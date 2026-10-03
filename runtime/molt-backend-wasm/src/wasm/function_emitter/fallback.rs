@@ -19,7 +19,7 @@ pub(super) fn emit_fallback_function_body(
     let call_site_abi = &ctx.call_site_abi;
     let import_ids = ctx.import_ids;
     let frame_plan = WasmFunctionFramePlan::for_function(func_ir);
-    let (mut func, frame) = frame_plan.into_function_and_frame();
+    let (mut func, mut frame) = frame_plan.into_function_and_frame();
     frame.emit_debug_local_map(func_ir, func_index);
 
     let dispatch_plan =
@@ -29,6 +29,17 @@ pub(super) fn emit_fallback_function_body(
         plan.emit_table_bases(backend, func_index, &mut func, reloc_enabled, locals);
     }
     frame.emit_entry_initializers(&mut func);
+    // All function ABIs preserve pending Python exceptions. Only structured
+    // bodies lower authored handlers with WASM EH; dispatch keeps explicit edges.
+    let wasm_eh_enabled = backend.options.native_eh_enabled && !reloc_enabled;
+    let native_eh_enabled = frame.control_mode().native_eh_enabled(
+        backend.options.native_eh_enabled,
+        backend.options.reloc_enabled,
+    );
+    if wasm_eh_enabled {
+        frame.emit_unwind_scope_start(&mut func);
+    }
+    frame.emit_return_scope_start(&mut func, wasm_eh_enabled);
     frame.emit_const_anchor_initializers(
         backend,
         &mut func,
@@ -38,15 +49,6 @@ pub(super) fn emit_fallback_function_body(
         ctx.const_str_scratch_segment,
     );
 
-    // Capture native_eh_enabled before the closure to avoid borrowing backend.
-    // Dispatch lowers path-local exception regions through explicit runtime
-    // state and target-labelled checks, not lexical WASM TryTable scopes.
-    // Native EH is valid only for the plain structured emitter, and requires
-    // non-relocatable output because wasm-ld does not support EH relocations.
-    let native_eh_enabled = frame.control_mode().native_eh_enabled(
-        backend.options.native_eh_enabled,
-        backend.options.reloc_enabled,
-    );
     let tail_call_enabled = backend.options.tail_call_enabled;
 
     // Uses Cell so stateful dispatch can emit ops one at a time while sharing
@@ -100,6 +102,7 @@ pub(super) fn emit_fallback_function_body(
         }
     }
 
+    frame.emit_epilogue(&mut func, import_ids, reloc_enabled, wasm_eh_enabled);
     backend.tail_calls_emitted += tail_call_count.get();
     backend.codes.function(&func);
 }

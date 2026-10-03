@@ -8,10 +8,6 @@ from typing import (
 )
 
 from molt.frontend._types import (
-    INTRINSIC_HANDLE_CLASS_CONSTRUCTORS,
-    MOLT_DIRECT_CALLS,
-    MOLT_REEXPORT_FUNCTIONS,
-    STDLIB_DIRECT_CALL_MODULES,
     MoltOp,
     MoltValue,
     _intrinsic_arity_exact,
@@ -34,36 +30,6 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
         if module_name == "molt.stdlib" or module_name.startswith("molt.stdlib."):
             return False
         return module_name == "molt" or module_name.startswith("molt.")
-
-    @staticmethod
-    def _display_allowlist_module(module_name: str) -> str:
-        if module_name in STDLIB_DIRECT_CALL_MODULES:
-            return f"molt.stdlib.{module_name}"
-        return module_name
-
-    def _call_allowlist_suggestion(
-        self, func_id: str, imported_from: str | None
-    ) -> str | None:
-        if imported_from == "molt":
-            target_module = MOLT_REEXPORT_FUNCTIONS.get(func_id)
-            if target_module:
-                return f"{target_module}.{func_id}"
-        if imported_from:
-            normalized = self._normalize_allowlist_module(imported_from)
-            if (
-                normalized
-                and normalized in MOLT_DIRECT_CALLS
-                and func_id in MOLT_DIRECT_CALLS[normalized]
-            ):
-                display_module = self._display_allowlist_module(normalized)
-                return f"{display_module}.{func_id}"
-            if (
-                imported_from in MOLT_DIRECT_CALLS
-                and func_id in MOLT_DIRECT_CALLS[imported_from]
-            ):
-                display_module = self._display_allowlist_module(imported_from)
-                return f"{display_module}.{func_id}"
-        return None
 
     @staticmethod
     def _known_module_func_kind(info: dict[str, Any] | None) -> FunctionKind | None:
@@ -192,6 +158,27 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind=call_kind, args=args, result=res))
         return res
 
+    def _named_callee_value(
+        self, target_info: MoltValue, func_id: str, node: ast.Call
+    ) -> MoltValue:
+        """The callee operand of a call through the name ``func_id``.
+
+        ``target_info`` is a compile-time fact about that name. It is never the
+        operand of a function-scope read: a local is read where the call reads
+        it, by the Name read that owns its source fact, frame storage and
+        capture across argument evaluation, and a module function is read from
+        the module. Module-scope code and coroutine slots already hold the
+        name's current value.
+        """
+        if self.current_func_name == "molt_main" or func_id in self.async_locals:
+            return target_info
+        if func_id not in self.locals:
+            return self._emit_module_attr_get(func_id)
+        callee = self.visit(node.func)
+        if callee is None:
+            raise FrontendRejection(Diagnostic.CALL_TARGET, "Unsupported call target")
+        return callee
+
     def _emit_stateful_function_value_call(
         self,
         target_info: MoltValue | None,
@@ -206,13 +193,7 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
         if stateful_hint is None:
             return None
 
-        callee = target_info
-        if (
-            self.current_func_name != "molt_main"
-            and func_id not in self.locals
-            and func_id not in self.async_locals
-        ):
-            callee = self._emit_module_attr_get(func_id)
+        callee = self._named_callee_value(target_info, func_id, node)
         return self._emit_stateful_callable_call(
             callee,
             node,
@@ -255,11 +236,7 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
         original_attr: str,
         node: ast.Call,
         *,
-        imported_from: str | None,
-        normalized: str | None,
         needs_bind: bool,
-        force_bind: bool,
-        direct_registry_authorized: bool,
     ) -> MoltValue | None:
         if target_module is None:
             return None
@@ -274,67 +251,25 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
             # module attribute, not a synthesized module__function symbol, owns
             # dispatch and rebinding semantics.
             return None
-        target_kind = self._lookup_func_kind(target_module, original_attr)
-        known_direct_target = self._lookup_func_defaults(target_module, original_attr)
-        has_known_direct_target = known_direct_target is not None
-        known_info_kind = self._known_module_func_kind(known_direct_target)
-        has_known_task_target = (
-            target_kind not in {None, FunctionKind.SYNC} or known_info_kind is not None
-        )
-        direct_target_is_linkable = self._is_linkable_module_function_symbol(
-            target_module
-        )
-        # Speculative direct calls assume the target module defines the
-        # attribute as a compiled function. When the module's function facts
-        # are known and the attribute is not among its defs (star-import
-        # re-exports like numpy._core.multiarray.dtype forwarding the C
-        # extension), the direct symbol would never exist at link, so the
-        # call must stay a dynamic bound call.
-        target_module_funcs = self.known_func_kinds.get(target_module)
-        if target_module_funcs is None and normalized is not None:
-            target_module_funcs = self.known_func_kinds.get(normalized)
-        speculative_target_is_defined = (
-            target_module_funcs is None or original_attr in target_module_funcs
-        )
-        allow_speculative_internal_direct = (
-            not has_known_direct_target
-            and target_kind in {None, FunctionKind.SYNC}
-            and speculative_target_is_defined
-            and imported_from is not None
-            and imported_from not in self.stdlib_allowlist
-            and (normalized is None or normalized not in self.stdlib_allowlist)
-            and (
-                self._is_internal_module(imported_from)
-                or self._is_known_project_module(imported_from)
-            )
-            and not force_bind
-        )
-        if (
-            not direct_target_is_linkable
-            or not self._imported_module_attr_is_stable(target_module, original_attr)
-            or not (
-                direct_registry_authorized
-                or has_known_direct_target
-                or has_known_task_target
-                or allow_speculative_internal_direct
-            )
-        ):
+        if not self._is_linkable_module_function_symbol(
+            target_module, original_attr
+        ) or not self._imported_module_attr_is_stable(target_module, original_attr):
             return None
 
         lowered_task_func = self._emit_known_module_task_func_call(
             target_module,
             original_attr,
             node,
-            needs_bind=needs_bind or force_bind,
+            needs_bind=needs_bind,
         )
         if lowered_task_func is not None:
             return lowered_task_func
-        if needs_bind or force_bind or has_known_task_target:
+        if needs_bind:
             return self._emit_call_bind_for_known_module_func(
                 node,
                 result_hint="Any",
             )
-        # Registry and module stability facts identify a candidate code symbol,
+        # Source definition and linkability facts identify a candidate code symbol,
         # not an immutable Python function/defaults ABI. Keep its live operand.
         callee = self.visit(node.func)
         if callee is None:
@@ -348,65 +283,6 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
                 args=[callee] + args,
                 result=res,
                 metadata={"target": target_name},
-            )
-        )
-        return res
-
-    def _try_emit_intrinsic_handle_class_constructor(
-        self,
-        target_module: str,
-        attr_name: str,
-        node: ast.Call,
-    ) -> MoltValue | None:
-        spec = INTRINSIC_HANDLE_CLASS_CONSTRUCTORS.get((target_module, attr_name))
-        if spec is None:
-            return None
-        if node.keywords or any(isinstance(arg, ast.Starred) for arg in node.args):
-            return None
-        if len(node.args) > 1:
-            return None
-
-        runtime_args: list[MoltValue]
-        if node.args:
-            arg_hint = self._builtin_exact_type_from_expr(node.args[0])
-            if arg_hint not in spec.iterable_types:
-                return None
-            intrinsic_name = spec.iterable_intrinsic
-        else:
-            intrinsic_name = spec.empty_intrinsic
-
-        class_ref = self.visit(node.func)
-        if class_ref is None:
-            raise FrontendRejection(
-                Diagnostic.OPERAND_VALUE,
-                "Unsupported intrinsic-backed class target",
-            )
-        runtime_args = []
-        if node.args:
-            iterable = self.visit(node.args[0])
-            if iterable is None:
-                raise FrontendRejection(
-                    Diagnostic.OPERAND_VALUE,
-                    "Unsupported intrinsic-backed class constructor argument",
-                )
-            runtime_args.append(iterable)
-
-        intrinsic_func = self._emit_intrinsic_function(intrinsic_name)
-        handle = MoltValue(self.next_var(), type_hint="int")
-        self.emit(
-            MoltOp(
-                kind="CALL_FUNC",
-                args=[intrinsic_func] + runtime_args,
-                result=handle,
-            )
-        )
-        res = MoltValue(self.next_var(), type_hint=spec.type_hint)
-        self.emit(MoltOp(kind="OBJECT_NEW_BOUND", args=[class_ref], result=res))
-        self.emit(
-            MoltOp(
-                kind="SETATTR_GENERIC_OBJ",
-                args=[res, spec.handle_attr, handle],
-                result=MoltValue("none"),
             )
         )
         return res

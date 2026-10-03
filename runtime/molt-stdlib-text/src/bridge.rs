@@ -7,6 +7,19 @@
 
 use molt_runtime_core::prelude::*;
 
+unsafe extern "C" {
+    fn __molt_text_east_asian_width(bits: u64) -> u64;
+    fn __molt_text_unidata_version() -> u64;
+}
+
+pub fn east_asian_width(bits: u64) -> u64 {
+    unsafe { __molt_text_east_asian_width(bits) }
+}
+
+pub fn unidata_version() -> u64 {
+    unsafe { __molt_text_unidata_version() }
+}
+
 // ---------------------------------------------------------------------------
 // Exception / error handling
 // ---------------------------------------------------------------------------

@@ -122,8 +122,6 @@ struct FutureState {
     cancelled: bool,
     /// Cancel message bits (None if no message). Heap objects are inc_ref'd.
     cancel_msg_bits: u64,
-    /// Done-callback bits. Each entry is inc_ref'd when stored.
-    callbacks: Vec<u64>,
 }
 
 impl FutureState {
@@ -134,7 +132,6 @@ impl FutureState {
             done: false,
             cancelled: false,
             cancel_msg_bits: MoltObject::none().bits(),
-            callbacks: Vec::new(),
         }
     }
 }
@@ -251,7 +248,6 @@ fn release_future_state(_py: &PyToken, state: FutureState) {
     dec_ref_bits(_py, state.result_bits);
     dec_ref_bits(_py, state.exception_bits);
     dec_ref_bits(_py, state.cancel_msg_bits);
-    release_waiters(_py, state.callbacks);
 }
 
 fn release_waiters(_py: &PyToken, waiters: Vec<u64>) {
@@ -350,7 +346,7 @@ pub extern "C" fn molt_asyncio_future_exception(handle_bits: u64) -> u64 {
     })
 }
 
-/// Atomic: set result + mark done + return callbacks count as int bits.
+/// Atomically store the result and mark the Future done.
 /// Raises InvalidStateError if already done.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_future_set_result_fast(handle_bits: u64, result_bits: u64) -> u64 {
@@ -371,14 +367,13 @@ pub extern "C" fn molt_asyncio_future_set_result_fast(handle_bits: u64, result_b
         state.result_bits = result_bits;
         state.done = true;
 
-        let cb_count = state.callbacks.len() as i64;
-        MoltObject::from_int(cb_count).bits()
+        MoltObject::none().bits()
     })
 }
 
-/// Atomic: set exception + mark done + return callbacks count as int bits.
-/// Raises InvalidStateError if already done. If the exception is a
-/// CancelledError, also marks the future as cancelled.
+/// Atomically store the exception and mark the Future done.
+/// Raises InvalidStateError if already done. Storing an exception never
+/// transitions a Future to cancelled; cancellation has its own transition.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_future_set_exception_fast(handle_bits: u64, exc_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -398,12 +393,8 @@ pub extern "C" fn molt_asyncio_future_set_exception_fast(handle_bits: u64, exc_b
         state.exception_bits = exc_bits;
         state.done = true;
 
-        // Note: The Python layer is responsible for checking if the exception
-        // is a CancelledError and calling cancel_fast instead if so. This
-        // intrinsic handles the general exception case.
 
-        let cb_count = state.callbacks.len() as i64;
-        MoltObject::from_int(cb_count).bits()
+        MoltObject::none().bits()
     })
 }
 
@@ -444,7 +435,6 @@ pub extern "C" fn molt_asyncio_future_cancel_fast(handle_bits: u64, msg_bits: u6
         dec_ref_bits(_py, old_exc);
         dec_ref_bits(_py, old_res);
 
-        let _cb_count = state.callbacks.len() as i64;
         // Return True to signal cancellation succeeded; the Python layer
         // will call _invoke_callbacks itself.
         MoltObject::from_bool(true).bits()
@@ -480,36 +470,6 @@ pub extern "C" fn molt_asyncio_future_cancelled(handle_bits: u64) -> u64 {
     })
 }
 
-/// Add a done-callback to a future. If the future is already done, returns
-/// True (was_done) so the Python layer can invoke the callback immediately.
-/// Otherwise stores the callback and returns False.
-///
-/// callback_bits: the callable bits to invoke when the future completes.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_asyncio_future_add_done_callback_fast(
-    handle_bits: u64,
-    callback_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let handle = handle_from_bits(handle_bits);
-        let registry = asyncio_core_state(_py);
-        let mut map = registry.futures.lock().unwrap();
-        let Some(state) = map.get_mut(&handle) else {
-            return MoltObject::from_bool(true).bits();
-        };
-
-        if state.done {
-            // Future already done — caller should invoke callback immediately.
-            return MoltObject::from_bool(true).bits();
-        }
-
-        // Store callback with inc_ref.
-        inc_ref_bits(_py, callback_bits);
-        state.callbacks.push(callback_bits);
-        MoltObject::from_bool(false).bits()
-    })
-}
-
 /// Drop a future handle. Dec-refs all stored bits and removes from registry.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_asyncio_future_drop(handle_bits: u64) -> u64 {
@@ -522,9 +482,6 @@ pub extern "C" fn molt_asyncio_future_drop(handle_bits: u64) -> u64 {
             dec_ref_bits(_py, state.result_bits);
             dec_ref_bits(_py, state.exception_bits);
             dec_ref_bits(_py, state.cancel_msg_bits);
-            for cb in &state.callbacks {
-                dec_ref_bits(_py, *cb);
-            }
         }
         MoltObject::none().bits()
     })

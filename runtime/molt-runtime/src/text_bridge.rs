@@ -6,7 +6,55 @@
 
 use crate::object::ops::string_obj_to_owned as _string_obj_to_owned;
 use crate::object::ops::type_name as _type_name;
+use crate::object::ops_sys::runtime_target_minor;
 use crate::*;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_text_east_asian_width(bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(ptr) = obj_from_bits(bits)
+            .as_ptr()
+            .filter(|ptr| unsafe { object_type_id(*ptr) == TYPE_ID_STRING })
+        else {
+            return raise_exception::<u64>(_py, "TypeError", "argument must be str");
+        };
+        let bytes = unsafe { std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)) };
+        let mut codes = crate::object::ops_string::wtf8_from_bytes(bytes).code_points();
+        let Some(code) = codes.next().filter(|_| codes.next().is_none()) else {
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "need a single Unicode character as parameter",
+            );
+        };
+        let width = crate::object::ops::unicode_east_asian_width_table::width(
+            code.to_u32(),
+            runtime_target_minor(_py),
+        );
+        let ptr = alloc_string(_py, width.as_bytes());
+        if ptr.is_null() {
+            raise_exception::<u64>(_py, "MemoryError", "out of memory")
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_text_unidata_version() -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let (version, _) = crate::object::ops::unicode_east_asian_width_table::for_minor(
+            runtime_target_minor(_py),
+        )
+        .expect("unsupported target Python Unicode version");
+        let ptr = alloc_string(_py, version.as_bytes());
+        if ptr.is_null() {
+            raise_exception::<u64>(_py, "MemoryError", "out of memory")
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Exception / error handling

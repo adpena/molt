@@ -638,3 +638,137 @@ setattr(
 assert saved_layout_target.x == 80
 assert rebound_layout_target.x == 8
 print("held-receiver-name-rebinding", saved_layout_target.x, rebound_layout_target.x)
+
+
+def saved_globals_survive_module_publication():
+    import importlib
+    import sys
+    from types import ModuleType
+    import globals_callable_support as original
+
+    name = original.__name__
+    namespace = original.__dict__
+    reader = original.read_marker
+    writer = original.write_marker
+    deleter = original.delete_marker
+    direct = original.direct
+    factory = original.make_nested
+    suspended = original.suspended(globals)
+    coroutine = original.coroutine_namespace()
+    replacement = ModuleType(name)
+    replacement.marker = "replacement"
+    try:
+        assert next(suspended) is namespace
+        sys.modules[name] = replacement
+        assert importlib.import_module(name) is replacement
+        writer("saved-replacement")
+        assert reader() == "saved-replacement"
+        assert direct() is namespace and reader.__globals__ is namespace
+        child = factory()
+        assert child.__globals__ is namespace
+        assert child() == (namespace, "saved-replacement")
+        assert replacement.marker == "replacement"
+        deleter()
+        assert "marker" not in namespace
+        try:
+            reader()
+        except NameError:
+            pass
+        else:
+            raise AssertionError("deleted defining global remained visible")
+        writer("saved-deletion")
+        del sys.modules[name]
+        assert reader() == "saved-deletion"
+        assert direct() is namespace
+        assert next(suspended) is namespace
+        fresh = importlib.import_module(name)
+        assert fresh is not original
+        assert fresh.__dict__ is not namespace
+        assert fresh.read_marker() == "lexical"
+        fresh.write_marker("fresh")
+        assert reader() == "saved-deletion"
+        writer("saved-reimport")
+        assert fresh.read_marker() == "fresh"
+        assert child() == (namespace, "saved-reimport")
+        assert factory()() == (namespace, "saved-reimport")
+        try:
+            coroutine.send(None)
+        except StopIteration as finished:
+            assert finished.value == (namespace, "saved-reimport")
+        else:
+            raise AssertionError("saved coroutine did not finish")
+        print("defining-globals-survive-publication", reader(), fresh.read_marker())
+    finally:
+        suspended.close()
+        coroutine.close()
+        sys.modules[name] = original
+        writer("lexical")
+
+
+saved_globals_survive_module_publication()
+
+# Module execution owns its namespace even after replacing its public entry.
+# Forced chunk lowering must carry this owner rather than reacquire it by name.
+import sys as publication_sys
+
+publication_name = __name__
+publication_owner = publication_sys.modules[publication_name]
+publication_namespace = globals()
+publication_sys.modules[publication_name] = object()
+try:
+    publication_marker = "held-module"
+    assert globals() is publication_namespace
+    assert publication_namespace["publication_marker"] == "held-module"
+    del publication_marker
+    assert "publication_marker" not in publication_namespace
+    print("module-globals-survive-publication", globals() is publication_namespace)
+finally:
+    publication_sys.modules[publication_name] = publication_owner
+
+
+def user_names_preserve_execution_roles():
+    import sys
+    from types import FunctionType
+    import molt_init_namespace_support as support
+    import globals_callable_support as ordinary
+
+    namespace = {"__builtins__": __builtins__, "marker": "foreign"}
+    clone = FunctionType(support.probe.__code__, namespace)
+    value, observed, local = clone("updated")
+    assert value == local == namespace["marker"] == "updated"
+    assert observed is namespace
+    assert support.marker == "lexical"
+    chunk_spelled = FunctionType(ordinary.molt_module_chunk_1.__code__, namespace)
+    observed, local = chunk_spelled("parameter")
+    assert observed is namespace and local == "parameter"
+    try:
+        support.fail()
+    except ValueError as error:
+        assert str(error) == "ordinary-function-failure"
+    else:
+        raise AssertionError("user function failure disappeared")
+    assert sys.modules[support.__name__] is support
+    assert support.annotated(True).__annotations__ == {"field": int}
+    assert support.annotated(False).__annotations__ == {}
+    assert ordinary.generated_lambda(7) == ("generated-lambda", 7)
+    assert list(ordinary.generated_expression) == [2, 3]
+    assert ordinary.lambda_1(8) == ("source-lambda", 8)
+    assert ordinary.genexpr_1(9) == ("source-genexpr", 9)
+    assert ordinary.MethodOwner().probe(4) == ("method", 4)
+    assert ordinary.MethodOwner_probe(5) == ("module", 5)
+    assert ordinary.saved_redefined(6) == ("first", 6)
+    assert ordinary.redefined(7) == ("second", 7)
+    assert ordinary.symbol_early_poll(10) == ("source-early-poll", 10)
+    assert ordinary.symbol_late_poll(11) == ("source-late-poll", 11)
+    assert list(ordinary.symbol_late(12)) == [("generator", 12)]
+    coroutine = ordinary.symbol_early(13)
+    try:
+        coroutine.send(None)
+    except StopIteration as completed:
+        assert completed.value == ("coroutine", 13)
+    else:
+        raise AssertionError("coroutine result disappeared")
+    print("user-names-preserve-frames", value, local, support.marker)
+
+
+user_names_preserve_execution_roles()

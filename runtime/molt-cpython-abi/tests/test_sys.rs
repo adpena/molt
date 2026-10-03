@@ -7,7 +7,12 @@ use std::ptr;
 unsafe extern "C" fn fake_sys_get_object_borrowed(
     name: *const u8,
     len: usize,
+    _policy: molt_cpython_abi::hooks::SysLookupPolicy,
 ) -> molt_cpython_abi::hooks::BorrowedHandleResult {
+    assert_eq!(
+        _policy,
+        molt_cpython_abi::hooks::SysLookupPolicy::PySysGetObject
+    );
     let name = unsafe { std::slice::from_raw_parts(name, len) };
     if name == b"flags" {
         molt_cpython_abi::hooks::BorrowedHandleResult::error()
@@ -24,20 +29,13 @@ fn init() {
 }
 
 #[test]
-fn test_pysys_getobject_hook_error_fails_closed_with_systemerror() {
+fn test_pysys_getobject_hook_error_is_suppressed() {
     init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let flags = unsafe { molt_cpython_abi::api::sys::PySys_GetObject(c"flags".as_ptr()) };
     assert!(flags.is_null());
-    assert_eq!(
-        unsafe {
-            molt_cpython_abi::api::errors::PyErr_ExceptionMatches(
-                (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError)
-                    .cast::<molt_cpython_abi::abi_types::PyObject>(),
-            )
-        },
-        1
-    );
+    assert!(unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 

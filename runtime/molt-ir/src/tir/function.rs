@@ -4,15 +4,20 @@ use super::blocks::{BlockId, LoopBreakKind, LoopRole, TirBlock};
 use super::op_kinds_generated::{
     opcode_is_exception_handler_region_table, opcode_is_lowered_state_machine_body_table,
 };
-use super::ops::AttrDict;
+use super::ops::{AttrDict, AttrValue};
 use super::types::TirType;
 use super::values::ValueId;
-use crate::ir::{ExecutionContextPolicy, FunctionReturnAbi};
+use crate::ir::{ExecutionContextPolicy, FunctionReturnAbi, ParameterCustody};
 
 mod block_retention;
 
 /// Attribute projection of the typed SimpleIR physical partition fact.
 pub const CODEGEN_PARTITION_ATTR: &str = "codegen_partition";
+
+/// Attribute projection of the typed FunctionIR parameter custody fact: the
+/// [`ParameterCustody::encode`] bytes, one per parameter of the declared
+/// signature. Absent means every parameter is borrowed.
+pub const PARAMETER_CUSTODY_ATTR: &str = "parameter_custody";
 
 /// A function in TIR: a collection of basic blocks in SSA form.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -79,6 +84,44 @@ impl TirFunction {
             self.attrs.get(CODEGEN_PARTITION_ATTR),
             Some(super::ops::AttrValue::Bool(true))
         )
+    }
+
+    /// Custody of the parameter at `position` of the declared signature, for a
+    /// body and an extern declaration alike. A projection that does not name
+    /// every parameter is malformed and is never guessed.
+    pub fn parameter_custody(&self, position: usize) -> ParameterCustody {
+        let arity = self.param_types.len();
+        let custody = match self.attrs.get(PARAMETER_CUSTODY_ATTR) {
+            None => return ParameterCustody::Borrowed,
+            Some(AttrValue::Bytes(encoded)) => ParameterCustody::decode(encoded, arity, position),
+            Some(_) => None,
+        };
+        custody.unwrap_or_else(|| {
+            panic!(
+                "{}: malformed {PARAMETER_CUSTODY_ATTR} for parameter {position} of {arity}",
+                self.name
+            )
+        })
+    }
+
+    /// Project `custody`, one entry per parameter. All-borrowed custody is the
+    /// absent attribute, so the fact has one encoding.
+    pub fn set_parameter_custody(&mut self, custody: &[ParameterCustody]) {
+        assert_eq!(
+            custody.len(),
+            self.param_types.len(),
+            "{}: parameter custody must name every parameter",
+            self.name
+        );
+        match ParameterCustody::encode(custody) {
+            Some(encoded) => {
+                self.attrs
+                    .insert(PARAMETER_CUSTODY_ATTR.into(), AttrValue::Bytes(encoded));
+            }
+            None => {
+                self.attrs.remove(PARAMETER_CUSTODY_ATTR);
+            }
+        }
     }
 
     /// Create a new function with a single empty entry block.
@@ -188,26 +231,10 @@ impl TirFunction {
         })
     }
 
-    /// True iff the function is a lowered coroutine `_poll` **state machine** —
-    /// it dispatches on a saved state via [`StateSwitch`](super::ops::OpCode::StateSwitch)
-    /// (and friends: `StateTransition`/`StateYield`). Such a function's CFG is NOT
-    /// dominator-structured: the state dispatch RE-ENTERS resume blocks, so a
-    /// value defined in one state region is reachable (via the dispatch back-edge)
-    /// in a resume block that a straight-line / dominator liveness walk does NOT
-    /// see as dominated. Any pass that places ops keyed on single-entry dominance
-    /// (drop insertion's per-block last-use / edge-dying placement) is UNSOUND
-    /// over this shape — it can emit a `DecRef` in a resume block referencing a
-    /// value defined only on the non-taken first-entry path (a use-before-def that
-    /// the LLVM verifier rejects and that double-frees at runtime on native).
-    ///
-    /// This is the post-lowering complement to [`has_exception_handlers`]: a
-    /// generator may be lowered to a `_poll` body carrying `StateSwitch` WITHOUT
-    /// the `StateBlockStart`/`StateBlockEnd` delimiters, so the handler predicate
-    /// alone does not catch it. Passes whose hazard is the re-entrant state CFG
-    /// (drop insertion — design 20 §2.9 handles the high-level suspension model
-    /// but NOT the lowered state machine) bail on this predicate too.
-    ///
-    /// [`has_exception_handlers`]: TirFunction::has_exception_handlers
+    /// True for a coroutine/generator poll activation with saved-state dispatch.
+    /// Resume edges belong to the CFG. Persistence belongs to explicit frame
+    /// stores/loads; terminal DropInsertion exposes suspension as ordinary
+    /// returns and releases invocation-local owners through the shared analysis.
     pub fn has_state_machine(&self) -> bool {
         use super::blocks::Terminator;
         self.blocks.values().any(|block| {

@@ -309,7 +309,7 @@ fn boxed_runtime_calls_retire_temporary_integer_owners_separately_from_results()
                     ir.contains(&format!("call i64 @molt_int_from_i64(i64 {value})")),
                     "{ir}"
                 );
-                let release = "call void @molt_dec_ref_obj(i64 %boxed_int)";
+                let release = "call void @molt_dec_ref_obj(i64 %boxed_call_owner_bits)";
                 assert_eq!(
                     ir.matches(release).count(),
                     usize::from(!inline_proven),
@@ -547,11 +547,22 @@ fn hash_constructors_share_typed_and_preserved_failure_cfg() {
             ir.find("aggregate_created").unwrap() < ir.find("call i64 @molt_int_from_i64").unwrap(),
             "allocation failure must branch before any operand boxing/hashing: {ir}"
         );
-        assert!(
-            ir.contains("aggregate_abort")
-                && ir.matches("call void @molt_dec_ref_obj").count()
-                    >= if width == 2 { 5 } else { 3 },
-            "{ir}"
+        assert!(ir.contains("aggregate_abort"), "{ir}");
+        assert_eq!(
+            ir.matches("call i64 @molt_int_from_i64(").count(),
+            1,
+            "the value repeated in every entry is boxed once: {ir}"
+        );
+        assert_eq!(
+            ir.matches("call void @molt_dec_ref_obj(i64 %aggregate_owner_bits")
+                .count(),
+            1,
+            "its one box is released once on both paths: {ir}"
+        );
+        assert_eq!(
+            ir.matches("call void @molt_dec_ref_obj(i64 %aggregate)").count(),
+            1,
+            "only the failure path releases the partial aggregate: {ir}"
         );
         assert!(ir.contains("aggregate_result = phi i64"), "{ir}");
         assert!(
@@ -565,8 +576,12 @@ fn hash_constructors_share_typed_and_preserved_failure_cfg() {
         assert_eq!(mutations.len(), 2, "{ir}");
         let mutation = mutations[0];
         assert!(
-            ir[..mutation].contains("@molt_exception_pending()"),
+            ir[..mutation].contains("%aggregate_box_failed = icmp eq i64"),
             "boxing failure must precede mutation: {ir}"
+        );
+        assert!(
+            !ir[..mutation].contains("@molt_exception_pending()"),
+            "allocation and boxing report failure through their words: {ir}"
         );
         assert!(
             ir[mutation..].contains("@molt_exception_pending()"),
@@ -589,10 +604,138 @@ fn hash_constructors_share_typed_and_preserved_failure_cfg() {
 }
 
 #[test]
+fn hash_constructor_entries_are_boxed_after_the_previous_insertion() {
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let mut func = TirFunction::new(
+        "lazy_dict_entries".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let first = func.fresh_value();
+    let second = func.fresh_value();
+    let result = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(const_int_def(first, i64::MAX));
+    entry.ops.push(const_int_def(second, i64::MIN));
+    // {first: first, second: first}: the second entry's key is new, its value
+    // repeats the first entry's.
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::BuildDict,
+        operands: vec![first, first, second, first],
+        results: vec![result],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result],
+    };
+    let llvm_fn = lower_tir_to_llvm(&func, &backend);
+    backend
+        .module
+        .verify()
+        .expect("lazy hash aggregate entries must verify");
+    let ir = llvm_fn.print_to_string().to_string();
+    let at = |needle: &str| -> Vec<usize> {
+        ir.match_indices(needle).map(|(index, _)| index).collect()
+    };
+    let boxes = at("call i64 @molt_int_from_i64(");
+    let inserts = at("call i64 @molt_dict_set(");
+    assert_eq!(boxes.len(), 2, "each distinct value is boxed once: {ir}");
+    assert_eq!(inserts.len(), 2, "{ir}");
+    assert!(
+        boxes[0] < inserts[0] && inserts[0] < boxes[1] && boxes[1] < inserts[1],
+        "a later entry is boxed only after the previous insertion: {ir}"
+    );
+    let insert_line = |index: usize| ir[inserts[index]..].lines().next().unwrap().trim_end();
+    assert!(
+        insert_line(0).ends_with("i64 %boxed_int, i64 %boxed_int)"),
+        "{ir}"
+    );
+    assert!(
+        insert_line(1).ends_with("i64 %boxed_int)") && !insert_line(1).contains("i64 %boxed_int, "),
+        "the repeated value reuses its first box beside the new key's box: {ir}"
+    );
+    assert_eq!(
+        ir.matches("call void @molt_dec_ref_obj(i64 %aggregate_owner_bits")
+            .count(),
+        2,
+        "{ir}"
+    );
+}
+
+#[test]
+fn direct_compiled_calls_box_scalar_arguments_as_borrowed_temporaries() {
+    for (param, boxed) in [(TirType::DynBox, true), (TirType::I64, false)] {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        backend.function_linkage_abis.insert(
+            "borrowing_target".into(),
+            test_native_linkage_abi(vec![param], Some(TirType::DynBox)),
+        );
+        let mut func = TirFunction::new(
+            "direct_argument_owner".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let raw = func.fresh_value();
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_int_def(raw, i64::MAX));
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Call,
+            operands: vec![raw],
+            results: vec![result],
+            attrs: AttrDict::from([
+                ("_original_kind".into(), AttrValue::Str("call".into())),
+                ("s_value".into(), AttrValue::Str("borrowing_target".into())),
+            ]),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let llvm_fn = lower_tir_to_llvm(&func, &backend);
+        backend
+            .module
+            .verify()
+            .expect("direct compiled call arguments must verify");
+        let ir = llvm_fn.print_to_string().to_string();
+        if boxed {
+            let call = "call i64 @borrowing_target(i64 %boxed_int)";
+            let release = "call void @molt_dec_ref_obj(i64 %direct_call_owner_bits)";
+            assert!(ir.contains(call), "a boxed parameter receives a box: {ir}");
+            assert!(
+                ir.find(call).unwrap() < ir.find(release).unwrap(),
+                "the callee borrows its argument, so the box outlives the call: {ir}"
+            );
+            assert_eq!(ir.matches("call void @molt_dec_ref_obj(").count(), 1, "{ir}");
+            assert!(
+                ir.contains("%direct_call_result = phi i64 [ %direct_call, "),
+                "a failed box skips the callee and yields None: {ir}"
+            );
+        } else {
+            assert!(
+                ir.contains("call i64 @borrowing_target(i64 9223372036854775807)"),
+                "a raw parameter receives the raw word: {ir}"
+            );
+            assert!(
+                !ir.contains("@molt_int_from_i64(") && !ir.contains("@molt_dec_ref_obj("),
+                "{ir}"
+            );
+        }
+    }
+}
+
+#[test]
 fn handwritten_container_owned_results_release_when_discarded() {
     for (opcode, preserved, operand_count, result_name, runtime_symbol) in [
-        (OpCode::BuildList, None, 1, "sequence_builder_result", None),
-        (OpCode::BuildTuple, None, 1, "sequence_builder_result", None),
+        (OpCode::BuildList, None, 1, "sequence_result", None),
+        (OpCode::BuildTuple, None, 1, "sequence_result", None),
         (OpCode::BuildSet, None, 1, "aggregate_result", None),
         (OpCode::BuildDict, None, 2, "aggregate_result", None),
         (
@@ -602,7 +745,7 @@ fn handwritten_container_owned_results_release_when_discarded() {
             "aggregate_result",
             None,
         ),
-        (OpCode::BuildSlice, None, 3, "slice", None),
+        (OpCode::BuildSlice, None, 3, "slice_result", None),
         (
             OpCode::GetIter,
             None,
@@ -749,7 +892,7 @@ fn iterator_calls_box_and_retire_raw_inputs() {
             .unwrap_or_else(|error| panic!("{opcode:?}: {error}"));
         let ir = llvm_fn.print_to_string().to_string();
         let call = format!("call i64 @{symbol}(i64 %boxed_int)");
-        let input_release = "call void @molt_dec_ref_obj(i64 %boxed_int)";
+        let input_release = "call void @molt_dec_ref_obj(i64 %boxed_call_owner_bits)";
         assert!(
             ir.contains("call i64 @molt_int_from_i64(i64 9223372036854775807)"),
             "{ir}"
@@ -767,7 +910,7 @@ fn iterator_calls_box_and_retire_raw_inputs() {
             "iterator input must remain owned through the runtime borrow: {ir}"
         );
         assert!(
-            ir.contains(&format!("call void @molt_dec_ref_obj(i64 %{symbol})")),
+            ir.contains("call void @molt_dec_ref_obj(i64 %boxed_call_result)"),
             "discarded iterator result must be retired: {ir}"
         );
     }
@@ -804,7 +947,7 @@ fn iterator_calls_box_and_retire_raw_inputs() {
         .expect("raw unboxed iterator input ownership");
     let ir = llvm_fn.print_to_string().to_string();
     let call = "call i64 @molt_iter_next_unboxed(i64 %boxed_int, i64 %iter_next_unboxed_value_ptr)";
-    let input_release = "call void @molt_dec_ref_obj(i64 %boxed_int)";
+    let input_release = "call void @molt_dec_ref_obj(i64 %iter_next_unboxed_owner_bits)";
     assert!(
         ir.contains(call),
         "mixed iterator input must be boxed: {ir}"
@@ -1050,10 +1193,9 @@ fn lower_preserved_container_builders_use_declared_append_abis() {
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     backend.module.verify().expect("module should verify");
     let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains("call i32 @molt_list_builder_append"), "{ir}");
-    assert!(ir.contains("sequence_item_admitted"), "{ir}");
-    assert!(ir.contains("sequence_builder_abort"), "{ir}");
-    assert!(ir.contains("sequence_builder_result = phi i64"), "{ir}");
+    assert!(ir.contains("call i64 @molt_list_from_values("), "{ir}");
+    assert!(ir.contains("call i64 @molt_tuple_from_values("), "{ir}");
+    assert!(!ir.contains("molt_list_builder"), "{ir}");
     assert!(ir.contains("call i64 @molt_dict_set"), "{ir}");
     assert!(ir.contains("call i64 @molt_set_add"), "{ir}");
     assert!(
@@ -1064,17 +1206,17 @@ fn lower_preserved_container_builders_use_declared_append_abis() {
 }
 
 #[test]
-fn list_and_tuple_builders_share_owned_failure_cfg_for_typed_and_preserved_ops() {
-    for (opcode, preserved, finish) in [
-        (OpCode::BuildList, None, "molt_list_builder_finish"),
-        (OpCode::BuildTuple, None, "molt_tuple_builder_finish"),
-        (OpCode::Copy, Some("list_new"), "molt_list_builder_finish"),
-        (OpCode::Copy, Some("tuple_new"), "molt_tuple_builder_finish"),
+fn fixed_sequences_borrow_one_entry_word_range_for_typed_and_preserved_ops() {
+    for (opcode, preserved, constructor) in [
+        (OpCode::BuildTuple, None, "molt_tuple_from_values"),
+        (OpCode::Copy, Some("tuple_new"), "molt_tuple_from_values"),
+        (OpCode::BuildList, None, "molt_list_from_values"),
+        (OpCode::Copy, Some("list_new"), "molt_list_from_values"),
     ] {
         let ctx = Context::create();
         let backend = make_backend(&ctx);
         let mut func = TirFunction::new(
-            "sequence_ownership".into(),
+            "fixed_sequence_word_range".into(),
             vec![],
             TirType::DynBox,
             molt_ir::FunctionReturnAbi::Value,
@@ -1082,6 +1224,7 @@ fn list_and_tuple_builders_share_owned_failure_cfg_for_typed_and_preserved_ops()
         let raw = func.fresh_value();
         let text = func.fresh_value();
         let result = func.fresh_value();
+        let body = func.fresh_block();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(const_int_def(raw, i64::MAX));
         entry.ops.push(TirOp {
@@ -1092,50 +1235,82 @@ fn list_and_tuple_builders_share_owned_failure_cfg_for_typed_and_preserved_ops()
             attrs: AttrDict::from([("s_value".into(), AttrValue::Str("borrowed".into()))]),
             source_span: None,
         });
+        entry.terminator = Terminator::Branch {
+            target: body,
+            args: vec![],
+        };
         let mut attrs = AttrDict::new();
         if let Some(kind) = preserved {
             attrs.insert("_original_kind".into(), AttrValue::Str(kind.into()));
         }
-        entry.ops.push(TirOp {
-            dialect: Dialect::Molt,
-            opcode,
-            operands: vec![raw, text],
-            results: vec![result],
-            attrs,
-            source_span: None,
-        });
-        entry.terminator = Terminator::Return {
-            values: vec![result],
-        };
+        // Construct outside the entry block: a range allocated where the sequence
+        // is built would grow the stack on every loop iteration.
+        func.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops: vec![TirOp {
+                    dialect: Dialect::Molt,
+                    opcode,
+                    operands: vec![raw, text],
+                    results: vec![result],
+                    attrs,
+                    source_span: None,
+                }],
+                terminator: Terminator::Return {
+                    values: vec![result],
+                },
+            },
+        );
         let llvm_fn = lower_tir_to_llvm(&func, &backend);
         backend
             .module
             .verify()
-            .expect("sequence builder CFG must verify");
+            .expect("fixed sequence construction must verify");
         let ir = llvm_fn.print_to_string().to_string();
+        let entry = llvm_fn.get_first_basic_block().unwrap();
+        let mut entry_ir = String::new();
+        let mut instruction = entry.get_first_instruction();
+        while let Some(current) = instruction {
+            entry_ir.push_str(&current.print_to_string().to_string());
+            instruction = current.get_next_instruction();
+        }
+        assert!(
+            entry_ir.contains("alloca i64, i64 2"),
+            "the word range is one static entry-block slot: {ir}"
+        );
+        assert_eq!(ir.matches("alloca i64, i64 2").count(), 1, "{ir}");
+        assert!(
+            !ir.contains("molt_list_builder") && !ir.contains("molt_tuple_builder"),
+            "fixed-arity sequences need no builder custody: {ir}"
+        );
         assert_eq!(
-            ir.matches("call i32 @molt_list_builder_append").count(),
-            2,
+            ir.matches(&format!(
+                "call i64 @{constructor}(i64 %sequence_values_ptr, i64 2)"
+            ))
+            .count(),
+            1,
             "{ir}"
         );
         assert_eq!(
             ir.matches("call void @molt_dec_ref_obj").count(),
-            2,
-            "only the fresh raw-I64 box and partial builder are released, never the borrowed text: {ir}"
-        );
-        assert!(ir.contains("sequence_builder_created"), "{ir}");
-        assert!(ir.contains("sequence_item_admitted"), "{ir}");
-        assert!(ir.contains("sequence_builder_result = phi i64"), "{ir}");
-        assert_eq!(
-            ir.matches(&format!("call i64 @{finish}")).count(),
             1,
+            "only the fresh raw-I64 box is released, never the borrowed text: {ir}"
+        );
+        let checked = ir.find("label %sequence_abort").unwrap();
+        let construct = ir.find(&format!("@{constructor}(i64")).unwrap();
+        let release = ir.find("call void @molt_dec_ref_obj").unwrap();
+        assert!(
+            checked < construct && construct < release,
+            "a failed box skips construction, and the sequence retains every word \
+             before the temporary box is released: {ir}"
+        );
+        assert!(
+            ir.contains("%sequence_result = phi i64 [ %sequence_constructed, "),
             "{ir}"
         );
-        assert_eq!(
-            ir.matches("ret i64").count(),
-            1,
-            "abort must not introduce a private return: {ir}"
-        );
+        assert_eq!(ir.matches("ret i64").count(), 1, "{ir}");
     }
 }
 
@@ -1327,11 +1502,29 @@ fn lower_class_def_boxes_raw_i64_attribute_values() {
     };
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
+    backend
+        .module
+        .verify()
+        .expect("class definition transaction");
     let ir = llvm_fn.print_to_string().to_string();
     assert!(ir.contains("molt_guarded_class_def"), "{ir}");
     assert!(
         ir.contains("9221401712017801218"),
         "class_def attr values must be boxed before array storage; IR:\n{ir}"
     );
-    assert!(!ir.contains("store i64 2, ptr %class_attr_ptr_1"), "{ir}");
+    assert!(
+        !ir.contains("store i64 2, "),
+        "a raw payload never enters a range: {ir}"
+    );
+    let define = ir.find("call i64 @molt_guarded_class_def(").unwrap();
+    let releases: Vec<_> = ir.match_indices("call void @molt_dec_ref_obj(").collect();
+    assert_eq!(
+        releases.len(),
+        1,
+        "only the minted attribute box is released: {ir}"
+    );
+    assert!(
+        define < releases[0].0,
+        "the class retains the attribute value before its temporary box is released: {ir}"
+    );
 }

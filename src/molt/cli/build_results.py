@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from pathlib import Path
 import platform
 import subprocess
@@ -15,7 +15,6 @@ from molt.toolchain_identity import (
 from molt.capability_manifest import ResolvedRuntimePolicy
 from molt.artifact_publication import discard_staged_output
 from molt.cli.binary_image_analysis import (
-    _merge_binary_image_analysis_stage,
     _native_artifact_binary_image_analysis_payload,
     _non_native_artifact_binary_image_analysis_payload,
 )
@@ -38,7 +37,7 @@ from molt.cli.native_link_plan import (
 )
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import json_payload as _json_payload
-from molt.cli import link_fingerprints
+from molt.cli import link_fingerprints, progress
 
 
 def _observed_build_toolchain(
@@ -187,19 +186,44 @@ def _attach_process_output(
     return data
 
 
-def _emit_build_success_json(
+def _emit_native_link_process_output(
+    process: subprocess.CompletedProcess[str],
+) -> None:
+    # Build status and diagnostics use stderr in text mode. Preserve both
+    # captured linker streams there: drivers may report failures or warnings
+    # on either stream, and the outer build consumer reads this one channel.
+    for output in (process.stdout, process.stderr):
+        if output:
+            sys.stderr.write(output)
+            if not output.endswith("\n"):
+                sys.stderr.write("\n")
+
+
+def _emit_build_result_json(
     *,
     data: Mapping[str, Any],
     warnings: Sequence[str],
     json_output: bool,
-) -> None:
+    returncode: int,
+    diagnostics_error: str | None,
+    errors: Sequence[str] = (),
+) -> int:
+    result = returncode or (1 if diagnostics_error is not None else 0)
+    result_data = dict(data)
+    if result != 0:
+        result_data["returncode"] = result
+        result_data.pop("messages", None)
+    if diagnostics_error is not None:
+        result_data["diagnostics_error"] = diagnostics_error
     payload = _json_payload(
         "build",
-        "ok",
-        data=dict(data),
+        "error" if result != 0 else "ok",
+        data=result_data,
         warnings=list(warnings),
+        errors=list(errors) or ([diagnostics_error] if diagnostics_error else []),
     )
     _emit_json(payload, json_output)
+    return result
 
 
 def _build_native_link_success_data(
@@ -428,6 +452,18 @@ def _finalize_native_link_candidate(
             discard_staged_output(link_selection[0])
 
 
+def _finish_build_input_custody(
+    finalize_inputs: Callable[[], None] | None,
+) -> str | None:
+    """Close admitted inputs before any successful terminal result is emitted."""
+    if finalize_inputs is not None:
+        try:
+            finalize_inputs()
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            return f"Build input custody failed to close: {exc}"
+    return None
+
+
 def _emit_native_link_result(
     *,
     link_process: subprocess.CompletedProcess[str],
@@ -461,8 +497,8 @@ def _emit_native_link_result(
     stub_path: Path,
     runtime_lib: Path,
     external_native_artifacts: Sequence[_StagedExternalPackageNativeArtifact],
-    diagnostics_payload: dict[str, Any] | None,
-    diagnostics_path: Path | None,
+    diagnostics_enabled: bool,
+    build_diagnostics_payload: Callable[[], tuple[dict[str, Any] | None, Path | None]],
     pgo_profile_payload: Any | None,
     runtime_feedback_payload: Any | None,
     emit_ir_path: Path | None,
@@ -474,7 +510,41 @@ def _emit_native_link_result(
     link_selection: tuple[Path, Path] | None = None,
     backend_bin: Path | None = None,
     selected_profiles: Mapping[str, str] | None = None,
+    finalize_inputs: Callable[[], None] | None = None,
 ) -> int:
+    def emit_finalization_failure(message: str) -> int:
+        diagnostics_payload, diagnostics_error = _emit_build_diagnostics_if_present(
+            diagnostics_enabled=diagnostics_enabled,
+            build_diagnostics_payload=build_diagnostics_payload,
+            json_output=json_output,
+            verbosity=resolved_diagnostics_verbosity,
+        )
+        if json_output:
+            data: dict[str, Any] = {"output": str(output_binary), "target": target}
+            _attach_build_metadata(
+                data,
+                diagnostics_payload=diagnostics_payload,
+                pgo_profile_payload=pgo_profile_payload,
+                runtime_feedback_payload=runtime_feedback_payload,
+                emit_ir_path=emit_ir_path,
+            )
+            _attach_process_output(data, link_process)
+            return _emit_build_result_json(
+                data=data,
+                warnings=(),
+                json_output=json_output,
+                returncode=1,
+                diagnostics_error=diagnostics_error,
+                errors=[message],
+            )
+        print(message, file=sys.stderr)
+        if diagnostics_error is not None:
+            print(diagnostics_error, file=sys.stderr)
+        return 1
+
+    if not json_output:
+        progress.finish()
+        _emit_native_link_process_output(link_process)
     if link_process.returncode == 0:
         # LinkPlan owns strip ordering. Ordinary release plans strip here;
         # BOLT plans retain symbols and relocations until the optimized image
@@ -491,26 +561,9 @@ def _emit_native_link_result(
                     link_fingerprint_path, link_fingerprint
                 ),
             ):
-                message = f"Build failed during native finalization: {finalize_error}"
-                if json_output:
-                    _emit_json(
-                        _json_payload(
-                            "build",
-                            "error",
-                            data={"output": str(output_binary), "target": target},
-                            errors=[message],
-                        ),
-                        json_output,
-                    )
-                else:
-                    print(message, file=sys.stderr)
-                _emit_build_diagnostics_if_present(
-                    diagnostics_payload=diagnostics_payload,
-                    diagnostics_path=diagnostics_path,
-                    json_output=json_output,
-                    verbosity=resolved_diagnostics_verbosity,
+                return emit_finalization_failure(
+                    f"Build failed during native finalization: {finalize_error}"
                 )
-                return 1
         # Fresh candidates were validated after signing, before publication.
         # Reused/already-finalized names still receive the target admission gate;
         # no receipt is ever minted from this public-name observation.
@@ -520,28 +573,17 @@ def _emit_native_link_result(
         except _NativeBinaryInvalid as validity_error:
             # This name may now belong to another publisher. Never delete a
             # public destination based on an unlocked post-publication check.
-            message = f"Build failed: produced binary is invalid. {validity_error}"
-            if json_output:
-                payload = _json_payload(
-                    "build",
-                    "error",
-                    data={"output": str(output_binary), "target": target},
-                    errors=[message],
-                )
-                _emit_json(payload, json_output)
-            else:
-                print(message, file=sys.stderr)
-            _emit_build_diagnostics_if_present(
-                diagnostics_payload=diagnostics_payload,
-                diagnostics_path=diagnostics_path,
-                json_output=json_output,
-                verbosity=resolved_diagnostics_verbosity,
+            return emit_finalization_failure(
+                f"Build failed: produced binary is invalid. {validity_error}"
             )
-            return 1
-        _merge_binary_image_analysis_stage(
-            diagnostics_payload,
-            "artifacts",
-            _native_artifact_binary_image_analysis_payload(
+        if custody_error := _finish_build_input_custody(finalize_inputs):
+            return emit_finalization_failure(custody_error)
+        diagnostics_payload, diagnostics_error = _emit_build_diagnostics_if_present(
+            diagnostics_enabled=diagnostics_enabled,
+            build_diagnostics_payload=build_diagnostics_payload,
+            json_output=json_output,
+            verbosity=resolved_diagnostics_verbosity,
+            artifact_analysis=lambda: _native_artifact_binary_image_analysis_payload(
                 output_binary=output_binary,
                 output_obj=output_obj,
                 runtime_lib=runtime_lib,
@@ -599,14 +641,24 @@ def _emit_native_link_result(
                 emit_ir_path=emit_ir_path,
             )
             _attach_process_output(data, link_process)
-            _emit_build_success_json(
+            return _emit_build_result_json(
                 data=data,
                 warnings=warnings,
                 json_output=json_output,
+                returncode=0,
+                diagnostics_error=diagnostics_error,
             )
-        else:
-            _success(f"Successfully built {output_binary}", file=sys.stderr)
+        if diagnostics_error is not None:
+            print(diagnostics_error, file=sys.stderr)
+            return 1
+        _success(f"Successfully built {output_binary}", file=sys.stderr)
     else:
+        diagnostics_payload, diagnostics_error = _emit_build_diagnostics_if_present(
+            diagnostics_enabled=diagnostics_enabled,
+            build_diagnostics_payload=build_diagnostics_payload,
+            json_output=json_output,
+            verbosity=resolved_diagnostics_verbosity,
+        )
         if json_output:
             cache_info = _build_cache_info(
                 enabled=cache,
@@ -638,21 +690,17 @@ def _emit_native_link_result(
                 emit_ir_path=None,
             )
             _attach_process_output(data, link_process)
-            payload = _json_payload(
-                "build",
-                "error",
+            return _emit_build_result_json(
                 data=data,
+                warnings=(),
+                json_output=json_output,
+                returncode=link_process.returncode,
+                diagnostics_error=diagnostics_error,
                 errors=["Linking failed"],
             )
-            _emit_json(payload, json_output)
-        else:
-            print("Linking failed", file=sys.stderr)
-    _emit_build_diagnostics_if_present(
-        diagnostics_payload=diagnostics_payload,
-        diagnostics_path=diagnostics_path,
-        json_output=json_output,
-        verbosity=resolved_diagnostics_verbosity,
-    )
+        print("Linking failed", file=sys.stderr)
+        if diagnostics_error is not None:
+            print(diagnostics_error, file=sys.stderr)
     return link_process.returncode
 
 
@@ -682,8 +730,8 @@ def _emit_non_native_build_result(
     emit_mode: str,
     profile: str,
     native_arch_perf_enabled: bool,
-    diagnostics_payload: dict[str, Any] | None,
-    diagnostics_path: Path | None,
+    diagnostics_enabled: bool,
+    build_diagnostics_payload: Callable[[], tuple[dict[str, Any] | None, Path | None]],
     pgo_profile_payload: Any | None,
     runtime_feedback_payload: Any | None,
     emit_ir_path: Path | None,
@@ -693,11 +741,15 @@ def _emit_non_native_build_result(
     artifacts: Mapping[str, Any] | None = None,
     extra_fields: Mapping[str, Any] | None = None,
     success_messages: Sequence[str] = (),
+    finalize_inputs: Callable[[], None] | None = None,
 ) -> int:
-    _merge_binary_image_analysis_stage(
-        diagnostics_payload,
-        "artifacts",
-        _non_native_artifact_binary_image_analysis_payload(
+    custody_error = _finish_build_input_custody(finalize_inputs)
+    diagnostics_payload, diagnostics_error = _emit_build_diagnostics_if_present(
+        diagnostics_enabled=diagnostics_enabled,
+        build_diagnostics_payload=build_diagnostics_payload,
+        json_output=json_output,
+        verbosity=resolved_diagnostics_verbosity,
+        artifact_analysis=lambda: _non_native_artifact_binary_image_analysis_payload(
             kind=target,
             output=output,
             consumer_output=consumer_output,
@@ -736,7 +788,7 @@ def _emit_non_native_build_result(
             data["consumer_output"] = str(consumer_output)
         if bundle_root is not None:
             data["bundle_root"] = str(bundle_root)
-        if success_messages:
+        if success_messages and diagnostics_error is None and custody_error is None:
             data["messages"] = list(success_messages)
         if artifacts is not None:
             data["artifacts"] = dict(artifacts)
@@ -749,18 +801,22 @@ def _emit_non_native_build_result(
             runtime_feedback_payload=runtime_feedback_payload,
             emit_ir_path=emit_ir_path,
         )
-        _emit_build_success_json(
+        return _emit_build_result_json(
             data=data,
             warnings=warnings,
             json_output=json_output,
+            returncode=1 if custody_error is not None else 0,
+            diagnostics_error=diagnostics_error,
+            errors=[custody_error] if custody_error is not None else (),
         )
-    else:
-        for message in success_messages:
-            _success(message)
-    _emit_build_diagnostics_if_present(
-        diagnostics_payload=diagnostics_payload,
-        diagnostics_path=diagnostics_path,
-        json_output=json_output,
-        verbosity=resolved_diagnostics_verbosity,
-    )
+    if custody_error is not None:
+        print(custody_error, file=sys.stderr)
+        if diagnostics_error is not None:
+            print(diagnostics_error, file=sys.stderr)
+        return 1
+    if diagnostics_error is not None:
+        print(diagnostics_error, file=sys.stderr)
+        return 1
+    for message in success_messages:
+        _success(message)
     return 0

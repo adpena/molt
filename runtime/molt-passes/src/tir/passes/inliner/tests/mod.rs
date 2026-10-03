@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use super::activation::Activations;
 use super::call_sites::collect_call_sites;
 use super::clone_body::{clone_attrs_without_simple_names, clone_function_body_with_fresh_ids};
 use super::eligibility::is_closure;

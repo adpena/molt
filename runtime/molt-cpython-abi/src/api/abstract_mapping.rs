@@ -82,16 +82,12 @@ pub unsafe extern "C" fn PyMapping_Check(o: *mut PyObject) -> c_int {
     if o.is_null() {
         return 0;
     }
-    if let Some(bits) = resolve_bits(o) {
-        let tag = classify(bits);
-        if tag == tag_dict()
-            || tag == crate::abi_types::MoltTypeTag::List as u8
-            || tag == crate::abi_types::MoltTypeTag::Tuple as u8
-            || tag == crate::abi_types::MoltTypeTag::Str as u8
-            || tag == crate::abi_types::MoltTypeTag::Bytes as u8
-        {
-            return 1;
+    match crate::bridge::observe_pyobject(o) {
+        Some(crate::bridge::ResolvedPyObject::ManagedMolt(value)) => {
+            return unsafe { (hooks_or_stubs().object_supports_subscript)(value.bits()) };
         }
+        None => return 0,
+        Some(crate::bridge::ResolvedPyObject::Foreign) => {}
     }
     unsafe { has_mp_subscript(o) as c_int }
 }
@@ -267,23 +263,6 @@ pub unsafe extern "C" fn PyMapping_SetItemString(
     rc
 }
 
-/// CPython `method_output_as_list(o, meth)`: call `o.<meth>()` and materialize
-/// the result as a list via the iterator protocol.
-unsafe fn method_output_as_list(o: *mut PyObject, meth: &'static core::ffi::CStr) -> *mut PyObject {
-    let bound = unsafe { crate::api::object::PyObject_GetAttrString(o, meth.as_ptr()) };
-    if bound.is_null() {
-        return ptr::null_mut();
-    }
-    let output = unsafe { crate::api::object::PyObject_CallNoArgs(bound) };
-    unsafe { crate::api::refcount::Py_DECREF(bound) };
-    if output.is_null() {
-        return ptr::null_mut();
-    }
-    let list = unsafe { crate::api::abstract_sequence::PySequence_List(output) };
-    unsafe { crate::api::refcount::Py_DECREF(output) };
-    list
-}
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMapping_Keys(o: *mut PyObject) -> *mut PyObject {
     // CPython: exact dict → PyDict_Keys; otherwise call o.keys() and
@@ -293,12 +272,10 @@ pub unsafe extern "C" fn PyMapping_Keys(o: *mut PyObject) -> *mut PyObject {
         unsafe { set_null_error() };
         return ptr::null_mut();
     }
-    if let Some(bits) = resolve_bits(o)
-        && classify(bits) == tag_dict()
-    {
+    if unsafe { crate::api::mapping::PyDict_CheckExact(o) } != 0 {
         return unsafe { crate::api::mapping::PyDict_Keys(o) };
     }
-    unsafe { method_output_as_list(o, c"keys") }
+    unsafe { crate::api::mapping::mapping_op(crate::hooks::DictOp::MappingKeys, o) }
 }
 
 #[unsafe(no_mangle)]
@@ -307,12 +284,10 @@ pub unsafe extern "C" fn PyMapping_Values(o: *mut PyObject) -> *mut PyObject {
         unsafe { set_null_error() };
         return ptr::null_mut();
     }
-    if let Some(bits) = resolve_bits(o)
-        && classify(bits) == tag_dict()
-    {
+    if unsafe { crate::api::mapping::PyDict_CheckExact(o) } != 0 {
         return unsafe { crate::api::mapping::PyDict_Values(o) };
     }
-    unsafe { method_output_as_list(o, c"values") }
+    unsafe { crate::api::mapping::mapping_op(crate::hooks::DictOp::MappingValues, o) }
 }
 
 #[unsafe(no_mangle)]
@@ -324,10 +299,25 @@ pub unsafe extern "C" fn PyMapping_Items(o: *mut PyObject) -> *mut PyObject {
         unsafe { set_null_error() };
         return ptr::null_mut();
     }
-    if let Some(bits) = resolve_bits(o)
-        && classify(bits) == tag_dict()
-    {
+    if unsafe { crate::api::mapping::PyDict_CheckExact(o) } != 0 {
         return unsafe { crate::api::mapping::PyDict_Items(o) };
     }
-    unsafe { method_output_as_list(o, c"items") }
+    unsafe { crate::api::mapping::mapping_op(crate::hooks::DictOp::MappingItems, o) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyMapping_DelItemString(obj: *mut PyObject, key: *const c_char) -> c_int {
+    if key.is_null() {
+        unsafe { set_null_error() };
+        return -1;
+    }
+    let key = unsafe {
+        crate::api::refcount::OwnedPyObject::from_owned(crate::api::strings::PyUnicode_FromString(
+            key,
+        ))
+    };
+    if key.as_ptr().is_null() {
+        return -1;
+    }
+    unsafe { crate::api::object::PyObject_DelItem(obj, key.as_ptr()) }
 }

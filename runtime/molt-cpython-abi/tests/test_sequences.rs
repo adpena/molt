@@ -177,13 +177,20 @@ fn test_list_setitem_null_list_returns_error() {
 }
 
 #[test]
-fn test_list_setitem_null_value_returns_error() {
+fn test_list_setitem_null_container_and_value_returns_error() {
     init();
-    let list = unsafe { molt_cpython_abi::api::sequences::PyList_New(0) };
-    let result =
-        unsafe { molt_cpython_abi::api::sequences::PyList_SetItem(list, 0, ptr::null_mut()) };
+    // A NULL container is invalid even when the replacement is NULL. Do not
+    // mistake the stub's allocation failure for rejection of a NULL item.
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let result = unsafe {
+        molt_cpython_abi::api::sequences::PyList_SetItem(ptr::null_mut(), 0, ptr::null_mut())
+    };
     assert_eq!(result, -1);
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(list) };
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() },
+        (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast()
+    );
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
 #[test]
@@ -323,13 +330,53 @@ fn test_tuple_setitem_null_tuple_returns_error() {
 }
 
 #[test]
-fn test_tuple_setitem_null_value_returns_error() {
+fn test_tuple_setitem_null_value_clears_slot_and_releases_displaced_reference() {
+    use molt_cpython_abi::abi_types::{PyBaseObject_Type, PyObject};
+    use molt_cpython_abi::api::{errors, refcount::OwnedPyObject, sequences};
     init();
-    let tup = unsafe { molt_cpython_abi::api::sequences::PyTuple_New(1) };
-    let result =
-        unsafe { molt_cpython_abi::api::sequences::PyTuple_SetItem(tup, 0, ptr::null_mut()) };
-    assert_eq!(result, -1);
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(tup) };
+    // CPython v3.12.13 Objects/tupleobject.c:110-127 uses Py_XSETREF:
+    // NULL is a valid replacement, and the displaced reference is released.
+    // The stack sentinel retains one owner; the second is stolen by the tuple.
+    let mut item = PyObject {
+        ob_refcnt: 2,
+        ob_type: &raw mut PyBaseObject_Type,
+    };
+    let tup = unsafe { OwnedPyObject::from_owned(sequences::PyTuple_New(1)) };
+    assert!(!tup.as_ptr().is_null());
+    unsafe { errors::PyErr_Clear() };
+    assert_eq!(
+        unsafe { sequences::PyTuple_SetItem(tup.as_ptr(), 0, ptr::null_mut()) },
+        0
+    );
+    assert!(unsafe { sequences::PyTuple_GetItem(tup.as_ptr(), 0) }.is_null());
+    assert!(unsafe { errors::PyErr_Occurred() }.is_null());
+    assert_eq!(
+        unsafe { sequences::PyTuple_SetItem(tup.as_ptr(), 0, &raw mut item) },
+        0
+    );
+    assert_eq!(
+        unsafe { sequences::PyTuple_GetItem(tup.as_ptr(), 0) },
+        &raw mut item
+    );
+    assert_eq!(
+        item.ob_refcnt, 2,
+        "SetItem steals without adding a reference"
+    );
+    assert_eq!(
+        unsafe { sequences::PyTuple_SetItem(tup.as_ptr(), 0, ptr::null_mut()) },
+        0
+    );
+    assert!(unsafe { sequences::PyTuple_GetItem(tup.as_ptr(), 0) }.is_null());
+    assert!(unsafe { errors::PyErr_Occurred() }.is_null());
+    assert_eq!(
+        item.ob_refcnt, 1,
+        "NULL replacement releases the old slot exactly once"
+    );
+    drop(tup);
+    assert_eq!(
+        item.ob_refcnt, 1,
+        "tuple destruction must not release the cleared slot again"
+    );
 }
 
 #[test]

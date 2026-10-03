@@ -78,8 +78,7 @@ def test_mixed_and_borrowed_ops_have_real_dedicated_llvm_handlers() -> None:
     assert not duplicates
     for kind, arity in (
         ("alloc_class", 2),
-        ("gen_locals_register", 3),
-        ("asyncgen_locals_register", 3),
+        ("stateful_locals_register", 3),
         ("asyncgen_new", 1),
         ("function_closure_bits", 1),
     ):
@@ -92,7 +91,7 @@ def test_mixed_and_borrowed_ops_have_real_dedicated_llvm_handlers() -> None:
     assert audit_op_kinds.extract_llvm_preserved_handler_routing_drifts() == []
 
 
-def test_descriptor_constructors_use_only_generated_boxed_contracts() -> None:
+def test_owned_constructors_and_reductions_use_only_generated_boxed_contracts() -> None:
     from tools import audit_op_kinds
 
     dedicated = audit_op_kinds.extract_llvm_preserved_op_kinds(root=ROOT)
@@ -104,6 +103,10 @@ def test_descriptor_constructors_use_only_generated_boxed_contracts() -> None:
         ("staticmethod_new", 1),
         ("property_new", 3),
         ("bound_method_new", 2),
+        ("vec_sum", 3),
+        ("vec_prod", 3),
+        ("vec_min", 3),
+        ("vec_max", 3),
     ):
         assert kind not in dedicated
         key = (f"molt_{kind}", arity)
@@ -123,9 +126,6 @@ def test_machine_i64_fact_cannot_hide_missing_generic_semantics(monkeypatch) -> 
     )
     monkeypatch.setattr(
         audit_op_kinds, "extract_llvm_preserved_op_kinds", lambda **kw: set()
-    )
-    monkeypatch.setattr(
-        audit_op_kinds, "extract_vec_reduction_ops", lambda *args: set()
     )
     monkeypatch.setattr(AUDIT, "mapped_tir_kinds", lambda path: set())
     monkeypatch.setattr(AUDIT, "runtime_exports", lambda roots: {raw.symbol: raw})

@@ -22,6 +22,7 @@ _MACHINERY_INTRINSICS = [
     "molt_importlib_zip_source_loader_exec_module",
     "molt_importlib_extension_loader_exec_module",
     "molt_importlib_extension_loader_create_module",
+    "molt_importlib_extension_loader_type_declare",
     "molt_importlib_sourceless_loader_exec_module",
     "molt_importlib_resources_reader_resource_path_from_roots",
     "molt_importlib_resources_reader_open_resource_bytes_from_roots",
@@ -33,7 +34,6 @@ _MACHINERY_INTRINSICS = [
     "molt_exception_clear",
     "molt_exception_last",
     "molt_exception_last_pending",
-    "molt_exception_pending",
     "molt_sys_platform",
     "molt_importlib_module_spec_type",
     "molt_importlib_compiled_loader",
@@ -56,6 +56,7 @@ _RUNTIME_LOADER = _RUNTIME_BUILTIN_IMPORTER()
 def _bootstrap_intrinsics():
     # Identity sentinels only: behavior is tested against the real Rust owner.
     return {
+        "molt_importlib_extension_loader_type_declare": lambda cls: None,
         "molt_importlib_module_spec_type": lambda: _RUNTIME_MODULE_SPEC,
         "molt_importlib_compiled_loader": lambda: _RUNTIME_LOADER,
         "molt_importlib_compiled_loader_types": lambda: _RUNTIME_LOADER_TYPES,
@@ -150,13 +151,15 @@ def test_platform_suffixes_resolve_when_sys_is_partially_initialized() -> None:
 
 
 def test_ensure_intrinsics_does_not_publish_partial_registry() -> None:
-    machinery = _load_machinery_module(missing_intrinsics={"molt_exception_pending"})
+    machinery = _load_machinery_module(
+        missing_intrinsics={"molt_exception_last_pending"}
+    )
 
     for _ in range(2):
         try:
             machinery._ensure_intrinsics()  # noqa: SLF001
         except RuntimeError as exc:
-            assert str(exc) == "intrinsic unavailable: molt_exception_pending"
+            assert str(exc) == "intrinsic unavailable: molt_exception_last_pending"
         else:
             raise AssertionError("expected missing intrinsic to fail closed")
 
@@ -164,4 +167,16 @@ def test_ensure_intrinsics_does_not_publish_partial_registry() -> None:
         assert (  # noqa: SLF001
             machinery._MOLT_IMPORTLIB_SOURCEFILELOADER_EXEC_MODULE is None
         )
-        assert machinery._MOLT_EXCEPTION_PENDING is None  # noqa: SLF001
+        assert machinery._MOLT_EXCEPTION_LAST_PENDING is None  # noqa: SLF001
+
+
+def test_extension_loader_declares_the_actual_class(monkeypatch) -> None:
+    declarations = []
+    intrinsics = _bootstrap_intrinsics()
+    intrinsics["molt_importlib_extension_loader_type_declare"] = declarations.append
+    monkeypatch.setattr(
+        sys.modules[__name__], "_bootstrap_intrinsics", lambda: intrinsics
+    )
+    machinery = _load_machinery_module()
+    assert declarations == [machinery.ExtensionFileLoader]
+    assert machinery.ExtensionFileLoader.__bases__ == (machinery._FileLoader,)

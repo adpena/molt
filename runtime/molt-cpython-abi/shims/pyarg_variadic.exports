@@ -1,3 +1,4 @@
+PyArg_Parse
 PyArg_ParseTuple
 PyArg_ParseTupleAndKeywords
 PyArg_VaParseTupleAndKeywords

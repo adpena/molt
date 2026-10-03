@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Collection
 
-from molt.compiler_analysis.python_call_arguments import call_argument_schedule
 
 from molt.compiler_analysis.static_truth import (
     ExpressionResultLookup,
@@ -66,12 +64,10 @@ def expression_evaluation_children(node: ast.AST) -> tuple[ast.expr, ...]:
 
 def _joined_child_effects(
     node: ast.AST,
-    *,
-    proven_pure_calls: Collection[str],
 ) -> EffectMask:
     mask = NO_EFFECTS
     for child in expression_evaluation_children(node):
-        mask |= expression_effect_mask(child, proven_pure_calls=proven_pure_calls)
+        mask |= expression_effect_mask(child)
     return mask
 
 
@@ -180,52 +176,42 @@ def mapping_unpack_effects(
 
 def expression_effect_mask(
     node: ast.AST,
-    *,
-    proven_pure_calls: Collection[str] = (),
 ) -> EffectMask:
     """Return a fail-closed mask for evaluating one expression.
 
-    Exact calls are admitted only through the caller's binding-proven identity
-    set. Unknown AST forms are top so adding syntax cannot silently manufacture
-    purity or import-state stability.
+    This syntax-only projection never establishes callable identity. Consumers
+    with binding facts use their canonical call-site effects. Unknown forms and
+    calls are top, so spelling cannot manufacture purity or import stability.
     """
 
     if isinstance(node, (ast.Constant, ast.Name)):
         return NO_EFFECTS
     if isinstance(node, ast.Lambda):
-        return ALLOCATES | _joined_child_effects(
-            node, proven_pure_calls=proven_pure_calls
-        )
+        return ALLOCATES | _joined_child_effects(node)
     if isinstance(node, ast.NamedExpr):
-        return expression_effect_mask(node.value, proven_pure_calls=proven_pure_calls)
+        return expression_effect_mask(node.value)
     if isinstance(node, ast.Starred):
-        return expression_effect_mask(
-            node.value, proven_pure_calls=proven_pure_calls
-        ) | iterable_unpack_effects(node.value)
+        return expression_effect_mask(node.value) | iterable_unpack_effects(node.value)
     if isinstance(node, (ast.Tuple, ast.List)):
-        return ALLOCATES | _joined_child_effects(
-            node, proven_pure_calls=proven_pure_calls
-        )
+        return ALLOCATES | _joined_child_effects(node)
     if isinstance(node, ast.Dict):
         mask = ALLOCATES
         keys = AccumulatedKeyEffects()
         for key, value in zip(node.keys, node.values):
             if key is None:
                 mask |= (
-                    expression_effect_mask(value, proven_pure_calls=proven_pure_calls)
+                    expression_effect_mask(value)
                     | mapping_unpack_effects(value)
                     | keys.extend(static_expression_result(value))
                 )
                 continue
-            mask |= expression_effect_mask(key, proven_pure_calls=proven_pure_calls)
-            mask |= expression_effect_mask(value, proven_pure_calls=proven_pure_calls)
+            mask |= expression_effect_mask(key)
+            mask |= expression_effect_mask(value)
             mask |= keys.add(static_expression_result(key))
         return mask
     if isinstance(node, ast.Set):
         keys = AccumulatedKeyEffects()
-        mask = ALLOCATES | _joined_child_effects(
-            node, proven_pure_calls=proven_pure_calls
-        )
+        mask = ALLOCATES | _joined_child_effects(node)
         for element in node.elts:
             mask |= (
                 keys.extend(static_expression_result(element.value))
@@ -234,12 +220,10 @@ def expression_effect_mask(
             )
         return mask
     if isinstance(node, ast.Slice):
-        return ALLOCATES | _joined_child_effects(
-            node, proven_pure_calls=proven_pure_calls
-        )
+        return ALLOCATES | _joined_child_effects(node)
     if isinstance(node, ast.Attribute):
         return (
-            expression_effect_mask(node.value, proven_pure_calls=proven_pure_calls)
+            expression_effect_mask(node.value)
             | EXECUTES_ARBITRARY_PYTHON
             | INVOKES_DESCRIPTOR
             | READS_OBJECT_STATE
@@ -247,40 +231,20 @@ def expression_effect_mask(
         )
     if isinstance(node, ast.Subscript):
         return (
-            _joined_child_effects(node, proven_pure_calls=proven_pure_calls)
+            _joined_child_effects(node)
             | EXECUTES_ARBITRARY_PYTHON
             | READS_OBJECT_STATE
             | RAISES
         )
     if isinstance(node, ast.Call):
-        arguments = NO_EFFECTS
-        keys = AccumulatedKeyEffects()
-        for step in call_argument_schedule(node):
-            if step.action == "evaluate":
-                arguments |= expression_effect_mask(
-                    step.expression, proven_pure_calls=proven_pure_calls
-                )
-            elif step.action == "star":
-                arguments |= iterable_unpack_effects(step.expression)
-            elif step.action == "kw":
-                arguments |= keys.add(StaticExpressionResult.scalar(step.name))
-            elif step.action == "kwstar":
-                arguments |= mapping_unpack_effects(step.expression)
-                arguments |= keys.extend(static_expression_result(step.expression))
-        name = dotted_expression_name(node.func)
-        if name in proven_pure_calls:
-            return arguments | ALLOCATES | RAISES
         return UNKNOWN_EFFECTS
     if isinstance(node, (ast.Await, ast.Yield, ast.YieldFrom)):
         return (
-            _joined_child_effects(node, proven_pure_calls=proven_pure_calls)
-            | EXECUTES_ARBITRARY_PYTHON
-            | SUSPENDS
-            | RAISES
+            _joined_child_effects(node) | EXECUTES_ARBITRARY_PYTHON | SUSPENDS | RAISES
         )
     if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
         return (
-            _joined_child_effects(node, proven_pure_calls=proven_pure_calls)
+            _joined_child_effects(node)
             | ALLOCATES
             | EXECUTES_ARBITRARY_PYTHON
             | INVOKES_ITERATION_CALLBACK
@@ -288,26 +252,20 @@ def expression_effect_mask(
         )
     if isinstance(node, (ast.BoolOp, ast.Compare, ast.IfExp)):
         return (
-            _joined_child_effects(node, proven_pure_calls=proven_pure_calls)
+            _joined_child_effects(node)
             | EXECUTES_ARBITRARY_PYTHON
             | INVOKES_COMPARISON_CALLBACK
             | RAISES
         )
     if isinstance(node, (ast.BinOp, ast.UnaryOp, ast.FormattedValue, ast.JoinedStr)):
-        return (
-            _joined_child_effects(node, proven_pure_calls=proven_pure_calls)
-            | EXECUTES_ARBITRARY_PYTHON
-            | RAISES
-        )
+        return _joined_child_effects(node) | EXECUTES_ARBITRARY_PYTHON | RAISES
     return UNKNOWN_EFFECTS
 
 
 def expression_may_execute_python(
     node: ast.AST,
-    *,
-    proven_pure_calls: Collection[str] = (),
 ) -> bool:
-    mask = expression_effect_mask(node, proven_pure_calls=proven_pure_calls)
+    mask = expression_effect_mask(node)
     return not effect_mask_satisfies_capability(
         mask, NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS
     )
@@ -315,10 +273,8 @@ def expression_may_execute_python(
 
 def expression_preserves_import_state(
     node: ast.AST,
-    *,
-    proven_pure_calls: Collection[str] = (),
 ) -> bool:
-    mask = expression_effect_mask(node, proven_pure_calls=proven_pure_calls)
+    mask = expression_effect_mask(node)
     return effect_mask_satisfies_capability(
         mask, PRESERVES_IMPORT_STATE_FORBIDDEN_EFFECTS
     )

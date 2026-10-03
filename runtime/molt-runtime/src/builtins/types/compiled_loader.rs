@@ -5,6 +5,7 @@
 //! authority shared by that metadata, importlib and the machinery facade.
 
 use super::*;
+use crate::builtins::functions::native_callable::NativeCallableKind;
 
 fn loader_class_module(py: &PyToken<'_>, dict_ptr: *mut u8, module: &[u8]) -> bool {
     let ptr = alloc_string(py, module);
@@ -26,13 +27,15 @@ pub(crate) fn compiled_loader_base_class(py: &PyToken<'_>) -> u64 {
         py,
         &state.compiled_loader_base_class,
         "_MoltLoader",
+        ClassSemanticPolicy::heap(false, true),
         8,
         None,
-        |_class_bits, dict_ptr| {
+        None,
+        |class_bits, dict_ptr| {
             let methods = [
                 RuntimeClassMethodSpec::with_signature(
                     "create_module",
-                    &state.compiled_loader_create_module_fn,
+                    NativeCallableKind::MethodDescriptor,
                     crate::builtins::functions::runtime_fn_addr(
                         "molt_importlib_compiled_loader_create_module",
                         molt_importlib_compiled_loader_create_module as *const (),
@@ -42,7 +45,7 @@ pub(crate) fn compiled_loader_base_class(py: &PyToken<'_>) -> u64 {
                 ),
                 RuntimeClassMethodSpec::with_signature(
                     "exec_module",
-                    &state.compiled_loader_exec_module_fn,
+                    NativeCallableKind::MethodDescriptor,
                     crate::builtins::functions::runtime_fn_addr(
                         "molt_importlib_compiled_loader_exec_module",
                         molt_importlib_compiled_loader_exec_module as *const (),
@@ -52,7 +55,7 @@ pub(crate) fn compiled_loader_base_class(py: &PyToken<'_>) -> u64 {
                 ),
                 RuntimeClassMethodSpec::with_signature(
                     "load_module",
-                    &state.compiled_loader_load_module_fn,
+                    NativeCallableKind::MethodDescriptor,
                     crate::builtins::functions::runtime_fn_addr(
                         "molt_importlib_compiled_loader_load_module",
                         molt_importlib_compiled_loader_load_module as *const (),
@@ -62,7 +65,7 @@ pub(crate) fn compiled_loader_base_class(py: &PyToken<'_>) -> u64 {
                 ),
             ];
             loader_class_module(py, dict_ptr, b"importlib.machinery")
-                && configure_runtime_class_methods(py, dict_ptr, &methods)
+                && configure_runtime_class_methods(py, class_bits, dict_ptr, &methods)
         },
     )
 }
@@ -78,20 +81,29 @@ fn compiled_loader_derived_class(py: &PyToken<'_>, frozen: bool) -> u64 {
     if base == 0 {
         return 0;
     }
-    init_cached_runtime_class_configured(py, slot, name, 8, None, |class_bits, dict_ptr| {
-        let set_base = molt_class_set_base(class_bits, base);
-        dec_ref_bits(py, set_base);
-        if exception_pending(py)
-            || class_bases_vec(unsafe {
-                class_bases_bits(obj_from_bits(class_bits).as_ptr().unwrap())
-            })
-            .as_slice()
-                != [base]
-        {
-            return false;
-        }
-        loader_class_module(py, dict_ptr, b"_frozen_importlib")
-    })
+    init_cached_runtime_class_configured(
+        py,
+        slot,
+        name,
+        ClassSemanticPolicy::heap(false, true),
+        8,
+        None,
+        None,
+        |class_bits, dict_ptr| {
+            let set_base = molt_class_set_base(class_bits, base);
+            dec_ref_bits(py, set_base);
+            if exception_pending(py)
+                || class_bases_vec(unsafe {
+                    class_bases_bits(obj_from_bits(class_bits).as_ptr().unwrap())
+                })
+                .as_slice()
+                    != [base]
+            {
+                return false;
+            }
+            loader_class_module(py, dict_ptr, b"_frozen_importlib")
+        },
+    )
 }
 
 pub(crate) fn compiled_loader_builtin_class(py: &PyToken<'_>) -> u64 {
@@ -423,13 +435,16 @@ mod tests {
             return "<pending exception without object>".to_string();
         }
         let kind = crate::molt_exception_kind(exc);
-        let message = crate::builtins::exceptions::molt_exception_message(exc);
+        let message = crate::builtins::exceptions::format_exception_message(
+            py,
+            obj_from_bits(exc).as_ptr().expect("pending exception"),
+        );
         let summary = format!(
             "{}: {}",
             string_obj_to_owned(obj_from_bits(kind)).unwrap_or_else(|| "<kind>".to_string()),
-            string_obj_to_owned(obj_from_bits(message)).unwrap_or_else(|| "<message>".to_string())
+            message
         );
-        for bits in [message, kind, exc] {
+        for bits in [kind, exc] {
             if !obj_from_bits(bits).is_none() {
                 dec_ref_bits(py, bits);
             }
@@ -451,6 +466,7 @@ mod tests {
             let cached = crate::molt_module_cache_get(name);
             assert!(!exception_pending(py), "{}", pending_exception_summary(py));
             if !obj_from_bits(cached).is_none() {
+                crate::builtins::module_table::publish_interpreter_sys_for_test(py, cached);
                 return Self {
                     name,
                     module: cached,
@@ -460,7 +476,8 @@ mod tests {
             let module = crate::molt_module_new(name);
             assert!(!exception_pending(py), "{}", pending_exception_summary(py));
             assert!(!obj_from_bits(module).is_none());
-            let publication = crate::molt_module_cache_set(name, module);
+            let publication =
+                crate::builtins::module_table::publish_interpreter_sys_for_test(py, module);
             assert!(obj_from_bits(publication).is_none());
             assert!(!exception_pending(py), "{}", pending_exception_summary(py));
             Self {

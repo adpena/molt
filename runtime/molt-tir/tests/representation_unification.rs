@@ -164,6 +164,7 @@ fn bounded_loop_body_op_ir(int_op: IntOp) -> FunctionIR {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
         ops: vec![
             const_int("init", 0),

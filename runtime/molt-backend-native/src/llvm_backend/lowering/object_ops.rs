@@ -78,26 +78,24 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             _ => None,
         });
         if matches!(original_kind, Some("get_attr_name")) && op.operands.len() >= 2 {
-            let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
-            let name_bits = self.materialize_dynbox_operand(op.operands[1]);
             let get_fn = self.ensure_runtime_i64_fn("molt_get_attr_name", 2);
-            let val = self
-                .backend
-                .builder
-                .build_call(
-                    get_fn,
-                    &[obj_bits.into(), name_bits.into()],
-                    "get_attr_name_dyn",
-                )
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic();
-            self.values.insert(result_id, val);
+            let val = self.borrowed_runtime_call_value(
+                get_fn,
+                &[
+                    RuntimeArg::Operand(op.operands[0]),
+                    RuntimeArg::Operand(op.operands[1]),
+                ],
+                false,
+                "get_attr_name",
+                "get_attr_name_dyn",
+            );
+            self.values.insert(result_id, val.into());
             self.value_types.insert(result_id, TirType::DynBox);
             return;
         }
-        if matches!(original_kind, Some("load")) && !op.operands.is_empty() {
-            let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
+        if matches!(original_kind, Some("load" | "guarded_load")) && !op.operands.is_empty() {
+            let mut custody = self.begin_borrowed_operands(&op.operands[..1], "field_load");
+            let obj_bits = self.borrowed_operand(&mut custody, op.operands[0]);
             let offset = op
                 .attrs
                 .get("value")
@@ -207,14 +205,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 (&val, load_bb),
                 (&runtime_val, runtime_bb),
             ]);
-            self.values.insert(result_id, loaded.as_basic_value());
+            let loaded = self.finish_borrowed_operands(
+                custody,
+                loaded.as_basic_value().into_int_value(),
+                "field_load_result",
+                |_| {},
+            );
+            self.values.insert(result_id, loaded.into());
             self.value_types.insert(result_id, TirType::DynBox);
             return;
         }
         if matches!(original_kind, Some("guarded_field_get")) && op.operands.len() >= 3 {
-            let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
-            let class_bits = self.materialize_dynbox_operand(op.operands[1]);
-            let expected_version = self.materialize_dynbox_operand(op.operands[2]);
             let attr_name = op
                 .attrs
                 .get("name")
@@ -236,33 +237,29 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap_or(0);
             let (attr_ptr_bits, attr_len_bits) = self.raw_string_const_ptr_len(attr_name);
             let get_fn = self.ensure_runtime_i64_fn("molt_guarded_field_get", 6);
-            let val = self
+            let offset_bits = self
                 .backend
-                .builder
-                .build_call(
-                    get_fn,
-                    &[
-                        obj_bits.into(),
-                        class_bits.into(),
-                        expected_version.into(),
-                        self.backend
-                            .context
-                            .i64_type()
-                            .const_int(offset as u64, true)
-                            .into(),
-                        attr_ptr_bits.into(),
-                        attr_len_bits.into(),
-                    ],
-                    "guarded_field_get",
-                )
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic();
-            self.values.insert(result_id, val);
+                .context
+                .i64_type()
+                .const_int(offset as u64, true);
+            let val = self.borrowed_runtime_call_value(
+                get_fn,
+                &[
+                    RuntimeArg::Operand(op.operands[0]),
+                    RuntimeArg::Operand(op.operands[1]),
+                    RuntimeArg::Operand(op.operands[2]),
+                    RuntimeArg::Word(offset_bits.into()),
+                    RuntimeArg::Word(attr_ptr_bits.into()),
+                    RuntimeArg::Word(attr_len_bits.into()),
+                ],
+                false,
+                "guarded_field_get",
+                "guarded_field_get",
+            );
+            self.values.insert(result_id, val.into());
             self.value_types.insert(result_id, TirType::DynBox);
             return;
         }
-        let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
         // Attribute name is stored in attrs["name"], not as a second operand.
         let attr_name = op
             .attrs
@@ -275,6 +272,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             })
             .unwrap_or("<unknown>");
+        let mut custody = self.begin_borrowed_operands(&op.operands[..1], "get_attr");
+        let obj_bits = self.borrowed_operand(&mut custody, op.operands[0]);
         let runtime_name = if matches!(original_kind, Some("get_attr_generic_obj")) {
             "molt_get_attr_object_ic"
         } else {
@@ -311,6 +310,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap()
                 .try_as_basic_value()
                 .unwrap_basic()
+                .into_int_value()
         } else {
             let get_fn = self.ensure_runtime_i64_fn(runtime_name, 2);
             self.with_owned_name(attr_name, |this, name_bits| {
@@ -321,11 +321,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic()
             })
+            .into_int_value()
         };
         // Runtime getattr entry points return one owned result on every
         // successful path, including IC hits. Preserve that single authority;
         // a backend-side retain would leak bound-method receivers.
-        self.values.insert(result_id, val);
+        let val = self.finish_borrowed_operands(custody, val, "get_attr_result", |_| {});
+        self.values.insert(result_id, val.into());
         self.value_types.insert(result_id, TirType::DynBox);
     }
 
@@ -334,31 +336,28 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             AttrValue::Str(s) => Some(s.as_str()),
             _ => None,
         });
+        // Attribute setters borrow the receiver and value and return the
+        // immortal None, so a discarded result needs no release.
         if matches!(original_kind, Some("set_attr_name")) && op.operands.len() >= 3 {
-            let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
-            let name_bits = self.materialize_dynbox_operand(op.operands[1]);
-            let val_bits = self.materialize_dynbox_operand(op.operands[2]);
             let set_fn = self.ensure_runtime_i64_fn("molt_set_attr_name", 3);
-            let result = self
-                .backend
-                .builder
-                .build_call(
-                    set_fn,
-                    &[obj_bits.into(), name_bits.into(), val_bits.into()],
-                    "set_attr_name_dyn",
-                )
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic();
-            if !op.results.is_empty() {
-                self.values.insert(op.results[0], result);
-                self.value_types.insert(op.results[0], TirType::DynBox);
-            }
+            self.emit_borrowed_runtime_call(
+                op,
+                set_fn,
+                &[
+                    RuntimeArg::Operand(op.operands[0]),
+                    RuntimeArg::Operand(op.operands[1]),
+                    RuntimeArg::Operand(op.operands[2]),
+                ],
+                RuntimeResultCustody::Unowned,
+                "set_attr_name",
+                "set_attr_name_dyn",
+            );
             return;
         }
         if matches!(original_kind, Some("store")) && op.operands.len() >= 2 {
-            let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
-            let val_bits = self.materialize_dynbox_operand(op.operands[1]);
+            let mut custody = self.begin_borrowed_operands(&op.operands[..2], "field_store");
+            let obj_bits = self.borrowed_operand(&mut custody, op.operands[0]);
+            let val_bits = self.borrowed_operand(&mut custody, op.operands[1]);
             let offset = op
                 .attrs
                 .get("value")
@@ -371,6 +370,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // A scalar write can be inline only while physical backing has
             // no pointer owners or dictionary and the incoming value is immediate.
             // Every other write uses the ordinary retain/publish/release contract.
+            // A heap box minted for a raw value is a pointer, so it takes the
+            // retaining runtime path and custody releases the temporary after it.
             let i64_ty = self.backend.context.i64_type();
             let i8_ty = self.backend.context.i8_type();
             let ptr_ty = self
@@ -458,20 +459,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap();
             // Merge.
             self.backend.builder.position_at_end(merge_bb);
+            let none = i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
+            self.finish_borrowed_operands(custody, none, "field_store_result", |_| {});
             if !op.results.is_empty() {
-                let none_val: BasicValueEnum<'ctx> = i64_ty
-                    .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
-                    .into();
-                self.values.insert(op.results[0], none_val);
+                self.values.insert(op.results[0], none.into());
                 self.value_types.insert(op.results[0], TirType::DynBox);
             }
             return;
         }
         if matches!(original_kind, Some("guarded_field_set")) && op.operands.len() >= 4 {
-            let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
-            let class_bits = self.materialize_dynbox_operand(op.operands[1]);
-            let expected_version = self.materialize_dynbox_operand(op.operands[2]);
-            let val_bits = self.materialize_dynbox_operand(op.operands[3]);
             let attr_name = op
                 .attrs
                 .get("name")
@@ -493,36 +489,29 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .unwrap_or(0);
             let (attr_ptr_bits, attr_len_bits) = self.raw_string_const_ptr_len(attr_name);
             let set_fn = self.ensure_runtime_i64_fn("molt_guarded_field_set", 7);
-            let result = self
+            let offset_bits = self
                 .backend
-                .builder
-                .build_call(
-                    set_fn,
-                    &[
-                        obj_bits.into(),
-                        class_bits.into(),
-                        expected_version.into(),
-                        self.backend
-                            .context
-                            .i64_type()
-                            .const_int(offset as u64, true)
-                            .into(),
-                        val_bits.into(),
-                        attr_ptr_bits.into(),
-                        attr_len_bits.into(),
-                    ],
-                    "guarded_field_set",
-                )
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic();
-            if !op.results.is_empty() {
-                self.values.insert(op.results[0], result);
-                self.value_types.insert(op.results[0], TirType::DynBox);
-            }
+                .context
+                .i64_type()
+                .const_int(offset as u64, true);
+            self.emit_borrowed_runtime_call(
+                op,
+                set_fn,
+                &[
+                    RuntimeArg::Operand(op.operands[0]),
+                    RuntimeArg::Operand(op.operands[1]),
+                    RuntimeArg::Operand(op.operands[2]),
+                    RuntimeArg::Word(offset_bits.into()),
+                    RuntimeArg::Operand(op.operands[3]),
+                    RuntimeArg::Word(attr_ptr_bits.into()),
+                    RuntimeArg::Word(attr_len_bits.into()),
+                ],
+                RuntimeResultCustody::Unowned,
+                "guarded_field_set",
+                "guarded_field_set",
+            );
             return;
         }
-        let obj = self.resolve(op.operands[0]);
         let attr_name = op
             .attrs
             .get("name")
@@ -534,42 +523,27 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             })
             .unwrap_or("<unknown>");
-        let val = self.resolve(op.operands[1]);
-        let obj_i64 = self.materialize_dynbox_bits(
-            obj,
-            &self
-                .value_types
-                .get(&op.operands[0])
-                .cloned()
-                .unwrap_or(TirType::DynBox),
-        );
-        let val_i64 = self.materialize_dynbox_bits(
-            val,
-            &self
-                .value_types
-                .get(&op.operands[1])
-                .cloned()
-                .unwrap_or(TirType::DynBox),
-        );
-        let set_fn = self
-            .backend
-            .module
-            .get_function("molt_set_attr_name")
-            .unwrap();
-        let result = self.with_owned_name(attr_name, |this, name_i64| {
-            this.backend
-                .builder
-                .build_call(
-                    set_fn,
-                    &[obj_i64.into(), name_i64.into(), val_i64.into()],
-                    "setattr",
-                )
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic()
-        });
+        let mut custody = self.begin_borrowed_operands(&op.operands[..2], "set_attr");
+        let obj_i64 = self.borrowed_operand(&mut custody, op.operands[0]);
+        let val_i64 = self.borrowed_operand(&mut custody, op.operands[1]);
+        let set_fn = self.ensure_runtime_i64_fn("molt_set_attr_name", 3);
+        let result = self
+            .with_owned_name(attr_name, |this, name_i64| {
+                this.backend
+                    .builder
+                    .build_call(
+                        set_fn,
+                        &[obj_i64.into(), name_i64.into(), val_i64.into()],
+                        "setattr",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic()
+            })
+            .into_int_value();
+        let result = self.finish_borrowed_operands(custody, result, "set_attr_result", |_| {});
         if !op.results.is_empty() {
-            self.values.insert(op.results[0], result);
+            self.values.insert(op.results[0], result.into());
             self.value_types.insert(op.results[0], TirType::DynBox);
         }
     }
@@ -579,28 +553,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             AttrValue::Str(s) => Some(s.as_str()),
             _ => None,
         });
+        // Attribute deletion borrows the receiver and returns the immortal None.
         if matches!(original_kind, Some("del_attr_name")) && op.operands.len() >= 2 {
-            let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
-            let name_bits = self.materialize_dynbox_operand(op.operands[1]);
             let del_fn = self.ensure_runtime_i64_fn("molt_del_attr_name", 2);
-            let val = self
-                .backend
-                .builder
-                .build_call(
-                    del_fn,
-                    &[obj_bits.into(), name_bits.into()],
-                    "del_attr_name_dyn",
-                )
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic();
-            if !op.results.is_empty() {
-                self.values.insert(op.results[0], val);
-                self.value_types.insert(op.results[0], TirType::DynBox);
-            }
+            self.emit_borrowed_runtime_call(
+                op,
+                del_fn,
+                &[
+                    RuntimeArg::Operand(op.operands[0]),
+                    RuntimeArg::Operand(op.operands[1]),
+                ],
+                RuntimeResultCustody::Unowned,
+                "del_attr_name",
+                "del_attr_name_dyn",
+            );
             return;
         }
-        let obj_bits = self.materialize_dynbox_operand(op.operands[0]);
         let attr_name = op
             .attrs
             .get("name")
@@ -612,21 +580,26 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
             })
             .unwrap_or("<unknown>");
+        let mut custody = self.begin_borrowed_operands(&op.operands[..1], "del_attr");
+        let obj_bits = self.borrowed_operand(&mut custody, op.operands[0]);
         let del_fn = self.ensure_runtime_i64_fn("molt_del_attr_name", 2);
-        let val = self.with_owned_name(attr_name, |this, name_bits| {
-            this.backend
-                .builder
-                .build_call(
-                    del_fn,
-                    &[obj_bits.into(), name_bits.into()],
-                    "del_attr_name",
-                )
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic()
-        });
+        let val = self
+            .with_owned_name(attr_name, |this, name_bits| {
+                this.backend
+                    .builder
+                    .build_call(
+                        del_fn,
+                        &[obj_bits.into(), name_bits.into()],
+                        "del_attr_name",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic()
+            })
+            .into_int_value();
+        let val = self.finish_borrowed_operands(custody, val, "del_attr_result", |_| {});
         if !op.results.is_empty() {
-            self.values.insert(op.results[0], val);
+            self.values.insert(op.results[0], val.into());
             self.value_types.insert(op.results[0], TirType::DynBox);
         }
     }
@@ -636,46 +609,56 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // BCE: when the bounds-check elimination pass has proven the index
         // is in-range, we call `molt_getitem_unchecked` which skips the
         // runtime bounds check and associated branch entirely.
-        let val = if has_attr(op, "bce_safe") {
-            self.call_runtime_2_boxed("molt_getitem_unchecked", op.operands[0], op.operands[1])
+        let symbol = if has_attr(op, "bce_safe") {
+            "molt_getitem_unchecked"
         } else {
-            self.call_runtime_2_boxed("molt_getitem_method", op.operands[0], op.operands[1])
+            "molt_getitem_method"
         };
-        self.values.insert(result_id, val);
+        let get_fn = self.ensure_runtime_i64_fn(symbol, 2);
+        let val = self.borrowed_runtime_call_value(
+            get_fn,
+            &[
+                RuntimeArg::Operand(op.operands[0]),
+                RuntimeArg::Operand(op.operands[1]),
+            ],
+            false,
+            "index",
+            symbol,
+        );
+        self.values.insert(result_id, val.into());
         self.value_types.insert(result_id, TirType::DynBox);
     }
 
+    /// Item assignment and deletion borrow their operands; the container
+    /// retains what it stores, and the runtime returns only None or a boolean.
     pub(super) fn emit_store_index(&mut self, op: &TirOp) {
-        let obj_i64 = self.materialize_dynbox_operand(op.operands[0]);
-        let key_i64 = self.materialize_dynbox_operand(op.operands[1]);
-        let val_i64 = self.materialize_dynbox_operand(op.operands[2]);
-        let set_fn = self
-            .backend
-            .module
-            .get_function("molt_setitem_method")
-            .unwrap();
-        let result = self
-            .backend
-            .builder
-            .build_call(
-                set_fn,
-                &[obj_i64.into(), key_i64.into(), val_i64.into()],
-                "setitem",
-            )
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic();
-        if !op.results.is_empty() {
-            self.values.insert(op.results[0], result);
-            self.value_types.insert(op.results[0], TirType::DynBox);
-        }
+        let set_fn = self.ensure_runtime_i64_fn("molt_setitem_method", 3);
+        self.emit_borrowed_runtime_call(
+            op,
+            set_fn,
+            &[
+                RuntimeArg::Operand(op.operands[0]),
+                RuntimeArg::Operand(op.operands[1]),
+                RuntimeArg::Operand(op.operands[2]),
+            ],
+            RuntimeResultCustody::Unowned,
+            "store_index",
+            "setitem",
+        );
     }
 
     pub(super) fn emit_del_index(&mut self, op: &TirOp) {
-        let val = self.call_runtime_2_boxed("molt_delitem_method", op.operands[0], op.operands[1]);
-        if !op.results.is_empty() {
-            self.values.insert(op.results[0], val);
-            self.value_types.insert(op.results[0], TirType::DynBox);
-        }
+        let del_fn = self.ensure_runtime_i64_fn("molt_delitem_method", 2);
+        self.emit_borrowed_runtime_call(
+            op,
+            del_fn,
+            &[
+                RuntimeArg::Operand(op.operands[0]),
+                RuntimeArg::Operand(op.operands[1]),
+            ],
+            RuntimeResultCustody::Unowned,
+            "del_index",
+            "molt_delitem_method",
+        );
     }
 }

@@ -20,7 +20,6 @@ pub const TYPE_ID_BUFFER2D: u32 = 216;
 pub const TYPE_ID_CONTEXT_MANAGER: u32 = 217;
 pub const TYPE_ID_FILE_HANDLE: u32 = 218;
 pub const TYPE_ID_MEMORYVIEW: u32 = 219;
-pub const TYPE_ID_INTARRAY: u32 = 220;
 pub const TYPE_ID_FUNCTION: u32 = 221;
 pub const TYPE_ID_BOUND_METHOD: u32 = 222;
 pub const TYPE_ID_MODULE: u32 = 223;
@@ -58,9 +57,10 @@ pub const TYPE_ID_WEAK_CONTAINER_STATE: u32 = 255;
 pub const TYPE_ID_WEAKREF: u32 = 256;
 pub const TYPE_ID_NATIVE_DESCRIPTOR: u32 = 257;
 pub const TYPE_ID_CELL: u32 = 258;
+pub const TYPE_ID_FRAME_BINDINGS: u32 = 259;
 
 pub const MIN_HEAP_TYPE_ID: u32 = TYPE_ID_STRING;
-pub const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_CELL;
+pub const MAX_HEAP_TYPE_ID: u32 = TYPE_ID_FRAME_BINDINGS;
 pub const ALL_HEAP_TYPE_IDS: [u32; 58] = [
     TYPE_ID_OBJECT,
     TYPE_ID_STRING,
@@ -82,7 +82,6 @@ pub const ALL_HEAP_TYPE_IDS: [u32; 58] = [
     TYPE_ID_CONTEXT_MANAGER,
     TYPE_ID_FILE_HANDLE,
     TYPE_ID_MEMORYVIEW,
-    TYPE_ID_INTARRAY,
     TYPE_ID_FUNCTION,
     TYPE_ID_BOUND_METHOD,
     TYPE_ID_MODULE,
@@ -120,6 +119,7 @@ pub const ALL_HEAP_TYPE_IDS: [u32; 58] = [
     TYPE_ID_WEAKREF,
     TYPE_ID_NATIVE_DESCRIPTOR,
     TYPE_ID_CELL,
+    TYPE_ID_FRAME_BINDINGS,
 ];
 
 #[repr(u16)]
@@ -131,13 +131,8 @@ pub enum ObjectShapeId {
     AsyncSleep = 2,
     AsyncGeneratorFuture = 3,
     AnextDefault = 4,
-    AsyncioWait = 5,
-    AsyncioGather = 6,
-    AsyncioWaitFor = 7,
-    AsyncioTimerHandle = 8,
     AsyncioFdWatcher = 9,
     AsyncioServerAcceptLoop = 10,
-    AsyncioReadyRunner = 11,
     ContextlibAsyncgenEnter = 12,
     ContextlibAsyncgenExit = 13,
     ContextlibAsyncExitstackEnter = 14,
@@ -171,6 +166,8 @@ pub enum ObjectShapeId {
     FunctoolsLruFactory = 71,
     FunctoolsCacheInfo = 72,
     TypesMappingProxy = 73,
+    TypesFrame = 74,
+    TypesFrameLocalsProxy = 75,
     ItertoolsChain = 96,
     ItertoolsIslice = 97,
     ItertoolsRepeat = 98,
@@ -205,13 +202,8 @@ impl ObjectShapeId {
             2 => Self::AsyncSleep,
             3 => Self::AsyncGeneratorFuture,
             4 => Self::AnextDefault,
-            5 => Self::AsyncioWait,
-            6 => Self::AsyncioGather,
-            7 => Self::AsyncioWaitFor,
-            8 => Self::AsyncioTimerHandle,
             9 => Self::AsyncioFdWatcher,
             10 => Self::AsyncioServerAcceptLoop,
-            11 => Self::AsyncioReadyRunner,
             12 => Self::ContextlibAsyncgenEnter,
             13 => Self::ContextlibAsyncgenExit,
             14 => Self::ContextlibAsyncExitstackEnter,
@@ -245,6 +237,8 @@ impl ObjectShapeId {
             71 => Self::FunctoolsLruFactory,
             72 => Self::FunctoolsCacheInfo,
             73 => Self::TypesMappingProxy,
+            74 => Self::TypesFrame,
+            75 => Self::TypesFrameLocalsProxy,
             96 => Self::ItertoolsChain,
             97 => Self::ItertoolsIslice,
             98 => Self::ItertoolsRepeat,
@@ -298,13 +292,8 @@ pub const fn object_shape_lifecycle_family(shape: ObjectShapeId) -> ObjectShapeL
         ObjectShapeId::AsyncSleep => ObjectShapeLifecycleFamily::Task,
         ObjectShapeId::AsyncGeneratorFuture => ObjectShapeLifecycleFamily::Task,
         ObjectShapeId::AnextDefault => ObjectShapeLifecycleFamily::Task,
-        ObjectShapeId::AsyncioWait => ObjectShapeLifecycleFamily::Task,
-        ObjectShapeId::AsyncioGather => ObjectShapeLifecycleFamily::Task,
-        ObjectShapeId::AsyncioWaitFor => ObjectShapeLifecycleFamily::Task,
-        ObjectShapeId::AsyncioTimerHandle => ObjectShapeLifecycleFamily::Task,
         ObjectShapeId::AsyncioFdWatcher => ObjectShapeLifecycleFamily::Task,
         ObjectShapeId::AsyncioServerAcceptLoop => ObjectShapeLifecycleFamily::Task,
-        ObjectShapeId::AsyncioReadyRunner => ObjectShapeLifecycleFamily::Task,
         ObjectShapeId::ContextlibAsyncgenEnter => ObjectShapeLifecycleFamily::Task,
         ObjectShapeId::ContextlibAsyncgenExit => ObjectShapeLifecycleFamily::Task,
         ObjectShapeId::ContextlibAsyncExitstackEnter => ObjectShapeLifecycleFamily::Task,
@@ -338,6 +327,8 @@ pub const fn object_shape_lifecycle_family(shape: ObjectShapeId) -> ObjectShapeL
         ObjectShapeId::FunctoolsLruFactory => ObjectShapeLifecycleFamily::Functools,
         ObjectShapeId::FunctoolsCacheInfo => ObjectShapeLifecycleFamily::Functools,
         ObjectShapeId::TypesMappingProxy => ObjectShapeLifecycleFamily::Types,
+        ObjectShapeId::TypesFrame => ObjectShapeLifecycleFamily::Types,
+        ObjectShapeId::TypesFrameLocalsProxy => ObjectShapeLifecycleFamily::Types,
         ObjectShapeId::ItertoolsChain => ObjectShapeLifecycleFamily::Itertools,
         ObjectShapeId::ItertoolsIslice => ObjectShapeLifecycleFamily::Itertools,
         ObjectShapeId::ItertoolsRepeat => ObjectShapeLifecycleFamily::Itertools,
@@ -372,13 +363,8 @@ pub const fn object_shape_resource_slot(shape: ObjectShapeId) -> ObjectShapeReso
         ObjectShapeId::AsyncSleep => ObjectShapeResourceSlot::None,
         ObjectShapeId::AsyncGeneratorFuture => ObjectShapeResourceSlot::None,
         ObjectShapeId::AnextDefault => ObjectShapeResourceSlot::None,
-        ObjectShapeId::AsyncioWait => ObjectShapeResourceSlot::None,
-        ObjectShapeId::AsyncioGather => ObjectShapeResourceSlot::None,
-        ObjectShapeId::AsyncioWaitFor => ObjectShapeResourceSlot::None,
-        ObjectShapeId::AsyncioTimerHandle => ObjectShapeResourceSlot::None,
         ObjectShapeId::AsyncioFdWatcher => ObjectShapeResourceSlot::None,
         ObjectShapeId::AsyncioServerAcceptLoop => ObjectShapeResourceSlot::None,
-        ObjectShapeId::AsyncioReadyRunner => ObjectShapeResourceSlot::None,
         ObjectShapeId::ContextlibAsyncgenEnter => ObjectShapeResourceSlot::None,
         ObjectShapeId::ContextlibAsyncgenExit => ObjectShapeResourceSlot::None,
         ObjectShapeId::ContextlibAsyncExitstackEnter => ObjectShapeResourceSlot::None,
@@ -412,6 +398,8 @@ pub const fn object_shape_resource_slot(shape: ObjectShapeId) -> ObjectShapeReso
         ObjectShapeId::FunctoolsLruFactory => ObjectShapeResourceSlot::None,
         ObjectShapeId::FunctoolsCacheInfo => ObjectShapeResourceSlot::None,
         ObjectShapeId::TypesMappingProxy => ObjectShapeResourceSlot::None,
+        ObjectShapeId::TypesFrame => ObjectShapeResourceSlot::None,
+        ObjectShapeId::TypesFrameLocalsProxy => ObjectShapeResourceSlot::None,
         ObjectShapeId::ItertoolsChain => ObjectShapeResourceSlot::None,
         ObjectShapeId::ItertoolsIslice => ObjectShapeResourceSlot::None,
         ObjectShapeId::ItertoolsRepeat => ObjectShapeResourceSlot::None,

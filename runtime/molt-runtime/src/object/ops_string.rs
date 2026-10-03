@@ -9,20 +9,61 @@ use unicode_casefold::{Locale, UnicodeCaseFold, Variant};
 
 use super::ops::{
     bytes_ascii_capitalize, bytes_ascii_swapcase, bytes_ascii_title, dict_like_bits_from_ptr,
-    format_with_spec, parse_codec_arg, parse_format_spec, repeat_sequence,
-    simd_has_any_ascii_lower, simd_has_any_ascii_upper, simd_is_all_ascii_alnum,
-    simd_is_all_ascii_alpha, simd_is_all_ascii_digit, simd_is_all_ascii_printable,
-    simd_is_all_ascii_text_whitespace, slice_bounds_from_args, slice_match,
-    unicode_classification_table,
+    format_with_spec, parse_codec_arg, parse_format_spec, simd_has_any_ascii_lower,
+    simd_has_any_ascii_upper, simd_is_all_ascii_alnum, simd_is_all_ascii_alpha,
+    simd_is_all_ascii_digit, simd_is_all_ascii_printable, simd_is_all_ascii_text_whitespace,
+    slice_bounds_from_args, slice_match, unicode_classification_table,
 };
 
 #[path = "ops_string_predicates.rs"]
 mod ops_string_predicates;
+pub(crate) use ops_string_predicates::is_identifier_bytes;
 pub use ops_string_predicates::{
     molt_string_isalnum, molt_string_isalpha, molt_string_isascii, molt_string_isdecimal,
     molt_string_isdigit, molt_string_isidentifier, molt_string_islower, molt_string_isnumeric,
     molt_string_isprintable, molt_string_isspace, molt_string_istitle, molt_string_isupper,
 };
+
+/// Require the strict UTF-8 view used by C-facing names. Python text storage
+/// itself remains lossless; only these named export boundaries reject surrogates.
+pub(crate) fn require_strict_utf8(py: &PyToken<'_>, bits: u64) -> bool {
+    let Some(ptr) = obj_from_bits(bits)
+        .as_ptr()
+        .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
+    else {
+        raise_exception::<()>(py, "TypeError", "expected str for UTF-8 export");
+        return false;
+    };
+    let value = unsafe { std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)) };
+    if std::str::from_utf8(value).is_ok() {
+        return true;
+    }
+    let text = wtf8_from_bytes(value);
+    let mut points = text.code_points().enumerate().peekable();
+    while let Some((start, code)) = points.next() {
+        if (0xd800..=0xdfff).contains(&code.to_u32()) {
+            let mut end = start + 1;
+            while points
+                .peek()
+                .is_some_and(|(_, code)| (0xd800..=0xdfff).contains(&code.to_u32()))
+            {
+                points.next();
+                end += 1;
+            }
+            raise_unicode_encode_error::<()>(
+                py,
+                "utf-8",
+                bits,
+                start,
+                end,
+                "surrogates not allowed",
+            );
+            return false;
+        }
+    }
+    raise_exception::<()>(py, "SystemError", "invalid internal Python string storage");
+    false
+}
 
 /// Admit a str descriptor without invoking conversion or any user protocol.
 ///
@@ -1136,7 +1177,9 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
             let mut _sequence_snapshot = None;
             if let Some(ptr) = items.as_ptr() {
                 let type_id = object_type_id(ptr);
-                if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
+                if matches!(type_id, TYPE_ID_LIST | TYPE_ID_TUPLE)
+                    && crate::object::iterable::builtin_receiver(_py, ptr)
+                {
                     let Some(elems) = crate::object::seq_access::snapshot(
                         _py,
                         ptr,
@@ -1276,7 +1319,7 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
                 }
                 return MoltObject::none().bits();
             }
-            let mut cursor = out_ptr.add(std::mem::size_of::<usize>());
+            let mut cursor = super::layout::InlineBytesStorage::data(out_ptr);
             if all_same && parts.len() > 1 {
                 let sep_len = sep_bytes.len();
                 let elem_len = first_len;
@@ -1333,7 +1376,7 @@ pub extern "C" fn molt_string_join(sep_bits: u64, items_bits: u64) -> u64 {
 }
 
 #[path = "ops_string_format.rs"]
-mod ops_string_format;
+pub(crate) mod ops_string_format;
 pub use ops_string_format::{
     molt_string_format, molt_string_format_map, molt_string_format_method,
 };
@@ -1544,7 +1587,7 @@ pub extern "C" fn molt_string_lower(hay_bits: u64) -> u64 {
                 if ptr.is_null() {
                     return MoltObject::none().bits();
                 }
-                let data_ptr = ptr.add(std::mem::size_of::<usize>());
+                let data_ptr = super::layout::InlineBytesStorage::data(ptr);
                 let out = std::slice::from_raw_parts_mut(data_ptr, hay_bytes.len());
                 ascii_lower_into(hay_bytes, out);
                 return MoltObject::from_ptr(ptr).bits();
@@ -1625,7 +1668,7 @@ pub extern "C" fn molt_string_upper(hay_bits: u64) -> u64 {
                 if ptr.is_null() {
                     return MoltObject::none().bits();
                 }
-                let data_ptr = ptr.add(std::mem::size_of::<usize>());
+                let data_ptr = super::layout::InlineBytesStorage::data(ptr);
                 let out = std::slice::from_raw_parts_mut(data_ptr, hay_bytes.len());
                 ascii_upper_into(hay_bytes, out);
                 return MoltObject::from_ptr(ptr).bits();
@@ -1695,48 +1738,11 @@ pub extern "C" fn molt_string_swapcase(hay_bits: u64) -> u64 {
     })
 }
 
-/// Intrinsic for `str.__mul__` / `str * int`.
-/// Avoids the generic `molt_mul` dispatch path (int check, bigint check, float
-/// check, dunder lookup) when the compiler knows the LHS is a string.
+/// Source string-repeat intrinsic shares normal numeric/reflected dispatch
+/// and the sequence index protocol with canonical multiplication.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_str_repeat(str_bits: u64, count_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let str_obj = obj_from_bits(str_bits);
-        let count_obj = obj_from_bits(count_bits);
-        let Some(ptr) = str_obj.as_ptr() else {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "can't multiply sequence by non-int of type 'NoneType'",
-            );
-        };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_STRING {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    &format!(
-                        "can't multiply sequence by non-int of type '{}'",
-                        type_of_bits(_py, str_bits)
-                    ),
-                );
-            }
-        }
-        let Some(count) = to_i64(count_obj) else {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                &format!(
-                    "can't multiply sequence by non-int of type '{}'",
-                    type_of_bits(_py, count_bits)
-                ),
-            );
-        };
-        match repeat_sequence(_py, ptr, count) {
-            Some(bits) => bits,
-            None => raise_exception::<_>(_py, "TypeError", "unsupported operand type(s) for *"),
-        }
-    })
+    crate::object::ops_arith::molt_mul(str_bits, count_bits)
 }
 
 #[unsafe(no_mangle)]

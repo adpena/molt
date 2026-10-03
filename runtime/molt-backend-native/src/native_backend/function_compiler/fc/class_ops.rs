@@ -17,12 +17,8 @@ use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for class-object ops: `class_new`/`class_def`/`set_base`/`apply_set_name`/`layout_version`/`set_layout_version`/`merge_layout` and `object_set_class`.
 ///
-/// Extracted verbatim from `compile_func_inner`'s per-op dispatch (M1).
-/// Each arm body is byte-for-byte identical to the original; only the access
-/// path to the backend's split-borrowed fields changed (`self.module` ->
-/// `module`, `Self::` -> `SimpleBackend::`, owned locals -> reborrowed params).
-/// The op-local closure `var_get_boxed_overflow_safe` is reconstructed with the
-/// same capture so the arm bodies are unchanged.
+/// Constructor operands and results follow the shared fixed-constructor
+/// ownership transaction, including the first failed materialization.
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 pub(in crate::native_backend::function_compiler) fn handle_class_op(
@@ -35,6 +31,8 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
+    block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
+    block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
 ) {
     // Reconstruct the original op-local closure (captures representation_plan +
     // nbc; all other state threads through explicit params) so the moved arm
@@ -65,150 +63,73 @@ pub(in crate::native_backend::function_compiler) fn handle_class_op(
     };
     match op.kind.as_str() {
         "class_new" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let name_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
+            emit_fixed_aggregate_constructor(
+                op,
+                FixedAggregateConstructor::ClassNew,
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                sealed_blocks,
                 vars,
-                &args[0],
                 representation_plan,
-            )
-            .expect("Class name not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_class_new",
-                &[types::I64],
-                &[types::I64],
+                nbc,
+                block_tracked_obj,
+                block_tracked_ptr,
             );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*name_bits]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
         }
         "class_def" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let meta = op.s_value.as_ref().expect("class_def needs s_value");
-            let parts: Vec<&str> = meta.split(',').collect();
-            let nbases: usize = parts[0].parse().unwrap();
-            let nattrs: usize = parts[1].parse().unwrap();
-            let layout_size: i64 = parts[2].parse().unwrap();
-            let layout_version: i64 = parts[3].parse().unwrap();
-            let flags: i64 = parts[4].parse().unwrap();
-            let name_bits = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
+            let meta = op.s_value.as_deref().expect("class_def needs s_value");
+            let mut parts = meta.split(',');
+            let nbases = parts
+                .next()
+                .expect("class_def needs base count")
+                .parse()
+                .expect("class_def base count must fit usize");
+            let nattrs = parts
+                .next()
+                .expect("class_def needs attribute count")
+                .parse()
+                .expect("class_def attribute count must fit usize");
+            let layout_size = parts
+                .next()
+                .expect("class_def needs layout size")
+                .parse()
+                .expect("class_def layout size must fit i64");
+            let layout_version = parts
+                .next()
+                .expect("class_def needs layout version")
+                .parse()
+                .expect("class_def layout version must fit i64");
+            let flags = parts
+                .next()
+                .expect("class_def needs flags")
+                .parse()
+                .expect("class_def flags must fit i64");
+            assert!(
+                parts.next().is_none(),
+                "class_def has extra metadata fields"
+            );
+            emit_fixed_aggregate_constructor(
+                op,
+                FixedAggregateConstructor::ClassDefinition {
+                    nbases,
+                    nattrs,
+                    layout_size,
+                    layout_version,
+                    flags,
+                },
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                sealed_blocks,
                 vars,
-                &args[0],
                 representation_plan,
-            )
-            .expect("Class name not found");
-            let bases_slot_size = std::cmp::max(nbases, 1) * 8;
-            let bases_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                bases_slot_size as u32,
-                3,
-            ));
-            for i in 0..nbases {
-                let base = var_get_boxed_overflow_safe(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    &args[1 + i],
-                    representation_plan,
-                )
-                .expect("Base class not found");
-                builder.ins().stack_store(*base, bases_slot, (i * 8) as i32);
-            }
-            let bases_ptr = builder.ins().stack_addr(types::I64, bases_slot, 0);
-            let attrs_slot_size = std::cmp::max(nattrs * 2, 1) * 8;
-            let attrs_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                attrs_slot_size as u32,
-                3,
-            ));
-            let attrs_base = 1 + nbases;
-            for i in 0..nattrs {
-                let key = var_get_boxed_overflow_safe(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    &args[attrs_base + i * 2],
-                    representation_plan,
-                )
-                .expect("Attr key not found");
-                let val = var_get_boxed_overflow_safe(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    &args[attrs_base + i * 2 + 1],
-                    representation_plan,
-                )
-                .expect("Attr value not found");
-                builder
-                    .ins()
-                    .stack_store(*key, attrs_slot, (i * 2 * 8) as i32);
-                builder
-                    .ins()
-                    .stack_store(*val, attrs_slot, ((i * 2 + 1) * 8) as i32);
-            }
-            let attrs_ptr = builder.ins().stack_addr(types::I64, attrs_slot, 0);
-            let nbases_val = builder.ins().iconst(types::I64, nbases as i64);
-            let nattrs_val = builder.ins().iconst(types::I64, nattrs as i64);
-            let layout_size_val = builder.ins().iconst(types::I64, layout_size);
-            let layout_version_val = builder.ins().iconst(types::I64, layout_version);
-            let flags_val = builder.ins().iconst(types::I64, flags);
-            let cd_callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_guarded_class_def",
-                &[
-                    types::I64,
-                    types::I64,
-                    types::I64,
-                    types::I64,
-                    types::I64,
-                    types::I64,
-                    types::I64,
-                    types::I64,
-                ],
-                &[types::I64],
+                nbc,
+                block_tracked_obj,
+                block_tracked_ptr,
             );
-            let cd_local = module.declare_func_in_func(cd_callee, builder.func);
-            let cd_call = builder.ins().call(
-                cd_local,
-                &[
-                    *name_bits,
-                    bases_ptr,
-                    nbases_val,
-                    attrs_ptr,
-                    nattrs_val,
-                    layout_size_val,
-                    layout_version_val,
-                    flags_val,
-                ],
-            );
-            let res = builder.inst_results(cd_call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
         }
         "class_layout_version" => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);

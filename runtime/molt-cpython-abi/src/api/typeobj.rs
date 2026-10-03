@@ -2,9 +2,10 @@
 
 use crate::abi_types::{
     Py_TPFLAGS_HAVE_GC, Py_TPFLAGS_HEAPTYPE, Py_TPFLAGS_READY, Py_ssize_t, PyHeapTypeObject,
-    PyMethodDef, PyObject, PyType_Spec, PyTypeObject,
+    PyObject, PyType_Spec, PyTypeObject,
 };
 use crate::bridge::GLOBAL_BRIDGE;
+use molt_lang_obj_model::sequence_compare::RichCompareOp;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
@@ -13,11 +14,81 @@ use std::os::raw::{c_char, c_int, c_longlong, c_ulong, c_ulonglong};
 use std::ptr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+mod descriptors;
+mod hierarchy;
+mod inheritance;
+mod method_descriptors;
+mod native_lifecycle;
+mod root_metadata;
+pub use root_metadata::{TypeAttributeField, native_type_attribute_get, native_type_attribute_set};
+mod slot_wrappers;
+pub use descriptors::{PyDescr_NewGetSet, PyDescr_NewMember};
+pub(crate) use method_descriptors::completes_call_operands as method_descriptor_completes_call_operands;
+pub(crate) use method_descriptors::completes_vectorcall as method_descriptor_completes_vectorcall;
+pub use method_descriptors::{
+    PyClassMethod_New, PyDescr_NewClassMethod, PyDescr_NewMethod, PyStaticMethod_New,
+};
+pub(crate) use native_lifecycle::{
+    NativeDeallocation, gc_uses_managed_storage, object_dealloc, type_dealloc,
+};
+use slot_wrappers::SLOT_WRAPPER_DEFS;
+pub(crate) use slot_wrappers::completes_call_operands as slot_wrapper_completes_call_operands;
+pub use slot_wrappers::{PyDescr_NewWrapper, PyWrapper_New};
+
+/// Build a real Init wrapper for a runtime integration witness. Runtime-bound
+/// builtin namespaces contain managed semantic descriptors, so reading their
+/// __init__ entries cannot provide a physical PyWrapperDescrObject. Reuse the
+/// production slot declaration and public constructor without a throwaway type
+/// or a second adapter implementation.
+#[cfg(feature = "runtime-test-support")]
+pub unsafe fn init_slot_wrapper_for_test(
+    owner: *mut PyTypeObject,
+    initializer: unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> c_int,
+) -> *mut PyObject {
+    assert!(!owner.is_null());
+    assert_ne!(unsafe { PyType_Check(owner.cast()) }, 0);
+    let definition = SLOT_WRAPPER_DEFS
+        .iter()
+        .find(|definition| matches!(definition.slot, SlotWrapper::Direct(DirectSlot::Init)))
+        .expect("native Init has a canonical slot declaration");
+    assert_eq!(
+        definition.base.offset as usize,
+        std::mem::offset_of!(PyTypeObject, tp_init),
+    );
+    unsafe {
+        PyDescr_NewWrapper(
+            owner,
+            (&raw const definition.base).cast_mut(),
+            initializer as *const () as *mut c_void,
+        )
+    }
+}
+
 static ABI_LOCAL_TYPES: Lazy<Mutex<HashMap<u32, usize>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct TypeIdentity {
     address: usize,
     generation: u64,
+}
+
+impl TypeIdentity {
+    fn is_live(self, registry: &TypeSubclassRegistry) -> bool {
+        registry
+            .live
+            .get(&self.address)
+            .is_some_and(|lifetime| lifetime.generation == self.generation)
+    }
+
+    /// The execution token protects header observation through retention.
+    /// A registered type at zero references is still in its deallocator; it
+    /// must not be resurrected by a non-owning subclass traversal.
+    unsafe fn live_type(self, registry: &TypeSubclassRegistry) -> Option<*mut PyTypeObject> {
+        if !self.is_live(registry) {
+            return None;
+        }
+        let tp = ptr::with_exposed_provenance_mut::<PyTypeObject>(self.address);
+        (unsafe { (*tp).ob_base.ob_base.ob_refcnt } != 0).then_some(tp)
+    }
 }
 
 #[derive(Default)]
@@ -26,9 +97,50 @@ struct SubclassIdentities {
     members: HashSet<TypeIdentity>,
 }
 
+impl SubclassIdentities {
+    fn compact(&mut self) {
+        self.order
+            .retain(|identity| self.members.contains(identity));
+        // Reclaim a retired cohort's high-water storage geometrically, keeping
+        // registration and retirement amortized O(1) per edge.
+        let retained = self.members.len().saturating_mul(2);
+        if self.order.capacity() > retained.saturating_mul(2) {
+            self.order.shrink_to(retained);
+        }
+        if self.members.capacity() > retained.saturating_mul(2) {
+            self.members.shrink_to(retained);
+        }
+    }
+
+    fn remove(&mut self, identity: &TypeIdentity) -> bool {
+        self.members.remove(identity);
+        if self.members.is_empty() {
+            return true;
+        }
+        // Tombstones are bounded by the live cohort, independently of whether
+        // any consumer ever traverses or modifies the base.
+        if self.order.len() - self.members.len() > self.members.len() {
+            self.compact();
+        }
+        false
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum TypeStorage {
+    Unknown,
+    NativeHeap { bytes: usize },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TypeLifetime {
+    generation: u64,
+    storage: TypeStorage,
+}
+
 #[derive(Default)]
 struct TypeSubclassRegistry {
-    live: HashMap<usize, u64>,
+    live: HashMap<usize, TypeLifetime>,
     subclasses: HashMap<TypeIdentity, SubclassIdentities>,
     bases_by_subclass: HashMap<TypeIdentity, HashSet<TypeIdentity>>,
     // Process-owned builtin shells remain closed across runtime teardown.
@@ -39,6 +151,106 @@ struct TypeSubclassRegistry {
 static TYPE_SUBCLASSES: Lazy<Mutex<TypeSubclassRegistry>> =
     Lazy::new(|| Mutex::new(TypeSubclassRegistry::default()));
 static NEXT_TYPE_IDENTITY_GENERATION: AtomicU64 = AtomicU64::new(1);
+/// Insert the first observation of one allocation lifetime. Callers decide
+/// whether they own a fresh allocation or are admitting more evidence for it.
+fn insert_type_lifetime(
+    registry: &mut TypeSubclassRegistry,
+    address: usize,
+    storage: TypeStorage,
+) -> bool {
+    debug_assert!(!registry.live.contains_key(&address));
+    if registry.live.try_reserve(1).is_err() {
+        return false;
+    }
+    let Ok(generation) =
+        NEXT_TYPE_IDENTITY_GENERATION.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            value.checked_add(1)
+        })
+    else {
+        return false;
+    };
+    registry.live.insert(
+        address,
+        TypeLifetime {
+            generation,
+            storage,
+        },
+    );
+    true
+}
+
+/// The allocator owns fresh, unpublished storage. Any observation left at its
+/// address belongs to an earlier allocation, including an Unknown receipt.
+pub(crate) fn record_native_heap_type_allocation(address: usize, bytes: usize) -> bool {
+    if bytes < std::mem::size_of::<PyHeapTypeObject>() {
+        return false;
+    }
+    let mut registry = TYPE_SUBCLASSES.lock();
+    retire_type_lifetime(&mut registry, address);
+    insert_type_lifetime(&mut registry, address, TypeStorage::NativeHeap { bytes })
+}
+
+/// The selected tp_alloc contract promises the captured requested extent.
+/// Generic allocation can provide a stronger actual-byte receipt; a custom
+/// allocator is trusted exactly as CPython trusts its allocation contract.
+/// No flag or post-callback metaclass value can manufacture this admission.
+#[derive(Debug, PartialEq, Eq)]
+enum TypeStorageAdmissionError {
+    InsufficientExtent,
+    Capacity,
+}
+
+fn admit_spec_type_allocation(
+    address: usize,
+    required: usize,
+) -> Result<(), TypeStorageAdmissionError> {
+    if required < std::mem::size_of::<PyHeapTypeObject>() {
+        return Err(TypeStorageAdmissionError::InsufficientExtent);
+    }
+    let mut registry = TYPE_SUBCLASSES.lock();
+    if let Some(lifetime) = registry.live.get_mut(&address) {
+        // The allocator callback has already run. Readiness observations can
+        // belong to this allocation; admitting its extent is not a new birth.
+        return match lifetime.storage {
+            TypeStorage::NativeHeap { bytes } if bytes < required => {
+                Err(TypeStorageAdmissionError::InsufficientExtent)
+            }
+            TypeStorage::NativeHeap { .. } => Ok(()),
+            TypeStorage::Unknown => {
+                lifetime.storage = TypeStorage::NativeHeap { bytes: required };
+                Ok(())
+            }
+        };
+    }
+    insert_type_lifetime(
+        &mut registry,
+        address,
+        TypeStorage::NativeHeap { bytes: required },
+    )
+    .then_some(())
+    .ok_or(TypeStorageAdmissionError::Capacity)
+}
+
+/// Extent permission, not a Python semantic flag. The caller owns a live type.
+pub(crate) fn heap_type_storage(tp: *mut PyTypeObject) -> Option<*mut PyHeapTypeObject> {
+    if tp.is_null() {
+        return None;
+    }
+    if let Some(storage) = GLOBAL_BRIDGE.managed_type_storage(tp) {
+        return storage;
+    }
+    if let Some(heap) = crate::abi_types::process_heap_type_storage(tp) {
+        return Some(heap);
+    }
+    TYPE_SUBCLASSES
+        .lock()
+        .live
+        .get(&tp.addr())
+        .and_then(|lifetime| {
+            matches!(lifetime.storage, TypeStorage::NativeHeap { .. }).then_some(tp.cast())
+        })
+}
+
 type PyTypeWatchCallback = unsafe extern "C" fn(*mut PyObject) -> c_int;
 const TYPE_MAX_WATCHERS: usize = 8;
 const CANONICAL_INTERPRETER_ID: i64 = 0;
@@ -68,16 +280,13 @@ fn type_identity(
     if registry.retired_statics.contains(&address) {
         return None;
     }
-    let generation = if let Some(generation) = registry.live.get(&address) {
-        *generation
+    let generation = if let Some(lifetime) = registry.live.get(&address) {
+        lifetime.generation
     } else {
-        let generation = NEXT_TYPE_IDENTITY_GENERATION
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                value.checked_add(1)
-            })
-            .ok()?;
-        registry.live.insert(address, generation);
-        generation
+        if !insert_type_lifetime(registry, address, TypeStorage::Unknown) {
+            return None;
+        }
+        registry.live[&address].generation
     };
     Some(TypeIdentity {
         address,
@@ -116,13 +325,18 @@ pub(crate) fn unregister_type_address(address: usize) {
     if address == 0 {
         return;
     }
-    let mut registry = TYPE_SUBCLASSES.lock();
-    let Some(generation) = registry.live.remove(&address) else {
+    retire_type_lifetime(&mut TYPE_SUBCLASSES.lock(), address);
+}
+
+/// One revocation primitive serves both terminal release and fresh allocation
+/// recording, which must replace an old lifetime under the same registry lock.
+fn retire_type_lifetime(registry: &mut TypeSubclassRegistry, address: usize) {
+    let Some(lifetime) = registry.live.remove(&address) else {
         return;
     };
     let identity = TypeIdentity {
         address,
-        generation,
+        generation: lifetime.generation,
     };
     if let Some(children) = registry.subclasses.remove(&identity) {
         for child in children.order {
@@ -136,11 +350,12 @@ pub(crate) fn unregister_type_address(address: usize) {
     }
     if let Some(bases) = registry.bases_by_subclass.remove(&identity) {
         for base in bases {
-            if let Some(children) = registry.subclasses.get_mut(&base) {
-                children.members.remove(&identity);
-                // Keep the ordered slot as a tombstone. Repeated sibling
-                // teardown is O(1) per base edge; the next deterministic
-                // traversal compacts all dead slots in one linear pass.
+            if registry
+                .subclasses
+                .get_mut(&base)
+                .is_some_and(|children| children.remove(&identity))
+            {
+                registry.subclasses.remove(&base);
             }
         }
     }
@@ -190,6 +405,25 @@ pub(crate) unsafe fn retire_static_type_runtime_roots(types: &[(*mut PyTypeObjec
                     detached.push(root);
                 }
             }
+            if let Some(heap) = heap_type_storage(tp) {
+                for field in [
+                    &raw mut (*heap).ht_name,
+                    &raw mut (*heap).ht_qualname,
+                    &raw mut (*heap).ht_slots,
+                    &raw mut (*heap).ht_module,
+                ] {
+                    let root = field.replace(ptr::null_mut());
+                    if !root.is_null() {
+                        detached.push(root);
+                    }
+                }
+                // Runtime-renamed process shells own this byte allocation.
+                let name = (&raw mut (*heap)._ht_tpname).replace(ptr::null_mut());
+                if !name.is_null() {
+                    (*tp).tp_name = c"<retired type>".as_ptr();
+                    crate::api::memory::PyMem_Free(name.cast());
+                }
+            }
             let readiness = if bootstrap_ready && detached.len() == first_root {
                 0
             } else {
@@ -217,6 +451,13 @@ pub(crate) fn reopen_static_type_runtime_roots(types: &[(*mut PyTypeObject, bool
     for &(tp, _) in types {
         registry.retired_statics.remove(&tp.addr());
     }
+}
+
+/// Callback addresses belong to the interpreter that registered them. Version
+/// and allocation generations remain monotonic; a new runtime gets no old
+/// extension callbacks, even if their slots were never explicitly cleared.
+pub(crate) fn reset_type_watchers_for_runtime() {
+    TYPE_WATCHER_STATE.lock().callbacks.fill(None);
 }
 
 struct TypeReadyingGuard(*mut PyTypeObject);
@@ -284,37 +525,9 @@ unsafe fn validate_base_layout(tp: *mut PyTypeObject, base: *mut PyTypeObject) -
     0
 }
 
-/// Select one truthful physical base.  Incomparable C layouts are rejected;
-/// managed runtime multiple inheritance is answered by the runtime
-/// `type_is_subtype` hook instead of fabricating a single `tp_base` chain.
+/// Select one physical base using the shared solid-owner dominance rule.
 unsafe fn acceptable_best_base(bases: *mut PyObject) -> *mut PyTypeObject {
-    if bases.is_null() {
-        return ptr::null_mut();
-    }
-    let count = unsafe { crate::api::sequences::PyTuple_Size(bases) };
-    if count < 0 {
-        return ptr::null_mut();
-    }
-    let mut best: *mut PyTypeObject = ptr::null_mut();
-    for index in 0..count {
-        let candidate = unsafe { crate::api::sequences::PyTuple_GetItem(bases, index) };
-        if candidate.is_null() || unsafe { PyType_Check(candidate) } == 0 {
-            unsafe { reject_type_layout(c"bases must contain only type objects") };
-            return ptr::null_mut();
-        }
-        let candidate = candidate.cast::<PyTypeObject>();
-        if unsafe { (*candidate).tp_flags } & crate::abi_types::Py_TPFLAGS_BASETYPE == 0 {
-            unsafe { reject_type_layout(c"type is not an acceptable base type") };
-            return ptr::null_mut();
-        }
-        if best.is_null() || unsafe { PyType_IsSubtype(candidate, best) } != 0 {
-            best = candidate;
-        } else if unsafe { PyType_IsSubtype(best, candidate) } == 0 {
-            unsafe { reject_type_layout(c"multiple bases have incompatible physical layouts") };
-            return ptr::null_mut();
-        }
-    }
-    best
+    unsafe { hierarchy::best_base(bases) }
 }
 
 #[unsafe(no_mangle)]
@@ -364,6 +577,15 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
         return -1;
     }
     let name = unsafe { (*tp).tp_name };
+    if name.is_null() {
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                c"type has no resolved name".as_ptr(),
+            )
+        };
+        return -1;
+    }
     let label = if name.is_null() {
         format!("<unnamed@{:p}>", tp)
     } else {
@@ -384,10 +606,48 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
         return unsafe { reject_type_readiness(c"recursive PyType_Ready on an initializing type") };
     }
 
+    // Bootstrap native shells carry initialized C slots before their runtime
+    // roots exist. Projecting roots is not completion of native readiness.
+    // Clear that bootstrap marker before fallible projection so a retry cannot
+    // mistake partially populated roots for completed declaration admission.
+    let completed = unsafe {
+        (*tp).tp_flags & Py_TPFLAGS_READY != 0
+            && !(*tp).tp_dict.is_null()
+            && !(*tp).tp_bases.is_null()
+            && !(*tp).tp_mro.is_null()
+    };
+    if !completed {
+        unsafe {
+            (*tp).tp_flags &= !Py_TPFLAGS_READY;
+        }
+    }
+
+    // Crossing a runtime-bound type through PyType_Ready exposes its real
+    // namespace, including native method declarations, before any READY exit.
+    let runtime_projection = match unsafe { GLOBAL_BRIDGE.expose_runtime_type_dictionary(tp) } {
+        Ok(projection) => projection,
+        Err(()) => return -1,
+    };
+    if runtime_projection == Some(crate::bridge::RuntimeTypeProjection::Managed)
+        || (runtime_projection.is_some()
+            && (tp == &raw mut crate::abi_types::PyBaseObject_Type
+                || tp == &raw mut crate::abi_types::PyType_Type))
+    {
+        // Managed classes are sealed by the runtime. Their canonical namespace,
+        // bases and MRO have just been projected; native declaration admission
+        // must not rebuild or overwrite that semantic graph.
+        unsafe {
+            register_type_subclasses(tp);
+            install_metatype_getattro(tp);
+            (*tp).tp_flags |= Py_TPFLAGS_READY;
+        }
+        return 0;
+    }
+
     // Readiness owns C layout and subclass metadata, not a runtime reference.
     // Only an actual C-to-runtime crossing may acquire a foreign wrapper; in
     // particular, a runtime-bound builtin must never get a second identity.
-    if unsafe { (*tp).tp_flags } & Py_TPFLAGS_READY != 0 {
+    if completed {
         unsafe {
             register_type_subclasses(tp);
             install_metatype_getattro(tp);
@@ -397,145 +657,46 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
 
     // READYING is the canonical recursion state, including allocation/error
     // callbacks during startup. Every success and failure path clears it.
-    unsafe { (*tp).tp_flags |= crate::abi_types::Py_TPFLAGS_READYING };
+    // Static shells initialize their C slots before a runtime dictionary exists.
+    // READY is complete only once that namespace has been materialized. Retry a
+    // failed materialization through the ordinary readiness transaction.
+    unsafe {
+        if (*tp).tp_flags & Py_TPFLAGS_HEAPTYPE == 0 {
+            (*tp).tp_flags |= crate::abi_types::Py_TPFLAGS_IMMUTABLETYPE;
+        }
+        (*tp).tp_flags &= !Py_TPFLAGS_READY;
+        (*tp).tp_flags |= crate::abi_types::Py_TPFLAGS_READYING;
+    }
     let _readying = TypeReadyingGuard(tp);
 
     unsafe {
-        // (1) Default a missing base to `object` — every static type except
-        //     object itself inherits from PyBaseObject_Type. numpy's
-        //     SINGLE_INHERIT sets tp_base explicitly, but the root
-        //     PyGenericArrType_Type and the builtin bases rely on this default.
-        let object = &raw mut crate::abi_types::PyBaseObject_Type;
-        if (*tp).tp_base.is_null() && !ptr::eq(tp, object) {
-            (*tp).tp_base = object;
-        }
-        // (2) Inherit unset slots from the base type — exactly as CPython's
-        //     inherit_slots does. A static C extension (numpy's scalar type
-        //     hierarchy is the canonical case) sets `tp_base` and trusts
-        //     PyType_Ready to copy the base's function slots into the child
-        //     wherever the child left them null. Skipping this leaves derived
-        //     types with null number/compare/hash slots and later operations
-        //     fail opaquely.
-        if !(*tp).tp_base.is_null() {
-            inherit_slots_from_base(tp, (*tp).tp_base);
-        }
-
-        // (2b) Guarantee the object-lifecycle allocator slots CPython fills
-        //      during PyType_Ready. CPython's post-ready invariant (verified
-        //      against CPython 3.12: non-GC builtins carry
-        //      `tp_free == PyObject_Free`, GC builtins carry
-        //      `tp_free == PyObject_GC_Del`, and every readied type carries
-        //      `tp_alloc == PyType_GenericAlloc`) is that `tp_free` and
-        //      `tp_alloc` are NON-NULL. A static C extension leaves them NULL and
-        //      trusts PyType_Ready to fill them from `object`: numpy's
-        //      `PyBoundArrayMethod_Type` (`Py_TPFLAGS_DEFAULT`, no `tp_free`) is
-        //      the canonical case — its `boundarraymethod_dealloc` ends in
-        //      `Py_TYPE(self)->tp_free(self)`. Leaving `tp_free` NULL turns that
-        //      into a `call_indirect` on table index 0, which traps with
-        //      "null function or function signature mismatch" on the first
-        //      dealloc. (In the wasm runtime PyObject_Free / PyObject_GC_Del /
-        //      PyMem_Free all route to `libc::free`, so the GC split is
-        //      CPython-faithful bookkeeping rather than a behavioral fork.)
-        if (*tp).tp_free.is_none() {
-            (*tp).tp_free = Some(if (*tp).tp_flags & Py_TPFLAGS_HAVE_GC != 0 {
-                crate::api::memory::PyObject_GC_Del
-            } else {
-                crate::api::memory::PyObject_Free
-            });
-        }
-        if (*tp).tp_alloc.is_none() {
-            (*tp).tp_alloc = Some(PyType_GenericAlloc);
-        }
-
-        // (3) Build tp_dict and populate it from the type's own tp_methods so
-        //     the methods become resolvable attributes. numpy's scalar types
-        //     ship large method/getset tables and expect PyType_Ready to expose
-        //     them; without a populated tp_dict, _PyType_Lookup finds nothing.
         if (*tp).tp_dict.is_null() {
             let dict = crate::api::mapping::PyDict_New();
             if dict.is_null() {
-                crate::capi_trace::record_silent_failure(
-                    "PyType_Ready",
-                    Some("tp_dict allocation failed"),
-                );
                 return -1;
             }
             (*tp).tp_dict = dict;
         }
-        if add_methods_to_dict(tp) < 0 {
+        // Metadata is complete before constructing any callback-bearing object.
+        if hierarchy::prepare(tp, runtime_projection.is_some()) < 0 {
             return -1;
         }
-
-        // (3b) Populate tp_dict from tp_members and tp_getset — exactly the
-        //      `type_add_members` / `type_add_getset` steps of CPython's
-        //      `type_ready_fill_dict`. numpy's `PyUFunc_Type`, `PyArrayDescr_Type`,
-        //      and `PyArray_Type` (all readied in `_multiarray_umath_exec` before
-        //      the historical failure point) declare `tp_members`/`tp_getset`
-        //      tables and trust PyType_Ready to expose them as
-        //      member_descriptor / getset_descriptor entries. Each returns a real
-        //      descriptor; a NULL from `PyDescr_New*` (or a dict-insert failure)
-        //      propagates as a -1 with a set exception, matching CPython, so a
-        //      genuine failure here is never a contentless exec-slot -1.
-        if add_members_to_dict(tp) < 0 {
+        inheritance::prepare_layout(tp);
+        inheritance::prepare_new(tp);
+        // Only this type's declarations introduce entries in its namespace.
+        // METH_COEXIST can replace an operator wrapper; ordinary methods cannot.
+        if add_operators_to_dict(tp) < 0
+            || add_methods_to_dict(tp) < 0
+            || add_members_to_dict(tp) < 0
+            || add_getset_to_dict(tp) < 0
+            || root_metadata::add_type_documentation(tp) < 0
+        {
             return -1;
         }
-        if add_getset_to_dict(tp) < 0 {
+        if inheritance::finish(tp) < 0 {
             return -1;
         }
-        if add_operators_to_dict(tp) < 0 {
-            return -1;
-        }
-
-        // (4) Compute tp_mro for single inheritance: [tp, ...base.tp_mro...].
-        //     A null MRO makes attribute resolution and isinstance checks fail.
-        if compute_single_inheritance_mro(tp) < 0 {
-            return -1;
-        }
-
-        // (5) Set the metatype. CPython's `PyType_Ready` does
-        //     `Py_SET_TYPE(type, &PyType_Type)` when the type's `ob_type` is left
-        //     NULL by the static declaration (numpy's `PyVarObject_HEAD_INIT(NULL, 0)`
-        //     leaves it NULL). Without this the readied type is a bare sentinel
-        //     (`ob_type == NULL`) and every consumer that inspects
-        //     `Py_TYPE(type)` — including the split-runtime bridge and the
-        //     `describe_unresolved_pyobject` diagnostic — sees an ill-formed object.
-        if (*tp).ob_base.ob_base.ob_type.is_null() {
-            (*tp).ob_base.ob_base.ob_type = &raw mut crate::abi_types::PyType_Type;
-        }
-
-        // (5b) Guarantee the metatype can INSTANTIATE this type. `tp` is a type
-        //      object; `Py_TYPE(tp)` is therefore its metatype, and in CPython
-        //      every metatype is a subtype of `type` and so carries `type_call`
-        //      as its `tp_call` (inherited during the metatype's own
-        //      PyType_Ready). numpy's `_DTypeMeta` sets `tp_base = &PyType_Type`
-        //      and relies on exactly that inheritance — but in the split wasm
-        //      runtime a PIC extension's `&PyType_Type` DATA reference can resolve
-        //      to an app-local unresolved GOT placeholder (an all-zero
-        //      PyTypeObject: `tp_name`/`tp_call` NULL) rather than the runtime's
-        //      canonical `PyType_Type`, so `_DTypeMeta` readies with a NULL
-        //      `tp_call`. Then calling a DType class — `StringDType(...)`, whose
-        //      metatype is `_DTypeMeta` — dispatches `Py_TYPE(cls)->tp_call`,
-        //      finds NULL, and fails "'numpy._DTypeMeta' object is not callable"
-        //      during `_multiarray_umath` init. Restore the slot the broken
-        //      cross-module inheritance left NULL: this is byte-for-byte the value
-        //      a faithful `inherit_slots(_DTypeMeta, &PyType_Type)` would have
-        //      copied, so it is the correct metatype call slot, not a mask. Only a
-        //      NULL slot is filled, so a metatype that overrides `__call__` keeps
-        //      its own `tp_call`. `PyType_Type` itself (the common metatype)
-        //      already carries `molt_type_call` from `init_static_types`, so this
-        //      is a no-op for ordinary types.
-        let meta = (*tp).ob_base.ob_base.ob_type;
-        if !meta.is_null() && (*meta).tp_call.is_none() {
-            (*meta).tp_call = Some(molt_type_call);
-        }
-
-        // (6) Register every direct base before publishing READY. This is the
-        // recursive invalidation graph consumed by PyType_Modified; keeping it
-        // as non-owning raw identities mirrors CPython's weakref subclass dict
-        // without adding a strong type cycle to the GC graph.
         register_type_subclasses(tp);
-
-        // (7) Mark ready.
         (*tp).tp_flags |= Py_TPFLAGS_READY;
     }
     drop(_readying);
@@ -546,76 +707,71 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
     0
 }
 
-/// Populate `tp`'s `tp_dict` with a callable for each entry in its own
-/// `tp_methods` table, keyed by method name. Mirrors the subset of CPython's
-/// `add_methods` that static extension method tables depend on: each method
-/// becomes a `builtin_function_or_method` bound to the type so `_PyType_Lookup`
-/// (and therefore attribute access) resolves it. Returns 0 on success, -1 with
-/// a recorded silent failure otherwise.
+/// Publish native declarations as descriptors. Names already present in the
+/// namespace win unless the declaration explicitly requests METH_COEXIST.
 unsafe fn add_methods_to_dict(tp: *mut PyTypeObject) -> c_int {
+    use crate::abi_types::{METH_CLASS, METH_COEXIST, METH_STATIC};
+    use crate::api::refcount::OwnedPyObject;
     unsafe {
-        let mut methods: *mut PyMethodDef = (*tp).tp_methods;
-        if methods.is_null() {
+        let mut method = (*tp).tp_methods;
+        if method.is_null() {
             return 0;
         }
-        let dict = (*tp).tp_dict;
-        // Iterate until the sentinel entry (ml_name == NULL).
-        while !(*methods).ml_name.is_null() {
-            let name_ptr = (*methods).ml_name;
-            // Constructor admission is authoritative for flags and targets.
-            // METHOD carries its defining class separately from the receiver;
-            // STATIC must not acquire the type as a bound receiver.
-            let receiver = if (*methods).ml_flags & crate::abi_types::METH_STATIC != 0 {
-                ptr::null_mut()
-            } else {
-                tp.cast::<PyObject>()
-            };
-            let defining_class = if (*methods).ml_flags & crate::abi_types::METH_METHOD != 0 {
-                tp
-            } else {
-                ptr::null_mut()
-            };
-            let func = crate::api::object::PyCMethod_New(
-                methods,
-                receiver,
-                ptr::null_mut(),
-                defining_class,
-            );
-            if func.is_null() {
-                crate::capi_trace::record_silent_failure(
-                    "PyType_Ready",
-                    Some("C method constructor admission failed"),
+        while !(*method).ml_name.is_null() {
+            let flags = (*method).ml_flags;
+            if flags & (METH_CLASS | METH_STATIC) == (METH_CLASS | METH_STATIC) {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_ValueError).cast(),
+                    c"method cannot be both class and static".as_ptr(),
                 );
                 return -1;
             }
-            // Store the descriptor. A failure here means the runtime dict layer
-            // could not hold the entry (e.g. an unresolved bridge handle). CPython's
-            // add_methods (Objects/typeobject.c) propagates a PyDict store failure
-            // as -1, so PyType_Ready FAILS — it never marks a type ready with a
-            // silently-dropped method (which would surface much later as an
-            // AttributeError / wrong dispatch on the missing method). Match that:
-            // fail CLOSED with a set exception, mirroring the add_members_/
-            // add_getset_ (store_descr) siblings.
-            let rc = crate::api::mapping::PyDict_SetItemString(dict, name_ptr, func);
-            crate::api::refcount::Py_DECREF(func);
-            if rc < 0 {
-                crate::capi_trace::record_silent_failure(
-                    "PyType_Ready",
-                    Some("PyDict_SetItemString could not store method descriptor"),
-                );
-                // Guarantee a pending exception even if the dict layer returned
-                // -1 without setting one (record-without-exception class), so the
-                // caller's `< 0` check never sees a contentless failure.
-                if crate::api::errors::PyErr_Occurred().is_null() {
-                    crate::api::errors::PyErr_SetString(
-                        (&raw mut crate::abi_types::PyExc_SystemError)
-                            .cast::<crate::abi_types::PyObject>(),
-                        c"PyType_Ready could not store method descriptor in tp_dict".as_ptr(),
-                    );
+            let descriptor = OwnedPyObject::from_owned(if flags & METH_CLASS != 0 {
+                PyDescr_NewClassMethod(tp, method)
+            } else if flags & METH_STATIC != 0 {
+                let callable = OwnedPyObject::from_owned(crate::api::object::PyCMethod_New(
+                    method,
+                    tp.cast(),
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                ));
+                if callable.as_ptr().is_null() {
+                    return -1;
                 }
+                PyStaticMethod_New(callable.as_ptr())
+            } else {
+                PyDescr_NewMethod(tp, method)
+            });
+            if descriptor.as_ptr().is_null() {
                 return -1;
             }
-            methods = methods.add(1);
+            let name = OwnedPyObject::from_owned(crate::api::strings::PyUnicode_FromString(
+                (*method).ml_name,
+            ));
+            if name.as_ptr().is_null() {
+                return -1;
+            }
+            let status = if flags & METH_COEXIST != 0 {
+                crate::api::mapping::PyDict_SetItem(
+                    (*tp).tp_dict,
+                    name.as_ptr(),
+                    descriptor.as_ptr(),
+                )
+            } else if crate::api::mapping::PyDict_SetDefault(
+                (*tp).tp_dict,
+                name.as_ptr(),
+                descriptor.as_ptr(),
+            )
+            .is_null()
+            {
+                -1
+            } else {
+                0
+            };
+            if status < 0 {
+                return -1;
+            }
+            method = method.add(1);
         }
         0
     }
@@ -736,148 +892,6 @@ enum BufferSlot {
     Release,
 }
 
-struct SlotWrapperDef {
-    name: &'static [u8],
-    slot: SlotWrapper,
-}
-
-macro_rules! direct {
-    ($name:literal, $slot:ident) => {
-        SlotWrapperDef {
-            name: concat!($name, "\0").as_bytes(),
-            slot: SlotWrapper::Direct(DirectSlot::$slot),
-        }
-    };
-}
-macro_rules! number {
-    ($name:literal, $slot:ident) => {
-        SlotWrapperDef {
-            name: concat!($name, "\0").as_bytes(),
-            slot: SlotWrapper::Number(NumberSlot::$slot),
-        }
-    };
-}
-macro_rules! sequence {
-    ($name:literal, $slot:ident) => {
-        SlotWrapperDef {
-            name: concat!($name, "\0").as_bytes(),
-            slot: SlotWrapper::Sequence(SequenceSlot::$slot),
-        }
-    };
-}
-macro_rules! mapping {
-    ($name:literal, $slot:ident) => {
-        SlotWrapperDef {
-            name: concat!($name, "\0").as_bytes(),
-            slot: SlotWrapper::Mapping(MappingSlot::$slot),
-        }
-    };
-}
-
-static SLOT_WRAPPER_DEFS: &[SlotWrapperDef] = &[
-    direct!("__repr__", Repr),
-    direct!("__hash__", Hash),
-    direct!("__call__", Call),
-    direct!("__str__", Str),
-    direct!("__getattribute__", GetAttr),
-    direct!("__setattr__", SetAttr),
-    direct!("__delattr__", SetAttr),
-    direct!("__lt__", RichCompare),
-    direct!("__le__", RichCompare),
-    direct!("__eq__", RichCompare),
-    direct!("__ne__", RichCompare),
-    direct!("__gt__", RichCompare),
-    direct!("__ge__", RichCompare),
-    direct!("__iter__", Iter),
-    direct!("__next__", IterNext),
-    direct!("__get__", DescrGet),
-    direct!("__set__", DescrSet),
-    direct!("__delete__", DescrSet),
-    direct!("__init__", Init),
-    direct!("__del__", Finalize),
-    SlotWrapperDef {
-        name: b"__buffer__\0",
-        slot: SlotWrapper::Buffer(BufferSlot::Get),
-    },
-    SlotWrapperDef {
-        name: b"__release_buffer__\0",
-        slot: SlotWrapper::Buffer(BufferSlot::Release),
-    },
-    SlotWrapperDef {
-        name: b"__await__\0",
-        slot: SlotWrapper::Async(AsyncSlot::Await),
-    },
-    SlotWrapperDef {
-        name: b"__aiter__\0",
-        slot: SlotWrapper::Async(AsyncSlot::Iter),
-    },
-    SlotWrapperDef {
-        name: b"__anext__\0",
-        slot: SlotWrapper::Async(AsyncSlot::Next),
-    },
-    number!("__add__", Add),
-    number!("__radd__", Add),
-    number!("__sub__", Subtract),
-    number!("__rsub__", Subtract),
-    number!("__mul__", Multiply),
-    number!("__rmul__", Multiply),
-    number!("__mod__", Remainder),
-    number!("__rmod__", Remainder),
-    number!("__pow__", Power),
-    number!("__rpow__", Power),
-    number!("__neg__", Negative),
-    number!("__pos__", Positive),
-    number!("__abs__", Absolute),
-    number!("__bool__", Bool),
-    number!("__invert__", Invert),
-    number!("__lshift__", LShift),
-    number!("__rlshift__", LShift),
-    number!("__rshift__", RShift),
-    number!("__rrshift__", RShift),
-    number!("__and__", And),
-    number!("__rand__", And),
-    number!("__xor__", Xor),
-    number!("__rxor__", Xor),
-    number!("__or__", Or),
-    number!("__ror__", Or),
-    number!("__int__", Int),
-    number!("__float__", Float),
-    number!("__iadd__", InPlaceAdd),
-    number!("__isub__", InPlaceSubtract),
-    number!("__imul__", InPlaceMultiply),
-    number!("__imod__", InPlaceRemainder),
-    number!("__ipow__", InPlacePower),
-    number!("__ilshift__", InPlaceLShift),
-    number!("__irshift__", InPlaceRShift),
-    number!("__iand__", InPlaceAnd),
-    number!("__ixor__", InPlaceXor),
-    number!("__ior__", InPlaceOr),
-    number!("__floordiv__", FloorDivide),
-    number!("__rfloordiv__", FloorDivide),
-    number!("__truediv__", TrueDivide),
-    number!("__rtruediv__", TrueDivide),
-    number!("__ifloordiv__", InPlaceFloorDivide),
-    number!("__itruediv__", InPlaceTrueDivide),
-    number!("__index__", Index),
-    number!("__matmul__", MatrixMultiply),
-    number!("__rmatmul__", MatrixMultiply),
-    number!("__imatmul__", InPlaceMatrixMultiply),
-    mapping!("__len__", Length),
-    mapping!("__getitem__", Subscript),
-    mapping!("__setitem__", AssSubscript),
-    mapping!("__delitem__", AssSubscript),
-    sequence!("__len__", Length),
-    sequence!("__add__", Concat),
-    sequence!("__mul__", Repeat),
-    sequence!("__rmul__", Repeat),
-    sequence!("__getitem__", Item),
-    sequence!("__setitem__", AssItem),
-    sequence!("__delitem__", AssItem),
-    sequence!("__contains__", Contains),
-    sequence!("__iadd__", InPlaceConcat),
-    sequence!("__imul__", InPlaceRepeat),
-];
-
 /// Return the raw pointer-sized storage that owns one direct type slot. Rust's
 /// FFI `Option<extern "C" fn>` fields use the nullable-pointer representation;
 /// the compile-time size/alignment assertions below make that assumption
@@ -935,11 +949,7 @@ unsafe fn direct_slot_storage(tp: *mut PyTypeObject, slot: DirectSlot) -> *mut *
 /// Return the one pointer-sized storage cell for a public Stable-ABI slot.
 /// Protocol tables are created only for FromSpec writes; GetSlot reads a missing
 /// parent as a valid NULL slot without allocating or setting an exception.
-unsafe fn slot_wrapper_storage(
-    tp: *mut PyTypeObject,
-    slot: SlotWrapper,
-    create: bool,
-) -> *mut *mut c_void {
+unsafe fn slot_wrapper_storage(tp: *mut PyTypeObject, slot: SlotWrapper) -> *mut *mut c_void {
     macro_rules! field_storage {
         ($table:expr, $field:ident) => {
             std::ptr::addr_of_mut!((*$table).$field)
@@ -949,13 +959,9 @@ unsafe fn slot_wrapper_storage(
         match slot {
             SlotWrapper::Direct(slot) => direct_slot_storage(tp, slot),
             SlotWrapper::Number(slot) => {
-                let table = if create {
-                    ensure_number(tp)
-                } else {
-                    (*tp)
-                        .tp_as_number
-                        .cast::<crate::abi_types::PyNumberMethods>()
-                };
+                let table = (*tp)
+                    .tp_as_number
+                    .cast::<crate::abi_types::PyNumberMethods>();
                 if table.is_null() {
                     return ptr::null_mut();
                 }
@@ -1010,13 +1016,9 @@ unsafe fn slot_wrapper_storage(
                 }
             }
             SlotWrapper::Sequence(slot) => {
-                let table = if create {
-                    ensure_sequence(tp)
-                } else {
-                    (*tp)
-                        .tp_as_sequence
-                        .cast::<crate::abi_types::PySequenceMethods>()
-                };
+                let table = (*tp)
+                    .tp_as_sequence
+                    .cast::<crate::abi_types::PySequenceMethods>();
                 if table.is_null() {
                     return ptr::null_mut();
                 }
@@ -1032,13 +1034,9 @@ unsafe fn slot_wrapper_storage(
                 }
             }
             SlotWrapper::Mapping(slot) => {
-                let table = if create {
-                    ensure_mapping(tp)
-                } else {
-                    (*tp)
-                        .tp_as_mapping
-                        .cast::<crate::abi_types::PyMappingMethods>()
-                };
+                let table = (*tp)
+                    .tp_as_mapping
+                    .cast::<crate::abi_types::PyMappingMethods>();
                 if table.is_null() {
                     return ptr::null_mut();
                 }
@@ -1049,11 +1047,7 @@ unsafe fn slot_wrapper_storage(
                 }
             }
             SlotWrapper::Async(slot) => {
-                let table = if create {
-                    ensure_async(tp)
-                } else {
-                    (*tp).tp_as_async.cast::<crate::abi_types::PyAsyncMethods>()
-                };
+                let table = (*tp).tp_as_async.cast::<crate::abi_types::PyAsyncMethods>();
                 if table.is_null() {
                     return ptr::null_mut();
                 }
@@ -1065,11 +1059,7 @@ unsafe fn slot_wrapper_storage(
                 }
             }
             SlotWrapper::Buffer(slot) => {
-                let table = if create {
-                    ensure_buffer(tp)
-                } else {
-                    (*tp).tp_as_buffer.cast::<crate::abi_types::PyBufferProcs>()
-                };
+                let table = (*tp).tp_as_buffer.cast::<crate::abi_types::PyBufferProcs>();
                 if table.is_null() {
                     return ptr::null_mut();
                 }
@@ -1083,7 +1073,7 @@ unsafe fn slot_wrapper_storage(
 }
 
 unsafe fn slot_wrapper_ptr(tp: *mut PyTypeObject, slot: SlotWrapper) -> *mut c_void {
-    let storage = unsafe { slot_wrapper_storage(tp, slot, false) };
+    let storage = unsafe { slot_wrapper_storage(tp, slot) };
     if storage.is_null() {
         ptr::null_mut()
     } else {
@@ -1200,57 +1190,35 @@ pub unsafe extern "C" fn PyType_GetSlot(tp: *mut PyTypeObject, slot: c_int) -> *
     unsafe { slot_wrapper_ptr(tp, wrapper) }
 }
 
-unsafe fn new_wrapper_descr(
-    tp: *mut PyTypeObject,
-    name: *const c_char,
-    wrapped: *mut c_void,
-) -> *mut PyObject {
-    let common = unsafe { descr_alloc(&raw mut crate::abi_types::PyWrapperDescr_Type, tp, name) };
-    if common.is_null() {
-        return ptr::null_mut();
-    }
-    unsafe {
-        let header = *Box::from_raw(common);
-        let descr = Box::new(crate::abi_types::PyWrapperDescrObject {
-            d_common: header,
-            d_wrapped: wrapped,
-        });
-        Box::into_raw(descr).cast::<PyObject>()
-    }
-}
-
 unsafe fn add_operators_to_dict(tp: *mut PyTypeObject) -> c_int {
     unsafe {
         let dict = (*tp).tp_dict;
-        // A NULL tp_hash means "inherit from the tp_base chain" (CPython), NOT
-        // "unhashable". Inherit it BEFORE the slot-wrapper loop builds __hash__
-        // and before the __hash__=None baking below — else a metatype whose base
-        // (PyType_Type) supplies an identity hash, i.e. numpy's `_DTypeMeta`, has
-        // its DType CLASSES marked "unhashable type: 'type'" during numpy.dtypes
-        // registration. Genuinely-unhashable types set tp_hash =
-        // PyObject_HashNotImplemented (still baked to __hash__=None below).
-        // PyBaseObject_Type.tp_hash is now the identity _Py_HashPointer (CPython
-        // object.__hash__), so a plain object() and inheriting-only-object
-        // subtypes are hashable; the builtin containers (list/dict/set/bytearray)
-        // set PyObject_HashNotImplemented on their own type shells in abi_types, so
-        // they stay unhashable despite the now-non-NULL object root.
-        if (*tp).tp_hash.is_none() {
-            let mut base = (*tp).tp_base;
-            while !base.is_null() {
-                if let Some(h) = (*base).tp_hash {
-                    (*tp).tp_hash = Some(h);
-                    break;
-                }
-                base = (*base).tp_base;
-            }
-        }
         for def in SLOT_WRAPPER_DEFS {
+            // Builtin exception rendering declarations come from the shared
+            // schema. PyType_Ready has already inherited C slots, but an
+            // inherited slot does not introduce a descriptor in this dict.
+            if let Some(spec) = crate::abi_types::exc_singleton_name(tp.cast())
+                .and_then(|name| name.strip_prefix("PyExc_"))
+                .and_then(molt_lang_obj_model::builtin_exception_spec)
+            {
+                if (matches!(def.slot, SlotWrapper::Direct(DirectSlot::Repr))
+                    && !spec.declares_repr())
+                    || (matches!(def.slot, SlotWrapper::Direct(DirectSlot::Str))
+                        && spec.declared_str_slot().is_none())
+                {
+                    continue;
+                }
+            }
             let wrapped = slot_wrapper_ptr(tp, def.slot);
             if wrapped.is_null() {
                 continue;
             }
-            let name = def.name.as_ptr().cast::<c_char>();
-            if !crate::api::mapping::PyDict_GetItemString(dict, name).is_null() {
+            let name = def.base.name;
+            let existing = crate::api::mapping::_PyDict_GetItemStringWithError(dict, name);
+            if descriptors::pending() {
+                return -1;
+            }
+            if !existing.is_null() {
                 continue;
             }
             let hash_not_implemented = matches!(def.slot, SlotWrapper::Direct(DirectSlot::Hash))
@@ -1265,98 +1233,47 @@ unsafe fn add_operators_to_dict(tp: *mut PyTypeObject) -> c_int {
                     return -1;
                 }
             } else {
-                let descr = new_wrapper_descr(tp, name, wrapped);
+                let descr = PyDescr_NewWrapper(tp, (&raw const def.base).cast_mut(), wrapped);
                 if descr.is_null() {
                     return -1;
                 }
                 let stored = crate::api::mapping::PyDict_SetItemString(dict, name, descr);
-                crate::api::refcount::Py_DECREF(descr);
+                crate::api::errors::release_preserving_error(&[descr]);
                 if stored < 0 {
                     return -1;
                 }
             }
         }
-        if (*tp).tp_hash.is_none()
-            && crate::api::mapping::PyDict_GetItemString(dict, c"__hash__".as_ptr()).is_null()
-            && crate::api::mapping::PyDict_SetItemString(
-                dict,
-                c"__hash__".as_ptr(),
-                &raw mut crate::abi_types::Py_None,
-            ) < 0
-        {
-            return -1;
-        }
         0
     }
 }
 
-/// Insert a descriptor into `tp_dict` keyed by its interned name, using
-/// `PyDict_SetDefault` semantics (do not clobber a name already placed by an
-/// earlier step — CPython's operators run first). Steals the caller's reference
-/// to `descr` (decrefs it after insertion, exactly like CPython's loop bodies).
+/// Publish one owned descriptor with normal dictionary ownership, then consume
+/// the constructor reference. The runtime dictionary/foreign bridge owns the
+/// stored edge; publication must not leave a second permanent C anchor.
 unsafe fn store_descr(dict: *mut PyObject, descr: *mut PyObject) -> c_int {
-    unsafe {
-        if dict.is_null() || std::ptr::eq(dict, &raw mut crate::abi_types::Py_None) {
-            crate::api::refcount::Py_DECREF(descr);
-            crate::capi_trace::record_silent_failure(
-                "PyType_Ready",
-                Some("tp_dict is not backed by runtime dict hooks"),
-            );
-            crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
-                c"PyType_Ready requires a real tp_dict for descriptors".as_ptr(),
-            );
-            return -1;
+    let name = unsafe { PyDescr_NAME(descr) };
+    let status = if dict.is_null() || name.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        -1
+    } else {
+        let stored = unsafe { crate::api::mapping::PyDict_SetDefault(dict, name, descr) };
+        unsafe {
+            crate::api::errors::check_native_status(
+                if stored.is_null() { -1 } else { 0 },
+                "native descriptor publication",
+            )
         }
-        let name = PyDescr_NAME(descr);
-        if name.is_null() {
-            crate::api::refcount::Py_DECREF(descr);
-            crate::capi_trace::record_silent_failure(
-                "PyType_Ready",
-                Some("descriptor has no name"),
-            );
-            crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
-                c"descriptor missing name during PyType_Ready".as_ptr(),
-            );
-            return -1;
-        }
-        crate::api::refcount::Py_INCREF(descr);
-        let stored = crate::api::mapping::PyDict_SetDefault(dict, name, descr);
-        let visible = if stored.is_null() {
-            ptr::null_mut()
-        } else {
-            crate::api::mapping::PyDict_GetItem(dict, name)
-        };
-        let store_visible = !visible.is_null() && std::ptr::eq(visible, stored);
-        let dict_retained_descriptor = store_visible && std::ptr::eq(stored, descr);
-        crate::api::refcount::Py_DECREF(descr);
-        if !dict_retained_descriptor {
-            crate::api::refcount::Py_DECREF(descr);
-        }
-        if !store_visible {
-            crate::capi_trace::record_silent_failure(
-                "PyType_Ready",
-                Some("PyDict_SetDefault did not make getset/member descriptor visible"),
-            );
-            if crate::api::errors::PyErr_Occurred().is_null() {
-                crate::api::errors::PyErr_SetString(
-                    (&raw mut crate::abi_types::PyExc_SystemError)
-                        .cast::<crate::abi_types::PyObject>(),
-                    c"PyType_Ready could not publish getset/member descriptor".as_ptr(),
-                );
-            }
-            return -1;
-        }
-        0
-    }
+    };
+    unsafe { crate::api::errors::release_preserving_error(&[descr]) };
+    status
 }
 
 /// Populate `tp`'s `tp_dict` with a `member_descriptor` for each entry in its
 /// own `tp_members` table. Mirrors CPython's `type_add_members`.
 unsafe fn add_members_to_dict(tp: *mut PyTypeObject) -> c_int {
     unsafe {
-        let mut memb = (*tp).tp_members.cast::<crate::abi_types::PyMemberDef>();
+        let mut memb = (*tp).tp_members;
         if memb.is_null() {
             return 0;
         }
@@ -1388,7 +1305,7 @@ unsafe fn add_members_to_dict(tp: *mut PyTypeObject) -> c_int {
 /// own `tp_getset` table. Mirrors CPython's `type_add_getset`.
 unsafe fn add_getset_to_dict(tp: *mut PyTypeObject) -> c_int {
     unsafe {
-        let mut gsp = (*tp).tp_getset.cast::<crate::abi_types::PyGetSetDef>();
+        let mut gsp = (*tp).tp_getset;
         if gsp.is_null() {
             return 0;
         }
@@ -1411,125 +1328,6 @@ unsafe fn add_getset_to_dict(tp: *mut PyTypeObject) -> c_int {
             gsp = gsp.add(1);
         }
         0
-    }
-}
-
-/// Compute `tp_mro` for the single-inheritance chain rooted at `tp`:
-/// `[tp, base, base.base, ..., object]`. This is the exact linearization
-/// CPython produces for single inheritance, which covers every numpy scalar
-/// type (they all use `SINGLE_INHERIT`/`DUAL_INHERIT` where the primary
-/// `tp_base` chain drives resolution). Returns 0 on success, -1 otherwise.
-unsafe fn compute_single_inheritance_mro(tp: *mut PyTypeObject) -> c_int {
-    unsafe {
-        // Walk the base chain to collect [tp, base, ...]. Bounded and
-        // cycle-guarded: a malformed extension with a self- or cyclic tp_base
-        // must fail closed rather than hang the whole module exec.
-        let mut chain: Vec<*mut PyTypeObject> = Vec::new();
-        let mut cur = tp;
-        while !cur.is_null() {
-            if chain.contains(&cur) {
-                // Cyclic base chain — refuse rather than loop forever.
-                crate::capi_trace::record_silent_failure(
-                    "PyType_Ready",
-                    Some("cyclic tp_base chain"),
-                );
-                return -1;
-            }
-            chain.push(cur);
-            let base = (*cur).tp_base;
-            if base == cur {
-                break; // object's tp_base may point to itself; stop.
-            }
-            cur = base;
-        }
-        let mro = crate::api::sequences::PyTuple_New(chain.len() as Py_ssize_t);
-        if mro.is_null() {
-            crate::capi_trace::record_silent_failure(
-                "PyType_Ready",
-                Some("tp_mro tuple allocation failed"),
-            );
-            return -1;
-        }
-        for (i, &entry) in chain.iter().enumerate() {
-            let obj = entry.cast::<PyObject>();
-            crate::api::refcount::Py_INCREF(obj);
-            // PyTuple_SetItem steals the reference we just added.
-            crate::api::sequences::PyTuple_SetItem(mro, i as Py_ssize_t, obj);
-        }
-        (*tp).tp_mro = mro;
-        0
-    }
-}
-
-/// Copy the base type's slots into `tp` wherever `tp` has left them empty,
-/// mirroring the subset of CPython's `inherit_slots` that static C-extension
-/// type hierarchies depend on. Only null/zero child slots are filled, so a type
-/// that defines its own slot keeps it.
-unsafe fn inherit_slots_from_base(tp: *mut PyTypeObject, base: *mut PyTypeObject) {
-    unsafe {
-        // Sizing: a derived type that did not declare its own instance layout
-        // uses the base's.
-        if (*tp).tp_basicsize == 0 {
-            (*tp).tp_basicsize = (*base).tp_basicsize;
-        }
-        if (*tp).tp_itemsize == 0 {
-            (*tp).tp_itemsize = (*base).tp_itemsize;
-        }
-        if (*tp).tp_dictoffset == 0 {
-            (*tp).tp_dictoffset = (*base).tp_dictoffset;
-        }
-        if (*tp).tp_weaklistoffset == 0 {
-            (*tp).tp_weaklistoffset = (*base).tp_weaklistoffset;
-        }
-
-        // Function-pointer slots: inherit when the child left them None.
-        macro_rules! inherit_fn {
-            ($field:ident) => {
-                if (*tp).$field.is_none() {
-                    (*tp).$field = (*base).$field;
-                }
-            };
-        }
-        inherit_fn!(tp_dealloc);
-        inherit_fn!(tp_getattr);
-        inherit_fn!(tp_setattr);
-        inherit_fn!(tp_repr);
-        inherit_fn!(tp_hash);
-        inherit_fn!(tp_call);
-        inherit_fn!(tp_str);
-        inherit_fn!(tp_getattro);
-        inherit_fn!(tp_setattro);
-        inherit_fn!(tp_traverse);
-        inherit_fn!(tp_clear);
-        inherit_fn!(tp_richcompare);
-        inherit_fn!(tp_iter);
-        inherit_fn!(tp_iternext);
-        inherit_fn!(tp_descr_get);
-        inherit_fn!(tp_descr_set);
-        inherit_fn!(tp_init);
-        inherit_fn!(tp_alloc);
-        inherit_fn!(tp_new);
-        inherit_fn!(tp_free);
-        inherit_fn!(tp_is_gc);
-        inherit_fn!(tp_del);
-        inherit_fn!(tp_finalize);
-
-        // Raw-pointer sub-protocol tables: inherit when the child left them null.
-        macro_rules! inherit_ptr {
-            ($field:ident) => {
-                if (*tp).$field.is_null() {
-                    (*tp).$field = (*base).$field;
-                }
-            };
-        }
-        inherit_ptr!(tp_as_async);
-        inherit_ptr!(tp_as_number);
-        inherit_ptr!(tp_as_sequence);
-        inherit_ptr!(tp_as_mapping);
-        inherit_ptr!(tp_as_buffer);
-        inherit_ptr!(tp_methods);
-        inherit_ptr!(tp_members);
-        inherit_ptr!(tp_getset);
     }
 }
 
@@ -1569,12 +1367,17 @@ pub unsafe extern "C" fn molt_type_traverse(
     if op.is_null() || visit_raw.is_null() {
         return 0;
     }
-    let type_ = op.cast::<PyTypeObject>();
-    if unsafe { (*type_).tp_flags } & Py_TPFLAGS_HEAPTYPE == 0 {
-        return 0;
+    if crate::bridge::GLOBAL_BRIDGE
+        .managed_handle_for_pyobj(op)
+        .is_some()
+    {
+        return unsafe { crate::api::memory::molt_managed_gc_traverse(op, visit_raw, arg) };
     }
+    let type_ = op.cast::<PyTypeObject>();
+    let Some(heap) = heap_type_storage(type_) else {
+        return 0;
+    };
     let visit: TypeVisitProc = unsafe { std::mem::transmute(visit_raw) };
-    let heap = type_.cast::<PyHeapTypeObject>();
     let references = unsafe {
         [
             (*type_).tp_dict,
@@ -1582,6 +1385,9 @@ pub unsafe extern "C" fn molt_type_traverse(
             (*type_).tp_mro,
             (*type_).tp_bases,
             (*type_).tp_base.cast::<PyObject>(),
+            (*heap).ht_name,
+            (*heap).ht_qualname,
+            (*heap).ht_slots,
             (*heap).ht_module,
         ]
     };
@@ -1608,16 +1414,21 @@ pub unsafe extern "C" fn molt_type_clear(op: *mut PyObject) -> c_int {
     if op.is_null() {
         return 0;
     }
-    let type_ = op.cast::<PyTypeObject>();
-    if unsafe { (*type_).tp_flags } & Py_TPFLAGS_HEAPTYPE == 0 {
-        return 0;
+    if crate::bridge::GLOBAL_BRIDGE
+        .managed_handle_for_pyobj(op)
+        .is_some()
+    {
+        return unsafe { crate::api::memory::molt_managed_gc_clear(op) };
     }
+    let type_ = op.cast::<PyTypeObject>();
+    let Some(heap) = heap_type_storage(type_) else {
+        return 0;
+    };
     unsafe {
         PyType_Modified(type_);
         if !(*type_).tp_dict.is_null() {
             crate::api::mapping::PyDict_Clear((*type_).tp_dict);
         }
-        let heap = type_.cast::<PyHeapTypeObject>();
         crate::api::refcount::Py_CLEAR(&raw mut (*heap).ht_module);
         crate::api::refcount::Py_CLEAR(&raw mut (*type_).tp_mro);
     }
@@ -1634,7 +1445,7 @@ pub unsafe extern "C" fn molt_type_clear(op: *mut PyObject) -> c_int {
 /// (NULL without an exception ⇒ SystemError; a result with an exception
 /// pending ⇒ SystemError) instead of CPython's debug-only asserts.
 ///
-/// Installed on `PyType_Type` by `init_static_types`, so every C-extension
+/// Installed on `PyType_Type` by the process ABI bootstrap, so every C-extension
 /// metatype that sets `tp_base = &PyType_Type` and relies on `PyType_Ready`
 /// slot inheritance (numpy's `PyArrayDTypeMeta_Type` is the canonical case —
 /// calling a DType class like `BoolDType()` dispatches
@@ -1801,10 +1612,28 @@ pub unsafe extern "C" fn PyType_GenericAlloc(
     tp: *mut PyTypeObject,
     nitems: Py_ssize_t,
 ) -> *mut PyObject {
-    if tp.is_null() {
-        return ptr::null_mut();
+    unsafe {
+        let object = crate::api::memory::molt_object_alloc_with_tail(tp, nitems, true);
+        if object.is_null() || (*tp).tp_flags & Py_TPFLAGS_HAVE_GC == 0 {
+            return object;
+        }
+        if (crate::hooks::hooks_or_stubs().native_gc_track)(object.addr()) < 0 {
+            crate::api::errors::check_native_status(-1, "PyType_GenericAlloc GC publication");
+            crate::api::errors::with_preserved_error(|| {
+                // Storage is initialized, payload construction has not started.
+                let heap_type = (*tp).tp_flags & Py_TPFLAGS_HEAPTYPE != 0;
+                if let Some(storage) = NativeDeallocation::storage(object) {
+                    storage.finish();
+                }
+                if heap_type {
+                    crate::api::refcount::Py_DECREF(tp.cast());
+                }
+            });
+            ptr::null_mut()
+        } else {
+            object
+        }
     }
-    unsafe { crate::api::memory::molt_object_alloc(tp, nitems) }
 }
 
 #[unsafe(no_mangle)]
@@ -1826,72 +1655,11 @@ pub unsafe extern "C" fn PyType_GenericNew(
 
 use crate::type_slots as ts;
 
-/// Get-or-allocate the `tp_as_number` sub-table, zero-initialised.
-unsafe fn ensure_number(ty: *mut PyTypeObject) -> *mut crate::abi_types::PyNumberMethods {
-    unsafe {
-        if (*ty).tp_as_number.is_null() {
-            let b: Box<crate::abi_types::PyNumberMethods> = Box::new(std::mem::zeroed());
-            (*ty).tp_as_number = Box::into_raw(b).cast::<c_void>();
-        }
-        (*ty)
-            .tp_as_number
-            .cast::<crate::abi_types::PyNumberMethods>()
-    }
-}
-
-/// Get-or-allocate the `tp_as_sequence` sub-table, zero-initialised.
-unsafe fn ensure_sequence(ty: *mut PyTypeObject) -> *mut crate::abi_types::PySequenceMethods {
-    unsafe {
-        if (*ty).tp_as_sequence.is_null() {
-            let b: Box<crate::abi_types::PySequenceMethods> = Box::new(std::mem::zeroed());
-            (*ty).tp_as_sequence = Box::into_raw(b).cast::<c_void>();
-        }
-        (*ty)
-            .tp_as_sequence
-            .cast::<crate::abi_types::PySequenceMethods>()
-    }
-}
-
-/// Get-or-allocate the `tp_as_mapping` sub-table, zero-initialised.
-unsafe fn ensure_mapping(ty: *mut PyTypeObject) -> *mut crate::abi_types::PyMappingMethods {
-    unsafe {
-        if (*ty).tp_as_mapping.is_null() {
-            let b: Box<crate::abi_types::PyMappingMethods> = Box::new(std::mem::zeroed());
-            (*ty).tp_as_mapping = Box::into_raw(b).cast::<c_void>();
-        }
-        (*ty)
-            .tp_as_mapping
-            .cast::<crate::abi_types::PyMappingMethods>()
-    }
-}
-
-/// Get-or-allocate the `tp_as_async` sub-table, zero-initialised.
-unsafe fn ensure_async(ty: *mut PyTypeObject) -> *mut crate::abi_types::PyAsyncMethods {
-    unsafe {
-        if (*ty).tp_as_async.is_null() {
-            let b: Box<crate::abi_types::PyAsyncMethods> = Box::new(std::mem::zeroed());
-            (*ty).tp_as_async = Box::into_raw(b).cast::<c_void>();
-        }
-        (*ty).tp_as_async.cast::<crate::abi_types::PyAsyncMethods>()
-    }
-}
-
-/// Get-or-allocate the `tp_as_buffer` sub-table, zero-initialised.
-unsafe fn ensure_buffer(ty: *mut PyTypeObject) -> *mut crate::abi_types::PyBufferProcs {
-    unsafe {
-        if (*ty).tp_as_buffer.is_null() {
-            let b: Box<crate::abi_types::PyBufferProcs> = Box::new(std::mem::zeroed());
-            (*ty).tp_as_buffer = Box::into_raw(b).cast::<c_void>();
-        }
-        (*ty).tp_as_buffer.cast::<crate::abi_types::PyBufferProcs>()
-    }
-}
-
 /// Apply every entry of a `PyType_Spec.slots` array (terminated by `slot == 0`)
 /// to the corresponding field of the type under construction. Mirrors the slot
 /// dispatch of CPython 3.12's `PyType_FromMetaclass` (`Objects/typeobject.c`):
 /// each `Py_tp_*` id targets a `tp_*` field, each `Py_nb_*/sq_*/mp_*/am_*/bf_*`
-/// id targets a lazily-allocated protocol sub-table, and `Py_tp_doc` copies the
+/// id targets the admitted inline protocol sub-table, and `Py_tp_doc` copies the
 /// documentation string into freshly allocated memory. An unrecognised slot id
 /// fails closed with a set exception (CPython raises `RuntimeError: invalid slot
 /// offset`) rather than silently dropping behaviour. Returns 0 on success, -1
@@ -1907,6 +1675,12 @@ unsafe fn apply_spec_slots(
         let mut slot = slots;
         while (*slot).slot != 0 {
             let id = (*slot).slot;
+            // These declarations are normalized once by the construction
+            // transaction before allocator callbacks. No second ownership lane.
+            if matches!(id, ts::Py_tp_base | ts::Py_tp_bases | ts::Py_tp_members) {
+                slot = slot.add(1);
+                continue;
+            }
             let pfunc = (*slot).pfunc;
             let Some(wrapper) = stable_slot_wrapper(id) else {
                 crate::capi_trace::record_silent_failure(
@@ -1920,6 +1694,14 @@ unsafe fn apply_spec_slots(
                 );
                 return -1;
             };
+            let storage = slot_wrapper_storage(ty, wrapper);
+            if storage.is_null() {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                    c"PyType_FromSpec: stable type-slot storage unavailable".as_ptr(),
+                );
+                return -1;
+            }
             // CPython owns a private copy of tp_doc. Every other stable slot is
             // a pointer-sized value written through the shared slot-storage map.
             let stored = if id == ts::Py_tp_doc && !pfunc.is_null() {
@@ -1939,24 +1721,137 @@ unsafe fn apply_spec_slots(
             } else {
                 pfunc
             };
-            let storage = slot_wrapper_storage(ty, wrapper, true);
-            if storage.is_null() {
-                crate::capi_trace::record_silent_failure(
-                    "PyType_FromSpec",
-                    Some("stable type-slot storage unavailable"),
-                );
-                crate::api::errors::PyErr_SetString(
-                    (&raw mut crate::abi_types::PyExc_SystemError)
-                        .cast::<crate::abi_types::PyObject>(),
-                    c"PyType_FromSpec: stable slot storage unavailable".as_ptr(),
-                );
-                return -1;
+            if id == ts::Py_tp_doc {
+                crate::api::memory::PyMem_Free(storage.read());
             }
             storage.write(stored);
             slot = slot.add(1);
         }
         0
     }
+}
+
+/// Normalize the public argument and spec base declarations into one owner.
+/// Metaclass selection, physical-base selection and readiness consume this tuple.
+unsafe fn spec_bases(
+    spec: *mut PyType_Spec,
+    bases: *mut PyObject,
+) -> crate::api::refcount::OwnedPyObject {
+    use crate::api::refcount::OwnedPyObject;
+    use crate::api::sequences::{PyTuple_Check, PyTuple_New, PyTuple_SetItem};
+    unsafe {
+        let mut base = (&raw mut crate::abi_types::PyBaseObject_Type).cast::<PyObject>();
+        let mut declared = ptr::null_mut::<PyObject>();
+        if bases.is_null() {
+            let mut slot = (*spec).slots;
+            while !slot.is_null() && (*slot).slot != 0 {
+                match (*slot).slot {
+                    ts::Py_tp_base => base = (*slot).pfunc.cast(),
+                    ts::Py_tp_bases => declared = (*slot).pfunc.cast(),
+                    _ => (),
+                }
+                slot = slot.add(1);
+            }
+            if !declared.is_null() {
+                if PyTuple_Check(declared) == 0 {
+                    crate::api::errors::PyErr_SetString(
+                        (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                        c"Py_tp_bases is not a tuple".as_ptr(),
+                    );
+                    return OwnedPyObject::from_owned(ptr::null_mut());
+                }
+                return OwnedPyObject::from_borrowed(declared);
+            }
+        } else if PyTuple_Check(bases) != 0 {
+            return OwnedPyObject::from_borrowed(bases);
+        } else {
+            base = bases;
+        }
+        let tuple = OwnedPyObject::from_owned(PyTuple_New(1));
+        if tuple.as_ptr().is_null() {
+            return tuple;
+        }
+        crate::api::refcount::Py_XINCREF(base);
+        if PyTuple_SetItem(tuple.as_ptr(), 0, base) < 0 {
+            return OwnedPyObject::from_owned(ptr::null_mut());
+        }
+        tuple
+    }
+}
+
+unsafe fn preflight_spec_slots(
+    spec: *mut PyType_Spec,
+) -> Option<(*mut crate::abi_types::PyMemberDef, Py_ssize_t)> {
+    unsafe {
+        let mut members = ptr::null_mut();
+        let mut count = 0isize;
+        let mut seen_members = false;
+        let mut seen_doc = false;
+        let mut slot = (*spec).slots;
+        while !slot.is_null() && (*slot).slot != 0 {
+            if stable_slot_wrapper((*slot).slot).is_none() {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_RuntimeError).cast(),
+                    c"PyType_FromSpec: invalid slot offset".as_ptr(),
+                );
+                return None;
+            }
+            match (*slot).slot {
+                ts::Py_tp_members => {
+                    if seen_members || (*slot).pfunc.is_null() {
+                        crate::api::errors::PyErr_SetString(
+                            (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                            c"Py_tp_members requires one non-null declaration".as_ptr(),
+                        );
+                        return None;
+                    }
+                    seen_members = true;
+                    members = (*slot).pfunc.cast::<crate::abi_types::PyMemberDef>();
+                    let mut member = members;
+                    while !(*member).name.is_null() {
+                        if (*member).flags & crate::abi_types::Py_RELATIVE_OFFSET != 0
+                            && ((*spec).basicsize >= 0
+                                || (*member).offset < 0
+                                || i64::try_from((*member).offset).unwrap_or(i64::MAX)
+                                    >= -i64::from((*spec).basicsize))
+                        {
+                            crate::api::errors::PyErr_SetString((&raw mut crate::abi_types::PyExc_SystemError).cast(), c"relative member offset requires negative basicsize and an in-range offset".as_ptr());
+                            return None;
+                        }
+                        count = count.checked_add(1).or_else(|| {
+                            crate::api::errors::PyErr_NoMemory();
+                            None
+                        })?;
+                        member = member.add(1);
+                    }
+                }
+                ts::Py_tp_doc => {
+                    if seen_doc {
+                        crate::api::errors::PyErr_SetString(
+                            (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                            c"multiple Py_tp_doc slots are not supported".as_ptr(),
+                        );
+                        return None;
+                    }
+                    seen_doc = true;
+                }
+                _ => (),
+            }
+            slot = slot.add(1);
+        }
+        Some((members, count))
+    }
+}
+
+// CPython's relative type-data contract uses the target C max_align_t.
+#[cfg(all(windows, target_env = "msvc"))]
+const TYPE_DATA_ALIGNMENT: Py_ssize_t = std::mem::align_of::<f64>() as Py_ssize_t;
+#[cfg(not(all(windows, target_env = "msvc")))]
+const TYPE_DATA_ALIGNMENT: Py_ssize_t = std::mem::align_of::<libc::max_align_t>() as Py_ssize_t;
+
+fn align_type_data(size: Py_ssize_t) -> Option<Py_ssize_t> {
+    size.checked_add(TYPE_DATA_ALIGNMENT - 1)
+        .map(|size| size & !(TYPE_DATA_ALIGNMENT - 1))
 }
 
 /// Shared body for `PyType_FromSpec*` / `PyType_FromMetaclass`. Allocates a real
@@ -1969,38 +1864,259 @@ unsafe fn apply_spec_slots(
 /// after the last '.' in `spec->name`, `ht_qualname = ht_name`, `ht_module =
 /// Py_XNewRef(module)`.
 ///
-/// The heap type is intentionally leaked (like every static/extension type in the
-/// process): heap types created during extension import live for the process, and
-/// molt has no type teardown path that would reclaim it — so the larger allocation
-/// never causes a size-mismatched free.
+/// Allocation uses the selected metaclass's object-domain allocator. Failed
+/// construction cuts partial self cycles; completed heap types enter the same
+/// mixed collector and terminal destruction authority as native instances.
 unsafe fn type_from_spec_impl(
+    metaclass: *mut PyTypeObject,
     spec: *mut PyType_Spec,
     bases: *mut PyObject,
     module: *mut PyObject,
+    allow_custom_new: bool,
 ) -> *mut PyObject {
-    if spec.is_null() {
+    if spec.is_null() || unsafe { (*spec).name }.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
-    let heap: Box<crate::abi_types::PyHeapTypeObject> = Box::new(unsafe { std::mem::zeroed() });
-    let heap_ptr = Box::into_raw(heap);
     unsafe {
+        crate::bridge::molt_cpython_abi_init();
+        let Some((members, member_count)) = preflight_spec_slots(spec) else {
+            return ptr::null_mut();
+        };
+        // Custom metaclass allocation may reenter C. Own the declaration facts
+        // before callbacks; descriptors finally borrow the heap type's copy.
+        let mut member_records = Vec::new();
+        if member_records
+            .try_reserve_exact(member_count as usize)
+            .is_err()
+        {
+            return crate::api::errors::PyErr_NoMemory();
+        }
+        for index in 0..member_count {
+            member_records.push(ptr::read(members.offset(index)));
+        }
+        let bases = spec_bases(spec, bases);
+        if bases.as_ptr().is_null() {
+            return ptr::null_mut();
+        }
+        let count = crate::api::sequences::PyTuple_Size(bases.as_ptr());
+        if count <= 0 {
+            if count == 0 {
+                reject_type_layout(c"bases tuple must not be empty");
+            }
+            return ptr::null_mut();
+        }
+        let mut metaclass = if metaclass.is_null() {
+            &raw mut crate::abi_types::PyType_Type
+        } else {
+            metaclass
+        };
+        if PyType_Check(metaclass.cast()) == 0
+            || PyType_IsSubtype(metaclass, &raw mut crate::abi_types::PyType_Type) == 0
+        {
+            reject_type_layout(c"metaclass must be a subtype of type");
+            return ptr::null_mut();
+        }
+        // Select by canonical subtype relations, including every explicit base.
+        let mut consider = |base: *mut PyTypeObject| -> bool {
+            if base.is_null() || PyType_Check(base.cast()) == 0 {
+                reject_type_layout(c"bases must contain only type objects");
+                return false;
+            }
+            let candidate = crate::bridge::semantic_type(base.cast());
+            if candidate.is_null() {
+                return false;
+            }
+            if PyType_IsSubtype(metaclass, candidate) != 0 {
+                return true;
+            }
+            if PyType_IsSubtype(candidate, metaclass) != 0 {
+                metaclass = candidate;
+                return true;
+            }
+            reject_type_layout(c"metaclass conflict among bases");
+            false
+        };
+        for index in 0..count {
+            if !consider(crate::api::sequences::PyTuple_GetItem(bases.as_ptr(), index).cast()) {
+                return ptr::null_mut();
+            }
+        }
+        let _metaclass_owner = crate::api::refcount::OwnedPyObject::from_borrowed(metaclass.cast());
+        if PyType_Ready(metaclass) < 0 {
+            return ptr::null_mut();
+        }
+        if (*metaclass).tp_basicsize < std::mem::size_of::<PyHeapTypeObject>() as Py_ssize_t
+            || (*metaclass).tp_itemsize
+                != std::mem::size_of::<crate::abi_types::PyMemberDef>() as Py_ssize_t
+        {
+            reject_type_layout(c"metaclass storage cannot hold a heap type");
+            return ptr::null_mut();
+        }
+        if let Some(new) = (*metaclass).tp_new
+            && (*(&raw mut crate::abi_types::PyType_Type))
+                .tp_new
+                .is_none_or(|canonical| !ptr::fn_addr_eq(new, canonical))
+        {
+            if !allow_custom_new {
+                reject_type_layout(c"metaclasses with custom tp_new are not supported");
+                return ptr::null_mut();
+            }
+            if crate::api::errors::PyErr_WarnEx(
+                (&raw mut crate::abi_types::PyExc_DeprecationWarning).cast(),
+                c"PyType_Spec with a metaclass that has custom tp_new is deprecated".as_ptr(),
+                1,
+            ) < 0
+            {
+                return ptr::null_mut();
+            }
+        }
+        let base = acceptable_best_base(bases.as_ptr());
+        if base.is_null() {
+            return ptr::null_mut();
+        }
+        let _base_owner = crate::api::refcount::OwnedPyObject::from_borrowed(base.cast());
+        let mut basicsize = (*spec).basicsize as Py_ssize_t;
+        let mut data_offset = basicsize;
+        if basicsize == 0 {
+            basicsize = (*base).tp_basicsize;
+        } else if basicsize < 0 {
+            if (*base).tp_itemsize != 0
+                && ((*base).tp_flags | (*spec).flags as std::os::raw::c_ulong)
+                    & crate::abi_types::Py_TPFLAGS_ITEMS_AT_END
+                    == 0
+            {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                    c"cannot extend a variable-size class without Py_TPFLAGS_ITEMS_AT_END".as_ptr(),
+                );
+                return ptr::null_mut();
+            }
+            let Some(offset) = align_type_data((*base).tp_basicsize) else {
+                return crate::api::errors::PyErr_NoMemory();
+            };
+            data_offset = offset;
+            let Some(size) = basicsize
+                .checked_neg()
+                .and_then(align_type_data)
+                .and_then(|extra| offset.checked_add(extra))
+            else {
+                return crate::api::errors::PyErr_NoMemory();
+            };
+            basicsize = size;
+        }
+        if (*spec).itemsize < 0
+            || basicsize < (*base).tp_basicsize
+            || ((*spec).itemsize != 0
+                && (*base).tp_itemsize != 0
+                && (*spec).itemsize as Py_ssize_t != (*base).tp_itemsize)
+        {
+            reject_type_layout(c"type spec sizes are incompatible with its base layout");
+            return ptr::null_mut();
+        }
+        // Capture the allocating metaclass request before any allocator callback.
+        // Later mutations cannot enlarge this operation's minimum extent.
+        let member_offset = (*metaclass).tp_basicsize as usize;
+        let Some(required_bytes) =
+            crate::api::memory::native_object_layout_size(metaclass, member_count, true)
+        else {
+            return crate::api::errors::PyErr_NoMemory();
+        };
+        let allocate = (*metaclass).tp_alloc.unwrap_or(PyType_GenericAlloc);
+        let owns_metaclass = (*metaclass).tp_flags & Py_TPFLAGS_HEAPTYPE != 0;
+        if let Some(reason) = crate::api::memory::native_gc_type_admission_error(metaclass) {
+            crate::api::memory::raise_native_gc_admission_error(reason);
+            return ptr::null_mut();
+        }
+        let object = allocate(metaclass, member_count);
+        if object.is_null() {
+            return crate::api::errors::check_native_result(object, "heap type allocation");
+        }
+        // Capture the actual initialized header owner before validating the
+        // requested contract. Rejection cannot release an unacquired owner or
+        // overwrite the allocator's own exception with a storage-size error.
+        let allocated_class = (*object).ob_type;
+        let owns_allocated_class = if allocated_class == metaclass {
+            owns_metaclass
+        } else {
+            !allocated_class.is_null() && (*allocated_class).tp_flags & Py_TPFLAGS_HEAPTYPE != 0
+        };
+        if crate::api::errors::check_native_status(0, "heap type allocation") < 0 {
+            native_lifecycle::release_unconstructed_type(
+                object,
+                allocated_class,
+                owns_allocated_class,
+            );
+            return ptr::null_mut();
+        }
+        if allocated_class != metaclass {
+            reject_type_layout(c"type allocator returned an object with the wrong metaclass");
+            native_lifecycle::release_unconstructed_type(
+                object,
+                allocated_class,
+                owns_allocated_class,
+            );
+            return ptr::null_mut();
+        }
+        if let Err(error) = admit_spec_type_allocation(object.addr(), required_bytes) {
+            match error {
+                TypeStorageAdmissionError::InsufficientExtent => {
+                    reject_type_layout(c"type allocator returned insufficient heap storage");
+                }
+                TypeStorageAdmissionError::Capacity => {
+                    crate::api::errors::PyErr_NoMemory();
+                }
+            }
+            // Only the compact initialized object header is admitted here.
+            // Release the allocator's storage without invoking type_dealloc,
+            // which cannot read an unproven tail.
+            native_lifecycle::release_unconstructed_type(object, metaclass, owns_metaclass);
+            return ptr::null_mut();
+        }
+        if let Some(reason) = crate::api::memory::native_gc_type_admission_error(metaclass) {
+            crate::api::memory::raise_native_gc_admission_error(reason);
+            native_lifecycle::release_unconstructed_type(object, metaclass, owns_metaclass);
+            return ptr::null_mut();
+        }
+        // Readiness publishes self/MRO/descriptor edges through the runtime.
+        // A custom allocator may not have enrolled this physical allocation.
+        // Admit it before the first such crossing, but keep it untracked until
+        // the completed type can expose all of its initialized owned fields.
+        if (crate::hooks::hooks_or_stubs().native_gc_allocate)(object.addr()) < 0 {
+            crate::api::errors::check_native_status(-1, "heap type GC admission");
+            native_lifecycle::release_unconstructed_type(object, metaclass, owns_metaclass);
+            return ptr::null_mut();
+        }
+        crate::api::memory::PyObject_GC_UnTrack(object.cast());
+        let heap_ptr = object.cast::<PyHeapTypeObject>();
         let tp: *mut PyTypeObject = &raw mut (*heap_ptr).ht_type;
-        (*tp).ob_base.ob_base.ob_refcnt = 1;
-        (*tp).ob_base.ob_base.ob_type = &raw mut crate::abi_types::PyType_Type;
-        (*tp).ob_base.ob_size = 0;
-        (*tp).tp_name = (*spec).name;
-        (*tp).tp_basicsize = (*spec).basicsize as Py_ssize_t;
-        (*tp).tp_itemsize = (*spec).itemsize as Py_ssize_t;
-        // HEAPTYPE is mandatory for a spec-built type (CPython always ORs it), but
-        // do NOT pre-mark READY — PyType_Ready must run its full pipeline below.
         (*tp).tp_flags = ((*spec).flags as std::os::raw::c_ulong & !Py_TPFLAGS_READY)
             | crate::abi_types::Py_TPFLAGS_HEAPTYPE;
-
+        let construction = native_lifecycle::HeapTypeConstruction(
+            crate::api::refcount::OwnedPyObject::from_owned(object),
+        );
+        crate::api::refcount::Py_INCREF(base.cast());
+        (*tp).tp_base = base;
+        (*tp).tp_bases = bases.into_ptr();
+        let name_bytes = std::ffi::CStr::from_ptr((*spec).name).to_bytes_with_nul();
+        let name = crate::api::memory::PyMem_Malloc(name_bytes.len()).cast::<c_char>();
+        if name.is_null() {
+            return crate::api::errors::PyErr_NoMemory();
+        }
+        ptr::copy_nonoverlapping(name_bytes.as_ptr(), name.cast(), name_bytes.len());
+        (*heap_ptr)._ht_tpname = name;
+        (*tp).tp_name = name;
+        (*tp).tp_as_async = (&raw mut (*heap_ptr).as_async).cast();
+        (*tp).tp_as_number = (&raw mut (*heap_ptr).as_number).cast();
+        (*tp).tp_as_sequence = (&raw mut (*heap_ptr).as_sequence).cast();
+        (*tp).tp_as_mapping = (&raw mut (*heap_ptr).as_mapping).cast();
+        (*tp).tp_as_buffer = (&raw mut (*heap_ptr).as_buffer).cast();
+        (*tp).tp_basicsize = basicsize;
+        (*tp).tp_itemsize = (*spec).itemsize as Py_ssize_t;
         // ht_name / ht_qualname: the `spec->name` segment after the last '.', as a
         // str object. The C string is null-terminated, so the after-dot pointer is
-        // itself a valid C string — no copy needed. Best-effort: a NULL (str
-        // allocation unavailable) is still IN BOUNDS, never OOB.
-        let name_ptr = (*spec).name;
+        // itself a valid C string. A failed name allocation aborts construction.
+        let name_ptr = name;
         if !name_ptr.is_null() {
             let short = match std::ffi::CStr::from_ptr(name_ptr)
                 .to_bytes()
@@ -2011,11 +2127,12 @@ unsafe fn type_from_spec_impl(
                 None => name_ptr,
             };
             let ht_name = crate::api::strings::PyUnicode_FromString(short);
-            if !ht_name.is_null() {
-                (*heap_ptr).ht_name = ht_name;
-                crate::api::refcount::Py_INCREF(ht_name);
-                (*heap_ptr).ht_qualname = ht_name;
+            if ht_name.is_null() {
+                return ptr::null_mut();
             }
+            (*heap_ptr).ht_name = ht_name;
+            crate::api::refcount::Py_INCREF(ht_name);
+            (*heap_ptr).ht_qualname = ht_name;
         }
 
         // ht_module: retain the defining module (Py_XNewRef) so PyType_GetModule /
@@ -2025,24 +2142,63 @@ unsafe fn type_from_spec_impl(
             (*heap_ptr).ht_module = module;
         }
 
-        // (1) Apply every spec slot to its destination field/sub-table. A bad slot
-        //     id fails closed with a pending exception.
+        // Member descriptors retain their declaration pointer. Move the records
+        // into the metaclass allocation's variable tail, including its sentinel.
+        if !members.is_null() {
+            let destination = object
+                .cast::<u8>()
+                .add(member_offset)
+                .cast::<crate::abi_types::PyMemberDef>();
+            ptr::copy_nonoverlapping(member_records.as_ptr(), destination, member_count as usize);
+            destination
+                .add(member_count as usize)
+                .write(std::mem::zeroed());
+            for index in 0..member_count {
+                let member = &mut *destination.offset(index);
+                if member.flags & crate::abi_types::Py_RELATIVE_OFFSET != 0 {
+                    member.flags &= !crate::abi_types::Py_RELATIVE_OFFSET;
+                    member.offset += data_offset;
+                }
+                let name = std::ffi::CStr::from_ptr(member.name);
+                let offset = if name == c"__weaklistoffset__" {
+                    Some(&raw mut (*tp).tp_weaklistoffset)
+                } else if name == c"__dictoffset__" {
+                    Some(&raw mut (*tp).tp_dictoffset)
+                } else if name == c"__vectorcalloffset__" {
+                    Some(&raw mut (*tp).tp_vectorcall_offset)
+                } else {
+                    None
+                };
+                if let Some(offset) = offset {
+                    if member.type_ != PY_T_PYSSIZET || member.flags != PY_READONLY {
+                        crate::api::errors::PyErr_SetString(
+                            (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                            c"special offset member must be a readonly Py_ssize_t".as_ptr(),
+                        );
+                        return ptr::null_mut();
+                    }
+                    offset.write(member.offset);
+                }
+            }
+            (*tp).tp_members = destination;
+        }
+
+        // Base and member ownership is complete; apply the ordinary slots.
         if apply_spec_slots(tp, (*spec).slots) < 0 {
             return ptr::null_mut();
         }
-
-        // (2) Resolve the base. A Py_tp_base slot wins; otherwise derive from the
-        //     explicit `bases` tuple (first entry — the single-inheritance case
-        //     numpy/scipy use); otherwise PyType_Ready defaults it to `object`.
-        if !bases.is_null() {
-            let best = acceptable_best_base(bases);
-            if best.is_null() && crate::api::sequences::PyTuple_Size(bases) != 0 {
-                return ptr::null_mut();
+        // Heap-subtype lifecycle wraps both builtin and foreign bases. Direct
+        // inheritance loses finalizers, member owners and the heap-class edge.
+        if (*tp).tp_dealloc.is_none() {
+            (*tp).tp_dealloc = Some(native_lifecycle::subtype_dealloc);
+        }
+        if ((*tp).tp_flags | (*base).tp_flags) & Py_TPFLAGS_HAVE_GC != 0 {
+            (*tp).tp_flags |= Py_TPFLAGS_HAVE_GC;
+            if (*tp).tp_traverse.is_none() {
+                (*tp).tp_traverse = Some(native_lifecycle::subtype_traverse);
             }
-            crate::api::refcount::Py_INCREF(bases);
-            (*tp).tp_bases = bases;
-            if !best.is_null() {
-                (*tp).tp_base = best;
+            if (*tp).tp_clear.is_none() {
+                (*tp).tp_clear = Some(native_lifecycle::subtype_clear);
             }
         }
         if !(*tp).tp_base.is_null() && validate_base_layout(tp, (*tp).tp_base) < 0 {
@@ -2053,7 +2209,10 @@ unsafe fn type_from_spec_impl(
         if (*tp).tp_alloc.is_none() {
             (*tp).tp_alloc = Some(PyType_GenericAlloc);
         }
-        if (*tp).tp_new.is_none() {
+        if (*tp).tp_new.is_none()
+            && (*base).tp_new.is_none()
+            && base == &raw mut crate::abi_types::PyBaseObject_Type
+        {
             (*tp).tp_new = Some(PyType_GenericNew);
         }
 
@@ -2062,8 +2221,63 @@ unsafe fn type_from_spec_impl(
         if PyType_Ready(tp) < 0 {
             return ptr::null_mut();
         }
-        tp.cast::<PyObject>()
+        if (*tp).tp_alloc.is_some_and(|alloc| {
+            ptr::fn_addr_eq(
+                alloc,
+                PyType_GenericAlloc
+                    as unsafe extern "C" fn(*mut PyTypeObject, Py_ssize_t) -> *mut PyObject,
+            )
+        }) {
+            let Some(size) = crate::api::memory::native_object_layout_size(tp, 0, false) else {
+                return crate::api::errors::PyErr_NoMemory();
+            };
+            for offset in [
+                (*tp).tp_dictoffset,
+                (*tp).tp_weaklistoffset,
+                (*tp).tp_vectorcall_offset,
+            ] {
+                if offset == 0 {
+                    continue;
+                }
+                let position = if offset < 0 {
+                    (size as isize).checked_add(offset)
+                } else {
+                    Some(offset)
+                };
+                if position.is_none_or(|position| {
+                    position < std::mem::size_of::<PyObject>() as isize
+                        || position as usize % std::mem::align_of::<*mut PyObject>() != 0
+                        || (position as usize)
+                            .checked_add(std::mem::size_of::<*mut PyObject>())
+                            .is_none_or(|end| end > size)
+                }) {
+                    reject_type_layout(
+                        c"type spec offset is outside its generic allocation layout",
+                    );
+                    return ptr::null_mut();
+                }
+            }
+        }
+        // These two declarations configure layout; CPython removes their
+        // temporary member descriptors instead of exposing raw offset reads.
+        for member in &member_records {
+            let name = std::ffi::CStr::from_ptr(member.name);
+            if (name == c"__dictoffset__" || name == c"__weaklistoffset__")
+                && crate::api::mapping::PyDict_DelItemString((*tp).tp_dict, member.name) < 0
+            {
+                return ptr::null_mut();
+            }
+        }
+        if crate::api::memory::PyObject_GC_IsTracked(object) == 0 {
+            crate::api::memory::PyObject_GC_Track(object.cast());
+        }
+        construction.into_ptr()
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_FromSpec(spec: *mut PyType_Spec) -> *mut PyObject {
+    unsafe { PyType_FromSpecWithBases(spec, ptr::null_mut()) }
 }
 
 #[unsafe(no_mangle)]
@@ -2071,7 +2285,7 @@ pub unsafe extern "C" fn PyType_FromSpecWithBases(
     spec: *mut PyType_Spec,
     bases: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { type_from_spec_impl(spec, bases, ptr::null_mut()) }
+    unsafe { type_from_spec_impl(ptr::null_mut(), spec, bases, ptr::null_mut(), true) }
 }
 
 #[unsafe(no_mangle)]
@@ -2080,17 +2294,17 @@ pub unsafe extern "C" fn PyType_FromModuleAndSpec(
     spec: *mut PyType_Spec,
     bases: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { type_from_spec_impl(spec, bases, module) }
+    unsafe { type_from_spec_impl(ptr::null_mut(), spec, bases, module, true) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_FromMetaclass(
-    _metaclass: *mut PyTypeObject,
+    metaclass: *mut PyTypeObject,
     module: *mut PyObject,
     spec: *mut PyType_Spec,
     bases: *mut PyObject,
 ) -> *mut PyObject {
-    unsafe { type_from_spec_impl(spec, bases, module) }
+    unsafe { type_from_spec_impl(metaclass, spec, bases, module, false) }
 }
 
 /// CPython `PyType_GetModule` (Objects/typeobject.c): the module a heap type was
@@ -2102,7 +2316,9 @@ pub unsafe extern "C" fn PyType_GetModule(ty: *mut PyTypeObject) -> *mut PyObjec
     if ty.is_null() {
         return ptr::null_mut();
     }
-    if unsafe { (*ty).tp_flags } & crate::abi_types::Py_TPFLAGS_HEAPTYPE == 0 {
+    if unsafe { (*ty).tp_flags } & crate::abi_types::Py_TPFLAGS_HEAPTYPE == 0
+        || heap_type_storage(ty).is_none()
+    {
         unsafe {
             crate::api::errors::PyErr_SetString(
                 (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
@@ -2111,7 +2327,7 @@ pub unsafe extern "C" fn PyType_GetModule(ty: *mut PyTypeObject) -> *mut PyObjec
         }
         return ptr::null_mut();
     }
-    let et = ty.cast::<crate::abi_types::PyHeapTypeObject>();
+    let et = heap_type_storage(ty).expect("heap storage admitted above");
     let m = unsafe { (*et).ht_module };
     if m.is_null() {
         unsafe {
@@ -2138,33 +2354,55 @@ pub unsafe extern "C" fn PyType_GetModuleState(ty: *mut PyTypeObject) -> *mut c_
 }
 
 /// CPython `PyType_GetModuleByDef` (Objects/typeobject.c): walk `type`'s MRO and
-/// return the first *heap* super whose `ht_module` belongs to `def`. molt has no
-/// `PyModule_GetDef`, so it matches via `PyState_FindModule(def)` (the runtime's
-/// def→module registry) and returns that module iff it is the `ht_module` of some
-/// heap type on the MRO/base chain. Sufficient for the single-module extension
-/// shape numpy/Cython use; the strict def-per-super match is specced, not fully
-/// implemented (PEP 573 long tail).
+/// return the first heap type's defining module whose exact definition is `def`.
+/// This is a borrowed reference. Multi-phase modules are not members of the
+/// single-phase PyState registry, and secondary bases participate in MRO order.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_GetModuleByDef(
     ty: *mut PyTypeObject,
     def: *mut crate::abi_types::PyModuleDef,
 ) -> *mut PyObject {
     if ty.is_null() || def.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
-    let target = unsafe { crate::api::modules::PyState_FindModule(def) };
-    // Walk the base chain (falling back from tp_mro), returning the target module
-    // if it is the ht_module of a heap super — otherwise NULL (no matching super).
-    let mut cursor = ty;
-    while !cursor.is_null() {
-        if unsafe { (*cursor).tp_flags } & crate::abi_types::Py_TPFLAGS_HEAPTYPE != 0 {
-            let et = cursor.cast::<crate::abi_types::PyHeapTypeObject>();
-            let m = unsafe { (*et).ht_module };
-            if !m.is_null() && (target.is_null() || std::ptr::eq(m, target)) {
-                return m;
+    unsafe {
+        if (*ty).tp_mro.is_null() && PyType_Ready(ty) < 0 {
+            return ptr::null_mut();
+        }
+        let mro = crate::api::refcount::OwnedPyObject::from_borrowed((*ty).tp_mro);
+        let count = crate::api::sequences::PyTuple_Size(mro.as_ptr());
+        if count < 0 {
+            return ptr::null_mut();
+        }
+        for index in 0..count {
+            let base =
+                crate::api::sequences::PyTuple_GetItem(mro.as_ptr(), index).cast::<PyTypeObject>();
+            if base.is_null() {
+                return ptr::null_mut();
+            }
+            if (*base).tp_flags & Py_TPFLAGS_HEAPTYPE == 0 {
+                continue;
+            }
+            let Some(heap) = heap_type_storage(base) else {
+                continue;
+            };
+            let module = (*heap).ht_module;
+            if module.is_null() {
+                continue;
+            }
+            let definition = crate::api::modules::PyModule_GetDef(module);
+            if definition == def {
+                return module;
+            }
+            if definition.is_null() && descriptors::pending() {
+                return ptr::null_mut();
             }
         }
-        cursor = unsafe { (*cursor).tp_base };
+        crate::api::errors::PyErr_SetString(
+            (&raw mut crate::abi_types::PyExc_TypeError).cast(),
+            c"PyType_GetModuleByDef: no superclass defines the requested module".as_ptr(),
+        );
     }
     ptr::null_mut()
 }
@@ -2181,7 +2419,7 @@ pub unsafe extern "C" fn PyType_Check(op: *mut PyObject) -> c_int {
     // compare answered only PyType_CheckExact and rejected every C metaclass
     // instance. Walk the metatype's subtype chain like PyObject_TypeCheck.
     let type_type = &raw mut crate::abi_types::PyType_Type;
-    let meta = unsafe { (*op).ob_type };
+    let meta = unsafe { crate::bridge::semantic_type(op) };
     if meta.is_null() {
         return 0;
     }
@@ -2193,116 +2431,159 @@ pub unsafe extern "C" fn PyType_Check(op: *mut PyObject) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_Modified(tp: *mut PyTypeObject) {
-    fn live_subclasses(tp: *mut PyTypeObject) -> Vec<TypeIdentity> {
-        {
-            let mut registry = TYPE_SUBCLASSES.lock();
-            let Some(tp_identity) = type_identity(&mut registry, tp) else {
-                return Vec::new();
-            };
-            let order = registry
-                .subclasses
-                .get(&tp_identity)
-                .map(|entry| entry.order.clone())
-                .unwrap_or_default();
-            let members = registry
-                .subclasses
-                .get(&tp_identity)
-                .map(|entry| entry.members.clone())
-                .unwrap_or_default();
-            let live_order: Vec<_> = order
-                .into_iter()
-                .filter(|identity| {
-                    members.contains(identity)
-                        && registry.live.get(&identity.address) == Some(&identity.generation)
-                })
-                .collect();
-            if let Some(entry) = registry.subclasses.get_mut(&tp_identity) {
-                entry.order.clone_from(&live_order);
-                entry.members = live_order.iter().copied().collect();
-            }
-            live_order
-        }
-    }
-
-    unsafe fn invalidate_one(tp: *mut PyTypeObject) {
+    unsafe fn invalidate_one(identity: TypeIdentity) {
+        let Some(tp) = (unsafe { identity.live_type(&TYPE_SUBCLASSES.lock()) }) else {
+            return;
+        };
         let watched = unsafe { (*tp).tp_watched };
+        // Retention admits the lifetime before any field writes. Watched types
+        // also need that owner across callbacks and unraisable reporting,
+        // outside the registry lock.
+        // A managed view's teardown pin can keep its C header positive after
+        // runtime death is committed. Checked retention rejects that window
+        // before either watcher callbacks or version-flag writes.
+        let Some(_owner) =
+            (unsafe { crate::api::refcount::OwnedPyObject::try_from_borrowed(tp.cast()) })
+        else {
+            return;
+        };
         if watched != 0 {
-            let watcher_state = TYPE_WATCHER_STATE.lock();
-            debug_assert_eq!(watcher_state.interpreter_id, CANONICAL_INTERPRETER_ID);
-            let watchers = watcher_state.callbacks;
-            drop(watcher_state);
-            for (watcher_id, callback) in watchers.into_iter().enumerate() {
+            for watcher_id in 0..TYPE_MAX_WATCHERS {
                 if watched & (1 << watcher_id) == 0 {
                     continue;
                 }
-                if let Some(callback) = callback
-                    && unsafe { callback(tp.cast::<PyObject>()) } < 0
-                {
-                    unsafe { crate::api::errors::PyErr_WriteUnraisable(tp.cast()) };
+                // A prior callback may clear or replace a later slot. Keep the
+                // watched-bit snapshot, but resolve each callback at dispatch.
+                let callback = {
+                    let watcher_state = TYPE_WATCHER_STATE.lock();
+                    debug_assert_eq!(watcher_state.interpreter_id, CANONICAL_INTERPRETER_ID);
+                    watcher_state.callbacks[watcher_id]
+                };
+                if let Some(callback) = callback {
+                    if !identity.is_live(&TYPE_SUBCLASSES.lock()) {
+                        return;
+                    }
+                    crate::api::errors::with_preserved_error(|| unsafe {
+                        let status = callback(tp.cast::<PyObject>());
+                        if status < 0 && !crate::api::errors::raised_error_pending() {
+                            crate::api::errors::PyErr_SetString(
+                                (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                                c"type watcher callback failed without an exception".as_ptr(),
+                            );
+                        }
+                        if crate::api::errors::raised_error_pending() {
+                            let context = if identity.is_live(&TYPE_SUBCLASSES.lock()) {
+                                tp.cast()
+                            } else {
+                                ptr::null_mut()
+                            };
+                            crate::api::errors::PyErr_WriteUnraisable(context);
+                        }
+                    });
                 }
+            }
+            if !identity.is_live(&TYPE_SUBCLASSES.lock()) {
+                return;
             }
         }
         unsafe {
             (*tp).tp_flags &= !crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG;
             (*tp).tp_version_tag = 0;
-            if (*tp).tp_flags & Py_TPFLAGS_HEAPTYPE != 0 {
-                (*tp.cast::<PyHeapTypeObject>())._spec_cache.getitem = ptr::null_mut();
+            if let Some(heap) = heap_type_storage(tp) {
+                (*heap)._spec_cache.getitem = ptr::null_mut();
             }
         }
     }
     if tp.is_null() {
         return;
     }
+    // Serialize lifetime observation and retaining a live type through the
+    // existing runtime token. Never take a bridge/refcount lock under the
+    // subclass registry lock.
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
+    let Some(root) = type_identity(&mut TYPE_SUBCLASSES.lock(), tp) else {
+        return;
+    };
     // Explicit post-order traversal preserves CPython's subclass-before-base
     // callback order without consuming one Rust stack frame per hierarchy
     // level. Children are pushed in reverse so their registration order is
     // observed deterministically.
     let mut seen = HashSet::new();
-    let mut work = vec![(tp, false)];
+    let mut work = vec![(root, false)];
     while let Some((current, expanded)) = work.pop() {
-        if current.is_null() {
-            continue;
-        }
         if expanded {
             unsafe { invalidate_one(current) };
             continue;
         }
-        if !seen.insert(current.addr())
-            || unsafe { (*current).tp_flags } & crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG == 0
-        {
+        let mut registry = TYPE_SUBCLASSES.lock();
+        let Some(pointer) = (unsafe { current.live_type(&registry) }) else {
+            // Live subclasses retain their bases, so a dying type cannot
+            // have a live subtree. Keep registration for possible resurrection.
+            continue;
+        };
+        if !seen.insert(current) {
+            continue;
+        }
+        if unsafe { (*pointer).tp_flags } & crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG == 0 {
             continue;
         }
         work.push((current, true));
-        for child in live_subclasses(current).into_iter().rev() {
-            work.push((
-                ptr::with_exposed_provenance_mut::<PyTypeObject>(child.address),
-                false,
-            ));
+        if let Some(entry) = registry.subclasses.get_mut(&current) {
+            // Copy identities directly into the traversal queue under the
+            // membership lock, without a temporary allocation per parent.
+            entry.compact();
+            work.extend(entry.order.iter().rev().map(|&child| (child, false)));
         }
     }
 }
 
 unsafe fn validate_type_watcher_id(watcher_id: c_int) -> bool {
     if watcher_id < 0 || watcher_id as usize >= TYPE_MAX_WATCHERS {
-        unsafe { reject_type_layout(c"invalid type watcher ID") };
+        unsafe {
+            crate::api::errors::PyErr_Format(
+                (&raw mut crate::abi_types::PyExc_ValueError).cast(),
+                c"Invalid type watcher ID %d".as_ptr(),
+                watcher_id,
+            )
+        };
         return false;
     }
     if TYPE_WATCHER_STATE.lock().callbacks[watcher_id as usize].is_none() {
-        unsafe { reject_type_layout(c"no type watcher is registered for this ID") };
+        unsafe {
+            crate::api::errors::PyErr_Format(
+                (&raw mut crate::abi_types::PyExc_ValueError).cast(),
+                c"No type watcher set for ID %d".as_ptr(),
+                watcher_id,
+            )
+        };
         return false;
     }
     true
 }
 
 unsafe fn assign_type_version_tag(tp: *mut PyTypeObject, seen: &mut HashSet<usize>) -> bool {
-    if tp.is_null() {
-        return false;
+    // Already-admitted lookups do not execute the fallible base walk and need
+    // no exception snapshot or cleanup transaction.
+    if !tp.is_null()
+        && unsafe { (*tp).tp_flags } & crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG != 0
+    {
+        return true;
     }
-    if TYPE_SUBCLASSES.lock().retired_statics.contains(&tp.addr()) {
+    // Tag admission is best effort, including malformed physical base tuples.
+    // A failed admission must not turn a successful watch/lookup into a
+    // success-with-error result or replace a pre-existing exception.
+    crate::api::errors::with_preserved_error(|| unsafe { assign_type_version_tag_inner(tp, seen) })
+}
+
+unsafe fn assign_type_version_tag_inner(tp: *mut PyTypeObject, seen: &mut HashSet<usize>) -> bool {
+    if tp.is_null() {
         return false;
     }
     if unsafe { (*tp).tp_flags } & crate::abi_types::Py_TPFLAGS_VALID_VERSION_TAG != 0 {
         return true;
+    }
+    if TYPE_SUBCLASSES.lock().retired_statics.contains(&tp.addr()) {
+        return false;
     }
     if !seen.insert(tp as usize) {
         return false;
@@ -2319,7 +2600,7 @@ unsafe fn assign_type_version_tag(tp: *mut PyTypeObject, seen: &mut HashSet<usiz
         for index in 0..count {
             let base = unsafe { crate::api::sequences::PyTuple_GetItem(bases, index) }
                 .cast::<PyTypeObject>();
-            if !unsafe { assign_type_version_tag(base, seen) } {
+            if !unsafe { assign_type_version_tag_inner(base, seen) } {
                 return false;
             }
         }
@@ -2360,7 +2641,13 @@ pub unsafe extern "C" fn PyType_AddWatcher(callback: Option<PyTypeWatchCallback>
         *slot = Some(callback);
         return index as c_int;
     }
-    unsafe { reject_type_layout(c"no more type watcher IDs available") };
+    drop(watcher_state);
+    unsafe {
+        crate::api::errors::PyErr_SetString(
+            (&raw mut crate::abi_types::PyExc_RuntimeError).cast(),
+            c"no more type watcher IDs available".as_ptr(),
+        )
+    };
     -1
 }
 
@@ -2375,26 +2662,37 @@ pub unsafe extern "C" fn PyType_ClearWatcher(watcher_id: c_int) -> c_int {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_Watch(watcher_id: c_int, obj: *mut PyObject) -> c_int {
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
     if obj.is_null() || unsafe { PyType_Check(obj) } == 0 {
-        unsafe { reject_type_layout(c"cannot watch a non-type object") };
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_ValueError).cast(),
+                c"Cannot watch non-type".as_ptr(),
+            )
+        };
         return -1;
     }
     if !unsafe { validate_type_watcher_id(watcher_id) } {
         return -1;
     }
     let tp = obj.cast::<PyTypeObject>();
-    if !unsafe { assign_type_version_tag(tp, &mut HashSet::new()) } {
-        unsafe { reject_type_layout(c"cannot assign a version tag to this type") };
-        return -1;
-    }
+    // Tag exhaustion or an unready type does not reject watcher registration.
+    // A later cacheable lookup can assign the tag, as in CPython.
+    unsafe { assign_type_version_tag(tp, &mut HashSet::new()) };
     unsafe { (*tp).tp_watched |= 1 << watcher_id };
     0
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_Unwatch(watcher_id: c_int, obj: *mut PyObject) -> c_int {
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
     if obj.is_null() || unsafe { PyType_Check(obj) } == 0 {
-        unsafe { reject_type_layout(c"cannot unwatch a non-type object") };
+        unsafe {
+            crate::api::errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_ValueError).cast(),
+                c"Cannot watch non-type".as_ptr(),
+            )
+        };
         return -1;
     }
     if !unsafe { validate_type_watcher_id(watcher_id) } {
@@ -2406,7 +2704,45 @@ pub unsafe extern "C" fn PyType_Unwatch(watcher_id: c_int, obj: *mut PyObject) -
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnstable_Type_AssignVersionTag(tp: *mut PyTypeObject) -> c_int {
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
     unsafe { assign_type_version_tag(tp, &mut HashSet::new()) as c_int }
+}
+
+/// Lookup a single physical/runtime namespace while preserving the caller's
+/// C3 traversal order. The bridge returns the original descriptor, borrowed.
+unsafe fn type_namespace_lookup(tp: *mut PyTypeObject, name: *mut PyObject) -> *mut PyObject {
+    unsafe {
+        if let Some(class) = GLOBAL_BRIDGE.observed_handle_for_pyobj(tp.cast()) {
+            let hooks = crate::hooks::hooks_or_stubs();
+            if (hooks.classify_heap)(class.bits()) == crate::abi_types::MoltTypeTag::Type as u8 {
+                let Some(name) = crate::bridge::RuntimeValue::acquire(name) else {
+                    return ptr::null_mut();
+                };
+                return GLOBAL_BRIDGE.borrowed_result_to_borrowed_pyobj((hooks
+                    .type_lookup_borrowed)(
+                    class.bits(),
+                    name.bits(),
+                    0,
+                ));
+            }
+        }
+        // A native namespace must expose its declarations through the same
+        // lifecycle as every other type. READYING owns its partially populated
+        // dictionary; reentrant lookup may inspect it but cannot start another
+        // readiness transaction.
+        if ((*tp).tp_dict.is_null() || (*tp).tp_flags & Py_TPFLAGS_READY == 0)
+            && (*tp).tp_flags & crate::abi_types::Py_TPFLAGS_READYING == 0
+            && PyType_Ready(tp) < 0
+        {
+            return ptr::null_mut();
+        }
+        let dict = (*tp).tp_dict;
+        if dict.is_null() {
+            ptr::null_mut()
+        } else {
+            crate::api::mapping::PyDict_GetItemWithError(dict, name)
+        }
+    }
 }
 
 /// Resolve `name` on `tp` by walking its MRO and returning the first matching
@@ -2422,20 +2758,45 @@ pub unsafe extern "C" fn _PyType_Lookup(
     if tp.is_null() || name.is_null() {
         return ptr::null_mut();
     }
-    unsafe {
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
+    let Some(_type_owner) =
+        (unsafe { crate::api::refcount::OwnedPyObject::try_from_borrowed(tp.cast()) })
+    else {
+        return ptr::null_mut();
+    };
+    let _name_owner = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(name) };
+    let found = (|| unsafe {
+        if let Some(class) = GLOBAL_BRIDGE.observed_handle_for_pyobj(tp.cast()) {
+            let hooks = crate::hooks::hooks_or_stubs();
+            if (hooks.classify_heap)(class.bits()) == crate::abi_types::MoltTypeTag::Type as u8 {
+                let Some(name) = crate::bridge::RuntimeValue::acquire(name) else {
+                    return ptr::null_mut();
+                };
+                return GLOBAL_BRIDGE.borrowed_result_to_borrowed_pyobj((hooks
+                    .type_lookup_borrowed)(
+                    class.bits(),
+                    name.bits(),
+                    1,
+                ));
+            }
+        }
         let mro = (*tp).tp_mro;
         if !mro.is_null() {
+            let _mro_owner = crate::api::refcount::OwnedPyObject::from_borrowed(mro);
             let n = crate::api::sequences::PyTuple_Size(mro);
+            if n < 0 {
+                return ptr::null_mut();
+            }
             let mut i: Py_ssize_t = 0;
             while i < n {
                 let base = crate::api::sequences::PyTuple_GetItem(mro, i).cast::<PyTypeObject>();
+                if base.is_null() {
+                    return ptr::null_mut();
+                }
                 if !base.is_null() {
-                    let dict = (*base).tp_dict;
-                    if !dict.is_null() {
-                        let found = crate::api::mapping::PyDict_GetItem(dict, name);
-                        if !found.is_null() {
-                            return found;
-                        }
+                    let found = type_namespace_lookup(base, name);
+                    if !found.is_null() || !crate::api::errors::PyErr_Occurred().is_null() {
+                        return found;
                     }
                 }
                 i += 1;
@@ -2446,12 +2807,9 @@ pub unsafe extern "C" fn _PyType_Lookup(
         // walk so lookups still resolve.
         let mut cur = tp;
         while !cur.is_null() {
-            let dict = (*cur).tp_dict;
-            if !dict.is_null() {
-                let found = crate::api::mapping::PyDict_GetItem(dict, name);
-                if !found.is_null() {
-                    return found;
-                }
+            let found = type_namespace_lookup(cur, name);
+            if !found.is_null() || !crate::api::errors::PyErr_Occurred().is_null() {
+                return found;
             }
             let base = (*cur).tp_base;
             if base == cur {
@@ -2460,7 +2818,13 @@ pub unsafe extern "C" fn _PyType_Lookup(
             cur = base;
         }
         ptr::null_mut()
+    })();
+    if !crate::api::errors::raised_error_pending() {
+        // Error-free hits and misses rearm invalidated watchers. Failed lookup
+        // keeps its original exception and leaves the tag invalid.
+        unsafe { assign_type_version_tag(tp, &mut HashSet::new()) };
     }
+    found
 }
 
 /// `PyDescr_IsData` — a descriptor is a *data* descriptor iff its type defines
@@ -2472,14 +2836,9 @@ pub unsafe extern "C" fn _PyType_Lookup(
 /// an honest answer here.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDescr_IsData(descr: *mut PyObject) -> c_int {
-    if descr.is_null() {
-        return 0;
-    }
-    let tp = unsafe { (*descr).ob_type };
-    if tp.is_null() {
-        return 0;
-    }
-    unsafe { (*tp).tp_descr_set }.is_some() as c_int
+    crate::api::errors::with_preserved_error(|| unsafe {
+        crate::api::descriptor::is_data(descr).unwrap_or(false) as c_int
+    })
 }
 
 /// `PyDescr_NAME(descr)` — the interned attribute name of any descriptor. All
@@ -2493,279 +2852,15 @@ pub unsafe extern "C" fn PyDescr_NAME(descr: *mut PyObject) -> *mut PyObject {
     unsafe { (*descr.cast::<crate::abi_types::PyDescrObject>()).d_name }
 }
 
-/// Allocate the shared descriptor header for a `type`/`name` pair. Mirrors
-/// CPython's `descr_new`: interns the name, takes an owned reference to `type`.
-/// Returns a boxed, ABI-owned descriptor with refcount 1, or NULL (with an
-/// exception set) on allocation failure.
-unsafe fn descr_alloc(
-    descr_type: *mut PyTypeObject,
-    for_type: *mut PyTypeObject,
-    name: *const c_char,
-) -> *mut crate::abi_types::PyDescrObject {
-    unsafe {
-        let name_obj = if name.is_null() {
-            crate::api::strings::PyUnicode_FromString(c"".as_ptr())
-        } else {
-            crate::api::strings::PyUnicode_InternFromString(name)
-        };
-        if name_obj.is_null() {
-            // PyUnicode_* sets MemoryError on failure; record for the exec-slot
-            // diagnostic in case a stubbed string layer returned NULL silently.
-            crate::capi_trace::record_silent_failure(
-                "PyDescr_New",
-                Some("descriptor name allocation failed"),
-            );
-            return ptr::null_mut();
-        }
-        crate::api::refcount::Py_INCREF(for_type.cast::<PyObject>());
-        let descr = Box::new(crate::abi_types::PyDescrObject {
-            ob_base: PyObject {
-                ob_refcnt: 1,
-                ob_type: descr_type,
-            },
-            d_type: for_type,
-            d_name: name_obj,
-            d_qualname: ptr::null_mut(),
-        });
-        Box::into_raw(descr)
-    }
-}
-
-/// Create a `getset_descriptor` for `getset` bound to `type`. Faithful to
-/// CPython `PyDescr_NewGetSet` (`Objects/descrobject.c`): the descriptor stores
-/// a *borrowed* pointer to the caller's `PyGetSetDef` (which must outlive the
-/// type), so a static numpy `tp_getset` table becomes real, resolvable
-/// `getset_descriptor` attributes in `tp_dict`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyDescr_NewGetSet(
-    type_: *mut PyTypeObject,
-    getset: *mut crate::abi_types::PyGetSetDef,
-) -> *mut PyObject {
-    if type_.is_null() || getset.is_null() {
-        crate::capi_trace::record_silent_failure("PyDescr_NewGetSet", Some("null type or getset"));
-        unsafe { crate::api::errors::PyErr_BadInternalCall() };
-        return ptr::null_mut();
-    }
-    let name = unsafe { (*getset).name };
-    let common = unsafe { descr_alloc(&raw mut crate::abi_types::PyGetSetDescr_Type, type_, name) };
-    if common.is_null() {
-        return ptr::null_mut();
-    }
-    // Widen the shared header allocation to the getset descriptor. `descr_alloc`
-    // boxed a bare `PyDescrObject`; reallocate as the wider struct so the
-    // `d_getset` tail is owned. Simpler and leak-free: box the full struct here
-    // and copy the header out, then free the header box.
-    unsafe {
-        let header = *Box::from_raw(common);
-        let descr = Box::new(crate::abi_types::PyGetSetDescrObject {
-            d_common: header,
-            d_getset: getset,
-        });
-        Box::into_raw(descr).cast::<PyObject>()
-    }
-}
-
-/// Create a `member_descriptor` for `member` bound to `type`. Faithful to
-/// CPython `PyDescr_NewMember`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyDescr_NewMember(
-    type_: *mut PyTypeObject,
-    member: *mut crate::abi_types::PyMemberDef,
-) -> *mut PyObject {
-    if type_.is_null() || member.is_null() {
-        crate::capi_trace::record_silent_failure("PyDescr_NewMember", Some("null type or member"));
-        unsafe { crate::api::errors::PyErr_BadInternalCall() };
-        return ptr::null_mut();
-    }
-    let name = unsafe { (*member).name };
-    let common = unsafe { descr_alloc(&raw mut crate::abi_types::PyMemberDescr_Type, type_, name) };
-    if common.is_null() {
-        return ptr::null_mut();
-    }
-    unsafe {
-        let header = *Box::from_raw(common);
-        let descr = Box::new(crate::abi_types::PyMemberDescrObject {
-            d_common: header,
-            d_member: member,
-        });
-        Box::into_raw(descr).cast::<PyObject>()
-    }
-}
-
-// ─── Descriptor protocol (tp_descr_get / tp_descr_set) ─────────────────────
-//
-// `getset_descriptor` and `member_descriptor` are the objects `PyType_Ready`
-// stores in `tp_dict` for a type's `tp_getset` / `tp_members` tables. When an
-// attribute lookup finds one of these in the type's dict, the runtime invokes
-// its `tp_descr_get` (read) or `tp_descr_set` (write). Faithful to
-// CPython `Objects/descrobject.c` (`getset_get`/`getset_set`/`member_get`/
-// `member_set`).
-
-/// `tp_descr_get` for `getset_descriptor`. `obj == NULL` (attribute accessed on
-/// the type itself) returns the descriptor; otherwise it invokes the underlying
-/// getter with the `closure`, or raises `AttributeError` for a write-only entry.
-unsafe extern "C" fn getset_get(
-    descr: *mut PyObject,
-    obj: *mut PyObject,
-    _type: *mut PyObject,
-) -> *mut PyObject {
-    unsafe {
-        if obj.is_null() {
-            crate::api::refcount::Py_INCREF(descr);
-            return descr;
-        }
-        let d = descr.cast::<crate::abi_types::PyGetSetDescrObject>();
-        let getset = (*d).d_getset;
-        if getset.is_null() {
-            return ptr::null_mut();
-        }
-        match (*getset).get {
-            Some(get) => get(obj, (*getset).closure),
-            None => {
-                crate::api::errors::PyErr_SetString(
-                    (&raw mut crate::abi_types::PyExc_AttributeError)
-                        .cast::<crate::abi_types::PyObject>(),
-                    c"unreadable attribute".as_ptr(),
-                );
-                ptr::null_mut()
-            }
-        }
-    }
-}
-
-/// `tp_descr_set` for `getset_descriptor`. Invokes the underlying setter with
-/// the `closure`, or raises `AttributeError` for a read-only entry.
-unsafe extern "C" fn getset_set(
-    descr: *mut PyObject,
-    obj: *mut PyObject,
-    value: *mut PyObject,
-) -> c_int {
-    unsafe {
-        let d = descr.cast::<crate::abi_types::PyGetSetDescrObject>();
-        let getset = (*d).d_getset;
-        if getset.is_null() {
-            return -1;
-        }
-        match (*getset).set {
-            Some(set) => set(obj, value, (*getset).closure),
-            None => {
-                crate::api::errors::PyErr_SetString(
-                    (&raw mut crate::abi_types::PyExc_AttributeError)
-                        .cast::<crate::abi_types::PyObject>(),
-                    c"readonly attribute".as_ptr(),
-                );
-                -1
-            }
-        }
-    }
-}
-
-/// `tp_descr_get` for `member_descriptor`. Reads the struct member at
-/// `d_member->offset` off `obj` using `PyMember_GetOne`.
-unsafe extern "C" fn member_get(
-    descr: *mut PyObject,
-    obj: *mut PyObject,
-    _type: *mut PyObject,
-) -> *mut PyObject {
-    unsafe {
-        if obj.is_null() {
-            crate::api::refcount::Py_INCREF(descr);
-            return descr;
-        }
-        let d = descr.cast::<crate::abi_types::PyMemberDescrObject>();
-        let member = (*d).d_member;
-        if member.is_null() {
-            return ptr::null_mut();
-        }
-        PyMember_GetOne(obj.cast::<c_char>(), member)
-    }
-}
-
-/// `tp_descr_set` for `member_descriptor`.
-unsafe extern "C" fn member_set(
-    descr: *mut PyObject,
-    obj: *mut PyObject,
-    value: *mut PyObject,
-) -> c_int {
-    unsafe {
-        let d = descr.cast::<crate::abi_types::PyMemberDescrObject>();
-        let member = (*d).d_member;
-        if member.is_null() {
-            return -1;
-        }
-        PyMember_SetOne(obj.cast::<c_char>(), member, value)
-    }
-}
-
-unsafe fn descr_common_decref(common: &mut crate::abi_types::PyDescrObject) {
-    unsafe {
-        crate::api::refcount::Py_XDECREF(common.d_type.cast::<PyObject>());
-        crate::api::refcount::Py_XDECREF(common.d_name);
-        crate::api::refcount::Py_XDECREF(common.d_qualname);
-    }
-}
-
-unsafe extern "C" fn getset_descr_dealloc(op: *mut PyObject) {
-    if op.is_null() {
-        return;
-    }
-    unsafe {
-        let descr = op.cast::<crate::abi_types::PyGetSetDescrObject>();
-        descr_common_decref(&mut (*descr).d_common);
-        drop(Box::from_raw(descr));
-    }
-}
-
-unsafe extern "C" fn member_descr_dealloc(op: *mut PyObject) {
-    if op.is_null() {
-        return;
-    }
-    unsafe {
-        let descr = op.cast::<crate::abi_types::PyMemberDescrObject>();
-        descr_common_decref(&mut (*descr).d_common);
-        drop(Box::from_raw(descr));
-    }
-}
-
-unsafe extern "C" fn wrapper_descr_dealloc(op: *mut PyObject) {
-    if op.is_null() {
-        return;
-    }
-    unsafe {
-        let descr = op.cast::<crate::abi_types::PyWrapperDescrObject>();
-        descr_common_decref(&mut (*descr).d_common);
-        drop(Box::from_raw(descr));
-    }
-}
-
-/// Install descriptor ownership and the getset/member protocol slots.
-/// Called once at ABI init (after `init_static_types`) so that a
-/// `getset_descriptor` / `member_descriptor` found in a type's `tp_dict`
-/// resolves through `tp_descr_get` / `tp_descr_set` exactly as CPython wires
-/// `PyGetSetDescr_Type` / `PyMemberDescr_Type`.
+/// Install the shared physical descriptor lifecycle and typed wrapper slots.
 ///
 /// # Safety
-/// Single-threaded init only; must run before any C extension attribute access.
+/// Single-threaded ABI initialization, before extension access.
 pub unsafe fn init_descriptor_slots() {
     unsafe {
-        let gs = &raw mut crate::abi_types::PyGetSetDescr_Type;
-        (*gs).tp_descr_get = Some(getset_get);
-        (*gs).tp_descr_set = Some(getset_set);
-        (*gs).tp_dealloc = Some(getset_descr_dealloc);
-        (*gs).tp_basicsize =
-            std::mem::size_of::<crate::abi_types::PyGetSetDescrObject>() as Py_ssize_t;
-
-        let mem = &raw mut crate::abi_types::PyMemberDescr_Type;
-        (*mem).tp_descr_get = Some(member_get);
-        (*mem).tp_descr_set = Some(member_set);
-        (*mem).tp_dealloc = Some(member_descr_dealloc);
-        (*mem).tp_basicsize =
-            std::mem::size_of::<crate::abi_types::PyMemberDescrObject>() as Py_ssize_t;
-
-        let wrapper = &raw mut crate::abi_types::PyWrapperDescr_Type;
-        (*wrapper).tp_dealloc = Some(wrapper_descr_dealloc);
-        (*wrapper).tp_basicsize =
-            std::mem::size_of::<crate::abi_types::PyWrapperDescrObject>() as Py_ssize_t;
+        descriptors::init();
+        method_descriptors::init();
+        slot_wrappers::init();
     }
 }
 
@@ -3163,12 +3258,7 @@ pub unsafe extern "C" fn _Py_TYPE(op: *mut PyObject) -> *mut PyTypeObject {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_Type(op: *mut PyObject) -> *mut PyObject {
     if op.is_null() {
-        unsafe {
-            crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_SystemError).cast::<crate::abi_types::PyObject>(),
-                c"PyObject_Type called with NULL".as_ptr(),
-            );
-        }
+        unsafe { crate::api::object::null_argument_error() };
         return ptr::null_mut();
     }
     let tp = unsafe { crate::bridge::semantic_type(op) };
@@ -3208,6 +3298,9 @@ pub unsafe extern "C" fn PyObject_TypeCheck(op: *mut PyObject, tp: *mut PyTypeOb
     // `use_new_as_default` (dtypemeta.c) with "did not return a dtype instance".
     // Walk the subtype chain exactly as CPython does.
     let actual = unsafe { crate::bridge::semantic_type(op) };
+    if actual.is_null() {
+        return 0;
+    }
     if std::ptr::eq(actual, tp) {
         return 1;
     }
@@ -3216,25 +3309,17 @@ pub unsafe extern "C" fn PyObject_TypeCheck(op: *mut PyObject, tp: *mut PyTypeOb
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_IsInstance(inst: *mut PyObject, cls: *mut PyObject) -> c_int {
-    if inst.is_null() || cls.is_null() {
-        return 0;
+    unsafe {
+        crate::api::object::classinfo_match(crate::hooks::ClassInfoOperation::Instance, inst, cls)
     }
-    // When `cls` is a type object, CPython's `PyObject_IsInstance` reduces to
-    // `PyObject_TypeCheck(inst, (PyTypeObject *)cls)` (Objects/abstract.c ->
-    // `recursive_isinstance`). That is exactly the C-extension case (e.g.
-    // numpy `descriptor.c` does `PyObject_IsInstance(conv, &PyArray_StringDType)`),
-    // so answer it with the same exact-OR-subtype walk `PyObject_TypeCheck`
-    // now performs. `PyObject_TypeCheck` only POINTER-compares `cls`
-    // (it dereferences `inst`'s type, never `cls`), so a non-type `cls` — the
-    // `__instancecheck__` / tuple-of-classes cases Molt cannot resolve here —
-    // safely yields the same conservative `0` (not-an-instance) as before,
-    // never a false positive.
-    unsafe { PyObject_TypeCheck(inst, cls.cast::<PyTypeObject>()) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyCallable_Check(op: *mut PyObject) -> c_int {
     if op.is_null() {
+        return 0;
+    }
+    if crate::bridge::resolve_pyobject(op).is_none() {
         return 0;
     }
     // A generic managed view has no authoritative C call slot. Its semantic
@@ -3275,16 +3360,20 @@ pub unsafe extern "C" fn PyObject_Hash(op: *mut PyObject) -> isize {
     if op.is_null() {
         return -1;
     }
+    // Molt-native (bridge-managed) objects hash through the runtime hash
+    // authority over their handle bits (hash(int) == int, etc.), not tp_hash.
+    let Some(observed) = crate::bridge::observe_pyobject(op) else {
+        // A failed managed commit is an error, never permission to dispatch a
+        // foreign hash slot or replace the original failure with TypeError.
+        return -1;
+    };
     if std::ptr::eq(
         unsafe { (*op).ob_type },
         &raw const crate::abi_types::PyComplex_Type,
     ) {
         return unsafe { complex_hash_from_cval(op) };
     }
-    // Molt-native (bridge-managed) objects hash through the runtime hash
-    // authority over their handle bits (hash(int) == int, etc.), not tp_hash.
-    let native = crate::bridge::GLOBAL_BRIDGE.observed_handle_for_pyobj(op);
-    if let Some(value) = native {
+    if let crate::bridge::ResolvedPyObject::ManagedMolt(value) = observed {
         return crate::bridge::molt_hash_from_bits(value.bits());
     }
     // Foreign object: dispatch tp_hash.
@@ -3294,21 +3383,17 @@ pub unsafe extern "C" fn PyObject_Hash(op: *mut PyObject) -> isize {
     {
         return unsafe { hash_fn(op) };
     }
-    // CPython Objects/object.c: a NULL tp_hash means the object is unhashable —
-    // PyObject_HashNotImplemented raises TypeError and returns -1. Never fabricate
-    // an identity hash from the pointer (that would make an unhashable object
-    // silently hashable and usable as a dict/set key).
-    let name = unsafe { object_type_name(op) };
-    let msg = format!("unhashable type: '{}'", &name[..name.len().min(200)]);
-    if let Ok(cmsg) = std::ffi::CString::new(msg) {
-        unsafe {
-            crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_TypeError).cast::<crate::abi_types::PyObject>(),
-                cmsg.as_ptr(),
-            );
+    // CPython lazily readies an unready type, then retries its inherited hash
+    // slot. Readiness failure keeps its own exception.
+    if !tp.is_null() && unsafe { (*tp).tp_flags } & Py_TPFLAGS_READY == 0 {
+        if unsafe { PyType_Ready(tp) } < 0 {
+            return -1;
+        }
+        if let Some(hash_fn) = unsafe { (*tp).tp_hash } {
+            return unsafe { hash_fn(op) };
         }
     }
-    -1
+    unsafe { hash_not_implemented(op) }
 }
 
 // ─── PyType subtype / flags / name ────────────────────────────────────────
@@ -3318,9 +3403,22 @@ pub unsafe extern "C" fn PyType_IsSubtype(a: *mut PyTypeObject, b: *mut PyTypeOb
     if a.is_null() || b.is_null() {
         return 0;
     }
-    let a_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(a.cast::<PyObject>());
-    let b_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(b.cast::<PyObject>());
-    if let (Some(a_bits), Some(b_bits)) = (a_bits, b_bits) {
+    let Some(a_identity) = crate::bridge::resolve_pyobject(a.cast()) else {
+        return 0;
+    };
+    let b_identity = if std::ptr::eq(a, b) {
+        a_identity
+    } else {
+        let Some(identity) = crate::bridge::resolve_pyobject(b.cast()) else {
+            return 0;
+        };
+        identity
+    };
+    if let (
+        crate::bridge::ResolvedPyObject::ManagedMolt(a_bits),
+        crate::bridge::ResolvedPyObject::ManagedMolt(b_bits),
+    ) = (a_identity, b_identity)
+    {
         let hooks = crate::hooks::hooks_or_stubs();
         if unsafe { (hooks.classify_heap)(a_bits.bits()) }
             == crate::abi_types::MoltTypeTag::Type as u8
@@ -3387,108 +3485,146 @@ pub unsafe extern "C" fn PyType_GetName(tp: *mut PyTypeObject) -> *mut PyObject 
     if tp.is_null() {
         return ptr::null_mut();
     }
+    if let Some(value) = GLOBAL_BRIDGE
+        .observed_handle_for_pyobj(tp.cast())
+        .filter(|value| unsafe {
+            (crate::hooks::hooks_or_stubs().classify_heap)(value.bits())
+                == crate::abi_types::MoltTypeTag::Type as u8
+        })
+    {
+        return unsafe { managed_type_name(value.bits(), crate::hooks::TypeMetadataField::Name) };
+    }
+    if let Some(heap) = heap_type_storage(tp) {
+        return unsafe { crate::api::object::Py_XNewRef((*heap).ht_name) };
+    }
     let name_ptr = unsafe { (*tp).tp_name };
     if name_ptr.is_null() {
         return ptr::null_mut();
     }
-    // CPython Objects/typeobject.c type_name -> _PyType_Name: for a non-heap type
-    // return only the segment AFTER the last '.' in tp_name (e.g. `BoolDType`,
-    // not `numpy.dtypes.BoolDType`). PyType_GetQualName delegates here. Our
-    // static/foreign types are all non-heap, so always strip the dotted prefix.
+    // Native static types derive the short name from their physical tp_name.
     let bytes = unsafe { std::ffi::CStr::from_ptr(name_ptr) }.to_bytes();
     let short = match bytes.iter().rposition(|&b| b == b'.') {
         Some(dot) => &bytes[dot + 1..],
         None => bytes,
     };
+    let decoded = String::from_utf8_lossy(short);
     unsafe {
-        crate::api::strings::PyUnicode_FromStringAndSize(
-            short.as_ptr().cast(),
-            short.len() as isize,
+        crate::api::strings::unicode_from_python_text(
+            crate::api::strings::PythonStringBytes::from_utf8(&decoded),
         )
     }
 }
 
-/// Read a `str` attribute-name `PyObject` into an owned `String`, or `None`.
-fn attr_name_utf8(name: *mut PyObject) -> Option<String> {
-    let mut size: Py_ssize_t = 0;
-    let ptr = unsafe { crate::api::strings::PyUnicode_AsUTF8AndSize(name, &raw mut size) };
-    if ptr.is_null() || size < 0 {
-        return None;
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, size as usize) };
-    std::str::from_utf8(bytes).ok().map(|s| s.to_string())
+/// Return a new reference to the canonical type dictionary (CPython 3.12+).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyType_GetDict(tp: *mut PyTypeObject) -> *mut PyObject {
+    unsafe { crate::api::object::Py_XNewRef(type_dict_borrowed(tp)) }
 }
 
-/// `tp_getattro` for `PyType_Type` — inherited by every metaclass that leaves
-/// its own slot null (numpy's `_DTypeMeta`, whose `tp_base` is `type`). CPython
-/// exposes `type.__name__` / `type.__qualname__` as getset descriptors in
-/// `type`'s dict, backed by the `PyTypeObject` fields; our static `PyType_Type`
-/// carries no populated dict, so those well-known attributes are answered here
-/// straight from `tp_name` — exactly what CPython's getters read. This is not a
-/// per-attribute fake: it is the genuine `type` attribute semantics, and it lets
-/// `DType.__name__` inside numpy's `numpy.dtypes._add_dtype_helper` resolve once
-/// the DType crosses into Molt as a foreign wrapper. Every other attribute
-/// delegates to generic resolution (the type's own dict + MRO, populated by
-/// `PyType_Ready` from `tp_methods`/`tp_getset`, e.g. numpy's `_abstract`).
-unsafe extern "C" fn type_getattro(o: *mut PyObject, name: *mut PyObject) -> *mut PyObject {
-    if o.is_null() || name.is_null() {
+/// Internal lookup borrows the same owner; attribute lookup would instead
+/// return a mapping proxy. Callers retaining it across callbacks acquire a pin.
+pub(crate) unsafe fn type_dict_borrowed(tp: *mut PyTypeObject) -> *mut PyObject {
+    if tp.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
-    if let Some(attr) = attr_name_utf8(name) {
-        // `__name__` / `__qualname__` are data descriptors on the metatype in
-        // CPython, so they take priority over the type's own dict. Resolve them
-        // from `tp_name`, stripping any module/qualifier prefix (the part up to
-        // and including the last '.') — exactly what CPython's `type.__name__`
-        // getter does, so numpy's dotted `numpy.dtypes.BoolDType` reports
-        // `BoolDType` (the key `_add_dtype_helper` stores in `numpy.dtypes`).
-        if attr == "__name__" || attr == "__qualname__" {
-            let tp = o.cast::<PyTypeObject>();
-            let name_ptr = unsafe { (*tp).tp_name };
-            if !name_ptr.is_null() {
-                let bytes = unsafe { std::ffi::CStr::from_ptr(name_ptr) }.to_bytes();
-                let short = match bytes.iter().rposition(|&b| b == b'.') {
-                    Some(dot) => &bytes[dot + 1..],
-                    None => bytes,
-                };
-                return unsafe {
-                    crate::api::strings::PyUnicode_FromStringAndSize(
-                        short.as_ptr().cast::<std::os::raw::c_char>(),
-                        short.len() as Py_ssize_t,
-                    )
-                };
-            }
+    unsafe {
+        if ((*tp).tp_dict.is_null() || (*tp).tp_flags & Py_TPFLAGS_READY == 0)
+            && PyType_Ready(tp) < 0
+        {
+            return ptr::null_mut();
         }
+        (*tp).tp_dict
+    }
+}
+
+unsafe fn managed_type_name(bits: u64, field: crate::hooks::TypeMetadataField) -> *mut PyObject {
+    let result = unsafe { (crate::hooks::hooks_or_stubs().type_metadata)(bits, field) };
+    unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result) }
+}
+
+/// CPython _PyType_Name semantics differ from PyType_GetName for a dotted heap
+/// __name__: repr uses only the final component. Read current managed metadata;
+/// native C types retain their physical tp_name authority.
+pub(crate) unsafe fn type_short_name_bytes(tp: *mut PyTypeObject) -> Option<Vec<u8>> {
+    if tp.is_null() {
+        return None;
+    }
+    let bytes = if GLOBAL_BRIDGE.observed_handle_for_pyobj(tp.cast()).is_some() {
+        let name = unsafe { PyType_GetName(tp) };
+        if name.is_null() {
+            return None;
+        }
+        let bytes = unsafe { crate::api::strings::unicode_bytes(name) }.map(<[u8]>::to_vec);
+        unsafe { crate::api::errors::release_preserving_error(&[name]) };
+        bytes?
+    } else {
+        let name = unsafe { (*tp).tp_name };
+        if name.is_null() {
+            return None;
+        }
+        String::from_utf8_lossy(unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes())
+            .into_owned()
+            .into_bytes()
+    };
+    let start = bytes
+        .iter()
+        .rposition(|byte| *byte == b'.')
+        .map_or(0, |index| index + 1);
+    Some(bytes[start..].to_vec())
+}
+
+/// Metatype attribute lookup shares the public name observers. Managed types
+/// read callback-free structural metadata; native heap types use distinct
+/// ht_name/ht_qualname fields; static types derive their short tp_name. All
+/// other attributes retain normal metatype-descriptor and type-MRO precedence.
+unsafe extern "C" fn type_getattro(o: *mut PyObject, name: *mut PyObject) -> *mut PyObject {
+    use crate::api::{descriptor, refcount::OwnedPyObject};
+    if o.is_null() || name.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    }
+    let Some(_type_owner) = (unsafe { OwnedPyObject::try_from_borrowed(o) }) else {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    };
+    let _name_owner = unsafe { OwnedPyObject::from_borrowed(name) };
+    if descriptors::pending() {
+        return ptr::null_mut();
     }
     let tp = o.cast::<PyTypeObject>();
     let metatype = unsafe { (*o).ob_type };
-    let meta_attribute = unsafe { _PyType_Lookup(metatype, name) };
-    if !meta_attribute.is_null() && unsafe { PyDescr_IsData(meta_attribute) } != 0 {
-        let descriptor_type = unsafe { (*meta_attribute).ob_type };
-        if !descriptor_type.is_null()
-            && let Some(get) = unsafe { (*descriptor_type).tp_descr_get }
-        {
-            return unsafe { get(meta_attribute, o, metatype.cast::<PyObject>()) };
-        }
+    let _metatype_owner = unsafe { OwnedPyObject::from_borrowed(metatype.cast()) };
+    let meta_owner = unsafe { OwnedPyObject::from_borrowed(_PyType_Lookup(metatype, name)) };
+    if descriptors::pending() {
+        return ptr::null_mut();
+    }
+    let meta_attribute = meta_owner.as_ptr();
+    let is_data = match unsafe { descriptor::is_data(meta_attribute) } {
+        Ok(value) => value,
+        Err(()) => return ptr::null_mut(),
+    };
+    if is_data && let Some(result) = unsafe { descriptor::get(meta_attribute, o, metatype.cast()) }
+    {
+        return result;
     }
 
-    let attribute = unsafe { _PyType_Lookup(tp, name) };
+    let owner = unsafe { OwnedPyObject::from_borrowed(_PyType_Lookup(tp, name)) };
+    if descriptors::pending() {
+        return ptr::null_mut();
+    }
+    let attribute = owner.as_ptr();
     if !attribute.is_null() {
-        let descriptor_type = unsafe { (*attribute).ob_type };
-        if !descriptor_type.is_null()
-            && let Some(get) = unsafe { (*descriptor_type).tp_descr_get }
-        {
-            return unsafe { get(attribute, ptr::null_mut(), o) };
+        if let Some(result) = unsafe { descriptor::get(attribute, ptr::null_mut(), o) } {
+            return result;
         }
         unsafe { crate::api::refcount::Py_INCREF(attribute) };
         return attribute;
     }
 
     if !meta_attribute.is_null() {
-        let descriptor_type = unsafe { (*meta_attribute).ob_type };
-        if !descriptor_type.is_null()
-            && let Some(get) = unsafe { (*descriptor_type).tp_descr_get }
-        {
-            return unsafe { get(meta_attribute, o, metatype.cast::<PyObject>()) };
+        if let Some(result) = unsafe { descriptor::get(meta_attribute, o, metatype.cast()) } {
+            return result;
         }
         unsafe { crate::api::refcount::Py_INCREF(meta_attribute) };
         return meta_attribute;
@@ -3498,13 +3634,14 @@ unsafe extern "C" fn type_getattro(o: *mut PyObject, name: *mut PyObject) -> *mu
 }
 
 /// Install `type_getattro` on `PyType_Type` so metaclasses inherit it. Called
-/// from `init_static_types` after the static type table is zero-initialized.
+/// by the process ABI bootstrap after the static type table is zero-initialized.
 ///
 /// # Safety
 /// Must be called during single-threaded ABI initialization.
 pub unsafe fn init_type_getattro() {
     unsafe {
         crate::abi_types::PyType_Type.tp_getattro = Some(type_getattro);
+        crate::abi_types::PyType_Type.tp_setattro = Some(root_metadata::type_setattro);
     }
 }
 
@@ -3519,7 +3656,7 @@ pub unsafe fn init_type_getattro() {
 /// `DType.__name__` (numpy's `numpy.dtypes._add_dtype_helper`) fail to resolve.
 /// `tp`'s metatype is the object that answers attribute access for `tp` and
 /// every sibling instance of that metaclass, so installing our `type_getattro`
-/// here (only when the slot is null — never overriding a metatype's own) makes
+/// here (only when neither getter is declared) makes
 /// `Type.__name__` / `__qualname__` resolve for every type of that metaclass,
 /// from Molt (via foreign-object custody) and from C alike.
 ///
@@ -3533,14 +3670,30 @@ pub(crate) unsafe fn install_metatype_getattro(tp: *mut PyTypeObject) {
     if metatype.is_null() || std::ptr::eq(metatype, tp) {
         return;
     }
-    if unsafe { (*metatype).tp_getattro }.is_none() {
+    if unsafe { (*metatype).tp_getattr }.is_none() && unsafe { (*metatype).tp_getattro }.is_none() {
         unsafe { (*metatype).tp_getattro = Some(type_getattro) };
     }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_GetQualName(tp: *mut PyTypeObject) -> *mut PyObject {
-    // For our purposes, qualname == name.
+    if tp.is_null() {
+        return ptr::null_mut();
+    }
+    if let Some(value) = GLOBAL_BRIDGE
+        .observed_handle_for_pyobj(tp.cast())
+        .filter(|value| unsafe {
+            (crate::hooks::hooks_or_stubs().classify_heap)(value.bits())
+                == crate::abi_types::MoltTypeTag::Type as u8
+        })
+    {
+        return unsafe {
+            managed_type_name(value.bits(), crate::hooks::TypeMetadataField::QualName)
+        };
+    }
+    if let Some(heap) = heap_type_storage(tp) {
+        return unsafe { crate::api::object::Py_XNewRef((*heap).ht_qualname) };
+    }
     unsafe { PyType_GetName(tp) }
 }
 
@@ -3558,6 +3711,11 @@ pub unsafe extern "C" fn PyType_HasFeature(
 /// Best-effort semantic type name of a live `PyObject*` for diagnostics
 /// (mirrors CPython's `Py_TYPE(v)->tp_name`, defaulting to `object`).
 unsafe fn object_type_name(op: *mut PyObject) -> String {
+    unsafe { object_type_name_with_precision(op, usize::MAX) }
+}
+
+/// CPython's %.Ns truncates raw tp_name bytes before UTF-8 replacement decoding.
+pub unsafe fn object_type_name_with_precision(op: *mut PyObject, precision: usize) -> String {
     if op.is_null() {
         return "object".to_string();
     }
@@ -3569,9 +3727,16 @@ unsafe fn object_type_name(op: *mut PyObject) -> String {
     if name.is_null() {
         return "object".to_string();
     }
-    unsafe { std::ffi::CStr::from_ptr(name) }
-        .to_string_lossy()
-        .into_owned()
+    let bytes = if precision == usize::MAX {
+        unsafe { std::ffi::CStr::from_ptr(name) }.to_bytes()
+    } else {
+        let mut length = 0;
+        while length < precision && unsafe { *name.add(length) } != 0 {
+            length += 1;
+        }
+        unsafe { std::slice::from_raw_parts(name.cast::<u8>(), length) }
+    };
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 /// Validate that a `tp_str`/`tp_repr` slot returned an actual `str`, mirroring
@@ -3584,9 +3749,7 @@ unsafe fn check_stringifier_result(res: *mut PyObject, dunder: &str) -> *mut PyO
         return ptr::null_mut();
     }
     if unsafe { crate::api::strings::PyUnicode_Check(res) } == 0 {
-        let mut name = unsafe { object_type_name(res) };
-        name.truncate(200);
-        unsafe { crate::api::refcount::Py_DECREF(res) };
+        let name = unsafe { object_type_name_with_precision(res, 200) };
         let msg = format!("{dunder} returned non-string (type {name})");
         if let Ok(cmsg) = std::ffi::CString::new(msg) {
             unsafe {
@@ -3597,6 +3760,7 @@ unsafe fn check_stringifier_result(res: *mut PyObject, dunder: &str) -> *mut PyO
                 );
             }
         }
+        unsafe { crate::api::errors::release_preserving_error(&[res]) };
         return ptr::null_mut();
     }
     res
@@ -3709,23 +3873,17 @@ pub unsafe extern "C" fn PyObject_Str(op: *mut PyObject) -> *mut PyObject {
 }
 
 // Comparison opcodes (CPython Include/object.h): Py_LT..Py_GE = 0..5.
-const CMP_LT: c_int = 0;
-const CMP_LE: c_int = 1;
-const CMP_EQ: c_int = 2;
-const CMP_NE: c_int = 3;
-const CMP_GT: c_int = 4;
-const CMP_GE: c_int = 5;
+const CMP_LT: c_int = RichCompareOp::Lt as c_int;
+const CMP_LE: c_int = RichCompareOp::Le as c_int;
+const CMP_EQ: c_int = RichCompareOp::Eq as c_int;
+const CMP_NE: c_int = RichCompareOp::Ne as c_int;
+const CMP_GT: c_int = RichCompareOp::Gt as c_int;
+const CMP_GE: c_int = RichCompareOp::Ge as c_int;
 
 /// `_Py_SwappedOp[op]` — the reflected comparison operator.
 #[inline]
 fn swapped_op(op: c_int) -> c_int {
-    match op {
-        CMP_LT => CMP_GT,
-        CMP_LE => CMP_GE,
-        CMP_GT => CMP_LT,
-        CMP_GE => CMP_LE,
-        other => other, // EQ/NE are self-reflected
-    }
+    RichCompareOp::from_i32(op).map_or(op, |op| op.reversed() as c_int)
 }
 
 #[inline]
@@ -3773,145 +3931,130 @@ fn cmp_bool_result(b: bool) -> *mut PyObject {
     res
 }
 
+/// Return the declaring slot's owned NotImplemented result.
 #[inline]
-fn ordering_to_result(ord: std::cmp::Ordering, op: c_int) -> Option<*mut PyObject> {
-    use std::cmp::Ordering::*;
-    let b = match op {
-        CMP_LT => ord == Less,
-        CMP_LE => ord != Greater,
-        CMP_EQ => ord == Equal,
-        CMP_NE => ord != Equal,
-        CMP_GT => ord == Greater,
-        CMP_GE => ord != Less,
-        _ => return None,
-    };
-    Some(cmp_bool_result(b))
+unsafe fn richcmp_not_implemented() -> *mut PyObject {
+    let result = &raw mut crate::abi_types::Py_NotImplementedSentinel;
+    unsafe { crate::api::refcount::Py_INCREF(result) };
+    result
 }
 
-/// Value comparison for two Molt-native (bridge-resolvable) operands, playing
-/// the role of CPython's `long_richcompare` / `float_richcompare` /
-/// `unicode_richcompare` slots (bridge-minted natives carry no tp_richcompare).
-/// Returns `None` when this pair is not a natively comparable combination —
-/// callers then continue with slot dispatch / NotImplemented resolution.
-unsafe fn native_value_richcompare(
-    v: *mut PyObject,
-    w: *mut PyObject,
+/// Invoke a canonical builtin declaring class without generic redispatch.
+/// The caller has admitted physical operand families and owns their values.
+pub(crate) unsafe fn declaring_richcompare(
+    declaring_type: *mut PyTypeObject,
+    left: u64,
+    right: u64,
     op: c_int,
-) -> Option<*mut PyObject> {
-    let (vb, wb) = {
-        let bridge = &*crate::bridge::GLOBAL_BRIDGE;
-        (
-            bridge.molt_handle_for_pyobj(v),
-            bridge.molt_handle_for_pyobj(w),
-        )
-    };
-    let (vb, wb) = (vb?, wb?);
-    let (mv, mw) = (vb.decode(), wb.decode());
-
-    // Numeric pair (inline int / bool exact in i64; float via f64 — inline ints
-    // are 47-bit, exact in f64, so a mixed compare loses nothing).
-    let as_num = |m: &molt_lang_obj_model::MoltObject| -> Option<(Option<i64>, f64)> {
-        if m.is_bool() {
-            let i = m.as_bool().unwrap_or(false) as i64;
-            Some((Some(i), i as f64))
-        } else if m.is_int() {
-            let i = m.as_int()?;
-            Some((Some(i), i as f64))
-        } else if m.is_float() {
-            Some((None, m.as_float()?))
-        } else {
-            None
+) -> *mut PyObject {
+    if RichCompareOp::from_i32(op).is_none() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    }
+    let Some(owner) = crate::bridge::resolved_molt_handle(declaring_type.cast()) else {
+        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            unsafe {
+                crate::api::errors::PyErr_SetString(
+                    (&raw mut crate::abi_types::PyExc_SystemError).cast::<PyObject>(),
+                    c"builtin comparison owner has no runtime class identity".as_ptr(),
+                )
+            };
         }
+        return ptr::null_mut();
     };
-    if let (Some((vi, vf)), Some((wi, wf))) = (as_num(&mv), as_num(&mw)) {
-        // int-vs-int stays exact; any float operand compares as f64.
-        let ord = match (vi, wi) {
-            (Some(a), Some(b)) => a.cmp(&b),
-            _ => vf.partial_cmp(&wf)?, // NaN: fall through to slot path
+    let result = unsafe {
+        (crate::hooks::hooks_or_stubs().object_richcompare_builtin)(owner.bits(), op, left, right)
+    };
+    unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result) }
+}
+
+unsafe fn numeric_declaring_richcompare(
+    declaring_type: *mut PyTypeObject,
+    left: *mut PyObject,
+    right: *mut PyObject,
+    op: c_int,
+) -> *mut PyObject {
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
+    let Some(left) = (unsafe { crate::api::numbers::numeric_comparison_value(left) }) else {
+        return ptr::null_mut();
+    };
+    let Some(right) = (unsafe { crate::api::numbers::numeric_comparison_value(right) }) else {
+        return ptr::null_mut();
+    };
+    unsafe { declaring_richcompare(declaring_type, left.bits(), right.bits(), op) }
+}
+
+/// A declaring byte comparison borrows storage only; the shared comparator
+/// performs no callbacks. Raw native bytes retain their truthful C prefix.
+unsafe fn comparison_bytes<'a>(
+    object: *mut PyObject,
+    kind: crate::abi_types::MoltTypeTag,
+) -> Option<&'a [u8]> {
+    if let crate::bridge::ResolvedPyObject::ManagedMolt(handle) =
+        crate::bridge::observe_pyobject(object)?
+    {
+        let hooks = crate::hooks::hooks_or_stubs();
+        let mut len = 0;
+        let data = unsafe {
+            if kind == crate::abi_types::MoltTypeTag::Str {
+                (hooks.str_data)(handle.bits(), &raw mut len)
+            } else {
+                (hooks.bytes_data)(handle.bits(), &raw mut len)
+            }
         };
-        return ordering_to_result(ord, op);
+        if data.is_null() {
+            if !crate::api::errors::transfer_runtime_pending_to_current() {
+                unsafe { crate::api::errors::PyErr_BadInternalCall() };
+            }
+            return None;
+        }
+        return Some(unsafe { std::slice::from_raw_parts(data, len) });
     }
-
-    // str pair: byte-lexicographic == code-point-lexicographic under UTF-8.
-    let str_bytes = |bits: u64| -> Option<Vec<u8>> {
-        let h = crate::hooks::hooks_or_stubs();
-        let m = molt_lang_obj_model::MoltObject::from_bits(bits);
-        if !m.is_ptr() {
+    if kind == crate::abi_types::MoltTypeTag::Bytes {
+        let object = object.cast::<crate::abi_types::PyBytesObject>();
+        let len = unsafe { (*object).ob_base.ob_size };
+        if len < 0 {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
             return None;
         }
-        if unsafe { (h.classify_heap)(bits) } != crate::abi_types::MoltTypeTag::Str as u8 {
-            return None;
-        }
-        let mut len: usize = 0;
-        let p = unsafe { (h.str_data)(bits, &raw mut len) };
-        if p.is_null() {
-            return Some(Vec::new());
-        }
-        Some(unsafe { std::slice::from_raw_parts(p, len) }.to_vec())
-    };
-    if let (Some(a), Some(b)) = (str_bytes(vb.bits()), str_bytes(wb.bits())) {
-        return ordering_to_result(a.cmp(&b), op);
-    }
-
-    // bytes pair: lexicographic over the raw bytes as UNSIGNED (CPython
-    // `Objects/bytesobject.c bytes_richcompare` ordering — `Py_CHARMASK` +
-    // `memcmp`, shorter-is-less on a full-prefix tie; `Vec<u8>::cmp` is exactly
-    // that). Mirrors the `str_bytes` path above for the `bytes` builtin.
-    let bytes_bytes = |bits: u64| -> Option<Vec<u8>> {
-        let h = crate::hooks::hooks_or_stubs();
-        let m = molt_lang_obj_model::MoltObject::from_bits(bits);
-        if !m.is_ptr() {
-            return None;
-        }
-        if unsafe { (h.classify_heap)(bits) } != crate::abi_types::MoltTypeTag::Bytes as u8 {
-            return None;
-        }
-        let mut len: usize = 0;
-        let p = unsafe { (h.bytes_data)(bits, &raw mut len) };
-        if p.is_null() {
-            return Some(Vec::new());
-        }
-        Some(unsafe { std::slice::from_raw_parts(p, len) }.to_vec())
-    };
-    if let (Some(a), Some(b)) = (bytes_bytes(vb.bits()), bytes_bytes(wb.bits())) {
-        return ordering_to_result(a.cmp(&b), op);
-    }
-
-    // Same handle bits: identity implies equality for EQ/NE.
-    if vb == wb && (op == CMP_EQ || op == CMP_NE) {
-        return Some(cmp_bool_result(op == CMP_EQ));
+        let data = unsafe { (&raw const (*object).ob_sval).cast::<u8>() };
+        return Some(unsafe { std::slice::from_raw_parts(data, len as usize) });
     }
     None
 }
 
-/// Return a new reference to `NotImplemented` — CPython's contract when a
-/// `tp_richcompare` slot does not handle the operand pair (the caller then tries
-/// the reflected slot / resolves EQ-NE by identity). Mirrors
-/// `api::sequences::richcompare_not_implemented`.
-#[inline]
-unsafe fn richcmp_not_implemented() -> *mut PyObject {
-    let ni = &raw mut crate::abi_types::Py_NotImplementedSentinel;
-    unsafe { crate::api::refcount::Py_INCREF(ni) };
-    ni
+unsafe fn bytes_declaring_richcompare(
+    left: *mut PyObject,
+    right: *mut PyObject,
+    op: c_int,
+    kind: crate::abi_types::MoltTypeTag,
+) -> *mut PyObject {
+    let Some(op) = RichCompareOp::from_i32(op) else {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    };
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
+    let Some(left) = (unsafe { comparison_bytes(left, kind) }) else {
+        return if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            unsafe { richcmp_not_implemented() }
+        } else {
+            ptr::null_mut()
+        };
+    };
+    let Some(right) = (unsafe { comparison_bytes(right, kind) }) else {
+        return if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            unsafe { richcmp_not_implemented() }
+        } else {
+            ptr::null_mut()
+        };
+    };
+    cmp_bool_result(op.test(molt_lang_obj_model::byte_compare::compare_bytes(
+        left, right,
+    )))
 }
 
-// ─── Builtin value-type `tp_richcompare` slots (CLASS1-SLOTS) ────────────────
-//
-// numpy 2.4.2 `DUAL_INHERIT`/`DUAL_INHERIT2` (`multiarraymodule.c:4827-4835`)
-// copies `tp_richcompare`/`tp_hash` straight off molt's builtin
-// `PyFloat_Type`/`PyComplex_Type`/`PyBytes_Type`/`PyUnicode_Type` (and the
-// `Long` scalar inherits `PyLong_Type`'s via the `tp_base` chain at
-// `PyType_Ready`). Those slots were NULL (zeroed-shell statics), leaving numpy's
-// Double/CDouble/String/Unicode scalar types non-comparable and unhashable and
-// breaking `_multiarray_umath` init. These slots close that as a batch, mirroring
-// the landed `molt_tuple_richcompare`: each guards the concrete builtin type and
-// routes value comparison through the single `native_value_richcompare`
-// authority (so `do_richcompare`'s fast path and the slot never drift), deferring
-// with `NotImplemented` for cross-type pairs exactly where CPython does.
-
-/// CPython `Objects/longobject.c` `long_richcompare` (:3312). `CHECK_BINOP`: if
-/// either operand is not a `PyLong` → `NotImplemented` (int-vs-float defers to
-/// float's reflected slot). Value order via the runtime int authority.
+/// int's declaring slot accepts only int/bool storage; float reflection owns
+/// mixed int/float comparison. Numeric values are compared by the runtime.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_long_richcompare(
     v: *mut PyObject,
@@ -3923,37 +4066,27 @@ pub unsafe extern "C" fn molt_long_richcompare(
     {
         return unsafe { richcmp_not_implemented() };
     }
-    match unsafe { native_value_richcompare(v, w, op) } {
-        Some(res) => res,
-        None => unsafe { richcmp_not_implemented() },
-    }
+    unsafe { numeric_declaring_richcompare(&raw mut crate::abi_types::PyLong_Type, v, w, op) }
 }
 
-/// CPython `Objects/floatobject.c` `float_richcompare` (:417). `float` compares
-/// with `float` and (exactly) with `int`; any other `w` → `NotImplemented`.
+/// float's declaring slot accepts float receivers and float/int peers.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_float_richcompare(
     v: *mut PyObject,
     w: *mut PyObject,
     op: c_int,
 ) -> *mut PyObject {
-    if unsafe { crate::api::numbers::PyFloat_Check(v) } == 0 {
-        return unsafe { richcmp_not_implemented() };
-    }
-    if unsafe { crate::api::numbers::PyFloat_Check(w) } == 0
-        && unsafe { crate::api::numbers::PyLong_Check(w) } == 0
+    if unsafe { crate::api::numbers::PyFloat_Check(v) } == 0
+        || (unsafe { crate::api::numbers::PyFloat_Check(w) } == 0
+            && unsafe { crate::api::numbers::PyLong_Check(w) } == 0)
     {
         return unsafe { richcmp_not_implemented() };
     }
-    match unsafe { native_value_richcompare(v, w, op) } {
-        Some(res) => res,
-        None => unsafe { richcmp_not_implemented() },
-    }
+    unsafe { numeric_declaring_richcompare(&raw mut crate::abi_types::PyFloat_Type, v, w, op) }
 }
 
-/// CPython `Objects/unicodeobject.c` `PyUnicode_RichCompare` (:10952). Non-`str`
-/// operand → `NotImplemented`; else lexicographic by code point (UTF-8 byte
-/// order == code-point order).
+/// str's declaring slot admits only string storage, then shares the runtime's
+/// code-point-preserving byte order without invoking outer subclass overrides.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_str_richcompare(
     v: *mut PyObject,
@@ -3965,14 +4098,11 @@ pub unsafe extern "C" fn molt_str_richcompare(
     {
         return unsafe { richcmp_not_implemented() };
     }
-    match unsafe { native_value_richcompare(v, w, op) } {
-        Some(res) => res,
-        None => unsafe { richcmp_not_implemented() },
-    }
+    unsafe { bytes_declaring_richcompare(v, w, op, crate::abi_types::MoltTypeTag::Str) }
 }
 
-/// CPython `Objects/bytesobject.c` `bytes_richcompare` (:1544). Non-`bytes`
-/// operand → `NotImplemented`; else lexicographic over the raw unsigned bytes.
+/// bytes's declaring slot admits only bytes storage. Bytearray reflection owns
+/// a mixed bytes/bytearray operation.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_bytes_richcompare(
     v: *mut PyObject,
@@ -3984,57 +4114,147 @@ pub unsafe extern "C" fn molt_bytes_richcompare(
     {
         return unsafe { richcmp_not_implemented() };
     }
-    match unsafe { native_value_richcompare(v, w, op) } {
-        Some(res) => res,
-        None => unsafe { richcmp_not_implemented() },
+    unsafe { bytes_declaring_richcompare(v, w, op, crate::abi_types::MoltTypeTag::Bytes) }
+}
+
+/// A native bytes exporter uses the same storage reader as its declaring
+/// comparison slot and the canonical public buffer ownership transaction.
+pub unsafe extern "C" fn molt_bytes_getbuffer(
+    object: *mut PyObject,
+    view: *mut crate::abi_types::Py_buffer,
+    flags: c_int,
+) -> c_int {
+    if unsafe { crate::api::strings::PyBytes_Check(object) } == 0 {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return -1;
+    }
+    let Some(bytes) = (unsafe { comparison_bytes(object, crate::abi_types::MoltTypeTag::Bytes) })
+    else {
+        return -1;
+    };
+    unsafe {
+        crate::api::buffer::PyBuffer_FillInfo(
+            view,
+            object,
+            bytes.as_ptr().cast_mut().cast(),
+            bytes.len() as Py_ssize_t,
+            1,
+            flags,
+        )
     }
 }
 
-/// CPython `Objects/complexobject.c` `complex_richcompare` (:582). `complex`
-/// supports ONLY `==`/`!=` (ordering → `NotImplemented` → TypeError). Self-
-/// contained (molt complex is a C-layout `PyComplexObject`, not a bridge handle):
-/// vs `int` with zero imag defers to `float(real)`-vs-int; vs `float` equal iff
-/// `imag==0 && real==w`; vs `complex` both parts match exactly; else
-/// `NotImplemented`. Faithful to numpy's `CDouble` DUAL_INHERIT layout.
+/// Bytearray owns mixed bytes-like comparison. Hold the receiver's export
+/// before invoking the peer exporter, preserving the protocol's resize guard.
+pub unsafe extern "C" fn molt_bytearray_richcompare(
+    left: *mut PyObject,
+    right: *mut PyObject,
+    op: c_int,
+) -> *mut PyObject {
+    let Some(op) = RichCompareOp::from_i32(op) else {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    };
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
+    let Some(resolved) = crate::bridge::observe_pyobject(left) else {
+        return if left.is_null() {
+            unsafe { richcmp_not_implemented() }
+        } else {
+            ptr::null_mut()
+        };
+    };
+    let managed = matches!(resolved, crate::bridge::ResolvedPyObject::ManagedMolt(_));
+    let admitted = if managed {
+        let ty = unsafe { crate::bridge::semantic_type(left) };
+        if ty.is_null() {
+            return ptr::null_mut();
+        }
+        (unsafe { PyType_IsSubtype(ty, &raw mut crate::abi_types::PyByteArray_Type) }) != 0
+    } else {
+        (unsafe { crate::api::strings::PyByteArray_Check(left) }) != 0
+    };
+    if !admitted {
+        return unsafe { richcmp_not_implemented() };
+    }
+    if unsafe { crate::api::buffer::PyObject_CheckBuffer(left) } == 0
+        || unsafe { crate::api::buffer::PyObject_CheckBuffer(right) } == 0
+    {
+        return unsafe { richcmp_not_implemented() };
+    }
+    let mut receiver: crate::abi_types::Py_buffer = unsafe { std::mem::zeroed() };
+    if unsafe {
+        crate::api::buffer::PyObject_GetBuffer(
+            left,
+            &raw mut receiver,
+            crate::abi_types::PyBUF_SIMPLE,
+        )
+    } != 0
+    {
+        unsafe { crate::api::errors::PyErr_Clear() };
+        return unsafe { richcmp_not_implemented() };
+    }
+    let mut peer: crate::abi_types::Py_buffer = unsafe { std::mem::zeroed() };
+    if unsafe {
+        crate::api::buffer::PyObject_GetBuffer(right, &raw mut peer, crate::abi_types::PyBUF_SIMPLE)
+    } != 0
+    {
+        // bytearray declines either unavailable simple export. Retire the
+        // acquisition error before releasing the already-held receiver.
+        unsafe {
+            crate::api::errors::PyErr_Clear();
+            crate::api::buffer::PyBuffer_Release(&raw mut receiver);
+        }
+        return unsafe { richcmp_not_implemented() };
+    }
+    let data = receiver.buf.cast::<u8>();
+    let len = receiver.len;
+    let valid = len >= 0
+        && peer.len >= 0
+        && (len == 0 || !data.is_null())
+        && (peer.len == 0 || !peer.buf.is_null());
+    let result = if valid {
+        let left = if len == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(data, len as usize) }
+        };
+        let right = if peer.len == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(peer.buf.cast::<u8>(), peer.len as usize) }
+        };
+        cmp_bool_result(op.test(molt_lang_obj_model::byte_compare::compare_bytes(
+            left, right,
+        )))
+    } else {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        ptr::null_mut()
+    };
+    crate::api::errors::with_preserved_error(|| unsafe {
+        crate::api::buffer::PyBuffer_Release(&raw mut receiver);
+        crate::api::buffer::PyBuffer_Release(&raw mut peer);
+    });
+    result
+}
+
+/// Complex declares equality only, with complex/float/int peers. Exact mixed
+/// numeric comparison and NaN behavior belong to the runtime family kernel.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_complex_richcompare(
     v: *mut PyObject,
     w: *mut PyObject,
     op: c_int,
 ) -> *mut PyObject {
-    if op != CMP_EQ && op != CMP_NE {
+    if (op != CMP_EQ && op != CMP_NE)
+        || unsafe { crate::api::numbers::PyComplex_Check(v) } == 0
+        || (unsafe { crate::api::numbers::PyComplex_Check(w) } == 0
+            && unsafe { crate::api::numbers::PyFloat_Check(w) } == 0
+            && unsafe { crate::api::numbers::PyLong_Check(w) } == 0)
+    {
         return unsafe { richcmp_not_implemented() };
     }
-    if unsafe { crate::api::numbers::PyComplex_Check(v) } == 0 {
-        return unsafe { richcmp_not_implemented() };
-    }
-    let i = unsafe { crate::api::numbers::PyComplex_AsCComplex(v) };
-    let equal: bool;
-    if unsafe { crate::api::numbers::PyLong_Check(w) } != 0 {
-        if i.imag == 0.0 {
-            // Defer to `float(real) <op> int` so the exact float/int comparison
-            // (and its NotImplemented rules) applies. Matches CPython.
-            let j = unsafe { crate::api::numbers::PyFloat_FromDouble(i.real) };
-            if j.is_null() {
-                return ptr::null_mut();
-            }
-            let sub = unsafe { PyObject_RichCompare(j, w, op) };
-            unsafe { crate::api::refcount::Py_DECREF(j) };
-            return sub;
-        }
-        equal = false;
-    } else if unsafe { crate::api::numbers::PyFloat_Check(w) } != 0 {
-        let wd = unsafe { crate::api::numbers::PyFloat_AsDouble(w) };
-        equal = i.real == wd && i.imag == 0.0;
-    } else if unsafe { crate::api::numbers::PyComplex_Check(w) } != 0 {
-        let j = unsafe { crate::api::numbers::PyComplex_AsCComplex(w) };
-        equal = i.real == j.real && i.imag == j.imag;
-    } else {
-        return unsafe { richcmp_not_implemented() };
-    }
-    cmp_bool_result(equal == (op == CMP_EQ))
+    unsafe { numeric_declaring_richcompare(&raw mut crate::abi_types::PyComplex_Type, v, w, op) }
 }
-
 // ─── Builtin value-type `tp_hash` slot (CLASS1-SLOTS) ────────────────────────
 
 /// Read `ob_fval` off a foreign object whose type is `float`-layout-compatible
@@ -4061,11 +4281,10 @@ unsafe fn complex_hash_from_cval(op: *mut PyObject) -> isize {
     let part_hash = |d: f64| -> isize {
         crate::bridge::molt_hash_from_bits(molt_lang_obj_model::MoltObject::from_float(d).bits())
     };
-    const PY_HASH_IMAG: usize = 1000003;
-    let hr = part_hash(cval.real) as usize;
-    let hi = part_hash(cval.imag) as usize;
-    let combined = hr.wrapping_add(PY_HASH_IMAG.wrapping_mul(hi)) as isize;
-    if combined == -1 { -2 } else { combined }
+    molt_lang_obj_model::hash_policy::combine_complex_hashes(
+        part_hash(cval.real) as i64,
+        part_hash(cval.imag) as i64,
+    ) as isize
 }
 
 /// Set the CPython `unhashable type: '<name>'` TypeError and return the `-1`
@@ -4074,8 +4293,8 @@ unsafe fn complex_hash_from_cval(op: *mut PyObject) -> isize {
 /// handle and no known-compatible C layout (never fabricate an identity hash).
 #[inline]
 unsafe fn hash_not_implemented(op: *mut PyObject) -> isize {
-    let name = unsafe { object_type_name(op) };
-    let msg = format!("unhashable type: '{}'", &name[..name.len().min(200)]);
+    let name = unsafe { object_type_name_with_precision(op, 200) };
+    let msg = format!("unhashable type: '{name}'");
     if let Ok(cmsg) = std::ffi::CString::new(msg) {
         unsafe {
             crate::api::errors::PyErr_SetString(
@@ -4089,6 +4308,9 @@ unsafe fn hash_not_implemented(op: *mut PyObject) -> isize {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyObject_HashNotImplemented(op: *mut PyObject) -> isize {
+    if crate::bridge::resolve_pyobject(op).is_none() {
+        return -1;
+    }
     unsafe { hash_not_implemented(op) }
 }
 
@@ -4154,13 +4376,7 @@ pub unsafe extern "C" fn molt_type_identity_hash(op: *mut PyObject) -> isize {
     if op.is_null() {
         return -1;
     }
-    // CPython `Python/pyhash.c` `_Py_HashPointer`: rotate the address right by 4
-    // (usize::BITS matches SIZEOF_VOID_P*8 on both wasm32 and native), then map
-    // the -1 error sentinel to -2. Stable per-object; never the -1 error value.
-    let p = op as usize;
-    let x = (p >> 4) | (p << (usize::BITS - 4));
-    let h = x as isize;
-    if h == -1 { -2 } else { h }
+    molt_lang_obj_model::hash_policy::hash_pointer(op as u64) as isize
 }
 
 /// Faithful port of CPython `Objects/object.c` `do_richcompare`: reflected
@@ -4168,16 +4384,34 @@ pub unsafe extern "C" fn molt_type_identity_hash(op: *mut PyObject) -> isize {
 /// error; a both-NotImplemented result resolves EQ/NE by identity and raises
 /// TypeError for ordering — never leaks NotImplemented to the caller.
 unsafe fn do_richcompare(v: *mut PyObject, w: *mut PyObject, op: c_int) -> *mut PyObject {
-    // Molt-native value comparison (the natives' "type slots").
-    if let Some(res) = unsafe { native_value_richcompare(v, w, op) } {
-        return res;
+    let Some(left) = crate::bridge::observe_pyobject(v) else {
+        return ptr::null_mut();
+    };
+    let Some(right) = crate::bridge::observe_pyobject(w) else {
+        return ptr::null_mut();
+    };
+    if let (
+        crate::bridge::ResolvedPyObject::ManagedMolt(left),
+        crate::bridge::ResolvedPyObject::ManagedMolt(right),
+    ) = (left, right)
+    {
+        let result = unsafe {
+            (crate::hooks::hooks_or_stubs().object_richcompare)(op, left.bits(), right.bits())
+        };
+        return unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result) };
     }
     // Slot dispatch follows semantic `Py_TYPE`, not the physical carrier.
     // Generic managed views deliberately use `MoltManaged_Type` so C code can
     // never read a list/dict/string layout that is not present. The semantic
     // resolver preserves the corresponding builtin type identity and slots.
-    let tv = unsafe { crate::bridge::semantic_type(v) };
-    let tw = unsafe { crate::bridge::semantic_type(w) };
+    let tv = unsafe { crate::bridge::semantic_type_for_resolved(v, left) };
+    let tw = unsafe { crate::bridge::semantic_type_for_resolved(w, right) };
+    if tv.is_null() || tw.is_null() {
+        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        }
+        return ptr::null_mut();
+    }
     let mut checked_reverse = false;
 
     // Reflected op on w first when Py_TYPE(w) is a PROPER subtype of Py_TYPE(v).
@@ -4231,16 +4465,8 @@ unsafe fn do_richcompare(v: *mut PyObject, w: *mut PyObject, op: c_int) -> *mut 
             let msg = format!(
                 "'{}' not supported between instances of '{}' and '{}'",
                 cmp_opstring(op),
-                {
-                    let mut n = unsafe { object_type_name(v) };
-                    n.truncate(100);
-                    n
-                },
-                {
-                    let mut n = unsafe { object_type_name(w) };
-                    n.truncate(100);
-                    n
-                },
+                unsafe { object_type_name_with_precision(v, 100) },
+                unsafe { object_type_name_with_precision(w, 100) },
             );
             if let Ok(c) = std::ffi::CString::new(msg) {
                 unsafe {
@@ -4263,13 +4489,19 @@ pub unsafe extern "C" fn PyObject_RichCompare(
     op: c_int,
 ) -> *mut PyObject {
     // CPython PyObject_RichCompare: a NULL operand is a BadInternalCall.
-    if v.is_null() || w.is_null() {
+    if v.is_null() || w.is_null() || RichCompareOp::from_i32(op).is_none() {
         if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
             unsafe { crate::api::errors::PyErr_BadInternalCall() };
         }
         return ptr::null_mut();
     }
-    unsafe { do_richcompare(v, w, op) }
+    let _runtime_gil = crate::hooks::RuntimeGilGuard::ensure();
+    if unsafe { crate::api::memory::Py_EnterRecursiveCall(c" in comparison".as_ptr()) } != 0 {
+        return ptr::null_mut();
+    }
+    let result = unsafe { do_richcompare(v, w, op) };
+    unsafe { crate::api::memory::Py_LeaveRecursiveCall() };
+    result
 }
 
 #[unsafe(no_mangle)]
@@ -4280,7 +4512,12 @@ pub unsafe extern "C" fn PyObject_RichCompareBool(
 ) -> c_int {
     // CPython Objects/object.c: identity implies equality — v == w shortcuts
     // EQ->1 / NE->0 BEFORE any slot dispatch (so [nan] == [nan] is True).
-    if std::ptr::eq(v, w) {
+    if std::ptr::eq(v, w) && (op == CMP_EQ || op == CMP_NE) {
+        // Only this identity shortcut bypasses RichCompare's observation.
+        // Every other path admits each operand once in do_richcompare.
+        if !v.is_null() && crate::bridge::resolve_pyobject(v).is_none() {
+            return -1;
+        }
         if op == CMP_EQ {
             return 1;
         } else if op == CMP_NE {
@@ -4302,7 +4539,7 @@ pub unsafe extern "C" fn PyObject_RichCompareBool(
     } else {
         unsafe { crate::api::object::PyObject_IsTrue(res) }
     };
-    unsafe { crate::api::refcount::Py_DECREF(res) };
+    unsafe { crate::api::errors::release_preserving_error(&[res]) };
     ok
 }
 
@@ -4353,46 +4590,6 @@ mod class2_decode_tests {
         0
     }
 
-    unsafe fn release_slot_table(ty: &mut PyTypeObject, wrapper: SlotWrapper) {
-        unsafe {
-            match wrapper {
-                SlotWrapper::Direct(_) => {}
-                SlotWrapper::Number(_) => {
-                    drop(Box::from_raw(
-                        ty.tp_as_number.cast::<crate::abi_types::PyNumberMethods>(),
-                    ));
-                    ty.tp_as_number = ptr::null_mut();
-                }
-                SlotWrapper::Sequence(_) => {
-                    drop(Box::from_raw(
-                        ty.tp_as_sequence
-                            .cast::<crate::abi_types::PySequenceMethods>(),
-                    ));
-                    ty.tp_as_sequence = ptr::null_mut();
-                }
-                SlotWrapper::Mapping(_) => {
-                    drop(Box::from_raw(
-                        ty.tp_as_mapping
-                            .cast::<crate::abi_types::PyMappingMethods>(),
-                    ));
-                    ty.tp_as_mapping = ptr::null_mut();
-                }
-                SlotWrapper::Async(_) => {
-                    drop(Box::from_raw(
-                        ty.tp_as_async.cast::<crate::abi_types::PyAsyncMethods>(),
-                    ));
-                    ty.tp_as_async = ptr::null_mut();
-                }
-                SlotWrapper::Buffer(_) => {
-                    drop(Box::from_raw(
-                        ty.tp_as_buffer.cast::<crate::abi_types::PyBufferProcs>(),
-                    ));
-                    ty.tp_as_buffer = ptr::null_mut();
-                }
-            }
-        }
-    }
-
     #[test]
     fn every_stable_slot_has_one_symmetric_storage_authority() {
         let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
@@ -4400,21 +4597,29 @@ mod class2_decode_tests {
         for id in 1..=81 {
             unsafe { crate::api::errors::PyErr_Clear() };
             let wrapper = stable_slot_wrapper(id).expect("all public slot ids are mapped");
-            let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
+            let mut heap: PyHeapTypeObject = unsafe { std::mem::zeroed() };
+            let ty = &raw mut heap.ht_type;
 
             // A valid but unset slot returns NULL without manufacturing an error,
             // including a protocol slot whose parent table does not yet exist.
-            assert!(unsafe { PyType_GetSlot(&raw mut ty, id) }.is_null());
+            assert!(unsafe { PyType_GetSlot(ty, id) }.is_null());
             assert!(unsafe { crate::api::errors::PyErr_Occurred() }.is_null());
 
-            let storage = unsafe { slot_wrapper_storage(&raw mut ty, wrapper, true) };
+            assert!(record_native_heap_type_allocation(
+                ty.addr(),
+                std::mem::size_of::<PyHeapTypeObject>()
+            ));
+            unsafe {
+                inheritance::prepare_layout(ty);
+            }
+            let storage = unsafe { slot_wrapper_storage(ty, wrapper) };
             assert!(!storage.is_null());
             let sentinel = std::ptr::without_provenance_mut::<c_void>(0x1000 + id as usize * 16);
             unsafe { storage.write(sentinel) };
-            assert_eq!(unsafe { PyType_GetSlot(&raw mut ty, id) }, sentinel);
+            assert_eq!(unsafe { PyType_GetSlot(ty, id) }, sentinel);
             assert!(unsafe { crate::api::errors::PyErr_Occurred() }.is_null());
 
-            unsafe { release_slot_table(&mut ty, wrapper) };
+            unregister_type_address(ty.addr());
         }
         for id in [-1, 0, 82, i32::MAX] {
             unsafe { crate::api::errors::PyErr_Clear() };
@@ -4464,12 +4669,28 @@ mod class2_decode_tests {
         );
         assert_eq!(FLOAT_CALLS.load(Ordering::SeqCst), 1);
 
-        assert!(unsafe { native_value_richcompare(&raw mut obj, &raw mut obj, CMP_EQ) }.is_none());
         assert_eq!(
             unsafe { PyObject_RichCompare(&raw mut obj, &raw mut obj, CMP_EQ) },
             (&raw mut crate::abi_types::Py_True).cast()
         );
         assert_eq!(RICHCOMPARE_CALLS.load(Ordering::SeqCst), 1);
+
+        // RichCompare must invoke even a same-object slot; only its Bool
+        // consumer owns the intentional identity shortcut.
+        assert_eq!(
+            unsafe { PyObject_RichCompareBool(&raw mut obj, &raw mut obj, CMP_EQ) },
+            1
+        );
+        assert_eq!(
+            unsafe { PyObject_RichCompareBool(&raw mut obj, &raw mut obj, CMP_NE) },
+            0
+        );
+        assert_eq!(RICHCOMPARE_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            unsafe { PyObject_RichCompare(&raw mut obj, &raw mut obj, CMP_NE) },
+            (&raw mut crate::abi_types::Py_True).cast()
+        );
+        assert_eq!(RICHCOMPARE_CALLS.load(Ordering::SeqCst), 2);
 
         assert_eq!(
             unsafe { crate::api::object::PyObject_IsTrue(&raw mut obj) },
@@ -4485,11 +4706,43 @@ mod class2_decode_tests {
 }
 
 #[cfg(test)]
-mod subclass_registry_tests {
+pub(crate) mod subclass_registry_tests {
     use super::*;
     use crate::abi_types::{
         Py_TPFLAGS_VALID_VERSION_TAG, PyTuple_Type, PyTupleObject, PyVarObject,
     };
+
+    // Watcher slots are process-global. Hold this through registration,
+    // callbacks and cleanup so the default parallel test runner cannot steal
+    // a cleared lower slot from another watcher's dispatch test.
+    static WATCHER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    // Bridge retirement tests use the real non-owning registry without
+    // dereferencing freed storage or adding a production introspection API.
+    pub(crate) unsafe fn register_subclass_for_test(
+        base: *mut PyTypeObject,
+        child: *mut PyTypeObject,
+    ) {
+        unsafe { register_subclass(base, child) };
+    }
+
+    pub(crate) fn assert_type_address_retired(address: usize) {
+        let registry = TYPE_SUBCLASSES.lock();
+        assert!(!registry.live.contains_key(&address));
+        for (base, children) in &registry.subclasses {
+            assert_ne!(base.address, address);
+            assert!(
+                children
+                    .members
+                    .iter()
+                    .all(|child| child.address != address)
+            );
+        }
+        for (child, bases) in &registry.bases_by_subclass {
+            assert_ne!(child.address, address);
+            assert!(bases.iter().all(|base| base.address != address));
+        }
+    }
 
     #[repr(C)]
     struct RawTuple2 {
@@ -4520,6 +4773,118 @@ mod subclass_registry_tests {
         ty.tp_flags = Py_TPFLAGS_READY | Py_TPFLAGS_VALID_VERSION_TAG;
         ty.tp_version_tag = 41;
         ty
+    }
+
+    #[test]
+    fn fresh_type_allocation_replaces_stale_identity_and_all_subclass_edges() {
+        for already_has_extent in [false, true] {
+            let mut base = blank_type(1);
+            let mut descendant = blank_type(1);
+            let mut heap: Box<PyHeapTypeObject> = Box::new(unsafe { std::mem::zeroed() });
+            let pointer = &raw mut heap.ht_type;
+            if already_has_extent {
+                assert!(record_native_heap_type_allocation(
+                    pointer.addr(),
+                    std::mem::size_of::<PyHeapTypeObject>()
+                ));
+            }
+            unsafe {
+                register_subclass(&raw mut *base, pointer);
+                register_subclass(pointer, &raw mut *descendant);
+            }
+            let old_generation = TYPE_SUBCLASSES.lock().live[&pointer.addr()].generation;
+            // Model allocator address reuse without dereferencing freed memory.
+            assert!(record_native_heap_type_allocation(
+                pointer.addr(),
+                std::mem::size_of::<PyHeapTypeObject>()
+            ));
+            {
+                let registry = TYPE_SUBCLASSES.lock();
+                assert_ne!(registry.live[&pointer.addr()].generation, old_generation);
+                let old_identity = TypeIdentity {
+                    address: pointer.addr(),
+                    generation: old_generation,
+                };
+                assert!(!registry.subclasses.contains_key(&old_identity));
+                assert!(!registry.bases_by_subclass.contains_key(&old_identity));
+                assert!(
+                    registry
+                        .subclasses
+                        .values()
+                        .all(|entry| { !entry.members.contains(&old_identity) })
+                );
+                assert!(
+                    registry
+                        .bases_by_subclass
+                        .values()
+                        .all(|bases| { !bases.contains(&old_identity) })
+                );
+            }
+            unregister_type_address(pointer.addr());
+            unregister_type_address((&raw mut *base).addr());
+            unregister_type_address((&raw mut *descendant).addr());
+        }
+    }
+
+    #[test]
+    fn spec_extent_admission_preserves_current_identity_and_subclass_edges() {
+        let mut base = blank_type(1);
+        let mut descendant = blank_type(1);
+        let mut heap: Box<PyHeapTypeObject> = Box::new(unsafe { std::mem::zeroed() });
+        let pointer = &raw mut heap.ht_type;
+        unsafe {
+            register_subclass(&raw mut *base, pointer);
+            register_subclass(pointer, &raw mut *descendant);
+        }
+        let old_generation = TYPE_SUBCLASSES.lock().live[&pointer.addr()].generation;
+        for _ in 0..2 {
+            assert_eq!(
+                admit_spec_type_allocation(pointer.addr(), std::mem::size_of::<PyHeapTypeObject>()),
+                Ok(())
+            );
+            let registry = TYPE_SUBCLASSES.lock();
+            assert_eq!(registry.live[&pointer.addr()].generation, old_generation);
+            let identity = TypeIdentity {
+                address: pointer.addr(),
+                generation: old_generation,
+            };
+            assert_eq!(registry.subclasses[&identity].members.len(), 1);
+            assert_eq!(registry.bases_by_subclass[&identity].len(), 1);
+        }
+        unregister_type_address(pointer.addr());
+        unregister_type_address((&raw mut *base).addr());
+        unregister_type_address((&raw mut *descendant).addr());
+    }
+
+    #[test]
+    fn type_storage_receipt_is_generation_owned_and_flag_independent() {
+        let mut heap: Box<PyHeapTypeObject> = Box::new(unsafe { std::mem::zeroed() });
+        let pointer = (&raw mut *heap).cast::<PyTypeObject>();
+        assert!(heap_type_storage(pointer).is_none());
+        unsafe {
+            (*pointer).tp_flags = Py_TPFLAGS_HEAPTYPE;
+        }
+        assert!(
+            heap_type_storage(pointer).is_none(),
+            "a public flag is not allocation evidence"
+        );
+        assert!(record_native_heap_type_allocation(
+            pointer.addr(),
+            std::mem::size_of::<PyHeapTypeObject>()
+        ));
+        unsafe {
+            (*pointer).tp_flags = 0;
+        }
+        assert_eq!(heap_type_storage(pointer), Some(&raw mut *heap));
+        assert_eq!(
+            admit_spec_type_allocation(pointer.addr(), std::mem::size_of::<PyHeapTypeObject>() + 1),
+            Err(TypeStorageAdmissionError::InsufficientExtent)
+        );
+        unregister_type_address(pointer.addr());
+        assert!(
+            heap_type_storage(pointer).is_none(),
+            "address reuse cannot retain extent"
+        );
     }
 
     #[test]
@@ -4616,14 +4981,14 @@ mod subclass_registry_tests {
         let (old_generation, base_identity, child_identity) = {
             let registry = TYPE_SUBCLASSES.lock();
             (
-                registry.live[&shells[0].addr()],
+                registry.live[&shells[0].addr()].generation,
                 TypeIdentity {
                     address: base.addr(),
-                    generation: registry.live[&base.addr()],
+                    generation: registry.live[&base.addr()].generation,
                 },
                 TypeIdentity {
                     address: child.addr(),
-                    generation: registry.live[&child.addr()],
+                    generation: registry.live[&child.addr()].generation,
                 },
             )
         };
@@ -4660,8 +5025,14 @@ mod subclass_registry_tests {
         );
         {
             let registry = TYPE_SUBCLASSES.lock();
-            assert_eq!(registry.live[&base.addr()], base_identity.generation);
-            assert_eq!(registry.live[&child.addr()], child_identity.generation);
+            assert_eq!(
+                registry.live[&base.addr()].generation,
+                base_identity.generation
+            );
+            assert_eq!(
+                registry.live[&child.addr()].generation,
+                child_identity.generation
+            );
             assert_eq!(
                 registry.subclasses[&base_identity].members,
                 HashSet::from([child_identity])
@@ -4739,7 +5110,7 @@ mod subclass_registry_tests {
             let registry = TYPE_SUBCLASSES.lock();
             TypeIdentity {
                 address: child_ptr.addr(),
-                generation: registry.live[&child_ptr.addr()],
+                generation: registry.live[&child_ptr.addr()].generation,
             }
         };
 
@@ -4753,6 +5124,318 @@ mod subclass_registry_tests {
         assert_eq!(base.ob_base.ob_base.ob_refcnt, 17);
         assert_eq!(child.ob_base.ob_base.ob_refcnt, 23);
         unregister_type_address(child_ptr.addr());
+        unregister_type_address(base_ptr.addr());
+    }
+
+    #[repr(C)]
+    struct RevokingWatcherType {
+        ty: PyTypeObject,
+        victim: *mut PyTypeObject,
+        replacement_base: *mut PyTypeObject,
+        calls: usize,
+        callback_refcnt: isize,
+        clear_watcher: c_int,
+        replace_cleared_watcher: bool,
+        watcher_status: c_int,
+        replacement_calls: usize,
+        zero_victim_refcnt: bool,
+        deallocations: usize,
+    }
+
+    impl RevokingWatcherType {
+        fn new() -> Box<Self> {
+            Box::new(Self {
+                ty: *blank_type(1),
+                victim: ptr::null_mut(),
+                replacement_base: ptr::null_mut(),
+                calls: 0,
+                callback_refcnt: 0,
+                clear_watcher: -1,
+                replace_cleared_watcher: false,
+                watcher_status: -1,
+                replacement_calls: 0,
+                zero_victim_refcnt: false,
+                deallocations: 0,
+            })
+        }
+    }
+
+    unsafe extern "C" fn revoke_watched_type(object: *mut PyObject) -> c_int {
+        let watched = unsafe { &mut *object.cast::<RevokingWatcherType>() };
+        watched.calls += 1;
+        watched.callback_refcnt = watched.ty.ob_base.ob_base.ob_refcnt;
+        if watched.clear_watcher >= 0 {
+            watched.watcher_status = unsafe { PyType_ClearWatcher(watched.clear_watcher) };
+            if watched.watcher_status == 0 && watched.replace_cleared_watcher {
+                watched.watcher_status =
+                    unsafe { PyType_AddWatcher(Some(replacement_type_watcher)) };
+            }
+        }
+        if !watched.victim.is_null() {
+            if watched.zero_victim_refcnt {
+                unsafe { (*watched.victim).ob_base.ob_base.ob_refcnt = 0 };
+                return 0;
+            }
+            unregister_type_address(watched.victim.addr());
+            if !watched.replacement_base.is_null() {
+                // Model allocation reuse while keeping test storage valid.
+                // The queued old generation must not act on its replacement.
+                unsafe { register_subclass(watched.replacement_base, watched.victim) };
+            }
+        }
+        0
+    }
+
+    unsafe extern "C" fn replacement_type_watcher(object: *mut PyObject) -> c_int {
+        let watched = unsafe { &mut *object.cast::<RevokingWatcherType>() };
+        watched.replacement_calls += 1;
+        0
+    }
+
+    #[test]
+    fn watcher_dispatch_observes_later_slot_clear_and_replacement() {
+        let _watcher_lock = WATCHER_TEST_LOCK.lock();
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
+        for replace in [false, true] {
+            let first = unsafe { PyType_AddWatcher(Some(revoke_watched_type)) };
+            let second = unsafe { PyType_AddWatcher(Some(revoke_watched_type)) };
+            assert!(first >= 0 && second > first);
+            let mut watched = RevokingWatcherType::new();
+            let pointer = &raw mut watched.ty;
+            watched.clear_watcher = second;
+            watched.replace_cleared_watcher = replace;
+            watched.ty.tp_watched = (1 << first) | (1 << second);
+            unsafe { PyType_Modified(pointer) };
+            assert_eq!(watched.calls, 1, "the old later callback must not run");
+            assert_eq!(watched.replacement_calls, usize::from(replace));
+            assert_eq!(watched.watcher_status, if replace { second } else { 0 });
+            assert_eq!(watched.ty.ob_base.ob_base.ob_refcnt, 1);
+            assert_eq!(watched.ty.tp_flags & Py_TPFLAGS_VALID_VERSION_TAG, 0);
+            assert_eq!(watched.ty.tp_version_tag, 0);
+            unregister_type_address(pointer.addr());
+            assert_eq!(unsafe { PyType_ClearWatcher(first) }, 0);
+            if replace {
+                assert_eq!(unsafe { PyType_ClearWatcher(second) }, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn queued_type_invalidation_skips_retired_and_reused_generations_in_both_phases() {
+        let _watcher_lock = WATCHER_TEST_LOCK.lock();
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
+        let watcher = unsafe { PyType_AddWatcher(Some(revoke_watched_type)) };
+        assert!(watcher >= 0);
+        for expanded_victim in [false, true] {
+            for reuse in [false, true] {
+                let mut base = RevokingWatcherType::new();
+                let mut first = RevokingWatcherType::new();
+                let mut second = RevokingWatcherType::new();
+                let base_ptr = &raw mut base.ty;
+                let first_ptr = &raw mut first.ty;
+                let second_ptr = &raw mut second.ty;
+                let victim = if expanded_victim {
+                    base_ptr
+                } else {
+                    second_ptr
+                };
+                for ty in [base_ptr, first_ptr, second_ptr] {
+                    unsafe { (*ty).tp_watched = 1 << watcher };
+                }
+                first.victim = victim;
+                first.replacement_base = if reuse { first_ptr } else { ptr::null_mut() };
+                unsafe {
+                    register_subclass(base_ptr, first_ptr);
+                    register_subclass(base_ptr, second_ptr);
+                }
+                let old_generation = TYPE_SUBCLASSES.lock().live[&victim.addr()].generation;
+                unsafe { PyType_Modified(base_ptr) };
+                let target = if expanded_victim { &base } else { &second };
+                assert_eq!(target.calls, 0, "a stale queued identity reached a watcher");
+                assert_ne!(target.ty.tp_flags & Py_TPFLAGS_VALID_VERSION_TAG, 0);
+                assert_eq!(target.ty.tp_version_tag, 41);
+                assert_eq!(target.ty.ob_base.ob_base.ob_refcnt, 1);
+                assert_eq!(first.calls, 1);
+                assert_eq!(first.callback_refcnt, 2, "callback needs a live owner");
+                assert_eq!(first.ty.ob_base.ob_base.ob_refcnt, 1);
+                {
+                    let registry = TYPE_SUBCLASSES.lock();
+                    if reuse {
+                        assert_ne!(registry.live[&victim.addr()].generation, old_generation);
+                    } else {
+                        assert!(!registry.live.contains_key(&victim.addr()));
+                    }
+                }
+                for ty in [base_ptr, first_ptr, second_ptr] {
+                    unregister_type_address(ty.addr());
+                }
+            }
+        }
+        assert_eq!(unsafe { PyType_ClearWatcher(watcher) }, 0);
+    }
+
+    #[test]
+    fn watcher_retirement_stops_remaining_callbacks_and_invalidation() {
+        let _watcher_lock = WATCHER_TEST_LOCK.lock();
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
+        let first = unsafe { PyType_AddWatcher(Some(revoke_watched_type)) };
+        let second = unsafe { PyType_AddWatcher(Some(revoke_watched_type)) };
+        assert!(first >= 0 && second > first);
+        let mut watched = RevokingWatcherType::new();
+        let pointer = &raw mut watched.ty;
+        watched.victim = pointer;
+        watched.ty.tp_watched = (1 << first) | (1 << second);
+        unsafe { PyType_Modified(pointer) };
+        assert_eq!(watched.calls, 1);
+        assert_eq!(watched.callback_refcnt, 2);
+        assert_eq!(watched.ty.ob_base.ob_base.ob_refcnt, 1);
+        assert_ne!(watched.ty.tp_flags & Py_TPFLAGS_VALID_VERSION_TAG, 0);
+        assert_eq!(watched.ty.tp_version_tag, 41);
+        assert_type_address_retired(pointer.addr());
+        assert_eq!(unsafe { PyType_ClearWatcher(first) }, 0);
+        assert_eq!(unsafe { PyType_ClearWatcher(second) }, 0);
+    }
+
+    unsafe extern "C" fn count_watched_type_deallocation(object: *mut PyObject) {
+        unsafe { (*object.cast::<RevokingWatcherType>()).deallocations += 1 };
+    }
+
+    #[test]
+    fn invalidation_never_retains_a_dying_type_in_either_traversal_phase() {
+        let _watcher_lock = WATCHER_TEST_LOCK.lock();
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
+        let watcher = unsafe { PyType_AddWatcher(Some(revoke_watched_type)) };
+        assert!(watcher >= 0);
+        let mut metatype = blank_type(crate::abi_types::IMMORTAL_REFCNT);
+        metatype.tp_dealloc = Some(count_watched_type_deallocation);
+        for dying_after_expansion in [false, true] {
+            let mut base = RevokingWatcherType::new();
+            let mut sibling = RevokingWatcherType::new();
+            let mut child = RevokingWatcherType::new();
+            let base_ptr = &raw mut base.ty;
+            let sibling_ptr = &raw mut sibling.ty;
+            let child_ptr = &raw mut child.ty;
+            for tp in [base_ptr, sibling_ptr, child_ptr] {
+                unsafe {
+                    (*tp).tp_watched = 1 << watcher;
+                    (*tp).ob_base.ob_base.ob_type = &raw mut *metatype;
+                }
+            }
+            let dying = if dying_after_expansion {
+                sibling.victim = base_ptr;
+                sibling.zero_victim_refcnt = true;
+                base_ptr
+            } else {
+                child.ty.ob_base.ob_base.ob_refcnt = 0;
+                child_ptr
+            };
+            unsafe {
+                register_subclass(base_ptr, sibling_ptr);
+                register_subclass(base_ptr, child_ptr);
+                PyType_Modified(base_ptr);
+            }
+            let target = if dying_after_expansion { &base } else { &child };
+            assert_eq!(target.calls, 0, "a dying type reached a watcher");
+            assert_eq!(target.deallocations, 0, "watching reentered deallocation");
+            assert_eq!(target.ty.ob_base.ob_base.ob_refcnt, 0);
+            assert_ne!(target.ty.tp_flags & Py_TPFLAGS_VALID_VERSION_TAG, 0);
+            assert_eq!(sibling.calls, 1);
+            assert_eq!(sibling.callback_refcnt, 2);
+            assert_eq!(sibling.ty.tp_flags & Py_TPFLAGS_VALID_VERSION_TAG, 0);
+            assert!(TYPE_SUBCLASSES.lock().live.contains_key(&dying.addr()));
+            for tp in [base_ptr, sibling_ptr, child_ptr] {
+                unregister_type_address(tp.addr());
+            }
+        }
+        assert_eq!(unsafe { PyType_ClearWatcher(watcher) }, 0);
+    }
+
+    #[test]
+    fn subclass_retirement_bounds_tombstones_without_base_invalidation() {
+        let mut base = blank_type(1);
+        let mut survivor = blank_type(1);
+        let mut transient = blank_type(1);
+        let base_ptr = &raw mut *base;
+        let survivor_ptr = &raw mut *survivor;
+        let transient_ptr = &raw mut *transient;
+        unsafe { register_subclass(base_ptr, survivor_ptr) };
+        let (base_identity, survivor_identity) = {
+            let mut registry = TYPE_SUBCLASSES.lock();
+            (
+                type_identity(&mut registry, base_ptr).unwrap(),
+                type_identity(&mut registry, survivor_ptr).unwrap(),
+            )
+        };
+        // Repeated address reuse must neither accumulate dead generations nor
+        // reorder the survivor, even for a base that is never modified.
+        for _ in 0..10_000 {
+            unsafe { register_subclass(base_ptr, transient_ptr) };
+            let retired_identity = {
+                let mut registry = TYPE_SUBCLASSES.lock();
+                type_identity(&mut registry, transient_ptr).unwrap()
+            };
+            unregister_type_address(transient_ptr.addr());
+            let registry = TYPE_SUBCLASSES.lock();
+            let children = &registry.subclasses[&base_identity];
+            assert_eq!(children.members.len(), 1);
+            assert_eq!(children.order[0], survivor_identity);
+            assert!(children.order.len() <= 2);
+            assert!(!registry.bases_by_subclass.contains_key(&retired_identity));
+        }
+        unregister_type_address(survivor_ptr.addr());
+        assert!(
+            !TYPE_SUBCLASSES
+                .lock()
+                .subclasses
+                .contains_key(&base_identity)
+        );
+        assert_ne!(base.tp_flags & Py_TPFLAGS_VALID_VERSION_TAG, 0);
+        unregister_type_address(base_ptr.addr());
+    }
+
+    #[test]
+    fn subclass_retirement_reclaims_cohort_storage_and_preserves_registration_order() {
+        const WIDTH: usize = 2048;
+        let mut base = blank_type(1);
+        let base_ptr = &raw mut *base;
+        let mut children: Vec<_> = (0..WIDTH).map(|_| blank_type(1)).collect();
+        for child in &mut children {
+            unsafe { register_subclass(base_ptr, &raw mut **child) };
+        }
+        let base_identity = {
+            let mut registry = TYPE_SUBCLASSES.lock();
+            type_identity(&mut registry, base_ptr).unwrap()
+        };
+        for child in children.iter_mut().take(WIDTH - 3) {
+            unregister_type_address((&raw mut **child).addr());
+        }
+        {
+            let registry = TYPE_SUBCLASSES.lock();
+            let entry = &registry.subclasses[&base_identity];
+            let live_order: Vec<_> = entry
+                .order
+                .iter()
+                .filter(|id| entry.members.contains(id))
+                .map(|id| id.address)
+                .collect();
+            let expected: Vec<_> = children[WIDTH - 3..]
+                .iter()
+                .map(|child| (&**child as *const PyTypeObject).addr())
+                .collect();
+            assert_eq!(live_order, expected);
+            assert!(entry.order.len() <= 2 * entry.members.len());
+            assert!(entry.order.capacity() <= 8 * entry.members.len());
+            assert!(entry.members.capacity() <= 8 * entry.members.len());
+        }
+        for child in &mut children[WIDTH - 3..] {
+            unregister_type_address((&raw mut **child).addr());
+        }
+        assert!(
+            !TYPE_SUBCLASSES
+                .lock()
+                .subclasses
+                .contains_key(&base_identity)
+        );
         unregister_type_address(base_ptr.addr());
     }
 
@@ -4779,7 +5462,7 @@ mod subclass_registry_tests {
             let registry = TYPE_SUBCLASSES.lock();
             TypeIdentity {
                 address: base_ptr.addr(),
-                generation: registry.live[&base_ptr.addr()],
+                generation: registry.live[&base_ptr.addr()].generation,
             }
         };
         assert_eq!(
@@ -4843,7 +5526,7 @@ mod subclass_registry_tests {
         let registry = TYPE_SUBCLASSES.lock();
         let base_identity = TypeIdentity {
             address: base_address,
-            generation: registry.live[&base_address],
+            generation: registry.live[&base_address].generation,
         };
         assert_eq!(registry.subclasses[&base_identity].order.len(), WIDTH);
         drop(registry);
@@ -4926,42 +5609,5 @@ mod subclass_registry_tests {
         );
         drop(registry);
         unregister_type_address(base_address);
-    }
-}
-
-#[cfg(test)]
-mod constructor_ownership_tests {
-    use super::*;
-
-    #[test]
-    fn wrapper_descriptor_releases_all_native_header_owners() {
-        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
-        crate::bridge::molt_cpython_abi_init();
-        let mut owner: PyTypeObject = unsafe { std::mem::zeroed() };
-        owner.ob_base.ob_base.ob_refcnt = 2;
-        let mut name = PyObject {
-            ob_refcnt: 2,
-            ob_type: ptr::null_mut(),
-        };
-        let mut qualname = PyObject {
-            ob_refcnt: 2,
-            ob_type: ptr::null_mut(),
-        };
-        let descr = Box::new(crate::abi_types::PyWrapperDescrObject {
-            d_common: crate::abi_types::PyDescrObject {
-                ob_base: PyObject {
-                    ob_refcnt: 1,
-                    ob_type: &raw mut crate::abi_types::PyWrapperDescr_Type,
-                },
-                d_type: &raw mut owner,
-                d_name: &raw mut name,
-                d_qualname: &raw mut qualname,
-            },
-            d_wrapped: ptr::null_mut(),
-        });
-        unsafe { crate::api::refcount::Py_DECREF(Box::into_raw(descr).cast()) };
-        assert_eq!(owner.ob_base.ob_base.ob_refcnt, 1);
-        assert_eq!(name.ob_refcnt, 1);
-        assert_eq!(qualname.ob_refcnt, 1);
     }
 }

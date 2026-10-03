@@ -10,6 +10,26 @@ from molt.cli import build_inputs as cli_build_inputs
 from molt.cli import wrapper_build as cli_wrapper_build
 
 
+def test_newer_target_diagnostic_uses_installed_commands(monkeypatch) -> None:
+    from types import SimpleNamespace
+    import molt.target_python as target_python
+
+    monkeypatch.setattr(
+        target_python,
+        "sys",
+        SimpleNamespace(version_info=SimpleNamespace(major=3, minor=12)),
+    )
+    with pytest.raises(SyntaxError) as failure:
+        target_python._parse_source_for_target(
+            "print(1)", target_python=target_python.TargetPythonVersion(3, 14, 0)
+        )
+    message = str(failure.value)
+    assert "set PYTHON to a CPython 3.14+ executable" in message
+    assert "molt setup --install-cli-dependencies" in message
+    assert "retry `molt build`" in message
+    assert "uv run" not in message
+
+
 def test_target_python_defaults_to_lowest_supported_project_floor(
     tmp_path: Path,
 ) -> None:

@@ -87,6 +87,17 @@ closed_domains = []
 discovery_only = false
 
 [[generator]]
+tool = "tools/gen_unicode_width.py"
+outputs = ["runtime/molt-runtime/src/object/unicode_width_generated.rs"]
+source = "src/molt/target_python.py + installed matching CPython unicodedata databases + tools/generator_io.py"
+check_mode = true
+check_command = "tools/gen_unicode_width.py --check"
+idempotent = true
+toolchains = ["uv"]
+sync_test = "tests/test_runtime_build_python.py"
+discovery_only = false
+
+[[generator]]
 tool = "tools/gen_cpython_coverage.py"
 outputs = [
   "runtime/molt-cpython-abi/cpython_abi_coverage.generated.json",
@@ -103,7 +114,7 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_cpython_type_slots.py"
 outputs = [
-  "runtime/molt-cpython-abi/include/_molt_typeslots.generated.h",
+  "include/molt/shared/_molt_typeslots.generated.h",
 ]
 source = "runtime/molt-cpython-abi/src/type_slots.rs + config/cpython_stable_abi_3_12.toml + tools/generator_io.py"
 check_mode = true

@@ -94,23 +94,10 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             out: out_var,
             ..OpIR::default()
         }),
-        OpCode::ConstStr => Some(OpIR {
-            kind: "const_str".to_string(),
-            s_value: attr_str(&op.attrs, "s_value").or_else(|| attr_str(&op.attrs, "value")),
-            out: out_var,
-            ..OpIR::default()
-        }),
-        // Arbitrary-precision int constant: decimal text in s_value. The
-        // module phase re-lifts every function from SimpleIR, so this op
-        // MUST round-trip (ssa.rs maps "const_bigint" back to ConstBigInt);
-        // as a Copy fallback the TIR-consuming LLVM backend silently left
-        // the result undefined (= the None sentinel).
-        OpCode::ConstBigInt => Some(OpIR {
-            kind: "const_bigint".to_string(),
-            s_value: attr_str(&op.attrs, "s_value"),
-            out: out_var,
-            ..OpIR::default()
-        }),
+        OpCode::ConstStr | OpCode::ConstBytes | OpCode::ConstBigInt => Some(
+            molt_ir::literal_payload::lower_tir_literal(op, out_var)
+                .unwrap_or_else(|error| panic!("{error}")),
+        ),
         OpCode::ConstBool => Some(OpIR {
             kind: "const_bool".to_string(),
             // Both the SSA lift and SCCP store ConstBool values as
@@ -126,12 +113,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         }),
         OpCode::ConstNone => Some(OpIR {
             kind: "const_none".to_string(),
-            out: out_var,
-            ..OpIR::default()
-        }),
-        OpCode::ConstBytes => Some(OpIR {
-            kind: "const_bytes".to_string(),
-            bytes: attr_bytes(&op.attrs, "bytes").or_else(|| attr_bytes(&op.attrs, "value")),
             out: out_var,
             ..OpIR::default()
         }),
@@ -526,11 +507,23 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             value: attr_int(&op.attrs, "value"),
             ..OpIR::default()
         }),
+        OpCode::StateSet | OpCode::IsPending | OpCode::TaskWait => Some(OpIR {
+            kind: crate::tir::op_kinds_generated::opcode_canonical_kind_table(op.opcode).to_string(),
+            args: Some(operand_args(op)),
+            out: out_var,
+            value: attr_int(&op.attrs, "value"),
+            ..OpIR::default()
+        }),
         OpCode::ClosureLoad => Some(OpIR {
             kind: "closure_load".to_string(),
             args: Some(operand_args(op)),
             out: out_var,
             value: attr_int(&op.attrs, "value"),
+            ..OpIR::default()
+        }),
+        OpCode::FrameContextSet => Some(OpIR {
+            kind: "frame_context_set".to_string(),
+            args: Some(operand_args(op)),
             ..OpIR::default()
         }),
         OpCode::ClosureStore => Some(OpIR {

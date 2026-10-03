@@ -646,7 +646,6 @@ x = [1 for _ in range(n)]
     assert "len" in kinds
     assert "list_int_new" in kinds
     assert "list_append" not in kinds
-    assert "intarray_from_seq" not in kinds
 
 
 def test_bool_range_listcomp_does_not_lower_to_flat_int_list():
@@ -728,7 +727,7 @@ if __name__ == "__main__":
     assert "get_attr_generic_obj" not in kinds
 
 
-def test_dataclass_field_dict_increment_uses_single_fused_update():
+def test_dataclass_field_dict_increment_fuses_with_the_statement_as_fallback():
     src = """
 from dataclasses import dataclass
 
@@ -748,8 +747,12 @@ if __name__ == "__main__":
 """
     ir = compile_to_tir(src)
     kinds = _op_kinds(ir, "__main____molt_user_main")
-    assert "dict_str_int_inc" in kinds
-    assert "dict_get" not in kinds
+    assert kinds.count("dict_str_int_inc") == 1
+    fused = kinds.index("dict_str_int_inc")
+    # The kernel admits the statement on the values it reads or declines; the
+    # statement itself is the only fallback, never run before the kernel.
+    assert "dict_get" not in kinds[:fused]
+    assert "dict_get" in kinds[fused:]
     assert "guard_dict_shape" not in kinds
 
 
@@ -799,92 +802,132 @@ def parse_digit(text: str) -> int:
     assert "ord" in kinds
 
 
-def test_prod_reduction_over_flat_listcomp_skips_intarray_conversion():
+def test_product_loop_fuses_as_a_chunked_prefix_of_the_ordinary_loop():
     src = """
 def main():
-    n = 5
-    nums = [1 for _ in range(n)]
+    nums = [2, 3, 4]
     acc = 1
     for x in nums:
         acc = acc * x
-    print(acc)
+    print(acc, x)
 
 main()
 """
     ir = compile_to_tir(src)
     kinds = [op["kind"] for op in _ops_by_func_suffix(ir, "molt_user_main")]
-    assert "list_int_new" in kinds
-    assert "vec_prod_int" in kinds
-    assert "intarray_from_seq" not in kinds
+    assert kinds.count("vec_prod") == 1
+    # The iterator is acquired once; the kernel runs chunks inside a loop of its
+    # own, whose back edge observes pending work, and the ordinary loop then
+    # continues on the same iterator.
+    assert kinds.count("iter") == 1
+    chunk_start = kinds.index("loop_start")
+    chunk_end = kinds.index("loop_end", chunk_start)
+    assert kinds.index("iter") < chunk_start < kinds.index("vec_prod") < chunk_end
+    assert "loop_start" in kinds[chunk_end:]
+    assert "vec_prod" not in kinds[chunk_end:]
 
 
-def test_dict_increment_lowering():
-    src = """
-counts = {}
-key = "molt"
-counts[key] = counts.get(key, 0) + 1
-"""
+def _dict_increment_kinds(body: str) -> list[str]:
+    src = "def update(counts, key, step, flag):\n" + body
+    return [op["kind"] for op in _ops_by_func_suffix(compile_to_tir(src), "update")]
+
+
+def test_dict_increment_statement_lowering():
+    kinds = _dict_increment_kinds("    counts[key] = counts.get(key, 0) + step\n")
+    assert kinds.count("dict_str_int_inc") == 1
+    assert "dict_get" not in kinds[: kinds.index("dict_str_int_inc")]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # delta + d.get(k, 0) calls delta's __add__ first: another statement.
+        "    counts[key] = step + counts.get(key, 0)\n",
+        # A read the fused op moves ahead of d.get must not raise.
+        "    if flag:\n        total = {}\n    total[key] = total.get(key, 0) + 1\n",
+    ],
+    ids=["reversed-operands", "maybe-unbound-dict"],
+)
+def test_dict_increment_statement_declines_unsound_shapes(body):
+    assert "dict_str_int_inc" not in _dict_increment_kinds(body)
+
+
+def _split_count_kinds(src: str, func: str) -> list[str]:
     ir = compile_to_tir(src)
-    kinds = _op_kinds(ir)
-    assert "dict_inc" in kinds or "dict_str_int_inc" in kinds
-
-
-def test_dict_str_int_increment_lowering():
-    src = """
-counts: dict[str, int] = {}
-key = "molt"
-counts[key] = counts.get(key, 0) + 1
-"""
-    ir = compile_to_tir(src, type_hint_policy="check")
-    kinds = _op_kinds(ir)
-    assert "dict_str_int_inc" in kinds
+    if func == "molt_main":
+        return _op_kinds(ir)
+    return [op["kind"] for op in _ops_by_func_suffix(ir, func)]
 
 
 def test_for_split_whitespace_dict_increment_fused():
     src = """
-counts = {}
-line = "a b a"
-for word in line.split():
-    counts[word] = counts.get(word, 0) + 1
+def count(line):
+    counts = {}
+    for word in line.split():
+        counts[word] = counts.get(word, 0) + 1
+    return counts, word
 """
-    ir = compile_to_tir(src)
-    kinds = _op_kinds(ir)
-    assert "string_split_ws_dict_inc" in kinds
+    kinds = _split_count_kinds(src, "count")
+    assert kinds.count("string_split_ws_dict_inc") == 1
+    assert kinds.index("string_split_ws_dict_inc") < kinds.index("loop_start")
 
 
 def test_for_split_separator_dict_increment_fused():
     src = """
+def count(line):
+    counts = {}
+    step = 2
+    for word in line.split("|"):
+        counts[word] = counts.get(word, 0) + step
+    return counts
+"""
+    kinds = _split_count_kinds(src, "count")
+    assert kinds.count("string_split_sep_dict_inc") == 1
+    assert kinds.index("string_split_sep_dict_inc") < kinds.index("loop_start")
+
+
+@pytest.mark.parametrize(
+    ("src", "func"),
+    [
+        # A module's loop target is a module global: one final store cannot
+        # stand for a store per word.
+        (
+            """
 counts = {}
-line = "a|b|a"
-for word in line.split("|"):
-    counts[word] = counts.get(word, 0) + 2
-"""
-    ir = compile_to_tir(src)
-    kinds = _op_kinds(ir)
-    assert "string_split_sep_dict_inc" in kinds
-
-
-def test_taq_ingest_line_fused():
-    src = """
-BUCKET_SIZE = 1_000_000_000
-data = {}
-header = True
-for line in ["header", "100|X|AAPL|X|200"]:
-    if header:
-        header = False
-        continue
-    x = line.split("|")
-    if x[0] == "END" or x[4] == "ENDP":
-        continue
-    timestamp = int(x[0])
-    symbol = x[2]
-    volume = int(x[4])
-    series = data.setdefault(symbol, [])
-    series.append((timestamp // BUCKET_SIZE, volume))
-"""
-    ir = compile_to_tir(src)
-    kinds = _op_kinds(ir)
-    assert "taq_ingest_line" in kinds
+line = "a b a"
+for word in line.split():
+    counts[word] = counts.get(word, 0) + 1
+""",
+            "molt_main",
+        ),
+        (
+            """
+def count(line):
+    counts = {}
+    for word in line.split():
+        counts[word] = 1 + counts.get(word, 0)
+    return counts
+""",
+            "count",
+        ),
+        (
+            """
+def count(line, flag):
+    if flag:
+        counts = {}
+    for word in line.split():
+        counts[word] = counts.get(word, 0) + 1
+    return counts
+""",
+            "count",
+        ),
+    ],
+    ids=["module-target", "reversed-operands", "maybe-unbound-dict"],
+)
+def test_for_split_dict_increment_declines_unsound_shapes(src, func):
+    kinds = _split_count_kinds(src, func)
+    assert "string_split_ws_dict_inc" not in kinds
+    assert "string_split_sep_dict_inc" not in kinds
 
 
 def test_statistics_slice_lowering():
@@ -911,22 +954,21 @@ series.append(1)
     assert "dict_setdefault_empty_list" in kinds
 
 
-def test_bytearray_counted_fill_lowers_to_range_primitive():
+def test_bytearray_counted_fill_never_fuses_a_shadowed_bytearray():
     src = """
-def main():
+def main(bytearray):
     size = 16
     data = bytearray(size)
     i = 0
     while i < size:
         data[i] = 97
         i += 1
-    return bytes(data).find(b"a")
+    return data
 """
     ir = compile_to_tir(src)
-    ops = _ops_by_func_suffix(ir, "molt_user_main")
-    kinds = [op["kind"] for op in ops]
-    assert "bytearray_fill_range" in kinds
-    assert "store_index" not in kinds
+    kinds = [op["kind"] for op in _ops_by_func_suffix(ir, "molt_user_main")]
+    assert "bytearray_fill_range" not in kinds
+    assert "store_index" in kinds
 
 
 def test_nested_function_locals_cache_does_not_leak_into_outer_function():

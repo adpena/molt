@@ -10,6 +10,7 @@ pub(in crate::wasm) struct WasmCallableCallSiteAbi<'a> {
     plan: &'a WasmCallableTablePlan,
     escaped_callable_targets: &'a BTreeSet<String>,
     call_func_spill_offset: u32,
+    entry_custody: &'a BTreeMap<String, molt_codegen_abi::EntryCustodyDeclaration>,
 }
 
 impl<'a> WasmCallableCallSiteAbi<'a> {
@@ -17,6 +18,7 @@ impl<'a> WasmCallableCallSiteAbi<'a> {
         plan: &'a WasmCallableTablePlan,
         escaped_callable_targets: &'a BTreeSet<String>,
         call_func_spill_offset: u32,
+        entry_custody: &'a BTreeMap<String, molt_codegen_abi::EntryCustodyDeclaration>,
     ) -> Self {
         Self {
             func_table_slots: &plan.func_to_table_idx,
@@ -25,7 +27,30 @@ impl<'a> WasmCallableCallSiteAbi<'a> {
             plan,
             escaped_callable_targets,
             call_func_spill_offset,
+            entry_custody,
         }
+    }
+
+    /// The runtime entry custody of the function object a `func_new`
+    /// creates for `target_name`, from that function's own parameter
+    /// declaration. A target without one, or whose declaration has no
+    /// one-bit runtime encoding, is a compiler error: guessing "borrowed"
+    /// would let a transferring body release its caller's references.
+    pub(in crate::wasm) fn entry_custody_word(
+        &self,
+        target_name: &str,
+        has_closure: bool,
+        arity: i64,
+    ) -> u64 {
+        let declaration = self.entry_custody.get(target_name).unwrap_or_else(|| {
+            panic!("func_new target `{target_name}` has no parameter declaration")
+        });
+        usize::try_from(arity)
+            .map_err(|_| molt_codegen_abi::EntryCustodyError::Signature)
+            .and_then(|arity| declaration.encode(has_closure, arity))
+            .unwrap_or_else(|error| {
+                panic!("func_new target `{target_name}` has no runtime entry custody: {error:?}")
+            })
     }
 
     pub(in crate::wasm) fn table_target(
@@ -153,7 +178,15 @@ mod tests {
             trampoline_entries: Vec::new(),
         };
         let escaped_targets = BTreeSet::from(["callee".to_string()]);
-        let abi = plan.call_site_abi(&escaped_targets, 4096);
+        let entry_custody = BTreeMap::from([(
+            "callee".to_string(),
+            molt_codegen_abi::EntryCustodyDeclaration::declare(true, 3, &[false, true, true]),
+        )]);
+        let abi = plan.call_site_abi(&escaped_targets, 4096, &entry_custody);
+        assert_eq!(
+            abi.entry_custody_word("callee", true, 2),
+            molt_codegen_abi::ENTRY_CUSTODY_ADOPTS
+        );
 
         let table_pair = abi.callable_table_pair("callee", "test_call");
         assert_eq!(table_pair.function.current_table_index, 107);
@@ -189,7 +222,8 @@ mod tests {
             trampoline_entries: Vec::new(),
         };
         let escaped = BTreeSet::new();
-        let abi = plan.call_site_abi(&escaped, 0);
+        let entry_custody = BTreeMap::new();
+        let abi = plan.call_site_abi(&escaped, 0, &entry_custody);
         let pair = abi.callable_table_pair("callee", "fixed-mask-test");
 
         assert!(matches!(

@@ -105,7 +105,7 @@ pub unsafe extern "C" fn molt_asyncio_socket_reader_read_poll(obj_bits: u64) -> 
             let n_bits = *payload_ptr.add(ASYNCIO_SOCKET_READER_READ_SLOT_N);
             let out_bits = molt_socket_reader_read(reader_bits, n_bits);
             if out_bits as i64 != pending_bits_i64() {
-                asyncio_drop_payload_slots(_py, payload_ptr, 4);
+                asyncio_drop_payload_slots::<4>(_py, payload_ptr);
                 return out_bits as i64;
             }
             let fd_bits = *payload_ptr.add(ASYNCIO_SOCKET_READER_READ_SLOT_FD);
@@ -170,7 +170,7 @@ pub unsafe extern "C" fn molt_asyncio_socket_reader_readline_poll(obj_bits: u64)
             let reader_bits = *payload_ptr.add(ASYNCIO_SOCKET_READER_READLINE_SLOT_READER);
             let out_bits = molt_socket_reader_readline(reader_bits);
             if out_bits as i64 != pending_bits_i64() {
-                asyncio_drop_payload_slots(_py, payload_ptr, 3);
+                asyncio_drop_payload_slots::<3>(_py, payload_ptr);
                 return out_bits as i64;
             }
             let fd_bits = *payload_ptr.add(ASYNCIO_SOCKET_READER_READLINE_SLOT_FD);
@@ -256,7 +256,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recv_poll(obj_bits: u64) -> i64 {
                 dec_ref_bits(_py, exc_bits);
                 return raised as i64;
             }
-            asyncio_drop_payload_slots(_py, payload_ptr, 4);
+            asyncio_drop_payload_slots::<4>(_py, payload_ptr);
             out_bits as i64
         })
     }
@@ -348,7 +348,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recv_into_poll(obj_bits: u64) -> i64 
                 dec_ref_bits(_py, exc_bits);
                 return raised as i64;
             }
-            asyncio_drop_payload_slots(_py, payload_ptr, 5);
+            asyncio_drop_payload_slots::<5>(_py, payload_ptr);
             out_bits as i64
         })
     }
@@ -441,7 +441,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendall_poll(obj_bits: u64) -> i64 {
                 let total_bits = *payload_ptr.add(ASYNCIO_SOCK_SENDALL_SLOT_TOTAL);
                 let total = to_i64(obj_from_bits(total_bits)).unwrap_or(0);
                 if total >= data_len {
-                    asyncio_drop_payload_slots(_py, payload_ptr, 6);
+                    asyncio_drop_payload_slots::<6>(_py, payload_ptr);
                     return MoltObject::none().bits() as i64;
                 }
 
@@ -498,16 +498,15 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendall_poll(obj_bits: u64) -> i64 {
                     );
                 }
 
-                let old_total_bits = *payload_ptr.add(ASYNCIO_SOCK_SENDALL_SLOT_TOTAL);
                 let new_total = total.saturating_add(sent);
-                let new_total_bits = MoltObject::from_int(new_total).bits();
-                if old_total_bits != 0 && !obj_from_bits(old_total_bits).is_none() {
-                    dec_ref_bits(_py, old_total_bits);
-                }
-                *payload_ptr.add(ASYNCIO_SOCK_SENDALL_SLOT_TOTAL) = new_total_bits;
-                inc_ref_bits(_py, new_total_bits);
+                crate::object::payload_refs::store_owned(
+                    _py,
+                    payload_ptr.cast(),
+                    ASYNCIO_SOCK_SENDALL_SLOT_TOTAL * std::mem::size_of::<u64>(),
+                    MoltObject::from_int(new_total).bits(),
+                );
                 if new_total >= data_len {
-                    asyncio_drop_payload_slots(_py, payload_ptr, 6);
+                    asyncio_drop_payload_slots::<6>(_py, payload_ptr);
                     return MoltObject::none().bits() as i64;
                 }
             }
@@ -599,7 +598,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_poll(obj_bits: u64) -> i64 {
                 dec_ref_bits(_py, exc_bits);
                 return raised as i64;
             }
-            asyncio_drop_payload_slots(_py, payload_ptr, 4);
+            asyncio_drop_payload_slots::<4>(_py, payload_ptr);
             out_bits as i64
         })
     }
@@ -691,7 +690,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_recvfrom_into_poll(obj_bits: u64) -> 
                 dec_ref_bits(_py, exc_bits);
                 return raised as i64;
             }
-            asyncio_drop_payload_slots(_py, payload_ptr, 5);
+            asyncio_drop_payload_slots::<5>(_py, payload_ptr);
             out_bits as i64
         })
     }
@@ -789,7 +788,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_sendto_poll(obj_bits: u64) -> i64 {
                     ASYNCIO_SOCKET_IO_EVENT_WRITE,
                 );
             }
-            asyncio_drop_payload_slots(_py, payload_ptr, 5);
+            asyncio_drop_payload_slots::<5>(_py, payload_ptr);
             out_bits as i64
         })
     }
@@ -872,7 +871,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_connect_poll(obj_bits: u64) -> i64 {
                                     sock_bits
                                 );
                             }
-                            asyncio_drop_payload_slots(_py, payload_ptr, 4);
+                            asyncio_drop_payload_slots::<4>(_py, payload_ptr);
                             return MoltObject::none().bits() as i64;
                         }
                         let pending = asyncio_pending_with_connect_retry(
@@ -909,7 +908,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_connect_poll(obj_bits: u64) -> i64 {
                     eprintln!("molt async connect: rc={} sock=0x{:x}", rc, sock_bits);
                 }
                 if rc == 0 || rc == libc::EISCONN as i64 {
-                    asyncio_drop_payload_slots(_py, payload_ptr, 4);
+                    asyncio_drop_payload_slots::<4>(_py, payload_ptr);
                     return MoltObject::none().bits() as i64;
                 }
                 if asyncio_retryable_socket_errno(rc) {
@@ -920,7 +919,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_connect_poll(obj_bits: u64) -> i64 {
                                 sock_bits
                             );
                         }
-                        asyncio_drop_payload_slots(_py, payload_ptr, 4);
+                        asyncio_drop_payload_slots::<4>(_py, payload_ptr);
                         return MoltObject::none().bits() as i64;
                     }
                     let pending = asyncio_pending_with_connect_retry(
@@ -946,7 +945,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_connect_poll(obj_bits: u64) -> i64 {
                     }
                     return pending;
                 }
-                asyncio_drop_payload_slots(_py, payload_ptr, 4);
+                asyncio_drop_payload_slots::<4>(_py, payload_ptr);
                 return raise_os_error_errno::<i64>(_py, rc, "connect");
             }
         })
@@ -1020,7 +1019,7 @@ pub unsafe extern "C" fn molt_asyncio_sock_accept_poll(obj_bits: u64) -> i64 {
                 dec_ref_bits(_py, exc_bits);
                 return raised as i64;
             }
-            asyncio_drop_payload_slots(_py, payload_ptr, 3);
+            asyncio_drop_payload_slots::<3>(_py, payload_ptr);
             out_bits as i64
         })
     }

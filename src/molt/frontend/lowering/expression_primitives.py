@@ -57,15 +57,6 @@ class ExpressionPrimitivesMixin(GeneratorMixinBase):
             values[idx] = self._reload_async_value(slot, hint)
         return values
 
-    def _emit_intarray_from_seq(self, seq: MoltValue) -> MoltValue:
-        res = MoltValue(self.next_var(), type_hint="intarray")
-        self.emit(MoltOp(kind="INTARRAY_FROM_SEQ", args=[seq], result=res))
-        self.container_elem_hints[res.name] = "int"
-        return res
-
-    def _is_flat_list_int_container(self, value: MoltValue) -> bool:
-        return value.name in getattr(self, "_list_int_containers", set())
-
     def _emit_not(self, value: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="NOT", args=[value], result=res))

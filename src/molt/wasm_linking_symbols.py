@@ -6,6 +6,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
+from molt.toolchain_identity import StableRegularFileIdentity, open_stable_regular_file
+
 from molt.wasm_artifact import (
     WASM_EXTERN_KIND_FUNCTION,
     WASM_EXTERN_KIND_GLOBAL,
@@ -499,7 +501,10 @@ def _resolve_undefined_indexed_symbol_names(
 
 
 def _read_mapped(
-    path: Path, *, expected_symbol_kinds: Mapping[str, str] | None
+    path: Path,
+    *,
+    expected_symbol_kinds: Mapping[str, str] | None,
+    observed: StableRegularFileIdentity | None = None,
 ) -> WasmLinkingSymbolTable | frozenset[str]:
     expected_by_kind_and_length: (
         dict[tuple[WasmLinkingSymbolKind, int], dict[bytes, str]] | None
@@ -511,10 +516,12 @@ def _read_mapped(
             expected_by_kind_and_length.setdefault((kind, len(encoded)), {})[
                 encoded
             ] = name
-    with path.open("rb") as stream:
-        if stream.seek(0, 2) == 0:
+    with open_stable_regular_file(
+        path, label="WASM linking symbols", observed=observed
+    ) as opened:
+        if opened.stat.st_size == 0:
             return _parse_wasm_linking_symbols(b"", expected_by_kind_and_length)
-        with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        with mmap.mmap(opened.stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
             return _parse_wasm_linking_symbols(data, expected_by_kind_and_length)
 
 
@@ -531,10 +538,15 @@ def read_wasm_linking_symbols(
 
 
 def wasm_linking_defined_names(
-    path: Path, expected_symbol_kinds: Mapping[str, str]
+    path: Path,
+    expected_symbol_kinds: Mapping[str, str],
+    *,
+    observed: StableRegularFileIdentity | None = None,
 ) -> frozenset[str]:
     if not expected_symbol_kinds:
         return frozenset()
-    names = _read_mapped(path, expected_symbol_kinds=expected_symbol_kinds)
+    names = _read_mapped(
+        path, expected_symbol_kinds=expected_symbol_kinds, observed=observed
+    )
     assert isinstance(names, frozenset)
     return names

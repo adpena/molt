@@ -107,14 +107,9 @@ PROCESS_COUNTER_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
                 "call_bind_ic_miss",
                 "attr_site_name_hit",
                 "attr_site_name_miss",
-                "split_ws_ascii",
-                "split_ws_unicode",
                 "dict_str_int_prehash_hit",
                 "dict_str_int_prehash_miss",
                 "dict_str_int_prehash_deopt",
-                "taq_ingest_calls",
-                "taq_ingest_skip_marker",
-                "ascii_i64_parse_fail",
             )
         ),
         "deopt_reasons": frozenset(

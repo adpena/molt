@@ -48,6 +48,150 @@ def _last_call(source: str):
     return index.calls[-1]
 
 
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "(value, (value := replacement))",
+        "[value, (value := replacement)]",
+        "{value: (value := replacement)}",
+        "consume(value, (value := replacement))",
+        "consume(first=value, second=(value := replacement))",
+        "value + (value := replacement)",
+        "value[(value := replacement)]",
+        "value is (value := replacement)",
+        "(value if condition else replacement, (value := replacement))",
+        "(value or replacement, (value := replacement))",
+        "(value, [(value := item) for item in source])",
+    ],
+)
+def test_pending_expression_read_captures_resolved_binding(expression: str) -> None:
+    source = (
+        "def f(value, replacement, condition, source, consume):\n"
+        f"    return {expression}\n"
+    )
+    facts = analyze_python_source_bindings(source)
+    reads = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Name)
+        and node.id == "value"
+        and isinstance(node.ctx, ast.Load)
+    ]
+    assert reads
+    assert all(facts.expression_fact(node).binding_capture_required for node in reads)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "(value, replacement)",
+        "((value := replacement), value)",
+        "(value, lambda value: (value := replacement))",
+        "(value, [value for value in source])",
+    ],
+)
+def test_stable_or_different_storage_does_not_capture_name(expression: str) -> None:
+    source = f"def f(value, replacement, source):\n    return {expression}\n"
+    facts = analyze_python_source_bindings(source)
+    outer = ast.parse(source).body[0]
+    reads = [
+        node
+        for node in ast.walk(outer.body[0].value)
+        if isinstance(node, ast.Name)
+        and node.id == "value"
+        and isinstance(node.ctx, ast.Load)
+    ]
+    # The earliest source read belongs to the enclosing function; equal text
+    # in an isolated comprehension or lambda denotes a different slot.
+    read = min(reads, key=lambda node: (node.lineno, node.col_offset))
+    assert not facts.expression_fact(read).binding_capture_required
+
+
+@pytest.mark.parametrize(
+    "target, expected", [((3, 12), False), ((3, 13), True), ((3, 14), True)]
+)
+@pytest.mark.parametrize(
+    "boundary", ["callback()", "callback and other", "callback.member"]
+)
+def test_live_frame_write_boundary_requires_expression_capture(
+    target, expected, boundary
+) -> None:
+    source = f"def f(value, callback, other):\n    return (value, {boundary})\n"
+    facts = analyze_python_source_bindings(
+        source, policy=PythonBindingPolicy(target_python=target)
+    )
+    read = ast.parse(source).body[0].body[0].value.elts[0]
+    assert facts.expression_fact(read).binding_capture_required is expected
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "callback()",
+        "callback.member",
+        "callback and other",
+        "callback == other",
+        "tuple(callback)",
+        "with callback:\n        pass",
+        "other = None",
+    ],
+)
+def test_frame_callbacks_expire_local_value_facts(target, boundary) -> None:
+    source = (
+        f"def f(callback, other):\n    value = 17\n    {boundary}\n    return value\n"
+    )
+    index = analyze_python_source_bindings(
+        source, policy=PythonBindingPolicy(target_python=target)
+    )
+    read = ast.parse(source).body[0].body[-1].value
+    fact = index.expression_fact(read)
+    assert fact is not None
+    assert fact.binding_invalidated is (target >= (3, 13))
+    assert (fact.result == UNKNOWN_EXPRESSION_RESULT) is (target >= (3, 13))
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
+def test_frame_callback_can_replace_saved_callable_identity(target) -> None:
+    source = (
+        "def f(callback):\n    callee = len\n    callback()\n    return callee(())\n"
+    )
+    index = analyze_python_source_bindings(
+        source, policy=PythonBindingPolicy(target_python=target)
+    )
+    call = ast.parse(source).body[0].body[-1].value
+    fact = index.expression_fact(call.func)
+    assert fact is not None
+    assert fact.binding_invalidated is (target >= (3, 13))
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
+@pytest.mark.parametrize("body", ["1 + 2", "value = 23"])
+def test_frame_local_facts_survive_inert_operations_and_fresh_stores(
+    target, body
+) -> None:
+    source = f"def f(callback):\n    value = 17\n    {body}\n    return value\n"
+    index = analyze_python_source_bindings(
+        source, policy=PythonBindingPolicy(target_python=target)
+    )
+    fact = index.expression_fact(ast.parse(source).body[0].body[-1].value)
+    assert fact is not None and not fact.binding_invalidated
+    assert fact.result != UNKNOWN_EXPRESSION_RESULT
+
+
+@pytest.mark.parametrize("target", [(3, 13), (3, 14)])
+def test_frame_callback_store_cannot_hide_displaced_finalizer_reentry(target) -> None:
+    # The callback may install a finalizable object. Replacing it publishes
+    # 17, then runs that object's finalizer, which can replace the binding again.
+    source = "def f(callback):\n    value = 1\n    callback()\n    value = 17\n    return value\n"
+    index = analyze_python_source_bindings(
+        source, policy=PythonBindingPolicy(target_python=target)
+    )
+    fact = index.expression_fact(ast.parse(source).body[0].body[-1].value)
+    assert fact is not None and fact.binding_invalidated
+    assert fact.result == UNKNOWN_EXPRESSION_RESULT
+
+
 @pytest.mark.parametrize("target", ["Alias = A", "del Alias", "(Alias := A)"])
 def test_import_metadata_projection_is_independent_of_unrelated_deferred_return(
     target: str,
@@ -1056,14 +1200,14 @@ def test_conditional_binding_join_preserves_clean_bound_and_pristine_unbound_pat
     pool.set_taint_domain(1)
     branches = [0]
     for _ in range(branch_count - 1):
-        tainted = pool.taint_module_bindings(branches[-1])
+        tainted = pool.taint_exposed_bindings(branches[-1])
         branches.append(pool.set_binding(tainted, 0, int(PythonIdentity.USER_FUNCTION)))
     joined = pool.join(*branches)
     assert pool.binding(joined, 0) == int(
         PythonIdentity.USER_FUNCTION | PythonIdentity.UNBOUND
     )
     assert pool._binding_resolution(joined, 0).clean
-    tainted_unbound = pool.taint_module_bindings(0)
+    tainted_unbound = pool.taint_exposed_bindings(0)
     unsafe_join = pool.join(*branches[1:], tainted_unbound)
     assert not pool._binding_resolution(unsafe_join, 0).clean
 
@@ -2503,7 +2647,7 @@ def test_absent_binding_is_pristine_until_its_namespace_is_exposed() -> None:
     pool.set_taint_domain(1)
     assert pool._binding_resolution(0, 0).clean
     assert pool.binding(0, 0) == int(PythonIdentity.UNBOUND)
-    exposed = pool.taint_module_bindings(0)
+    exposed = pool.taint_exposed_bindings(0)
     assert not pool._binding_resolution(exposed, 0).clean
     assert pool.binding(exposed, 0) == int(PythonIdentity.UNBOUND) | OTHER_IDENTITY
     # A private fast-local slot is not part of the exposed namespace.
@@ -2514,7 +2658,7 @@ def test_absent_binding_is_pristine_until_its_namespace_is_exposed() -> None:
 def test_deferred_history_retains_insertion_into_previously_absent_namespace() -> None:
     pool = python_binding_flow._StatePool()
     pool.set_taint_domain(1)
-    exposed = pool.taint_module_bindings(0)
+    exposed = pool.taint_exposed_bindings(0)
     history = python_binding_flow._HistorySummary.build(pool, [0, exposed])
     assert history.binding(pool, 0, 0) == int(PythonIdentity.UNBOUND) | OTHER_IDENTITY
     assert history.binding(pool, 0, 1) == int(PythonIdentity.UNBOUND)

@@ -228,6 +228,9 @@ fn exception_creation_ref_releases_at_raise_with_handler_full_drop() {
     assert_eq!(entry_ops[3].operands, vec![exc]);
 }
 
+/// A borrowed payload bound to an owned handler argument needs its own +1 on
+/// the exceptional path only. The check's landing block retains it there, so
+/// the normal path runs no RC operation for the caller's borrow.
 #[test]
 fn exception_edge_borrowed_payload_retains_for_owned_handler_arg() {
     let mut func = TirFunction::new(
@@ -266,18 +269,42 @@ fn exception_edge_borrowed_payload_retains_for_owned_handler_arg() {
     let stats = run(&mut func, &mut am);
 
     assert_eq!(
-        stats.ops_added, 3,
-        "borrowed payload retain+normal release plus handler arg release"
+        stats.ops_added, 2,
+        "one landing retain for the borrowed payload plus the handler arg release"
     );
     let entry_ops = &func.blocks[&func.entry_block].ops;
-    let check_idx = entry_ops
+    assert!(
+        entry_ops
+            .iter()
+            .all(|op| !matches!(op.opcode, OpCode::IncRef | OpCode::DecRef)),
+        "the normal path leaves the caller's borrow alone: {entry_ops:?}"
+    );
+    let check = entry_ops
         .iter()
-        .position(|op| op.opcode == OpCode::CheckException)
+        .find(|op| op.opcode == OpCode::CheckException)
         .expect("check_exception survives");
-    assert_eq!(entry_ops[check_idx - 1].opcode, OpCode::IncRef);
-    assert_eq!(entry_ops[check_idx - 1].operands, vec![param]);
-    assert_eq!(entry_ops[check_idx + 1].opcode, OpCode::DecRef);
-    assert_eq!(entry_ops[check_idx + 1].operands, vec![param]);
+    assert_eq!(check.operands, vec![param]);
+    let Some(&AttrValue::Int(label)) = check.attrs.get("value") else {
+        panic!("the check keeps a handler label");
+    };
+    let landing = func
+        .label_id_map
+        .iter()
+        .find(|&(_, &candidate)| candidate == label)
+        .map(|(&block, _)| BlockId(block))
+        .expect("the check targets a labelled block");
+    assert_ne!(landing, handler, "the retain needs a landing on this edge");
+    let landing_block = &func.blocks[&landing];
+    let [forwarded] = landing_block.args.as_slice() else {
+        panic!("the landing takes the payload: {:?}", landing_block.args);
+    };
+    assert_eq!(landing_block.ops.len(), 1);
+    assert_eq!(landing_block.ops[0].opcode, OpCode::IncRef);
+    assert_eq!(landing_block.ops[0].operands, vec![forwarded.id]);
+    assert!(matches!(
+        &landing_block.terminator,
+        Terminator::Branch { target, args } if *target == handler && args == &vec![forwarded.id]
+    ));
 
     let handler_ops = &func.blocks[&handler].ops;
     assert_eq!(handler_ops[0].opcode, OpCode::Call);
@@ -285,10 +312,14 @@ fn exception_edge_borrowed_payload_retains_for_owned_handler_arg() {
     assert_eq!(handler_ops[1].operands, vec![handler_arg]);
 }
 
+/// A region registration binds nothing. `TryStart` keeps its handler
+/// reachable, but only the check raises into it. The check's landing retains
+/// the borrowed parameter that the handler reads, on the exceptional path only,
+/// and the registration costs the normal path no reference-count operation.
 #[test]
-fn try_start_edge_borrowed_payload_retains_for_owned_handler_arg() {
+fn try_start_registration_retains_nothing_for_its_payload() {
     let mut func = TirFunction::new(
-        "try_start_edge_borrowed_payload".into(),
+        "try_start_registration_payload".into(),
         vec![TirType::DynBox],
         TirType::None,
         molt_ir::FunctionReturnAbi::Void,
@@ -301,9 +332,11 @@ fn try_start_edge_borrowed_payload_retains_for_owned_handler_arg() {
     let param = func.blocks[&func.entry_block].args[0].id;
     let mut start = op(OpCode::TryStart, vec![param], vec![]);
     start.attrs.insert("value".into(), AttrValue::Int(4));
+    let mut check = op(OpCode::CheckException, vec![param], vec![]);
+    check.attrs.insert("value".into(), AttrValue::Int(4));
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops = vec![start];
+        entry.ops = vec![start, op(OpCode::Call, vec![], vec![]), check];
         entry.terminator = Terminator::Return { values: vec![] };
     }
     func.blocks.insert(
@@ -323,23 +356,20 @@ fn try_start_edge_borrowed_payload_retains_for_owned_handler_arg() {
     let stats = run(&mut func, &mut am);
 
     assert_eq!(
-        stats.ops_added, 3,
-        "try_start borrowed payload retain+normal release plus handler arg release"
+        stats.ops_added, 2,
+        "the check's landing retain plus the handler arg release"
     );
     let entry_ops = &func.blocks[&func.entry_block].ops;
-    let start_idx = entry_ops
-        .iter()
-        .position(|op| op.opcode == OpCode::TryStart)
-        .expect("try_start survives");
-    assert_eq!(entry_ops[start_idx - 1].opcode, OpCode::IncRef);
-    assert_eq!(entry_ops[start_idx - 1].operands, vec![param]);
-    assert_eq!(entry_ops[start_idx + 1].opcode, OpCode::DecRef);
-    assert_eq!(entry_ops[start_idx + 1].operands, vec![param]);
-
-    let handler_ops = &func.blocks[&handler].ops;
-    assert_eq!(handler_ops[0].opcode, OpCode::Call);
-    assert_eq!(handler_ops[1].opcode, OpCode::DecRef);
-    assert_eq!(handler_ops[1].operands, vec![handler_arg]);
+    assert!(
+        entry_ops
+            .iter()
+            .all(|op| !matches!(op.opcode, OpCode::IncRef | OpCode::DecRef)),
+        "the registration retains nothing on the normal path: {entry_ops:?}"
+    );
+    let paths: [&[bool]; 2] = [&[], &[true]];
+    for path in paths {
+        trace(&func, 0, path);
+    }
 }
 
 #[test]
@@ -831,126 +861,159 @@ fn exception_region_match_release_splits_shared_pop_with_block_args() {
 
 #[test]
 fn exception_region_match_release_remaps_dominated_successor_uses() {
-    let mut func = TirFunction::new(
-        "shared_exception_pop_successor_uses_arg".into(),
-        vec![],
-        TirType::None,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let normal = func.fresh_block();
-    let handler = func.fresh_block();
-    let handler_body = func.fresh_block();
-    let shared_pop = func.fresh_block();
-    let after_pop = func.fresh_block();
-    func.label_id_map.insert(handler.0, 4);
+    for exceptional_entry in [false, true] {
+        let mut func = TirFunction::new(
+            "shared_exception_pop_successor_uses_arg".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let normal = func.fresh_block();
+        let handler = func.fresh_block();
+        let handler_body = func.fresh_block();
+        let shared_pop = func.fresh_block();
+        let after_pop = func.fresh_block();
+        func.label_id_map.insert(handler.0, 4);
 
-    let exc = func.fresh_value();
-    let normal_arg = func.fresh_value();
-    let handler_arg = func.fresh_value();
-    let pop_arg = func.fresh_value();
-    let pop_alias = func.fresh_value();
-    let tail_value = func.fresh_value();
+        let exc = func.fresh_value();
+        let normal_arg = func.fresh_value();
+        let handler_arg = func.fresh_value();
+        let pop_arg = func.fresh_value();
+        let pop_alias = func.fresh_value();
+        let tail_value = func.fresh_value();
 
-    func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![try_start(4)];
-    func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
-        target: normal,
-        args: vec![],
-    };
-    func.blocks.insert(
-        normal,
-        TirBlock {
-            id: normal,
+        func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![try_start(4)];
+        func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
+            target: normal,
             args: vec![],
-            ops: vec![const_str(normal_arg)],
-            terminator: Terminator::Branch {
-                target: shared_pop,
-                args: vec![normal_arg],
-            },
-        },
-    );
-    func.blocks.insert(
-        handler,
-        TirBlock {
-            id: handler,
-            args: vec![],
-            ops: vec![
-                original_copy("exception_last_pending", vec![exc]),
-                const_str(handler_arg),
-            ],
-            terminator: Terminator::Branch {
-                target: handler_body,
+        };
+        func.blocks.insert(
+            normal,
+            TirBlock {
+                id: normal,
                 args: vec![],
+                ops: vec![const_str(normal_arg)],
+                terminator: Terminator::Branch {
+                    target: shared_pop,
+                    args: vec![normal_arg],
+                },
             },
-        },
-    );
-    func.blocks.insert(
-        handler_body,
-        TirBlock {
-            id: handler_body,
-            args: vec![],
-            ops: vec![],
-            terminator: Terminator::Branch {
-                target: shared_pop,
-                args: vec![handler_arg],
-            },
-        },
-    );
-    func.blocks.insert(
-        shared_pop,
-        TirBlock {
-            id: shared_pop,
-            args: vec![TirValue {
-                id: pop_arg,
-                ty: TirType::Str,
-            }],
-            ops: vec![
-                original_copy_with_operands("load_var", vec![pop_arg], vec![pop_alias]),
-                original_copy("exception_pop", vec![]),
-            ],
-            terminator: Terminator::Branch {
-                target: after_pop,
+        );
+        func.blocks.insert(
+            handler,
+            TirBlock {
+                id: handler,
                 args: vec![],
+                ops: vec![
+                    original_copy("exception_last_pending", vec![exc]),
+                    const_str(handler_arg),
+                ],
+                terminator: Terminator::Branch {
+                    target: handler_body,
+                    args: vec![],
+                },
             },
-        },
-    );
-    func.blocks.insert(
-        after_pop,
-        TirBlock {
-            id: after_pop,
-            args: vec![],
-            ops: vec![op(OpCode::Copy, vec![pop_alias], vec![tail_value])],
-            terminator: Terminator::Return {
-                values: vec![tail_value],
+        );
+        func.blocks.insert(
+            handler_body,
+            TirBlock {
+                id: handler_body,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Branch {
+                    target: shared_pop,
+                    args: vec![handler_arg],
+                },
             },
-        },
-    );
+        );
+        func.blocks.insert(
+            shared_pop,
+            TirBlock {
+                id: shared_pop,
+                args: vec![TirValue {
+                    id: pop_arg,
+                    ty: TirType::Str,
+                }],
+                ops: vec![
+                    original_copy_with_operands("load_var", vec![pop_arg], vec![pop_alias]),
+                    original_copy("exception_pop", vec![]),
+                ],
+                terminator: Terminator::Branch {
+                    target: after_pop,
+                    args: vec![],
+                },
+            },
+        );
+        func.blocks.insert(
+            after_pop,
+            TirBlock {
+                id: after_pop,
+                args: vec![],
+                ops: vec![op(OpCode::Copy, vec![pop_alias], vec![tail_value])],
+                terminator: Terminator::Return {
+                    values: vec![tail_value],
+                },
+            },
+        );
 
-    let mut am = AnalysisManager::new();
-    let before_blocks = func.blocks.len();
-    let stats = run(&mut func, &mut am);
-
-    assert_eq!(stats.ops_added, 1);
-    assert_eq!(
-        func.blocks.len(),
-        before_blocks + 2,
-        "shared pop needs a continuation plus the handler-specific release split"
-    );
-
-    let continuation = match &func.blocks[&shared_pop].terminator {
-        Terminator::Branch { target, args } => {
-            assert_eq!(args, &vec![pop_arg]);
-            *target
+        if exceptional_entry {
+            // The whole protected body is reached only through an observation.
+            // Its post-pop successor must still read the new continuation argument.
+            let protected_entry = func.entry_block;
+            let outer_entry = func.fresh_block();
+            func.label_id_map.insert(protected_entry.0, 77);
+            let mut observe = op(OpCode::CheckException, vec![], vec![]);
+            observe.attrs.insert("value".into(), AttrValue::Int(77));
+            func.blocks.insert(
+                outer_entry,
+                TirBlock {
+                    id: outer_entry,
+                    args: vec![],
+                    ops: vec![observe],
+                    terminator: Terminator::Unreachable,
+                },
+            );
+            func.entry_block = outer_entry;
         }
-        other => panic!("shared pop must branch to a continuation, got {other:?}"),
-    };
-    let continuation_arg = func.blocks[&continuation].args[0].id;
-    assert_ne!(continuation_arg, pop_arg);
-    assert_eq!(
-        func.blocks[&after_pop].ops[0].operands,
-        vec![continuation_arg],
-        "dominated successor must read the post-split continuation arg, not the stale pre-split phi"
-    );
 
-    molt_passes::tir::verify::verify_function(&func)
-        .expect("post-pop split must preserve SSA dominance through dominated successors");
+        let mut am = AnalysisManager::new();
+        let before_blocks = func.blocks.len();
+        let stats = run(&mut func, &mut am);
+
+        if !exceptional_entry {
+            assert_eq!(stats.ops_added, 1);
+        }
+        assert_eq!(
+            func.blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .filter(|op| op.opcode == OpCode::DecRef && op.operands == [exc])
+                .count(),
+            1,
+            "both entry modes release the handler's matched exception exactly once"
+        );
+        assert_eq!(
+            func.blocks.len(),
+            before_blocks + 2,
+            "shared pop needs a continuation plus the handler-specific release split"
+        );
+
+        let continuation = match &func.blocks[&shared_pop].terminator {
+            Terminator::Branch { target, args } => {
+                assert_eq!(args, &vec![pop_arg]);
+                *target
+            }
+            other => panic!("shared pop must branch to a continuation, got {other:?}"),
+        };
+        let continuation_arg = func.blocks[&continuation].args[0].id;
+        assert_ne!(continuation_arg, pop_arg);
+        assert_eq!(
+            func.blocks[&after_pop].ops[0].operands,
+            vec![continuation_arg],
+            "dominated successor must read the post-split continuation arg, not the stale pre-split phi"
+        );
+
+        molt_passes::tir::verify::verify_function(&func)
+            .expect("post-pop split must preserve SSA dominance through dominated successors");
+    }
 }

@@ -8,256 +8,18 @@ use crate::call::type_policy::{
     InitArgPolicy, callable_matches_runtime_symbol, resolved_constructor_init_policy,
     resolved_new_is_default_object_new,
 };
-use crate::object::ops_encoding::DecodeFailure;
 use crate::*;
 use molt_obj_model::ExceptionTypedField;
 
-fn str_codec_arg(_py: &PyToken<'_>, bits: u64, arg_name: &str) -> Option<String> {
-    let obj = obj_from_bits(bits);
-    let Some(text) = string_obj_to_owned(obj) else {
-        let type_name = class_name_for_error(type_of_bits(_py, bits));
-        let msg = format!("str() argument '{arg_name}' must be str, not {type_name}");
-        return raise_exception::<Option<String>>(_py, "TypeError", &msg);
-    };
-    Some(text)
-}
-
-// A missing capacity is an allocation failure, never absent layout metadata.
-fn class_allocation_capacity<T>(_py: &PyToken<'_>, capacity: Option<T>) -> Option<T> {
-    if capacity.is_none() {
-        record_memory_error_without_allocation(_py);
-    }
-    capacity
-}
-
-unsafe fn max_slot_end_from_offsets_dict(_py: &PyToken<'_>, offsets_ptr: *mut u8) -> Option<usize> {
-    unsafe {
-        if object_type_id(offsets_ptr) != TYPE_ID_DICT {
-            return Some(0);
-        }
-        let mut max_end = 0usize;
-        for pair in dict_order(offsets_ptr).chunks(2) {
-            if pair.len() != 2 {
-                continue;
-            }
-            if let Some(offset) = obj_from_bits(pair[1]).as_int()
-                && offset >= 0
-            {
-                let offset = class_allocation_capacity(_py, usize::try_from(offset).ok())?;
-                let end =
-                    class_allocation_capacity(_py, offset.checked_add(std::mem::size_of::<u64>()))?;
-                if end > max_end {
-                    max_end = end;
-                }
-            }
-        }
-        Some(max_end)
-    }
-}
-
-unsafe fn max_slot_end_from_mro_offsets(
-    _py: &PyToken<'_>,
-    class_ptr: *mut u8,
-    fields_name_bits: u64,
-) -> Option<usize> {
-    unsafe {
-        let mro = class_mro_view(_py, class_ptr);
-        if exception_pending(_py) {
-            return None;
-        }
-        let mut max_end = 0usize;
-        for mro_class_bits in mro.iter().copied() {
-            let Some(mro_class_ptr) = obj_from_bits(mro_class_bits).as_ptr() else {
-                continue;
-            };
-            if object_type_id(mro_class_ptr) != TYPE_ID_TYPE {
-                continue;
-            }
-            let offsets_bits = crate::builtins::attr::class_field_offsets_map_bits(
-                _py,
-                mro_class_ptr,
-                Some(fields_name_bits),
-            );
-            if exception_pending(_py) {
-                return None;
-            }
-            let Some(offsets_bits) = offsets_bits else {
-                continue;
-            };
-            let Some(offsets_ptr) = obj_from_bits(offsets_bits).as_ptr() else {
-                continue;
-            };
-            if object_type_id(offsets_ptr) != TYPE_ID_DICT {
-                continue;
-            }
-            max_end = max_end.max(max_slot_end_from_offsets_dict(_py, offsets_ptr)?);
-        }
-        Some(max_end)
-    }
-}
-
-/// Compute the byte size of the payload for instances of the class at
-/// `class_ptr`.  This involves MRO walks, dict probes and name interning so
-/// it is expensive.  Callers in hot loops should cache the result (e.g. via
-/// the call-bind IC `cached_alloc_size` field).
+/// Allocation reads the concrete size sealed with the physical row record.
+/// Construction is the only fallible path; there is no ancestor sizing lane.
 pub(crate) unsafe fn class_layout_size_cached(
     _py: &PyToken<'_>,
     class_ptr: *mut u8,
 ) -> Option<usize> {
     unsafe {
-        if let Some(size) = crate::object::layout::class_cached_layout_size(class_ptr) {
-            return Some(size);
-        }
-        class_layout_size(_py, class_ptr)
-    }
-}
-
-unsafe fn class_layout_size(_py: &PyToken<'_>, class_ptr: *mut u8) -> Option<usize> {
-    unsafe {
-        let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        let fields_name_bits = intern_static_name(
-            _py,
-            &runtime_state(_py).interned.field_offsets_name,
-            b"__molt_field_offsets__",
-        );
-        if fields_name_bits == 0 || exception_pending(_py) {
-            return None;
-        }
-        let size_name_bits = intern_static_name(
-            _py,
-            &runtime_state(_py).interned.molt_layout_size,
-            b"__molt_layout_size__",
-        );
-        if size_name_bits == 0 || exception_pending(_py) {
-            return None;
-        }
-        let class_dict_ptr = obj_from_bits(class_dict_bits(class_ptr)).as_ptr();
-
-        // The Python-visible layout metadata is an input to validation, never
-        // the hot-path cache authority. A forged smaller value therefore cannot
-        // under-allocate an instance.
-        let builtins = builtin_classes(_py);
-        let reserved_prefix = crate::object::class_reserved_layout_prefix(class_ptr);
-        let reserved_tail = crate::object::class_reserved_layout_tail(_py, class_ptr);
-        if exception_pending(_py) {
-            return None;
-        }
-        let mut size = 0usize;
-        let mut has_own_layout = false;
-        let mut own_has_offsets = false;
-        if let Some(class_dict_ptr) = class_dict_ptr
-            && object_type_id(class_dict_ptr) == TYPE_ID_DICT
-        {
-            if let Some(size_bits) = dict_get_in_place(_py, class_dict_ptr, size_name_bits)
-                && let Some(val) = obj_from_bits(size_bits).as_int()
-                && val > 0
-            {
-                has_own_layout = true;
-                size = class_allocation_capacity(_py, usize::try_from(val).ok())?;
-            }
-            if exception_pending(_py) {
-                return None;
-            }
-            if let Some(offsets_bits) = dict_get_in_place(_py, class_dict_ptr, fields_name_bits) {
-                own_has_offsets = obj_from_bits(offsets_bits)
-                    .as_ptr()
-                    .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_DICT);
-            }
-            if exception_pending(_py) {
-                return None;
-            }
-        }
-        // A sealed ancestor's private size cache is the only layout-size
-        // authority. Namespace reads remain available solely for ancestors
-        // that are themselves still under construction.
-        let mro = class_mro_view(_py, class_ptr);
-        if exception_pending(_py) {
-            return None;
-        }
-        for ancestor_bits in mro.iter().copied().skip(1) {
-            let Some(ancestor) = obj_from_bits(ancestor_bits).as_ptr() else {
-                continue;
-            };
-            if object_type_id(ancestor) != TYPE_ID_TYPE {
-                continue;
-            }
-            let inherited = if crate::object::class_definition_is_finished(ancestor) {
-                Some(
-                    crate::object::layout::class_cached_layout_size(ancestor)
-                        .expect("sealed ancestor has no private layout size"),
-                )
-            } else {
-                let Some(dict) = obj_from_bits(class_dict_bits(ancestor)).as_ptr() else {
-                    continue;
-                };
-                if object_type_id(dict) != TYPE_ID_DICT {
-                    continue;
-                }
-                let declared = dict_get_in_place(_py, dict, size_name_bits)
-                    .and_then(|bits| obj_from_bits(bits).as_int())
-                    .filter(|&value| value > 0);
-                if exception_pending(_py) {
-                    return None;
-                }
-                match declared {
-                    Some(value) => {
-                        Some(class_allocation_capacity(_py, usize::try_from(value).ok())?)
-                    }
-                    None => None,
-                }
-            };
-            if let Some(inherited) = inherited {
-                size = size.max(inherited);
-            }
-        }
-        let max_end = max_slot_end_from_mro_offsets(_py, class_ptr, fields_name_bits)?;
-        let required = class_allocation_capacity(
-            _py,
-            max_end.max(reserved_prefix).checked_add(reserved_tail),
-        )?;
-        if has_own_layout && own_has_offsets && size < required {
-            raise_exception::<()>(
-                _py,
-                "ValueError",
-                "class field offset exceeds the declared layout size",
-            );
-            return None;
-        }
-        let needs_recompute = !has_own_layout || size < required || !own_has_offsets;
-        if needs_recompute {
-            size = size.max(required);
-        }
-        if size == 0 {
-            size = reserved_tail.max(std::mem::size_of::<u64>());
-        }
-        if issubclass_bits(class_bits, builtins.int) && size < 16 {
-            size = 16;
-        }
-        if issubclass_bits(class_bits, builtins.float) && size < 16 {
-            size = 16;
-        }
-        if issubclass_bits(class_bits, builtins.dict) && size < 16 {
-            size = 16;
-        }
-        if needs_recompute
-            && let Some(class_dict_ptr) = class_dict_ptr
-            && object_type_id(class_dict_ptr) == TYPE_ID_DICT
-        {
-            let size_i64 = class_allocation_capacity(_py, i64::try_from(size).ok())?;
-            let size_bits = MoltObject::from_int(size_i64).bits();
-            dict_set_in_place(_py, class_dict_ptr, size_name_bits, size_bits);
-            if exception_pending(_py) {
-                return None;
-            }
-            class_bump_layout_version(class_ptr);
-        }
-        if exception_pending(_py) {
-            return None;
-        }
-        if crate::object::class_definition_is_finished(class_ptr) {
-            crate::object::layout::class_set_cached_layout_size(class_ptr, size);
-        }
-        Some(size)
+        crate::object::class_finish_definition(_py, class_ptr).ok()?;
+        crate::object::layout::class_cached_layout_size(class_ptr)
     }
 }
 
@@ -282,6 +44,17 @@ pub(crate) unsafe fn alloc_published_instance_for_class_with_total_size(
 }
 
 pub(crate) unsafe fn alloc_instance_for_class(_py: &PyToken<'_>, class_ptr: *mut u8) -> u64 {
+    // Default type construction and explicit object.__new__ converge here.
+    // A plain class allocation cannot supply the wrapper's native poll payload.
+    if crate::builtins::classes::builtin_classes_if_initialized(_py)
+        .is_some_and(|classes| MoltObject::from_ptr(class_ptr).bits() == classes.coroutine_wrapper)
+    {
+        return raise_exception::<_>(
+            _py,
+            "TypeError",
+            "cannot create 'coroutine_wrapper' instances",
+        );
+    }
     unsafe {
         if crate::object::class_finish_definition(_py, class_ptr).is_err() {
             return MoltObject::none().bits();
@@ -311,7 +84,7 @@ pub(crate) unsafe fn alloc_instance_for_default_object_new(
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        alloc_instance_for_class(_py, class_ptr)
+        crate::molt_object_new_bound(class_bits)
     }
 }
 
@@ -511,43 +284,6 @@ pub(crate) unsafe fn construct_exception_from_args(
             );
         }
 
-        let call = |callable_bits: u64,
-                    prefix: Option<u64>,
-                    call_pos: &[u64],
-                    include_keywords: bool|
-         -> u64 {
-            let keyword_count = if include_keywords { kw_names.len() } else { 0 };
-            let position_count = call_pos.len().saturating_add(usize::from(prefix.is_some()));
-            let builder_bits = molt_callargs_new(position_count as u64, keyword_count as u64);
-            if builder_bits == 0 {
-                return MoltObject::none().bits();
-            }
-            if let Some(prefix) = prefix {
-                let _ = molt_callargs_push_pos(builder_bits, prefix);
-                if exception_pending(_py) {
-                    dec_ref_bits(_py, builder_bits);
-                    return MoltObject::none().bits();
-                }
-            }
-            for &arg in call_pos {
-                let _ = molt_callargs_push_pos(builder_bits, arg);
-                if exception_pending(_py) {
-                    dec_ref_bits(_py, builder_bits);
-                    return MoltObject::none().bits();
-                }
-            }
-            if include_keywords {
-                for (&name, &value) in kw_names.iter().zip(kw_values) {
-                    let _ = molt_callargs_push_kw(builder_bits, name, value);
-                    if exception_pending(_py) {
-                        dec_ref_bits(_py, builder_bits);
-                        return MoltObject::none().bits();
-                    }
-                }
-            }
-            molt_call_bind(callable_bits, builder_bits)
-        };
-
         let new_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
         let (inst_bits, initialized_by_default_new) = if let Some(new_bits) =
@@ -568,7 +304,16 @@ pub(crate) unsafe fn construct_exception_from_args(
                 }
                 MoltObject::from_ptr(exc_ptr).bits()
             } else {
-                call(new_bits, Some(class_bits), pos, true)
+                // `type.__call__` lends its arguments to each constructor
+                // phase; the phase retains its own argument vector.
+                crate::call::bind::call_bind_borrowed(
+                    _py,
+                    new_bits,
+                    Some(class_bits),
+                    pos,
+                    kw_names,
+                    kw_values,
+                )
             };
             if exception_pending(_py) {
                 return MoltObject::none().bits();
@@ -637,7 +382,9 @@ pub(crate) unsafe fn construct_exception_from_args(
                 return MoltObject::none().bits();
             }
         } else {
-            let init_result = call(init_bits, None, pos, true);
+            let init_result = crate::call::bind::call_bind_borrowed(
+                _py, init_bits, None, pos, kw_names, kw_values,
+            );
             dec_ref_bits(_py, init_bits);
             return resolve_construct_after_init(_py, inst_bits, init_result);
         }
@@ -722,146 +469,6 @@ pub(crate) unsafe fn call_class_init_with_args(
                 }
             }
         }
-        if class_bits == builtins.list {
-            match args.len() {
-                0 => {
-                    let ptr = alloc_list(_py, &[]);
-                    if ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    return MoltObject::from_ptr(ptr).bits();
-                }
-                1 => {
-                    let Some(bits) = list_from_iter_bits(_py, args[0]) else {
-                        return MoltObject::none().bits();
-                    };
-                    return bits;
-                }
-                _ => {
-                    let msg = format!("list expected at most 1 argument, got {}", args.len());
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-            }
-        }
-        if class_bits == builtins.tuple || issubclass_bits(class_bits, builtins.tuple) {
-            match args.len() {
-                0 => {
-                    if class_bits != builtins.tuple {
-                        return crate::object::builders::alloc_tuple_subclass(_py, class_bits, &[]);
-                    }
-                    let ptr = alloc_tuple(_py, &[]);
-                    return if ptr.is_null() {
-                        MoltObject::none().bits()
-                    } else {
-                        MoltObject::from_ptr(ptr).bits()
-                    };
-                }
-                1 => {
-                    let Some(bits) = tuple_from_iter_bits(_py, args[0]) else {
-                        return MoltObject::none().bits();
-                    };
-                    if class_bits == builtins.tuple {
-                        return bits;
-                    }
-                    let out = if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-                        let Some(items) = crate::object::seq_access::snapshot(
-                            _py,
-                            ptr,
-                            "tuple subclass snapshot allocation failed",
-                        ) else {
-                            dec_ref_bits(_py, bits);
-                            return MoltObject::none().bits();
-                        };
-                        crate::object::builders::alloc_tuple_subclass(_py, class_bits, &items)
-                    } else {
-                        MoltObject::none().bits()
-                    };
-                    dec_ref_bits(_py, bits);
-                    return out;
-                }
-                _ => {
-                    let msg = format!("tuple expected at most 1 argument, got {}", args.len());
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-            }
-        }
-        if class_bits == builtins.dict {
-            match args.len() {
-                0 => return molt_dict_new(0),
-                1 => return molt_dict_from_obj(args[0]),
-                _ => {
-                    let msg = format!("dict expected at most 1 argument, got {}", args.len());
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-            }
-        }
-        if class_bits == builtins.module {
-            match args.len() {
-                0 => {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "module() missing required argument 'name' (pos 1)",
-                    );
-                }
-                1 => return molt_module_new(args[0]),
-                2 => {
-                    let mod_bits = molt_module_new(args[0]);
-                    if obj_from_bits(mod_bits).is_none() {
-                        return mod_bits;
-                    }
-                    let Some(doc_name_bits) = attr_name_bits_from_bytes(_py, b"__doc__") else {
-                        return mod_bits;
-                    };
-                    let _ = molt_module_set_attr(mod_bits, doc_name_bits, args[1]);
-                    dec_ref_bits(_py, doc_name_bits);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    return mod_bits;
-                }
-                _ => {
-                    let msg = format!("module expected at most 2 arguments, got {}", args.len());
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-            }
-        }
-        if class_bits == builtins.set {
-            match args.len() {
-                0 => return molt_set_new(0),
-                1 => {
-                    let set_bits = molt_set_new(0);
-                    if obj_from_bits(set_bits).is_none() {
-                        return MoltObject::none().bits();
-                    }
-                    let _ = molt_set_update(set_bits, args[0]);
-                    if exception_pending(_py) {
-                        dec_ref_bits(_py, set_bits);
-                        return MoltObject::none().bits();
-                    }
-                    return set_bits;
-                }
-                _ => {
-                    let msg = format!("set expected at most 1 argument, got {}", args.len());
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-            }
-        }
-        if class_bits == builtins.frozenset {
-            match args.len() {
-                0 => return molt_frozenset_new(0),
-                1 => {
-                    let Some(bits) = frozenset_from_iter_bits(_py, args[0]) else {
-                        return MoltObject::none().bits();
-                    };
-                    return bits;
-                }
-                _ => {
-                    let msg = format!("frozenset expected at most 1 argument, got {}", args.len());
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-            }
-        }
         if class_bits == builtins.range {
             match args.len() {
                 0 => {
@@ -898,258 +505,105 @@ pub(crate) unsafe fn call_class_init_with_args(
         ) {
             return result;
         }
-        if class_bits == builtins.bytes {
-            match args.len() {
-                0 => {
-                    let ptr = alloc_bytes(_py, &[]);
-                    if ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    return MoltObject::from_ptr(ptr).bits();
-                }
-                1 => return molt_bytes_from_obj(args[0]),
-                2 => return molt_bytes_from_str(args[0], args[1], MoltObject::none().bits()),
-                3 => return molt_bytes_from_str(args[0], args[1], args[2]),
-                _ => {
-                    let msg = format!("bytes() takes at most 3 arguments ({} given)", args.len());
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-            }
+        construct_regular_class(_py, class_ptr, args, &[], &[])
+    }
+}
+
+/// One type.__call__ lifecycle for positional and fully-bound callers. __new__
+/// lends its arguments; only a result with real subtype ancestry receives init,
+/// and init is selected from the actual result type (CPython type_call).
+pub(crate) unsafe fn construct_regular_class(
+    py: &PyToken<'_>,
+    class: *mut u8,
+    positional: &[u64],
+    names: &[u64],
+    values: &[u64],
+) -> u64 {
+    unsafe {
+        let class_bits = MoltObject::from_ptr(class).bits();
+        let new_name = intern_static_name(py, &runtime_state(py).interned.new_name, b"__new__");
+        let init_name = intern_static_name(py, &runtime_state(py).interned.init_name, b"__init__");
+        let new = class_attr_lookup_raw_mro(py, class, new_name);
+        if exception_pending(py) {
+            return MoltObject::none().bits();
         }
-        if class_bits == builtins.bytearray {
-            match args.len() {
-                0 => {
-                    let ptr = alloc_bytearray(_py, &[]);
-                    if ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    return MoltObject::from_ptr(ptr).bits();
-                }
-                1 => return molt_bytearray_from_obj(args[0]),
-                2 => return molt_bytearray_from_str(args[0], args[1], MoltObject::none().bits()),
-                3 => return molt_bytearray_from_str(args[0], args[1], args[2]),
-                _ => {
-                    let msg = format!(
-                        "bytearray() takes at most 3 arguments ({} given)",
-                        args.len()
-                    );
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
+        let _new_owner = new.and_then(|bits| {
+            obj_from_bits(bits).as_ptr().map(|ptr| {
+                inc_ref_bits(py, bits);
+                crate::PtrDropGuard::new(ptr)
+            })
+        });
+        let instance = if resolved_new_is_default_object_new(new) || new.is_none() {
+            let init = class_attr_lookup_raw_mro(py, class, init_name);
+            if resolved_constructor_init_policy(new, init) == InitArgPolicy::RejectConstructorArgs
+                && (!positional.is_empty() || !names.is_empty())
+            {
+                return raise_exception::<_>(
+                    py,
+                    "TypeError",
+                    &format!("{}() takes no arguments", class_name_for_error(class_bits)),
+                );
             }
-        }
-        if class_bits == builtins.str {
-            match args.len() {
-                0 => {
-                    let ptr = alloc_string(_py, b"");
-                    if ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    return MoltObject::from_ptr(ptr).bits();
-                }
-                1 => return molt_str_from_obj(args[0]),
-                2 | 3 => {
-                    let obj = obj_from_bits(args[0]);
-                    let Some(ptr) = obj.as_ptr() else {
-                        let msg = format!(
-                            "decoding to str: need a bytes-like object, {} found",
-                            type_name(_py, obj)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    };
-                    let type_id = object_type_id(ptr);
-                    if type_id == TYPE_ID_STRING {
-                        return raise_exception::<_>(
-                            _py,
-                            "TypeError",
-                            "decoding str is not supported",
-                        );
-                    }
-                    if type_id != TYPE_ID_BYTES
-                        && type_id != TYPE_ID_BYTEARRAY
-                        && type_id != TYPE_ID_MEMORYVIEW
-                    {
-                        let msg = format!(
-                            "decoding to str: need a bytes-like object, {} found",
-                            type_name(_py, obj)
-                        );
-                        return raise_exception::<_>(_py, "TypeError", &msg);
-                    }
-                    let encoding = match str_codec_arg(_py, args[1], "encoding") {
-                        Some(val) => val,
-                        None => return MoltObject::none().bits(),
-                    };
-                    let errors = if args.len() == 3 {
-                        match str_codec_arg(_py, args[2], "errors") {
-                            Some(val) => val,
-                            None => return MoltObject::none().bits(),
-                        }
-                    } else {
-                        "strict".to_string()
-                    };
-                    let bytes_bits = if type_id == TYPE_ID_BYTES {
-                        inc_ref_bits(_py, args[0]);
-                        args[0]
-                    } else {
-                        let bits = molt_bytes_from_obj(args[0]);
-                        if obj_from_bits(bits).is_none() {
-                            return MoltObject::none().bits();
-                        }
-                        bits
-                    };
-                    let bytes_obj = obj_from_bits(bytes_bits);
-                    let out_bits = if let Some(bytes_ptr) = bytes_obj.as_ptr() {
-                        let bytes = bytes_like_slice(bytes_ptr).unwrap_or(&[]);
-                        match decode_bytes_text(&encoding, &errors, bytes) {
-                            Ok((text_bytes, _label)) => {
-                                let ptr = alloc_string(_py, &text_bytes);
-                                if ptr.is_null() {
-                                    MoltObject::none().bits()
-                                } else {
-                                    MoltObject::from_ptr(ptr).bits()
-                                }
-                            }
-                            Err(DecodeTextError::UnknownEncoding(name)) => {
-                                let msg = format!("unknown encoding: {name}");
-                                raise_exception::<_>(_py, "LookupError", &msg)
-                            }
-                            Err(DecodeTextError::UnknownErrorHandler(name)) => {
-                                let msg = format!("unknown error handler name '{name}'");
-                                raise_exception::<_>(_py, "LookupError", &msg)
-                            }
-                            Err(DecodeTextError::Failure(
-                                DecodeFailure::Byte { pos, message, .. },
-                                label,
-                            )) => raise_unicode_decode_error(
-                                _py,
-                                &label,
-                                bytes_bits,
-                                pos,
-                                pos + 1,
-                                message,
-                            ),
-                            Err(DecodeTextError::Failure(
-                                DecodeFailure::Range {
-                                    start,
-                                    end,
-                                    message,
-                                },
-                                label,
-                            )) => {
-                                let end_exclusive = end.saturating_add(1);
-                                raise_unicode_decode_error(
-                                    _py,
-                                    &label,
-                                    bytes_bits,
-                                    start,
-                                    end_exclusive,
-                                    message,
-                                )
-                            }
-                            Err(DecodeTextError::Failure(
-                                DecodeFailure::UnknownErrorHandler(name),
-                                _label,
-                            )) => {
-                                let msg = format!("unknown error handler name '{name}'");
-                                raise_exception::<_>(_py, "LookupError", &msg)
-                            }
-                        }
-                    } else {
-                        MoltObject::none().bits()
-                    };
-                    dec_ref_bits(_py, bytes_bits);
-                    return out_bits;
-                }
-                _ => {
-                    let msg = format!("str expected at most 3 arguments, got {}", args.len());
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-            }
-        }
-        let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        let new_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.new_name, b"__new__");
-        let mut resolved_new_bits = None;
-        let inst_bits =
-            if let Some(new_bits) = class_attr_lookup_raw_mro(_py, class_ptr, new_name_bits) {
-                resolved_new_bits = Some(new_bits);
-                let default_new = resolved_new_is_default_object_new(resolved_new_bits);
-                let inst_bits = if default_new {
-                    let inst_bits = alloc_instance_for_default_object_new(_py, class_ptr);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    if !isinstance_bits(_py, inst_bits, class_bits) {
-                        return inst_bits;
-                    }
-                    inst_bits
-                } else {
-                    let builder_bits = molt_callargs_new(args.len() as u64 + 1, 0);
-                    if builder_bits == 0 {
-                        return MoltObject::none().bits();
-                    }
-                    let _ = molt_callargs_push_pos(builder_bits, class_bits);
-                    for &arg in args {
-                        let _ = molt_callargs_push_pos(builder_bits, arg);
-                    }
-                    let inst_bits = molt_call_bind(new_bits, builder_bits);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    if !isinstance_bits(_py, inst_bits, class_bits) {
-                        return inst_bits;
-                    }
-                    inst_bits
-                };
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                inst_bits
-            } else {
-                alloc_instance_for_class(_py, class_ptr)
-            };
-        let Some(inst_ptr) = obj_from_bits(inst_bits).as_ptr() else {
-            return inst_bits;
+            alloc_instance_for_default_object_new(py, class)
+        } else {
+            crate::call::bind::call_bind_borrowed(
+                py,
+                new.unwrap(),
+                Some(class_bits),
+                positional,
+                names,
+                values,
+            )
         };
-        let init_name_bits =
-            intern_static_name(_py, &runtime_state(_py).interned.init_name, b"__init__");
-        let Some(init_bits) =
-            class_attr_lookup(_py, class_ptr, class_ptr, Some(inst_ptr), init_name_bits)
-        else {
-            return inst_bits;
+        if exception_pending(py) {
+            crate::call::discard_owned_call_result(py, instance);
+            return MoltObject::none().bits();
+        }
+        let actual_bits = type_of_bits(py, instance);
+        if !crate::object::class_layout::is_real_subtype(py, actual_bits, class_bits) {
+            return instance;
+        }
+        let actual = obj_from_bits(actual_bits)
+            .as_ptr()
+            .expect("instance type is a class");
+        let raw_init = class_attr_lookup_raw_mro(py, actual, init_name);
+        if exception_pending(py) {
+            dec_ref_bits(py, instance);
+            return MoltObject::none().bits();
+        }
+        let Some(raw_init) = raw_init else {
+            return instance;
         };
-        match resolved_constructor_init_policy(resolved_new_bits, Some(init_bits)) {
-            InitArgPolicy::RejectConstructorArgs if !args.is_empty() => {
-                let class_name = class_name_for_error(class_bits);
-                let msg = format!("{class_name}() takes no arguments");
-                dec_ref_bits(_py, init_bits);
-                dec_ref_bits(_py, inst_bits);
-                return raise_exception::<_>(_py, "TypeError", &msg);
+        let actual_new = class_attr_lookup_raw_mro(py, actual, new_name);
+        match resolved_constructor_init_policy(actual_new, Some(raw_init)) {
+            InitArgPolicy::RejectConstructorArgs if !positional.is_empty() || !names.is_empty() => {
+                dec_ref_bits(py, instance);
+                return raise_exception::<_>(
+                    py,
+                    "TypeError",
+                    &format!("{}() takes no arguments", class_name_for_error(actual_bits)),
+                );
             }
             InitArgPolicy::RejectConstructorArgs | InitArgPolicy::SkipObjectInit => {
-                dec_ref_bits(_py, init_bits);
-                return inst_bits;
+                return instance;
             }
             InitArgPolicy::ForwardArgs => {}
         }
-        // Every callable ABI borrows Python arguments, including a bound
-        // `__init__` receiver. The freshly allocated instance's original owner
-        // is the constructor result; the owned bound-method handle separately
-        // pins `self` for the duration of this call. Adding a callable-category
-        // retain here creates a hidden second result owner on backends whose
-        // compiled parameters correctly follow the shared borrowed convention.
-        let builder_bits = molt_callargs_new(args.len() as u64, 0);
-        if builder_bits == 0 {
-            dec_ref_bits(_py, init_bits);
-            return inst_bits;
-        }
-        for &arg in args {
-            let _ = molt_callargs_push_pos(builder_bits, arg);
-        }
-        let init_result = molt_call_bind(init_bits, builder_bits);
-        dec_ref_bits(_py, init_bits);
-        // Consume and validate the owned `__init__` result. A pending exception
-        // or non-None return discards the partially-constructed instance.
-        resolve_construct_after_init(_py, inst_bits, init_result)
+        let Some(instance_ptr) = obj_from_bits(instance).as_ptr() else {
+            return instance;
+        };
+        let Some(init) = class_attr_lookup(py, actual, actual, Some(instance_ptr), init_name)
+        else {
+            if exception_pending(py) {
+                dec_ref_bits(py, instance);
+                return MoltObject::none().bits();
+            }
+            return instance;
+        };
+        let result =
+            crate::call::bind::call_bind_borrowed(py, init, None, positional, names, values);
+        dec_ref_bits(py, init);
+        resolve_construct_after_init(py, instance, result)
     }
 }
 
@@ -1196,7 +650,8 @@ pub(crate) unsafe fn call_builtin_type_if_needed(
     args: &[u64],
 ) -> Option<u64> {
     unsafe {
-        if is_builtin_class_bits(_py, call_bits) {
+        if is_builtin_class_bits(_py, call_bits) && crate::object::class_is_immutable(_py, call_ptr)
+        {
             let builtins = builtin_classes(_py);
             if call_bits == builtins.super_type {
                 return Some(crate::builtins::types::descriptor_objects::super_call(
@@ -1208,16 +663,6 @@ pub(crate) unsafe fn call_builtin_type_if_needed(
             if call_bits == builtins.type_obj {
                 return None;
             }
-            if call_bits == builtins.float {
-                if args.is_empty() {
-                    return Some(MoltObject::from_float(0.0).bits());
-                }
-                if args.len() == 1 {
-                    return Some(crate::molt_float_from_obj(args[0]));
-                }
-                let msg = format!("float expected at most 1 argument, got {}", args.len());
-                return Some(raise_exception::<_>(_py, "TypeError", &msg));
-            }
             if call_bits == builtins.bool {
                 if args.is_empty() {
                     return Some(MoltObject::from_bool(false).bits());
@@ -1226,22 +671,6 @@ pub(crate) unsafe fn call_builtin_type_if_needed(
                     return Some(crate::molt_bool_builtin(args[0]));
                 }
                 let msg = format!("bool expected at most 1 argument, got {}", args.len());
-                return Some(raise_exception::<_>(_py, "TypeError", &msg));
-            }
-            if call_bits == builtins.int {
-                if args.is_empty() {
-                    return Some(MoltObject::from_int(0).bits());
-                }
-                if args.len() == 1 {
-                    let has_base = MoltObject::from_int(0).bits();
-                    let base = MoltObject::from_int(10).bits();
-                    return Some(crate::molt_int_from_obj(args[0], base, has_base));
-                }
-                if args.len() == 2 {
-                    let has_base = MoltObject::from_int(1).bits();
-                    return Some(crate::molt_int_from_obj(args[0], args[1], has_base));
-                }
-                let msg = format!("int() takes at most 2 arguments ({} given)", args.len());
                 return Some(raise_exception::<_>(_py, "TypeError", &msg));
             }
             return Some(call_class_init_with_args(_py, call_ptr, args));
@@ -1260,78 +689,12 @@ pub(crate) unsafe fn function_attr_bits(
             && object_type_id(attr_ptr) == TYPE_ID_STRING
         {
             let name = std::slice::from_raw_parts(string_bytes(attr_ptr), string_len(attr_ptr));
-            if let Some(bits) =
-                crate::object::layout::function_code_signature_metadata_bits(func_ptr, name)
-            {
-                return Some(bits);
+            if crate::object::function_metadata::FunctionMetadataField::from_name(name).is_some() {
+                return crate::object::function_metadata::metadata_bits(func_ptr, name);
             }
         }
-        let dict_bits = function_dict_bits(func_ptr);
-        if dict_bits == 0 {
-            return None;
-        }
-        let dict_ptr = obj_from_bits(dict_bits).as_ptr()?;
-        if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return None;
-        }
-        dict_get_in_place(_py, dict_ptr, attr_bits)
-    }
-}
-
-/// Allocate the first metadata dictionary off-object. Its allocation reference
-/// transfers to the function only after every initial entry is installed.
-unsafe fn publish_function_dict(
-    py: &PyToken<'_>,
-    func_ptr: *mut u8,
-    pairs: &[u64],
-) -> Option<*mut u8> {
-    unsafe {
-        let dict_ptr =
-            crate::object::builders::alloc_dict_with_capacity_and_pairs(py, pairs.len() / 2, &[]);
-        if dict_ptr.is_null() || exception_pending(py) {
-            if !dict_ptr.is_null() {
-                dec_ref_bits(py, MoltObject::from_ptr(dict_ptr).bits());
-            }
-            if !exception_pending(py) {
-                raise_exception::<u64>(py, "MemoryError", "function metadata allocation failed");
-            }
-            return None;
-        }
-        for pair in pairs.chunks_exact(2) {
-            if crate::object::ops::dict_set_deferred(py, dict_ptr, pair[0], pair[1]).is_err() {
-                dec_ref_bits(py, MoltObject::from_ptr(dict_ptr).bits());
-                if !exception_pending(py) {
-                    raise_exception::<u64>(py, "MemoryError", "function metadata insertion failed");
-                }
-                return None;
-            }
-        }
-        function_set_dict_bits(func_ptr, MoltObject::from_ptr(dict_ptr).bits());
-        Some(dict_ptr)
-    }
-}
-
-/// Return the live metadata dictionary, creating it only for an explicit
-/// __dict__ read. Attribute writes stage their first entry before publication.
-pub(crate) unsafe fn function_ensure_dict(py: &PyToken<'_>, func_ptr: *mut u8) -> Option<*mut u8> {
-    unsafe {
-        if exception_pending(py) {
-            return None;
-        }
-        let bits = function_dict_bits(func_ptr);
-        if bits == 0 {
-            return publish_function_dict(py, func_ptr, &[]);
-        }
-        if let Some(ptr) = obj_from_bits(bits).as_ptr()
-            && object_type_id(ptr) == TYPE_ID_DICT
-        {
-            return Some(ptr);
-        }
-        raise_exception::<Option<*mut u8>>(
-            py,
-            "SystemError",
-            "invalid function metadata dictionary",
-        )
+        let dictionary = crate::object::field_storage::current_dictionary(_py, func_ptr).ok()??;
+        dict_get_in_place(_py, obj_from_bits(dictionary).as_ptr().unwrap(), attr_bits)
     }
 }
 
@@ -1362,11 +725,19 @@ pub(crate) unsafe fn function_set_attr_bits(
     }
 }
 
-/// A committed dictionary update whose displaced owner has not been released.
+/// A committed typed-field or ordinary dictionary update awaiting retirement.
 /// Dependent call metadata must be published before this receipt is dropped.
 #[must_use]
 pub(crate) struct FunctionMetadataPublication<'a, 'py> {
-    _displaced: Option<crate::object::ops::DetachedDictReferences<'a, 'py>>,
+    displaced: Option<crate::object::ops::DetachedDictReferences<'a, 'py>>,
+    _typed: Option<crate::object::function_metadata::MetadataRetirement<'a, 'py>>,
+}
+
+impl Drop for FunctionMetadataPublication<'_, '_> {
+    fn drop(&mut self) {
+        let displaced = self.displaced.take();
+        molt_cpython_abi::api::errors::with_preserved_error(|| drop(displaced));
+    }
 }
 
 pub(crate) unsafe fn function_set_attr_bits_deferred<'a, 'py>(
@@ -1386,21 +757,22 @@ pub(crate) unsafe fn function_set_attr_bits_deferred<'a, 'py>(
             raise_exception::<u64>(_py, "TypeError", "function attribute name must be a string");
             return Err(());
         }
-        if function_dict_bits(func_ptr) == 0 {
-            return publish_function_dict(_py, func_ptr, &[attr_bits, val_bits])
-                .map(|_| FunctionMetadataPublication { _displaced: None })
-                .ok_or(());
+        let name = obj_from_bits(attr_bits).as_ptr().unwrap();
+        let name = std::slice::from_raw_parts(string_bytes(name), string_len(name));
+        if let Some(field) =
+            crate::object::function_metadata::FunctionMetadataField::from_name(name)
+        {
+            return Ok(FunctionMetadataPublication {
+                displaced: None,
+                _typed: Some(field.replace_deferred(_py, func_ptr, val_bits)),
+            });
         }
-        let Some(dict_ptr) = function_ensure_dict(_py, func_ptr) else {
-            return Err(());
-        };
-        let result = crate::object::ops::dict_set_deferred(_py, dict_ptr, attr_bits, val_bits);
-        if result.is_err() && !exception_pending(_py) {
-            raise_exception::<u64>(_py, "MemoryError", "function metadata insertion failed");
-        }
-        result.map(|displaced| FunctionMetadataPublication {
-            _displaced: Some(displaced),
-        })
+        crate::object::field_storage::set_item_deferred(_py, func_ptr, attr_bits, val_bits).map(
+            |displaced| FunctionMetadataPublication {
+                displaced,
+                _typed: None,
+            },
+        )
     }
 }
 
@@ -1480,6 +852,10 @@ mod tests {
                 ));
                 assert!(exception_pending(py));
                 assert_eq!(function_dict_bits(function), 0);
+                let _ = molt_exception_clear();
+                assert!(crate::object::field_storage::materialize(py, function).is_none());
+                assert!(exception_pending(py));
+                assert_eq!(function_dict_bits(function), 0);
                 drop(reset);
                 let _ = molt_exception_clear();
                 assert_eq!((*header_from_obj_ptr(value)).ref_count_snapshot(), 1);
@@ -1499,7 +875,7 @@ mod tests {
                 assert_eq!(function_dict_bits(function), dictionary);
                 assert_eq!((*header_from_obj_ptr(value)).ref_count_snapshot(), 1);
                 assert_eq!(
-                    MoltObject::from_ptr(super::function_ensure_dict(py, function).unwrap()).bits(),
+                    crate::object::field_storage::materialize(py, function).unwrap(),
                     dictionary
                 );
                 assert!(!exception_pending(py));
@@ -1519,10 +895,16 @@ mod tests {
             unsafe {
                 let corrupt = MoltObject::from_int(7).bits();
                 function_set_dict_bits(function, corrupt);
-                assert!(super::function_ensure_dict(py, function).is_none());
+                assert!(crate::object::field_storage::materialize(py, function).is_none());
                 assert!(exception_pending(py));
                 assert_eq!(function_dict_bits(function), corrupt);
                 let _ = molt_exception_clear();
+                let key = attr_name_bits_from_bytes(py, b"corrupt_read").unwrap();
+                assert!(crate::builtins::attributes::attr_lookup_ptr(py, function, key).is_none());
+                assert!(exception_pending(py));
+                assert_eq!(function_dict_bits(function), corrupt);
+                let _ = molt_exception_clear();
+                dec_ref_bits(py, key);
             }
             dec_ref_bits(py, MoltObject::from_ptr(function).bits());
         });
@@ -1698,6 +1080,79 @@ mod tests {
             dec_ref_bits(_py, name_bits);
             dec_ref_bits(_py, class_bits);
             dec_ref_bits(_py, init_bits);
+        });
+    }
+
+    #[test]
+    fn memoryview_constructor_shares_positional_keyword_and_explicit_new_protocol() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::with_gil(|py| unsafe {
+            let py = &py;
+            let source = crate::alloc_bytearray(py, b"abcdefgh");
+            assert!(!source.is_null());
+            let source_bits = MoltObject::from_ptr(source).bits();
+            let _source = crate::PtrDropGuard::new(source);
+            let class = builtin_classes(py).memoryview;
+            let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+            let object_name = crate::alloc_string(py, b"object");
+            assert!(!object_name.is_null());
+            let _object_name = crate::PtrDropGuard::new(object_name);
+            let object_name = MoltObject::from_ptr(object_name).bits();
+            let new_name = crate::attr_name_bits_from_bytes(py, b"__new__").unwrap();
+            let new = crate::molt_get_attr_name(class, new_name);
+            dec_ref_bits(py, new_name);
+            assert!(!exception_pending(py));
+            let _new = crate::PtrDropGuard::new(obj_from_bits(new).as_ptr().unwrap());
+            let positional = call_class_init_with_args(py, class_ptr, &[source_bits]);
+            let keyword = crate::call::bind::call_bind_borrowed(
+                py,
+                class,
+                None,
+                &[],
+                &[object_name],
+                &[source_bits],
+            );
+            let explicit = crate::call::bind::call_bind_borrowed(
+                py,
+                new,
+                None,
+                &[class, source_bits],
+                &[],
+                &[],
+            );
+            for view in [positional, keyword, explicit] {
+                assert!(!exception_pending(py));
+                let ptr = obj_from_bits(view).as_ptr().expect("native memoryview");
+                assert_eq!(object_type_id(ptr), crate::TYPE_ID_MEMORYVIEW);
+                let bytes = crate::molt_memoryview_tobytes(view);
+                assert!(!exception_pending(py));
+                let bytes_ptr = obj_from_bits(bytes).as_ptr().unwrap();
+                assert_eq!(
+                    std::slice::from_raw_parts(
+                        crate::bytes_data(bytes_ptr),
+                        crate::bytes_len(bytes_ptr)
+                    ),
+                    b"abcdefgh",
+                );
+                dec_ref_bits(py, bytes);
+                crate::molt_memoryview_release(view);
+                dec_ref_bits(py, view);
+            }
+            let missing = call_class_init_with_args(py, class_ptr, &[]);
+            assert!(obj_from_bits(missing).is_none());
+            assert!(exception_pending(py));
+            let error = crate::molt_exception_last();
+            let error_ptr = obj_from_bits(error).as_ptr().unwrap();
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                error,
+                "TypeError"
+            ));
+            assert_eq!(
+                crate::format_exception_message(py, error_ptr),
+                "memoryview() missing required argument 'object' (pos 1)"
+            );
+            crate::clear_exception(py);
         });
     }
 

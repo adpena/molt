@@ -1503,12 +1503,15 @@ fn string_whitespace_step(hay: &[u8], cursor: usize, from_right: bool) -> Option
     Some((next, unicode_space_table::is_space(code)))
 }
 
-fn string_whitespace_split(
-    _py: &PyToken<'_>,
+/// The byte bounds of the words `str.split()` (or `str.rsplit()`, `from_right`)
+/// returns for `hay`, in order, after at most `maxsplit` splits (all when
+/// negative). This is the one `str` whitespace tokenization; fused consumers
+/// read words through it rather than their own whitespace set.
+pub(crate) fn string_whitespace_parts(
     hay: &[u8],
     maxsplit: i64,
     from_right: bool,
-) -> Option<u64> {
+) -> Vec<(usize, usize)> {
     let mut cursor = if from_right { hay.len() } else { 0 };
     let mut parts = Vec::new();
     let mut splits = 0i64;
@@ -1545,6 +1548,16 @@ fn string_whitespace_split(
     if from_right {
         parts.reverse();
     }
+    parts
+}
+
+fn string_whitespace_split(
+    _py: &PyToken<'_>,
+    hay: &[u8],
+    maxsplit: i64,
+    from_right: bool,
+) -> Option<u64> {
+    let parts = string_whitespace_parts(hay, maxsplit, from_right);
     let list_ptr = alloc_list_empty_with_capacity(_py, parts.len());
     if list_ptr.is_null() {
         return None;

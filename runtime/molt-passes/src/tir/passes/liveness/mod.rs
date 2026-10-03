@@ -18,8 +18,9 @@
 //! ## Dataflow
 //!
 //! ```text
-//! LiveOut[B] = ⋃ { LiveIn[S] | S ∈ succ(B) }
-//! LiveIn[B]  = (LiveOut[B] \ Kill[B]) ∪ Use[B]
+//! LiveOut[B] = normal terminator-successor demand
+//! LiveIn[B]  = backward transfer through B, merging exceptional demand
+//!              at each exception observation before crossing earlier definitions
 //! ```
 //!
 //! where, restricted to the heap-carrying values:
@@ -31,9 +32,10 @@
 //! * `Kill[B]` — values defined by ops in `B` (op results) and `B`'s own block
 //!   args (an SSA def at block entry).
 //!
-//! Iterated to a fixpoint over a reverse-postorder block walk (back-edges
+//! A predecessor worklist reaches a fixpoint over reachable blocks; back-edges
 //! converge because the transfer functions are monotone over the finite value
-//! set).
+//! set. Normal and exceptional demand remain separate at each observation so
+//! cleanup can release an owner abandoned by only the exceptional path.
 //!
 //! ## Block-argument (phi) semantics
 //!
@@ -55,4 +57,6 @@ mod solver;
 mod tests;
 
 pub use api::{TirLiveness, TirLivenessResult};
+pub(crate) use raw::compute_raw_scalars;
 pub use solver::compute_liveness;
+pub(crate) use solver::{compute_liveness_in_domain, visit_exception_liveness};

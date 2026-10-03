@@ -140,16 +140,17 @@ class Formatter:
             if literal_text:
                 result.append(literal_text)
             if field_name is not None:
-                field_first, _ = _molt_field_name_split(field_name)
-                if field_first == "":
+                # Formatter numbers the complete field spelling before its
+                # overridable get_field method performs any lookup parsing.
+                if field_name == "":
                     if auto_arg_index is False:
                         raise ValueError(
                             "cannot switch from manual field "
                             "specification to automatic field numbering"
                         )
-                    field_name = f"{auto_arg_index}{field_name}"
+                    field_name = str(auto_arg_index)
                     auto_arg_index = int(auto_arg_index) + 1
-                elif isinstance(field_first, int):
+                elif field_name.isdigit():
                     if auto_arg_index:
                         raise ValueError(
                             "cannot switch from automatic field "

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::{Arc, Mutex};
@@ -33,10 +33,6 @@ pub(crate) fn await_waiters(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSlot
 
 pub(crate) fn task_waiting_on(_py: &PyToken<'_>) -> &'static Mutex<HashMap<PtrSlot, PtrSlot>> {
     &runtime_state(_py).task_waiting_on
-}
-
-pub(crate) fn asyncgen_registry(_py: &PyToken<'_>) -> &'static Mutex<HashSet<PtrSlot>> {
-    &runtime_state(_py).asyncgen_registry
 }
 
 #[derive(Default)]
@@ -419,25 +415,50 @@ pub(crate) fn process_task_state(
         .cloned()
 }
 
-pub(crate) fn task_waiting_on_event(_py: &PyToken<'_>, task_ptr: *mut u8) -> bool {
-    if task_ptr.is_null() {
+/// Resolve the existing await graph once under its lock. Floyd cycle detection
+/// avoids both arbitrary nesting limits and allocation on the poll hot path.
+/// None denotes an await cycle (blocked until cancellation), not ready work.
+pub(crate) fn await_chain_terminal(py: &PyToken<'_>, task: *mut u8) -> Option<*mut u8> {
+    if task.is_null() {
+        return None;
+    }
+    let links = task_waiting_on(py).lock().unwrap();
+    let next = |ptr: *mut u8| {
+        links
+            .get(&PtrSlot(ptr))
+            .map(|slot| slot.0)
+            .filter(|ptr| !ptr.is_null())
+    };
+    let mut cursor = task;
+    let mut fast = task;
+    loop {
+        let Some(target) = next(cursor) else {
+            return Some(cursor);
+        };
+        cursor = target;
+        fast = next(fast).and_then(next).unwrap_or(std::ptr::null_mut());
+        if cursor == fast {
+            return None;
+        }
+    }
+}
+
+pub(crate) fn task_waiting_on_event(py: &PyToken<'_>, task_ptr: *mut u8) -> bool {
+    let Some(awaited) = await_chain_terminal(py, task_ptr) else {
+        return !task_ptr.is_null();
+    };
+    if awaited == task_ptr {
         return false;
     }
-    let waiting_map = task_waiting_on(_py).lock().unwrap();
-    let awaited = match waiting_map.get(&PtrSlot(task_ptr)) {
-        Some(val) => val.0,
-        None => return false,
-    };
     unsafe {
         let header = header_from_obj_ptr(awaited);
         let poll_fn = crate::object::object_poll_fn(awaited);
-        if ((*header).load_synchronized_flags() & HEADER_FLAG_SPAWN_RETAIN) != 0 {
-            return true;
-        }
-        poll_fn == io_wait_poll_fn_addr()
+        ((*header).load_synchronized_flags() & HEADER_FLAG_SPAWN_RETAIN) != 0
+            || poll_fn == io_wait_poll_fn_addr()
             || poll_fn == thread_poll_fn_addr()
             || poll_fn == process_poll_fn_addr()
             || poll_fn == promise_poll_fn_addr()
+            || super::task_sleep_scheduled(py, awaited)
     }
 }
 
@@ -447,36 +468,6 @@ pub(crate) fn task_waiting_on_future(_py: &PyToken<'_>, task_ptr: *mut u8) -> Op
     }
     let waiting_map = task_waiting_on(_py).lock().unwrap();
     waiting_map.get(&PtrSlot(task_ptr)).map(|val| val.0)
-}
-
-pub(crate) fn task_waiting_on_blocked(_py: &PyToken<'_>, task_ptr: *mut u8) -> bool {
-    if task_ptr.is_null() {
-        return false;
-    }
-    let mut cursor = task_ptr;
-    for _ in 0..8 {
-        let awaited_ptr = {
-            let waiting_map = task_waiting_on(_py).lock().unwrap();
-            match waiting_map.get(&PtrSlot(cursor)) {
-                Some(val) => val.0,
-                None => return false,
-            }
-        };
-        if awaited_ptr.is_null() {
-            return false;
-        }
-        if task_waiting_on_event(_py, awaited_ptr) {
-            return true;
-        }
-        if runtime_state(_py)
-            .sleep_queue()
-            .is_scheduled(_py, awaited_ptr)
-        {
-            return true;
-        }
-        cursor = awaited_ptr;
-    }
-    false
 }
 
 #[cfg(test)]
@@ -512,6 +503,42 @@ mod tests {
 
             dec_ref_bits(_py, MoltObject::from_ptr(waiter_ptr).bits());
             dec_ref_bits(_py, MoltObject::from_ptr(awaited_ptr).bits());
+        });
+    }
+}
+
+#[cfg(test)]
+mod await_chain_tests {
+    use super::*;
+
+    #[test]
+    fn deep_wait_chain_and_cycle_have_one_terminal_authority() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let nodes: Vec<u64> = (0..64).map(|_| crate::molt_future_new(0, 0)).collect();
+            let terminal = crate::molt_promise_new();
+            let mut chain: Vec<*mut u8> = nodes.iter().copied().map(crate::ptr_from_bits).collect();
+            chain.push(crate::ptr_from_bits(terminal));
+            for pair in chain.windows(2) {
+                await_waiter_register(py, pair[0], pair[1]);
+            }
+            assert_eq!(await_chain_terminal(py, chain[0]), chain.last().copied());
+            assert!(task_waiting_on_event(py, chain[0]));
+            assert_eq!(
+                crate::async_rt::generators::resolve_sleep_target(py, chain[0]),
+                *chain.last().unwrap()
+            );
+
+            await_waiter_register(py, *chain.last().unwrap(), chain[0]);
+            assert_eq!(await_chain_terminal(py, chain[0]), None);
+            assert!(task_waiting_on_event(py, chain[0]));
+            for &node in &chain {
+                await_waiter_clear(py, node);
+            }
+            for node in nodes {
+                crate::dec_ref_bits(py, node);
+            }
+            crate::dec_ref_bits(py, terminal);
         });
     }
 }

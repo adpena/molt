@@ -8,14 +8,13 @@ import functools
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 TOOLS_ROOT = Path(__file__).resolve().parent
 if str(TOOLS_ROOT) not in sys.path:
@@ -30,9 +29,11 @@ from command_execution import CommandExecutor  # noqa: E402
 from wasm_optimize import find_wasm_opt as find_wasm_opt, optimize as optimize_wasm  # noqa: E402, F401
 from wasm_metrics import wasm_metrics as wasm_metrics  # noqa: E402
 from molt.cli import wasm_link_inputs  # noqa: E402
+from molt.tool_releases import ToolReleaseError, run_pinned_tool  # noqa: E402
 from molt.link_outputs import validate_link_output_paths, wasm_link_output_paths  # noqa: E402
 from molt.cli.link_fingerprints import FinalLinkReceiptRequest  # noqa: E402
 from molt.cli import wasm_toolchain  # noqa: E402
+from molt.cli.wasm_link_args import wasm_link_output_arguments  # noqa: E402
 from molt.cli.app_export_contract import (  # noqa: E402
     app_export_call_abi as app_export_call_abi,
     excluded_app_symbols as excluded_app_symbols,
@@ -399,14 +400,6 @@ def _read_wasm_bytes_with_retry(
     return data
 
 
-def _find_tool(names: list[str]) -> str | None:
-    for name in names:
-        path = shutil.which(name)
-        if path:
-            return path
-    return None
-
-
 def _find_wasm_ld() -> str | None:
     """Return the attested `wasm-ld` selected by WASI toolchain authority."""
     try:
@@ -433,11 +426,16 @@ def _deduplicated_export_flags(*groups: Iterable[str]) -> list[str]:
 
 
 def _preflight_relocatable_runtime(
-    wasm_ld: str, runtime: Path, temp_dir: Any
+    wasm_ld: str, runtime: Path, scratch_root: Path
 ) -> str | None:
-    output = Path(temp_dir.name) / "runtime_reloc_preflight.wasm"
+    output = scratch_root / "runtime_reloc_preflight.wasm"
     result = _run_external_tool(
-        [wasm_ld, "-r", "-o", str(output), str(runtime)],
+        [
+            wasm_ld,
+            "-r",
+            *wasm_link_output_arguments(output, staged_output=output),
+            str(runtime),
+        ],
         capture_output=True,
         text=True,
     )
@@ -460,9 +458,7 @@ def _preflight_relocatable_runtime(
     return f"relocatable runtime preflight failed for {runtime}: {detail}"
 
 
-def _dump_symbols(
-    path: Path, wasm_tools: str | None
-) -> list[tuple[int, int, str, str]]:
+def _dump_symbols(path: Path) -> list[tuple[int, int, str, str]]:
     try:
         data = path.read_bytes()
     except OSError as exc:
@@ -482,14 +478,18 @@ def _dump_symbols(
         parsed = []
     if parsed:
         return parsed
-    if not wasm_tools:
+    try:
+        res = run_pinned_tool(
+            "wasm-tools",
+            ["dump", str(path)],
+            run=_run_external_tool,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except ToolReleaseError as exc:
+        print(f"WASM symbol inspection unavailable: {exc}", file=sys.stderr)
         return []
-    res = _run_external_tool(
-        [wasm_tools, "dump", str(path)],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
     if res.returncode != 0:
         err = res.stderr.strip() or res.stdout.strip()
         if err:
@@ -508,9 +508,8 @@ def _dump_symbols(
 
 
 def _find_call_indirect_mangled(runtime: Path) -> dict[str, str]:
-    wasm_tools = _find_tool(["wasm-tools"])
     names: dict[str, str] = {}
-    for flags, _, name, _ in _dump_symbols(runtime, wasm_tools):
+    for flags, _, name, _ in _dump_symbols(runtime):
         if not (flags & FLAG_UNDEFINED):
             continue
         match = CALL_INDIRECT_RE.fullmatch(name)
@@ -524,26 +523,16 @@ def _find_call_indirect_mangled(runtime: Path) -> dict[str, str]:
             import_name = call_indirect_import_name_for_arity(mangled_match.group(1))
             if import_name is not None:
                 names[import_name] = name
-    if not names and not wasm_tools:
-        print(
-            "wasm-tools not found; cannot extract call_indirect symbol name.",
-            file=sys.stderr,
-        )
     if not names:
         print("Unable to locate runtime call_indirect symbol names.", file=sys.stderr)
     return names
 
 
 def _find_output_call_indirect_symbol(output: Path) -> dict[str, tuple[int, int]]:
-    wasm_tools = _find_tool(["wasm-tools"])
     symbols: dict[str, tuple[int, int]] = {}
-    for flags, index, name, _ in _dump_symbols(output, wasm_tools):
+    for flags, index, name, _ in _dump_symbols(output):
         if is_call_indirect_import_name(name):
             symbols[name] = (index, flags)
-    if not symbols and not wasm_tools:
-        print(
-            "wasm-tools not found; cannot extract output symbol info.", file=sys.stderr
-        )
     if not symbols:
         print("Unable to locate output call_indirect symbols.", file=sys.stderr)
     return symbols
@@ -2182,7 +2171,7 @@ def _run_wasm_ld_with_custodied_inputs(
     deploy_runtime_override: Path | None = None,
     native_link_requirements: SourceExtensionLinkRequirements | None = None,
     preserve_debug_sections: bool = False,
-    phase_timings_file: Path | None = None,
+    phase_timings_ms: dict[str, float] | None = None,
     wasm_facts_scanner: Path,
     app_export_contract_path: Path | None = None,
     link_receipt: FinalLinkReceiptRequest | None = None,
@@ -2203,7 +2192,7 @@ def _run_wasm_ld_with_custodied_inputs(
         deploy_runtime_override=deploy_runtime_override,
         native_link_requirements=native_link_requirements,
         preserve_debug_sections=preserve_debug_sections,
-        phase_timings_file=phase_timings_file,
+        phase_timings_ms=phase_timings_ms,
         wasm_facts_scanner=wasm_facts_scanner,
         app_export_contract_path=app_export_contract_path,
         link_receipt=link_receipt,
@@ -2234,6 +2223,7 @@ def _run_wasm_ld(
     link_receipt: FinalLinkReceiptRequest | None = None,
 ) -> int:
     expected_target = "wasm32-unknown-unknown" if freestanding else "wasm32-wasip1"
+    phase_timings_ms: dict[str, float] = {}
     try:
         native_link_requirements = (
             native_link_requirements or SourceExtensionLinkRequirements(expected_target)
@@ -2275,21 +2265,29 @@ def _run_wasm_ld(
         with tempfile.TemporaryDirectory(prefix="molt-wasm-link-custody-") as tmp:
             snapshot_root = Path(tmp)
             runtime_snapshot_root = snapshot_root / "runtime-pair"
+
+            def admit_runtime(path: Path) -> bool:
+                # Validate the exact immutable snapshot once, at its custody
+                # boundary. The pipeline consumes this admitted input and must
+                # not relink it again merely to repeat the same admission.
+                started = time.perf_counter()
+                try:
+                    error = _preflight_relocatable_runtime(wasm_ld, path, snapshot_root)
+                    if error is not None:
+                        raise ValueError(error)
+                    return True
+                finally:
+                    phase_timings_ms["wasm_reloc_preflight"] = round(
+                        (time.perf_counter() - started) * 1000.0, 6
+                    )
+                    phase_timings_ms["wasm_reloc_preflight_invocations"] = 1.0
+
             runtime_snapshot = _snapshot_link_input(
                 runtime,
                 runtime_snapshot_root,
                 label="selected",
                 expected_identity=runtime_identity,
-                accept_path=(
-                    lambda path: (
-                        _preflight_relocatable_runtime(
-                            wasm_ld, path, type("CustodyDir", (), {"name": tmp})()
-                        )
-                        is None
-                    )
-                )
-                if runtime_role == "reloc"
-                else None,
+                accept_path=admit_runtime if runtime_role == "reloc" else None,
                 retry_delay_seconds=0.25,
             )
             runtime_snapshot = (
@@ -2389,7 +2387,7 @@ def _run_wasm_ld(
                 deploy_runtime_override=deploy_runtime_snapshot,
                 native_link_requirements=snapshot_requirements,
                 preserve_debug_sections=preserve_debug_sections,
-                phase_timings_file=phase_timings_file,
+                phase_timings_ms=phase_timings_ms,
                 wasm_facts_scanner=wasm_facts_scanner,
                 app_export_contract_path=app_export_contract_snapshot,
                 link_receipt=link_receipt,
@@ -2397,6 +2395,15 @@ def _run_wasm_ld(
     except (OSError, ValueError) as exc:
         print(f"Failed to establish wasm linker input custody: {exc}", file=sys.stderr)
         return 1
+    finally:
+        # One publisher covers both custody/preflight failures and the complete
+        # link. The pipeline updates this same operation-owned timing record.
+        if phase_timings_file is not None:
+            phase_timings_file.parent.mkdir(parents=True, exist_ok=True)
+            phase_timings_file.write_text(
+                json.dumps(phase_timings_ms, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
 
 
 @local_python_import_graph_transaction()

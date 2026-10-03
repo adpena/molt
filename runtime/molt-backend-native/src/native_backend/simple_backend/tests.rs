@@ -3,10 +3,11 @@ use super::{
     DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT, DEFERRED_CODEGEN_FLUSH_OP_BUDGET,
     NativeBackendModuleContext, NativeRcAuthority, SimpleBackend, TrampolineKey,
     analyze_native_backend_ir, compute_function_has_ret, drain_cleanup_candidates,
-    merge_closure_functions, merge_function_arities, merge_function_has_ret, merge_leaf_functions,
-    merge_task_kinds, preprocess_backend_tir_input, should_flush_deferred_codegen,
+    merge_closure_functions, merge_function_arities, merge_function_has_ret, merge_task_kinds,
+    preprocess_backend_tir_input, should_flush_deferred_codegen,
 };
 use crate::ir::{FunctionIR, OpIR, SimpleIR};
+use crate::native_backend::simple_backend::merge_function_entry_custody;
 use crate::{GENERATOR_CONTROL_BYTES, TrampolineKind};
 use cranelift_codegen::flowgraph::ControlFlowGraph;
 use cranelift_codegen::ir::condcodes::{CondCode, IntCC};
@@ -127,6 +128,7 @@ fn compile_trace_probe_object(
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context,
         }],
         profile: None,
@@ -143,7 +145,18 @@ fn compile_function_to_clif(
 
 struct CompiledFunctionClif {
     function: Function,
-    import_ids: BTreeMap<&'static str, FuncId>,
+    import_ids: BTreeMap<String, FuncId>,
+}
+
+fn declared_import_ids(module: &impl Module) -> BTreeMap<String, FuncId> {
+    // Direct runtime calls and helper calls share the module's declarations;
+    // the helper cache contains only calls made through import_func_ref.
+    module
+        .declarations()
+        .get_functions()
+        .filter(|(_, declaration)| declaration.linkage == cranelift_module::Linkage::Import)
+        .filter_map(|(id, declaration)| declaration.name.clone().map(|name| (name, id)))
+        .collect()
 }
 
 fn definition(func: &Function, value: Value) -> Option<Inst> {
@@ -256,11 +269,7 @@ fn compile_function_to_clif_with_imports(
         .unwrap_or_else(|| panic!("missing deferred function `{target_name}`"))
         .func
         .clone();
-    let import_ids = backend
-        .import_ids
-        .iter()
-        .map(|(name, (id, _))| (*name, *id))
-        .collect();
+    let import_ids = declared_import_ids(&backend.module);
     CompiledFunctionClif {
         function,
         import_ids,
@@ -279,7 +288,6 @@ pub(in crate::native_backend) fn compile_selected_functions_direct(
     };
     let analysis = analyze_native_backend_ir(
         &ir,
-        true,
         molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
     );
     let function_has_ret = compute_function_has_ret(&ir.functions);
@@ -289,6 +297,7 @@ pub(in crate::native_backend) fn compile_selected_functions_direct(
         .map(|func| (func.name.clone(), func.params.len()))
         .collect();
     let mut backend = SimpleBackend::new();
+    backend.function_entry_custody = merge_function_entry_custody(None, &ir.functions);
     for target_name in target_names {
         let target_func = ir
             .functions
@@ -483,6 +492,7 @@ fn test_tir_pipeline_cache_dir() -> std::path::PathBuf {
     ))
 }
 
+mod activation_exits;
 mod arith_codegen_snapshot;
 mod backend_selection;
 mod cleanup;

@@ -13,8 +13,7 @@
 
 use crate::abi_types::{
     Py_buffer, PyBUF_ANY_CONTIGUOUS, PyBUF_C_CONTIGUOUS, PyBUF_F_CONTIGUOUS, PyBUF_FORMAT,
-    PyBUF_ND, PyBUF_STRIDES, PyBUF_WRITABLE, PyExc_BufferError, PyExc_TypeError,
-    PyMemoryViewObject, PyObject,
+    PyBUF_ND, PyBUF_STRIDES, PyBUF_WRITABLE, PyExc_BufferError, PyExc_TypeError, PyObject,
 };
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::{MOLT_BUFFER_FORMAT_CAP, MOLT_BUFFER_MAX_NDIM, MoltBufferView, hooks_or_stubs};
@@ -161,7 +160,43 @@ unsafe fn export_internal_release(
     }
 }
 
-unsafe fn descriptor_from_pybuffer(info: *const Py_buffer) -> Result<MoltBufferView, ()> {
+/// Borrow one normalized export through a scoped consumer. The canonical
+/// Py_buffer stays in place (FillInfo may publish self-pointers), and its one
+/// release preserves any conversion error. Byte consumers need geometry, not
+/// PEP 3118 format text, so format length cannot reject a valid byte copy.
+///
+/// # Safety
+/// `object` must be a live canonical PyObject for the duration of the call.
+/// The consumer must not retain the descriptor or its borrowed data pointers.
+pub unsafe fn with_buffer_descriptor<T>(
+    object: *mut PyObject,
+    consume: impl FnOnce(&MoltBufferView) -> T,
+) -> Result<T, ()> {
+    struct Release(*mut Py_buffer);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            crate::api::errors::with_preserved_error(|| unsafe { PyBuffer_Release(self.0) });
+        }
+    }
+    let mut view: Py_buffer = unsafe { std::mem::zeroed() };
+    let status =
+        unsafe { PyObject_GetBuffer(object, &raw mut view, crate::abi_types::PyBUF_FULL_RO) };
+    // A failed exporter owns its cleanup. A completed export is ours even if
+    // its callback incorrectly returned success with an exception pending.
+    let _release = (status >= 0).then(|| Release(&raw mut view));
+    if unsafe { crate::api::errors::check_native_status(status, "native buffer callback") } < 0 {
+        return Err(());
+    }
+    match unsafe { descriptor_from_pybuffer(&raw const view) } {
+        Ok(descriptor) => Ok(consume(&descriptor)),
+        Err(()) => {
+            unsafe { set_buffer_error(b"invalid or indirect buffer descriptor for bytes\0") };
+            Err(())
+        }
+    }
+}
+
+pub unsafe fn descriptor_from_pybuffer(info: *const Py_buffer) -> Result<MoltBufferView, ()> {
     if info.is_null() {
         return Err(());
     }
@@ -256,16 +291,6 @@ unsafe fn descriptor_from_pybuffer(info: *const Py_buffer) -> Result<MoltBufferV
     // the captured strides above carry the layout. Only suboffset (PIL-style)
     // buffers are rejected earlier: `MoltBufferView` has no suboffsets field,
     // so that case fails closed with BufferError rather than mis-describing.
-
-    if !info.format.is_null() {
-        let bytes = unsafe { CStr::from_ptr(info.format) }.to_bytes();
-        if bytes.len() >= MOLT_BUFFER_FORMAT_CAP {
-            return Err(());
-        }
-        let copy_len = bytes.len().min(MOLT_BUFFER_FORMAT_CAP.saturating_sub(1));
-        descriptor.format = [0; MOLT_BUFFER_FORMAT_CAP];
-        descriptor.format[..copy_len].copy_from_slice(&bytes[..copy_len]);
-    }
 
     Ok(descriptor)
 }
@@ -467,25 +492,15 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
         unsafe { set_type_error(b"buffer exporter must not be NULL\0") };
         return -1;
     }
-    // Resolve in its own statement (NOT as a `match` scrutinee): a `match
-    // GLOBAL_BRIDGE....` scrutinee keeps the MutexGuard alive for the
-    // ENTIRE match statement, including the `None` arm's body (Rust temporary
-    // lifetime extension). That arm calls `raise_bytes_like_type_error` ->
-    // `PyErr_SetString`, which itself locks `GLOBAL_BRIDGE` — with the outer
-    // guard still held, that is an immediate self-deadlock (parking_lot's
-    // Mutex is not reentrant). Binding the resolved `Option` first drops the
-    // guard before the `None` arm runs.
-    //
-    // `molt_handle_for_pyobj`, NOT `pyobj_to_handle`: a raw-registered C object
-    // (synthetic `0xA11C…` identity handle) is a FOREIGN exporter — its bits
-    // are not a valid `MoltObject`, so it must route to its own `bf_getbuffer`
-    // below, not to the runtime `buffer_acquire` hook. `PyBuffer_Release`
-    // classifies with the SAME function, so export and release dispatch can
-    // never disagree about who owns `view.internal`.
-    let resolved = GLOBAL_BRIDGE.molt_handle_for_pyobj(obj);
+    // Both header facades now enter here. Admit the canonical object prefix
+    // before any foreign slot access; registered private storage has no such
+    // prefix and cannot acquire the linked buffer protocol by registration.
+    let Some(resolved) = crate::bridge::observe_pyobject(obj) else {
+        return -1;
+    };
     let bits = match resolved {
-        Some(bits) => bits,
-        None => {
+        crate::bridge::ResolvedPyObject::ManagedMolt(bits) => bits,
+        crate::bridge::ResolvedPyObject::Foreign => {
             // Foreign C object: CPython Objects/abstract.c dispatches
             // `(*pb->bf_getbuffer)(obj, view, flags)` — the slot installed by
             // PyType_FromSpec was previously DEAD (no call site), so a
@@ -502,7 +517,9 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
     let hooks = hooks_or_stubs();
     let mut descriptor = MoltBufferView::default();
     if unsafe { (hooks.buffer_acquire)(bits.bits(), &mut descriptor as *mut MoltBufferView) } != 0 {
-        unsafe { set_buffer_error(b"object does not export a buffer\0") };
+        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
+            unsafe { set_buffer_error(b"object does not export a buffer\0") };
+        }
         return -1;
     }
     if descriptor.ndim as usize > MOLT_BUFFER_MAX_NDIM {
@@ -570,10 +587,32 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
             ptr::null_mut()
         };
         (*view).suboffsets = ptr::null_mut();
+        if (flags & PyBUF_FORMAT) != 0 && crate::api::memory::PyMemoryView_Check(obj) != 0 {
+            (*view).format = (*crate::api::memory::PyMemoryView_GET_BUFFER(obj)).format;
+        }
         (*view).internal = internal.cast();
         crate::api::refcount::Py_INCREF(obj);
     }
     0
+}
+
+/// Retire the managed export lease without consuming the public view's owned
+/// exporter reference. Installed base release slots and PyBuffer_Release use
+/// this same transaction; only PyBuffer_Release retires view.obj.
+pub(crate) unsafe fn release_managed_export(view: *mut Py_buffer) {
+    if view.is_null() {
+        return;
+    }
+    let internal = unsafe { (*view).internal };
+    if !internal.is_null() {
+        unsafe {
+            (*view).internal = ptr::null_mut();
+            export_internal_release(
+                internal.cast::<ExportInternal>(),
+                hooks_or_stubs().buffer_release,
+            );
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -603,16 +642,8 @@ pub unsafe extern "C" fn PyBuffer_Release(view: *mut Py_buffer) {
         // from the one `PyObject_GetBuffer` made at export time.
         let is_molt_native = GLOBAL_BRIDGE.molt_handle_for_pyobj(obj).is_some();
         if is_molt_native {
-            let internal = (*view).internal;
-            if !internal.is_null() {
-                // Ours: only molt's own `PyObject_GetBuffer` publishes a
-                // non-NULL `internal` on a view whose exporter is molt-native,
-                // so the deref is safe AFTER the obj-nature check above.
-                export_internal_release(
-                    internal.cast::<ExportInternal>(),
-                    hooks_or_stubs().buffer_release,
-                );
-            }
+            // Only managed acquisition publishes this internal layout.
+            release_managed_export(view);
         } else if let Some(releasebuffer) = foreign_bf_releasebuffer(obj) {
             // View filled by a C-extension bf_getbuffer: CPython calls
             // `pb->bf_releasebuffer(obj, view)` when present, BEFORE the obj
@@ -620,9 +651,11 @@ pub unsafe extern "C" fn PyBuffer_Release(view: *mut Py_buffer) {
             releasebuffer(obj, view);
         }
         (*view).internal = ptr::null_mut();
-        crate::api::refcount::Py_DECREF(obj);
+        // bf_releasebuffer observes the original descriptor. Retire it before
+        // the last exporter reference can invoke a reentrant finalizer.
         (*view).obj = ptr::null_mut();
         reset_pybuffer(view);
+        crate::api::refcount::Py_DECREF(obj);
     }
 }
 
@@ -639,23 +672,18 @@ pub unsafe extern "C" fn PyObject_CheckBuffer(obj: *mut PyObject) -> c_int {
     // raw-registered C object is FOREIGN (its synthetic identity bits are not
     // a `MoltObject`, so `classify_heap` on them would be garbage) — it gets
     // the honest slot test.
-    let bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(obj);
-    match bits {
-        None => {
+    let Some(resolved) = crate::bridge::resolve_pyobject(obj) else {
+        return 0;
+    };
+    match resolved {
+        crate::bridge::ResolvedPyObject::Foreign => {
             // Foreign object: honest slot test.
             (unsafe { foreign_bf_getbuffer(obj) }).is_some() as c_int
         }
-        Some(bits) => {
-            // Molt-native: side-effect-free classification. The runtime buffer
-            // exporters are the bytes-like natives; memoryview/bytearray are
-            // raw ABI objects and never reach this arm.
-            if unsafe { crate::api::memory::PyMemoryView_Check(obj) } != 0
-                || unsafe { crate::api::strings::PyByteArray_Check(obj) } != 0
-            {
-                return 1;
-            }
-            let tag = unsafe { (hooks_or_stubs().classify_heap)(bits.bits()) };
-            (tag == crate::abi_types::MoltTypeTag::Bytes as u8) as c_int
+        crate::bridge::ResolvedPyObject::ManagedMolt(bits) => {
+            // Runtime metadata owns managed exporter eligibility. This is a
+            // slot/support query, never an acquisition probe or callback.
+            unsafe { (hooks_or_stubs().buffer_supports)(bits.bits()) }
         }
     }
 }
@@ -701,7 +729,7 @@ static FILLINFO_FORMAT_B: [u8; 2] = *b"B\0";
 /// object (`PyBuffer_FillInfo(&mbuf->master, …)`) and by re-pointing copied
 /// views into the copy's own `ob_array`. Molt's memoryview constructors do the
 /// same (fill `(*mv).view` in place / copy values into the object's embedded
-/// storage) — see `api::memory` and `init_memoryview_from_pybuffer`.
+/// storage) — see the runtime MemoryView and its bridge projection.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyBuffer_FillInfo(
     view: *mut Py_buffer,
@@ -762,74 +790,47 @@ pub unsafe extern "C" fn PyBuffer_FillInfo(
     0
 }
 
-/// Fill `(*mv).view` for `PyMemoryView_FromBuffer`: validate + normalize the
-/// caller's `info` through the general field-read path
-/// (`descriptor_from_pybuffer`), then copy the descriptor VALUES into the
-/// memoryview object's own embedded storage and point
-/// `view.format`/`shape`/`strides` at that storage — CPython's `ob_array`
-/// model (Objects/memoryobject.c). The descriptor dies with the object; there
-/// is no side allocation and nothing for `PyBuffer_Release` to free.
-///
-/// `view.obj` stays NULL — CPython PyMemoryView_FromBuffer: "info->obj is
-/// either NULL or a borrowed reference. This reference should not be
-/// decremented in PyBuffer_Release()." (`mbuf->master.obj = NULL`). In
-/// particular the ORIGINAL exporter's `bf_releasebuffer` must NOT run for this
-/// copied view: the caller still owns `info` and its exactly-once release.
-/// The exporter pin is the memoryview's `base` strong reference (molt is
-/// stricter than CPython's borrowed reference), dropped at dealloc — see
-/// `molt_memoryview_dealloc`.
-///
-/// All stores go through raw projections off `mv` (the C-visible pointers must
-/// carry object-allocation provenance for the object's whole lifetime).
-pub(crate) unsafe fn init_memoryview_from_pybuffer(
-    mv: *mut PyMemoryViewObject,
-    info: *const Py_buffer,
-) -> c_int {
-    if mv.is_null() || info.is_null() {
-        unsafe { set_type_error(b"memoryview buffer must not be NULL\0") };
-        return -1;
-    }
-    let descriptor = match unsafe { descriptor_from_pybuffer(info) } {
-        Ok(descriptor) => descriptor,
-        Err(()) => {
-            unsafe { set_buffer_error(b"invalid buffer descriptor for memoryview\0") };
-            return -1;
-        }
-    };
-    let ndim = descriptor.ndim as usize;
-    unsafe {
-        let view = &raw mut (*mv).view;
-        reset_pybuffer(view);
-        (*view).buf = descriptor.data.cast();
-        (*view).obj = ptr::null_mut();
-        (*view).len = descriptor.len as isize;
-        (*view).itemsize = descriptor.itemsize as isize;
-        (*view).readonly = descriptor.readonly as c_int;
-        (*view).ndim = descriptor.ndim as c_int;
-        let shape_dst = (&raw mut (*mv).ob_shape).cast::<isize>();
-        let strides_dst = (&raw mut (*mv).ob_strides).cast::<isize>();
-        let format_dst = (&raw mut (*mv).ob_format).cast::<u8>();
-        for i in 0..ndim {
-            shape_dst.add(i).write(descriptor.shape[i]);
-            strides_dst.add(i).write(descriptor.strides[i]);
-        }
-        ptr::copy_nonoverlapping(
-            descriptor.format.as_ptr(),
-            format_dst,
-            MOLT_BUFFER_FORMAT_CAP,
-        );
-        (*view).format = format_dst.cast::<c_char>();
-        (*view).shape = shape_dst;
-        (*view).strides = strides_dst;
-        (*view).suboffsets = ptr::null_mut();
-        (*view).internal = ptr::null_mut();
-    }
-    0
-}
-
 #[cfg(test)]
 mod export_internal_tests {
     use super::*;
+
+    std::thread_local! {
+        static FINALIZER_VIEW: std::cell::Cell<*mut Py_buffer> = const { std::cell::Cell::new(ptr::null_mut()) };
+        static FINALIZER_SAW_RETIRED_VIEW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    unsafe extern "C" fn reenter_buffer_release_after_exporter_dealloc(_object: *mut PyObject) {
+        FINALIZER_VIEW.with(|slot| {
+            let view = slot.get();
+            if !view.is_null() {
+                let retired = unsafe { (*view).obj.is_null() && (*view).len == 0 };
+                FINALIZER_SAW_RETIRED_VIEW.with(|observed| observed.set(retired));
+                if retired {
+                    unsafe { PyBuffer_Release(view) };
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn buffer_release_retires_descriptor_before_exporter_finalizer_reentry() {
+        let mut exporter_type: crate::abi_types::PyTypeObject = unsafe { std::mem::zeroed() };
+        exporter_type.tp_dealloc = Some(reenter_buffer_release_after_exporter_dealloc);
+        let mut exporter = PyObject {
+            ob_refcnt: 1,
+            ob_type: &mut exporter_type,
+        };
+        let mut view: Py_buffer = unsafe { std::mem::zeroed() };
+        view.obj = &mut exporter;
+        view.len = 7;
+        FINALIZER_SAW_RETIRED_VIEW.with(|observed| observed.set(false));
+        FINALIZER_VIEW.with(|slot| slot.set(&mut view));
+        unsafe { PyBuffer_Release(&mut view) };
+        FINALIZER_VIEW.with(|slot| slot.set(ptr::null_mut()));
+        FINALIZER_SAW_RETIRED_VIEW.with(|observed| assert!(observed.get()));
+        assert_eq!(exporter.ob_refcnt, 0);
+        assert!(view.obj.is_null());
+    }
 
     /// Right-sized-allocation gate: the per-export internal for a molt-native
     /// `PyObject_GetBuffer` is a 40 B header + two isizes/dim tail — NOT the former

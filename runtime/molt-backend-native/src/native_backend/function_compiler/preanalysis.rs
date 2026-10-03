@@ -10,15 +10,14 @@ pub(in crate::native_backend::function_compiler) struct FunctionPreanalysis {
     pub(in crate::native_backend::function_compiler) last_use: BTreeMap<String, usize>,
     pub(in crate::native_backend::function_compiler) cfg_liveness:
         crate::tir::cfg_liveness::SimpleCfgLiveness,
+    pub(in crate::native_backend::function_compiler) ssa_values: NativeSsaValues,
     pub(in crate::native_backend::function_compiler) alias_roots: BTreeMap<String, String>,
     pub(in crate::native_backend::function_compiler) if_to_end_if: BTreeMap<usize, usize>,
     pub(in crate::native_backend::function_compiler) if_to_else: BTreeMap<usize, usize>,
     pub(in crate::native_backend::function_compiler) else_to_end_if: BTreeMap<usize, usize>,
     pub(in crate::native_backend::function_compiler) label_ids: Vec<i64>,
     pub(in crate::native_backend::function_compiler) state_label_ids: BTreeSet<i64>,
-    pub(in crate::native_backend::function_compiler) shared_resume_label_ids: BTreeSet<i64>,
-    pub(in crate::native_backend::function_compiler) state_ids: Vec<i64>,
-    pub(in crate::native_backend::function_compiler) resume_states: BTreeSet<i64>,
+    pub(in crate::native_backend::function_compiler) resume_targets: Option<BTreeMap<i64, i64>>,
     pub(in crate::native_backend::function_compiler) function_exception_label_id: Option<i64>,
     pub(in crate::native_backend::function_compiler) exception_label_ids: BTreeSet<i64>,
     /// Pre-built map from variable name -> constant integer value for O(1) lookups.
@@ -202,14 +201,19 @@ pub(in crate::native_backend::function_compiler) fn native_alias_mints_owner(
     alias_root_name(aliases, source) != alias_root_name(aliases, destination)
 }
 
+/// Whether a constructor result keeps its operands alive. First-class wire
+/// spellings (`build_*`) read their opcode fact and Copy-preserved constructors
+/// (`*_new`, `class_def`) read the per-spelling table; both are generated.
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn simple_ir_op_absorbs_finalizer_elements(
     op: &OpIR,
 ) -> bool {
-    matches!(
-        op.kind.as_str(),
-        "build_list" | "build_tuple" | "build_dict" | "build_set"
-    ) || crate::tir::op_kinds_generated::kind_result_absorbs_operand_ownership_table(&op.kind)
+    use crate::tir::op_kinds_generated::{
+        kind_result_absorbs_operand_ownership_table, kind_to_opcode_table,
+        opcode_result_absorbs_operand_ownership_table,
+    };
+    kind_to_opcode_table(&op.kind).is_some_and(opcode_result_absorbs_operand_ownership_table)
+        || kind_result_absorbs_operand_ownership_table(&op.kind)
 }
 
 #[cfg(feature = "native-backend")]
@@ -255,12 +259,9 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     let mut if_to_else = BTreeMap::new();
     let mut else_to_end_if = BTreeMap::new();
     let mut if_stack: Vec<(usize, Option<usize>)> = Vec::new();
-    let mut state_ids = Vec::new();
-    let mut seen_state_ids: BTreeSet<i64> = BTreeSet::new();
     let mut label_ids = Vec::new();
     let mut seen_label_ids: BTreeSet<i64> = BTreeSet::new();
     let mut state_label_ids = BTreeSet::new();
-    let mut resume_states = BTreeSet::new();
     let mut exception_label_ids = BTreeSet::new();
     let mut label_positions = Vec::new();
     let const_int_map = crate::build_const_int_map(func_ir);
@@ -274,7 +275,7 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     for (idx, op) in func_ir.ops.iter().enumerate() {
         match op.kind.as_str() {
             "drop_inserted" => drop_inserted = true,
-            "state_switch" | "state_transition" | "state_yield" => stateful = true,
+            "state_switch" => stateful = true,
             "store" => {}
             _ => {}
         }
@@ -327,21 +328,12 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
                     }
                 }
             }
-            "state_transition" | "state_yield" | "label" | "state_label" => {
+            "label" | "state_label" => {
                 if let Some(state_id) = op.value {
-                    if seen_state_ids.insert(state_id) {
-                        state_ids.push(state_id);
-                    }
                     if matches!(op.kind.as_str(), "label" | "state_label")
                         && seen_label_ids.insert(state_id)
                     {
                         label_ids.push(state_id);
-                    }
-                    if matches!(
-                        op.kind.as_str(),
-                        "state_transition" | "state_yield" | "state_label"
-                    ) {
-                        resume_states.insert(state_id);
                     }
                     if op.kind == "state_label" {
                         state_label_ids.insert(state_id);
@@ -390,7 +382,6 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     // computation below). Declared in the function scope — assigned exactly once
     // inside the unconditional block below — so the later alias-group last_use
     // unification can also keep them un-extended.
-    let stateful_per_iter_temps: BTreeSet<String>;
     {
         let mut loop_stack_post: Vec<usize> = Vec::new(); // stack of loop start indices
         let mut loop_ranges: Vec<(usize, usize)> = Vec::new();
@@ -447,138 +438,6 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
             ranges
         };
 
-        // ── Shared per-iteration-dead analysis inputs ──
-        //
-        // Computed unconditionally (cheap linear scans) so BOTH the generator/async
-        // `_poll` per-iteration analysis (`stateful_per_iter_temps`) AND the
-        // ExceptionRegion creation-ref analysis. Each is a single pass over
-        // `func_ir.ops`.
-        //
-        // First definition site of every name (min index over defining ops).
-        let mut first_def: BTreeMap<&str, usize> = BTreeMap::new();
-        for name in &func_ir.params {
-            if name != "none" {
-                first_def.entry(name.as_str()).or_insert(0);
-            }
-        }
-        for (idx, op) in func_ir.ops.iter().enumerate() {
-            crate::tir::simple_def_use::visit_simple_ir_defined_names(op, |name| {
-                first_def.entry(name).or_insert(idx);
-            });
-        }
-        // Names that are ever a local-slot mutation target carry loop/handler state in a
-        // slot (they are slot-backed and balanced by the store_var retain-new/
-        // release-old path); never treat them as per-iteration temps. For a stored
-        // exception `saved = e`, the slot `saved` is the store TARGET (and stays
-        // func_end-extended with its own independent reference), while the exception
-        // op RESULT is the store SOURCE — so the result still qualifies and
-        // releasing it at its last use cannot free the stored object.
-        let mut store_var_targets: BTreeSet<&str> = BTreeSet::new();
-        for op in &func_ir.ops {
-            if let Some(binding) = simple_ir_binding(op)
-                && binding.destination != "none"
-            {
-                store_var_targets.insert(binding.destination);
-            }
-        }
-        // Linear indices of every suspend op (yield / await / channel rendezvous).
-        // A value whose live range *strictly contains* a suspend must survive the
-        // poll's return-and-resume, so it is never a per-iteration temporary.
-        // (A `try`/`except` function with no suspend ops yields an empty list, so
-        // the suspend test is vacuously satisfied for the exception analyses.)
-        let suspend_ops: Vec<usize> = func_ir
-            .ops
-            .iter()
-            .enumerate()
-            .filter(|(_, op)| matches!(op.kind.as_str(), "state_yield" | "state_transition"))
-            .map(|(idx, _)| idx)
-            .collect();
-
-        // A name N is a per-iteration temporary — releasable at its real last use
-        // by the ordinary in-body / suspend-boundary / control-flow drain rather
-        // than deferred to func_end — iff ALL of:
-        //
-        //   1. N is NOT loop-carried: no back-edge body (s, e) has
-        //      `first_def(N) < s <= last_use(N)`.  That predicate means N is defined
-        //      before a loop header `s` and still read at/after it, so it must
-        //      survive the back-edge.  Its negation guarantees N's live range does
-        //      not straddle any loop header — N is recomputed each iteration (a
-        //      fresh SSA temporary), not threaded around the loop.  This admits both
-        //      in-body temporaries (the `(value, done)` pair built right before a
-        //      `state_yield`) AND resume-prologue temporaries (the `yield from`
-        //      delegation pair from `iter_next`, defined before the loop header
-        //      and dead before it).
-        //
-        //   2. No suspend op lies STRICTLY INSIDE `(first_def(N), last_use(N))`.
-        //      If a yield/await sat between N's definition and its last read, N would
-        //      have to survive the poll's return; the open interval lets a value
-        //      whose last use IS the suspend (the yielded pair) still qualify — it is
-        //      released by the suspend-boundary drain.  Vacuous for a non-stateful
-        //      `try`/`except` function.
-        //
-        //   3. N is not a `store_var` target — those carry loop/handler state in a
-        //      slot and are balanced by the store_var retain-new/release-old path.
-        //
-        // `last` is the global maximum use index and `first_def` the global minimum
-        // definition index, so these interval tests bound EVERY reference to N.
-        let is_per_iter_dead = |name: &str, last: usize| -> bool {
-            if name == "none" || store_var_targets.contains(name) {
-                return false;
-            }
-            let Some(&def) = first_def.get(name) else {
-                return false;
-            };
-            if last < def {
-                return false;
-            }
-            if back_edge_ranges.iter().any(|&(s, _e)| def < s && s <= last) {
-                return false; // loop-carried
-            }
-            if suspend_ops.iter().any(|&sx| def < sx && sx < last) {
-                return false; // live range strictly contains a suspend
-            }
-            true
-        };
-
-        // ── Per-iteration temporaries in generator/async `_poll` state machines ──
-        //
-        // The blanket "extend every lifetime to func_end" model below implements
-        // the Swift-ARC release-at-scope-exit discipline: a loop-carried heap value
-        // is released once, at the function's return, instead of inside the loop.
-        // For an ORDINARY function that is correct — the return *is* the scope exit,
-        // reached once after the loop completes.
-        //
-        // A generator/async `_poll` is a state machine that RETURNS ON EVERY YIELD
-        // and is re-entered on the next resume.  Its "function return" is a yield
-        // SUSPENSION, not the generator's scope exit.  Extending a *per-iteration*
-        // heap temporary's lifetime to func_end therefore defers its release to a
-        // point that, on the suspend path, never drains it — so the temporary is
-        // re-allocated and orphaned on every resume.  The canonical victim is the
-        // `(value, done)` pair tuple built by `tuple_new` immediately before each
-        // `state_yield`: it is allocated rc=1, retained to rc=2 by the suspend
-        // (so it survives the return to the consumer), and the consumer releases it
-        // once → rc=1, leaked.  Over a streamed generator (and multiplied by every
-        // delegation level of `yield from` / `for y in inner(): yield …`) this is an
-        // unbounded O(iterations × depth) leak.
-        //
-        // Fix: in a `stateful` function, do NOT extend the lifetime of values that
-        // are genuinely dead within a single iteration.  Their real `last_use` is
-        // preserved so the suspend-boundary drain (added in the `state_yield` /
-        // `state_transition` / `chan_*_yield` handlers) releases them per-iteration —
-        // byte-identical semantics, O(active-chain-depth) memory.  Loop-carried
-        // values (accumulators, cell-list contents) are live across the back-edge,
-        // so they fail the "dead within one iteration" test and remain fully
-        // protected by the func_end extension.
-        stateful_per_iter_temps = if stateful && !drop_inserted {
-            last_use
-                .iter()
-                .filter(|(name, last)| is_per_iter_dead(name.as_str(), **last))
-                .map(|(name, _)| name.clone())
-                .collect()
-        } else {
-            BTreeSet::new()
-        };
-
         // The source-order last-use map cannot establish precise liveness
         // across loop exits and exception edges. Keep loop-carried candidates
         // until function exit; executable tokens still release displaced owners
@@ -586,15 +445,9 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
         // TIR drop insertion already owns precise releases and needs no such
         // native lifetime extension.
         //
-        // `stateful_per_iter_temps` are excluded: their release belongs INSIDE the
-        // loop body (at the suspend boundary), not at the per-yield return — see the
-        // generator-`_poll` analysis above.
         if !loop_ranges.is_empty() && !drop_inserted {
             let func_end = func_ir.ops.len().saturating_sub(1);
-            for (name, entry) in last_use.iter_mut() {
-                if stateful_per_iter_temps.contains(name) {
-                    continue;
-                }
+            for entry in last_use.values_mut() {
                 if *entry < func_end {
                     *entry = func_end;
                 }
@@ -609,16 +462,9 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
         // owned by the TIR `DecRef`/`IncRef` ops (the back-edge `DecRef(old)`
         // releases the carried value with per-iteration precision).
         //
-        // `stateful_per_iter_temps` excluded for the same reason as the
-        // structured-loop extension: a generator/async `_poll`'s per-iteration
-        // heap temporaries are released at the suspend boundary, not deferred to
-        // the per-yield return (which would orphan them on every resume).
         if !back_edge_ranges.is_empty() && !drop_inserted {
             let func_end = func_ir.ops.len().saturating_sub(1);
-            for (name, entry) in last_use.iter_mut() {
-                if stateful_per_iter_temps.contains(name) {
-                    continue;
-                }
+            for entry in last_use.values_mut() {
                 if *entry < func_end {
                     *entry = func_end;
                 }
@@ -780,12 +626,6 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
                 .or_insert(last);
         }
         for (name, root) in &alias_roots {
-            // A per-iteration `_poll` temporary must keep its real last use so the
-            // suspend-boundary drain releases it each iteration; do not let the
-            // alias-group unification re-extend it to a group-mate's later use.
-            if stateful_per_iter_temps.contains(name) {
-                continue;
-            }
             let Some(group_last) = max_last_use_by_root.get(root).copied() else {
                 continue;
             };
@@ -808,41 +648,19 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
         .rev()
         .find_map(|(_, id)| exception_label_ids.contains(&id).then_some(id));
 
-    let label_id_set: BTreeSet<i64> = label_ids.iter().copied().collect();
-    let mut shared_resume_label_ids = state_label_ids.clone();
-    for op in &func_ir.ops {
-        let pending_arg = match op.kind.as_str() {
-            "state_transition" => {
-                let Some(args) = op.args.as_ref() else {
-                    continue;
-                };
-                match args.as_slice() {
-                    [_, pending_state] => Some(pending_state),
-                    [_, _, pending_state] => Some(pending_state),
-                    _ => None,
-                }
-            }
-            _ => None,
-        };
-        let Some(pending_arg) = pending_arg else {
-            continue;
-        };
-        let Some(&pending_state_id) = const_int_map.get(pending_arg) else {
-            continue;
-        };
-        resume_states.insert(pending_state_id);
-        assert!(
-            label_id_set.contains(&pending_state_id),
-            "function {} stores pending resume state {} from {} but has no matching label/state_label",
-            func_ir.name,
-            pending_state_id,
-            op.kind.as_str(),
-        );
-        shared_resume_label_ids.insert(pending_state_id);
-    }
+    // Resume identity is the terminal StateDispatch projection, never a label
+    // spelling, constant operand or the physical successor of a suspension.
+    let resume_targets = func_ir
+        .ops
+        .iter()
+        .find_map(|op| op.state_targets.as_ref())
+        .map(|targets| targets.iter().copied().collect());
 
     let scalar_slot_exclusion_unsafe = representation_plan.scalar_slot_exclusion_unsafe();
-    let cfg_liveness = crate::tir::cfg_liveness::analyze_simple_cfg_liveness(&func_ir.ops);
+    let cfg = crate::tir::cfg::CFG::build(&func_ir.ops);
+    let cfg_liveness =
+        crate::tir::cfg_liveness::analyze_simple_cfg_liveness_with_cfg(&func_ir.ops, &cfg);
+    let ssa_values = NativeSsaValues::for_function(func_ir, &cfg, stateful, &cfg_liveness.names);
 
     FunctionPreanalysis {
         returns_value,
@@ -851,15 +669,14 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
         var_names,
         last_use,
         cfg_liveness,
+        ssa_values,
         alias_roots,
         if_to_end_if,
         if_to_else,
         else_to_end_if,
         label_ids,
         state_label_ids,
-        shared_resume_label_ids,
-        state_ids,
-        resume_states,
+        resume_targets,
         function_exception_label_id,
         exception_label_ids,
         const_int_map,

@@ -89,23 +89,88 @@ fn iter_next_unboxed_value_result_root_is_conditionally_valid_without_finalizers
         "the test fixture must prove conditional validity is stored per root"
     );
     let lat = OwnershipLattice::compute(&f, &aliases);
+    let root_facts = OwnershipRootFacts::compute(&f, &aliases);
     assert!(
         lat.finalizer_sensitive_roots().is_empty(),
         "the conditional-validity fact must not depend on finalizer seeds"
     );
     assert!(
-        lat.is_conditionally_valid_result_root(aliases.root(value)),
+        root_facts.is_conditionally_valid_result_root(aliases.root(value)),
         "IterNextUnboxed result 0 root is valid only on the not-done edge"
     );
     assert!(
-        lat.is_conditionally_valid_result_root(aliases.root(value_alias)),
+        root_facts.is_conditionally_valid_result_root(aliases.root(value_alias)),
         "transparent aliases of the value result share the conditional-validity root"
     );
     assert!(
-        !lat.is_conditionally_valid_result_root(aliases.root(done)),
+        !root_facts.is_conditionally_valid_result_root(aliases.root(done)),
         "IterNextUnboxed result 1 is the done flag and is always valid"
     );
-    assert_eq!(lat.conditionally_valid_result_roots().len(), 1);
+    assert_eq!(root_facts.conditionally_valid_result_roots().len(), 1);
+}
+
+fn iter_next_region(
+    branch_on_done: bool,
+    body_has_exception_entry: bool,
+) -> (Option<BlockId>, BlockId) {
+    let mut f = func();
+    let iter = f.fresh_value();
+    let value = f.fresh_value();
+    let done = f.fresh_value();
+    let flag = f.fresh_value();
+    let exit = f.fresh_block();
+    let body = f.fresh_block();
+    let entry = f.entry_block;
+    {
+        let head = f.blocks.get_mut(&entry).unwrap();
+        head.ops
+            .push(op(OpCode::IterNextUnboxed, vec![iter], vec![value, done]));
+        head.ops.push(op(OpCode::ConstBool, vec![], vec![flag]));
+        head.terminator = Terminator::CondBranch {
+            cond: if branch_on_done { done } else { flag },
+            then_block: exit,
+            then_args: vec![],
+            else_block: body,
+            else_args: vec![],
+        };
+    }
+    let mut exit_ops = Vec::new();
+    if body_has_exception_entry {
+        f.label_id_map.insert(body.0, 5);
+        let mut check = op(OpCode::CheckException, vec![], vec![]);
+        check.attrs.insert("value".into(), AttrValue::Int(5));
+        exit_ops.push(check);
+    }
+    for (id, ops) in [(exit, exit_ops), (body, Vec::new())] {
+        f.blocks.insert(
+            id,
+            crate::tir::blocks::TirBlock {
+                id,
+                args: vec![],
+                ops,
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+    }
+    let aliases = build_alias_union_find(&f);
+    let facts = OwnershipRootFacts::compute(&f, &aliases);
+    (facts.conditionally_valid_region(aliases.root(value)), body)
+}
+
+#[test]
+fn iter_next_unboxed_value_region_is_its_sole_not_done_successor() {
+    let (region, body) = iter_next_region(true, false);
+    assert_eq!(region, Some(body), "the not-done arm initializes the value");
+    let (region, _) = iter_next_region(true, true);
+    assert_eq!(
+        region, None,
+        "a second entry into the not-done target can bypass initialization"
+    );
+    let (region, _) = iter_next_region(false, false);
+    assert_eq!(
+        region, None,
+        "a branch on another flag says nothing about initialization"
+    );
 }
 
 #[test]
@@ -242,11 +307,6 @@ fn non_owning_copy_result_roots_are_lattice_facts() {
     assert!(
         !root_facts.is_non_owning_copy_result_root(owned_alias),
         "owned alias Copy results keep their independent drop obligation"
-    );
-    let lat = OwnershipLattice::compute_with_root_facts(&f, &aliases, root_facts);
-    assert!(
-        lat.is_non_owning_copy_result_root(unknown_passthrough),
-        "OwnershipLattice exposes the same root fact to placement"
     );
 }
 
@@ -541,7 +601,7 @@ fn statement_release_plan_filters_and_sorts_boundary_roots() {
 
     let aliases = build_alias_union_find(&f);
     let root_facts = OwnershipRootFacts::compute(&f, &aliases);
-    let lattice = OwnershipLattice::compute_with_root_facts(&f, &aliases, root_facts.clone());
+    let lattice = OwnershipLattice::compute(&f, &aliases);
     let lifetime_facts = PythonLifetimeFacts::compute(&f, &aliases);
     let drop_eligibility = DropEligibility::new(&aliases, &root_facts, &HashSet::new());
     let plan = StatementReleasePlan::compute(&lattice, &lifetime_facts, &drop_eligibility);
@@ -698,6 +758,41 @@ fn call_bind_defines_del_into_list_new_is_sensitive() {
 }
 
 #[test]
+fn slice_construction_absorbs_finalizer_bounds_in_both_spellings() {
+    // `slice(A(), None)` keeps its bound alive until the slice dies. Real
+    // SimpleIR keeps `slice_new` as Copy{_original_kind}; first-class
+    // BuildSlice, which admits omitted bounds, shares the generated fact.
+    for first_class in [false, true] {
+        let mut f = func();
+        let a = f.fresh_value();
+        let slice = f.fresh_value();
+        let stop = f.fresh_value();
+        let step = f.fresh_value();
+        let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+        entry.ops.push(del_op(a));
+        entry.ops.push(if first_class {
+            op(OpCode::BuildSlice, vec![a], vec![slice])
+        } else {
+            original_kind_copy("slice_new", vec![a, stop, step], vec![slice])
+        });
+        entry.terminator = Terminator::Return { values: vec![] };
+
+        let lat = lattice(&f);
+        assert!(lat.is_finalizer_sensitive_root(a));
+        assert!(
+            lat.is_finalizer_sensitive_root(slice),
+            "slice construction (first class: {first_class}) must absorb the __del__ bound"
+        );
+        assert!(
+            lat.statement_release_finalizer_boundaries()
+                .iter()
+                .any(|boundary| boundary.op_index == 1 && boundary.root == a),
+            "slice construction (first class: {first_class}) must mark the absorbed producer"
+        );
+    }
+}
+
+#[test]
 fn list_append_absorbs_producer_into_existing_container() {
     let mut f = func();
     let list = f.fresh_value();
@@ -836,4 +931,440 @@ fn nested_container_propagates() {
     let lat = lattice(&f);
     assert!(lat.is_finalizer_sensitive_root(inner));
     assert!(lat.is_finalizer_sensitive_root(outer));
+}
+
+#[test]
+fn declared_custody_owns_transferred_parameters_and_adopts_operands() {
+    let mut f = TirFunction::new(
+        "custody".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    f.set_parameter_custody(&[ParameterCustody::Borrowed, ParameterCustody::Transferred]);
+    let borrowed = f.blocks[&f.entry_block].args[0].id;
+    let transferred = f.blocks[&f.entry_block].args[1].id;
+    let value = f.fresh_value();
+    let builder = f.fresh_value();
+    let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+    entry
+        .ops
+        .push(op(OpCode::ObjectNewBound, vec![], vec![value]));
+    entry.terminator = Terminator::Return { values: vec![] };
+
+    let mut call = op(
+        OpCode::Call,
+        vec![borrowed, value, value, transferred],
+        vec![],
+    );
+    call.set_argument_custody(&[
+        ParameterCustody::Borrowed,
+        ParameterCustody::Transferred,
+        ParameterCustody::Transferred,
+        ParameterCustody::Borrowed,
+    ]);
+    use OperandTransfer::{Adopted, Borrowed, Consumed};
+    assert_eq!(
+        op_transferred_operands(&call),
+        [Borrowed, Adopted, Adopted, Borrowed],
+        "typed custody adopts each position, a repeated root included"
+    );
+    let mut bind = op(OpCode::Call, vec![borrowed, builder], vec![]);
+    bind.attrs
+        .insert("_original_kind".into(), AttrValue::Str("call_bind".into()));
+    assert_eq!(
+        op_transferred_operands(&bind),
+        [Borrowed, Consumed],
+        "call_bind consumes the CallArgs builder it frees"
+    );
+    bind.set_argument_custody(&[ParameterCustody::Transferred, ParameterCustody::Transferred]);
+    assert_eq!(
+        op_transferred_operands(&bind),
+        [Adopted, Consumed],
+        "a position both declare is consumed"
+    );
+    let release = op(OpCode::DecRef, vec![value], vec![]);
+    assert_eq!(
+        op_transferred_operands(&release),
+        [Borrowed],
+        "an explicit release ends the holder's own reference; it takes nothing"
+    );
+
+    let aliases = build_alias_union_find(&f);
+    let root_facts = OwnershipRootFacts::compute(&f, &aliases);
+    let eligibility = DropEligibility::new(&aliases, &root_facts, &HashSet::new());
+    let facts = PythonLifetimeFacts::compute(&f, &aliases);
+    let lat = OwnershipLattice::compute(&f, &aliases);
+    assert!(
+        root_facts.is_borrowed_parameter_root(borrowed) && !eligibility.is_droppable(borrowed),
+        "a borrowed parameter stays the caller's"
+    );
+    assert!(
+        !root_facts.is_borrowed_parameter_root(transferred)
+            && eligibility.is_droppable(transferred),
+        "a transferred parameter is function-owned"
+    );
+    assert!(
+        !eligibility.return_requires_owned_publication(transferred),
+        "returning a transferred parameter moves its reference"
+    );
+    assert_eq!(
+        facts.boundary_release_roots(&eligibility, &lat),
+        [transferred].into_iter().collect(),
+        "a transferred parameter is a Python binding released at its boundary"
+    );
+    assert!(
+        !facts.is_statement_release_boundary_root(transferred, &eligibility),
+        "a parameter binding is never a statement temporary"
+    );
+}
+
+/// A replaced result keeps the owner its operation's result contract gave it,
+/// by the result eligibility DropInsertion reads, and gains none. Four results
+/// are rewritten into copies of one string, as value numbering rewrites a result
+/// into a copy of its equal:
+/// * an owned `Call` result that is read keeps its reference as an owned alias;
+/// * a borrowed getter's result (`dict_get`), its own alias root yet no owner,
+///   stays a transparent copy;
+/// * a no-op `TypeGuard`'s result forwards the string's reference and stays a
+///   transparent copy;
+/// * an owned result that nothing reads names nothing and stays transparent.
+///
+/// DropInsertion then releases the string once and the kept owner once.
+#[test]
+fn replaced_results_keep_exactly_the_owners_they_had() {
+    let mut f = func();
+    let text = f.fresh_value();
+    let (owned, borrowed, guarded, unread) = (
+        f.fresh_value(),
+        f.fresh_value(),
+        f.fresh_value(),
+        f.fresh_value(),
+    );
+    let mut string = op(OpCode::ConstStr, vec![], vec![text]);
+    string
+        .attrs
+        .insert("s_value".into(), AttrValue::Str("x".into()));
+    let mut guard = op(OpCode::TypeGuard, vec![text], vec![guarded]);
+    guard
+        .attrs
+        .insert("expected_type".into(), AttrValue::Str("str".into()));
+    let replaced = vec![
+        op(OpCode::Call, vec![text], vec![owned]),
+        original_kind_copy("dict_get", vec![text, text], vec![borrowed]),
+        guard,
+        op(OpCode::Call, vec![text], vec![unread]),
+    ];
+    let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+    entry.ops.push(string);
+    entry.ops.extend(replaced.iter().cloned());
+    entry.ops.push(op(
+        OpCode::WarnStderr,
+        vec![owned, borrowed, guarded],
+        vec![],
+    ));
+    entry.terminator = Terminator::Return { values: vec![] };
+
+    // The per-operation query is the root facts' result eligibility.
+    let aliases = build_alias_union_find(&f);
+    let root_facts = OwnershipRootFacts::compute(&f, &aliases);
+    for operation in &replaced {
+        let result = operation.results[0];
+        assert_eq!(
+            OwnershipRootFacts::result_holds_own_reference(operation, result, &aliases),
+            aliases.root(result) == result && root_facts.is_drop_owned_root_candidate(result),
+            "{operation:?}"
+        );
+    }
+
+    let mut owners = Replacements::new(&f);
+    let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+    for index in 1..=replaced.len() {
+        owners.record(&entry.ops[index]);
+        let result = entry.ops[index].results[0];
+        entry.ops[index] = op(OpCode::Copy, vec![text], vec![result]);
+    }
+    owners.finish(&mut f, None);
+    let kinds: Vec<Option<&str>> = f.blocks[&f.entry_block].ops[1..=replaced.len()]
+        .iter()
+        .map(original_kind)
+        .collect();
+    assert_eq!(kinds, [Some("binding_alias"), None, None, None]);
+
+    crate::tir::passes::drop_insertion::run(
+        &mut f,
+        &mut crate::tir::analysis::AnalysisManager::new(),
+    );
+    let mut released: Vec<ValueId> = f.blocks[&f.entry_block]
+        .ops
+        .iter()
+        .filter(|operation| operation.opcode == OpCode::DecRef)
+        .flat_map(|operation| operation.operands.iter().copied())
+        .collect();
+    released.sort_unstable_by_key(|value| value.0);
+    assert_eq!(
+        released,
+        [text, owned],
+        "the string and the kept owner, once each"
+    );
+    assert!(
+        !f.blocks[&f.entry_block]
+            .ops
+            .iter()
+            .any(|operation| operation.opcode == OpCode::IncRef),
+        "a transparent copy needs no retain"
+    );
+}
+
+/// Frame binding views hold no reference, and neither does a block argument
+/// that every binding arc passes a view: a loop header carrying store and load
+/// views around a loop, and a handler argument that a raising observation binds
+/// to a view. A join that also takes an owned temporary or a raw constant owns
+/// what it holds. The frame home store consumes its operand, its view result
+/// held nothing to keep, and a returned view needs a publication retain.
+#[test]
+fn binding_views_join_through_block_arguments() {
+    use crate::tir::blocks::TirBlock;
+    use crate::tir::values::TirValue;
+    assert!(
+        crate::tir::op_kinds_generated::copy_kind_is_binding_view_table("frame_home_store")
+            && crate::tir::op_kinds_generated::copy_kind_is_binding_view_table("frame_home_load"),
+        "needs the frame overlay's generated classifier_binding_view \
+         (frame-slot-custody COORDINATION §3)"
+    );
+    let mut f = func();
+    let (value, first, raw, fresh) = (
+        f.fresh_value(),
+        f.fresh_value(),
+        f.fresh_value(),
+        f.fresh_value(),
+    );
+    let (entry_cond, loop_cond, rebound) = (f.fresh_value(), f.fresh_value(), f.fresh_value());
+    let (looped, mixed, with_raw, handled) = (
+        f.fresh_value(),
+        f.fresh_value(),
+        f.fresh_value(),
+        f.fresh_value(),
+    );
+    let (header, body, join, handler) = (
+        f.fresh_block(),
+        f.fresh_block(),
+        f.fresh_block(),
+        f.fresh_block(),
+    );
+    f.label_id_map.insert(handler.0, 61);
+    let mut store = original_kind_copy("frame_home_store", vec![value], vec![first]);
+    store.attrs.insert("value".into(), AttrValue::Int(0));
+    let mut load = original_kind_copy("frame_home_load", vec![], vec![rebound]);
+    load.attrs.insert("value".into(), AttrValue::Int(0));
+    let mut check = op(OpCode::CheckException, vec![first], vec![]);
+    check.attrs.insert("value".into(), AttrValue::Int(61));
+    let mut constant = op(OpCode::ConstInt, vec![], vec![raw]);
+    constant.attrs.insert("value".into(), AttrValue::Int(3));
+    let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+    entry.ops = vec![
+        op(OpCode::Call, vec![], vec![value]),
+        store.clone(),
+        constant,
+        op(OpCode::Call, vec![], vec![fresh]),
+        op(OpCode::ConstBool, vec![], vec![entry_cond]),
+        check,
+    ];
+    entry.terminator = Terminator::CondBranch {
+        cond: entry_cond,
+        then_block: header,
+        then_args: vec![first],
+        else_block: join,
+        else_args: vec![fresh, raw],
+    };
+    let argument = |id| TirValue {
+        id,
+        ty: TirType::DynBox,
+    };
+    f.blocks.insert(
+        header,
+        TirBlock {
+            id: header,
+            args: vec![argument(looped)],
+            ops: vec![op(OpCode::ConstBool, vec![], vec![loop_cond])],
+            terminator: Terminator::CondBranch {
+                cond: loop_cond,
+                then_block: body,
+                then_args: vec![],
+                else_block: join,
+                else_args: vec![looped, looped],
+            },
+        },
+    );
+    f.blocks.insert(
+        body,
+        TirBlock {
+            id: body,
+            args: vec![],
+            ops: vec![load],
+            terminator: Terminator::Branch {
+                target: header,
+                args: vec![rebound],
+            },
+        },
+    );
+    f.blocks.insert(
+        join,
+        TirBlock {
+            id: join,
+            args: vec![argument(mixed), argument(with_raw)],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+    f.blocks.insert(
+        handler,
+        TirBlock {
+            id: handler,
+            args: vec![argument(handled)],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+
+    let aliases = build_alias_union_find(&f);
+    let root_facts = OwnershipRootFacts::compute(&f, &aliases);
+    for view in [first, rebound, looped, handled] {
+        assert!(
+            root_facts.is_binding_view_root(view) && !root_facts.is_drop_owned_root_candidate(view),
+            "{view:?} is a view"
+        );
+    }
+    for owner in [value, fresh, mixed, with_raw] {
+        assert!(
+            !root_facts.is_binding_view_root(owner)
+                && root_facts.is_drop_owned_root_candidate(owner),
+            "{owner:?} owns what it holds"
+        );
+    }
+    let eligibility = DropEligibility::new(&aliases, &root_facts, &HashSet::new());
+    assert!(eligibility.return_requires_owned_publication(looped));
+    assert!(!eligibility.return_requires_owned_publication(mixed));
+    assert!(!OwnershipRootFacts::result_holds_own_reference(
+        &store, first, &aliases
+    ));
+    assert_eq!(
+        op_transferred_operands(&store),
+        [OperandTransfer::BindingStore]
+    );
+}
+
+#[test]
+fn explicit_release_projection_selects_operands_and_canonicalizes_roots_once() {
+    let mut function = TirFunction::new(
+        "release_projection".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let first = function.blocks[&function.entry_block].args[0].id;
+    let second = function.blocks[&function.entry_block].args[1].id;
+    let alias = function.fresh_value();
+    function
+        .blocks
+        .get_mut(&function.entry_block)
+        .unwrap()
+        .ops
+        .push(original_kind_copy("copy", vec![first], vec![alias]));
+    for (opcode, operands, expected) in [
+        (OpCode::DecRef, vec![alias, second], vec![alias, second]),
+        (OpCode::DeleteVar, vec![first, second], vec![second]),
+        (OpCode::DelBoundary, vec![alias], vec![alias]),
+        (OpCode::IncRef, vec![first], vec![]),
+        (OpCode::Free, vec![first], vec![]),
+        (OpCode::DeleteVar, vec![first], vec![]),
+    ] {
+        let release = op(opcode, operands, vec![]);
+        assert_eq!(
+            explicit_release_values(&release).collect::<Vec<_>>(),
+            expected,
+            "{opcode:?}"
+        );
+        function
+            .blocks
+            .get_mut(&function.entry_block)
+            .unwrap()
+            .ops
+            .push(release);
+    }
+    let aliases = build_alias_union_find(&function);
+    assert_eq!(aliases.root(alias), aliases.root(first));
+    let facts = PythonLifetimeFacts::compute(&function, &aliases);
+    assert_eq!(
+        facts.explicit_release_roots(),
+        &HashSet::from([aliases.root(first), aliases.root(second),])
+    );
+    for &root in facts.explicit_release_roots() {
+        assert!(facts.has_explicit_release_boundary(root));
+    }
+}
+
+#[test]
+fn physical_release_does_not_invent_or_erase_python_binding_provenance() {
+    let mut function = TirFunction::new(
+        "binding_provenance".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    function.set_parameter_custody(&[molt_ir::ParameterCustody::Transferred]);
+    let parameter = function.blocks[&function.entry_block].args[0].id;
+    let temporary = function.fresh_value();
+    let deleted = function.fresh_value();
+    let replaced = function.fresh_value();
+    let named = function.fresh_value();
+    for value in [temporary, deleted, replaced, named] {
+        function.value_types.insert(value, TirType::DynBox);
+        let mut producer = op(OpCode::Call, vec![], vec![value]);
+        if value == named {
+            producer
+                .attrs
+                .insert("bound_local".into(), AttrValue::Bool(true));
+        }
+        function
+            .blocks
+            .get_mut(&function.entry_block)
+            .unwrap()
+            .ops
+            .push(producer);
+    }
+    let entry = function.blocks.get_mut(&function.entry_block).unwrap();
+    entry.ops.extend([
+        op(OpCode::DecRef, vec![temporary], vec![]),
+        op(OpCode::DelBoundary, vec![deleted], vec![]),
+        op(OpCode::DeleteVar, vec![temporary, replaced], vec![]),
+        op(OpCode::DecRef, vec![named], vec![]),
+        op(OpCode::DecRef, vec![parameter], vec![]),
+    ]);
+    let aliases = build_alias_union_find(&function);
+    let ownership = OwnershipRootFacts::compute(&function, &aliases);
+    let raw = HashSet::new();
+    let eligibility = DropEligibility::new(&aliases, &ownership, &raw);
+    let lattice = OwnershipLattice::compute(&function, &aliases);
+    let mut facts = PythonLifetimeFacts::compute(&function, &aliases);
+    assert_eq!(
+        facts.binding_custody_roots(&eligibility, &lattice),
+        HashSet::from([parameter, deleted, replaced, named]),
+    );
+    assert!(facts.has_explicit_release_boundary(temporary));
+    // Physical normalization must not erase source deletion provenance; a
+    // deleted release must also stop claiming a physical release obligation.
+    function
+        .blocks
+        .get_mut(&function.entry_block)
+        .unwrap()
+        .ops
+        .retain(|op| op.opcode != OpCode::DelBoundary);
+    facts.refresh_explicit_release_roots(&function, &aliases);
+    assert!(!facts.has_explicit_release_boundary(deleted));
+    assert!(
+        facts
+            .binding_custody_roots(&eligibility, &lattice)
+            .contains(&deleted)
+    );
 }

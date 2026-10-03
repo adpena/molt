@@ -263,6 +263,8 @@ ACTIVE_GUARD_MARKER_ENV = "MOLT_MEMORY_GUARD_MARKER"
 _INTERNAL_ENV_KEYS = (
     INTERNAL_COMMAND_ENV,
     INTERNAL_WORKER_ENV,
+    _cli_contract.INTERNAL_LAUNCH_ID_ENV,
+    _cli_contract.INTERNAL_STARTUP_PATH_ENV,
 )
 HOST_CONTROL_PLANE_TOKENS = _process_model.HOST_CONTROL_PLANE_TOKENS
 HOST_CONTROL_PLANE_EXECUTABLE_NAMES = _process_model.HOST_CONTROL_PLANE_EXECUTABLE_NAMES
@@ -750,6 +752,7 @@ def run_guarded(
     running_summary_environ: Mapping[str, str] | None = None,
     running_summary_max_global_rss_kb: int | None = None,
     on_spawn: Callable[[int], None] | None = None,
+    cancellation_requested: Callable[[], bool] | None = None,
 ) -> GuardResult:
     if not command:
         raise ValueError("command is required")
@@ -799,6 +802,7 @@ def run_guarded(
     observer_cpu_start = time.process_time()
     baseline_pgids: frozenset[int] = frozenset()
     guard_signal: int | None = None
+    cancelled = False
 
     def _handle_guard_signal(signum: int, _frame: object) -> None:
         nonlocal guard_signal
@@ -1593,7 +1597,8 @@ def run_guarded(
             elif proc.poll() is not None:
                 break
             now = time.perf_counter()
-            if guard_signal is not None:
+            cancelled = cancellation_requested is not None and cancellation_requested()
+            if guard_signal is not None or cancelled:
                 signal_snapshot = sample_tracked_tree()
                 assert signal_snapshot is not None
                 samples, watched = signal_snapshot
@@ -1602,7 +1607,10 @@ def run_guarded(
                 _update_active_guard_marker(
                     guard_marker,
                     guard_token,
-                    status="guard_signal_terminating",
+                    status="cancellation_terminating"
+                    if cancelled
+                    else "guard_signal_terminating",
+                    cancelled=cancelled,
                     child_process=guarded_child_process_payload(child_process),
                     guard_signal=guard_signal,
                     elapsed_s=now - start,
@@ -1613,7 +1621,7 @@ def run_guarded(
                 )
                 interrupted_cargo_observations.update(latest_cargo_observations)
                 terminate_owned_tree(
-                    reason="guard_signal",
+                    reason="owner_cancellation" if cancelled else "guard_signal",
                     samples=samples,
                     watched=watched,
                     grace=0.0,
@@ -1982,6 +1990,13 @@ def run_guarded(
                 f"{signal_label}; terminated tracked process tree before exiting\n",
                 text=text,
             )
+        if cancelled:
+            returncode = GUARD_RETURN_CODE
+            stderr = _append_guard_message(
+                stderr,
+                "memory_guard: owner requested cancellation; see terminal child custody\n",
+                text=text,
+            )
         if guard_interrupted:
             returncode = GUARD_RETURN_CODE
             stderr = _append_guard_message(
@@ -2093,6 +2108,7 @@ def run_guarded(
             and violation is None
             and not timed_out
             and guard_signal is None
+            and not cancelled
             and not termination_wait_expired
             and not orphaned_process_groups
             and not termination_reports
@@ -2167,6 +2183,8 @@ def run_guarded(
             stdout=stdout,
             stderr=stderr,
             timed_out=timed_out,
+            cancelled=cancelled,
+            descendants_closed=descendants_closed,
             elapsed_s=elapsed_s,
             child_elapsed_s=child_elapsed_s,
             cleanup_elapsed_s=(
@@ -2629,12 +2647,20 @@ def _child_env_without_internal_keys(environ: Mapping[str, str]) -> dict[str, st
     )
 
 
-def _worker_env(environ: Mapping[str, str], command: Sequence[str]) -> dict[str, str]:
+def _worker_env(
+    environ: Mapping[str, str],
+    command: Sequence[str],
+    *,
+    launch_id: str | None = None,
+    startup_json: str | None = None,
+) -> dict[str, str]:
     return _cli_contract.worker_env(
         environ,
         command,
         worker_env_name=INTERNAL_WORKER_ENV,
         command_env_name=INTERNAL_COMMAND_ENV,
+        launch_id=launch_id,
+        startup_json=startup_json,
     )
 
 
@@ -2788,6 +2814,9 @@ def main(
         running_summary_json=args.summary_json,
         running_summary_environ=current_env,
         running_summary_max_global_rss_kb=max_global_rss_kb,
+        cancellation_requested=(
+            None if args.cancel_file is None else Path(args.cancel_file).exists
+        ),
     )
     incident = _incident_payload(result)
     repro_payload: dict[str, object] | None = None

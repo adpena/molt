@@ -27,6 +27,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }
     }
@@ -278,6 +279,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         };
 
@@ -419,6 +421,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         };
         let target = TargetInfo::native_release_fast();
@@ -453,6 +456,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         };
         let target = TargetInfo::native_release_fast();

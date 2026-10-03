@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
-from typing import Iterator, Mapping, Sequence, cast
+from collections.abc import Iterator, Mapping, Sequence
+from typing import cast, overload
 
 from molt.cli.atomic_io import _atomic_write_text
 from molt.cli.runtime_artifact_selection import (
@@ -52,19 +53,64 @@ _RUNTIME_BUILD_MEMBER_FIELDS = {
 }
 
 
-def _freeze_json(value: object) -> object:
-    if isinstance(value, Mapping):
-        typed = string_keyed_mapping(value)
-        if typed is None:
+@dataclass(frozen=True, slots=True, eq=False)
+class _FrozenJsonObject(Mapping[str, object]):
+    """Owned immutable JSON object; hashes and admissions share its lifetime."""
+
+    _values: Mapping[str, object]
+    _cached_digest: str | None = field(default=None, init=False, repr=False)
+    _validated_schemas: frozenset[tuple[str, ...]] = field(
+        default=frozenset(), init=False, repr=False
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(self._values, Mapping):
             raise TypeError("runtime identity JSON object keys must be strings")
-        return MappingProxyType(
-            {key: _freeze_json(item) for key, item in typed.items()}
+        owned: dict[str, object] = {}
+        for key, item in self._values.items():
+            # A str subclass can carry mutable state and override hash/equality.
+            # Check each key in the same traversal that owns its frozen value.
+            if type(key) is not str:
+                raise TypeError("runtime identity JSON object keys must be strings")
+            owned[key] = _freeze_json(item)
+        object.__setattr__(
+            self,
+            "_values",
+            MappingProxyType(owned),
         )
+
+    def __getitem__(self, key: str) -> object:
+        return self._values[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+
+@overload
+def _freeze_json(value: Mapping[str, object]) -> Mapping[str, object]: ...
+
+
+@overload
+def _freeze_json(value: object) -> object: ...
+
+
+def _freeze_json(value: object) -> object:
+    # Only our exact owning type proves recursive immutability. A caller's
+    # mapping proxy can still wrap a mutable dictionary and must be copied.
+    if type(value) is _FrozenJsonObject:
+        return value
+    if isinstance(value, Mapping):
+        return _FrozenJsonObject(value)
     if isinstance(value, (list, tuple)):
         return tuple(_freeze_json(item) for item in value)
-    if isinstance(value, float) and not math.isfinite(value):
+    if type(value) is float and not math.isfinite(value):
         raise ValueError("runtime identity contains non-finite JSON number")
-    if value is None or isinstance(value, (str, int, float, bool)):
+    # Only exact JSON scalars are recursively immutable facts. Subclasses may
+    # carry mutable behavior; never retain them or call their coercion methods.
+    if value is None or type(value) in (str, int, float, bool):
         return value
     raise TypeError(f"runtime identity contains non-JSON value: {type(value).__name__}")
 
@@ -80,12 +126,46 @@ def _thaw_json(value: object) -> object:
     return value
 
 
+def _frozen_json_projection(value: object) -> dict[str, object]:
+    # The canonical encoder owns traversal/number formatting. Project just one
+    # immutable object, rather than thawing its entire descendants in Python.
+    if type(value) is not _FrozenJsonObject:
+        raise TypeError(
+            f"runtime identity contains non-JSON value: {type(value).__name__}"
+        )
+    return dict(value._values)
+
+
 def _canonical_json(value: object) -> str:
-    return canonical_json_bytes(_thaw_json(value)).decode("utf-8")
+    return canonical_json_bytes(
+        _freeze_json(value), default=_frozen_json_projection
+    ).decode("utf-8")
 
 
 def _digest(value: object) -> str:
-    return canonical_json_sha256(_thaw_json(value))
+    frozen = _freeze_json(value)
+    if type(frozen) is _FrozenJsonObject and frozen._cached_digest is not None:
+        return frozen._cached_digest
+    digest = canonical_json_sha256(frozen, default=_frozen_json_projection)
+    if type(frozen) is _FrozenJsonObject:
+        # Only a scalar is retained, never canonical bytes or a second graph.
+        object.__setattr__(frozen, "_cached_digest", digest)
+    return digest
+
+
+def _has_schema_admission(value: object, schema: tuple[str, ...]) -> bool:
+    # Foreign mappings and subclasses cannot attest recursive ownership, even
+    # when they expose a copied success marker. Wire content never carries it.
+    return type(value) is _FrozenJsonObject and schema in value._validated_schemas
+
+
+def _remember_schema_admission(value: object, schema: tuple[str, ...]) -> None:
+    if type(value) is _FrozenJsonObject:
+        # Store only successful schema facts on this captured graph. A target
+        # dependent fact includes its target; no live inputs or failures persist.
+        object.__setattr__(
+            value, "_validated_schemas", value._validated_schemas | {schema}
+        )
 
 
 def _portable_filename(value: str) -> bool:
@@ -124,9 +204,9 @@ def _validated_common_config(payload: object) -> Mapping[str, object]:
         or set(value) - required - optional
     ):
         raise ValueError("runtime common configuration shape is invalid")
-    for field in ("cargo_profile", "target_triple", "producer_artifact_selection"):
-        if not isinstance(value[field], str) or not value[field]:
-            raise ValueError(f"runtime common configuration {field} is invalid")
+    for field_name in ("cargo_profile", "target_triple", "producer_artifact_selection"):
+        if not isinstance(value[field_name], str) or not value[field_name]:
+            raise ValueError(f"runtime common configuration {field_name} is invalid")
     features = _string_sequence(value["runtime_features"], label="features")
     if features != tuple(sorted(set(features))):
         raise ValueError("runtime features must be sorted and unique")
@@ -368,6 +448,9 @@ def _validated_executable_content_identity(
 
 
 def _validated_build_python_identity(payload: object) -> Mapping[str, object]:
+    admission = (_BUILD_PYTHON_SCHEMA,)
+    if _has_schema_admission(payload, admission):
+        return cast(Mapping[str, object], payload)
     value = string_keyed_mapping(payload)
     if value is None or set(value) != {
         "identity_sha256",
@@ -411,6 +494,7 @@ def _validated_build_python_identity(payload: object) -> Mapping[str, object]:
     material = {key: value[key] for key in value if key != "identity_sha256"}
     if value.get("identity_sha256") != _digest(material):
         raise ValueError("runtime build Python identity digest is invalid")
+    _remember_schema_admission(payload, admission)
     return value
 
 
@@ -419,6 +503,11 @@ def _validated_runtime_toolchain_content(
     *,
     target_triple: str,
 ) -> Mapping[str, object]:
+    if type(target_triple) is not str or not target_triple:
+        raise ValueError("runtime toolchain target is invalid")
+    admission = (_TOOLCHAIN_MANIFEST_SCHEMA, target_triple)
+    if _has_schema_admission(payload, admission):
+        return cast(Mapping[str, object], payload)
     value = string_keyed_mapping(payload)
     if value is None or set(value) != {
         "archives",
@@ -519,12 +608,16 @@ def _validated_runtime_toolchain_content(
         archive_names.add(name)
     if target_triple == "native" and archives:
         raise ValueError("native runtime toolchain has target archives")
+    _remember_schema_admission(payload, admission)
     return value
 
 
 def _validated_toolchain_manifest_payload(
     payload: object,
 ) -> Mapping[str, object]:
+    admission = (_TOOLCHAIN_MANIFEST_SCHEMA,)
+    if _has_schema_admission(payload, admission):
+        return cast(Mapping[str, object], payload)
     value = string_keyed_mapping(payload)
     if value is None or set(value) != {"target_triple", "toolchain"}:
         raise ValueError("runtime toolchain manifest content shape is invalid")
@@ -533,6 +626,7 @@ def _validated_toolchain_manifest_payload(
     if not isinstance(target, str) or not target or toolchain is None or not toolchain:
         raise ValueError("runtime toolchain manifest content is invalid")
     _validated_runtime_toolchain_content(toolchain, target_triple=target)
+    _remember_schema_admission(payload, admission)
     return value
 
 
@@ -627,8 +721,8 @@ def _validated_runtime_build_payload(
             or type(member.get("preserve_debug")) is not bool
         ):
             raise ValueError("runtime build identity member shape is invalid")
-        for field in ("resolved_rustflags", "link_args"):
-            items = member.get(field)
+        for field_name in ("resolved_rustflags", "link_args"):
+            items = member.get(field_name)
             if not isinstance(items, (list, tuple)) or not all(
                 isinstance(item, str) and item for item in items
             ):
@@ -636,7 +730,10 @@ def _validated_runtime_build_payload(
     member = string_keyed_mapping(members.get(member_kind))
     if member is None:
         raise ValueError("runtime build identity selected member is absent")
-    if not all(_valid_sha256(item) for item in (digest, compile_digest, family_digest)):
+    if not all(
+        type(item) is str and _valid_sha256(item)
+        for item in (digest, compile_digest, family_digest)
+    ):
         raise ValueError("runtime build identity digest shape is invalid")
     if (
         digest != _digest(value)
@@ -656,7 +753,11 @@ class RuntimeToolchainContentManifest(Mapping[str, object]):
     def __post_init__(self) -> None:
         frozen = _freeze_json(self.payload)
         _validated_toolchain_manifest_payload(frozen)
-        if not _valid_sha256(self.digest) or self.digest != _digest(frozen):
+        if (
+            type(self.digest) is not str
+            or not _valid_sha256(self.digest)
+            or self.digest != _digest(frozen)
+        ):
             raise ValueError("runtime toolchain manifest digest is invalid")
         object.__setattr__(self, "payload", frozen)
 
@@ -667,7 +768,14 @@ class RuntimeToolchainContentManifest(Mapping[str, object]):
         return 3
 
     def __getitem__(self, key: str) -> object:
-        return self.to_dict()[key]
+        # Scalar lookup must not materialize the full source/toolchain closure.
+        if key == "schema":
+            return _TOOLCHAIN_MANIFEST_SCHEMA
+        if key == "digest":
+            return self.digest
+        if key == "payload":
+            return _thaw_json(self.payload)
+        raise KeyError(key)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -677,20 +785,40 @@ class RuntimeToolchainContentManifest(Mapping[str, object]):
         }
 
     @classmethod
+    def from_payload(
+        cls, payload: Mapping[str, object]
+    ) -> RuntimeToolchainContentManifest:
+        """Own one graph for canonical hashing and complete schema admission."""
+        frozen = _freeze_json(payload)
+        return cls(digest=_digest(frozen), payload=frozen)
+
+    @classmethod
     def from_dict(cls, value: object) -> RuntimeToolchainContentManifest:
+        # Exact instances are recursively frozen and validated at construction.
+        # Foreign mappings and subclasses still cross the full admission boundary.
+        if (
+            cls is RuntimeToolchainContentManifest
+            and type(value) is RuntimeToolchainContentManifest
+        ):
+            return cast(RuntimeToolchainContentManifest, value)
         outer = string_keyed_mapping(value)
         if (
             outer is None
+            or any(type(key) is not str for key in outer)
             or set(outer) != {"schema", "digest", "payload"}
+            or type(outer.get("schema")) is not str
             or outer.get("schema") != _TOOLCHAIN_MANIFEST_SCHEMA
         ):
             raise ValueError("runtime toolchain manifest schema is invalid")
         digest = outer.get("digest")
         payload = string_keyed_mapping(outer.get("payload"))
-        if not _valid_sha256(digest) or payload is None or digest != _digest(payload):
+        if type(digest) is not str or not _valid_sha256(digest) or payload is None:
+            raise ValueError("runtime toolchain manifest digest is invalid")
+        frozen = _freeze_json(payload)
+        if digest != _digest(frozen):
             raise ValueError("runtime toolchain manifest digest is invalid")
         assert isinstance(digest, str)
-        return cls(digest=digest, payload=payload)
+        return cls(digest=digest, payload=frozen)
 
     @classmethod
     def read(cls, path: Path) -> RuntimeToolchainContentManifest:
@@ -709,6 +837,10 @@ class RuntimeToolchainContentManifest(Mapping[str, object]):
     def write(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_text(path, _canonical_json(self.to_dict()) + "\n")
+
+
+class RuntimeBuildIdentityMismatch(ValueError):
+    """A valid recorded identity differs from the caller's admitted identity."""
 
 
 @dataclass(frozen=True)
@@ -743,7 +875,18 @@ class RuntimeBuildIdentity(Mapping[str, object]):
         return 5
 
     def __getitem__(self, key: str) -> object:
-        return self.to_dict()[key]
+        # Scalar lookup must not materialize the full source/toolchain closure.
+        if key == "schema":
+            return _SCHEMA
+        if key == "digest":
+            return self.digest
+        if key == "compile_digest":
+            return self.compile_digest
+        if key == "family_digest":
+            return self.family_digest
+        if key == "payload":
+            return _thaw_json(self.payload)
+        raise KeyError(key)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -764,14 +907,39 @@ class RuntimeBuildIdentity(Mapping[str, object]):
             "target_triple": configuration["target_triple"],
             "toolchain": compilation["toolchain"],
         }
-        return RuntimeToolchainContentManifest(_digest(payload), payload)
+        return RuntimeToolchainContentManifest.from_payload(payload)
 
     @classmethod
-    def from_dict(cls, value: object) -> RuntimeBuildIdentity:
+    def from_dict(
+        cls, value: object, *, expected: RuntimeBuildIdentity | None = None
+    ) -> RuntimeBuildIdentity:
+        # A caller-trusted identity already proves the complete schema. Matching
+        # a wire claim requires the same canonical content, not a second semantic
+        # admission of its Python/toolchain/family descendants. Return that owner;
+        # the untrusted mapping never becomes an authority or a retained cache.
+        if expected is not None:
+            expected = RuntimeBuildIdentity.from_dict(expected)
+        # Exact instances are recursively frozen and validated at construction.
+        # Foreign mappings and subclasses still cross the full admission boundary.
+        if cls is RuntimeBuildIdentity and type(value) is RuntimeBuildIdentity:
+            admitted = cast(RuntimeBuildIdentity, value)
+            if expected is not None:
+                if (
+                    admitted.digest != expected.digest
+                    or admitted.compile_digest != expected.compile_digest
+                    or admitted.family_digest != expected.family_digest
+                ):
+                    raise RuntimeBuildIdentityMismatch(
+                        "runtime build identity mismatch"
+                    )
+                return expected
+            return admitted
         outer = string_keyed_mapping(value)
         if (
             outer is None
+            or any(type(key) is not str for key in outer)
             or set(outer) != _RUNTIME_BUILD_OUTER_FIELDS
+            or type(outer.get("schema")) is not str
             or outer.get("schema") != _SCHEMA
         ):
             raise ValueError("runtime build identity schema is invalid")
@@ -781,11 +949,24 @@ class RuntimeBuildIdentity(Mapping[str, object]):
         family_digest = outer.get("family_digest")
         if (
             payload is None
-            or not isinstance(digest, str)
-            or not isinstance(compile_digest, str)
-            or not isinstance(family_digest, str)
+            or type(digest) is not str
+            or type(compile_digest) is not str
+            or type(family_digest) is not str
         ):
             raise ValueError("runtime build identity is incomplete")
+        if expected is not None:
+            if (
+                digest != expected.digest
+                or compile_digest != expected.compile_digest
+                or family_digest != expected.family_digest
+                or _digest(payload) != expected.digest
+            ):
+                # Preserve precise malformed-input diagnostics on rejection. A
+                # valid but different claim has a distinct typed failure; only
+                # the failure path needs another complete semantic admission.
+                RuntimeBuildIdentity.from_dict(value)
+                raise RuntimeBuildIdentityMismatch("runtime build identity mismatch")
+            return expected
         return cls(
             digest=digest,
             compile_digest=compile_digest,
@@ -801,7 +982,7 @@ def runtime_build_fingerprint(
 ) -> dict[str, object]:
     """Project an exact build identity into the generic artifact-sidecar protocol."""
 
-    build_identity = RuntimeBuildIdentity.from_dict(build_identity.to_dict())
+    build_identity = RuntimeBuildIdentity.from_dict(build_identity)
     if scope == "member":
         content_digest = build_identity.digest
         return {
@@ -858,9 +1039,7 @@ def require_native_runtime_staticlib_identity(
     selection, and member-output semantics cannot be reimplemented by consumers.
     """
 
-    build_identity = RuntimeBuildIdentity.from_dict(
-        value.to_dict() if isinstance(value, RuntimeBuildIdentity) else value
-    )
+    build_identity = RuntimeBuildIdentity.from_dict(value)
     family = cast(Mapping[str, object], build_identity.payload["family"])
     compile_payload = cast(Mapping[str, object], family["compile"])
     common_config = string_keyed_mapping(compile_payload.get("common_config"))

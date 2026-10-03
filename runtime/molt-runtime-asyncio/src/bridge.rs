@@ -22,7 +22,6 @@ unsafe extern "C" {
     fn __molt_asyncio_runtime_state_clear_and_drop(key_ptr: *const u8, key_len: usize) -> i32;
 
     fn __molt_asyncio_to_i64(bits: u64, out: *mut i64) -> i32;
-    fn __molt_asyncio_type_name(bits: u64, out_ptr: *mut *const u8, out_len: *mut usize) -> i32;
 }
 
 pub fn runtime_state_get_or_init(
@@ -85,20 +84,4 @@ pub fn to_i64(obj: MoltObject) -> Option<i64> {
     let mut out = 0_i64;
     let ok = unsafe { __molt_asyncio_to_i64(obj.bits(), &mut out) };
     if ok != 0 { Some(out) } else { None }
-}
-
-pub fn type_name(_py: &PyToken, obj: MoltObject) -> Option<String> {
-    let mut out_ptr: *const u8 = std::ptr::null();
-    let mut out_len: usize = 0;
-    let ok = unsafe { __molt_asyncio_type_name(obj.bits(), &mut out_ptr, &mut out_len) };
-    if ok != 0 && out_len > 0 {
-        let boxed = unsafe { bridge_owned_u8_buffer(out_ptr, out_len) };
-        Some(String::from_utf8_lossy(&boxed).into_owned())
-    } else {
-        rt_raise_str(
-            "RuntimeError",
-            "asyncio runtime type-name bridge failed closed",
-        );
-        None
-    }
 }

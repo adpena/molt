@@ -4,9 +4,11 @@ use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::dominators::{CfgEdgePolicy, reachable_blocks_with};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{OpCode, TirOp, dead_placeholder_const_for_type};
+use crate::tir::passes::ownership_lattice_min::owned_alias;
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
 
+use super::activation::{Activations, Binding};
 use super::call_sites::{CallSite, call_site_has_arg_incref};
 use super::clone_body::clone_function_body_with_fresh_ids;
 use super::eligibility::is_closure;
@@ -22,34 +24,42 @@ use crate::tir::clone_support::exception_label_of;
 /// guaranteed - self-calls are filtered) and hands it here.
 ///
 /// Returns `true` if the site was inlined, `false` if it was refused (refcount
-/// guard, multi-result/arity/shape mismatch - all of which leave the call
-/// intact, conservative-correct).
+/// guard, multi-result/arity/shape mismatch, or no activation that keeps the
+/// call's reference contract - all of which leave the call intact,
+/// conservative-correct).
 ///
 /// Mechanics:
 /// 1. Read the `Call` op's argument operands and (optional) result value.
 /// 2. Refcount guard - refuse a site with a caller-side arg `IncRef` in the <=2
 ///    preceding ops.
-/// 3. Clone the callee body (params bound to the call args) into `caller`.
-/// 4. Split the caller block at the `Call` into `B_pre` (ops `0..op_index`,
-///    keeping the original block id) and a fresh continuation `B_cont` (ops
-///    `op_index+1..`, taking the original terminator). `B_cont`'s single block
-///    argument is the original call-result value id, so every downstream use of
-///    the call result is satisfied without rewriting.
-/// 5. `B_pre` branches unconditionally into the cloned entry.
-/// 6. Each cloned `Return { values }` becomes `Branch { target: B_cont, args:
+/// 3. Prepare the callee's activation for this site ([`Activations`]): which
+///    parameters bind an owned `binding_alias` of their argument, each exit's
+///    frame clear, and owned captures of the frame bindings a return names.
+/// 4. Clone the prepared body into `caller`, each parameter bound to its
+///    argument or to the argument's binding alias.
+/// 5. Split the caller block at the `Call` into `B_pre` (ops `0..op_index`,
+///    then the binding aliases, keeping the original block id) and a fresh
+///    continuation `B_cont` (ops `op_index+1..`, taking the original
+///    terminator). `B_cont`'s single block argument is the original call-result
+///    value id, so every downstream use of the call result is satisfied without
+///    rewriting.
+/// 6. `B_pre` branches unconditionally into the cloned entry.
+/// 7. Each cloned `Return { values }` becomes `Branch { target: B_cont, args:
 ///    values }` (or `Branch B_cont []` for a void callee with a no-arg `B_cont`).
 ///    Observation-only void exception exits may branch directly to the caller's
 ///    post-call exception target instead of joining a value-carrying continuation.
-/// 7. The original `Call` op is gone (it lived between `B_pre` and `B_cont`).
+///    Every exit keeps the frame clear that precedes its `Return`.
+/// 8. The original `Call` op is gone (it lived between `B_pre` and `B_cont`).
 pub(super) fn splice_call_site(
     caller: &mut TirFunction,
     callee: &TirFunction,
     site: &CallSite,
+    activations: &mut Activations,
 ) -> bool {
     let block_id = site.block;
     let op_index = site.op_index;
 
-    let (call_args, call_result, multi_result): (Vec<ValueId>, Option<ValueId>, bool) = {
+    let (call_args, call_result, multi_result, call_span) = {
         let block = &caller.blocks[&block_id];
         let op = &block.ops[op_index];
         if op.opcode != OpCode::Call {
@@ -59,6 +69,7 @@ pub(super) fn splice_call_site(
             op.operands.clone(),
             op.results.first().copied(),
             op.results.len() > 1,
+            op.source_span,
         )
     };
     if multi_result {
@@ -100,6 +111,15 @@ pub(super) fn splice_call_site(
         return false;
     }
 
+    // The activation keeps the call's reference contract (invariant 2): each
+    // parameter binds its argument or an owned binding alias of it, and every
+    // exit clears the callee frame before it leaves. From here on `callee` is
+    // that prepared body.
+    let bindings = activations.bindings(caller, callee, site, &call_args);
+    let Some(callee) = activations.prepare(callee, &bindings) else {
+        return false;
+    };
+
     // Classify the callee's `Return` blocks on its **terminator-only** CFG:
     //  * NORMAL return - reachable from entry through terminator edges. Carries
     //    the function's actual return value.
@@ -133,8 +153,27 @@ pub(super) fn splice_call_site(
         }
     }
 
-    // Clone the callee body into the caller (params -> call args).
-    let cloned = clone_function_body_with_fresh_ids(callee, caller, &call_args);
+    // Bind each parameter to its argument, or to an owned binding alias of it
+    // placed where the call was.
+    let callee_entry = &callee.blocks[&callee.entry_block];
+    let mut binding_ops = Vec::new();
+    let parameter_values: Vec<ValueId> = call_args
+        .iter()
+        .zip(&bindings)
+        .zip(&callee_entry.args)
+        .map(|((&argument, &binding), parameter)| match binding {
+            Binding::Direct => argument,
+            Binding::Owned => {
+                let alias = caller.fresh_value();
+                caller.value_types.insert(alias, parameter.ty.clone());
+                binding_ops.push(owned_alias(argument, alias, call_span));
+                alias
+            }
+        })
+        .collect();
+
+    // Clone the prepared body into the caller (params -> bindings).
+    let cloned = clone_function_body_with_fresh_ids(callee, caller, &parameter_values);
 
     // The cloned block ids of the callee's EXCEPTION-EXIT blocks (reached only
     // via exception edges). Their cloned `Return`s either branch directly to the
@@ -168,7 +207,9 @@ pub(super) fn splice_call_site(
         Some(OpCode::Call),
         "splice: expected to remove the Call op at {block_id:?}#{op_index}"
     );
-    let pre_ops = all_ops;
+    let mut pre_ops = all_ops;
+    // The parameter bindings take the call's place.
+    pre_ops.extend(binding_ops);
 
     // The continuation block takes a single argument = the original call result
     // value id (when the call produced a value). A void call -> no-arg cont.

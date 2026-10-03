@@ -668,7 +668,7 @@ fn buffer_export_contract_writable_consumer_array_pin_and_source_drop() {
 fn buffer_export_contract_writable_consumer_rejects_invalid_and_unwinds_pins() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(py, {
-        use crate::object::buffer_exports::{ScopedWritableBuffer, WritableBufferError};
+        use crate::object::buffer_exports::{ScopedWritableBuffer, BufferAccessError};
         for (readonly, offset, shape, strides) in [
             (true, 0, vec![8], vec![1]),
             (false, 0, vec![4], vec![2]),
@@ -685,7 +685,7 @@ fn buffer_export_contract_writable_consumer_rejects_invalid_and_unwinds_pins() {
             let view = MoltObject::from_ptr(view_ptr).bits();
             assert!(matches!(
                 ScopedWritableBuffer::new(py, view),
-                Err(WritableBufferError::Invalid)
+                Err(BufferAccessError::Invalid)
             ));
             assert!(!exception_pending(py));
             // Failed admission releases only its own export, so explicit view
@@ -695,7 +695,7 @@ fn buffer_export_contract_writable_consumer_rejects_invalid_and_unwinds_pins() {
             assert!(!exception_pending(py));
             assert!(matches!(
                 ScopedWritableBuffer::new(py, view),
-                Err(WritableBufferError::Pending)
+                Err(BufferAccessError::Pending)
             ));
             assert_pending_exception_class(py, "ValueError");
             for bits in [view, owner, format] {
@@ -706,7 +706,7 @@ fn buffer_export_contract_writable_consumer_rejects_invalid_and_unwinds_pins() {
         for value in [readonly, MoltObject::from_int(1).bits(), none_bits()] {
             assert!(matches!(
                 ScopedWritableBuffer::new(py, value),
-                Err(WritableBufferError::Invalid)
+                Err(BufferAccessError::Invalid)
             ));
             assert!(!exception_pending(py));
         }
@@ -1774,10 +1774,9 @@ fn call_bind_ic_never_bypasses_custom_metaclass_call() {
 
 #[test]
 fn type_call_ic_invalidates_when_metaclass_call_policy_changes() {
-    extern "C" fn fixed_arity_initializer(_self_bits: u64) -> u64 {
+    extern "C" fn init(_self_bits: u64) -> u64 {
         MoltObject::none().bits()
     }
-
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
         crate::call::bind::clear_call_bind_ic_cache(_py);
@@ -1791,12 +1790,14 @@ fn type_call_ic_invalidates_when_metaclass_call_policy_changes() {
             builtins.type_obj,
             &[],
         );
-        // Inherited object.__init__ requires full argument binding and cannot
-        // enter the fixed-arity type-call cache. Supply a genuinely cacheable
-        // initializer so this test proves invalidation of an installed entry.
+        // TYPE_CALL admits a fixed-arity initializer. object.__init__ has a
+        // variadic public binding contract and correctly declines this cache.
         let init_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            fn_addr!(fixed_arity_initializer),
+            crate::builtins::functions::runtime_fn_addr(
+                "c_api_test_metaclass_invalidation_init",
+                init as *const (),
+            ),
             1,
         );
         assert!(!init_ptr.is_null());
@@ -1852,6 +1853,7 @@ fn type_call_ic_invalidates_when_metaclass_call_policy_changes() {
         dec_ref_bits(_py, call_bits);
         dec_ref_bits(_py, class_bits);
         dec_ref_bits(_py, metaclass_bits);
+        dec_ref_bits(_py, init_bits);
         crate::call::bind::clear_call_bind_ic_cache(_py);
     });
 }
@@ -2092,7 +2094,7 @@ fn runtime_intrinsic_module_import_fast_call_returns_module() {
             .expect("test sys module allocation should return module");
         assert_eq!(unsafe { object_type_id(sys_ptr) }, TYPE_ID_MODULE);
         let cache_set_bits =
-            crate::builtins::modules::molt_module_cache_set(cache_restore.name_bits(), sys_bits);
+            crate::builtins::module_table::publish_interpreter_sys_for_test(_py, sys_bits);
         assert!(obj_from_bits(cache_set_bits).is_none());
         assert!(!exception_pending(_py));
 
@@ -2456,7 +2458,14 @@ fn module_capi_teardown_detaches_registry_edge_before_release() {
         {
             let mut state = c_api_module_state(_py);
             state.state_registry.by_module.insert(owner_key, def_key);
-            state.state_registry.by_def.insert(def_key, referent_bits);
+            state.state_registry.by_def.insert(
+                def_key,
+                CApiModuleStateEntry {
+                    module_bits: Some(referent_bits),
+                    imports: Vec::new(),
+                    legacy: None,
+                },
+            );
         }
 
         let mut visited = Vec::new();

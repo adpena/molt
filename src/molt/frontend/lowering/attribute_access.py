@@ -174,10 +174,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
             return self._emit_global_get(name)
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        if self.current_func_name == "molt_main" and self.module_obj is not None:
-            module_val = self.module_obj
-        else:
-            module_val = self._get_or_emit_module_cache(self.module_name)
+        module_val = self._lexical_module_owner()
         # Propagate the last-known type hint for this module attribute.
         # When a module-scope variable was assigned from a typed expression
         # (e.g., count = 0 → int), the MODULE_GET_ATTR result inherits
@@ -225,10 +222,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
             return
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        if self.current_func_name == "molt_main" and self.module_obj is not None:
-            module_val = self.module_obj
-        else:
-            module_val = self._get_or_emit_module_cache(self.module_name)
+        module_val = self._lexical_module_owner()
         self.emit(
             MoltOp(
                 kind="MODULE_SET_ATTR",

@@ -6,12 +6,13 @@ mod worker;
 
 pub(crate) use application::compile_native_application_artifact_to_path;
 pub(crate) use archive::{
-    validate_native_archive_file, write_native_archive_bytes, write_native_archive_objects,
+    validate_native_archive_file, validate_native_object_bytes, write_native_archive_bytes,
+    write_native_archive_objects,
 };
 pub(crate) use batching::{
     ExternalFunctionDeclarations, NativeApplicationArtifactOptions,
-    NativeApplicationArtifactResult, NativeBatchJobSpec, NativeBatchModuleMetadata,
-    NativeBatchObjectJob, append_referenced_external_declarations, batch_external_function_names,
+    NativeApplicationArtifactResult, NativeBatchJobSpec, NativeBatchObjectJob,
+    append_referenced_external_declarations, batch_external_function_names,
     deduplicate_functions_by_name, external_function_declarations, partition_functions_for_batches,
     release_native_backend_batch_memory_to_os, resolved_batch_op_budget_limit,
     resolved_batch_size_limit,
