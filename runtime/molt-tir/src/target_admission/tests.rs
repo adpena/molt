@@ -98,6 +98,59 @@ fn shared_graph_admission_precedes_target_representation_planning() {
 }
 
 #[test]
+fn representation_shape_admission_precedes_every_target_plan() {
+    for target in [
+        TargetInfo::native_release_fast(),
+        TargetInfo::wasm_release_fast(),
+        TargetInfo::llvm_release_fast(),
+        TargetInfo::luau_release_fast(),
+        TargetInfo::rust_release_fast(),
+        TargetInfo::mlir_release_fast(),
+    ] {
+        for kind in ["box", "box_from_raw_int", "unbox", "unbox_to_raw_int"] {
+            for (args, var) in [
+                (None, None),
+                (Some(vec![]), None),
+                (Some(vec!["source".into(), "extra".into()]), None),
+                (Some(vec!["source".into()]), Some("extra")),
+                (Some(vec!["source".into()]), Some("source")),
+                (Some(vec!["source".into()]), Some("none")),
+                (Some(vec!["source".into()]), Some("")),
+            ] {
+                let mut ir = function_ir(vec![
+                    OpIR {
+                        kind: kind.into(),
+                        args,
+                        var: var.map(str::to_owned),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".into(),
+                        ..OpIR::default()
+                    },
+                ]);
+                ir.functions[0].params = vec!["source".into(), "extra".into()];
+                let mut planned = false;
+                let error =
+                    validate_target_contract_with_representation_plan(&ir, &target, |_, _| {
+                        planned = true;
+                        Ok(())
+                    })
+                    .expect_err("invalid conversion must not reach representation planning");
+                assert!(!planned, "{}: {error}", target.target.as_str());
+                let violation = if var.is_some() {
+                    "forbids `var`"
+                } else {
+                    "requires `args` length 1"
+                };
+                assert!(error.contains(&format!("`{kind}` {violation}")), "{error}");
+                assert!(error.contains("function `f` op#0"), "{error}");
+            }
+        }
+    }
+}
+
+#[test]
 fn lexical_cells_require_real_storage_and_capture_transport() {
     let requirement = SimpleIrRuntimeRequirements::LEXICAL_CELLS;
     let denied = target_with_runtime(SimpleIrRuntimeRequirements::ALL.difference(requirement));

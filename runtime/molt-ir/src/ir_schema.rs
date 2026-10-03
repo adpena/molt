@@ -111,6 +111,7 @@ const CONTAINER_TYPES: &[&str] = &[
 const BCE_SAFE_KINDS: &[&str] = &["index", "store_index"];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpShapeViolation {
+    ForbiddenVar,
     OperandCount {
         expected: usize,
         actual: Option<usize>,
@@ -137,6 +138,9 @@ impl std::fmt::Display for OpShapeDiagnostic {
         }
         write!(f, "[family={}] `{}` ", self.family, self.kind)?;
         match self.violation {
+            OpShapeViolation::ForbiddenVar => {
+                write!(f, "forbids `var`; `args` is the sole input carrier")
+            }
             OpShapeViolation::OperandCount { expected, actual } => {
                 write!(f, "requires `args` length {expected}, found ")?;
                 match actual {
@@ -226,7 +230,18 @@ pub fn validate_op_shape(
 }
 
 fn validate_simple_op_shape(op: &OpIR) -> Result<(), OpShapeDiagnostic> {
-    validate_op_shape(&op.kind, op.args.as_ref().map(Vec::len), op.value)
+    validate_op_shape(&op.kind, op.args.as_ref().map(Vec::len), op.value)?;
+    if let Some(shape) = simpleir_op_shape(&op.kind)
+        && simpleir_var_field_role_table(&op.kind) == SimpleIrVarFieldRole::Forbidden
+        && op.var.is_some()
+    {
+        return Err(OpShapeDiagnostic {
+            family: shape.family,
+            kind: shape.kind,
+            violation: OpShapeViolation::ForbiddenVar,
+        });
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
