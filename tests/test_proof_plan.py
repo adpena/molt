@@ -650,6 +650,65 @@ def test_cargo_toolchain_declares_complete_process_dependency_closure() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "consumer_id",
+    ["wasm.compile.hello", "wasm.compile.comprehension", "wasm.compile.sieve"],
+)
+def test_wasm_backend_prewarm_admits_the_consumer_compiler(
+    consumer_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    by_id = {command.id: command for command in PLAN.commands}
+    prewarm = by_id["wasm.build.backend"]
+    consumer = by_id[consumer_id]
+    # Guest dev output does not select the host compiler's profile. The CLI
+    # admission command owns that selection and its content/probe receipts;
+    # bare Cargo output, even with matching features, cannot prewarm it.
+    assert prewarm.argv[:5] == consumer.argv[:5]
+    assert prewarm.argv[5:] == (
+        "internal-backend-build",
+        "--target",
+        "wasm",
+        "--json",
+    )
+    assert consumer.argv[consumer.argv.index("--target") + 1] == "wasm"
+    assert consumer.argv[consumer.argv.index("--build-profile") + 1] == "dev"
+    assert {"python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld"}.issubset(
+        PLAN.required_toolchains(prewarm)
+    )
+    dependency_order = [
+        command.id
+        for command in proof_plan._topological_commands(PLAN, command_id=consumer_id)
+    ]
+    assert dependency_order.index(prewarm.id) < dependency_order.index(consumer_id)
+    assert (prewarm.data["timeout_budget"], prewarm.data["timeout_seconds"]) == (
+        "cold",
+        1200,
+    )
+    assert (consumer.data["timeout_budget"], consumer.data["timeout_seconds"]) == (
+        "warm",
+        300,
+    )
+    # Both entry points must inherit host-profile/session overrides identically
+    # while explicitly selecting the consumer's no-wrapper/no-daemon lane.
+    inherited = {
+        "MOLT_BACKEND_PROFILE": "release",
+        "MOLT_RELEASE_BACKEND_CARGO_PROFILE": "release-fast",
+        "MOLT_SESSION_ID": "wasm-prewarm-test",
+        "CARGO_TARGET_DIR": "/owned/cargo-target",
+    }
+    for name, value in inherited.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("RUSTC_WRAPPER", "/opt/cache/sccache")
+    monkeypatch.setenv("MOLT_BACKEND_DAEMON", "1")
+    for command in (prewarm, consumer):
+        environment, _policies = proof_plan._command_environment(
+            PLAN, command, command.data["timeout_seconds"]
+        )
+        assert {name: environment[name] for name in inherited} == inherited
+        assert environment["RUSTC_WRAPPER"] == ""
+        assert environment["MOLT_BACKEND_DAEMON"] == "0"
+
+
 def test_wasm_e2e_commands_bind_complete_child_toolchain_closure() -> None:
     by_id = {command.id: command for command in PLAN.commands}
     freestanding = by_id["wasm.test.freestanding-e2e"]
