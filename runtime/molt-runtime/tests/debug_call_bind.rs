@@ -6,6 +6,21 @@ molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavail
     "molt-runtime/debug_call_bind"
 ));
 
+#[allow(dead_code)]
+mod cargo_test_artifacts {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/cargo_test_artifacts.rs"
+    ));
+}
+
+mod captured_runtime_children {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../test_support/captured_runtime_children.rs"
+    ));
+}
+
 unsafe extern "C" {
     fn molt_runtime_init() -> u64;
     fn molt_runtime_exit(code_bits: u64) -> u64;
@@ -111,12 +126,15 @@ fn function_with_required_kwonly_metadata() -> u64 {
 fn spawn_child(test_name: &str, envs: &[(&str, &str)]) -> std::process::Output {
     let exe = std::env::current_exe().expect("current test executable");
     let mut cmd = Command::new(exe);
-    cmd.arg("--exact").arg(test_name).arg("--nocapture");
+    cmd.arg("--exact")
+        .arg(test_name)
+        .arg("--nocapture")
+        .arg("--test-threads=1");
     cmd.env("MOLT_TRACE_CHILD", "1");
     for (key, value) in envs {
         cmd.env(key, value);
     }
-    cmd.output().expect("spawn trace child")
+    captured_runtime_children::capture(&mut cmd, "trace-call-binding", test_name)
 }
 
 fn finish_trace_child() -> ! {

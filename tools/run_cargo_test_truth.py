@@ -24,6 +24,7 @@ ROOT = bind_repository_imports(__file__)
 
 from molt.exact_json import loads_exact  # noqa: E402
 from tools import check_suite_honesty  # noqa: E402
+from tools import runtime_descendant_receipts  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.libtest_results import BINARY_RECEIPT_SCHEMA, accounting_problem  # noqa: E402
 from tools.memory_guard_core.process_custody import GuardInfrastructureFailure  # noqa: E402
@@ -207,6 +208,24 @@ def load_binary_receipts(
                 )
         if workspace:
             payload["workspace"] = workspace
+        # Re-derive runtime descendant evidence from raw captures; a saved
+        # summary is never carried forward. A failed binary keeps its own
+        # attribution, while a published success that no longer verifies has
+        # lost custody exactly like a changed executable.
+        descendants = runtime_descendant_receipts.receipt_outcome(
+            payload, receipt_root=receipt_dir
+        )
+        payload.pop("runtime_descendants", None)
+        if descendants is not None:
+            if (
+                descendants["status"] != "verified"
+                and payload.get("status") == "success"
+            ):
+                raise RuntimeError(
+                    "Cargo test binary runtime descendant evidence changed after "
+                    f"receipt publication: {path}: {descendants['error']}"
+                )
+            payload["runtime_descendants"] = descendants
         receipts.append(payload)
     return receipts
 

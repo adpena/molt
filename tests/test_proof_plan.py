@@ -352,6 +352,25 @@ def test_shipping_runtime_gate_requires_full_parallel_and_fresh_child_accounting
         assert _classes(path)["rust"] is True
 
 
+def test_runtime_descendant_authority_is_hashed_and_its_tests_execute() -> None:
+    for path in (
+        "tools/runtime_descendant_receipts.py",
+        "tests/tools/test_runtime_descendant_receipts.py",
+        "tests/runtime_descendant_test_support.py",
+    ):
+        assert path in PLAN.authority_inputs
+        assert _classes(path)["rust"] is True
+    # The Rust producer is test source of the runtime family it records.
+    assert _classes("runtime/test_support/captured_runtime_children.rs")["rust"] is True
+    executed = {part for command in PLAN.commands for part in command.argv}
+    for path in (
+        "tests/tools/test_runtime_descendant_receipts.py",
+        "tests/tools/test_runtime_test_gate.py",
+        "tests/tools/test_cargo_test_truth.py",
+    ):
+        assert path in executed
+
+
 def test_libtest_accounting_is_hashed_and_selects_rust_consumers() -> None:
     path = "tools/libtest_results.py"
     assert path in PLAN.authority_inputs
