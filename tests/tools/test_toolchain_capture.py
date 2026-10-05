@@ -667,6 +667,16 @@ def test_custody_cas_recursively_fsyncs_new_directories(
     [
         ('"/usr/bin/cc" "-o" "probe"\n', ""),
         ("", 'note: emitted on stderr\n"/usr/bin/cc" "-o" "probe"\n'),
+        ('LC_ALL="C" PATH="/rust/lib:/usr/bin" "/usr/bin/cc" "-o" "probe"\n', ""),
+        ("", 'LC_ALL="C" PATH="/rust/lib:/usr/bin" "/usr/bin/cc" "-o" "probe"\n'),
+        (
+            'RUST_EMPTY="" RUST_FLAGS="value with spaces" "/usr/bin/cc" "-o" "probe"\n',
+            "",
+        ),
+        (
+            'RUST_FLAGS="escaped \\"quote\\" and \\\\path" "/usr/bin/cc" "-o" "probe"\n',
+            "",
+        ),
     ],
 )
 def test_rust_link_selection_accepts_exactly_one_command_from_either_channel(
@@ -683,6 +693,14 @@ def test_rust_link_selection_accepts_exactly_one_command_from_either_channel(
     ("stdout", "stderr", "count"),
     [
         ("selection emitted no quoted command\n", "", 0),
+        ('LC_ALL="C" PATH="/usr/bin"\n', "", 0),
+        ('LC_ALL="C" not a command\n', "", 0),
+        ('LC_ALL="C""/usr/bin/cc" "-o" "probe"\n', "", 0),
+        (
+            'LC_ALL="C" "/usr/bin/cc" "one"\n',
+            'PATH="/usr/bin" "/usr/bin/ld" "two"\n',
+            2,
+        ),
         (
             '"/usr/bin/cc" "one"\n',
             '"/usr/bin/ld" "two"\n',
@@ -731,8 +749,11 @@ def _rust_metadata_probe(command, root: Path):
     return None
 
 
+@pytest.mark.parametrize(
+    "command_prefix", ["", 'LC_ALL="C" PATH="/rust/lib:/usr/bin" ']
+)
 def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command_prefix: str
 ) -> None:
     cargo = tmp_path / ("cargo.exe" if os.name == "nt" else "cargo")
     rustc = tmp_path / ("rustc.exe" if os.name == "nt" else "rustc")
@@ -768,7 +789,7 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
         return subprocess.CompletedProcess(
             argv,
             0,
-            json.dumps(str(linker)) + ' "--exact-probe-argument"\n',
+            command_prefix + json.dumps(str(linker)) + ' "--exact-probe-argument"\n',
             "",
         )
 
@@ -859,9 +880,12 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
         )
 
 
+@pytest.mark.parametrize(
+    "command_prefix", ["", 'LC_ALL="C" PATH="/rust/lib:/usr/bin" ']
+)
 @pytest.mark.parametrize("cargo_mode", [False, True])
 def test_rust_capture_metadata_and_link_prints_are_disjoint_real_rustc_phases(
-    tmp_path, monkeypatch, cargo_mode
+    tmp_path, monkeypatch, cargo_mode, command_prefix
 ):
     linker = tmp_path / ("linker.exe" if os.name == "nt" else "linker")
     linker.write_bytes(b"linker")
@@ -883,7 +907,7 @@ def test_rust_capture_metadata_and_link_prints_are_disjoint_real_rustc_phases(
             "rustc links only after metadata early-exit requests are removed"
         )
         return subprocess.CompletedProcess(
-            command, 0, json.dumps(str(linker)) + "\n", ""
+            command, 0, command_prefix + json.dumps(str(linker)) + "\n", ""
         )
 
     monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
