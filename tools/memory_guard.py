@@ -979,6 +979,12 @@ def run_guarded(
             "text": text,
             **_guarded_popen_process_isolation_kwargs(),
         }
+        if text:
+            # The stdin pipe is the only text stream Popen opens here; it must
+            # use the same codec as the captured output, never the Windows
+            # locale code page (cp1252 corrupted non-ASCII generator input).
+            popen_kwargs["encoding"] = encoding
+            popen_kwargs["errors"] = errors
         if capture_output:
             popen_kwargs["stdout"] = stdout_capture.fileno()
             popen_kwargs["stderr"] = stderr_capture.fileno()
