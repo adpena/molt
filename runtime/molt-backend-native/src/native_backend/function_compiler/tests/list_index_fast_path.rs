@@ -679,6 +679,7 @@ fn sum_reduction_detects_reversed_add_operands() {
         storage_const("storage_count", 4),
         storage_const("storage_fill", 0),
         list_int_new("lst", "storage_count", "storage_fill"),
+        op_kind("loop_start"),
         OpIR {
             kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
@@ -705,13 +706,20 @@ fn sum_reduction_detects_reversed_add_operands() {
             ..OpIR::default()
         },
         OpIR {
+            kind: "loop_index_next".to_string(),
+            args: Some(vec!["i".to_string()]),
+            out: Some("i_next".to_string()),
+            ..OpIR::default()
+        },
+        op_kind("loop_continue"),
+        OpIR {
             kind: "loop_end".to_string(),
             ..OpIR::default()
         },
     ];
 
     let plan = representation_plan_for_ops(&ops);
-    let result = match_loop_int_sum_shape(&ops, 3, "i", &plan);
+    let result = match_loop_int_sum_shape(&ops, 4, "i", &plan);
     assert!(
         result.is_some(),
         "reversed operand sum reduction must be detected"

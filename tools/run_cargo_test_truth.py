@@ -680,6 +680,8 @@ def run_streamed(
                     payload = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(payload, dict):
+                    continue
                 if payload.get("reason") == "compiler-artifact" and payload.get(
                     "profile", {}
                 ).get("test"):

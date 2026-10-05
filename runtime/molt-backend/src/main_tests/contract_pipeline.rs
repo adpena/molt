@@ -19,11 +19,10 @@ fn fact_graph_cli_contract_rejects_rust_target() {
     assert!(err.to_string().contains("rust target"));
 }
 
-#[test]
-fn luau_tir_module_pipeline_inlines_direct_local_calls() {
+fn luau_local_call_ir(kind: &str) -> SimpleIR {
     let callee = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
-        name: "luau_add1".to_string(),
+        name: "luau_local".to_string(),
         params: vec!["x".to_string()],
         param_types: Some(vec!["int".to_string()]),
         ops: vec![
@@ -34,7 +33,7 @@ fn luau_tir_module_pipeline_inlines_direct_local_calls() {
                 ..OpIR::default()
             },
             OpIR {
-                kind: "add".to_string(),
+                kind: kind.to_string(),
                 args: Some(vec!["x".to_string(), "one".to_string()]),
                 out: Some("sum".to_string()),
                 ..OpIR::default()
@@ -65,7 +64,7 @@ fn luau_tir_module_pipeline_inlines_direct_local_calls() {
             },
             OpIR {
                 kind: "call".to_string(),
-                s_value: Some("luau_add1".to_string()),
+                s_value: Some("luau_local".to_string()),
                 args: Some(vec!["arg".to_string()]),
                 out: Some("result".to_string()),
                 ..OpIR::default()
@@ -82,10 +81,15 @@ fn luau_tir_module_pipeline_inlines_direct_local_calls() {
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
-    let mut ir = SimpleIR {
+    SimpleIR {
         functions: vec![caller, callee],
         profile: None,
-    };
+    }
+}
+
+#[test]
+fn luau_tir_module_pipeline_inlines_direct_local_calls() {
+    let mut ir = luau_local_call_ir("is");
 
     let stats = run_luau_tir_module_pipeline(&mut ir).expect("luau module pipeline");
 
@@ -109,9 +113,26 @@ fn luau_tir_module_pipeline_inlines_direct_local_calls() {
     assert!(
         main.ops
             .iter()
-            .all(|op| !(op.kind == "call" && op.s_value.as_deref() == Some("luau_add1"))),
+            .all(|op| !(op.kind == "call" && op.s_value.as_deref() == Some("luau_local"))),
         "Luau module phase must inline direct local calls instead of leaving a call boundary: {:?}",
         main.ops
+    );
+}
+
+#[test]
+fn luau_tir_module_pipeline_preserves_callback_capable_local_calls() {
+    let mut ir = luau_local_call_ir("add");
+    let stats = run_luau_tir_module_pipeline(&mut ir).expect("luau module pipeline");
+    assert_eq!(stats.module_changed, 0);
+    let main = ir
+        .functions
+        .iter()
+        .find(|func| func.name == "molt_main")
+        .unwrap();
+    assert!(
+        main.ops
+            .iter()
+            .any(|op| op.kind == "call" && op.s_value.as_deref() == Some("luau_local"))
     );
 }
 

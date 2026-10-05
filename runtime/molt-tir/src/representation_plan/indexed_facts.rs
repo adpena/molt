@@ -1193,7 +1193,13 @@ pub(crate) fn tir_container_storage_facts(
     use crate::tir::ops::OpCode;
 
     let inline = |value: &ValueId| repr.get(value) == Some(&Repr::RawI64Safe);
-    let index = |value: &ValueId| matches!(repr.get(value), Some(Repr::RawI64Safe | Repr::Bool));
+    let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
+    let index = |value: &ValueId| {
+        matches!(
+            exact.get(value),
+            Some(TirType::I64 | TirType::BigInt | TirType::Bool)
+        )
+    };
     let exact_count = |value: &ValueId| {
         matches!(
             repr.get(value),

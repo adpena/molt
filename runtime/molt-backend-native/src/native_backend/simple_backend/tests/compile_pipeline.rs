@@ -323,9 +323,9 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
                 "call_ownership_probe",
             );
             let function = &compiled.function;
-            // Direct symbols are declared on the object module, while dynamic
-            // helpers are registered imports. Exclude bookkeeping imports to
-            // identify the sole direct target without relying on instruction order.
+            // All imports come from the object module's declarations. Select
+            // the direct target or dynamic helper, excluding bookkeeping calls
+            // without relying on instruction order.
             let mut calls = Vec::new();
             for block in function.layout.blocks() {
                 for inst in function.layout.block_insts(block) {
@@ -350,6 +350,8 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
                         .values()
                         .any(|id| name.namespace == 0 && name.index == id.as_u32());
                     let selected_runtime = runtime_symbol
+                        .or(native_abi.map(|_| "native_probe"))
+                        .or(target)
                         .and_then(|symbol| compiled.import_ids.get(symbol))
                         .is_some_and(|id| name.namespace == 0 && name.index == id.as_u32());
                     if !registered || selected_runtime {

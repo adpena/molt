@@ -248,11 +248,13 @@ fn drop_inserted_codegen_rejects_a_hidden_suspension() {
     let function = poll_function(
         "hidden_suspension",
         vec![
-            simple_op("state_yield", Some(&["polled"]), None, Some(WAIT_LABEL)),
+            simple_op("state_yield", Some(&["polled"]), None, Some(RESUME_STATE)),
             simple_op("state_label", None, None, Some(WAIT_LABEL)),
             simple_op("ret", Some(&["polled"]), None, None),
         ],
     );
+    molt_ir::ir_schema::validate_state_dispatch(&function.ops)
+        .expect("hidden suspension fixture must have valid state dispatch");
     compile_function_to_clif_with_imports(vec![function], "hidden_suspension");
 }
 
