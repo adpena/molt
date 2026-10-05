@@ -1445,8 +1445,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             if cause_val is None:
                 return None
         else:
-            cause_val = MoltValue(self.next_var())
-            self.emit(MoltOp(kind="CONST_MISSING", args=[], result=cause_val))
+            cause_val = self._emit_missing_value()
         prepared = MoltValue(self.next_var(), type_hint="exception")
         self.emit(
             MoltOp(

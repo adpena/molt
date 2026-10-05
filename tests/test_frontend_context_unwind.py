@@ -467,6 +467,32 @@ def test_explicit_raise_admits_one_instance_after_both_expressions(mode: str) ->
 
 
 @pytest.mark.parametrize("mode", ["sync", "coroutine", "generator"])
+def test_raise_without_from_passes_registered_missing_cause(mode: str) -> None:
+    # The runtime skips cause validation only for the MISSING sentinel. An
+    # unregistered constant kind lowered to an ordinary value and turned every
+    # `raise X(...)` without `from` into "exception causes must derive from
+    # BaseException" in compiled programs.
+    prefix = "async " if mode == "coroutine" else ""
+    suspend = "    yield None\n" if mode == "generator" else ""
+    ops = _function_ops(
+        f"{prefix}def f(exception_expression):\n"
+        f"{suspend}"
+        "    raise exception_expression()\n",
+        "__f" if mode == "sync" else "__f_poll",
+    )
+    prepared = [
+        op
+        for op in ops
+        if op.kind == "CALL" and op.args[0] == "molt_exception_prepare_raise"
+    ]
+    assert len(prepared) == 1
+    cause = prepared[0].args[2]
+    producer = next(op for op in ops if op.result is cause)
+    assert producer.kind == "MISSING"
+    assert producer.args == []
+
+
+@pytest.mark.parametrize("mode", ["sync", "coroutine", "generator"])
 def test_exit_failure_inside_handler_has_live_cleanup_continuation(
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
