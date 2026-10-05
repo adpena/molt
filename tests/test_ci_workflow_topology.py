@@ -72,7 +72,7 @@ def test_setup_project_callers_use_declared_inputs() -> None:
     assert calls >= 10
 
 
-def test_setup_project_cache_identity_is_complete_and_registry_only() -> None:
+def test_setup_project_cache_identity_is_complete_and_non_incremental() -> None:
     action = _read(".github/actions/setup-project/action.yml")
     normalizer = _read(".github/actions/setup-project/normalize-inputs.sh")
     for token in (
@@ -82,16 +82,36 @@ def test_setup_project_cache_identity_is_complete_and_registry_only() -> None:
         "inputs.rust-targets",
         "rust-toolchain.toml",
         "Cargo.lock",
+        "**/Cargo.toml",
+        "tools/proof_plan.toml",
         "config/llvm_toolchain_releases.toml",
         "config/llvm_toolchain_arches.toml",
     ):
         assert token in action
-    cargo_block = action.split("- name: Cache Cargo source downloads", 1)[1].split(
-        "- name: Cache Lean lake artifacts", 1
-    )[0]
-    assert "~/.cargo/registry" in cargo_block
-    assert "~/.cargo/git" in cargo_block
-    assert "\n          target\n" not in cargo_block
+    steps = yaml.safe_load(action)["runs"]["steps"]
+    configure = next(step for step in steps if step.get("id") == "cargo-cache")
+    cache = next(
+        step for step in steps if "Swatinem/rust-cache@" in step.get("uses", "")
+    )
+    assert re.fullmatch(r"Swatinem/rust-cache@[0-9a-f]{40}", cache["uses"])
+    assert (
+        configure["if"] == cache["if"] == "steps.inputs.outputs.cache-cargo == 'true'"
+    )
+    assert configure["run"] == "python3 tools/ci_cargo_cache.py"
+    assert (
+        cache["with"]["workspaces"]
+        == ". -> ${{ steps.cargo-cache.outputs.target-dir }}"
+    )
+    assert cache["with"]["cache-workspace-crates"] == "true"
+    assert cache["with"]["cache-targets"] == "true"
+    assert cache["with"]["cache-all-crates"] == "true"
+    assert cache["with"]["cache-bin"] == "false"
+    assert "shared-key" not in cache["with"]
+    assert "cache-on-failure" not in cache["with"]
+    install = next(step for step in steps if step.get("name") == "Install exact Rust")
+    assert steps.index(install) < steps.index(configure) < steps.index(cache)
+    assert sum("Swatinem/rust-cache@" in step.get("uses", "") for step in steps) == 1
+    assert "Cache Cargo source downloads" not in action
     assert "cache-uv requires uv" in normalizer
     assert "sync requires uv" in normalizer
     assert "cache-cargo requires rust-toolchain" in normalizer
@@ -195,6 +215,56 @@ def test_security_reusable_selection_truth_table(
     text = _read(".github/workflows/security_hardening.yml")
     assert "if: github.event_name == 'schedule' || inputs.python_security" in text
     assert "if: github.event_name == 'schedule' || inputs.rust_security" in text
+
+
+@pytest.mark.parametrize(
+    ("workflow", "job"),
+    [
+        ("ci.yml", "docs-gates"),
+        ("ci.yml", "platform-portability"),
+        ("ci.yml", "native-integration"),
+        ("ci.yml", "rust-build-unit-smoke"),
+        ("ci.yml", "llvm-backend"),
+        ("molt-wasm-ci.yml", "wasm-build"),
+        ("security_hardening.yml", "rust-security"),
+    ],
+)
+def test_ci_rust_consumers_share_compiled_artifact_cache(
+    workflow: str, job: str
+) -> None:
+    steps = yaml.safe_load(_read(f".github/workflows/{workflow}"))["jobs"][job]["steps"]
+    setups = [
+        step for step in steps if step.get("uses") == "./.github/actions/setup-project"
+    ]
+    assert len(setups) == 1
+    assert setups[0]["with"]["rust-toolchain"]
+    assert setups[0]["with"]["cache-cargo"] == "true"
+    assert not any("rust-cache@" in step.get("uses", "") for step in steps)
+
+
+@pytest.mark.parametrize(
+    ("workflow", "job"),
+    [("ci.yml", "rust-build-unit-smoke"), ("molt-wasm-ci.yml", "wasm-build")],
+)
+def test_ci_luau_runner_uses_digest_bound_prebuilt_authority(
+    workflow: str, job: str
+) -> None:
+    text = _read(f".github/workflows/{workflow}")
+    steps = yaml.safe_load(text)["jobs"][job]["steps"]
+    provision = next(
+        step
+        for step in steps
+        if step.get("name") == "Install pinned executable Luau proof runner"
+    )
+    assert provision["run"] == (
+        'python3 -m molt.tool_releases provision lune --github-path "$GITHUB_PATH"'
+    )
+    assert "cargo install lune" not in text
+    assert steps.index(provision) < next(
+        index
+        for index, step in enumerate(steps)
+        if "--run-family" in step.get("run", "")
+    )
 
 
 def test_ci_push_path_is_cheap_only() -> None:
@@ -971,8 +1041,8 @@ def test_rust_security_reuses_cached_tool_builds() -> None:
     assert 'rust-toolchain: "1.96.1"' in rust_security
     assert 'cache-cargo: "true"' in rust_security
     setup_project = _read(".github/actions/setup-project/action.yml")
-    assert "~/.cargo/registry" in setup_project
-    assert "~/.cargo/git" in setup_project
+    assert "Swatinem/rust-cache@" in setup_project
+    assert 'cache-all-crates: "true"' in setup_project
     assert "cargo install cargo-deny --version 0.20.2 --locked" in rust_security
     assert "cargo install cargo-audit --version 0.22.2 --locked" in rust_security
     assert "rm -rf" not in rust_security

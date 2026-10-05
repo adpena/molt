@@ -68,6 +68,9 @@ jobs:
       - name: Install WASM validator
         run: python3 -m molt.tool_releases provision wasm-tools --github-path "$GITHUB_PATH"
 
+      - name: Install pinned executable Luau proof runner
+        run: python3 -m molt.tool_releases provision lune --github-path "$GITHUB_PATH"
+
       - name: Setup canonical native and WASM linker SDK
         uses: ./.github/actions/setup-llvm
         with:
