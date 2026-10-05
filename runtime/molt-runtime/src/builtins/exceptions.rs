@@ -82,7 +82,6 @@ pub use attributes::{
 
 mod raise_protocol;
 mod storage;
-pub use raise_protocol::molt_exception_prepare_raise;
 pub(crate) use storage::{
     ExceptionStorage, ExceptionValue, exception_class, exception_field, exception_traceback,
 };
