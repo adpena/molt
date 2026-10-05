@@ -26,6 +26,8 @@ class ProcessSpawnKwargs(ProcessGroupKwargs, total=False):
     cwd: str | os.PathLike[str] | None
     env: Mapping[str, str] | None
     text: bool
+    encoding: str
+    errors: str
     stdin: int | IO[str] | IO[bytes] | None
     stdout: int | IO[str] | IO[bytes] | None
     stderr: int | IO[str] | IO[bytes] | None
