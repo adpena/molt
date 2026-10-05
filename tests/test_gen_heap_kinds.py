@@ -56,7 +56,7 @@ def test_inventory_preserves_active_ids_and_retires_holes() -> None:
         ("OBJECT", 100)
     ]
     dense = [row["id"] for row in kinds if row["id"] >= 200]
-    assert dense == [value for value in range(200, 260) if value not in (205, 231)]
+    assert dense == [value for value in range(200, 260) if value not in (205, 220, 231)]
     assert next(row for row in kinds if row["name"] == "CELL")["id"] == 258
     by_name = {row["name"]: row for row in kinds}
     assert by_name["WEAKREF"]["id"] == 256
@@ -94,21 +94,27 @@ def test_green_reference_holders_carry_closed_acyclic_capabilities() -> None:
     assert by_name["BUFFER2D"]["acyclic_slots"] == {"cell": "int"}
 
 
-def test_retired_heap_ids_cannot_be_reused_or_silently_removed(tmp_path: Path) -> None:
+@pytest.mark.parametrize("retired_id", [205, 220, 231])
+def test_retired_heap_ids_cannot_be_reused_or_silently_removed(
+    tmp_path: Path, retired_id: int
+) -> None:
     gen = _gen()
     source = gen.TABLE.read_text(encoding="utf-8")
     table = tmp_path / "heap_kinds.toml"
-    table.write_text(source.replace("id = 206", "id = 205", 1), encoding="utf-8")
+    table.write_text(
+        source.replace("id = 206", f"id = {retired_id}", 1), encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="never be reused"):
         gen.load_table(table)
     table.write_text(
-        source.replace("retired_ids = [205, 231]", "retired_ids = []"), encoding="utf-8"
+        source.replace("retired_ids = [205, 220, 231]", "retired_ids = []"),
+        encoding="utf-8",
     )
     with pytest.raises(ValueError, match="allocated ABI domain"):
         gen.load_table(table)
     rendered = gen.render_all(gen.load_table())
-    assert rendered[gen.OUT_RUNTIME].count("None, // Retired ABI slot") == 2
-    assert json.loads(rendered[gen.OUT_AUDIT])["retired_ids"] == [205, 231]
+    assert rendered[gen.OUT_RUNTIME].count("None, // Retired ABI slot") == 3
+    assert json.loads(rendered[gen.OUT_AUDIT])["retired_ids"] == [205, 220, 231]
     for output in rendered.values():
         assert "DICT_BUILDER" not in output and "SET_BUILDER" not in output
         assert "DictBuilder" not in output and "SetBuilder" not in output
@@ -210,18 +216,19 @@ def test_runtime_visit_and_clear_dispatch_are_exhaustive_without_wildcards() -> 
     source = (ROOT / "runtime/molt-runtime/src/object/heap_lifecycle.rs").read_text(
         encoding="utf-8"
     )
-    visit = source.split("pub(crate) unsafe fn visit_owned_values", 1)[1].split(
-        "pub(crate) unsafe fn visit_owned_edges", 1
-    )[0]
-    clear = source.split("pub(crate) unsafe fn clear_cycle_edges_with_sink", 1)[
-        1
-    ].split("pub(crate) unsafe fn detach_terminal_owned_edges", 1)[0]
+    visit = _rust_function(source, "visit_payload_owned_values")
+    clear = _rust_function(source, "clear_cycle_edges_with_sink")
     for row in gen.load_table():
         variant = f"HeapLifecycleHandler::{gen._variant(str(row['name']).lower())}"
         assert variant in visit, f"visit dispatch omits {row['name']}"
         assert variant in clear, f"clear dispatch omits {row['name']}"
     assert "_ =>" not in visit
     assert "_ =>" not in clear
+    projection = _rust_function(source, "visit_owned_values")
+    local_edges = _rust_function(source, "visit_local_owned_gc_edges")
+    assert "visit_local_owned_gc_edges(py, ptr," in projection
+    assert "visit_payload_owned_values(py, ptr," in local_edges
+    assert "visit_physical_owned_edges(ptr, visit)" in local_edges
 
 
 def test_gc_deleted_legacy_type_id_traverse_and_clear_switches() -> None:
@@ -410,8 +417,12 @@ def test_variable_gc_edges_use_one_prereserved_detach_sink() -> None:
     clear_pos = delete_garbage.index("clear_node(")
     release_pos = delete_garbage.index("detached.release_all(py)")
     assert reserve_pos < revalidate_pos < clear_pos < release_pos
+    release_boundary = "molt_cpython_abi::api::errors::with_preserved_error(|| detached.release_all(py))"
+    assert release_boundary in delete_garbage
     detach_loop = delete_garbage[
-        delete_garbage.rfind("for &candidate_index", 0, clear_pos) : release_pos
+        delete_garbage.rfind(
+            "for &candidate_index", 0, clear_pos
+        ) : delete_garbage.index(release_boundary)
     ]
     assert "&scratch.final_unreachable" in detach_loop
     assert detach_loop.rstrip().endswith("}"), (
@@ -583,7 +594,11 @@ def test_opaque_external_custody_is_explicit_not_silently_dynamic() -> None:
     assert "super::TYPE_ID_FOREIGN" in traverse
     assert "if native_gc_is_enrolled(address)" in traverse
     assert "visit(GcNode::Native(address))" in traverse
-    assert "molt_cpython_abi::native_gc_node_visit(" in traverse
+    assert "visit_native_owned_edges(address," in traverse
+    native_visit = _rust_function(gc, "visit_native_owned_edges")
+    assert "molt_cpython_abi::native_gc_node_visit(" in native_visit
+    assert "native_gc_visit_edge" in native_visit
+    assert "result == 0" in native_visit
     assert "tp_is_gc" in bridge and "Py_TPFLAGS_HAVE_GC" in bridge
     native = (ROOT / "runtime/molt-runtime/src/object/native_handle.rs").read_text(
         encoding="utf-8"

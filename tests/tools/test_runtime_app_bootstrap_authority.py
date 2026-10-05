@@ -4,6 +4,8 @@ from pathlib import Path
 import re
 import tomllib
 
+from molt.rust_source_scan import mask_rust_comments_and_strings
+
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = ROOT / "runtime"
@@ -62,7 +64,7 @@ def test_wasm_host_does_not_link_or_bootstrap_the_native_runtime() -> None:
     assert "molt-runtime-core" not in packages
     assert "molt-runtime-resource" in packages
     for path in sorted((host_root / "src").rglob("*.rs")):
-        source = path.read_text(encoding="utf-8")
+        source = mask_rust_comments_and_strings(path.read_text(encoding="utf-8"))
         assert "molt_runtime::" not in source, path
         assert "declare_app_bootstrap!(" not in source, path
         assert "fn molt_isolate_import" not in source, path

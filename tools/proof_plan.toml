@@ -77,6 +77,8 @@ authority_inputs = [
   "runtime/molt-backend-luau/src/luau/helpers.rs",
   "runtime/molt-backend-luau/src/luau/function_body.rs",
   "runtime/molt-backend-luau/src/luau/frame_runtime.rs",
+  "runtime/molt-backend-luau/src/luau/runtime_fragments.rs",
+  "runtime/molt-backend-luau/src/luau/runtime_prelude.rs",
   "runtime/molt-backend-luau/src/luau/flow_dispatch.rs",
   "runtime/molt-backend-luau/src/luau/dict_runtime.rs",
   "runtime/molt-backend-luau/src/luau/compile_pipeline.rs",

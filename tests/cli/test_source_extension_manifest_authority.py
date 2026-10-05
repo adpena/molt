@@ -13,6 +13,8 @@ from typing import Any
 import pytest
 
 from molt.file_locks import _acquire_file_lock, _release_file_lock
+from molt.source_root import compiler_source_root
+from molt.cli.extension_manifest import _default_molt_c_api_version
 from molt.cli.source_extension_manifest_codec import (
     _BUILD_SEQUENCE_FIELDS,
     _OBJECT_SEQUENCE_FIELDS,
@@ -998,6 +1000,7 @@ def _write_identity_fixture(
     )
     from tests.python_environment_test_support import build_environment_manifest
 
+    abi_version = _default_molt_c_api_version(compiler_source_root())
     # A valid WASM custom section varies bytes without inventing symbol evidence.
     custom = b"\x07fixture" + artifact.encode("ascii")
     assert len(custom) < 128
@@ -1033,6 +1036,8 @@ def _write_identity_fixture(
         "wheel": "../provenance/wheels/native.whl",
         "deterministic": True,
         "python_tag": "py3",
+        "molt_c_api_version": abi_version,
+        "abi_tag": f"molt_abi{abi_version.split('.', 1)[0]}",
         "target_python": "py312",
         "abi_tier": "cpython-abi",
         "target_triple": "wasm32-wasip1",
@@ -1185,10 +1190,14 @@ def test_extension_identity_rejects_artifact_sidecar_digest_drift(
         ("abi_tier", "source-compat"),
         ("artifact_kind", "static_archive"),
         ("module", "pkg._other"),
+        ("molt_c_api_version", None),
+        ("molt_c_api_version", 1),
+        ("molt_c_api_version", "invalid"),
+        ("abi_tag", "molt_abi999"),
     ],
 )
 def test_extension_identity_rejects_sidecar_variant_drift(
-    tmp_path: Path, field: str, value: str
+    tmp_path: Path, field: str, value: object
 ) -> None:
     root = tmp_path / field
     _write_identity_fixture(root, producer_root="/producer/host", artifact="a" * 64)
