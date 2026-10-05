@@ -187,9 +187,9 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
     assert!(runtime_admission.contains("op.runtime_requirements()"));
     assert!(runtime_admission.contains("requirements.difference(supported_requirements)"));
     assert!(runtime_admission.contains("SIMPLEIR_RUNTIME_REQUIREMENT_DESCRIPTORS"));
-    assert!(
-        generated.contains("operation requires the target runtime's pending-call and eval-breaker polling boundary")
-    );
+    assert!(generated.contains(
+        "operation requires the target runtime's pending-call and eval-breaker polling boundary"
+    ));
     for target in ["native", "wasm", "llvm"] {
         assert!(target_info.contains(&format!(
             "assert!(TargetInfo::{target}_release_fast().supports_pending_call_eval_breaker_poll())"

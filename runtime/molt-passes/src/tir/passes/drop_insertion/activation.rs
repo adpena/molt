@@ -18,7 +18,7 @@ use super::util::make_op;
 fn state_set(state: i64, origin: &TirOp) -> TirOp {
     let mut op = make_op(OpCode::StateSet, vec![]);
     op.attrs.insert("value".into(), AttrValue::Int(state));
-    op.source_span = origin.source_span.clone();
+    op.source_span = origin.source_span;
     op
 }
 
@@ -113,7 +113,7 @@ pub(super) fn expose_activation_exits(func: &mut TirFunction) -> usize {
         poll.results.push(result);
         poll.attrs
             .insert("s_value".into(), AttrValue::Str("molt_future_poll".into()));
-        poll.source_span = op.source_span.clone();
+        poll.source_span = op.source_span;
         let mut test = make_op(OpCode::IsPending, vec![result]);
         test.results.push(condition);
         let block = func.blocks.get_mut(&bid).unwrap();
