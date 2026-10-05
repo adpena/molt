@@ -108,6 +108,9 @@ impl RustBackend {
             "end_for" => self.emit_op_end_for(op),
             "break" => self.emit_op_break(op),
             "continue" => self.emit_op_continue(op),
+            "unreachable" => {
+                self.emit_line("unreachable!(\"entered unreachable Molt control flow\");")
+            }
             kind if molt_ir::tir::op_kinds_generated::simpleir_return_shape(kind)
                 == molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Value =>
             {
