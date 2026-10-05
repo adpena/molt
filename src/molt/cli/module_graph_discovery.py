@@ -862,10 +862,8 @@ def _load_module_import_scan(
         tree,
         source_path=path,
         module_name=module_name,
-        is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
-        runtime_import_custody=runtime_import_custody,
         ast_digest_admission=ast_digest_admission,
         source=source,
     )

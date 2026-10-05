@@ -69,6 +69,51 @@ and list/tuple ordering preserve arbitrary result identity. Truth boundaries
 result and propagate truth-conversion errors. `object.__ne__` delegates to only
 its receiver's equality slot; the common dispatcher owns reflection.
 
+## Owned literal payload authority
+
+`literal_payload_opcodes` records scalar and owned carrier shapes in the opcode
+registry. The generator emits `LiteralPayloadKind`, the shared
+`OwnedLiteralPayloadKind`, and their exhaustive opcode projections. IR admission
+selects carrier validation through those facts, including canonical kind aliases.
+String bytes remain lossless for surrogate code points, embedded NULs and empty
+payloads; absent or conflicting carriers remain errors.
+
+WASM derives its literal policy from that registry through
+`molt.opcode_literal_payloads`. Its manifest owns materializer imports, scalar
+seeds and backend lowering choices; authored `literal_payload` rows are rejected.
+Materialization, scratch ownership and frame anchors use the shared owned enum;
+absence is `Option::None`, so allocating owned scratch cannot accept a missing
+payload shape. The registry and projection leaf are direct WASM generator inputs.
+
+Source audits and generator module readers share `molt.rust_source_scan` lexical
+offsets and Rust module declarations. Test-only file ownership excludes independent
+oracles from production semantic debt, while a file also owned by production is
+still audited. Test attributes mask exactly their item; later production siblings
+remain visible. Guarded wildcard arms do not replace the unconditional match
+default, and region boundaries ignore braces in comments and literals. The
+structural metric baselines remain unchanged by this authority migration.
+
+## Source target admission and structural debt
+
+`AdmittedTargetProgram` borrows the validated input and owns the same function
+representation plans produced by shared target admission. Rust's checked entry
+creates this witness before its private source assembler can run; checked
+publication still refuses accumulated lowering failures. The backend's internal
+source fixtures retain their test-only path without granting production support.
+
+`tools/op_kinds/runtime_requirements.py` composes registered wire kinds, minimum
+runtime requirements, target profiles and numeric roles for both generated Rust
+and Python consumers. The structural audit can exclude a literal dispatch domain
+only when the actual source admission, immutable input, generated projections and
+private checked-publication boundary establish that the domain cannot arrive.
+Refusal-only handlers for those domains are deleted from the Rust backend.
+
+The source audit does not infer a complete support promise from these facts.
+Payload-dependent numeric/string domains, unknown spellings, wildcard dispatch,
+and unresolved receiver/control flow remain obligations. Rust strings now consume
+the shared byte/text literal carrier losslessly when UTF-8 is representable;
+surrogatepass strings still expose the missing Python string representation.
+
 ## 1. Motivation — the bug class (5 proven instances)
 
 A `MoltOp` produced by the frontend visitors is serialized to a JSON op whose `"kind"` string is the **wire contract** between the Python frontend and the Rust backend. Five independent components must agree on that vocabulary, and each keeps its **own private copy** of the table:
@@ -610,3 +655,95 @@ projection. `DecRef`, `DeleteVar` old-slot operands, and `DelBoundary` therefore
 cannot drift between release placement and lifetime facts. Terminal activation
 lowering exposes yield/pending exits as Returns before shared ownership analysis;
 there is no separate suspension-retain classification lane.
+
+
+## Standalone Rust Python values
+
+`molt-ir::python_string::PythonString` owns the dependency-free compact Python
+text carrier and its surrogatepass decoder. IR literal admission and standalone
+Rust programs use the exact same source; `PYTHON_STRING_SOURCE` embeds it without
+copying an algorithm. The sole storage is canonical UTF-8/surrogatepass bytes:
+ASCII costs one byte, scalar code points one to four, and each surrogate three.
+Adjacent surrogate halves stay separate Python characters. Length and indexing
+decode code points without a parallel wide representation; this uses linear scans
+and avoids a code-point cache. Equality and ordering use canonical encoded bytes.
+
+All standalone string producers, concatenation, repetition, indexing, iteration,
+unpacking, containment, comparison, repr/ascii, metadata, and str conversions use
+that carrier. Rust scalar text and stdout encoding are explicit strict edges:
+surrogates fail encoding rather than being replaced or reinterpreted. Invalid
+UTF-8/surrogatepass byte sequences fail shared literal admission; bytes literals
+remain arbitrary byte sequences.
+
+The source backend selects ordinary literals by generated opcode mapping, so
+aliases share one materializer. Floating values emit from their IEEE bit pattern,
+preserving infinities, NaN payloads and negative zero. Ellipsis and NotImplemented
+have distinct variants. NotImplemented truth conversion follows target version
+state (a TypeError from Python 3.14). Owned and transparent copy transport share
+the backend value-copy primitive; independent identity, heap mutation, finalizer,
+and control-flow capabilities are unchanged. Canonical integer aliases inherit
+their numeric admission role, including load_const.
+
+This establishes carrier and lowering structure, not a universal Python string
+or runtime support claim. Runtime capabilities still gate protocols and unknown
+wire operations still fail closed. Unicode-category-exact repr printability and
+the complete warning protocol are not newly claimed by the source target.
+
+
+## Frontend and executable wire vocabularies
+
+Frontend optimizer effect tokens belong to the pre-serialization IR; they do not
+register runtime operations. Executable source-target admission derives its wire
+vocabulary only from mapper, control, runtime-role and explicit neutral wire facts.
+Generation rejects overlap between those facts and the frontend effect authority.
+
+The serializer validates its final output against the generated frontend semantic
+authority after scalarization and fusion, rejecting tokens that escaped lowering.
+It preserves wire names such as store_var and load_var instead of collapsing their
+binding field roles into Copy. Preserved runtime wire operations keep their release
+backend consumers. Unknown wire names remain the target admission obligation; this
+boundary creates no target support list and uses no case-conversion heuristic.
+
+Value transport keeps operand shape separate from ownership transparency.
+`guard_tag` and `guard_type` read both the guarded value and a dynamic expected
+tag; their declared two-operand shapes survive serialization, source validation,
+SSA and preserved-Copy verification. Their result aliases operand zero without
+retaining it, but that ownership fact does not erase the tag read. Ordinary copy
+and owned-alias transports still require one semantic read through their declared
+field roles. The distinct `type_guard` TIR refinement remains unary. Missing,
+extra, conflicting and undefined inputs remain invalid before backend lowering.
+
+Runtime guard identity and execution effects remain separate. The shared TIR
+`value_identity::no_heap_alias_source` validates the declared semantic read
+count, then projects only operand zero into alias union, ownership, and container
+provenance. Pure-copy emission uses `copy_value_source`; a no-heap ownership fact
+never authorizes erasing a check. Both runtime guard spellings retain both reads
+and bind an optional result to the original value and its existing scalar carrier.
+`molt_guard_type` converts the expected tag with runtime `to_i64`; a rejected tag
+raises, while a type mismatch counts profiling feedback and returns the source
+unchanged. It proves no source type. The unary TIR `TypeGuard` remains a distinct
+refinement operation. Native borrowed operands use the shared transaction, which
+skips dependent calls on failed wide-integer boxing and releases temporary owners;
+result aliases obey the same carrier and retain rules as other aliases.
+
+SimpleIR guard elimination compares an exact constant expected tag with a proven
+runtime type from unique dominating definitions. Dynamic tags, annotations,
+carrier classes, generic arithmetic and container indexing do not satisfy a
+check. A discharged guard with an output becomes an identity alias. Split-field
+deforestation consumes the same proof and keeps guards whose outputs still need
+the materialized object. Positive tag admission is a separate shared fact: a
+unique dominating i64 literal tag lets native, LLVM, generic WASM and LIR-fast
+execute the guard call only when a per-activation runtime profile flag is set.
+The flag is stable within a runtime epoch and is never inferred from the compiler's
+environment. Every executed mismatch remains counted when profiling is enabled;
+frontend CFG deduplication must not collapse repeated runtime guards. Nonthrowing
+analysis additionally proves that physical operand boxing cannot allocate or
+retains its exception observation. Dynamic tags keep runtime admission, including
+bool, integral direct-float and bounded integer carriers accepted by `to_i64`.
+Frontend SCCP continues past mismatch and never overwrites source-type facts with
+the requested tag.
+
+Frontend serialization preserves a named runtime-guard result for either
+spelling. Its canonicalization only erases a proven check when no result is
+bound. JSON string-split scalarization treats an undischarged guard as an
+observable use instead of maintaining a second tag-blind guard deletion path.

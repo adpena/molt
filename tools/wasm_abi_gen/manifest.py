@@ -7,6 +7,7 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
+from molt.opcode_literal_payloads import owned_literal_payloads_by_kind
 from molt import rust_source_scan
 from molt.c_api_headers import CAPIHeaderClosureError, c_api_header_closure
 from molt.cli.source_extension_toolchain import (
@@ -26,6 +27,7 @@ from wasm_abi_gen.paths import (
     INTRINSICS_MANIFEST,
     FRONTEND_TYPES,
     MANIFEST,
+    OP_KINDS_TABLE,
     OUT_RUNTIME_CALLABLES_RS,
     ROOT,
     RUNTIME_ROOT,
@@ -70,12 +72,6 @@ CONST_POLICY_INLINE_SEEDS = {
     "bool",
     "float",
     "none_value",
-}
-CONST_POLICY_LITERAL_PAYLOADS = {
-    "none",
-    "string",
-    "bigint_decimal",
-    "bytes",
 }
 CONST_POLICY_SCALAR_PAYLOADS = {
     "none",
@@ -2334,6 +2330,9 @@ def validate_loaded_manifest(
     const_op_policies = data.get("const_op_policy", [])
     if not isinstance(const_op_policies, list):
         raise WasmAbiManifestError("const_op_policy must be a list of tables")
+    owned_payloads = owned_literal_payloads_by_kind(
+        tomllib.loads(OP_KINDS_TABLE.read_text(encoding="utf-8"))
+    )
     seen_const_policy_kinds: set[str] = set()
     for idx, entry in enumerate(const_op_policies):
         if not isinstance(entry, dict):
@@ -2354,10 +2353,10 @@ def validate_loaded_manifest(
             raise WasmAbiManifestError(
                 f"const_op_policy {kind!r} has invalid inline_seed {inline_seed!r}"
             )
-        literal_payload = entry.get("literal_payload", "none")
-        if literal_payload not in CONST_POLICY_LITERAL_PAYLOADS:
+        literal_payload = owned_payloads.get(kind, "none")
+        if "literal_payload" in entry and entry["literal_payload"] != literal_payload:
             raise WasmAbiManifestError(
-                f"const_op_policy {kind!r} has invalid literal_payload {literal_payload!r}"
+                f"const_op_policy {kind!r} literal_payload disagrees with op_kinds.toml"
             )
         scalar_payload = entry.get("scalar_payload", "none")
         if scalar_payload not in CONST_POLICY_SCALAR_PAYLOADS:
@@ -2763,10 +2762,14 @@ def validate_loaded_manifest(
 
 
 def load_manifest(path: Path = MANIFEST) -> dict:
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    for entry in data.get("const_op_policy", []):
+        if "literal_payload" in entry:
+            raise WasmAbiManifestError(
+                "const_op_policy literal_payload is owned by op_kinds.toml"
+            )
     return validate_loaded_manifest(
-        _add_generated_cpython_abi_link_imports(
-            tomllib.loads(path.read_text(encoding="utf-8"))
-        ),
+        _add_generated_cpython_abi_link_imports(data),
         reject_manual_runtime_features=True,
     )
 
@@ -2781,6 +2784,8 @@ def generator_input_files(path: Path = MANIFEST) -> tuple[Path, ...]:
     """
     direct = {
         path,
+        OP_KINDS_TABLE,
+        Path(owned_literal_payloads_by_kind.__code__.co_filename).resolve(),
         Path(rust_source_scan.__file__).resolve(),
         Path(c_api_header_closure.__code__.co_filename).resolve(),
         Path(

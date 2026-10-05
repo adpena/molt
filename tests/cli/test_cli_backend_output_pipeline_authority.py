@@ -16,7 +16,9 @@ from molt.cli import (
     frontend_pipeline,
     output,
 )
-from molt.cli.models import _BuildDiagnosticsContext
+from molt.cli.models import _BackendCacheSetup, _BuildDiagnosticsContext
+from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
+from molt.cli.runtime_build_python import BuildPythonAdmission
 
 import molt.cli as cli
 from molt.cli import backend_output_pipeline as cli_backend_output_pipeline
@@ -37,7 +39,9 @@ def test_backend_output_pipeline_authority_lives_in_backend_output_module() -> N
 
 
 @pytest.fixture
-def terminal_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def terminal_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+):
     clock = SimpleNamespace(now=10.0)
     monkeypatch.setattr(build_diagnostics.time, "perf_counter", lambda: clock.now)
     monkeypatch.setattr(
@@ -128,14 +132,28 @@ def terminal_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         build_identity=identity,
         verify=lambda: None,
     )
+    admission = BuildPythonAdmission()
+    request.addfinalizer(admission.close)
     runtime = SimpleNamespace(
+        build_python_admission=admission,
         native_runtime_codegen_binding=binding,
         native_runtime_build_identity=identity,
         runtime_lib=binding.runtime_lib,
         native_runtime_build_failure=None,
         revoke_native_runtime_admission=lambda: None,
     )
-    cache_setup = SimpleNamespace(
+    cache_setup = _BackendCacheSetup(
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin"
+        ),
+        cache_enabled=True,
+        cache_key="app-key",
+        function_cache_key=None,
+        cache_path=None,
+        function_cache_path=None,
+        cache_candidates=(),
+        cache_hit=True,
+        cache_hit_tier="module",
         stdlib_object_path=None,
         stdlib_object_cache_key=None,
         stdlib_object_manifest=None,
@@ -163,7 +181,7 @@ def terminal_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         is_luau_transpile=False,
         is_wasm=False,
         is_wasm_freestanding=False,
-        emit_mode="binary",
+        emit_mode="bin",
         output_artifact=tmp_path / "app.lib",
         output_binary=binary,
         target_triple=None,

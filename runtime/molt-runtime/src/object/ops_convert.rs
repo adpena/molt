@@ -10,6 +10,7 @@ use crate::object::ops::{as_float_extended, float_result_bits};
 use crate::object::ops_format::{format_bytes, format_string_repr_bytes};
 use crate::*;
 use molt_obj_model::MoltObject;
+use molt_obj_model::float_literal::{format_hex_float, parse_hex_float};
 use molt_obj_model::int_literal::{IntLiteralErrorKind, scan_int_literal_with_limit};
 use num_bigint::BigInt;
 use num_integer::Integer;
@@ -583,101 +584,6 @@ pub extern "C" fn molt_float_new(cls_bits: u64, val_bits: u64) -> u64 {
     })
 }
 
-fn parse_float_fromhex_text(text: &str) -> Result<f64, ()> {
-    let mut src = text.trim();
-    if src.is_empty() {
-        return Err(());
-    }
-    let mut sign = 1.0f64;
-    if let Some(rest) = src.strip_prefix('+') {
-        src = rest;
-    } else if let Some(rest) = src.strip_prefix('-') {
-        src = rest;
-        sign = -1.0;
-    }
-    if src.eq_ignore_ascii_case("inf") || src.eq_ignore_ascii_case("infinity") {
-        return Ok(sign * f64::INFINITY);
-    }
-    if src.eq_ignore_ascii_case("nan") {
-        return Ok(f64::NAN);
-    }
-    let Some(hex_src) = src.strip_prefix("0x").or_else(|| src.strip_prefix("0X")) else {
-        return Err(());
-    };
-    let mut split = hex_src.split(['p', 'P']);
-    let significand = split.next().ok_or(())?;
-    let exponent_text = split.next().ok_or(())?;
-    if split.next().is_some() {
-        return Err(());
-    }
-    let exponent = exponent_text.parse::<i32>().map_err(|_| ())?;
-    let (int_part, frac_part) = if let Some((left, right)) = significand.split_once('.') {
-        (left, right)
-    } else {
-        (significand, "")
-    };
-    if int_part.is_empty() && frac_part.is_empty() {
-        return Err(());
-    }
-    let mut mantissa = 0.0f64;
-    let mut digits = 0usize;
-    for ch in int_part.bytes() {
-        let Some(d) = (ch as char).to_digit(16) else {
-            return Err(());
-        };
-        mantissa = mantissa * 16.0 + d as f64;
-        digits += 1;
-    }
-    let mut frac_digits = 0usize;
-    for ch in frac_part.bytes() {
-        let Some(d) = (ch as char).to_digit(16) else {
-            return Err(());
-        };
-        mantissa = mantissa * 16.0 + d as f64;
-        digits += 1;
-        frac_digits += 1;
-    }
-    if digits == 0 {
-        return Err(());
-    }
-    let exp2 = exponent
-        .checked_sub((frac_digits.saturating_mul(4)) as i32)
-        .ok_or(())?;
-    let mut out = mantissa * 2f64.powi(exp2);
-    if sign.is_sign_negative() {
-        out = -out;
-    }
-    Ok(out)
-}
-
-fn float_hex_string(value: f64) -> String {
-    if value.is_nan() {
-        return "nan".to_string();
-    }
-    if value.is_infinite() {
-        if value.is_sign_negative() {
-            return "-inf".to_string();
-        }
-        return "inf".to_string();
-    }
-    if value == 0.0 {
-        if value.is_sign_negative() {
-            return "-0x0.0p+0".to_string();
-        }
-        return "0x0.0p+0".to_string();
-    }
-    let bits = value.to_bits();
-    let sign = if (bits >> 63) != 0 { "-" } else { "" };
-    let exp_bits = ((bits >> 52) & 0x7ff) as i32;
-    let frac_bits = bits & ((1u64 << 52) - 1);
-    let (lead, exponent) = if exp_bits == 0 {
-        (0u8, -1022)
-    } else {
-        (1u8, exp_bits - 1023)
-    };
-    format!("{sign}0x{lead:x}.{frac_bits:013x}p{exponent:+}")
-}
-
 fn float_value_bits_or_descriptor_error(
     _py: &PyToken<'_>,
     self_bits: u64,
@@ -695,7 +601,11 @@ fn float_value_bits_or_descriptor_error(
     None
 }
 
-fn float_value_or_descriptor_error(_py: &PyToken<'_>, self_bits: u64, method: &str) -> Option<f64> {
+pub(in crate::object) fn float_value_or_descriptor_error(
+    _py: &PyToken<'_>,
+    self_bits: u64,
+    method: &str,
+) -> Option<f64> {
     let bits = float_value_bits_or_descriptor_error(_py, self_bits, method)?;
     as_float_extended(obj_from_bits(bits))
 }
@@ -803,7 +713,7 @@ pub extern "C" fn molt_float_hex(self_bits: u64) -> u64 {
         let Some(value) = float_value_or_descriptor_error(_py, self_bits, "hex") else {
             return MoltObject::none().bits();
         };
-        let text = float_hex_string(value);
+        let text = format_hex_float(value);
         let ptr = alloc_string(_py, text.as_bytes());
         if ptr.is_null() {
             return MoltObject::none().bits();
@@ -833,32 +743,30 @@ pub extern "C" fn molt_float_fromhex(cls_bits: u64, text_bits: u64) -> u64 {
                     "bad argument type for built-in operation",
                 );
             }
+            // float.fromhex uses PyUnicode_AsUTF8AndSize: surrogate failures
+            // belong to the same strict export authority as native text names.
+            if !crate::object::ops_string::require_strict_utf8(_py, text_bits) {
+                return MoltObject::none().bits();
+            }
             let bytes = std::slice::from_raw_parts(string_bytes(text_ptr), string_len(text_ptr));
-            let text = match std::str::from_utf8(bytes) {
-                Ok(val) => val,
-                Err(_) => {
-                    return raise_exception::<_>(
-                        _py,
-                        "ValueError",
-                        "invalid hexadecimal floating-point string",
-                    );
-                }
-            };
-            let value = match parse_float_fromhex_text(text) {
-                Ok(val) => val,
-                Err(()) => {
-                    return raise_exception::<_>(
-                        _py,
-                        "ValueError",
-                        "invalid hexadecimal floating-point string",
-                    );
+            let value = match parse_hex_float(bytes) {
+                Ok(value) => value,
+                Err(error) => {
+                    let (kind, message) = error.diagnostic();
+                    return raise_exception::<_>(_py, kind, message);
                 }
             };
             let out_bits = float_result_bits(_py, value);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
             let builtins = builtin_classes(_py);
             if cls_bits == builtins.float {
                 return out_bits;
             }
+            // The subclass callback borrows the parsed float. Its temporary
+            // owner ends on success, callback failure or invalid-class rejection.
+            let _result_owner = obj_from_bits(out_bits).as_ptr().map(PtrDropGuard::new);
             if !issubclass_bits(cls_bits, builtins.float) {
                 return raise_exception::<_>(
                     _py,
@@ -1267,7 +1175,11 @@ pub extern "C" fn molt_int_bit_length(self_bits: u64) -> u64 {
     })
 }
 
-fn int_method_value_bits_or_error(_py: &PyToken<'_>, self_bits: u64, method: &str) -> Option<u64> {
+pub(in crate::object) fn int_method_value_bits_or_error(
+    _py: &PyToken<'_>,
+    self_bits: u64,
+    method: &str,
+) -> Option<u64> {
     let obj = obj_from_bits(self_bits);
     if obj.is_int() {
         return Some(self_bits);

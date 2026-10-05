@@ -239,7 +239,14 @@ class _PythonAstDigestAdmission:
 
 
 def python_node_source_key(node: ast.AST) -> PythonSourceKey:
-    """Return a stable key, tolerating CPython's ``None`` synthetic end spans."""
+    """Return a stable key, including source-located semantic AST wrappers."""
+    if isinstance(node, ast.comprehension):
+        # CPython gives the clause no positions. Its target and final executed
+        # operand delimit a unique span even across nested clauses or reparses.
+        # Preserve the wrapper kind so it cannot alias its target expression.
+        start = python_node_source_key(node.target)
+        end = python_node_source_key(node.ifs[-1] if node.ifs else node.iter)
+        return (*start[:2], *end[2:4], type(node).__name__)
     lineno = getattr(node, "lineno", None)
     col_offset = getattr(node, "col_offset", None)
     start_line = int(lineno) if lineno is not None else 0

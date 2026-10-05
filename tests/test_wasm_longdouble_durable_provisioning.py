@@ -537,9 +537,9 @@ def test_deploy_cdylib_env_absent_when_archive_unresolved(
 
 
 def test_shared_and_reloc_families_attest_exact_archive_content(tmp_path: Path) -> None:
-    from molt.cli.runtime_build_identity import (
+    from molt.cli.runtime_build_identity import _archive_identity
+    from molt.cli.runtime_identity_schema import (
         RuntimeBuildIdentity,
-        _archive_identity,
         _digest,
     )
     from tests.runtime_build_identity_helper import runtime_build_identity

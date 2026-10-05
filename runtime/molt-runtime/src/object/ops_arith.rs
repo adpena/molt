@@ -20,6 +20,7 @@ use crate::builtins::numbers::{ComplexArith, complex_arith, complex_operand};
 
 pub(crate) mod native_slots;
 mod percent_format;
+pub(crate) mod rounding;
 
 use percent_format::string_percent_format_impl;
 
@@ -176,9 +177,9 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
         // of checking every arithmetic op is unnecessary.
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if let Some(result) = float_subtype_binary_result(
-            _py, lhs, rhs, b"__add__", b"__radd__", "+",
-        ) {
+        if let Some(result) =
+            float_subtype_binary_result(_py, lhs, rhs, b"__add__", b"__radd__", "+")
+        {
             return result;
         }
         // BigInt fast path — hoisted above inline int/float checks because
@@ -200,8 +201,10 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
             }
         }
         // Integer-only projections exclude every float storage representation.
-        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
-        {
+        if let (Some(li), Some(ri)) = (
+            index_i64_integral_bits(lhs.bits()),
+            index_i64_integral_bits(rhs.bits()),
+        ) {
             let res = li as i128 + ri as i128;
             return int_bits_from_i128(_py, res);
         }
@@ -275,7 +278,10 @@ pub extern "C" fn molt_add(a: u64, b: u64) -> u64 {
                 }
             }
         }
-        if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits())) {
+        if let (Some(l_big), Some(r_big)) = (
+            crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()),
+            crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()),
+        ) {
             let res = l_big + r_big;
             if let Some(i) = bigint_to_inline(&res) {
                 return MoltObject::from_int(i).bits();
@@ -424,9 +430,9 @@ pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if let Some(result) = float_subtype_binary_result(
-            _py, lhs, rhs, b"__sub__", b"__rsub__", "-",
-        ) {
+        if let Some(result) =
+            float_subtype_binary_result(_py, lhs, rhs, b"__sub__", b"__rsub__", "-")
+        {
             return result;
         }
         // BigInt fast path — hoisted above inline int/float checks to avoid
@@ -444,8 +450,10 @@ pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
                 return bigint_bits(_py, res);
             }
         }
-        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
-        {
+        if let (Some(li), Some(ri)) = (
+            index_i64_integral_bits(lhs.bits()),
+            index_i64_integral_bits(rhs.bits()),
+        ) {
             let res = li as i128 - ri as i128;
             return int_bits_from_i128(_py, res);
         }
@@ -457,7 +465,10 @@ pub extern "C" fn molt_sub(a: u64, b: u64) -> u64 {
             Err(()) => return MoltObject::none().bits(),
             Ok(None) => {}
         }
-        if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits())) {
+        if let (Some(l_big), Some(r_big)) = (
+            crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()),
+            crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()),
+        ) {
             let res = l_big - r_big;
             if let Some(i) = bigint_to_inline(&res) {
                 return MoltObject::from_int(i).bits();
@@ -548,7 +559,10 @@ pub extern "C" fn molt_inplace_sub(a: u64, b: u64) -> u64 {
         // Integer-only projections exclude every float storage representation.
         if builtin_operand(_py, lhs)
             && builtin_operand(_py, rhs)
-            && let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
+            && let (Some(li), Some(ri)) = (
+                index_i64_integral_bits(lhs.bits()),
+                index_i64_integral_bits(rhs.bits()),
+            )
         {
             return int_bits_from_i128(_py, li as i128 - ri as i128);
         }
@@ -1036,8 +1050,11 @@ unsafe fn bytearray_concat_in_place(_py: &PyToken<'_>, ptr: *mut u8, other_bits:
     unsafe {
         let other = obj_from_bits(other_bits);
         let Some(other_ptr) = other.as_ptr() else {
-            let msg = format!("can't concat {} to bytearray", type_name(_py, other));
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return native_slots::SequenceConcatKind::BytesLike.raise(
+                _py,
+                MoltObject::from_ptr(ptr).bits(),
+                other_bits,
+            );
         };
         let other_type = object_type_id(other_ptr);
         let payload = if other_type == TYPE_ID_MEMORYVIEW {
@@ -1049,8 +1066,11 @@ unsafe fn bytearray_concat_in_place(_py: &PyToken<'_>, ptr: *mut u8, other_bits:
             } else if let Some(buf) = memoryview_collect_bytes(other_ptr) {
                 buf
             } else {
-                let msg = format!("can't concat {} to bytearray", type_name(_py, other));
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return native_slots::SequenceConcatKind::BytesLike.raise(
+                    _py,
+                    MoltObject::from_ptr(ptr).bits(),
+                    other_bits,
+                );
             }
         } else if other_type == TYPE_ID_BYTES || other_type == TYPE_ID_BYTEARRAY {
             if other_ptr == ptr {
@@ -1059,8 +1079,11 @@ unsafe fn bytearray_concat_in_place(_py: &PyToken<'_>, ptr: *mut u8, other_bits:
                 bytes_like_slice_raw(other_ptr).unwrap_or(&[]).to_vec()
             }
         } else {
-            let msg = format!("can't concat {} to bytearray", type_name(_py, other));
-            return raise_exception::<_>(_py, "TypeError", &msg);
+            return native_slots::SequenceConcatKind::BytesLike.raise(
+                _py,
+                MoltObject::from_ptr(ptr).bits(),
+                other_bits,
+            );
         };
         let Some(required_len) = bytearray_len(ptr).checked_add(payload.len()) else {
             return raise_exception::<_>(_py, "MemoryError", "bytearray allocation failed");
@@ -1081,7 +1104,10 @@ pub extern "C" fn molt_inplace_mul(a: u64, b: u64) -> u64 {
         // Integer-only projections exclude every float storage representation.
         if builtin_operand(_py, lhs)
             && builtin_operand(_py, rhs)
-            && let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
+            && let (Some(li), Some(ri)) = (
+                index_i64_integral_bits(lhs.bits()),
+                index_i64_integral_bits(rhs.bits()),
+            )
         {
             return int_bits_from_i128(_py, li as i128 * ri as i128);
         }
@@ -1133,9 +1159,9 @@ pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if let Some(result) = float_subtype_binary_result(
-            _py, lhs, rhs, b"__mul__", b"__rmul__", "*",
-        ) {
+        if let Some(result) =
+            float_subtype_binary_result(_py, lhs, rhs, b"__mul__", b"__rmul__", "*")
+        {
             return result;
         }
         // BigInt fast path — hoisted to avoid wasted to_i64/is_float checks
@@ -1153,8 +1179,10 @@ pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
                 return bigint_bits(_py, res);
             }
         }
-        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
-        {
+        if let (Some(li), Some(ri)) = (
+            index_i64_integral_bits(lhs.bits()),
+            index_i64_integral_bits(rhs.bits()),
+        ) {
             let res = li as i128 * ri as i128;
             return int_bits_from_i128(_py, res);
         }
@@ -1183,7 +1211,10 @@ pub extern "C" fn molt_mul(a: u64, b: u64) -> u64 {
             };
             return repeat_sequence(_py, ptr, count).unwrap_or_else(|| MoltObject::none().bits());
         }
-        if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits())) {
+        if let (Some(l_big), Some(r_big)) = (
+            crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()),
+            crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()),
+        ) {
             let res = l_big * r_big;
             if let Some(i) = bigint_to_inline(&res) {
                 return MoltObject::from_int(i).bits();
@@ -1306,15 +1337,17 @@ fn div_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if let Some(result) = float_subtype_binary_result(
-            _py, lhs, rhs, b"__truediv__", b"__rtruediv__", err_op,
-        ) {
+        if let Some(result) =
+            float_subtype_binary_result(_py, lhs, rhs, b"__truediv__", b"__rtruediv__", err_op)
+        {
             return result;
         }
         // Python true division: int / int always returns float
         // Integer-only projections exclude every float storage representation.
-        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
-        {
+        if let (Some(li), Some(ri)) = (
+            index_i64_integral_bits(lhs.bits()),
+            index_i64_integral_bits(rhs.bits()),
+        ) {
             if ri == 0 {
                 return raise_numeric_error(_py, NumericErrorContext::IntegerTrueDivision);
             }
@@ -1343,7 +1376,10 @@ fn div_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         // dispatch. Floats and complexes are already handled above, so `to_bigint`
         // here only matches genuine integers.
         if (bigint_ptr_from_bits(a).is_some() || bigint_ptr_from_bits(b).is_some())
-            && let (Some(la), Some(lb)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()))
+            && let (Some(la), Some(lb)) = (
+                crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()),
+                crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()),
+            )
         {
             if lb.is_zero() {
                 return raise_numeric_error(_py, NumericErrorContext::IntegerTrueDivision);
@@ -1408,12 +1444,15 @@ fn floordiv_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if let Some(result) = float_subtype_binary_result(
-            _py, lhs, rhs, b"__floordiv__", b"__rfloordiv__", err_op,
-        ) {
+        if let Some(result) =
+            float_subtype_binary_result(_py, lhs, rhs, b"__floordiv__", b"__rfloordiv__", err_op)
+        {
             return result;
         }
-        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits())) {
+        if let (Some(li), Some(ri)) = (
+            index_i64_integral_bits(lhs.bits()),
+            index_i64_integral_bits(rhs.bits()),
+        ) {
             if ri == 0 {
                 return raise_numeric_error(_py, NumericErrorContext::IntegerFloorDivision);
             }
@@ -1421,7 +1460,10 @@ fn floordiv_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
                 .expect("nonzero i64 operands fit i128 division");
             return int_bits_from_i128(_py, quotient);
         }
-        if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits())) {
+        if let (Some(l_big), Some(r_big)) = (
+            crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()),
+            crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()),
+        ) {
             if r_big.is_zero() {
                 return raise_numeric_error(_py, NumericErrorContext::IntegerFloorDivision);
             }
@@ -1436,7 +1478,12 @@ fn floordiv_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
                 if rf == 0.0 {
                     return raise_numeric_error(_py, NumericErrorContext::FloatFloorDivision);
                 }
-                return float_result_bits(_py, python_float_divmod(lf, rf).expect("nonzero divisor checked").0);
+                return float_result_bits(
+                    _py,
+                    python_float_divmod(lf, rf)
+                        .expect("nonzero divisor checked")
+                        .0,
+                );
             }
             Err(()) => return MoltObject::none().bits(),
             Ok(None) => {}
@@ -1489,13 +1536,16 @@ fn mod_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if let Some(result) = float_subtype_binary_result(
-            _py, lhs, rhs, b"__mod__", b"__rmod__", err_op,
-        ) {
+        if let Some(result) =
+            float_subtype_binary_result(_py, lhs, rhs, b"__mod__", b"__rmod__", err_op)
+        {
             return result;
         }
         // Int fast path first — much more common than string % formatting.
-        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits())) {
+        if let (Some(li), Some(ri)) = (
+            index_i64_integral_bits(lhs.bits()),
+            index_i64_integral_bits(rhs.bits()),
+        ) {
             if ri == 0 {
                 return raise_numeric_error(_py, NumericErrorContext::IntegerModulo);
             }
@@ -1513,7 +1563,10 @@ fn mod_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
                 }
             }
         }
-        if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits())) {
+        if let (Some(l_big), Some(r_big)) = (
+            crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()),
+            crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()),
+        ) {
             if r_big.is_zero() {
                 return raise_numeric_error(_py, NumericErrorContext::IntegerModulo);
             }
@@ -1530,7 +1583,9 @@ fn mod_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
                 }
                 return float_result_bits(
                     _py,
-                    python_float_divmod(lf, rf).expect("nonzero divisor checked").1,
+                    python_float_divmod(lf, rf)
+                        .expect("nonzero divisor checked")
+                        .1,
                 );
             }
             Err(()) => return MoltObject::none().bits(),
@@ -1742,9 +1797,9 @@ fn pow_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
     {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
-        if let Some(result) = float_subtype_binary_result(
-            _py, lhs, rhs, b"__pow__", b"__rpow__", err_op,
-        ) {
+        if let Some(result) =
+            float_subtype_binary_result(_py, lhs, rhs, b"__pow__", b"__rpow__", err_op)
+        {
             return result;
         }
         if (complex_ptr_from_bits(a).is_some() || complex_ptr_from_bits(b).is_some())
@@ -1755,8 +1810,10 @@ fn pow_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             return result;
         }
         // Integer-only projections exclude every float storage representation.
-        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
-        {
+        if let (Some(li), Some(ri)) = (
+            index_i64_integral_bits(lhs.bits()),
+            index_i64_integral_bits(rhs.bits()),
+        ) {
             if ri >= 0 {
                 if let Some(res) = pow_i64_checked(li, ri) {
                     return int_bits_from_i64(_py, res);
@@ -1782,8 +1839,10 @@ fn pow_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
             }
             return float_result_bits(_py, out);
         }
-        if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()))
-        {
+        if let (Some(l_big), Some(r_big)) = (
+            crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()),
+            crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()),
+        ) {
             if !r_big.is_negative() {
                 let Some(res) = integer_pow_nonnegative(&l_big, r_big.magnitude()) else {
                     return raise_exception::<_>(_py, "OverflowError", "exponent too large");
@@ -1863,7 +1922,11 @@ pub extern "C" fn molt_pow_mod(a: u64, b: u64, m: u64) -> u64 {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         let mod_obj = obj_from_bits(m);
-        if let (Some(li), Some(ri), Some(mi)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()), index_i64_integral_bits(mod_obj.bits())) {
+        if let (Some(li), Some(ri), Some(mi)) = (
+            index_i64_integral_bits(lhs.bits()),
+            index_i64_integral_bits(rhs.bits()),
+            index_i64_integral_bits(mod_obj.bits()),
+        ) {
             let (base, exp, modulus) = (li as i128, ri, mi as i128);
             if modulus == 0 {
                 return raise_numeric_error(_py, NumericErrorContext::ModularPowerZero);
@@ -1885,9 +1948,11 @@ pub extern "C" fn molt_pow_mod(a: u64, b: u64, m: u64) -> u64 {
             };
             return int_bits_from_i128(_py, result);
         }
-        if let (Some(base), Some(exp), Some(modulus)) =
-            (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(mod_obj.bits()))
-        {
+        if let (Some(base), Some(exp), Some(modulus)) = (
+            crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()),
+            crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()),
+            crate::builtins::numbers::index_bigint_integral_bits(mod_obj.bits()),
+        ) {
             if modulus.is_zero() {
                 return raise_numeric_error(_py, NumericErrorContext::ModularPowerZero);
             }
@@ -1930,165 +1995,9 @@ pub extern "C" fn molt_pow_mod(a: u64, b: u64, m: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_round(val_bits: u64, ndigits_bits: u64, has_ndigits_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let val = obj_from_bits(val_bits);
-        let has_ndigits = to_i64(obj_from_bits(has_ndigits_bits)).unwrap_or(0) != 0;
-        if let Some(ptr) = bigint_ptr_from_bits(val_bits) {
-            if !has_ndigits {
-                return val_bits;
-            }
-            let ndigits_obj = obj_from_bits(ndigits_bits);
-            if ndigits_obj.is_none() {
-                return val_bits;
-            }
-            let ndigits = index_i64_from_obj(_py, ndigits_bits, "round() ndigits must be int");
-            if ndigits >= 0 {
-                return val_bits;
-            }
-            let exp = (-ndigits) as u32;
-            let value = unsafe { bigint_ref(ptr).clone() };
-            let pow = BigInt::from(10).pow(exp);
-            if pow.is_zero() {
-                return val_bits;
-            }
-            let div = value.div_floor(&pow);
-            let rem = value.mod_floor(&pow);
-            let twice = &rem * 2;
-            let mut rounded = div;
-            if twice > pow || (twice == pow && !rounded.is_even()) {
-                if value.is_negative() {
-                    rounded -= 1;
-                } else {
-                    rounded += 1;
-                }
-            }
-            let result = rounded * pow;
-            if let Some(i) = bigint_to_inline(&result) {
-                return MoltObject::from_int(i).bits();
-            }
-            return bigint_bits(_py, result);
-        }
-        if !val.is_int()
-            && !val.is_bool()
-            && !val.is_float()
-            && let Some(ptr) = maybe_ptr_from_bits(val_bits)
-        {
-            unsafe {
-                let round_name_bits =
-                    intern_static_name(_py, &runtime_state(_py).interned.round_name, b"__round__");
-                if let Some(call_bits) = attr_lookup_ptr(_py, ptr, round_name_bits) {
-                    let ndigits_obj = obj_from_bits(ndigits_bits);
-                    let want_arg = has_ndigits && !ndigits_obj.is_none();
-                    let arity = callable_arity(_py, call_bits).unwrap_or(0);
-                    let res_bits = if arity <= 1 {
-                        if want_arg {
-                            call_callable1(_py, call_bits, ndigits_bits)
-                        } else {
-                            call_callable0(_py, call_bits)
-                        }
-                    } else {
-                        let arg_bits = if want_arg {
-                            ndigits_bits
-                        } else {
-                            MoltObject::none().bits()
-                        };
-                        call_callable1(_py, call_bits, arg_bits)
-                    };
-                    dec_ref_bits(_py, call_bits);
-                    return res_bits;
-                }
-            }
-        }
-        if let Some(i) = index_i64_integral_bits(val.bits())
-        {
-            if !has_ndigits {
-                // Full-range boxing — `from_int` truncates a fit-i64 BigInt
-                // (e.g. round(2**60)) or exact-integer float >= 2**46.
-                return int_bits_from_i64(_py, i);
-            }
-            let ndigits_obj = obj_from_bits(ndigits_bits);
-            if ndigits_obj.is_none() {
-                return int_bits_from_i64(_py, i);
-            }
-            let Some(ndigits) = index_i64_integral_bits(ndigits_obj.bits()) else {
-                return raise_exception::<_>(_py, "TypeError", "round() ndigits must be int");
-            };
-            if ndigits >= 0 {
-                return int_bits_from_i64(_py, i);
-            }
-            let exp = (-ndigits) as u32;
-            if exp > 38 {
-                return MoltObject::from_int(0).bits();
-            }
-            let pow = 10_i128.pow(exp);
-            let value = i as i128;
-            if pow == 0 {
-                return int_bits_from_i64(_py, i);
-            }
-            let div = value / pow;
-            let rem = value % pow;
-            let abs_rem = rem.abs();
-            let twice = abs_rem.saturating_mul(2);
-            let mut rounded = div;
-            if twice > pow || (twice == pow && (div & 1) != 0) {
-                rounded += if value >= 0 { 1 } else { -1 };
-            }
-            let result = rounded.saturating_mul(pow);
-            return int_bits_from_i128(_py, result);
-        }
-        if let Some(f) = to_f64(val) {
-            if !has_ndigits {
-                if f.is_nan() {
-                    return raise_exception::<_>(
-                        _py,
-                        "ValueError",
-                        "cannot convert float NaN to integer",
-                    );
-                }
-                if f.is_infinite() {
-                    return raise_exception::<_>(
-                        _py,
-                        "OverflowError",
-                        "cannot convert float infinity to integer",
-                    );
-                }
-                let rounded = round_half_even(f);
-                let big = bigint_from_f64_trunc(rounded);
-                if let Some(i) = bigint_to_inline(&big) {
-                    return MoltObject::from_int(i).bits();
-                }
-                return bigint_bits(_py, big);
-            }
-            let ndigits_obj = obj_from_bits(ndigits_bits);
-            if ndigits_obj.is_none() {
-                if f.is_nan() {
-                    return raise_exception::<_>(
-                        _py,
-                        "ValueError",
-                        "cannot convert float NaN to integer",
-                    );
-                }
-                if f.is_infinite() {
-                    return raise_exception::<_>(
-                        _py,
-                        "OverflowError",
-                        "cannot convert float infinity to integer",
-                    );
-                }
-                let rounded = round_half_even(f);
-                let big = bigint_from_f64_trunc(rounded);
-                if let Some(i) = bigint_to_inline(&big) {
-                    return MoltObject::from_int(i).bits();
-                }
-                return bigint_bits(_py, big);
-            }
-            let Some(ndigits) = index_i64_integral_bits(ndigits_obj.bits()) else {
-                return raise_exception::<_>(_py, "TypeError", "round() ndigits must be int");
-            };
-            let rounded = round_float_ndigits(f, ndigits);
-            return float_result_bits(_py, rounded);
-        }
-        raise_exception::<_>(_py, "TypeError", "round() expects a real number")
+    crate::with_gil_entry_nopanic!(py, {
+        let supplied = to_i64(obj_from_bits(has_ndigits_bits)).unwrap_or(0) != 0;
+        rounding::round(py, val_bits, ndigits_bits, supplied)
     })
 }
 
@@ -2157,18 +2066,6 @@ pub(super) fn binary_type_error(
     rhs: MoltObject,
     op: &str,
 ) -> u64 {
-    // CPython uses "can only concatenate X (not 'Y') to X" for sequence +
-    if op == "+" {
-        let ltype = type_name(_py, lhs);
-        let rtype = type_name(_py, rhs);
-        if matches!(&*ltype, "str" | "list" | "tuple" | "bytes") && ltype != rtype {
-            let msg = format!(
-                "can only concatenate {} (not \"{}\") to {}",
-                ltype, rtype, ltype
-            );
-            return raise_exception::<_>(_py, "TypeError", &msg);
-        }
-    }
     let msg = format!(
         "unsupported operand type(s) for {op}: '{}' and '{}'",
         type_name(_py, lhs),
@@ -2290,8 +2187,10 @@ pub extern "C" fn molt_bit_or(a: u64, b: u64) -> u64 {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         // Integer-only projections exclude every float storage representation.
-        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
-        {
+        if let (Some(li), Some(ri)) = (
+            index_i64_integral_bits(lhs.bits()),
+            index_i64_integral_bits(rhs.bits()),
+        ) {
             if lhs.is_bool() && rhs.is_bool() {
                 return MoltObject::from_bool((li != 0) | (ri != 0)).bits();
             }
@@ -2301,7 +2200,10 @@ pub extern "C" fn molt_bit_or(a: u64, b: u64) -> u64 {
             }
             return bigint_bits(_py, BigInt::from(li) | BigInt::from(ri));
         }
-        if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits())) {
+        if let (Some(l_big), Some(r_big)) = (
+            crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()),
+            crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()),
+        ) {
             let res = l_big | r_big;
             if let Some(i) = bigint_to_inline(&res) {
                 return MoltObject::from_int(i).bits();
@@ -2471,8 +2373,10 @@ pub extern "C" fn molt_bit_and(a: u64, b: u64) -> u64 {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         // Integer-only projections exclude every float storage representation.
-        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
-        {
+        if let (Some(li), Some(ri)) = (
+            index_i64_integral_bits(lhs.bits()),
+            index_i64_integral_bits(rhs.bits()),
+        ) {
             if lhs.is_bool() && rhs.is_bool() {
                 return MoltObject::from_bool((li != 0) & (ri != 0)).bits();
             }
@@ -2482,7 +2386,10 @@ pub extern "C" fn molt_bit_and(a: u64, b: u64) -> u64 {
             }
             return bigint_bits(_py, BigInt::from(li) & BigInt::from(ri));
         }
-        if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits())) {
+        if let (Some(l_big), Some(r_big)) = (
+            crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()),
+            crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()),
+        ) {
             let res = l_big & r_big;
             if let Some(i) = bigint_to_inline(&res) {
                 return MoltObject::from_int(i).bits();
@@ -2601,8 +2508,10 @@ pub extern "C" fn molt_bit_xor(a: u64, b: u64) -> u64 {
         let lhs = obj_from_bits(a);
         let rhs = obj_from_bits(b);
         // Integer-only projections exclude every float storage representation.
-        if let (Some(li), Some(ri)) = (index_i64_integral_bits(lhs.bits()), index_i64_integral_bits(rhs.bits()))
-        {
+        if let (Some(li), Some(ri)) = (
+            index_i64_integral_bits(lhs.bits()),
+            index_i64_integral_bits(rhs.bits()),
+        ) {
             if lhs.is_bool() && rhs.is_bool() {
                 return MoltObject::from_bool((li != 0) ^ (ri != 0)).bits();
             }
@@ -2612,7 +2521,10 @@ pub extern "C" fn molt_bit_xor(a: u64, b: u64) -> u64 {
             }
             return bigint_bits(_py, BigInt::from(li) ^ BigInt::from(ri));
         }
-        if let (Some(l_big), Some(r_big)) = (crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()), crate::builtins::numbers::index_bigint_integral_bits(rhs.bits())) {
+        if let (Some(l_big), Some(r_big)) = (
+            crate::builtins::numbers::index_bigint_integral_bits(lhs.bits()),
+            crate::builtins::numbers::index_bigint_integral_bits(rhs.bits()),
+        ) {
             let res = l_big ^ r_big;
             if let Some(i) = bigint_to_inline(&res) {
                 return MoltObject::from_int(i).bits();
@@ -2741,7 +2653,11 @@ pub extern "C" fn molt_invert(val: u64) -> u64 {
 
 /// Resolve a subtype's unary protocol before any physical numeric projection.
 /// A missing inherited slot still permits the base numeric payload operation.
-pub(super) fn unary_subtype_result(py: &PyToken<'_>, value: MoltObject, name: &[u8]) -> Option<u64> {
+pub(super) fn unary_subtype_result(
+    py: &PyToken<'_>,
+    value: MoltObject,
+    name: &[u8],
+) -> Option<u64> {
     if builtin_operand(py, value) {
         return None;
     }
@@ -3135,8 +3051,11 @@ pub extern "C" fn molt_inplace_rshift(a: u64, b: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use super::complex_pow;
     use crate::*;
     use num_bigint::BigInt;
+    use num_integer::Integer;
+    use num_traits::Zero;
 
     fn repr_string(_py: &PyToken<'_>, bits: u64) -> String {
         let repr_bits = crate::molt_repr_from_obj(bits);
@@ -3422,7 +3341,7 @@ mod tests {
                 molt_div,
                 molt_floordiv,
                 molt_mod,
-                crate::molt_divmod,
+                crate::molt_divmod_builtin,
                 molt_pow,
             ] {
                 for (lhs, rhs) in [(huge, one), (one, huge), (huge, zero)] {

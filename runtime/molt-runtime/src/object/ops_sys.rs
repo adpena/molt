@@ -1108,6 +1108,14 @@ fn len_impl(val: u64, builtin_only: bool) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 let type_id = object_type_id(ptr);
+                if builtin_only && crate::object::tuple_storage::native_tuple(val).is_some() {
+                    let tuple =
+                        crate::object::tuple_storage::TupleStorage::from_bits(_py, val).unwrap();
+                    return tuple.len().map_or_else(
+                        || MoltObject::none().bits(),
+                        |len| int_bits_from_i64(_py, len as i64),
+                    );
+                }
                 if builtin_only || crate::object::iterable::builtin_receiver(_py, ptr) {
                     if type_id == TYPE_ID_STRING {
                         let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));

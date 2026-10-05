@@ -11,6 +11,7 @@ pub(super) struct OpLoopRuntimeCallContext<'a> {
     pub(super) import_ids: &'a TrackedImportIds,
     pub(super) locals: &'a WasmFrameLocals,
     pub(super) reloc_enabled: bool,
+    pub(super) guard_profile_local: Option<u32>,
 }
 
 pub(super) fn emit_op_loop_runtime_call(
@@ -19,6 +20,13 @@ pub(super) fn emit_op_loop_runtime_call(
     op: &OpIR,
     call: OpLoopRuntimeCallSpec,
 ) {
+    let profile_local = context.guard_profile_local;
+    if let Some(local) = profile_local {
+        func.instruction(&Instruction::LocalGet(local));
+        func.instruction(&Instruction::I64Eqz);
+        func.instruction(&Instruction::I32Eqz);
+        func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
+    }
     for arg in call.args {
         match *arg {
             OpLoopRuntimeArgSpec::Local(index) => {
@@ -42,7 +50,19 @@ pub(super) fn emit_op_loop_runtime_call(
     }
 
     emit_call(func, context.reloc_enabled, context.import_ids[call.import]);
-    if call.discard_result {
+    if matches!(op.kind.as_str(), "guard_tag" | "guard_type") {
+        // Runtime guards validate both reads but share operand zero's owner.
+        // An ordinary borrowed runtime return would incorrectly mint a +1.
+        func.instruction(&Instruction::Drop);
+        if profile_local.is_some() {
+            func.instruction(&Instruction::End);
+        }
+        if let Some(out) = context.locals.bound_op_result_slot(op) {
+            let source = &op.args.as_ref().expect("guard args")[0];
+            func.instruction(&Instruction::LocalGet(context.locals[source]));
+            func.instruction(&Instruction::LocalSet(out));
+        }
+    } else if call.discard_result {
         discard_runtime_result(func, context.import_ids, context.reloc_enabled, call.import);
     } else {
         store_runtime_result(

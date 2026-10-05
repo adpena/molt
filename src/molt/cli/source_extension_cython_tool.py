@@ -16,7 +16,7 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
 from molt import process_guard
-from molt.cli.source_build_environment import (
+from molt.cli.source_build_environment_schema import (
     active_source_build_requirements,
     canonical_source_marker_environment,
 )

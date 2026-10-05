@@ -19,18 +19,23 @@ from molt.cli import (
 from molt.cli.artifact_sync import _artifact_sync_state_path
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.models import (
+    _BackendCacheSetup,
     _BuildOutputLayout,
     _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN,
     _PreparedBackendIR,
+    _PreparedBackendSetup,
+    _PreparedBuildConfig,
     _RuntimeArtifactState,
 )
 from molt.cli.output import fail
-from molt.cli.installed_runtime import InstalledNativeAdmission
+from molt.cli.runtime_build_python import BuildPythonAdmission
+from molt.cli.installed_runtime_contract import InstalledNativeAdmission
 from molt.cli.native_link_manifest import (
     native_link_dependency_manifest_path,
     _read_native_link_dependency_manifest,
 )
 from molt.cli.native_link_custody import observe_native_link_custody
+from molt.target_python import TargetPythonVersion
 from molt.toolchain_identity import stable_regular_file_identity
 from tests.cli.native_link_test_support import (
     native_codegen_binding,
@@ -59,6 +64,7 @@ def test_native_object_publication_is_one_admitted_transaction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys,
+    request: pytest.FixtureRequest,
     cache_hit: bool,
     failure: str,
 ) -> None:
@@ -84,7 +90,10 @@ def test_native_object_publication_is_one_admitted_transaction(
     write_test_static_archive(archive)
     identity = write_test_native_link_manifest(archive)
     binding = native_codegen_binding(archive, identity)
+    admission = BuildPythonAdmission()
+    request.addfinalizer(admission.close)
     runtime_state = _RuntimeArtifactState(
+        build_python_admission=admission,
         runtime_lib=archive,
         native_runtime_build_identity=identity,
         native_runtime_codegen_binding=binding,
@@ -157,8 +166,32 @@ def test_native_object_publication_is_one_admitted_transaction(
         original_replace(source, target)
 
     monkeypatch.setattr(file_publication, "durable_replace", replace)
-    cache_setup = NS(
-        stdlib_object_path=backend_object if failure == "shared_stdlib" else None
+    cache_setup = _BackendCacheSetup(
+        artifact_contract=contract,
+        cache_enabled=True,
+        cache_key="module-key",
+        function_cache_key=None,
+        cache_path=cache_path,
+        function_cache_path=None,
+        stdlib_object_path=backend_object if failure == "shared_stdlib" else None,
+        stdlib_object_cache_key=None,
+        cache_candidates=(("module", cache_path),) if cache_hit else (),
+        cache_hit=cache_hit,
+        cache_hit_tier="module" if cache_hit else None,
+    )
+    backend_setup = _PreparedBackendSetup(
+        runtime_state=runtime_state,
+        backend_bin=tmp_path / "backend.exe",
+        cache_setup=cache_setup,
+        cache_hit=cache_setup.cache_hit,
+        cache_hit_tier=cache_setup.cache_hit_tier,
+        cache_key=cache_setup.cache_key,
+        function_cache_key=cache_setup.function_cache_key,
+        cache_path=cache_setup.cache_path,
+        function_cache_path=cache_setup.function_cache_path,
+        stdlib_object_path=cache_setup.stdlib_object_path,
+        cache_candidates=list(cache_setup.cache_candidates),
+        backend_compiler_fingerprint="fixture",
     )
     runtime_context = NS(
         runtime_state=runtime_state,
@@ -228,7 +261,7 @@ def test_native_object_publication_is_one_admitted_transaction(
             synchronize(candidate)
         if failure == "cache_sync":
             return None, fail("injected cache-sync failure", True, command="build")
-        return NS(cache_setup=cache_setup), None
+        return backend_setup, None
 
     def prepare_compile(**kwargs):
         candidate = kwargs["output_artifact"]
@@ -279,18 +312,26 @@ def test_native_object_publication_is_one_admitted_transaction(
         native_arch_perf_enabled=False,
         resolved_diagnostics_verbosity="quiet",
     )
-    config = NS(
+    config = _PreparedBuildConfig(
         pgo_profile_summary=None,
+        pgo_profile_path=None,
         runtime_feedback_summary=None,
-        target_python="3.12",
-        runtime_cargo_profile="dev-fast",
-        backend_cargo_profile="dev-fast",
-        cargo_timeout=None,
-        backend_timeout=None,
-        resolved_capability_policy=CapabilityManifest().resolve(),
-        capabilities_source=None,
+        runtime_feedback_path=None,
+        pgo_hot_function_names=set(),
+        pgo_hot_function_names_sorted=(),
         pgo_profile_payload=None,
         runtime_feedback_payload=None,
+        cargo_timeout=None,
+        backend_timeout=None,
+        link_timeout=None,
+        frontend_phase_timeout=None,
+        backend_profile="dev",
+        runtime_cargo_profile="dev-fast",
+        backend_cargo_profile="dev-fast",
+        resolved_capability_policy=CapabilityManifest().resolve(),
+        capabilities_source=None,
+        target_python=TargetPythonVersion(3, 12, 0),
+        target_sys_platform=None,
     )
     bundle = NS(
         prepared_frontend_run_ticket=NS(

@@ -21,156 +21,77 @@ impl RustBackend {
         }
     }
 
-    pub(super) fn emit_op_const(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
-            }
-        };
-
-        let o = out();
-        let rhs = if let Some(v) = op.value {
-            format!("MoltValue::Int({v})")
-        } else if let Some(f) = op.f_value {
-            format!("MoltValue::Float({f:.17})")
-        } else if let Some(ref s) = op.s_value {
-            format!("MoltValue::Str({}.to_string())", rust_string_literal(s))
-        } else {
-            self.emit_unsupported_op(op, "constant has no literal payload");
-            return;
-        };
-        self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
+    fn emit_literal_value(&mut self, op: &OpIR, rhs: &str) {
+        self.emit_line(&declare_molt_value(&out_var(op), rhs, &self.hoisted_vars));
     }
 
-    pub(super) fn emit_op_const_float(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
+    /// Materialization consumes the shared validated literal value, whose
+    /// exhaustive generated shape owns both opcode membership and aliases.
+    pub(super) fn emit_op_literal(&mut self, op: &OpIR) -> bool {
+        use molt_ir::literal_payload::SimpleLiteral;
+        use molt_ir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
+
+        let literal = match SimpleLiteral::from_simple(op) {
+            Ok(Some(literal)) => literal,
+            Ok(None) => return false,
+            Err(reason) => {
+                self.emit_unsupported_op(op, reason);
+                return true;
             }
         };
-
-        let Some(f) = op.f_value else {
-            self.emit_unsupported_op(op, "float constant has no f_value payload");
-            return;
-        };
-        let o = out();
-        let rhs = format!("MoltValue::Float({f:.17})");
-        self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
-    }
-
-    pub(super) fn emit_op_const_str(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
+        let rhs: Result<String, String> = match literal {
+            SimpleLiteral::Int(value) => Ok(format!("MoltValue::Int({value}i64)")),
+            SimpleLiteral::Float(value) => Ok(format!(
+                "MoltValue::Float(f64::from_bits({}u64))",
+                value.to_bits()
+            )),
+            SimpleLiteral::Bool(value) => Ok(format!("MoltValue::Bool({value})")),
+            SimpleLiteral::None => Ok("MoltValue::None".into()),
+            SimpleLiteral::Owned(OwnedLiteralPayloadKind::String, payload) => {
+                let bytes = payload.as_bytes();
+                Ok(format!(
+                    "MoltValue::Str(PythonString::from_utf8_surrogatepass(&{bytes:?}).expect(\"admitted Python text\"))"
+                ))
+            }
+            SimpleLiteral::Owned(OwnedLiteralPayloadKind::BigintDecimal, _) => literal
+                .exact_integer_value(i64::MAX as u128 + 1)
+                .and_then(|value| i64::try_from(value).ok())
+                .map(|value| format!("MoltValue::Int({value}i64)"))
+                .ok_or_else(|| {
+                    "bigint literal exceeds Rust backend i64 value representation".into()
+                }),
+            SimpleLiteral::Owned(OwnedLiteralPayloadKind::Bytes, _) => {
+                Err("bytes literal requires the target's Python object representation".into())
             }
         };
-
-        let Some(s) = op.s_value.as_deref() else {
-            self.emit_unsupported_op(op, "string constant has no s_value payload");
-            return;
-        };
-        let o = out();
-        let rhs = format!("MoltValue::Str({}.to_string())", rust_string_literal(s));
-        self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
-    }
-
-    pub(super) fn emit_op_const_bool(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
-            }
-        };
-
-        let Some(value) = op.value else {
-            self.emit_unsupported_op(op, "bool constant has no value payload");
-            return;
-        };
-        let o = out();
-        let b = value != 0;
-        let rhs = format!("MoltValue::Bool({b})");
-        self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
-    }
-
-    pub(super) fn emit_op_const_none(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
-            }
-        };
-
-        let o = out();
-        self.emit_line(&declare(&o, "MoltValue::None", &self.hoisted_vars.clone()));
-    }
-
-    pub(super) fn emit_op_const_bytes(&mut self, op: &OpIR) {
-        self.emit_unsupported_op(
-            op,
-            "bytes literals require a Rust backend bytes value representation",
-        );
-    }
-
-    pub(super) fn emit_op_const_bigint(&mut self, op: &OpIR) {
-        let out = || out_var(op);
-        let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
-            if hoisted.contains(out_name) {
-                format!("{out_name} = {rhs};")
-            } else {
-                format!("let mut {out_name}: MoltValue = {rhs};")
-            }
-        };
-
-        let Some(s) = op.s_value.as_deref() else {
-            self.emit_unsupported_op(op, "bigint constant has no decimal payload");
-            return;
-        };
-        let o = out();
-        if let Ok(value) = s.parse::<i64>() {
-            let rhs = format!("MoltValue::Int({value}i64)");
-            self.emit_line(&declare(&o, &rhs, &self.hoisted_vars.clone()));
-        } else {
-            self.emit_unsupported_op(
-                op,
-                "bigint literal exceeds Rust backend i64 value representation",
-            );
+        match rhs {
+            Ok(rhs) => self.emit_literal_value(op, &rhs),
+            Err(reason) => self.emit_unsupported_op(op, reason),
         }
+        true
+    }
+
+    pub(super) fn emit_op_warn_stderr(&mut self, op: &OpIR) {
+        let Some([source]) = op.args.as_deref() else {
+            self.emit_unsupported_op(op, "warning output requires one message operand");
+            return;
+        };
+        let message = rust_value(source);
+        self.emit_line(&format!("if let MoltValue::Str(message) = &{message} {{"));
+        self.push_indent();
+        self.emit_line("use std::io::Write;");
+        self.emit_line("let _ = std::io::stdout().flush();");
+        self.emit_line("eprintln!(\"{}\", message.to_utf8_backslashreplace());");
+        self.pop_indent();
+        self.emit_line("}");
     }
 
     pub(super) fn emit_op_const_ellipsis(&mut self, op: &OpIR) {
-        let out = out_var(op);
-        if !is_assignable_var(&out) {
-            self.emit_unsupported_op(op, "Ellipsis constant requires an assignable output");
-            return;
-        }
-        self.emit_line(&declare_molt_value(
-            &out,
-            "MoltValue::Ellipsis",
-            &self.hoisted_vars,
-        ));
+        self.emit_literal_value(op, "MoltValue::Ellipsis");
     }
 
     pub(super) fn emit_op_const_not_implemented(&mut self, op: &OpIR) {
-        self.emit_unsupported_op(
-            op,
-            format!(
-                "literal `{}` requires a dedicated Rust backend value representation",
-                op.kind
-            ),
-        );
+        self.emit_literal_value(op, "MoltValue::NotImplemented");
     }
 
     pub(super) fn emit_op_representation_copy(&mut self, op: &OpIR) {
@@ -227,17 +148,14 @@ impl RustBackend {
             );
         } else {
             let dst = rust_ident(binding.destination);
-            let source = op.args.as_deref().and_then(|args| args.first());
-            let rhs = op
-                .args
-                .as_deref()
-                .and_then(|args| args.first())
-                .map(|src| rust_clone(src))
-                .unwrap_or_else(|| "MoltValue::None".to_string());
+            let Some(source) = molt_tir::tir::simple_def_use::simple_ir_single_read(op) else {
+                self.emit_unsupported_op(op, "store_var requires exactly one source operand");
+                return;
+            };
+            let source = source.name;
+            let rhs = rust_clone(source);
             self.emit_line(&format!("{dst} = {rhs};"));
-            if let Some(source) = source
-                && is_assignable_var(source)
-            {
+            if is_assignable_var(source) {
                 self.note_alias(dst.clone(), rust_ident(source));
             }
             if let Some(result) = binding.result {
@@ -247,9 +165,7 @@ impl RustBackend {
                     &format!("{dst}.clone()"),
                     &self.hoisted_vars,
                 ));
-                if let Some(source) = source
-                    && is_assignable_var(source)
-                {
+                if is_assignable_var(source) {
                     // The snapshot shares the value assigned at this point,
                     // not the mutable destination binding. A later destination
                     // rebind must not retarget or sever the snapshot's alias.

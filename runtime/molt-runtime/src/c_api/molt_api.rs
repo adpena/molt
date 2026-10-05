@@ -2150,8 +2150,8 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
         let owner = unsafe {
             match obj_from_bits(owner).as_ptr() {
                 Some(ptr) if object_type_id(ptr) == TYPE_ID_MEMORYVIEW => {
-                    if memoryview_released(ptr) {
-                        return raise_released_memoryview(_py);
+                    if !crate::object::memoryview::require_exportable(_py, ptr) {
+                        return none_bits();
                     }
                     memoryview_owner_bits(ptr)
                 }

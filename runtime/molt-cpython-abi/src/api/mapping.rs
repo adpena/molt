@@ -76,7 +76,19 @@ pub unsafe extern "C" fn PyDict_SetItem(
     key: *mut PyObject,
     value: *mut PyObject,
 ) -> c_int {
-    if op.is_null() || key.is_null() || value.is_null() {
+    unsafe { dict_mutate(op, key, value, false, None, ptr::null_mut()) }
+}
+
+/// Shared ABI dictionary transaction. Callback publishes native derived fields after storage commit; the runtime retains the actual displaced edges.
+pub(crate) unsafe fn dict_mutate(
+    op: *mut PyObject,
+    key: *mut PyObject,
+    value: *mut PyObject,
+    delete: bool,
+    publish: Option<unsafe extern "C" fn(*mut std::ffi::c_void) -> i32>,
+    context: *mut std::ffi::c_void,
+) -> c_int {
+    if op.is_null() || key.is_null() || (!delete && value.is_null()) {
         bad_dict_argument();
         return -1;
     }
@@ -104,25 +116,25 @@ pub unsafe extern "C" fn PyDict_SetItem(
         }
         return -1;
     };
-    let Some(value_value) = (unsafe { RuntimeValue::acquire_edge(value) }) else {
-        let detail = format!("unresolved value: {}", unsafe {
-            crate::abi_types::describe_unresolved_pyobject(value)
-        });
-        crate::capi_trace::record_silent_failure("PyDict_SetItem", Some(&detail));
-        if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
-            unsafe {
-                crate::api::errors::PyErr_SetString(
-                    (&raw mut crate::abi_types::PyExc_SystemError)
-                        .cast::<crate::abi_types::PyObject>(),
-                    c"PyDict_SetItem: value is not a bridge-managed object and no foreign wrapper could be minted"
-                        .as_ptr(),
-                );
-            }
-        }
-        return -1;
+    let value_value = if delete {
+        None
+    } else {
+        let Some(value) = (unsafe { RuntimeValue::acquire_edge(value) }) else {
+            return -1;
+        };
+        Some(value)
     };
     let h = hooks_or_stubs();
-    let rc = unsafe { (h.dict_set)(dict_bits, key_value.bits(), value_value.bits()) };
+    let rc = unsafe {
+        (h.dict_mutate)(
+            dict_bits,
+            key_value.bits(),
+            value_value.as_ref().map_or(0, RuntimeValue::bits),
+            delete as u8,
+            publish,
+            context,
+        )
+    };
     let had_error = crate::api::errors::transfer_runtime_pending_to_current();
     drop(key_value);
     drop(value_value);
@@ -136,6 +148,15 @@ pub unsafe extern "C" fn PyDict_SetItem(
     // later `PyDict_SetItemString(registry, "argmin"/"argmax", …)` failed
     // "unresolved dict". Runtime mutation and ABI-view retirement now share
     // that lifecycle authority rather than retaining a permanent proxy anchor.
+    if rc == 1 && delete && !had_error {
+        unsafe {
+            crate::api::errors::PyErr_SetObject(
+                (&raw mut crate::abi_types::PyExc_KeyError).cast(),
+                key,
+            )
+        };
+        return -1;
+    }
     match (rc == 0, had_error) {
         (true, false) => 0,
         (false, true) => -1,
@@ -672,19 +693,7 @@ pub unsafe extern "C" fn PyDict_SetDefaultRef(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_DelItem(op: *mut PyObject, key: *mut PyObject) -> c_int {
-    match unsafe { PyDict_Pop(op, key, ptr::null_mut()) } {
-        1 => 0,
-        0 => {
-            unsafe {
-                crate::api::errors::PyErr_SetObject(
-                    (&raw mut crate::abi_types::PyExc_KeyError).cast::<PyObject>(),
-                    key,
-                )
-            };
-            -1
-        }
-        _ => -1,
-    }
+    unsafe { dict_mutate(op, key, ptr::null_mut(), true, None, ptr::null_mut()) }
 }
 
 #[unsafe(no_mangle)]

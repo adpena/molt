@@ -115,7 +115,7 @@ def test_object_output_rejects_split_stdlib_without_subprocess_or_mutation(
         output_artifact=output,
         stdlib_obj_path=tmp_path / "missing.lib",
         json_output=True,
-        target_triple="x86_64-pc-windows-msvc",
+        target=resolve_native_target_spec("x86_64-pc-windows-msvc"),
     )
     assert artifact is None and failure is not None
     assert output.read_bytes() == _object_header("win32")
@@ -123,6 +123,6 @@ def test_object_output_rejects_split_stdlib_without_subprocess_or_mutation(
         output_artifact=output,
         stdlib_obj_path=None,
         json_output=True,
-        target_triple="x86_64-pc-windows-msvc",
+        target=resolve_native_target_spec("x86_64-pc-windows-msvc"),
     )
     assert artifact == output and failure is None

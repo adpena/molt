@@ -17,6 +17,7 @@ pub fn elide_safe_exception_checks(func_ir: &mut FunctionIR) {
     // predecessor alone says nothing about earlier unchecked operations or
     // another incoming CFG edge. Polling checks also service Python callbacks
     // and must execute even when the incoming exception state is known clean.
+    let guard_facts = super::guard_elision::RuntimeGuardFacts::for_function(func_ir);
     let mut may_be_pending = true;
     func_ir.ops.retain(|op| {
         if simpleir_kind_is_exception_check(&op.kind) {
@@ -34,6 +35,9 @@ pub fn elide_safe_exception_checks(func_ir: &mut FunctionIR) {
         }
         if simpleir_kind_is_block_leader(&op.kind) || simpleir_kind_is_block_ender(&op.kind) {
             may_be_pending = true;
+        } else if guard_facts.is_nonthrowing(op, None) {
+            // A valid tag never traps on source mismatch. Literal transport
+            // needs no new owner; preserve the guard's profiling event itself.
         } else if let Some(opcode) = kind_to_opcode_table(&op.kind) {
             // SimpleIR may carry a full-i64 integer in the boxed lane. The TIR
             // ConstInt opcode is raw, but its final boxed transport can allocate.

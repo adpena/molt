@@ -35,7 +35,7 @@ from molt.cli.native_link_manifest import (
     read_native_link_flags,
     write_native_link_dependency_manifest,
 )
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from tests.cli.native_link_test_support import write_test_static_archive
 from tests.cli.process_guard import run_cli_test_process
 from tests.runtime_build_identity_helper import (
@@ -893,11 +893,12 @@ def test_hydrated_byte_identical_artifact_requires_matching_sidecar(
     provider_manifest = json.loads(
         native_link_dependency_manifest_path(provider).read_text(encoding="utf-8")
     )
-    copy_native_link_custody_archive(
+    with copy_native_link_custody_archive(
         provider,
         consumer,
         provider_manifest["custody"],
-    )
+    ):
+        pass
     hydrated = read_native_link_dependency_manifest(
         consumer,
         target_triple=None,
@@ -993,11 +994,12 @@ def test_hydrated_manifest_refuses_foreign_runtime_build_identity(
     provider_manifest = json.loads(
         native_link_dependency_manifest_path(provider).read_text(encoding="utf-8")
     )
-    copy_native_link_custody_archive(
+    with copy_native_link_custody_archive(
         provider,
         consumer,
         provider_manifest["custody"],
-    )
+    ):
+        pass
     hydrated = read_native_link_dependency_manifest(
         consumer,
         target_triple=None,

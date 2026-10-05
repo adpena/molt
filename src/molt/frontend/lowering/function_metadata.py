@@ -8,6 +8,10 @@ call, function, class, and module visitors.
 
 from __future__ import annotations
 
+from molt.compiler_analysis.python_lexical_scope import (
+    expression_contains_yield,
+)
+
 import ast
 import json
 from dataclasses import dataclass
@@ -24,7 +28,6 @@ from molt.frontend._types import (
 )
 from molt.frontend.sema import (
     FunctionKind,
-    expression_contains_yield,
     normalize_function_kind,
     stateful_function_frame_plan,
 )

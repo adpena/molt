@@ -114,6 +114,7 @@ def _process_sample_payload(sample: ProcessSample) -> dict[str, object]:
         "pgid": sample.pgid,
         "rss_kb": sample.rss_kb,
         "elapsed_sec": sample.elapsed_sec,
+        "started_at_ns": sample.started_at_ns,
         "command": sample.command,
     }
 

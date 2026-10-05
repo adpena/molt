@@ -122,6 +122,69 @@ def test_next_operation_recaptures_semantic_bytes_and_topology(
     assert after.fingerprint != before.fingerprint
 
 
+def test_installed_semantic_snapshot_uses_admitted_release_without_graph(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from types import SimpleNamespace
+
+    from molt import compiler_distribution
+    from molt.cli import compiler_identity
+
+    calls = {"sources": 0, "executing": 0, "binary": 0}
+
+    def sources():
+        calls["sources"] += 1
+
+    def executing():
+        calls["executing"] += 1
+
+    def binary(*args):
+        calls["binary"] += 1
+
+    compiler = SimpleNamespace(
+        source_sha="a" * 40,
+        files=(),
+        record={"features": [], "profile": "release"},
+        launcher={},
+        runtime={},
+        verify_sources=sources,
+        verify_executing_package=executing,
+        verify_binary=binary,
+    )
+
+    def forbidden(*args):
+        raise AssertionError(
+            "admitted installed source must not walk the developer graph"
+        )
+
+    monkeypatch.setattr(fingerprints, "_compiler_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        compiler_distribution, "installed_compiler", lambda root: compiler
+    )
+    monkeypatch.setattr(fingerprints, "_frontend_semantic_tooling_sources", forbidden)
+    with fingerprints._source_tree_fingerprint_transaction():
+        first = fingerprints._frontend_semantic_tooling_snapshot()
+        assert fingerprints._frontend_semantic_tooling_snapshot() is first
+        broad = fingerprints._cache_tooling_fingerprint()
+    assert first.source_paths == ()
+    assert first.fingerprint != broad  # Explicit consumer namespace separation.
+    assert calls == {"sources": 1, "executing": 1, "binary": 2}
+    compiler.source_sha = "b" * 40
+    with fingerprints._source_tree_fingerprint_transaction():
+        second = fingerprints._frontend_semantic_tooling_snapshot()
+    assert second.fingerprint != first.fingerprint
+
+    def reject():
+        raise ValueError("installed source generation changed")
+
+    compiler.verify_sources = reject
+    with fingerprints._source_tree_fingerprint_transaction():
+        with pytest.raises(
+            compiler_identity.CompilerIdentityError, match="generation changed"
+        ):
+            fingerprints._frontend_semantic_tooling_snapshot()
+
+
 def test_next_operation_rejects_seed_ownership_retarget(
     compiler_sources: Path, tmp_path: Path
 ) -> None:

@@ -63,9 +63,7 @@ fn exception_edges_release_only_prepared_unconsumed_owners() {
     }
     let exit = func.fresh_block();
     func.label_id_map.insert(exit.0, 77);
-    let mut call = op(OpCode::Call, vec![callee, builder], vec![result]);
-    call.attrs
-        .insert("_original_kind".into(), AttrValue::Str("call_bind".into()));
+    let call = call_bind(callee, builder, vec![result]);
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops = vec![
         check(77),
@@ -128,10 +126,10 @@ fn handler_live_owner_survives_normal_only_temporary_cleanup() {
     func.label_id_map.insert(handler.0, 81);
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops = vec![
-        op(OpCode::Call, vec![], vec![owner]),
-        op(OpCode::Call, vec![], vec![temporary]),
+        named_call("fixture_external_call", vec![], vec![owner]),
+        named_call("fixture_external_call", vec![], vec![temporary]),
         check(81),
-        op(OpCode::Call, vec![temporary], vec![]),
+        named_call("fixture_external_call", vec![temporary], vec![]),
     ];
     entry.terminator = Terminator::Return { values: vec![] };
     func.blocks.insert(
@@ -139,7 +137,7 @@ fn handler_live_owner_survives_normal_only_temporary_cleanup() {
         TirBlock {
             id: handler,
             args: vec![],
-            ops: vec![op(OpCode::Call, vec![owner], vec![])],
+            ops: vec![named_call("fixture_external_call", vec![owner], vec![])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -193,10 +191,7 @@ fn owner_created_in_handler_is_released_on_later_exception() {
             },
         },
     );
-    let mut consume = op(OpCode::Call, vec![callee, builder], vec![]);
-    consume
-        .attrs
-        .insert("_original_kind".into(), AttrValue::Str("call_bind".into()));
+    let consume = call_bind(callee, builder, vec![]);
     func.blocks.insert(
         continuation,
         TirBlock {
@@ -244,10 +239,10 @@ fn fallible_operation_cleanup_belongs_to_its_observed_continuation() {
             func.label_id_map.insert(handler.0, 97);
             let entry = func.entry_block;
             let mut ops = vec![
-                op(OpCode::Call, vec![], vec![older]),
-                op(OpCode::Call, vec![], vec![younger]),
-                op(
-                    OpCode::Call,
+                named_call("fixture_external_call", vec![], vec![older]),
+                named_call("fixture_external_call", vec![], vec![younger]),
+                named_call(
+                    "fixture_external_call",
                     vec![older],
                     if discarded_result {
                         vec![result]
@@ -268,7 +263,7 @@ fn fallible_operation_cleanup_belongs_to_its_observed_continuation() {
             if separate_observation_block {
                 ops.push(check(97));
             }
-            ops.push(op(OpCode::Call, vec![younger], vec![]));
+            ops.push(named_call("fixture_external_call", vec![younger], vec![]));
             func.blocks.insert(
                 continuation,
                 TirBlock {

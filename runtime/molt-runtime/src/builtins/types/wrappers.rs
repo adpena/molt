@@ -5,9 +5,9 @@
 //! subclasses keep ordinary Python method lookup and construction semantics.
 
 use super::*;
-use crate::builtins::native_arguments::{NamedBinding, NativeArguments, NativeKeywords};
 use crate::PtrDropGuard;
 use crate::builtins::attr::clear_attribute_error_if_pending;
+use crate::builtins::native_arguments::{NamedBinding, NativeArguments, NativeKeywords};
 use crate::object::layout::{
     WrapperKind, class_qualname_bits, classmethod_func_bits, classmethod_replace_func_bits,
     property_doc_bits, property_getter_doc, property_name_bits, property_replace_del_bits,
@@ -197,8 +197,11 @@ fn wrapper_initialize(
         let Some(values) = property_arguments(py, args, keywords) else {
             return MoltObject::none().bits();
         };
-        return property_initialize(py, self_bits,
-            (*values).map(|value| value.unwrap_or_else(|| MoltObject::none().bits())));
+        return property_initialize(
+            py,
+            self_bits,
+            (*values).map(|value| value.unwrap_or_else(|| MoltObject::none().bits())),
+        );
     }
     if !keywords.is_empty() {
         return raise_exception::<_>(
@@ -274,11 +277,20 @@ pub(crate) fn try_construct_exact_wrapper(
 ) -> Option<u64> {
     let kind = WrapperKind::exact_class(py, class)?;
     let mut pairs = Vec::new();
-    if pairs.try_reserve_exact(names.len().saturating_mul(2)).is_err() {
-        return Some(raise_exception(py, "MemoryError", "wrapper keyword allocation failed"));
+    if pairs
+        .try_reserve_exact(names.len().saturating_mul(2))
+        .is_err()
+    {
+        return Some(raise_exception(
+            py,
+            "MemoryError",
+            "wrapper keyword allocation failed",
+        ));
     }
     for (&name, &value) in names.iter().zip(values) {
-        if unsafe { crate::object::ops_format::with_string_bytes(obj_from_bits(name), |_| ()) }.is_none() {
+        if unsafe { crate::object::ops_format::with_string_bytes(obj_from_bits(name), |_| ()) }
+            .is_none()
+        {
             return Some(raise_exception::<_>(
                 py,
                 "TypeError",
@@ -293,9 +305,12 @@ pub(crate) fn try_construct_exact_wrapper(
     if dictionary.is_null() || exception_pending(py) {
         return Some(MoltObject::none().bits());
     }
-    Some(wrapper_construct(py, kind, args, NativeKeywords::mapping(
-        MoltObject::from_ptr(dictionary).bits(), names,
-    )))
+    Some(wrapper_construct(
+        py,
+        kind,
+        args,
+        NativeKeywords::mapping(MoltObject::from_ptr(dictionary).bits(), names),
+    ))
 }
 
 /// Special-method fast paths are admitted by the resolved method, not merely
@@ -692,19 +707,34 @@ fn wrapper_method(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_staticmethod_new(target: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        wrapper_construct(py, WrapperKind::Staticmethod, &[target], NativeKeywords::empty())
+        wrapper_construct(
+            py,
+            WrapperKind::Staticmethod,
+            &[target],
+            NativeKeywords::empty(),
+        )
     })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_classmethod_new(target: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        wrapper_construct(py, WrapperKind::Classmethod, &[target], NativeKeywords::empty())
+        wrapper_construct(
+            py,
+            WrapperKind::Classmethod,
+            &[target],
+            NativeKeywords::empty(),
+        )
     })
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_property_new(get: u64, set: u64, delete: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        wrapper_construct(py, WrapperKind::Property, &[get, set, delete], NativeKeywords::empty())
+        wrapper_construct(
+            py,
+            WrapperKind::Property,
+            &[get, set, delete],
+            NativeKeywords::empty(),
+        )
     })
 }
 #[unsafe(no_mangle)]

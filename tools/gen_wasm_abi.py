@@ -450,7 +450,7 @@ def _render_rs_mod() -> str:
             "};\n",
             "pub(crate) use const_policy::{\n",
             "    wasm_const_op_policy, wasm_const_op_policy_for_opcode, WasmConstInlineSeed,\n",
-            "    WasmConstLirFastPolicy, WasmConstLiteralPayload, WasmConstOpPolicySpec,\n",
+            "    WasmConstLirFastPolicy, WasmConstOpPolicySpec,\n",
             "    WasmConstRawIntEffect, WasmConstScalarValue,\n",
             "};\n",
             "pub(crate) use import_registry::{\n",
@@ -567,7 +567,7 @@ def _render_rs_const_policy(data: dict, import_variants: Mapping[str, str]) -> s
     lines.extend(
         [
             "use molt_codegen_abi::{box_bool_bits, box_float_bits, box_int_bits, box_none_bits};\n",
-            "use molt_tir::tir::op_kinds_generated::opcode_canonical_kind_table;\n",
+            "use molt_tir::tir::op_kinds_generated::{OwnedLiteralPayloadKind, opcode_canonical_kind_table};\n",
             "use molt_tir::tir::ops::{AttrValue, OpCode, TirOp};\n\n",
             "use super::import_tokens::WasmRuntimeImport;\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
@@ -577,13 +577,6 @@ def _render_rs_const_policy(data: dict, import_variants: Mapping[str, str]) -> s
             "    Bool,\n",
             "    Float,\n",
             "    NoneValue,\n",
-            "}\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) enum WasmConstLiteralPayload {\n",
-            "    None,\n",
-            "    String,\n",
-            "    BigintDecimal,\n",
-            "    Bytes,\n",
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum WasmConstScalarPayload {\n",
@@ -614,7 +607,7 @@ def _render_rs_const_policy(data: dict, import_variants: Mapping[str, str]) -> s
             "    pub(crate) kind: &'static str,\n",
             "    pub(crate) inline_seed: WasmConstInlineSeed,\n",
             "    pub(crate) materializer_import: Option<WasmRuntimeImport>,\n",
-            "    pub(crate) literal_payload: WasmConstLiteralPayload,\n",
+            "    pub(crate) literal_payload: Option<OwnedLiteralPayloadKind>,\n",
             "    pub(crate) scalar_payload: WasmConstScalarPayload,\n",
             "    pub(crate) dispatch_runtime_seed: bool,\n",
             "    pub(crate) raw_int_effect: WasmConstRawIntEffect,\n",
@@ -625,7 +618,11 @@ def _render_rs_const_policy(data: dict, import_variants: Mapping[str, str]) -> s
     )
     for entry in data.get("const_op_policy", []):
         inline_seed = _rust_pascal_variant(entry["inline_seed"])
-        literal_payload = _rust_pascal_variant(entry["literal_payload"])
+        literal_payload = (
+            "None"
+            if entry["literal_payload"] == "none"
+            else f"Some(OwnedLiteralPayloadKind::{_rust_pascal_variant(entry['literal_payload'])})"
+        )
         scalar_payload = _rust_pascal_variant(entry["scalar_payload"])
         raw_int_effect = _rust_pascal_variant(entry["raw_int_effect"])
         lir_fast = _rust_pascal_variant(entry["lir_fast"])
@@ -642,7 +639,7 @@ def _render_rs_const_policy(data: dict, import_variants: Mapping[str, str]) -> s
                     else f"Some({_rust_runtime_import(import_variants, entry['materializer_import'])})"
                 )
                 + ",\n",
-                f"        literal_payload: WasmConstLiteralPayload::{literal_payload},\n",
+                f"        literal_payload: {literal_payload},\n",
                 f"        scalar_payload: WasmConstScalarPayload::{scalar_payload},\n",
                 f"        dispatch_runtime_seed: {dispatch_seed},\n",
                 f"        raw_int_effect: WasmConstRawIntEffect::{raw_int_effect},\n",

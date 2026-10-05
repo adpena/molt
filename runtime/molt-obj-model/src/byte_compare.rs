@@ -10,9 +10,7 @@ pub fn compare_bytes(left: &[u8], right: &[u8]) -> Ordering {
     if common < 32 {
         return left.cmp(right);
     }
-    let diff = unsafe {
-        simd_find_first_byte_diff(left.as_ptr(), right.as_ptr(), common)
-    };
+    let diff = unsafe { simd_find_first_byte_diff(left.as_ptr(), right.as_ptr(), common) };
     if diff == common {
         left.len().cmp(&right.len())
     } else {

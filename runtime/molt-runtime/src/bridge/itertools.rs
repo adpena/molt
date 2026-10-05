@@ -110,100 +110,25 @@ pub fn alloc_itertools_class(
     name: &str,
     layout_size: i64,
     shape: ObjectShapeId,
+    iter_fn: u64,
+    next_fn: u64,
+    constructor: Option<(u64, u64, &[u64])>,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        crate::itertools_class::alloc_itertools_class(py, name, layout_size, shape)
-    })
-}
-
-pub fn class_set_iter_next(
-    _py: &CoreGilToken,
-    class_bits: u64,
-    iter_fn_bits: u64,
-    next_fn_bits: u64,
-) {
-    crate::with_gil_entry_nopanic!(py, {
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return;
-        };
-        let dict_bits = unsafe { crate::class_dict_bits(class_ptr) };
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-            && unsafe { crate::object_type_id(dict_ptr) } == crate::TYPE_ID_DICT
-        {
-            let iter_name = crate::intern_static_name(
-                py,
-                &crate::runtime_state(py).interned.iter_name,
-                b"__iter__",
-            );
-            unsafe { crate::dict_set_in_place(py, dict_ptr, iter_name, iter_fn_bits) };
-            let next_name = crate::intern_static_name(
-                py,
-                &crate::runtime_state(py).interned.next_name,
-                b"__next__",
-            );
-            unsafe { crate::dict_set_in_place(py, dict_ptr, next_name, next_fn_bits) };
-        }
-    });
-}
-
-pub fn class_set_new(_py: &CoreGilToken, class_bits: u64, new_fn_bits: u64) {
-    crate::with_gil_entry_nopanic!(py, {
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return;
-        };
-        let dict_bits = unsafe { crate::class_dict_bits(class_ptr) };
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-            && unsafe { crate::object_type_id(dict_ptr) } == crate::TYPE_ID_DICT
-        {
-            let new_name = crate::intern_static_name(
-                py,
-                &crate::runtime_state(py).interned.new_name,
-                b"__new__",
-            );
-            unsafe { crate::dict_set_in_place(py, dict_ptr, new_name, new_fn_bits) };
-        }
-    });
-}
-
-pub fn alloc_function(_py: &CoreGilToken, fn_ptr: u64, arity: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        let bits = crate::builtins::methods::alloc_builtin_function(py, fn_ptr, arity);
-        if bits == 0 {
-            MoltObject::none().bits()
-        } else {
-            bits
-        }
-    })
-}
-
-pub fn alloc_function_with_defaults(
-    _py: &CoreGilToken,
-    fn_ptr: u64,
-    arity: u64,
-    defaults: &[u64],
-) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        let bits = crate::builtins::methods::alloc_builtin_function_with_defaults(
-            py, fn_ptr, arity, defaults,
-        );
-        if bits == 0 {
-            MoltObject::none().bits()
-        } else {
-            bits
-        }
+        crate::itertools_class::alloc_itertools_class(
+            py,
+            name,
+            layout_size,
+            shape,
+            iter_fn,
+            next_fn,
+            constructor,
+        )
     })
 }
 
 pub fn alloc_kwd_mark(_py: &CoreGilToken) -> u64 {
-    crate::with_gil_entry_nopanic!(py, {
-        let total = std::mem::size_of::<crate::MoltHeader>();
-        let ptr = crate::alloc_object(py, total, crate::TYPE_ID_OBJECT);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
+    crate::with_gil_entry_nopanic!(py, { crate::state::cache::alloc_kwd_mark(py) })
 }
 
 /// # Safety

@@ -6,7 +6,13 @@ from tools import harness_memory_guard
 
 from .paths import ROOT
 from .primitive_effects import render_primitive_effects_rs
-from .runtime_requirements import runtime_symbol_requirement_masks
+from .runtime_requirements import (
+    INTEGER_SEMANTIC_ROLES,
+    integer_semantics_by_kind,
+    runtime_symbol_requirement_masks,
+    runtime_kind_requirement_masks,
+    target_runtime_requirement_masks,
+)
 from .schema import (
     _EXCEPTION_REGION_NESTING_ROLES,
     _FUZZ_TIR_ATTR_PAYLOAD_RULES,
@@ -20,7 +26,6 @@ from .schema import (
 )
 from .validate import (
     _opcode_role_members,
-    _simpleir_registered_runtime_kinds,
     _simpleir_var_forbidden_spellings,
 )
 from .render_rust_analysis import (
@@ -757,17 +762,29 @@ def _render_rs_unformatted(data: dict) -> str:
 
     # -- literal payload facts: exhaustive over OpCode ----------------------
     literal_kinds = {
-        row["opcode"]: row["literal"] for row in data.get("literal_payload_opcodes", [])
+        row["opcode"]: row["literal"] for row in data["literal_payload_opcodes"]
     }
     out.append(
+        "/// Owned carrier shape shared by IR admission and all backends.\n"
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n"
+        "pub enum OwnedLiteralPayloadKind {\n"
+    )
+    for variant, owned in _LITERAL_PAYLOAD_KINDS.values():
+        if owned:
+            out.append(f"    {variant},\n")
+    out.append("}\n\n")
+    out.append(
         "/// Literal payload kind consumers may record for an opcode.\n"
-        "#[derive(Clone, Copy, PartialEq, Eq)]\n"
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n"
         "pub enum LiteralPayloadKind {\n"
-        "    Int,\n"
-        "    Bool,\n"
+    )
+    for variant, owned in _LITERAL_PAYLOAD_KINDS.values():
+        if not owned:
+            out.append(f"    {variant},\n")
+    out.append(
+        "    Owned(OwnedLiteralPayloadKind),\n"
         "}\n\n"
-        "/// Literal payload classifier. EXHAUSTIVE over OpCode; non-literal\n"
-        "/// opcodes map to None instead of pass-local wildcards.\n"
+        "/// Literal payload classifier. EXHAUSTIVE over OpCode.\n"
         "#[inline]\n"
         "pub fn opcode_literal_payload_kind_table(\n"
         "    opcode: OpCode,\n"
@@ -780,11 +797,27 @@ def _render_rs_unformatted(data: dict) -> str:
         if literal is None:
             out.append(f"        OpCode::{opcode} => None,\n")
         else:
-            variant = _LITERAL_PAYLOAD_KINDS[literal]
-            out.append(
-                f"        OpCode::{opcode} => Some(LiteralPayloadKind::{variant}),\n"
+            variant, owned = _LITERAL_PAYLOAD_KINDS[literal]
+            value = (
+                f"LiteralPayloadKind::Owned(OwnedLiteralPayloadKind::{variant})"
+                if owned
+                else f"LiteralPayloadKind::{variant}"
             )
+            out.append(f"        OpCode::{opcode} => Some({value}),\n")
     out.append("    }\n}\n\n")
+    out.append(
+        "/// Owned-carrier projection of the same literal authority.\n"
+        "#[inline]\n"
+        "pub fn opcode_owned_literal_payload_kind_table(\n"
+        "    opcode: OpCode,\n"
+        ") -> Option<OwnedLiteralPayloadKind> {\n"
+        "    match opcode_literal_payload_kind_table(opcode) {\n"
+        "        Some(LiteralPayloadKind::Owned(kind)) => Some(kind),\n"
+    )
+    for variant, owned in _LITERAL_PAYLOAD_KINDS.values():
+        if not owned:
+            out.append(f"        Some(LiteralPayloadKind::{variant}) => None,\n")
+    out.append("        None => None,\n    }\n}\n\n")
 
     # -- canonicalize facts: exhaustive over OpCode -------------------------
     commutative_domains = {
@@ -1262,17 +1295,7 @@ def _render_simpleir_field_roles(data: dict) -> str:
 
 
 def _render_simpleir_integer_semantics(data: dict) -> str:
-    roles = (
-        ("simpleir_dynamic_add_semantics_kinds", "DynamicAdd"),
-        ("simpleir_dynamic_numeric_semantics_kinds", "DynamicNumeric"),
-        ("simpleir_dynamic_true_div_semantics_kinds", "DynamicTrueDiv"),
-        ("simpleir_dynamic_divmod_semantics_kinds", "DynamicDivmod"),
-        ("simpleir_dynamic_power_semantics_kinds", "DynamicPower"),
-        ("simpleir_dynamic_unary_numeric_semantics_kinds", "DynamicUnaryNumeric"),
-        ("simpleir_integer_only_semantics_kinds", "IntegerOnly"),
-        ("simpleir_integer_literal_semantics_kinds", "IntegerLiteral"),
-        ("simpleir_integer_producer_semantics_kinds", "IntegerProducer"),
-    )
+    roles = INTEGER_SEMANTIC_ROLES
     lines = [
         "/// Python integer semantic role for a SimpleIR wire spelling.\n",
         "/// Generated from op_kinds.toml so string-dispatch backends apply target\n",
@@ -1309,9 +1332,17 @@ def _render_simpleir_integer_semantics(data: dict) -> str:
             "    match kind {\n",
         ]
     )
-    for key, variant in roles:
-        patterns = " | ".join(f'"{member}"' for member in data.get(key, []))
-        lines.append(f"        {patterns} => SimpleIrIntegerSemantics::{variant},\n")
+    semantics = integer_semantics_by_kind(data)
+    for _, variant in roles:
+        patterns = " | ".join(
+            f'"{member}"'
+            for member in sorted(semantics)
+            if semantics[member] == variant
+        )
+        if patterns:
+            lines.append(
+                f"        {patterns} => SimpleIrIntegerSemantics::{variant},\n"
+            )
     lines.extend(
         [
             "        _ => SimpleIrIntegerSemantics::None,\n",
@@ -1334,7 +1365,6 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
         )
     )
     known_mask = sum(1 << bit for _, _, bit, _ in roles)
-    registered = _simpleir_registered_runtime_kinds(data)
 
     lines = [
         "/// Composable runtime/object-model requirements for a SimpleIR spelling.\n",
@@ -1391,7 +1421,7 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
             f"requirement: SimpleIrRuntimeRequirements::{constant}, "
             f"reason: {constant}_REQUIREMENT_REASON }},\n"
         )
-    role_bits = {constant: bit for _, constant, bit, _ in roles}
+    target_masks = target_runtime_requirement_masks(data)
     lines.extend(
         [
             "];\n\n",
@@ -1420,7 +1450,7 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
     for profile in sorted(
         data["simpleir_target_runtime_profiles"], key=lambda row: row["target"]
     ):
-        bits = sum(1 << role_bits[constant] for constant in profile["supported"])
+        bits = target_masks[profile["target"]]
         lines.append(
             f"        super::target_info::TargetKind::{profile['rust_variant']} => SimpleIrRuntimeRequirements({bits}),\n"
         )
@@ -1436,10 +1466,7 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
         ]
     )
 
-    requirements_by_kind = {kind: 0 for kind in registered}
-    for key, _, bit, _ in roles:
-        for kind in data.get(key, []):
-            requirements_by_kind[kind] = requirements_by_kind.get(kind, 0) | (1 << bit)
+    requirements_by_kind = runtime_kind_requirement_masks(data)
     grouped: dict[int, list[str]] = {}
     for kind, bits in requirements_by_kind.items():
         grouped.setdefault(bits, []).append(kind)

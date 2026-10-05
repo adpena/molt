@@ -20,7 +20,14 @@ import molt_diff  # noqa: E402
 @pytest.fixture
 def suite(tmp_path, monkeypatch):
     files = [tmp_path / f"case{index}.py" for index in range(5)]
-    state = SimpleNamespace(files=files, calls=[], status="fail", guard_trip=False)
+    state = SimpleNamespace(
+        files=files,
+        calls=[],
+        status="fail",
+        guard_trip=False,
+        trip_failure=None,
+        original_trip_outcome=molt_diff._memory_guard_trip_outcome,
+    )
     for name in (
         "_ensure_diff_run_lock",
         "_prune_orphan_diff_workers",
@@ -54,8 +61,18 @@ def suite(tmp_path, monkeypatch):
     monkeypatch.setattr(molt_diff, "_memory_guard_scheduler_per_job_gb", lambda *a: 0.1)
     monkeypatch.setattr(
         molt_diff,
-        "_memory_guard_trip_message",
-        lambda: "tripped" if state.guard_trip else None,
+        "_memory_guard_trip_outcome",
+        lambda sentinel=None: (
+            molt_diff.compat_backends.BackendResult(
+                "",
+                "tripped",
+                137,
+                rss_limit_exceeded=state.trip_failure is None,
+                infrastructure_failure=state.trip_failure,
+            )
+            if state.guard_trip
+            else None
+        ),
     )
     monkeypatch.setattr(
         molt_diff.harness_memory_guard.HarnessExecutionContext,
@@ -68,6 +85,9 @@ def suite(tmp_path, monkeypatch):
     def payload(path):
         if path == str(files[0]) and state.status == "guard":
             state.guard_trip = True
+            if state.trip_failure is not None and hasattr(state, "sentinel"):
+                state.sentinel.tripped = True
+                state.sentinel.infrastructure_failure = state.trip_failure
         return {
             "path": path,
             "status": state.status
@@ -158,16 +178,22 @@ def guarded_suite(suite, monkeypatch):
     suite.close_error = None
 
     class Sentinel:
+        tripped = False
+        infrastructure_failure = None
+
         def __exit__(self, *exc):
             suite.exits.append(exc)
             if suite.close_error is not None:
                 raise suite.close_error
 
+    suite.sentinel = Sentinel()
     monkeypatch.setattr(
         molt_diff.harness_memory_guard.HarnessExecutionContext,
         "from_env",
         staticmethod(
-            lambda *a, **k: SimpleNamespace(start_repo_sentinel=lambda **k: Sentinel())
+            lambda *a, **k: SimpleNamespace(
+                start_repo_sentinel=lambda **k: suite.sentinel
+            )
         ),
     )
     monkeypatch.setattr(molt_diff.atexit, "register", suite.exit_callbacks.append)
@@ -274,3 +300,46 @@ def test_failed_failure_receipt_is_not_silently_accepted(guarded_suite, tmp_path
         )
     assert len(guarded_suite.exits) == 1
     assert guarded_suite.exit_callbacks == []
+
+
+@pytest.mark.parametrize("jobs", [1, 2])
+@pytest.mark.parametrize("origin", ["marker", "sentinel"])
+def test_parent_trip_infrastructure_stops_admission_without_oom(
+    guarded_suite, tmp_path, monkeypatch, jobs, origin
+):
+    from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
+
+    suite = guarded_suite
+    suite.status = "guard"
+    suite.trip_failure = GuardInfrastructureFailure(
+        phase="rss_trip_evidence", details=("callback publication failed",)
+    )
+    monkeypatch.setattr(
+        molt_diff, "_memory_guard_trip_outcome", suite.original_trip_outcome
+    )
+    marker = tmp_path / "trip.json"
+    monkeypatch.setattr(molt_diff, "_diff_memory_guard_trip_file", lambda: marker)
+    if origin == "marker":
+        original = molt_diff._memory_guard_trip_outcome
+
+        def read_marker(sentinel=None):
+            if suite.guard_trip:
+                marker.write_text('{"event":"guard_tripped","violation":null}')
+            return original(None)
+
+        monkeypatch.setattr(molt_diff, "_memory_guard_trip_outcome", read_marker)
+    summary = molt_diff.run_diff(
+        suite.files,
+        sys.executable,
+        jobs=jobs,
+        retry_oom=True,
+        failures_output=tmp_path / "failures.txt",
+    )
+    assert suite.calls == [str(path) for path in suite.files[:jobs]]
+    assert summary["discovered"] == jobs
+    assert summary["failed"] == 1 and summary["oom"] == 0
+    assert summary["guard_infrastructure_failures"] == 1
+    guard = summary["config"]["memory_guard"]
+    assert guard["admission_stopped"] and not guard["tripped"]
+    assert guard["infrastructure_failure"]["phase"] == "rss_trip_evidence"
+    assert summary["passed"] == jobs

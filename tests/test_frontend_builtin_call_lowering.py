@@ -362,10 +362,12 @@ def test_globals_callable_uses_canonical_builtin_without_local_wrappers(
     functions = generator.to_json()["functions"]
     assert _module_lowering_local_reference_issue(module_name, functions) is None
     assert not any("__molt_globals_builtin__" in fn["name"] for fn in functions)
+    # Acquiring a first-class builtin follows live namespace resolution. Its
+    # runtime-owned callable supplies caller-frame semantics; no local wrapper
+    # or unguarded builtin identity may be manufactured by source spelling.
     assert any(
-        op["kind"] == "builtin_func" and op.get("s_value") == "molt_globals_builtin"
+        _module_attr_accesses(fn["ops"], "module_get_global", "globals")
         for fn in functions
-        for op in fn["ops"]
     )
     if chunked:
         assert len(generator.module_chunk_symbols) > 1
@@ -634,7 +636,9 @@ def test_lexical_name_shadows_module_name_specialization() -> None:
         for fn in compile_to_tir(source)["functions"]
         if fn["name"].endswith("__owner")
     )
-    assert any(op["kind"] == "ret" and op["args"] == ["__name__"] for op in ops)
+    reads = _local_reads(ops, "__name__")
+    assert any(op["kind"] == "ret" and op["args"][0] in reads for op in ops)
+    assert not _module_attr_accesses(ops, "module_get_global", "__name__")
 
 
 def test_active_global_read_does_not_inherit_lexical_module_type() -> None:
@@ -987,41 +991,84 @@ def _module_attr_accesses(
     return outs
 
 
+def _binding_reads(ops: list[dict[str, object]], roots: set[str]) -> set[str]:
+    """Trace actual values through straight-line binding storage and views."""
+    reads = set(roots)
+    variables: dict[str, object] = {}
+    homes: dict[int, object] = {}
+    for op in ops:
+        kind = op.get("kind")
+        if kind == "store_var":
+            variables[op["var"]] = op["args"][0]
+        elif kind == "load_var":
+            if variables.get(op["var"], op["var"]) in reads:
+                reads.add(op["out"])
+        elif kind == "binding_alias":
+            if op["args"][0] in reads:
+                reads.add(op["out"])
+        elif kind == "frame_home_store":
+            homes[op["value"]] = op["args"][0]
+            if op["args"][0] in reads:
+                reads.add(op["out"])
+        elif kind in {"frame_home_clear", "frame_home_take"}:
+            homes.pop(op["value"], None)
+        elif kind == "frame_home_load" and homes.get(op["value"]) in reads:
+            reads.add(op["out"])
+    return reads
+
+
 def _local_import_reads(
     ops: list[dict[str, object]],
     name: str,
     imported_values: set[str],
 ) -> set[str]:
-    """Follow the straight-line fixture's imported value through local storage."""
-    reads: set[str] = set()
-    stored: object = None
-    for op in ops:
-        if op.get("var") != name:
-            continue
-        if op.get("kind") == "store_var":
-            stored = op["args"][0]
-        elif op.get("kind") == "load_var" and stored in imported_values:
-            reads.add(op["out"])
-    return reads
+    """Follow the imported values, not a coincidentally matching local name."""
+    return _binding_reads(ops, imported_values)
 
 
-def _local_reads(ops: list[dict[str, object]], name: str) -> set[str]:
-    reads = {name}
-    homes: dict[int, object] = {}
+def _cpython_local_slots(source: str, function: str) -> dict[str, int]:
+    """Independent layout oracle: compile source without executing its imports."""
+    code = next(
+        constant
+        for constant in compile(source, "<local-slot-oracle>", "exec").co_consts
+        if isinstance(constant, CodeType) and constant.co_name == function
+    )
+    names = dict.fromkeys((*code.co_varnames, *code.co_cellvars, *code.co_freevars))
+    return {name: slot for slot, name in enumerate(names)}
+
+
+def _local_reads(
+    ops: list[dict[str, object]], name: str, *, slot: int | None = None
+) -> set[str]:
+    # Unlike referent provenance, a lexical binding remains the same slot even
+    # after reassignment or a callback. Cell storage and scalar views are distinct.
+    reads, cells = {name}, set()
+    if slot is None:
+        slot = next(
+            (
+                op["value"]
+                for op in ops
+                if op["kind"] == "frame_home_store" and op["args"] == [name]
+            ),
+            None,
+        )
     for op in ops:
-        kind = op.get("kind")
+        kind = op["kind"]
         if kind == "load_var" and op.get("var") == name:
             reads.add(op["out"])
-        elif kind == "frame_home_store":
-            homes[op["value"]] = op["args"][0]
-            # A store returns the published binding's borrowed view, which
-            # straight-line reads can use without a subsequent home load.
+        elif kind == "binding_alias":
             if op["args"][0] in reads:
                 reads.add(op["out"])
-        elif kind == "frame_home_clear":
-            homes.pop(op["value"], None)
-        elif kind == "frame_home_load" and homes.get(op["value"]) in reads:
-            reads.add(op["out"])
+            if op["args"][0] in cells:
+                cells.add(op["out"])
+        elif slot is not None and op.get("value") == slot:
+            if kind in {"frame_home_store", "frame_home_load"}:
+                reads.add(op["out"])
+            elif kind in {"frame_home_cell", "frame_home_private_cell"}:
+                cells.add(op["out"])
+        elif kind == "call" and op.get("s_value") == "molt_cell_get":
+            if op["args"][0] in cells:
+                reads.add(op["out"])
     return reads
 
 
@@ -2291,7 +2338,19 @@ def test_stateful_scope_and_alias_hints_use_frame_plan_not_symbol_spelling() -> 
         hint = plan.function_type_hint(64)
         gen.locals["source"] = MoltValue("source", type_hint=hint)
         alias = MoltValue("alias", type_hint="Any")
+        # An unattested synthetic Name must not inherit a stale cached hint.
         gen._propagate_func_type_hint(alias, ast.Name(id="source", ctx=ast.Load()))
+        assert alias.type_hint == "Any"
+        source = "def owner(source):\n    return source\n"
+        tree = ast.parse(source)
+        read = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        )
+        gen.python_binding_index = analyze_python_source_bindings(source)
+        assert gen._expression_has_invalidated_binding(read) is False
+        gen._propagate_func_type_hint(alias, read)
         assert alias.type_hint == hint
         gen.current_func_name = "ordinary_poll"
         assert not gen.is_async()
@@ -2572,12 +2631,12 @@ def test_nested_listcomp_function_does_not_capture_comprehension_target() -> Non
         and op.get("s_value") == "molt_cell_set"
         and op.get("args", [None, None])[1] == data_literal_var
     )
-    assert any(
-        op.get("kind") == "call"
-        and op.get("s_value") == "molt_cell_new"
-        and op.get("out") == data_cell_var
-        for op in outer_ops
-    )
+    producers = {op["out"]: op for op in outer_ops if "out" in op}
+    published_cell = producers[data_cell_var]
+    assert published_cell["kind"] == "frame_home_cell"
+    allocation = producers[published_cell["args"][0]]
+    assert allocation["kind"] == "call"
+    assert allocation["s_value"] == "molt_cell_new"
     for idx, op in enumerate(outer_ops):
         if op["kind"] != "func_new_closure" or op.get("s_value") != "__main____inner":
             continue
@@ -2667,10 +2726,13 @@ def test_closure_tuple_and_code_metadata_share_one_name_order(
     closure = producers[inner_definition["args"][0]]
     assert closure["kind"] == "tuple_new"
     assert len(closure["args"]) == len(freevars)
+    cells = [producers[value] for value in closure["args"]]
+    assert all(cell["kind"] == "frame_home_cell" for cell in cells)
+    assert len({cell["value"] for cell in cells}) == len(freevars)
     assert all(
-        producers[value].get("kind") == "call"
-        and producers[value].get("s_value") == "molt_cell_new"
-        for value in closure["args"]
+        producers[cell["args"][0]]["kind"] == "call"
+        and producers[cell["args"][0]]["s_value"] == "molt_cell_new"
+        for cell in cells
     )
 
 
@@ -3069,7 +3131,10 @@ def test_imported_callable_hint_respects_link_partition(
     assert bool(guarded) is compiled
     if compiled:
         assert len(guarded) == 1
-        assert guarded[0].metadata == {"target": f"asyncio__{member}"}
+        assert guarded[0].metadata == {
+            "target": f"asyncio__{member}",
+            "argument_custody": ["transferred", "transferred"],
+        }
     else:
         assert any(op.kind == "CALL_FUNC" for op in ops)
 
@@ -3714,7 +3779,7 @@ def test_counter_operation_respects_live_callable_binding(
 
     if expression == 'c["a"]':
         live_receiver = (
-            _local_reads(main_ops, "c")
+            _local_reads(main_ops, "c", slot=_cpython_local_slots(source, "probe")["c"])
             if local
             else _module_attr_accesses(main_ops, "module_get_global", "c")
         )
@@ -3734,7 +3799,7 @@ def test_counter_operation_respects_live_callable_binding(
         live_len = _module_attr_accesses(main_ops, "module_get_global", "len")
         call = _positional_call(main_ops, live_len, 1)
         receiver = (
-            _local_reads(main_ops, "c")
+            _local_reads(main_ops, "c", slot=_cpython_local_slots(source, "probe")["c"])
             if local
             else _module_attr_accesses(main_ops, "module_get_global", "c")
         )
@@ -3786,16 +3851,15 @@ def test_deferred_user_class_ctor_does_not_inherit_lexical_field_layout() -> Non
         for arg in call["args"][1:]
     )
     assert any(
-        op.get("kind") == "store_var"
-        and op.get("var") == "p"
-        and op.get("args") == [call["out"]]
+        op["kind"] == "frame_home_store" and op["args"] == [call["out"]]
         for op in make_ops
     )
+    point_reads = _binding_reads(make_ops, {call["out"]})
     stores = {
         op["s_value"]: op for op in make_ops if op.get("kind") == "set_attr_generic_obj"
     }
     assert set(stores) == {"x", "y"}
-    assert all(op["args"][0] in _local_reads(make_ops, "p") for op in stores.values())
+    assert all(op["args"][0] in point_reads for op in stores.values())
     assert stores["x"]["args"][1] in _local_reads(make_ops, "i")
     addition = producers[stores["y"]["args"][1]]
     assert addition["kind"] == "add"
@@ -4030,7 +4094,10 @@ def test_target_sys_platform_prunes_unreachable_darwin_guarded_module_code() -> 
         func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
     )
 
-    assert all(op.get("s_value") != "polyval" for op in main_ops)
+    # CPython co_names keeps source names even in an unreachable target branch.
+    # Prove executable lookup was eliminated, independently of metadata strings.
+    assert "polyval" in compile(source, "<platform-oracle>", "exec").co_names
+    assert not _module_attr_accesses(main_ops, "module_get_global", "polyval")
 
 
 def test_target_sys_platform_keeps_reachable_matching_platform_module_code() -> None:
@@ -4048,7 +4115,7 @@ def test_target_sys_platform_keeps_reachable_matching_platform_module_code() -> 
         func["ops"] for func in ir["functions"] if func["name"] == "molt_main"
     )
 
-    assert any(op.get("s_value") == "polyval" for op in main_ops)
+    assert _module_attr_accesses(main_ops, "module_get_global", "polyval")
 
 
 @pytest.mark.parametrize(
@@ -4676,9 +4743,7 @@ def test_shadowed_dictionary_constructor_does_not_bypass_method_dispatch(
         parameters=function["params"],
     )
     assert any(
-        op.get("kind") == "store_var"
-        and op.get("var") == "value"
-        and op["args"] == [constructor["out"]]
+        op["kind"] == "frame_home_store" and op["args"] == [constructor["out"]]
         for op in ops
     )
     (attribute,) = (
@@ -4686,7 +4751,7 @@ def test_shadowed_dictionary_constructor_does_not_bypass_method_dispatch(
         for op in ops
         if op.get("kind") == "get_attr_generic_obj" and op.get("s_value") == "pop"
     )
-    assert attribute["args"][0] in _local_reads(ops, "value")
+    assert attribute["args"][0] in _binding_reads(ops, {constructor["out"]})
     call = _positional_call(ops, {attribute["out"]}, 2)
     producers = {op["out"]: op for op in ops if "out" in op}
     key = producers[call["args"][1]]
@@ -4802,18 +4867,25 @@ def tensor_module_ops() -> dict[str, list[dict[str, object]]]:
 
 def test_tensor_linear_uses_internal_fast_tensor_wrap_helper(tensor_module_ops) -> None:
     func_ops = tensor_module_ops["molt_gpu_tensor__tensor_linear"]
+    slots = _cpython_local_slots(
+        Path("src/molt/gpu/tensor.py").read_text(encoding="utf-8"), "tensor_linear"
+    )
     helpers = _module_attr_accesses(func_ops, "module_get_global", "_tensor_from_parts")
     call = _positional_call(func_ops, helpers, 6)
     bits, dtype, size, fmt, shape, tensor_dtype = call["args"][1:]
-    assert bits in _local_reads(func_ops, "out_bits")
-    assert dtype in _local_reads(func_ops, "result_dtype")
-    assert fmt in _local_reads(func_ops, "result_format")
-    assert shape in _local_reads(func_ops, "out_shape")
-    assert tensor_dtype in _local_reads(func_ops, "result_dtype")
+    assert bits in _local_reads(func_ops, "out_bits", slot=slots["out_bits"])
+    assert dtype in _local_reads(func_ops, "result_dtype", slot=slots["result_dtype"])
+    assert fmt in _local_reads(func_ops, "result_format", slot=slots["result_format"])
+    assert shape in _local_reads(func_ops, "out_shape", slot=slots["out_shape"])
+    assert tensor_dtype in _local_reads(
+        func_ops, "result_dtype", slot=slots["result_dtype"]
+    )
     product = next(op for op in func_ops if op.get("out") == size)
     assert product["kind"] == "mul"
-    assert product["args"][0] in _local_reads(func_ops, "outer")
-    assert product["args"][1] in _local_reads(func_ops, "out_features")
+    assert product["args"][0] in _local_reads(func_ops, "outer", slot=slots["outer"])
+    assert product["args"][1] in _local_reads(
+        func_ops, "out_features", slot=slots["out_features"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -4833,7 +4905,10 @@ def test_tensor_view_helpers_use_internal_fast_wrap_helpers(
     producers = {op["out"]: op for op in ops if "out" in op}
     attrs = [(call["args"][1], "_buf")]
     if reshape:
-        assert call["args"][2] in _local_reads(ops, "shape")
+        slots = _cpython_local_slots(
+            Path("src/molt/gpu/tensor.py").read_text(encoding="utf-8"), function
+        )
+        assert call["args"][2] in _local_reads(ops, "shape", slot=slots["shape"])
         attrs.append((call["args"][3], "_dtype"))
     else:
         attrs.append((call["args"][2], "size"))
@@ -5276,3 +5351,46 @@ def probe(value):
         )
         == 1
     )
+
+
+def test_namespace_inplace_update_keeps_frontend_relative_transaction() -> None:
+    prefix = "exposed = globals()\nexposed |= {'__package__': 'other'}\n"
+    namespace = {"__package__": "pkg"}
+    exec(compile(prefix, "<inplace-import-anchor-oracle>", "exec"), namespace)
+    assert namespace["__package__"] == "other"
+    generator = SimpleTIRGenerator(module_name="pkg.entry", target_python=(3, 12))
+    generator.visit(ast.parse(prefix + "from .child import value\n"))
+    main_ops = next(
+        function["ops"]
+        for function in generator.to_json()["functions"]
+        if function["name"] == "molt_main"
+    )
+    assert ("child", ("value",), 1) in _import_transaction_details(main_ops)
+    assert ("pkg.child", ("value",), 0) not in _import_transaction_details(main_ops)
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "g = ((__package__ := 'other') for _ in (0,))\nlist(g)\n",
+        "exposed = globals()\ndef rebind():\n    exposed['__package__'] = 'other'\nrebind()\n",
+        "exposed = (globals(),)\nconsume(*exposed)\n",
+        "consume(*[globals()])\n",
+    ],
+)
+def test_deferred_and_starred_mutation_keep_frontend_relative_transaction(prefix):
+    def consume(namespace):
+        namespace["__package__"] = "other"
+
+    namespace = {"__package__": "pkg", "consume": consume}
+    exec(compile(prefix, "<deferred-frontend-oracle>", "exec"), namespace)
+    assert namespace["__package__"] == "other"
+    generator = SimpleTIRGenerator(module_name="pkg.entry", target_python=(3, 12))
+    generator.visit(ast.parse(prefix + "from .child import value\n"))
+    main_ops = next(
+        function["ops"]
+        for function in generator.to_json()["functions"]
+        if function["name"] == "molt_main"
+    )
+    assert ("child", ("value",), 1) in _import_transaction_details(main_ops)
+    assert ("pkg.child", ("value",), 0) not in _import_transaction_details(main_ops)

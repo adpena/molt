@@ -114,6 +114,7 @@ from tools.memory_guard_core.memory_limits import (  # noqa: E402
 from tools.memory_guard_core.payloads import (  # noqa: E402
     _rss_record_payload as _rss_record_payload,
     guarded_child_process_payload as guarded_child_process_payload,
+    process_identities_payload as process_identities_payload,
     memory_limits_payload as memory_limits_payload,
     termination_action_payload as termination_action_payload,
     termination_report_payload as termination_report_payload,
@@ -1035,6 +1036,19 @@ def run_guarded(
             if stderr_capture is not None:
                 stderr_capture.close()
             raise
+        _close_fds(launch.close_fds)
+        # Freeze the owned launch identity while Popen still reserves this PID.
+        # ChildExecutionClock starts the sole reaper immediately; a fast child
+        # can be gone (or its PID reused) before that constructor returns.
+        # Closure must use the original group/session, never a post-reap query.
+        child_process = GuardedChildProcess(
+            pid=proc.pid,
+            pgid=_safe_getpgid(proc.pid),
+            sid=_safe_getsid(proc.pid),
+            command=tuple(launch.command),
+            started_at=_utc_timestamp(),
+        )
+        tracker = ProcessTreeTracker(proc.pid)
         child_clock = None
         if type(proc).__module__ == "subprocess":
             from tools.memory_guard_core.process_custody import ChildExecutionClock
@@ -1048,15 +1062,6 @@ def run_guarded(
                 if resumed_at is None:
                     raise RuntimeError("Windows child resume clock is unavailable")
                 child_clock.started = resumed_at
-        _close_fds(launch.close_fds)
-        child_process = GuardedChildProcess(
-            pid=proc.pid,
-            pgid=_safe_getpgid(proc.pid),
-            sid=_safe_getsid(proc.pid),
-            command=tuple(launch.command),
-            started_at=_utc_timestamp(),
-        )
-        tracker = ProcessTreeTracker(proc.pid)
         sampling_source = (
             "windows_full_process_table"
             if _is_windows_process_model()
@@ -2352,6 +2357,9 @@ def run_guarded(
             cargo_incremental_quarantine=cargo_incremental_quarantine,
             guard_signal=guard_signal,
             child_process=child_process,
+            owned_process_identities=tuple(
+                sorted(tracker.custody_identities(tracker.known_pids or ()).items())
+            ),
             termination_reports=tuple(termination_reports),
             sampling_telemetry=final_sampling_telemetry,
             peak_job_commit_bytes=peak_job_commit_bytes,
@@ -2364,6 +2372,9 @@ def run_guarded(
             guard_marker,
             guard_token,
             status="completed",
+            owned_process_identities=process_identities_payload(
+                result.owned_process_identities
+            ),
             returncode=result.returncode,
             child_returncode=result.child_returncode,
             infrastructure_failure=infrastructure_failure_payload(

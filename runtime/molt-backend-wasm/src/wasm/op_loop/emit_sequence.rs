@@ -96,6 +96,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 reloc_enabled,
                 ops,
                 op_idx,
+                self.frame.guard_profile_local(op),
             ) {
                 continue;
             }
@@ -171,6 +172,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                     import_ids,
                     locals,
                     reloc_enabled,
+                    guard_profile_local: self.frame.guard_profile_local(op),
                     native_eh_enabled,
                     func_index,
                     func_import_count: backend.func_import_count,

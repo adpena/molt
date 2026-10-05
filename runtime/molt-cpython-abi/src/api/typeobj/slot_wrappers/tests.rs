@@ -3,6 +3,7 @@
 //! not computed from the adapter selected by the declaration being exercised.
 
 use super::*;
+use crate::type_slots as ts;
 use std::cell::RefCell;
 use std::ffi::CStr;
 
@@ -563,7 +564,29 @@ fn native_buffer_lease_uses_declaring_callback_and_last_share_releases_once() {
         bf_getbuffer: unexpected_buffer as *const () as _,
         bf_releasebuffer: releasebuffer as *const () as _,
     };
+    assert!(unsafe { super::super::type_bf_getbuffer(ptr::null_mut()) }.is_none());
+    assert!(unsafe { super::super::type_bf_releasebuffer(&raw mut owner) }.is_none());
     owner.tp_as_buffer = (&raw mut buffer).cast();
+    // Independent callbacks and Stable-ABI slot IDs must select the same
+    // physical table entries without allocating or invoking either callback.
+    assert!(
+        unsafe { super::super::type_bf_getbuffer(&raw mut owner) }.is_some_and(|slot| {
+            ptr::fn_addr_eq(slot, unexpected_buffer as super::super::BfGetBuffer)
+        })
+    );
+    assert!(
+        unsafe { super::super::type_bf_releasebuffer(&raw mut owner) }.is_some_and(|slot| {
+            ptr::fn_addr_eq(slot, releasebuffer as super::super::BfReleaseBuffer)
+        })
+    );
+    assert_eq!(
+        unsafe { super::super::PyType_GetSlot(&raw mut owner, ts::Py_bf_getbuffer) },
+        buffer.bf_getbuffer
+    );
+    assert_eq!(
+        unsafe { super::super::PyType_GetSlot(&raw mut owner, ts::Py_bf_releasebuffer) },
+        buffer.bf_releasebuffer
+    );
     let mut receiver = PyObject {
         ob_refcnt: 1,
         ob_type: &raw mut owner,
@@ -603,4 +626,89 @@ fn physical_wrapper_layout_matches_the_pinned_cpython_header() {
     assert_eq!(std::mem::size_of::<PyWrapperDescrObject>(), 7 * word);
     assert_eq!(std::mem::size_of::<PyMethodWrapperObject>(), 4 * word);
     assert_eq!(std::mem::size_of::<PyWrapperBase>(), 7 * word);
+}
+
+#[test]
+fn attribute_wrappers_share_native_setter_admission() {
+    let _thread = crate::api::object::AbiTestThreadStateTransaction::new();
+    unsafe {
+        let mut root: PyTypeObject = std::mem::zeroed();
+        root.ob_base.ob_base.ob_refcnt = 1;
+        root.tp_name = c"SetterRoot".as_ptr();
+        root.tp_setattro = Some(status);
+        let mut leaf: PyTypeObject = std::mem::zeroed();
+        leaf.ob_base.ob_base.ob_refcnt = 1;
+        leaf.tp_name = c"SetterLeaf".as_ptr();
+        leaf.tp_base = &raw mut root;
+        leaf.tp_setattro = Some(status);
+        let leaf_ptr = &raw mut leaf;
+        // The independently declared MRO includes the actual native owner of
+        // the inherited slot; admission must find it by walking from the end.
+        leaf.tp_mro = sequences::native_call_args(&[leaf_ptr.cast(), (&raw mut root).cast()]);
+        assert!(!leaf.tp_mro.is_null());
+        let mut receiver = PyObject {
+            ob_refcnt: 1,
+            ob_type: leaf_ptr,
+        };
+        let receiver_ptr = &raw mut receiver;
+        for (name, values) in [
+            (
+                c"__setattr__",
+                vec![&raw mut Py_None, &raw mut Py_NotImplementedSentinel],
+            ),
+            (c"__delattr__", vec![&raw mut Py_None]),
+        ] {
+            CALLS.with(|calls| calls.borrow_mut().clear());
+            let result = invoke(
+                leaf_ptr,
+                receiver_ptr,
+                declaration(name, Family::Direct),
+                status as *const () as _,
+                &values,
+            );
+            assert!(!result.is_null());
+            assert_eq!(
+                take_call(),
+                [
+                    receiver_ptr.addr(),
+                    values[0].addr(),
+                    values.get(1).map_or(0, |value| value.addr())
+                ]
+            );
+            refcount::Py_DECREF(result);
+
+            // A native NULL slot with a real MRO rejects the inherited setter.
+            leaf.tp_setattro = None;
+            let result = invoke(
+                leaf_ptr,
+                receiver_ptr,
+                declaration(name, Family::Direct),
+                status as *const () as _,
+                &values,
+            );
+            assert!(result.is_null());
+            assert!(!errors::PyErr_Occurred().is_null());
+            errors::PyErr_Clear();
+            assert!(CALLS.with(|calls| calls.borrow().is_empty()));
+
+            let mro = std::mem::replace(&mut leaf.tp_mro, ptr::null_mut());
+            let result = invoke(
+                leaf_ptr,
+                receiver_ptr,
+                declaration(name, Family::Direct),
+                status as *const () as _,
+                &values,
+            );
+            assert!(!result.is_null(), "missing MRO preserves CPython admission");
+            refcount::Py_DECREF(result);
+            take_call();
+            leaf.tp_mro = mro;
+            leaf.tp_setattro = Some(status);
+        }
+        let mro = std::mem::replace(&mut leaf.tp_mro, ptr::null_mut());
+        refcount::Py_DECREF(mro);
+        assert_eq!(leaf.ob_base.ob_base.ob_refcnt, 1);
+        assert_eq!(root.ob_base.ob_base.ob_refcnt, 1);
+        assert_eq!(receiver.ob_refcnt, 1);
+    }
 }

@@ -1,6 +1,5 @@
 use crate::PyToken;
 use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
-use crate::object::HEADER_FLAG_COROUTINE;
 use molt_obj_model::MoltObject;
 use std::sync::atomic::Ordering;
 
@@ -14,8 +13,8 @@ use crate::builtins::containers::tuple_method_bits;
 use crate::builtins::exceptions::{exception_matches_builtin_name, molt_exception_last_pending};
 use crate::builtins::frames::suspended_frame_bits;
 use crate::builtins::methods::{
-    asyncgen_method_bits, complex_method_bits, coroutine_method_bits, generator_method_bits,
-    object_method_bits, range_method_bits, type_method_bits,
+    asyncgen_method_bits, complex_method_bits, generator_method_bits, object_method_bits,
+    range_method_bits, type_method_bits,
 };
 use crate::*;
 
@@ -37,9 +36,11 @@ pub(crate) use wrapper_attrs::{
 };
 
 pub(crate) use class_lookup::{type_attr_lookup_ptr, type_attr_lookup_ptr_default};
+#[cfg(feature = "molt_gpu_primitives")]
+pub(crate) use mutation::object_setattr_raw;
 pub(crate) use mutation::{
-    dataclass_delattr_raw_unchecked, dataclass_setattr_raw_unchecked, del_attr_ptr,
-    object_delattr_raw, object_setattr_raw,
+    TypeMutation, explicit_object_mutation_admitted, explicit_type_mutate_attr_name,
+    generic_del_attr_name, generic_set_attr_name, type_mutate_attr_name,
 };
 pub use mutation::{
     molt_del_attr_generic, molt_del_attr_name, molt_del_attr_object, molt_del_attr_ptr,
@@ -211,10 +212,9 @@ pub extern "C" fn molt_code_positions(code_bits: u64) -> u64 {
     })
 }
 
-#[unsafe(no_mangle)]
 /// Attribute lookup for a `TYPE_ID_FOREIGN` wrapper: route through the wrapped
-/// C object's own type slots via the ABI bridge. Type names use the same
-/// type observers as every C API caller, including distinct heap qualnames.
+/// C object's normal or explicit generic protocol via the ABI bridge. Type names
+/// use the same type observers as every C API caller, including distinct qualnames.
 /// Returns `Some(bits)` on success, or `None` (caller raises `AttributeError`,
 /// or propagates a pending exception the C slot left set).
 ///
@@ -224,9 +224,10 @@ pub(crate) unsafe fn foreign_attr_lookup(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
     attr_bits: u64,
+    access: molt_cpython_abi::hooks::AttributeAccess,
 ) -> Option<u64> {
     let c_ptr = unsafe { crate::object::foreign::foreign_ptr_from_obj(obj_ptr) };
-    let val = unsafe { molt_cpython_abi::bridge::molt_foreign_getattr(c_ptr, attr_bits) };
+    let val = unsafe { molt_cpython_abi::bridge::molt_foreign_getattr(c_ptr, attr_bits, access) };
     match val.decode() {
         molt_cpython_abi::hooks::DecodedHandleResult::Ok(bits) => Some(bits),
         molt_cpython_abi::hooks::DecodedHandleResult::Missing => None,
@@ -246,6 +247,9 @@ pub(crate) unsafe fn attr_lookup_ptr(
         let type_id = object_type_id(obj_ptr);
         if type_id == TYPE_ID_TYPE {
             return type_attr_lookup_ptr(_py, obj_ptr, attr_bits);
+        }
+        if type_id == TYPE_ID_SUPER {
+            return crate::builtins::attr::super_attr_lookup(_py, obj_ptr, attr_bits);
         }
         if !matches!(type_id, TYPE_ID_FOREIGN | TYPE_ID_FUNCTION)
             && let Some(class) = obj_from_bits(object_class_bits(obj_ptr)).as_ptr()
@@ -316,7 +320,12 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
         // `_ic`, `_generic`, `_name`, …) funnels through, so foreign dispatch must
         // live here, not in a single entry point.
         if type_id == crate::TYPE_ID_FOREIGN {
-            return foreign_attr_lookup(_py, obj_ptr, attr_bits);
+            return foreign_attr_lookup(
+                _py,
+                obj_ptr,
+                attr_bits,
+                molt_cpython_abi::hooks::AttributeAccess::Normal,
+            );
         }
         if type_id == crate::TYPE_ID_NATIVE_DESCRIPTOR
             && let Some(field) = string_obj_to_owned(obj_from_bits(attr_bits))
@@ -435,14 +444,14 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
                 );
             }
         }
-        let class_bits = object_class_bits(obj_ptr);
-        let class_lookup_complete = class_bits != 0
-            && !crate::object::heap_kind_has_class_shape(type_id)
+        // Fixed-shape builtins also inherit ordinary class attributes even
+        // when their semantic type is derived rather than stored in a header.
+        if !crate::object::heap_kind_has_class_shape(type_id)
             && !matches!(
                 type_id,
                 TYPE_ID_DATACLASS | TYPE_ID_EXCEPTION | TYPE_ID_FUNCTION | TYPE_ID_TYPE
-            );
-        if class_lookup_complete {
+            )
+        {
             let result = crate::builtins::attr::object_attr_lookup_with_policy(
                 _py, obj_ptr, attr_bits, suppress,
             );
@@ -739,22 +748,6 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
                 );
             }
         }
-        if type_id == TYPE_ID_DICT {
-            if class_lookup_complete {
-                return None;
-            }
-            if let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits)) {
-                if let Some(func_bits) = dict_method_bits(_py, name.as_str()) {
-                    let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                    return descriptor_bind(
-                        _py,
-                        func_bits,
-                        Some(type_of_bits(_py, self_bits)),
-                        Some(self_bits),
-                    );
-                }
-            }
-        }
         if type_id == TYPE_ID_SET
             && let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits))
             && let Some(func_bits) = set_method_bits(_py, name.as_str())
@@ -865,93 +858,6 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
         }
         if type_id == TYPE_ID_TYPE {
             return type_attr_lookup_ptr_default(_py, obj_ptr, attr_bits);
-        }
-        if type_id == TYPE_ID_SUPER {
-            let attr_name = string_obj_to_owned(obj_from_bits(attr_bits));
-            let start_bits = super_type_bits(obj_ptr);
-            let target_bits = super_obj_bits(obj_ptr);
-            let obj_type_bits = crate::object::layout::super_receiver_class_bits(obj_ptr);
-            let member = match attr_name.as_deref() {
-                Some("__thisclass__") => Some(start_bits),
-                Some("__self__") => Some(target_bits),
-                Some("__self_class__") => Some(obj_type_bits),
-                _ => None,
-            };
-            if let Some(bits) = member {
-                inc_ref_bits(_py, bits);
-                return Some(bits);
-            }
-            if obj_from_bits(obj_type_bits).is_none() {
-                return None;
-            }
-            let obj_type_ptr = obj_from_bits(obj_type_bits).as_ptr()?;
-            if object_type_id(obj_type_ptr) != TYPE_ID_TYPE {
-                return None;
-            }
-            let mro_storage = class_mro_view(_py, obj_type_ptr);
-            // A class receiver is unbound for descriptors; a metaclass receiver
-            // remains an instance of its resolved metaclass.
-            let instance_bits = if target_bits == obj_type_bits {
-                None
-            } else {
-                Some(target_bits)
-            };
-            let owner_ptr = obj_type_ptr;
-            let mut found_start = false;
-            for class_bits in mro_storage.iter() {
-                if !found_start {
-                    if *class_bits == start_bits {
-                        found_start = true;
-                    }
-                    continue;
-                }
-                let class_obj = obj_from_bits(*class_bits);
-                let Some(class_ptr) = class_obj.as_ptr() else {
-                    continue;
-                };
-                if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                    continue;
-                }
-                let dict_bits = class_dict_bits(class_ptr);
-                let dict_obj = obj_from_bits(dict_bits);
-                let Some(dict_ptr) = dict_obj.as_ptr() else {
-                    continue;
-                };
-                if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                    continue;
-                }
-                if let Some(val_bits) = dict_get_in_place(_py, dict_ptr, attr_bits) {
-                    if attr_name.as_deref() == Some("__new__")
-                        && let Some(val_ptr) = obj_from_bits(val_bits).as_ptr()
-                        && object_type_id(val_ptr) == TYPE_ID_FUNCTION
-                    {
-                        inc_ref_bits(_py, val_bits);
-                        return Some(val_bits);
-                    }
-                    return descriptor_bind(
-                        _py,
-                        val_bits,
-                        Some(MoltObject::from_ptr(owner_ptr).bits()),
-                        instance_bits,
-                    );
-                }
-                if let Some(name) = attr_name.as_deref()
-                    && is_builtin_class_bits(_py, *class_bits)
-                    && let Some(func_bits) = builtin_class_method_bits(_py, *class_bits, name)
-                {
-                    if name == "__new__" {
-                        inc_ref_bits(_py, func_bits);
-                        return Some(func_bits);
-                    }
-                    return descriptor_bind(
-                        _py,
-                        func_bits,
-                        Some(MoltObject::from_ptr(owner_ptr).bits()),
-                        instance_bits,
-                    );
-                }
-            }
-            return None;
         }
         if type_id == TYPE_ID_FUNCTION {
             if let Some(kind) = NativeCallableKind::from_class(_py, object_class_bits(obj_ptr)) {
@@ -1066,28 +972,8 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
             }
             // The shared resolver gives real class data descriptors priority
             // over the user dictionary, then binds ordinary class attributes.
-            return crate::builtins::attr::object_attr_lookup_inner(
-                _py,
-                obj_bits,
-                obj_ptr,
-                type_of_bits(_py, obj_bits),
-                attr_bits,
-                None,
-                suppress,
-            );
-        }
-        if type_id == crate::TYPE_ID_CELL {
-            if class_lookup_complete {
-                return None;
-            }
-            return crate::builtins::attr::object_attr_lookup_inner(
-                _py,
-                obj_bits,
-                obj_ptr,
-                crate::builtins::types::cell_class(_py),
-                attr_bits,
-                None,
-                suppress,
+            return crate::builtins::attr::object_attr_lookup_with_policy(
+                _py, obj_ptr, attr_bits, suppress,
             );
         }
         if type_id == TYPE_ID_CODE {
@@ -1218,80 +1104,11 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
             );
         }
         if crate::object::heap_kind_has_class_shape(type_id) {
-            return classed_default_attr_lookup(_py, obj_ptr, attr_bits, suppress);
+            return crate::builtins::attr::object_attr_lookup_with_policy(
+                _py, obj_ptr, attr_bits, suppress,
+            );
         }
         None
-    }
-}
-
-/// Synthetic coroutine members precede ordinary object storage on the default
-/// path. All descriptor/slot/dictionary precedence is owned by the same raw
-/// object lookup that implements explicit object.__getattribute__.
-unsafe fn classed_default_attr_lookup(
-    _py: &PyToken<'_>,
-    obj_ptr: *mut u8,
-    attr_bits: u64,
-    suppress: bool,
-) -> Option<u64> {
-    unsafe {
-        let header = header_from_obj_ptr(obj_ptr);
-        if (*header).load_metadata_flags() & HEADER_FLAG_COROUTINE != 0
-            && let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits))
-        {
-            match name.as_str() {
-                "cr_running" => {
-                    let running =
-                        ((*header).load_synchronized_flags() & HEADER_FLAG_GEN_RUNNING) != 0;
-                    return Some(MoltObject::from_bool(running).bits());
-                }
-                "cr_frame" => {
-                    if crate::object::object_poll_fn(obj_ptr) == 0
-                        || ((*header).load_synchronized_flags() & HEADER_FLAG_TASK_DONE) != 0
-                    {
-                        return Some(MoltObject::none().bits());
-                    }
-                    let lasti = if crate::object::object_state(obj_ptr) == 0 {
-                        -1
-                    } else {
-                        0
-                    };
-                    return Some(suspended_frame_bits(_py, obj_ptr, lasti));
-                }
-                "cr_code" => {
-                    let code_bits = crate::object::aux_header::object_frame_code_bits(obj_ptr);
-                    if code_bits != 0 {
-                        inc_ref_bits(_py, code_bits);
-                        return Some(code_bits);
-                    }
-                    return Some(MoltObject::none().bits());
-                }
-                "cr_await" => {
-                    if (*header).load_synchronized_flags()
-                        & (HEADER_FLAG_GEN_RUNNING | HEADER_FLAG_TASK_DONE)
-                        != 0
-                    {
-                        return Some(MoltObject::none().bits());
-                    }
-                    let bits = crate::object::aux_header::object_frame_awaited_bits(obj_ptr);
-                    if bits != 0 {
-                        return Some(crate::async_rt::awaitable::python_awaited_bits(_py, bits));
-                    }
-                    return Some(MoltObject::none().bits());
-                }
-                _ => {}
-            }
-            if let Some(func_bits) = coroutine_method_bits(_py, name.as_str()) {
-                let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                return descriptor_bind(
-                    _py,
-                    func_bits,
-                    Some(type_of_bits(_py, self_bits)),
-                    Some(self_bits),
-                );
-            }
-        }
-
-        crate::builtins::attr::object_attr_lookup_with_policy(_py, obj_ptr, attr_bits, suppress)
     }
 }
 
@@ -1920,9 +1737,11 @@ mod tests {
                                 name.len() as u64,
                                 invalid_name,
                             ),
-                            ("set", 4) => {
-                                crate::molt_object_setattr(class_bits, name_bits, invalid_name)
-                            }
+                            ("set", 4) => super::type_mutate_attr_name(
+                                class_bits,
+                                name_bits,
+                                Some(invalid_name),
+                            ),
                             ("del", 0) => super::molt_del_attr_name(class_bits, name_bits),
                             ("del", 1) => super::molt_del_attr_generic(
                                 class_ptr,

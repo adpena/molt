@@ -263,8 +263,14 @@ fn identifier_storage_equality_does_not_invoke_string_subclass_comparison() {
         EQUALITY_CALLS.store(0, AtomicOrdering::SeqCst);
         assert_eq!(molt_eq(child, other), MoltObject::from_bool(true).bits());
         assert_eq!(EQUALITY_CALLS.load(AtomicOrdering::SeqCst), 1);
-        assert_eq!(molt_string_eq(child, name), MoltObject::from_bool(true).bits());
-        assert_eq!(molt_string_eq(child, other), MoltObject::from_bool(false).bits());
+        assert_eq!(
+            molt_string_eq(child, name),
+            MoltObject::from_bool(true).bits()
+        );
+        assert_eq!(
+            molt_string_eq(child, other),
+            MoltObject::from_bool(false).bits()
+        );
         assert_eq!(EQUALITY_CALLS.load(AtomicOrdering::SeqCst), 1);
         assert!(!exception_pending(py));
         for value in [child, other, name, class] {

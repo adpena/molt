@@ -31,7 +31,7 @@ pub struct ModuleGcCallbacks {
         ) -> std::os::raw::c_int,
     >,
     pub clear: Option<unsafe extern "C" fn(*mut crate::abi_types::PyObject) -> std::os::raw::c_int>,
-    pub free: Option<unsafe extern "C" fn(*mut std::ffi::c_void)>,
+    pub free: Option<unsafe extern "C" fn(*mut std::ffi::c_void) -> i32>,
 }
 
 /// Error policy selected by the public C API boundary, never inferred from
@@ -53,13 +53,24 @@ pub enum DictHashSource {
     Supplied = 1,
 }
 
-/// Normal object protocol invokes user overrides; explicit generic operations
-/// use the runtime's default descriptor and storage protocol.
+/// Normal lookup invokes user overrides; Generic selects descriptor/storage
+/// lookup directly. Mutation has its own protocol below.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttributeAccess {
     Normal = 0,
     Generic = 1,
+}
+
+/// Mutation has a separate default type protocol: it bypasses metaclass
+/// overrides while retaining namespace/cache publication. Generic is only the
+/// physical descriptor/dictionary operation, including for class receivers.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttributeMutation {
+    Normal = 0,
+    Generic = 1,
+    TypeDefault = 2,
 }
 
 /// Live descriptor slots of a managed value's Python type. Error is distinct
@@ -111,9 +122,52 @@ pub enum TypeMetadataField {
     Bases = 3,
     Mro = 4,
     SolidOwner = 5,
-    /// HEAPTYPE, IMMUTABLETYPE, and BASETYPE from exact-class declarations.
+    /// TYPE_SEMANTIC_FLAGS_MASK from exact-class declarations and latched abstract state.
     SemanticFlags = 6,
+    /// Exact immutable creation-time documentation, never mutable __doc__.
+    /// Missing means captured absence. An owned string result exposes stable
+    /// NUL-terminated str_data bytes; the class's existing terminal-lifetime
+    /// edge anchors those bytes after the temporary result owner is released.
+    CreationDoc = 7,
+    /// Exact native class's own sequence/mapping declaration capabilities.
+    /// Inherited methods retain the resolved declaring type's physical slots.
+    /// Missing means ordinary Python class policy, not an inherited native mask.
+    NativeProtocolSlots = 8,
 }
+
+/// Native protocol presence is independent of Python method spelling. In
+/// particular __len__ may expose sq_length, mp_length, or both. These typed
+/// bits are construction facts shared with the runtime class declaration word.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeProtocolSlot {
+    SequenceLength,
+    SequenceConcat,
+    SequenceRepeat,
+    SequenceItem,
+    SequenceAssignItem,
+    SequenceContains,
+    SequenceInPlaceConcat,
+    SequenceInPlaceRepeat,
+    MappingLength,
+    MappingSubscript,
+    MappingAssignSubscript,
+}
+
+impl NativeProtocolSlot {
+    pub const ALL_MASK: u64 = (Self::MappingAssignSubscript.bit() << 1) - 1;
+
+    pub const fn bit(self) -> u64 {
+        1 << self as u8
+    }
+}
+
+/// Complete runtime-owned CPython type-flag domain. Physical readiness,
+/// protocol and GC flags remain owned by each admitted C view.
+pub const TYPE_SEMANTIC_FLAGS_MASK: std::os::raw::c_ulong = crate::abi_types::Py_TPFLAGS_HEAPTYPE
+    | crate::abi_types::Py_TPFLAGS_IMMUTABLETYPE
+    | crate::abi_types::Py_TPFLAGS_BASETYPE
+    | crate::abi_types::Py_TPFLAGS_IS_ABSTRACT;
 
 /// Python's generic class-info protocols, distinct from physical subtype tests.
 #[repr(u32)]
@@ -673,9 +727,18 @@ pub struct RuntimeHooks {
     /// Missing means not a dict (or, with merge_source=1, overridden __iter__).
     /// Error preserves the original lazy-backing allocation/storage exception.
     pub dict_resolve: unsafe extern "C" fn(bits: u64, merge_source: u8) -> BorrowedHandleResult,
-    /// Insert or overwrite a key→value pair in the admitted exact backing dict.
-    pub dict_set:
-        unsafe extern "C" fn(dict_bits: u64, key_bits: u64, val_bits: u64) -> std::os::raw::c_int,
+    /// Set/delete through the canonical deferred dictionary transaction. The
+    /// optional callback publishes derived native facts after storage commit
+    /// and before displaced key/value ownership can run Python finalizers.
+    /// Return 0 on success, 1 for absent deletion, or -1 with an exception.
+    pub dict_mutate: unsafe extern "C" fn(
+        dict_bits: u64,
+        key_bits: u64,
+        val_bits: u64,
+        delete: u8,
+        publish: Option<unsafe extern "C" fn(*mut std::ffi::c_void) -> i32>,
+        context: *mut std::ffi::c_void,
+    ) -> std::os::raw::c_int,
     /// Look up a key in admitted backing storage. Compute invokes its hash
     /// protocol once; Supplied bypasses hashing and hashability checks. Equality
     /// failures retain their original error; an absent key returns Missing.
@@ -747,7 +810,7 @@ pub struct RuntimeHooks {
         name_bits: u64,
         value_bits: u64,
         delete: bool,
-        access: AttributeAccess,
+        access: AttributeMutation,
     ) -> std::os::raw::c_int,
     /// Probe the managed descriptor's live type without binding or executing
     /// Python hooks. The C carrier's physical slots are not this authority.
@@ -832,6 +895,16 @@ pub struct RuntimeHooks {
         type_bits: u64,
         name_bits: u64,
         search_mro: u8,
+    ) -> BorrowedHandleResult,
+    /// Callback-free native declaration identity. A matching wrapper descriptor
+    /// or constructor returns its borrowed declaring class; arbitrary Python
+    /// callables, including same-name functions, return Missing. Name selects a
+    /// canonical slot declaration, never an executable target registry.
+    pub builtin_slot_owner: unsafe extern "C" fn(
+        descriptor: u64,
+        name: *const u8,
+        name_len: usize,
+        constructor: bool,
     ) -> BorrowedHandleResult,
     // ── Reference counting ────────────────────────────────────────────────────
     /// Increment the Molt reference count for a heap object.
@@ -1250,6 +1323,7 @@ pub struct RuntimeHooks {
         *const MoltBufferView,
         *const std::ffi::c_char,
         *const std::ffi::c_void,
+        bool,
     ) -> OwnedHandleResult,
     /// 0 = live, 1 = released, -1 = invalid. No callback or owned edge transfer.
     pub memoryview_snapshot: unsafe extern "C" fn(
@@ -1275,7 +1349,9 @@ pub struct RuntimeHooks {
 }
 
 pub const RUNTIME_HOOKS_ABI_MAGIC: u64 = 0x4d4f_4c54_484f_4f4b;
-pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 52;
+// Version 56 adds the NativeProtocolSlots type-metadata domain. Callback
+// domains are ABI even when the pointer-sized table layout is unchanged.
+pub const RUNTIME_HOOKS_ABI_VERSION: u32 = 56;
 
 #[inline]
 fn runtime_hooks_layout_matches(abi_magic: u64, abi_version: u32, struct_size: u32) -> bool {
@@ -1716,7 +1792,14 @@ unsafe extern "C" fn stub_alloc_dict() -> u64 {
 unsafe extern "C" fn stub_dict_resolve(_: u64, _: u8) -> BorrowedHandleResult {
     BorrowedHandleResult::error()
 }
-unsafe extern "C" fn stub_dict_set(_d: u64, _k: u64, _v: u64) -> std::os::raw::c_int {
+unsafe extern "C" fn stub_dict_mutate(
+    _d: u64,
+    _k: u64,
+    _v: u64,
+    _delete: u8,
+    _publish: Option<unsafe extern "C" fn(*mut std::ffi::c_void) -> i32>,
+    _context: *mut std::ffi::c_void,
+) -> std::os::raw::c_int {
     -1
 }
 unsafe extern "C" fn stub_dict_get(
@@ -1854,7 +1937,7 @@ unsafe extern "C" fn stub_object_set_attr(
     _name: u64,
     _value: u64,
     _delete: bool,
-    _access: AttributeAccess,
+    _access: AttributeMutation,
 ) -> std::os::raw::c_int {
     -1
 }
@@ -2049,6 +2132,7 @@ unsafe extern "C" fn stub_memoryview_from_buffer(
     _view: *const MoltBufferView,
     _format: *const std::ffi::c_char,
     _lease: *const std::ffi::c_void,
+    _restricted: bool,
 ) -> OwnedHandleResult {
     OwnedHandleResult::error()
 }
@@ -2278,6 +2362,15 @@ unsafe extern "C" fn stub_exception_group_admit(
 }
 
 /// A no-op hooks table used when the runtime hasn't registered yet.
+unsafe extern "C" fn stub_builtin_slot_owner(
+    _descriptor: u64,
+    _name: *const u8,
+    _name_len: usize,
+    _constructor: bool,
+) -> BorrowedHandleResult {
+    BorrowedHandleResult::missing()
+}
+
 pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     abi_magic: RUNTIME_HOOKS_ABI_MAGIC,
     abi_version: RUNTIME_HOOKS_ABI_VERSION,
@@ -2328,7 +2421,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     alloc_dict: stub_alloc_dict,
     mappingproxy_new: stub_mappingproxy_new,
     dict_resolve: stub_dict_resolve,
-    dict_set: stub_dict_set,
+    dict_mutate: stub_dict_mutate,
     dict_get: stub_dict_get,
     dict_pop: stub_dict_pop,
     dict_len: stub_dict_len,
@@ -2346,6 +2439,7 @@ pub const STUB_HOOKS: RuntimeHooks = RuntimeHooks {
     object_get_attr: stub_object_get_attr,
     type_dict_borrowed: stub_type_dict_borrowed,
     type_metadata: stub_type_metadata,
+    builtin_slot_owner: stub_builtin_slot_owner,
     type_lookup_borrowed: stub_type_lookup_borrowed,
     object_set_attr: stub_object_set_attr,
     descriptor_protocol: stub_descriptor_protocol,

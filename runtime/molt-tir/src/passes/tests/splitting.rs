@@ -1560,7 +1560,11 @@ fn split_keeps_entry_custody_on_the_stub_and_moves_transferred_bindings() {
                 && pair[1].args.as_deref().map(|args| &args[..2]) == pair[0].args.as_deref()
         })
         .count();
-    assert_eq!(takes, chunks.len(), "each chunk takes the argument it reads");
+    assert_eq!(
+        takes,
+        chunks.len(),
+        "each chunk takes the argument it reads"
+    );
     let allocation = stub
         .ops
         .iter()

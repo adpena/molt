@@ -72,7 +72,9 @@ pub extern "C" fn __molt_http_pending_exception_matches_builtin(
             crate::builtins::exceptions::molt_exception_last_pending(),
         );
         i32::from(crate::builtins::exceptions::exception_matches_builtin_name(
-            py, pending.bits(), name,
+            py,
+            pending.bits(),
+            name,
         ))
     })
 }
@@ -499,8 +501,8 @@ pub extern "C" fn __molt_http_molt_module_import(name_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn __molt_http_molt_object_setattr(obj_bits: u64, name_bits: u64, value_bits: u64) {
-    let _ = crate::molt_object_setattr(obj_bits, name_bits, value_bits);
+pub extern "C" fn __molt_http_molt_set_attr_name(obj_bits: u64, name_bits: u64, value_bits: u64) {
+    let _ = crate::molt_set_attr_name(obj_bits, name_bits, value_bits);
 }
 
 // ---------------------------------------------------------------------------

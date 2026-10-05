@@ -593,42 +593,14 @@ pub extern "C" fn molt_raise(exc_bits: u64) -> u64 {
                 "exceptions must derive from BaseException",
             );
         }
-        let Some(ptr) = exc_obj.as_ptr() else {
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            return raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "exceptions must derive from BaseException",
-            );
+        let Some(exception) = super::raise_protocol::normalize_raise_operand(_py, exc_bits, false)
+        else {
+            return MoltObject::none().bits();
         };
-        let constructed = if exception_is_instance(_py, exc_bits) {
-            None
-        } else if exception_is_class(_py, exc_bits) {
-            let instance = unsafe { crate::call_callable0(_py, exc_bits) };
-            let instance = ExceptionValue::adopt(_py, instance);
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            if !exception_is_instance(_py, instance.bits()) {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "calling exception class did not return a BaseException instance",
-                );
-            }
-            Some(instance)
-        } else {
-            return raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "exceptions must derive from BaseException",
-            );
-        };
-        let exc_ptr = constructed
-            .as_ref()
-            .map_or(ptr, |value| obj_from_bits(value.bits()).as_ptr().unwrap());
+        let exception = ExceptionValue::adopt(_py, exception);
+        let exc_ptr = obj_from_bits(exception.bits())
+            .as_ptr()
+            .expect("normalized exception");
         if debug_exception_flow() || debug_exception_raise() {
             let kind = exception_diagnostic_name(exc_ptr);
             let task = current_task_key().map(|slot| slot.0 as usize).unwrap_or(0);

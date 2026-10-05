@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.native_link_plan import resolve_native_target_spec
+
 from tests.cli.native_link_test_support import native_codegen_binding
 
 from copy import deepcopy
@@ -94,7 +96,7 @@ def test_native_link_consumer_rejects_codegen_generation_replacement(
         json_output=True,
         output_binary=binary,
         runtime_codegen_binding=binding,
-        target_triple=target,
+        target=resolve_native_target_spec(target),
         sysroot_path=None,
         profile="dev",
         project_root=tmp_path,
@@ -459,7 +461,7 @@ def test_native_consumer_reuses_published_bytes_and_relinks_tampering(
             json_output=True,
             output_binary=binary,
             runtime_codegen_binding=native_codegen_binding(runtime, identity),
-            target_triple=target,
+            target=resolve_native_target_spec(target),
             sysroot_path=None,
             profile="dev",
             project_root=tmp_path,

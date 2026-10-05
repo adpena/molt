@@ -146,7 +146,7 @@ fn canonical_name_collision_with_override_is_resolved() {
     let a = ValueId(2);
     let b = ValueId(5);
 
-    let mut b_attrs = AttrDict::new();
+    let mut b_attrs = AttrDict::from([("value".into(), AttrValue::Int(11))]);
     b_attrs.insert("_simple_out".into(), AttrValue::Str("_v2".into()));
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -156,7 +156,7 @@ fn canonical_name_collision_with_override_is_resolved() {
         opcode: OpCode::ConstInt,
         operands: vec![],
         results: vec![a],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(9))]),
         source_span: None,
     });
     // B carries the explicit override "_v2".
@@ -1812,7 +1812,6 @@ fn tir_round_trip_preserves_method_guarded_field_set_sequence() {
     assert_eq!(exit_arg_op.kind, "load_var");
 }
 
-
 #[test]
 fn guarded_load_uses_field_custody_and_preserves_its_offset() {
     use crate::ir::{FunctionIR, OpIR};
@@ -1823,15 +1822,27 @@ fn guarded_load_uses_field_custody_and_preserves_its_offset() {
         name: "guarded_load_owner".into(),
         params: vec!["obj".into()],
         ops: vec![OpIR {
-            kind: "guarded_load".into(), args: Some(vec!["obj".into()]),
-            value: Some(24), out: Some("field".into()), class_name: Some("C".into()),
+            kind: "guarded_load".into(),
+            args: Some(vec!["obj".into()]),
+            value: Some(24),
+            out: Some("field".into()),
+            class_name: Some("C".into()),
             ..OpIR::default()
         }],
-        param_types: None, source_file: None, is_extern: false,
-        codegen_partition: false, parameter_custody: Vec::new(), execution_context: Default::default(),
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+        codegen_partition: false,
+        parameter_custody: Vec::new(),
+        execution_context: Default::default(),
     };
     let tir = lower_to_tir(&source);
-    assert!(tir.blocks.values().flat_map(|block| &block.ops).any(|op| op.opcode == OpCode::LoadAttr));
+    assert!(
+        tir.blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .any(|op| op.opcode == OpCode::LoadAttr)
+    );
     let lowered = lower_to_simple_ir(&tir);
     let load = lowered.iter().find(|op| op.kind == "guarded_load").unwrap();
     assert_eq!(load.value, Some(24));

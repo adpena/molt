@@ -17,9 +17,8 @@ use crate::{
     builtin_classes, call_callable2, class_dict_bits, dec_ref_bits, dict_find_entry_kv_in_place,
     dict_get_in_place, dict_order, dict_set_in_place, dict_update_apply, dict_update_set_in_place,
     exception_pending, inc_ref_bits, init_atomic_bits, intern_static_name, is_truthy,
-    issubclass_runtime, molt_getattr_builtin, molt_is_callable, molt_iter, molt_object_setattr,
-    molt_repr_from_obj, obj_from_bits, object_class_bits, object_type_id, raise_exception,
-    raise_not_iterable, string_obj_to_owned, to_i64, type_of_bits,
+    issubclass_runtime, molt_is_callable, molt_repr_from_obj, molt_set_attr_name, obj_from_bits,
+    object_class_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64, type_of_bits,
 };
 
 const FUNCTOOLS_OBJECT_SLOT_COUNT: usize = 23;
@@ -201,24 +200,19 @@ impl LruOrderState {
 }
 
 fn kwd_mark_bits(_py: &PyToken<'_>) -> u64 {
+    if exception_pending(_py) {
+        return 0;
+    }
     let functools = &crate::runtime_state(_py).functools;
     init_atomic_bits(_py, &functools.kwd_mark_bits, || {
-        let total = std::mem::size_of::<crate::MoltHeader>();
-        let ptr = crate::alloc_object(_py, total, crate::TYPE_ID_OBJECT);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
+        crate::state::cache::alloc_kwd_mark(_py)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_kwd_mark() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let bits = kwd_mark_bits(_py);
-        inc_ref_bits(_py, bits);
-        bits
+        crate::state::cache::retain_cached_result(_py, kwd_mark_bits(_py))
     })
 }
 
@@ -754,46 +748,128 @@ pub extern "C" fn molt_functools_reduce(
     initializer_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let iter_bits = molt_iter(iterable_bits);
-        if obj_from_bits(iter_bits).is_none() {
-            return raise_not_iterable(_py, iterable_bits);
+        use molt_runtime_core::OwnedRuntimeValue;
+
+        let missing = kwd_mark_bits(_py);
+        if missing == 0 || exception_pending(_py) {
+            return MoltObject::none().bits();
         }
-        let mut value_bits = initializer_bits;
-        if initializer_bits == kwd_mark_bits(_py) {
-            let Some((val_bits, done)) = iter_next_pair(_py, iter_bits) else {
-                return MoltObject::none().bits();
-            };
-            if done {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "reduce() of empty sequence with no initial value",
-                );
+        let Some(mut iterator) = crate::object::iterable::OwnedIterator::new(_py, iterable_bits)
+        else {
+            return MoltObject::none().bits();
+        };
+        let core_py = _py.core_token();
+        let mut value = if initializer_bits == missing {
+            match iterator.next() {
+                Ok(Some(bits)) => unsafe { OwnedRuntimeValue::from_owned_bits(core_py, bits) },
+                Ok(None) => {
+                    return raise_exception::<u64>(
+                        _py,
+                        "TypeError",
+                        "reduce() of empty sequence with no initial value",
+                    );
+                }
+                Err(()) => return MoltObject::none().bits(),
             }
-            value_bits = val_bits;
-            inc_ref_bits(_py, value_bits);
         } else {
-            inc_ref_bits(_py, value_bits);
-        }
+            OwnedRuntimeValue::retain(core_py, initializer_bits)
+        };
         loop {
-            let Some((val_bits, done)) = iter_next_pair(_py, iter_bits) else {
-                dec_ref_bits(_py, value_bits);
-                return MoltObject::none().bits();
+            let item = match iterator.next() {
+                Ok(Some(bits)) => unsafe { OwnedRuntimeValue::from_owned_bits(core_py, bits) },
+                Ok(None) => return value.into_bits(),
+                Err(()) => return MoltObject::none().bits(),
             };
-            if done {
-                dec_ref_bits(_py, iter_bits);
-                return value_bits;
-            }
-            let next_bits = unsafe { call_callable2(_py, func_bits, value_bits, val_bits) };
+            let next_bits = unsafe { call_callable2(_py, func_bits, value.bits(), item.bits()) };
+            let next = unsafe { OwnedRuntimeValue::from_owned_bits(core_py, next_bits) };
             if exception_pending(_py) {
-                dec_ref_bits(_py, value_bits);
                 return MoltObject::none().bits();
             }
-            dec_ref_bits(_py, value_bits);
-            value_bits = next_bits;
-            inc_ref_bits(_py, value_bits);
+            let previous = std::mem::replace(&mut value, next);
+            drop(previous);
         }
     })
+}
+
+fn update_wrapper_members(
+    py: &PyToken<'_>,
+    wrapper: u64,
+    wrapped: u64,
+    names: u64,
+    update: bool,
+) -> Result<(), ()> {
+    let mut iterator = crate::object::iterable::OwnedIterator::new(py, names).ok_or(())?;
+    let outcome = (|| {
+        while let Some(name) = iterator.next()? {
+            let outcome = (|| {
+                if !update {
+                    let value = crate::molt_get_attr_name(wrapped, name);
+                    if exception_pending(py) {
+                        molt_cpython_abi::api::errors::with_preserved_error(|| {
+                            dec_ref_bits(py, value)
+                        });
+                        if crate::builtins::attr::clear_attribute_error_if_pending(py) {
+                            return Ok(());
+                        }
+                        return Err(());
+                    }
+                    let result = molt_set_attr_name(wrapper, name, value);
+                    molt_cpython_abi::api::errors::with_preserved_error(|| {
+                        dec_ref_bits(py, result);
+                        dec_ref_bits(py, value);
+                    });
+                } else {
+                    let target = crate::molt_get_attr_name(wrapper, name);
+                    if exception_pending(py) {
+                        molt_cpython_abi::api::errors::with_preserved_error(|| {
+                            dec_ref_bits(py, target)
+                        });
+                        return Err(());
+                    }
+                    let Some(update_name) = attr_name_bits_from_bytes(py, b"update") else {
+                        dec_ref_bits(py, target);
+                        return Err(());
+                    };
+                    let method = crate::molt_get_attr_name(target, update_name);
+                    molt_cpython_abi::api::errors::with_preserved_error(|| {
+                        dec_ref_bits(py, update_name);
+                        dec_ref_bits(py, target);
+                    });
+                    if exception_pending(py) {
+                        molt_cpython_abi::api::errors::with_preserved_error(|| {
+                            dec_ref_bits(py, method)
+                        });
+                        return Err(());
+                    }
+                    let missing = crate::missing_bits(py);
+                    let mut source = crate::molt_getattr_builtin(wrapped, name, missing);
+                    if source == missing && !exception_pending(py) {
+                        source = crate::molt_dict_new(0);
+                    }
+                    if !exception_pending(py) {
+                        let result = unsafe { crate::call_callable1(py, method, source) };
+                        molt_cpython_abi::api::errors::with_preserved_error(|| {
+                            dec_ref_bits(py, result)
+                        });
+                    }
+                    molt_cpython_abi::api::errors::with_preserved_error(|| {
+                        dec_ref_bits(py, source);
+                        dec_ref_bits(py, method);
+                    });
+                }
+                if exception_pending(py) {
+                    Err(())
+                } else {
+                    Ok(())
+                }
+            })();
+            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, name));
+            outcome?;
+        }
+        Ok(())
+    })();
+    molt_cpython_abi::api::errors::with_preserved_error(|| drop(iterator));
+    outcome
 }
 
 #[unsafe(no_mangle)]
@@ -803,89 +879,23 @@ pub extern "C" fn molt_functools_update_wrapper(
     assigned_bits: u64,
     updated_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let missing = crate::missing_bits(_py);
-        let assigned_iter = molt_iter(assigned_bits);
-        if !obj_from_bits(assigned_iter).is_none() {
-            while let Some((val_bits, done)) = iter_next_pair(_py, assigned_iter) {
-                if done {
-                    break;
-                }
-                let name = string_obj_to_owned(obj_from_bits(val_bits)).unwrap_or_default();
-                let name_ptr = alloc_string(_py, name.as_bytes());
-                if name_ptr.is_null() {
-                    continue;
-                }
-                let name_bits = MoltObject::from_ptr(name_ptr).bits();
-                let value_bits = molt_getattr_builtin(wrapped_bits, name_bits, missing);
-                if exception_pending(_py) {
-                    crate::molt_exception_clear();
-                } else if value_bits != missing {
-                    let _ = molt_object_setattr(wrapper_bits, name_bits, value_bits);
-                    if exception_pending(_py) {
-                        crate::molt_exception_clear();
-                    }
-                }
-                dec_ref_bits(_py, name_bits);
-            }
+    crate::with_gil_entry_nopanic!(py, {
+        if update_wrapper_members(py, wrapper_bits, wrapped_bits, assigned_bits, false).is_err()
+            || update_wrapper_members(py, wrapper_bits, wrapped_bits, updated_bits, true).is_err()
+        {
+            return MoltObject::none().bits();
         }
-        let updated_iter = molt_iter(updated_bits);
-        if !obj_from_bits(updated_iter).is_none() {
-            while let Some((val_bits, done)) = iter_next_pair(_py, updated_iter) {
-                if done {
-                    break;
-                }
-                let name = string_obj_to_owned(obj_from_bits(val_bits)).unwrap_or_default();
-                if name == "__dict__" {
-                    let target_bits = molt_getattr_builtin(wrapper_bits, val_bits, missing);
-                    let source_bits = molt_getattr_builtin(wrapped_bits, val_bits, missing);
-                    if exception_pending(_py) {
-                        crate::molt_exception_clear();
-                        continue;
-                    }
-                    if target_bits != missing
-                        && source_bits != missing
-                        && let Some(target_ptr) = obj_from_bits(target_bits).as_ptr()
-                    {
-                        unsafe {
-                            if object_type_id(target_ptr) == TYPE_ID_DICT {
-                                let _order = dict_order(target_ptr);
-                                let source_ptr = obj_from_bits(source_bits).as_ptr();
-                                if let Some(source_ptr) = source_ptr
-                                    && object_type_id(source_ptr) == TYPE_ID_DICT
-                                {
-                                    let src_order = dict_order(source_ptr);
-                                    let mut idx = 0;
-                                    while idx + 1 < src_order.len() {
-                                        let key_bits = src_order[idx];
-                                        let val_bits = src_order[idx + 1];
-                                        if let Some(key_str) =
-                                            string_obj_to_owned(obj_from_bits(key_bits))
-                                            && key_str.starts_with("__molt_")
-                                        {
-                                            idx += 2;
-                                            continue;
-                                        }
-                                        dict_set_in_place(_py, target_ptr, key_bits, val_bits);
-                                        idx += 2;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let wrapped_name = intern_static_name(
-            _py,
-            &crate::runtime_state(_py).interned.wrapped_name,
+        let name = intern_static_name(
+            py,
+            &crate::runtime_state(py).interned.wrapped_name,
             b"__wrapped__",
         );
-        let _ = molt_object_setattr(wrapper_bits, wrapped_name, wrapped_bits);
-        if exception_pending(_py) {
-            crate::molt_exception_clear();
+        let result = molt_set_attr_name(wrapper_bits, name, wrapped_bits);
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, result));
+        if exception_pending(py) {
+            return MoltObject::none().bits();
         }
-        inc_ref_bits(_py, wrapper_bits);
+        inc_ref_bits(py, wrapper_bits);
         wrapper_bits
     })
 }
@@ -1330,31 +1340,6 @@ pub extern "C" fn molt_functools_total_ordering_op(
     })
 }
 
-fn iter_next_pair(_py: &PyToken<'_>, iter_bits: u64) -> Option<(u64, bool)> {
-    let pair_bits = crate::molt_iter_next(iter_bits);
-    let pair_obj = obj_from_bits(pair_bits);
-    let pair_ptr = pair_obj.as_ptr()?;
-    unsafe {
-        if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-            let _ = raise_exception::<u64>(_py, "TypeError", "object is not an iterator");
-            return None;
-        }
-        if crate::object::seq_access::len(pair_ptr) < 2 {
-            let _ = raise_exception::<u64>(_py, "TypeError", "object is not an iterator");
-            return None;
-        }
-        let mut val_bits = 0;
-        let mut done_bits = 0;
-        if crate::object::seq_access::read_item_gil_borrowed(pair_ptr, 0, &mut val_bits) == 0
-            || crate::object::seq_access::read_item_gil_borrowed(pair_ptr, 1, &mut done_bits) == 0
-        {
-            return None;
-        }
-        let done = is_truthy(_py, obj_from_bits(done_bits));
-        Some((val_bits, done))
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_functools_lru_cache(maxsize_bits: u64, typed_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -1487,10 +1472,18 @@ fn default_wrapper_updates(_py: &PyToken<'_>) -> u64 {
 }
 
 fn make_lru_key(_py: &PyToken<'_>, args_bits: u64, kwargs_bits: u64, typed: bool) -> u64 {
+    if exception_pending(_py) {
+        return MoltObject::none().bits();
+    }
     let mut parts: Vec<u64> = Vec::new();
     extend_owned_lru_key_parts_from_call_arg(_py, args_bits, &mut parts);
     if kwargs_bits != 0 && !obj_from_bits(kwargs_bits).is_none() {
-        push_owned_lru_key_part(_py, &mut parts, kwd_mark_bits(_py));
+        let missing = kwd_mark_bits(_py);
+        if missing == 0 || exception_pending(_py) {
+            release_owned_lru_key_parts(_py, &parts);
+            return MoltObject::none().bits();
+        }
+        push_owned_lru_key_part(_py, &mut parts, missing);
         if let Some(dict_ptr) = obj_from_bits(kwargs_bits).as_ptr() {
             unsafe {
                 if object_type_id(dict_ptr) == TYPE_ID_DICT {
@@ -2314,11 +2307,25 @@ mod tests {
                             .all(|&class| class != 0 && obj_from_bits(class).as_ptr().is_some())
                     );
 
-                    // This is the real pre-retirement callback drain: the old
-                    // all-slots cleanup loses the canonical identities here.
+                    // Published payloads and direct results each release only
+                    // their own edges, leaving the borrowed cache anchors live.
+                    let payload = crate::builtins::types::molt_types_bootstrap();
+                    assert!(obj_from_bits(payload).as_ptr().is_some());
+                    assert!(!crate::exception_pending(py));
+                    dec_ref_bits(py, payload);
+                    for class in native_operator {
+                        dec_ref_bits(py, class);
+                    }
+
+                    // Exercise the actual pre-retirement drain and full GC
+                    // after every external result/payload owner is released.
                     types_clear_runtime_callbacks(py, state);
                     super::functools_clear_runtime_callbacks(py, state);
                     operator_clear_runtime_callbacks(py, state);
+                    assert_eq!(
+                        unsafe { crate::object::gc::collect_cycles(py) }.status,
+                        crate::object::gc::GcCollectStatus::Completed
+                    );
                     let type_roots = types_runtime_class_roots(py, state);
                     let functools_roots = super::functools_runtime_class_roots(py, state);
                     let operator_roots = operator_runtime_class_roots(py, state);
@@ -2339,9 +2346,17 @@ mod tests {
                     assert_eq!(partial_class(py), native_functools[0]);
                     assert_eq!(cmpkey_class(py), native_functools[1]);
                     assert_eq!(lru_wrapper_class(py), native_functools[2]);
-                    assert_eq!(molt_operator_itemgetter_type(), native_operator[0]);
-                    assert_eq!(molt_operator_attrgetter_type(), native_operator[1]);
-                    assert_eq!(molt_operator_methodcaller_type(), native_operator[2]);
+                    for (owned, cached) in [
+                        molt_operator_itemgetter_type(),
+                        molt_operator_attrgetter_type(),
+                        molt_operator_methodcaller_type(),
+                    ]
+                    .into_iter()
+                    .zip(native_operator)
+                    {
+                        assert_eq!(owned, cached);
+                        dec_ref_bits(py, owned);
+                    }
                     assert!(!crate::exception_pending(py));
                 });
                 // The lifecycle owner now runs the production retirement path,
@@ -2433,6 +2448,1150 @@ mod tests {
             dec_ref_bits(_py, root_bits);
 
             functools_clear_runtime_state(_py, state);
+        });
+    }
+
+    struct DenyKwdMarkAllocations;
+
+    impl DenyKwdMarkAllocations {
+        fn enter() -> Self {
+            use crate::resource::{LimitedTracker, ResourceLimits, set_tracker};
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_memory: Some(0),
+                max_allocations: Some(0),
+                ..Default::default()
+            })));
+            Self
+        }
+    }
+
+    impl Drop for DenyKwdMarkAllocations {
+        fn drop(&mut self) {
+            crate::resource::set_tracker(Box::new(crate::resource::UnlimitedTracker));
+        }
+    }
+
+    fn kwd_mark_error_identity(
+        py: &crate::PyToken<'_>,
+    ) -> (molt_cpython_abi::hooks::PendingExceptionClass, Option<u64>) {
+        (
+            crate::builtins::exceptions::pending_exception_class(py),
+            crate::exception_last_bits_noinc(py),
+        )
+    }
+
+    fn assert_kwd_mark_memory_error(py: &crate::PyToken<'_>) {
+        use crate::builtins::exceptions::{
+            exception_class_is_subtype, exception_type_bits_from_name,
+        };
+        use molt_cpython_abi::hooks::PendingExceptionClass;
+
+        assert!(crate::exception_pending(py));
+        let pending = kwd_mark_error_identity(py);
+        // Emergency MemoryError deliberately has no heap exception to fetch.
+        // Class metadata borrows the raised state and preserves its owners.
+        let is_memory_error = match pending.0 {
+            PendingExceptionClass::EmergencyMemoryError => true,
+            PendingExceptionClass::Class(class) => {
+                let memory_error = exception_type_bits_from_name(py, "MemoryError");
+                exception_class_is_subtype(py, class, memory_error)
+            }
+            PendingExceptionClass::NativeClass(class) => unsafe {
+                molt_cpython_abi::api::typeobj::PyType_IsSubtype(
+                    class,
+                    &raw mut molt_cpython_abi::abi_types::PyExc_MemoryError,
+                ) != 0
+            },
+            PendingExceptionClass::None => false,
+        };
+        assert!(
+            is_memory_error,
+            "allocation failure must remain a MemoryError"
+        );
+        assert!(crate::exception_pending(py));
+        assert_eq!(kwd_mark_error_identity(py), pending);
+    }
+
+    #[test]
+    fn kwd_mark_allocation_failure_is_retryable_across_builtin_profiles() {
+        crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+            assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);
+            crate::with_gil_entry_nopanic!(py, {
+                let none = MoltObject::none().bits();
+                for get in [
+                    molt_functools_kwd_mark as extern "C" fn() -> u64,
+                    crate::molt_itertools_kwd_mark,
+                ] {
+                    let failed = {
+                        let _budget = DenyKwdMarkAllocations::enter();
+                        get()
+                    };
+                    assert_eq!(failed, none);
+                    assert_kwd_mark_memory_error(py);
+                    let pending = kwd_mark_error_identity(py);
+                    assert_eq!(get(), none, "pending allocation failure must be preserved");
+                    assert!(crate::exception_pending(py));
+                    assert_eq!(kwd_mark_error_identity(py), pending);
+                    crate::clear_exception(py);
+
+                    // Retry is the public discriminator for an empty slot in
+                    // both the in-tree and satellite itertools profiles.
+                    let first = get();
+                    assert!(!crate::exception_pending(py));
+                    let ptr = obj_from_bits(first)
+                        .as_ptr()
+                        .expect("retried keyword marker");
+                    assert_eq!(unsafe { crate::object_type_id(ptr) }, crate::TYPE_ID_OBJECT);
+                    let refs =
+                        || unsafe { (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot() };
+                    assert_eq!(refs(), 2, "cache and caller own separate references");
+                    let repeated = get();
+                    assert_eq!(repeated, first);
+                    assert_eq!(refs(), 3);
+                    dec_ref_bits(py, repeated);
+                    dec_ref_bits(py, first);
+                    assert_eq!(refs(), 1, "only the cache anchor remains");
+                }
+
+                let empty = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
+                let result =
+                    super::molt_functools_reduce(crate::builtin_classes(py).int, empty, none);
+                assert!(!crate::exception_pending(py));
+                assert_eq!(result, none, "None is a real reduce initializer");
+                dec_ref_bits(py, result);
+                dec_ref_bits(py, empty);
+
+                let key_name = MoltObject::from_ptr(crate::alloc_string(py, b"k")).bits();
+                let one = MoltObject::from_int(1).bits();
+                let two = MoltObject::from_int(2).bits();
+                let pair = MoltObject::from_ptr(crate::alloc_tuple(py, &[key_name, two])).bits();
+                let args = MoltObject::from_ptr(crate::alloc_tuple(py, &[one])).bits();
+                let kwargs =
+                    MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[key_name, two])).bits();
+                let positional =
+                    MoltObject::from_ptr(crate::alloc_tuple(py, &[one, none, pair])).bits();
+                let keyword_key = super::make_lru_key(py, args, kwargs, false);
+                let positional_key = super::make_lru_key(py, positional, none, false);
+                let equal = crate::molt_eq(keyword_key, positional_key);
+                assert!(!crate::exception_pending(py));
+                assert_eq!(obj_from_bits(equal).as_bool(), Some(false));
+                for owned in [
+                    equal,
+                    keyword_key,
+                    positional_key,
+                    positional,
+                    kwargs,
+                    args,
+                    pair,
+                    key_name,
+                ] {
+                    dec_ref_bits(py, owned);
+                }
+
+                let values = [0, 1, 2, 3, 4].map(|value| MoltObject::from_int(value).bits());
+                let sequence = MoltObject::from_ptr(crate::alloc_tuple(py, &values)).bits();
+                let sliced = crate::molt_itertools_islice(sequence, two, none, none);
+                assert!(!crate::exception_pending(py));
+                {
+                    let mut iterator =
+                        crate::object::iterable::OwnedIterator::new(py, sliced).unwrap();
+                    for expected in [2, 3, 4] {
+                        let value = iterator.next().unwrap().expect("slice item");
+                        assert_eq!(to_i64(obj_from_bits(value)), Some(expected));
+                        dec_ref_bits(py, value);
+                    }
+                    assert!(iterator.next().unwrap().is_none());
+                }
+                dec_ref_bits(py, sliced);
+                dec_ref_bits(py, sequence);
+            });
+        });
+    }
+
+    #[test]
+    fn kwd_mark_consumers_preserve_failure_and_release_temporary_key_owners() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let none = MoltObject::none().bits();
+            let value = MoltObject::from_ptr(crate::alloc_string(py, b"owned key argument")).bits();
+            let args = MoltObject::from_ptr(crate::alloc_tuple(py, &[value])).bits();
+            let kwargs =
+                MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[value, none])).bits();
+            let value_ptr = obj_from_bits(value).as_ptr().unwrap();
+            let refs = || unsafe { (*crate::header_from_obj_ptr(value_ptr)).ref_count_snapshot() };
+            let before = refs();
+            let slot = &runtime_state(py).functools.kwd_mark_bits;
+            crate::state::cache::clear_atomic_bits(py, slot);
+            let key = {
+                let _budget = DenyKwdMarkAllocations::enter();
+                super::make_lru_key(py, args, kwargs, false)
+            };
+            assert_eq!(key, none);
+            assert_eq!(slot.load(Ordering::Acquire), 0);
+            assert_eq!(
+                refs(),
+                before,
+                "failed keyword marker releases copied key parts"
+            );
+            assert_kwd_mark_memory_error(py);
+            crate::clear_exception(py);
+
+            let values = [1, 2].map(|value| MoltObject::from_int(value).bits());
+            let sequence = MoltObject::from_ptr(crate::alloc_tuple(py, &values)).bits();
+            let iterator = crate::molt_iter(sequence);
+            let accumulated =
+                crate::molt_itertools_accumulate(sequence, none, MoltObject::from_int(10).bits());
+            let marker = molt_functools_kwd_mark();
+            dec_ref_bits(py, marker);
+            assert!(!crate::exception_pending(py));
+            {
+                let _budget = DenyKwdMarkAllocations::enter();
+                assert_eq!(crate::state::cache::alloc_kwd_mark(py), 0);
+            }
+            assert_kwd_mark_memory_error(py);
+            let pending = kwd_mark_error_identity(py);
+            // Sentinel consumers and accumulate advancement must preserve the
+            // original error, including warm slots and an unstarted object.
+            for operation in 0..5 {
+                let result = match operation {
+                    0 => {
+                        super::molt_functools_reduce(crate::builtin_classes(py).int, iterator, none)
+                    }
+                    1 => super::make_lru_key(py, args, kwargs, false),
+                    2 => crate::molt_itertools_islice(iterator, values[0], none, none),
+                    3 => crate::molt_itertools_accumulate(iterator, none, none),
+                    _ => crate::molt_itertools_accumulate_next(accumulated),
+                };
+                assert_eq!(result, none);
+                assert!(crate::exception_pending(py));
+                assert_eq!(kwd_mark_error_identity(py), pending);
+                assert_eq!(refs(), before);
+            }
+            crate::clear_exception(py);
+            {
+                let mut input = crate::object::iterable::OwnedIterator::new(py, iterator).unwrap();
+                let first = input.next().unwrap().expect("unconsumed input");
+                assert_eq!(to_i64(obj_from_bits(first)), Some(1));
+                dec_ref_bits(py, first);
+            }
+            for expected in [10, 11, 13] {
+                let next = crate::molt_itertools_accumulate_next(accumulated);
+                assert!(!crate::exception_pending(py));
+                assert_eq!(to_i64(obj_from_bits(next)), Some(expected));
+                dec_ref_bits(py, next);
+            }
+            for owned in [accumulated, iterator, sequence, kwargs, args, value] {
+                dec_ref_bits(py, owned);
+            }
+        });
+    }
+
+    fn iterator_owned_refs(bits: u64) -> u32 {
+        let ptr = obj_from_bits(bits).as_ptr().expect("heap fixture");
+        unsafe { (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot() }
+    }
+
+    fn iterator_owned_function(py: &crate::PyToken<'_>, target: *const (), arity: u64) -> u64 {
+        let ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            py,
+            crate::provenance::abi::expose_function_address(target),
+            arity,
+        );
+        assert!(!ptr.is_null());
+        MoltObject::from_ptr(ptr).bits()
+    }
+
+    fn iterator_owned_drain(py: &crate::PyToken<'_>, bits: u64, count: usize, exhaust: bool) {
+        let mut iter = crate::object::iterable::OwnedIterator::new(py, bits).unwrap();
+        for _ in 0..count {
+            let value = iter.next().unwrap().expect("expected item");
+            dec_ref_bits(py, value);
+        }
+        if exhaust {
+            assert!(iter.next().unwrap().is_none());
+        }
+    }
+
+    fn iterator_owned_list(py: &crate::PyToken<'_>, values: &[i64]) -> u64 {
+        let values: Vec<_> = values
+            .iter()
+            .map(|&value| MoltObject::from_int(value).bits())
+            .collect();
+        let ptr = crate::alloc_list(py, &values);
+        assert!(!ptr.is_null());
+        MoltObject::from_ptr(ptr).bits()
+    }
+
+    fn iterator_owned_assert_list(bits: u64, expected: &[i64]) {
+        let ptr = obj_from_bits(bits).as_ptr().unwrap();
+        assert_eq!(
+            unsafe { crate::object::seq_access::len(ptr) },
+            expected.len()
+        );
+        for (index, &expected) in expected.iter().enumerate() {
+            let item = unsafe { crate::object::seq_access::item(ptr, index) }.unwrap();
+            assert_eq!(to_i64(obj_from_bits(item)), Some(expected));
+        }
+    }
+
+    extern "C" fn iterator_owned_right(_left: u64, right: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            inc_ref_bits(py, right);
+            right
+        })
+    }
+
+    extern "C" fn iterator_owned_true(_value: u64) -> u64 {
+        MoltObject::from_bool(true).bits()
+    }
+
+    extern "C" fn iterator_owned_false(_value: u64) -> u64 {
+        MoltObject::from_bool(false).bits()
+    }
+
+    extern "C" fn iterator_owned_fail(_value: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            crate::raise_exception::<u64>(py, "ValueError", "owned iterator callback")
+        })
+    }
+
+    extern "C" fn iterator_owned_fail_pair(_left: u64, right: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            // A native callback may return an owned handle and set an error.
+            // The consumer must retire both the operand and that return value.
+            inc_ref_bits(py, right);
+            crate::raise_exception::<()>(py, "ValueError", "owned iterator callback");
+            right
+        })
+    }
+
+    #[test]
+    fn accumulate_initial_edges_preserve_marker_heap_values_none_and_signed_zero() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let none = MoltObject::none().bits();
+            let marker = crate::molt_itertools_kwd_mark();
+            let marker_refs = iterator_owned_refs(marker);
+            let ints = [1, 2].map(|value| MoltObject::from_int(value).bits());
+            let sequence = MoltObject::from_ptr(crate::alloc_tuple(py, &ints)).bits();
+            let empty = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
+            for advance in [false, true] {
+                for _ in 0..marker_refs.saturating_add(8) {
+                    let accumulated = crate::molt_itertools_accumulate(sequence, none, marker);
+                    assert_eq!(iterator_owned_refs(marker), marker_refs);
+                    if advance {
+                        for expected in [1, 3] {
+                            let value = crate::molt_itertools_accumulate_next(accumulated);
+                            assert!(!crate::exception_pending(py));
+                            assert_eq!(to_i64(obj_from_bits(value)), Some(expected));
+                            dec_ref_bits(py, value);
+                        }
+                    }
+                    dec_ref_bits(py, accumulated);
+                    assert_eq!(iterator_owned_refs(marker), marker_refs);
+                }
+            }
+            for initial in [marker, none] {
+                let accumulated = crate::molt_itertools_accumulate(sequence, none, initial);
+                for expected in [1, 3] {
+                    let value = crate::molt_itertools_accumulate_next(accumulated);
+                    assert_eq!(to_i64(obj_from_bits(value)), Some(expected));
+                    dec_ref_bits(py, value);
+                }
+                iterator_owned_drain(py, accumulated, 0, true);
+                dec_ref_bits(py, accumulated);
+                let accumulated = crate::molt_itertools_accumulate(empty, none, initial);
+                iterator_owned_drain(py, accumulated, 0, true);
+                dec_ref_bits(py, accumulated);
+            }
+            for initial in [0.0_f64, -0.0_f64] {
+                for input in [sequence, empty] {
+                    let initial_bits = MoltObject::from_float(initial).bits();
+                    let accumulated = crate::molt_itertools_accumulate(input, none, initial_bits);
+                    let value = crate::molt_itertools_accumulate_next(accumulated);
+                    assert!(!crate::exception_pending(py));
+                    assert_eq!(
+                        obj_from_bits(value).as_float().unwrap().to_bits(),
+                        initial.to_bits()
+                    );
+                    dec_ref_bits(py, value);
+                    iterator_owned_drain(
+                        py,
+                        accumulated,
+                        if input == sequence { 2 } else { 0 },
+                        true,
+                    );
+                    dec_ref_bits(py, accumulated);
+                }
+            }
+            let initial = iterator_owned_list(py, &[0]);
+            let left = iterator_owned_list(py, &[1]);
+            let right = iterator_owned_list(py, &[2]);
+            let lists = MoltObject::from_ptr(crate::alloc_tuple(py, &[left, right])).bits();
+            let baseline = iterator_owned_refs(initial);
+            let left_baseline = iterator_owned_refs(left);
+            for count in 0..=3 {
+                let accumulated = crate::molt_itertools_accumulate(lists, none, initial);
+                assert_eq!(iterator_owned_refs(initial), baseline + 1);
+                for index in 0..count {
+                    let value = crate::molt_itertools_accumulate_next(accumulated);
+                    assert!(!crate::exception_pending(py));
+                    iterator_owned_assert_list(value, &[0, 1, 2][..index + 1]);
+                    assert_eq!(
+                        iterator_owned_refs(initial),
+                        baseline + if index == 0 { 2 } else { 0 }
+                    );
+                    dec_ref_bits(py, value);
+                    assert_eq!(
+                        iterator_owned_refs(initial),
+                        baseline + if index == 0 { 1 } else { 0 }
+                    );
+                    assert_eq!(iterator_owned_refs(left), left_baseline);
+                }
+                dec_ref_bits(py, accumulated);
+                assert_eq!(iterator_owned_refs(initial), baseline);
+            }
+            for bits in [lists, initial, left, right, empty, sequence, marker] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn owned_iterator_family_releases_items_containers_and_partial_results() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let none = MoltObject::none().bits();
+            let int = |value| MoltObject::from_int(value).bits();
+            let values = [0, 1, 2].map(|value| iterator_owned_list(py, &[value]));
+            let sequence = MoltObject::from_ptr(crate::alloc_tuple(py, &values)).bits();
+            let outer = MoltObject::from_ptr(crate::alloc_tuple(py, &[sequence])).bits();
+            let empty = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
+            let zipped = MoltObject::from_ptr(crate::alloc_tuple(py, &[sequence, empty])).bits();
+            let selectors =
+                MoltObject::from_ptr(crate::alloc_tuple(py, &[int(0), int(1), int(0)])).bits();
+            let short_selectors = MoltObject::from_ptr(crate::alloc_tuple(py, &[int(1)])).bits();
+            let pair = MoltObject::from_ptr(crate::alloc_tuple(py, &[values[0], values[1]])).bits();
+            let args = MoltObject::from_ptr(crate::alloc_tuple(py, &[pair, pair])).bits();
+            let truth = iterator_owned_function(py, iterator_owned_true as *const (), 1);
+            let falsity = iterator_owned_function(py, iterator_owned_false as *const (), 1);
+            let right = iterator_owned_function(py, iterator_owned_right as *const (), 2);
+            let heap_predicate =
+                iterator_owned_function(py, iterator_owned_heap_predicate as *const (), 1);
+            let predicate_result = iterator_owned_list(py, &[9]);
+            ITERATOR_OWNED_PREDICATE_RESULT.store(predicate_result, Ordering::SeqCst);
+            let marker_itertools = crate::molt_itertools_kwd_mark();
+            let baseline = values.map(iterator_owned_refs);
+            let sequence_refs = iterator_owned_refs(sequence);
+            for mode in 0..18 {
+                let (iter, count, exhaust) = match mode {
+                    0 => (crate::molt_itertools_chain(outer), 3, true),
+                    1 => (
+                        crate::molt_itertools_islice(sequence, int(1), int(3), int(1)),
+                        2,
+                        true,
+                    ),
+                    2 => (crate::molt_itertools_cycle(sequence), 5, false),
+                    3 => (
+                        crate::molt_itertools_batched(
+                            sequence,
+                            int(2),
+                            MoltObject::from_bool(false).bits(),
+                        ),
+                        2,
+                        true,
+                    ),
+                    4 => (crate::molt_itertools_compress(sequence, selectors), 1, true),
+                    5 => (
+                        crate::molt_itertools_compress(sequence, short_selectors),
+                        1,
+                        true,
+                    ),
+                    6 => (crate::molt_itertools_dropwhile(truth, sequence), 0, true),
+                    7 => (crate::molt_itertools_dropwhile(falsity, sequence), 3, true),
+                    8 => (crate::molt_itertools_filterfalse(none, sequence), 0, true),
+                    9 => (
+                        crate::molt_itertools_filterfalse(falsity, sequence),
+                        3,
+                        true,
+                    ),
+                    10 => (crate::molt_itertools_pairwise(sequence), 2, true),
+                    11 => (crate::molt_itertools_starmap(right, args), 2, true),
+                    12 => (crate::molt_itertools_takewhile(truth, sequence), 3, true),
+                    13 => (
+                        crate::molt_itertools_zip_longest(zipped, values[0]),
+                        3,
+                        true,
+                    ),
+                    14 => (
+                        crate::molt_itertools_dropwhile(heap_predicate, sequence),
+                        0,
+                        true,
+                    ),
+                    15 => (
+                        crate::molt_itertools_filterfalse(heap_predicate, sequence),
+                        0,
+                        true,
+                    ),
+                    16 => (
+                        crate::molt_itertools_takewhile(heap_predicate, sequence),
+                        3,
+                        true,
+                    ),
+                    _ => (
+                        crate::molt_itertools_accumulate(sequence, none, marker_itertools),
+                        3,
+                        true,
+                    ),
+                };
+                assert!(!crate::exception_pending(py), "constructor {mode}");
+                iterator_owned_drain(py, iter, count, exhaust);
+                dec_ref_bits(py, iter);
+                assert_eq!(
+                    iterator_owned_refs(predicate_result),
+                    1,
+                    "predicate output {mode}"
+                );
+                assert_eq!(values.map(iterator_owned_refs), baseline, "consumer {mode}");
+                assert_eq!(
+                    iterator_owned_refs(sequence),
+                    sequence_refs,
+                    "iterator owner {mode}"
+                );
+            }
+            let stopped = crate::molt_itertools_takewhile(falsity, sequence);
+            iterator_owned_drain(py, stopped, 0, true);
+            dec_ref_bits(py, stopped);
+            let strict =
+                crate::molt_itertools_batched(sequence, int(2), MoltObject::from_bool(true).bits());
+            {
+                let mut iter = crate::object::iterable::OwnedIterator::new(py, strict).unwrap();
+                dec_ref_bits(py, iter.next().unwrap().unwrap());
+                assert!(iter.next().is_err());
+                assert!(crate::exception_pending(py));
+                crate::clear_exception(py);
+            }
+            dec_ref_bits(py, strict);
+            let tee = crate::molt_itertools_tee(sequence, int(2));
+            let tee_ptr = obj_from_bits(tee).as_ptr().unwrap();
+            for index in 0..2 {
+                let child = unsafe { crate::object::seq_access::item(tee_ptr, index) }.unwrap();
+                iterator_owned_drain(py, child, 3, true);
+            }
+            dec_ref_bits(py, tee);
+            let marker = molt_functools_kwd_mark();
+            for initial in [marker, values[0]] {
+                let result = super::molt_functools_reduce(right, sequence, initial);
+                assert_eq!(result, values[2]);
+                assert!(!crate::exception_pending(py));
+                dec_ref_bits(py, result);
+                assert_eq!(values.map(iterator_owned_refs), baseline);
+            }
+            assert_eq!(values.map(iterator_owned_refs), baseline);
+            assert_eq!(iterator_owned_refs(sequence), sequence_refs);
+            ITERATOR_OWNED_PREDICATE_RESULT.store(0, Ordering::SeqCst);
+            for bits in [
+                heap_predicate,
+                predicate_result,
+                marker_itertools,
+                marker,
+                args,
+                pair,
+                selectors,
+                short_selectors,
+                zipped,
+                empty,
+                outer,
+                sequence,
+                truth,
+                falsity,
+                right,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+            for bits in values {
+                assert_eq!(iterator_owned_refs(bits), 1);
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn owned_iterator_callback_failures_release_transients_and_preserve_state() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let none = MoltObject::none().bits();
+            let values = [0, 1].map(|value| iterator_owned_list(py, &[value]));
+            let sequence = MoltObject::from_ptr(crate::alloc_tuple(py, &values)).bits();
+            let pair = MoltObject::from_ptr(crate::alloc_tuple(py, &values)).bits();
+            let args = MoltObject::from_ptr(crate::alloc_tuple(py, &[pair])).bits();
+            let failure = iterator_owned_function(py, iterator_owned_fail as *const (), 1);
+            let failure2 = iterator_owned_function(py, iterator_owned_fail_pair as *const (), 2);
+            let baseline = values.map(iterator_owned_refs);
+            let sequence_refs = iterator_owned_refs(sequence);
+            for mode in 0..6 {
+                let iter = match mode {
+                    0 => crate::molt_itertools_dropwhile(failure, sequence),
+                    1 => crate::molt_itertools_filterfalse(failure, sequence),
+                    2 => crate::molt_itertools_takewhile(failure, sequence),
+                    3 => crate::molt_itertools_groupby(sequence, failure),
+                    4 => crate::molt_itertools_starmap(failure2, args),
+                    _ => crate::molt_itertools_accumulate(sequence, failure2, values[0]),
+                };
+                assert!(!crate::exception_pending(py));
+                if mode == 5 {
+                    let first = crate::molt_itertools_accumulate_next(iter);
+                    assert_eq!(first, values[0]);
+                    dec_ref_bits(py, first);
+                }
+                {
+                    let mut owned = crate::object::iterable::OwnedIterator::new(py, iter).unwrap();
+                    assert!(owned.next().is_err(), "callback {mode}");
+                }
+                assert!(crate::exception_pending(py));
+                let error = kwd_mark_error_identity(py);
+                // Dropping the remaining state under the error exercises all
+                // field owners, including accumulate's unchanged prior total.
+                unsafe { molt_runtime_core::ffi::__molt_runtime_release_owned_value(iter) };
+                assert!(crate::exception_pending(py));
+                assert_eq!(kwd_mark_error_identity(py), error);
+                crate::clear_exception(py);
+                assert_eq!(values.map(iterator_owned_refs), baseline, "callback {mode}");
+                assert_eq!(iterator_owned_refs(sequence), sequence_refs);
+            }
+            let marker = molt_functools_kwd_mark();
+            let result = super::molt_functools_reduce(failure2, sequence, marker);
+            assert_eq!(result, none);
+            assert!(crate::exception_pending(py));
+            crate::clear_exception(py);
+            assert_eq!(values.map(iterator_owned_refs), baseline);
+            assert_eq!(iterator_owned_refs(sequence), sequence_refs);
+            for bits in [
+                marker, args, pair, sequence, failure, failure2, values[0], values[1],
+            ] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn groupby_owned_keys_groups_and_values_survive_parent_advancement() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let none = MoltObject::none().bits();
+            let a = iterator_owned_list(py, &[0]);
+            let b = iterator_owned_list(py, &[1]);
+            let sequence = MoltObject::from_ptr(crate::alloc_tuple(py, &[a, a, b, a])).bits();
+            let baseline = [a, b].map(iterator_owned_refs);
+            let parent = crate::molt_itertools_groupby(sequence, none);
+            let first = crate::molt_itertools_groupby_next(parent);
+            let first_ptr = obj_from_bits(first).as_ptr().unwrap();
+            let first_group = unsafe { crate::object::seq_access::item(first_ptr, 1) }.unwrap();
+            let value = crate::molt_itertools_groupby_iter_next(first_group);
+            assert_eq!(value, a);
+            dec_ref_bits(py, value);
+            // The next parent skips the remaining first group. A stale grouper
+            // must stay exhausted even when a later key equals its old key.
+            let second = crate::molt_itertools_groupby_next(parent);
+            iterator_owned_drain(py, first_group, 0, true);
+            let third = crate::molt_itertools_groupby_next(parent);
+            iterator_owned_drain(py, first_group, 0, true);
+            let third_ptr = obj_from_bits(third).as_ptr().unwrap();
+            let third_group = unsafe { crate::object::seq_access::item(third_ptr, 1) }.unwrap();
+            dec_ref_bits(py, parent);
+            iterator_owned_drain(py, third_group, 1, true);
+            for bits in [first, second, third] {
+                dec_ref_bits(py, bits);
+            }
+            assert_eq!([a, b].map(iterator_owned_refs), baseline);
+            for bits in [sequence, a, b] {
+                dec_ref_bits(py, bits);
+            }
+            // Presence facts must not consume the +0.0 value encoding.
+            let zero = MoltObject::from_float(0.0).bits();
+            let input = MoltObject::from_ptr(crate::alloc_tuple(py, &[zero, zero, none])).bits();
+            let parent = crate::molt_itertools_groupby(input, none);
+            for (expected, count) in [(zero, 2), (none, 1)] {
+                let pair = crate::molt_itertools_groupby_next(parent);
+                assert!(!crate::exception_pending(py));
+                let ptr = obj_from_bits(pair).as_ptr().unwrap();
+                assert_eq!(
+                    unsafe { crate::object::seq_access::item(ptr, 0) },
+                    Some(expected)
+                );
+                let group = unsafe { crate::object::seq_access::item(ptr, 1) }.unwrap();
+                iterator_owned_drain(py, group, count, true);
+                dec_ref_bits(py, pair);
+            }
+            iterator_owned_drain(py, parent, 0, true);
+            dec_ref_bits(py, parent);
+            dec_ref_bits(py, input);
+        });
+    }
+
+    static BATCHED_RETIRE_TARGET: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    static BATCHED_RETIRE_CALLS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    static BATCHED_RETIRE_FINALIZERS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    extern "C" fn batched_retire_iter(this: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            inc_ref_bits(py, this);
+            this
+        })
+    }
+
+    extern "C" fn batched_retire_next(_this: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            assert_eq!(BATCHED_RETIRE_FINALIZERS.load(Ordering::SeqCst), 0);
+            if BATCHED_RETIRE_CALLS.fetch_add(1, Ordering::SeqCst) == 0 {
+                let batch = BATCHED_RETIRE_TARGET.load(Ordering::SeqCst);
+                let result = crate::molt_itertools_batched_next(batch);
+                assert!(crate::exception_pending(py));
+                crate::clear_exception(py);
+                dec_ref_bits(py, result);
+                assert_eq!(BATCHED_RETIRE_FINALIZERS.load(Ordering::SeqCst), 0);
+                MoltObject::from_ptr(crate::object::builders::alloc_string_nointern(py, b"x"))
+                    .bits()
+            } else {
+                crate::raise_exception::<u64>(py, "StopIteration", "")
+            }
+        })
+    }
+
+    extern "C" fn batched_retire_finalizer(_this: u64) -> u64 {
+        BATCHED_RETIRE_FINALIZERS.fetch_add(1, Ordering::SeqCst);
+        MoltObject::none().bits()
+    }
+
+    #[test]
+    fn batched_keeps_input_owned_across_reentrant_field_retirement() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            BATCHED_RETIRE_CALLS.store(0, Ordering::SeqCst);
+            BATCHED_RETIRE_FINALIZERS.store(0, Ordering::SeqCst);
+            let name =
+                MoltObject::from_ptr(crate::alloc_string(py, b"ReentrantBatchSource")).bits();
+            let class = crate::molt_class_new(name);
+            let iter = iterator_owned_function(py, batched_retire_iter as *const (), 1);
+            let next = iterator_owned_function(py, batched_retire_next as *const (), 1);
+            let finalizer = iterator_owned_function(py, batched_retire_finalizer as *const (), 1);
+            let iter_name = MoltObject::from_ptr(crate::alloc_string(py, b"__iter__")).bits();
+            let next_name = MoltObject::from_ptr(crate::alloc_string(py, b"__next__")).bits();
+            let del_name = MoltObject::from_ptr(crate::alloc_string(py, b"__del__")).bits();
+            for (name, method) in [(iter_name, iter), (next_name, next), (del_name, finalizer)] {
+                crate::molt_set_attr_name(class, name, method);
+            }
+            let source = unsafe {
+                crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap())
+            };
+            let batch = crate::molt_itertools_batched(
+                source,
+                MoltObject::from_int(3).bits(),
+                MoltObject::from_bool(false).bits(),
+            );
+            assert!(!crate::exception_pending(py));
+            BATCHED_RETIRE_TARGET.store(batch, Ordering::SeqCst);
+            dec_ref_bits(py, source); // The batch now owns the only persistent input edge.
+            let result = crate::molt_itertools_batched_next(batch);
+            assert!(!crate::exception_pending(py));
+            assert_eq!(BATCHED_RETIRE_CALLS.load(Ordering::SeqCst), 3);
+            assert_eq!(BATCHED_RETIRE_FINALIZERS.load(Ordering::SeqCst), 1);
+            let ptr = obj_from_bits(result).as_ptr().unwrap();
+            assert_eq!(unsafe { crate::object::seq_access::len(ptr) }, 1);
+            let item = unsafe { crate::object::seq_access::item(ptr, 0) }.unwrap();
+            let expected = MoltObject::from_ptr(crate::alloc_string(py, b"x")).bits();
+            let equal = crate::molt_eq(item, expected);
+            assert_eq!(obj_from_bits(equal).as_bool(), Some(true));
+            assert_eq!(
+                iterator_owned_refs(item),
+                1,
+                "the result tuple owns its item"
+            );
+            BATCHED_RETIRE_TARGET.store(0, Ordering::SeqCst);
+            iterator_owned_drain(py, batch, 0, true);
+            for bits in [
+                equal, expected, result, batch, iter_name, next_name, del_name, iter, next,
+                finalizer, class, name,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+            assert_eq!(BATCHED_RETIRE_FINALIZERS.load(Ordering::SeqCst), 1);
+        });
+    }
+
+    static GROUPBY_DRAIN_HOOK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static GROUPBY_DRAIN_RESULT: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    static GROUPBY_DRAIN_TRUTH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static GROUPBY_DRAIN_AT_TRUTH: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    static GROUPBY_DRAIN_PARENT: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    static GROUPBY_DRAIN_SAME: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+
+    fn groupby_drain_hook(py: &crate::PyToken<'_>) {
+        let hook = GROUPBY_DRAIN_HOOK.swap(0, Ordering::SeqCst);
+        if hook == 0 {
+            return;
+        }
+        let value = if GROUPBY_DRAIN_PARENT.load(Ordering::SeqCst) {
+            let pair = crate::molt_itertools_groupby_next(hook);
+            assert!(!crate::exception_pending(py));
+            let ptr = obj_from_bits(pair).as_ptr().unwrap();
+            let grouper = unsafe { crate::object::seq_access::item(ptr, 1) }.unwrap();
+            let value = crate::molt_itertools_groupby_iter_next(grouper);
+            assert!(!crate::exception_pending(py));
+            dec_ref_bits(py, pair);
+            value
+        } else {
+            crate::molt_itertools_groupby_iter_next(hook)
+        };
+        assert!(!crate::exception_pending(py));
+        GROUPBY_DRAIN_RESULT.store(value, Ordering::SeqCst);
+    }
+
+    extern "C" fn groupby_drain_eq(left: u64, right: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            let same = !GROUPBY_DRAIN_PARENT.load(Ordering::SeqCst) || left == right;
+            if GROUPBY_DRAIN_AT_TRUTH.load(Ordering::SeqCst) {
+                GROUPBY_DRAIN_SAME.store(same, Ordering::SeqCst);
+                let truth = GROUPBY_DRAIN_TRUTH.load(Ordering::SeqCst);
+                inc_ref_bits(py, truth);
+                truth
+            } else {
+                groupby_drain_hook(py);
+                MoltObject::from_bool(same).bits()
+            }
+        })
+    }
+
+    extern "C" fn groupby_drain_bool(_this: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            let same = GROUPBY_DRAIN_SAME.load(Ordering::SeqCst);
+            groupby_drain_hook(py);
+            MoltObject::from_bool(same).bits()
+        })
+    }
+
+    fn groupby_reentrant_drain_case(parent_reentry: bool) {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let name = MoltObject::from_ptr(crate::alloc_string(py, b"ReentrantGroupKey")).bits();
+            let class = crate::molt_class_new(name);
+            let eq = iterator_owned_function(py, groupby_drain_eq as *const (), 2);
+            let eq_name = MoltObject::from_ptr(crate::alloc_string(py, b"__eq__")).bits();
+            crate::molt_set_attr_name(class, eq_name, eq);
+            let truth_name =
+                MoltObject::from_ptr(crate::alloc_string(py, b"ReentrantGroupTruth")).bits();
+            let truth_class = crate::molt_class_new(truth_name);
+            let bool_fn = iterator_owned_function(py, groupby_drain_bool as *const (), 1);
+            let bool_name = MoltObject::from_ptr(crate::alloc_string(py, b"__bool__")).bits();
+            crate::molt_set_attr_name(truth_class, bool_name, bool_fn);
+            let truth = unsafe {
+                crate::alloc_instance_for_class(py, obj_from_bits(truth_class).as_ptr().unwrap())
+            };
+            GROUPBY_DRAIN_TRUTH.store(truth, Ordering::SeqCst);
+            GROUPBY_DRAIN_PARENT.store(parent_reentry, Ordering::SeqCst);
+            let values = [0, 1, 2].map(|_| unsafe {
+                crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap())
+            });
+            let sequence = MoltObject::from_ptr(crate::alloc_tuple(py, &values)).bits();
+            let baseline = values.map(iterator_owned_refs);
+            for at_truth in [false, true] {
+                GROUPBY_DRAIN_AT_TRUTH.store(at_truth, Ordering::SeqCst);
+                GROUPBY_DRAIN_HOOK.store(0, Ordering::SeqCst);
+                let parent = crate::molt_itertools_groupby(sequence, MoltObject::none().bits());
+                let first = crate::molt_itertools_groupby_next(parent);
+                assert!(!crate::exception_pending(py));
+                let ptr = obj_from_bits(first).as_ptr().unwrap();
+                let grouper = unsafe { crate::object::seq_access::item(ptr, 1) }.unwrap();
+                let value = crate::molt_itertools_groupby_iter_next(grouper);
+                assert_eq!(value, values[0]);
+                dec_ref_bits(py, value);
+                GROUPBY_DRAIN_HOOK.store(
+                    if parent_reentry { parent } else { grouper },
+                    Ordering::SeqCst,
+                );
+                let outer = if parent_reentry {
+                    crate::molt_itertools_groupby_next(parent)
+                } else {
+                    crate::molt_itertools_groupby_iter_next(grouper)
+                };
+                if parent_reentry {
+                    assert!(!crate::exception_pending(py));
+                    let ptr = obj_from_bits(outer).as_ptr().unwrap();
+                    assert_eq!(
+                        unsafe { crate::object::seq_access::item(ptr, 0) },
+                        Some(values[2])
+                    );
+                    let group = unsafe { crate::object::seq_access::item(ptr, 1) }.unwrap();
+                    let value = crate::molt_itertools_groupby_iter_next(group);
+                    assert_eq!(value, values[2]);
+                    dec_ref_bits(py, value);
+                } else {
+                    assert!(
+                        crate::exception_pending(py),
+                        "reentrant drain exhausts this advance"
+                    );
+                    crate::clear_exception(py);
+                    assert!(
+                        obj_from_bits(outer).is_none(),
+                        "missing current is not +0.0"
+                    );
+                }
+                let nested = GROUPBY_DRAIN_RESULT.swap(0, Ordering::SeqCst);
+                assert_eq!(
+                    nested, values[1],
+                    "comparison callback consumed the current item"
+                );
+                assert_eq!(GROUPBY_DRAIN_HOOK.load(Ordering::SeqCst), 0);
+                for bits in [nested, outer, first, parent] {
+                    dec_ref_bits(py, bits);
+                }
+                assert_eq!(values.map(iterator_owned_refs), baseline);
+            }
+            GROUPBY_DRAIN_TRUTH.store(0, Ordering::SeqCst);
+            for bits in [
+                sequence,
+                values[0],
+                values[1],
+                values[2],
+                truth,
+                bool_name,
+                bool_fn,
+                truth_class,
+                truth_name,
+                eq_name,
+                eq,
+                class,
+                name,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn grouper_revalidates_current_after_equality_and_truth_reentry() {
+        groupby_reentrant_drain_case(false);
+    }
+
+    #[test]
+    fn groupby_revalidates_current_after_equality_and_truth_reentry() {
+        groupby_reentrant_drain_case(true);
+    }
+
+    static ACCUMULATE_REENTRY_TARGET: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    static ACCUMULATE_REENTRY_RESULT: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    static ACCUMULATE_REENTRY_MODE: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    static ACCUMULATE_FINALIZERS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    extern "C" fn accumulate_reenter_finalizer(_self: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            ACCUMULATE_FINALIZERS.fetch_add(1, Ordering::SeqCst);
+            if ACCUMULATE_REENTRY_MODE.load(Ordering::SeqCst) == 1 {
+                let result = crate::molt_itertools_accumulate_next(
+                    ACCUMULATE_REENTRY_TARGET.load(Ordering::SeqCst),
+                );
+                assert!(!crate::exception_pending(py));
+                ACCUMULATE_REENTRY_RESULT.store(result, Ordering::SeqCst);
+            }
+            MoltObject::none().bits()
+        })
+    }
+
+    extern "C" fn accumulate_reenter_callback(left: u64, right: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            if ACCUMULATE_REENTRY_MODE
+                .compare_exchange(2, 3, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                let nested = crate::molt_itertools_accumulate_next(
+                    ACCUMULATE_REENTRY_TARGET.load(Ordering::SeqCst),
+                );
+                assert!(!crate::exception_pending(py));
+                ACCUMULATE_REENTRY_RESULT.store(nested, Ordering::SeqCst);
+                assert_eq!(
+                    ACCUMULATE_FINALIZERS.load(Ordering::SeqCst),
+                    0,
+                    "outer operand remains owned across the callback"
+                );
+                assert!(obj_from_bits(left).as_ptr().is_some());
+            }
+            inc_ref_bits(py, right);
+            right
+        })
+    }
+
+    #[test]
+    fn accumulate_publishes_owned_total_before_callback_and_finalizer_reentry() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let name = MoltObject::from_ptr(crate::alloc_string(py, b"AccumulateInitial")).bits();
+            let class = crate::molt_class_new(name);
+            let finalizer =
+                iterator_owned_function(py, accumulate_reenter_finalizer as *const (), 1);
+            let del_name = MoltObject::from_ptr(crate::alloc_string(py, b"__del__")).bits();
+            crate::molt_set_attr_name(class, del_name, finalizer);
+            let callback = iterator_owned_function(py, accumulate_reenter_callback as *const (), 2);
+            let left = iterator_owned_list(py, &[1]);
+            let right = iterator_owned_list(py, &[2]);
+            let sequence = MoltObject::from_ptr(crate::alloc_tuple(py, &[left, right])).bits();
+            let baseline = [left, right].map(iterator_owned_refs);
+            for mode in [1, 2] {
+                ACCUMULATE_FINALIZERS.store(0, Ordering::SeqCst);
+                ACCUMULATE_REENTRY_MODE.store(mode, Ordering::SeqCst);
+                ACCUMULATE_REENTRY_RESULT.store(0, Ordering::SeqCst);
+                let initial = unsafe {
+                    crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap())
+                };
+                let accumulated = crate::molt_itertools_accumulate(sequence, callback, initial);
+                let yielded = crate::molt_itertools_accumulate_next(accumulated);
+                assert_eq!(yielded, initial);
+                dec_ref_bits(py, yielded);
+                dec_ref_bits(py, initial); // Total is now the only persistent owner.
+                ACCUMULATE_REENTRY_TARGET.store(accumulated, Ordering::SeqCst);
+                let outer = crate::molt_itertools_accumulate_next(accumulated);
+                assert!(!crate::exception_pending(py));
+                assert_eq!(outer, left);
+                assert_eq!(ACCUMULATE_FINALIZERS.load(Ordering::SeqCst), 1);
+                let nested = ACCUMULATE_REENTRY_RESULT.swap(0, Ordering::SeqCst);
+                assert_eq!(nested, right);
+                iterator_owned_assert_list(outer, &[1]);
+                iterator_owned_assert_list(nested, &[2]);
+                ACCUMULATE_REENTRY_TARGET.store(0, Ordering::SeqCst);
+                ACCUMULATE_REENTRY_MODE.store(0, Ordering::SeqCst);
+                for bits in [outer, nested, accumulated] {
+                    dec_ref_bits(py, bits);
+                }
+                assert_eq!([left, right].map(iterator_owned_refs), baseline);
+            }
+            for bits in [
+                sequence, left, right, callback, del_name, finalizer, class, name,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    static ITERATOR_OWNED_CALLBACK_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    static ITERATOR_OWNED_PREDICATE_RESULT: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
+    extern "C" fn iterator_owned_heap_predicate(_value: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            let bits = ITERATOR_OWNED_PREDICATE_RESULT.load(Ordering::SeqCst);
+            inc_ref_bits(py, bits);
+            bits
+        })
+    }
+
+    extern "C" fn iterator_owned_one_then_fail(_left: u64, right: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            if ITERATOR_OWNED_CALLBACK_COUNT.fetch_add(1, Ordering::SeqCst) == 0 {
+                inc_ref_bits(py, right);
+                right
+            } else {
+                crate::raise_exception::<u64>(py, "ValueError", "input failed after one item")
+            }
+        })
+    }
+
+    #[test]
+    fn owned_iterator_input_and_allocation_failures_release_partial_collections() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let int = |value| MoltObject::from_int(value).bits();
+            let none = MoltObject::none().bits();
+            let value = iterator_owned_list(py, &[1]);
+            let sequence = MoltObject::from_ptr(crate::alloc_tuple(py, &[value, value])).bits();
+            let pair = MoltObject::from_ptr(crate::alloc_tuple(py, &[value, value])).bits();
+            let args = MoltObject::from_ptr(crate::alloc_tuple(py, &[pair, pair])).bits();
+            let callback =
+                iterator_owned_function(py, iterator_owned_one_then_fail as *const (), 2);
+            let right = iterator_owned_function(py, iterator_owned_right as *const (), 2);
+            let marker = molt_functools_kwd_mark();
+            let baseline = iterator_owned_refs(value);
+            for mode in 0..5 {
+                ITERATOR_OWNED_CALLBACK_COUNT.store(0, Ordering::SeqCst);
+                let source = crate::molt_itertools_starmap(callback, args);
+                let mut consumer = none;
+                let mut outer = none;
+                match mode {
+                    0 => assert_eq!(crate::molt_itertools_cycle(source), none),
+                    1 => {
+                        consumer = crate::molt_itertools_batched(
+                            source,
+                            int(3),
+                            MoltObject::from_bool(false).bits(),
+                        )
+                    }
+                    2 => {
+                        outer =
+                            MoltObject::from_ptr(crate::alloc_tuple(py, &[source, source])).bits();
+                        consumer = crate::molt_itertools_zip_longest(outer, none);
+                    }
+                    3 => assert_eq!(super::molt_functools_reduce(right, source, marker), none),
+                    _ => consumer = crate::molt_itertools_islice(source, int(1), int(2), int(1)),
+                }
+                if consumer != none {
+                    let mut iter =
+                        crate::object::iterable::OwnedIterator::new(py, consumer).unwrap();
+                    assert!(iter.next().is_err(), "partial input {mode}");
+                }
+                assert!(crate::exception_pending(py), "partial input {mode}");
+                let error = kwd_mark_error_identity(py);
+                for bits in [consumer, outer, source] {
+                    unsafe { molt_runtime_core::ffi::__molt_runtime_release_owned_value(bits) };
+                }
+                assert_eq!(kwd_mark_error_identity(py), error);
+                crate::clear_exception(py);
+                assert_eq!(iterator_owned_refs(value), baseline, "partial input {mode}");
+            }
+            let outer = MoltObject::from_ptr(crate::alloc_tuple(py, &[sequence, sequence])).bits();
+            for mode in 0..3 {
+                let consumer = match mode {
+                    0 => crate::molt_itertools_batched(
+                        sequence,
+                        int(2),
+                        MoltObject::from_bool(false).bits(),
+                    ),
+                    1 => crate::molt_itertools_zip_longest(outer, none),
+                    _ => crate::molt_itertools_pairwise(sequence),
+                };
+                assert!(!crate::exception_pending(py));
+                {
+                    let _budget = DenyKwdMarkAllocations::enter();
+                    let result = match mode {
+                        0 => crate::molt_itertools_batched_next(consumer),
+                        1 => crate::molt_itertools_zip_longest_next(consumer),
+                        _ => crate::molt_itertools_pairwise_next(consumer),
+                    };
+                    assert_eq!(result, none);
+                }
+                assert_kwd_mark_memory_error(py);
+                let error = kwd_mark_error_identity(py);
+                unsafe { molt_runtime_core::ffi::__molt_runtime_release_owned_value(consumer) };
+                assert_eq!(kwd_mark_error_identity(py), error);
+                crate::clear_exception(py);
+                assert_eq!(
+                    iterator_owned_refs(value),
+                    baseline,
+                    "tuple allocation {mode}"
+                );
+            }
+            for bits in [outer, marker, callback, right, args, pair, sequence, value] {
+                dec_ref_bits(py, bits);
+            }
         });
     }
 }

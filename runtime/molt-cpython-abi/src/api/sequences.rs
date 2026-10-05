@@ -16,6 +16,8 @@ use std::ptr;
 #[path = "sequences/comparison_tests.rs"]
 mod comparison_tests;
 
+pub(crate) mod list_slots;
+
 // ─── PyList ───────────────────────────────────────────────────────────────
 
 /// Resolve `op` to its runtime handle bits iff it is a Molt-native list.
@@ -267,7 +269,9 @@ pub unsafe extern "C" fn PyList_SET_ITEM(op: *mut PyObject, i: Py_ssize_t, v: *m
     // The macro's caller proves a valid list and index. Preserve its deliberate
     // no-DECREF replacement semantics while sharing the canonical transaction.
     let old = unsafe { *(*op.cast::<PyListObject>()).ob_item.add(i as usize) };
-    if old.is_null() && v.is_null() { return; }
+    if old.is_null() && v.is_null() {
+        return;
+    }
     unsafe { crate::api::refcount::Py_XINCREF(old) };
     if unsafe { PyList_SetItem(op, i, v) } < 0 {
         unsafe { crate::api::errors::release_preserving_error(&[old]) };
@@ -312,24 +316,28 @@ pub unsafe extern "C" fn PyList_SetItem(
         unsafe { crate::api::errors::release_preserving_error(&[v]) };
         return -1;
     }
-    let value = if v.is_null() { None } else {
+    let value = if v.is_null() {
+        None
+    } else {
         let Some(value) = (unsafe { RuntimeValue::acquire_edge(v) }) else {
-        unsafe {
-            crate::api::errors::release_preserving_error(&[v]);
-            if crate::api::errors::PyErr_Occurred().is_null() {
-                crate::api::errors::PyErr_SetString(
+            unsafe {
+                crate::api::errors::release_preserving_error(&[v]);
+                if crate::api::errors::PyErr_Occurred().is_null() {
+                    crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_SystemError)
                         .cast::<crate::abi_types::PyObject>(),
                     c"PyList_SetItem: item is not a bridge-managed object and no foreign wrapper could be minted"
                         .as_ptr(),
                 );
+                }
             }
-        }
-        return -1;
-    };
+            return -1;
+        };
         Some(value)
     };
-    let value_bits = value.as_ref().map_or(MoltObject::none().bits(), RuntimeValue::bits);
+    let value_bits = value
+        .as_ref()
+        .map_or(MoltObject::none().bits(), RuntimeValue::bits);
     if !unsafe { GLOBAL_BRIDGE.prepare_list_set_stolen_ref(v) } {
         drop(value);
         unsafe { crate::api::errors::release_preserving_error(&[v]) };
@@ -517,7 +525,13 @@ pub unsafe extern "C" fn PyList_CheckExact(op: *mut PyObject) -> c_int {
 
 // ─── PyTuple ──────────────────────────────────────────────────────────────
 
-pub(crate) unsafe fn tuple_layout_object(op: *mut PyObject) -> Option<*mut PyTupleObject> {
+/// Admit native tuple storage by its physical type/MRO, without semantic
+/// class inquiry or user callbacks. The result borrows the input allocation.
+///
+/// # Safety
+/// A non-null `op` must be a live C object whose physical type is ready and whose
+/// allocation obeys that type's layout. Keep it alive while using the result.
+pub unsafe fn tuple_layout_object(op: *mut PyObject) -> Option<*mut PyTupleObject> {
     if op.is_null() {
         return None;
     }
@@ -543,7 +557,9 @@ pub(crate) unsafe fn tuple_items_ptr(tuple: *mut PyTupleObject) -> *mut *mut PyO
 }
 
 unsafe fn native_tuple_new(size: Py_ssize_t) -> *mut PyObject {
-    unsafe { crate::api::typeobj::PyType_GenericAlloc(&raw mut crate::abi_types::PyTuple_Type, size) }
+    unsafe {
+        crate::api::typeobj::PyType_GenericAlloc(&raw mut crate::abi_types::PyTuple_Type, size)
+    }
 }
 
 /// Build the physical positional-argument tuple used by native C call slots.
@@ -581,11 +597,15 @@ pub(crate) unsafe fn native_call_args(items: &[*mut PyObject]) -> *mut PyObject 
 /// dispatch; only subclass storage allocated by its type reaches this function.
 pub unsafe extern "C" fn molt_tuple_subtype_dealloc(op: *mut PyObject) {
     crate::api::errors::with_preserved_error(|| unsafe {
-        let Some(deallocation) = crate::api::typeobj::NativeDeallocation::storage(op) else { return; };
+        let Some(deallocation) = crate::api::typeobj::NativeDeallocation::storage(op) else {
+            return;
+        };
         let tuple = op.cast::<PyTupleObject>();
         let len = (*tuple).ob_base.ob_size.max(0) as usize;
         let items = std::slice::from_raw_parts_mut(tuple_items_ptr(tuple), len);
-        for pointer in items.iter_mut() { crate::api::refcount::Py_CLEAR(pointer); }
+        for pointer in items.iter_mut() {
+            crate::api::refcount::Py_CLEAR(pointer);
+        }
         deallocation.finish();
     });
 }
@@ -829,7 +849,11 @@ pub unsafe extern "C" fn _PyTuple_Resize(pv: *mut *mut PyObject, newsize: Py_ssi
 /// fixed-length runtime storage both reject an OOB index. Foreign `v` gets
 /// `TYPE_ID_FOREIGN` custody (same contract as `PyList_SetItem`).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyTuple_SetItem(op: *mut PyObject, i: Py_ssize_t, v: *mut PyObject) -> c_int {
+pub unsafe extern "C" fn PyTuple_SetItem(
+    op: *mut PyObject,
+    i: Py_ssize_t,
+    v: *mut PyObject,
+) -> c_int {
     unsafe { tuple_set_item(op, i, v, true) }
 }
 
@@ -838,7 +862,9 @@ pub unsafe extern "C" fn PyTuple_SetItem(op: *mut PyObject, i: Py_ssize_t, v: *m
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyTuple_SET_ITEM(op: *mut PyObject, i: Py_ssize_t, v: *mut PyObject) {
     let old = unsafe { *tuple_items_ptr(op.cast::<PyTupleObject>()).add(i as usize) };
-    if old.is_null() && v.is_null() { return; }
+    if old.is_null() && v.is_null() {
+        return;
+    }
     unsafe { crate::api::refcount::Py_XINCREF(old) };
     if unsafe { tuple_set_item(op, i, v, false) } < 0 {
         unsafe { crate::api::errors::release_preserving_error(&[old]) };
@@ -915,24 +941,28 @@ unsafe fn tuple_set_item(
         }
         return -1;
     }
-    let value = if v.is_null() { None } else {
+    let value = if v.is_null() {
+        None
+    } else {
         let Some(value) = (unsafe { RuntimeValue::acquire_edge(v) }) else {
-        unsafe {
-            crate::api::errors::release_preserving_error(&[v]);
-            if crate::api::errors::PyErr_Occurred().is_null() {
-                crate::api::errors::PyErr_SetString(
+            unsafe {
+                crate::api::errors::release_preserving_error(&[v]);
+                if crate::api::errors::PyErr_Occurred().is_null() {
+                    crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_SystemError)
                         .cast::<crate::abi_types::PyObject>(),
                     c"PyTuple_SetItem: item is not a bridge-managed object and no foreign wrapper could be minted"
                         .as_ptr(),
                 );
+                }
             }
-        }
-        return -1;
-    };
+            return -1;
+        };
         Some(value)
     };
-    let value_bits = value.as_ref().map_or(MoltObject::none().bits(), RuntimeValue::bits);
+    let value_bits = value
+        .as_ref()
+        .map_or(MoltObject::none().bits(), RuntimeValue::bits);
     let is_tuple =
         unsafe { (h.classify_heap)(tuple_bits) } == crate::abi_types::MoltTypeTag::Tuple as u8;
     let in_bounds = i >= 0 && is_tuple && (i as usize) < unsafe { (h.tuple_len)(tuple_bits) };
@@ -1192,13 +1222,6 @@ pub unsafe extern "C" fn molt_list_richcompare(
     unsafe { compare_admitted_sequences(v, w, SequenceKind::List, op) }
 }
 
-#[allow(dead_code)]
-unsafe fn py_tuple_pack_placeholder_removed_from_abi(n: Py_ssize_t, /* ... */) -> *mut PyObject {
-    // Variadic — without va_list we can only create an empty tuple.
-    // Real variadic support is in the C shim.
-    unsafe { PyTuple_New(n) }
-}
-
 // ─── PySet ────────────────────────────────────────────────────────────────
 
 #[unsafe(no_mangle)]
@@ -1325,7 +1348,11 @@ pub unsafe extern "C" fn PySet_New(iterable: *mut PyObject) -> *mut PyObject {
     };
     let iterable_bits = iterable_value.as_ref().map_or(0, RuntimeValue::bits);
     let h = hooks_or_stubs();
-    let input = if iterable.is_null() { crate::hooks::BorrowedHandleResult::missing() } else { crate::hooks::BorrowedHandleResult::ok(iterable_bits) };
+    let input = if iterable.is_null() {
+        crate::hooks::BorrowedHandleResult::missing()
+    } else {
+        crate::hooks::BorrowedHandleResult::ok(iterable_bits)
+    };
     let result = unsafe { (h.set_new)(input, false) };
     if result == 0 {
         unsafe { ensure_set_error(c"PySet_New failed: runtime set authority unavailable") };
@@ -1429,7 +1456,11 @@ pub unsafe extern "C" fn PyFrozenSet_New(iterable: *mut PyObject) -> *mut PyObje
     };
     let iterable_bits = iterable_value.as_ref().map_or(0, RuntimeValue::bits);
     let h = hooks_or_stubs();
-    let input = if iterable.is_null() { crate::hooks::BorrowedHandleResult::missing() } else { crate::hooks::BorrowedHandleResult::ok(iterable_bits) };
+    let input = if iterable.is_null() {
+        crate::hooks::BorrowedHandleResult::missing()
+    } else {
+        crate::hooks::BorrowedHandleResult::ok(iterable_bits)
+    };
     let result = unsafe { (h.set_new)(input, true) };
     if result == 0 {
         unsafe { ensure_set_error(c"PyFrozenSet_New failed") };

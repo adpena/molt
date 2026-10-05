@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import inspect
 from pathlib import Path
 
@@ -138,13 +139,23 @@ def test_initialization_seed_does_not_grant_dynamic_import_custody(
             full_scan_roots=full,
         )
 
-    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        discover(True)
-    if not deferred:
-        with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-            discover(False)
-    else:
-        assert discover(False).graph == {"pkg": entry}
+    for full in (False, True):
+        discovered = discover(full)
+        authority = discovered.scan_authority.by_module["pkg"]
+        needs_runtime = full or not deferred
+        assert authority.requires_runtime_package_anchor is needs_runtime
+        assert discovered.graph == {"pkg": entry}
+        # Finding the source owner never seals its dynamic package operand.
+        if needs_runtime:
+            with pytest.raises(
+                UnresolvedStaticImportError, match="runtime import custody"
+            ):
+                module_import_scanner._collect_imports(
+                    ast.parse(entry.read_text()),
+                    module_name="pkg",
+                    is_package=True,
+                    import_scan_mode="full" if full else "module_init",
+                )
 
 
 def test_core_initialization_keeps_named_helper_imports(tmp_path: Path) -> None:

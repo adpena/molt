@@ -332,11 +332,186 @@ impl Drop for NativeDescriptorReceiver {
     }
 }
 
-/// The two descriptor consumers use exactly this receiver admission policy.
+/// CPython distinguishes invoking a slot wrapper from binding its descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeDescriptorContext {
+    Binding,
+    Call,
+}
+
+/// Public native identity is a typed field, not the qualified binder label.
+unsafe fn native_callable_name(pointer: *mut u8) -> Option<Vec<u8>> {
+    unsafe {
+        CallableMetadata::Name
+            .load(pointer)
+            .and_then(|bits| crate::object::ops_format::string_obj_bytes(obj_from_bits(bits)))
+    }
+}
+
+/// Error labels read actual class storage, never __name__/__class__ hooks.
+/// A failed foreign class inquiry remains the original native failure.
+unsafe fn descriptor_class_name(py: &PyToken<'_>, class: u64) -> Result<Vec<u8>, ()> {
+    unsafe {
+        let bytes = if let Some(pointer) = obj_from_bits(class).as_ptr()
+            && object_type_id(pointer) == TYPE_ID_TYPE
+        {
+            crate::object::ops_format::string_obj_bytes(obj_from_bits(class_name_bits(pointer)))
+        } else {
+            let view = crate::object::class_layout::real_class_view(class).map_err(|()| {
+                crate::cpython_abi_hooks::propagate_native_failure(
+                    py,
+                    "native descriptor class name",
+                );
+            })?;
+            view.and_then(|view| {
+                let name = (*view).tp_name;
+                (!name.is_null()).then(|| std::ffi::CStr::from_ptr(name).to_bytes().to_vec())
+            })
+        };
+        let Some(bytes) = bytes else {
+            raise_exception::<()>(py, "SystemError", "native descriptor class has no name");
+            return Err(());
+        };
+        // CPython's diagnostic type labels use %.100s. Its UTF-8 C-string
+        // conversion replaces an incomplete character at the precision edge.
+        Ok(String::from_utf8_lossy(&bytes[..bytes.len().min(100)])
+            .into_owned()
+            .into_bytes())
+    }
+}
+
+unsafe fn descriptor_received_type_name(py: &PyToken<'_>, value: u64) -> Result<Vec<u8>, ()> {
+    unsafe {
+        let class = crate::object::class_layout::real_type_bits(py, value).map_err(|()| {
+            crate::cpython_abi_hooks::propagate_native_failure(py, "native receiver type");
+        })?;
+        let owner = NativeDescriptorReceiver::owned_type(class);
+        descriptor_class_name(py, owner.bits())
+    }
+}
+
+unsafe fn raise_descriptor_receiver_error(
+    py: &PyToken<'_>,
+    pointer: *mut u8,
+    kind: NativeCallableKind,
+    context: NativeDescriptorContext,
+    declaring: u64,
+    receiver: Option<u64>,
+) -> Result<(), ()> {
+    unsafe {
+        let name = native_callable_name(pointer).unwrap_or_else(|| b"?".to_vec());
+        let expected = descriptor_class_name(py, declaring)?;
+        let message = if let Some(receiver) = receiver {
+            if kind == NativeCallableKind::ClassMethodDescriptor {
+                let is_type = if obj_from_bits(receiver)
+                    .as_ptr()
+                    .is_some_and(|pointer| object_type_id(pointer) == TYPE_ID_TYPE)
+                {
+                    true
+                } else {
+                    crate::object::class_layout::real_class_view(receiver)
+                        .map_err(|()| {
+                            crate::cpython_abi_hooks::propagate_native_failure(
+                                py,
+                                "native receiver type",
+                            );
+                        })?
+                        .is_some()
+                };
+                if is_type {
+                    let actual = descriptor_class_name(py, receiver)?;
+                    [
+                        b"descriptor '".as_slice(),
+                        &name,
+                        b"' requires a subtype of '",
+                        &expected,
+                        b"' but received '",
+                        &actual,
+                        b"'",
+                    ]
+                    .concat()
+                } else {
+                    let actual = descriptor_received_type_name(py, receiver)?;
+                    [
+                        b"descriptor '".as_slice(),
+                        &name,
+                        b"' for type '",
+                        &expected,
+                        b"' needs a type, not a '",
+                        &actual,
+                        b"' as arg 2",
+                    ]
+                    .concat()
+                }
+            } else {
+                let actual = descriptor_received_type_name(py, receiver)?;
+                if kind == NativeCallableKind::WrapperDescriptor
+                    && context == NativeDescriptorContext::Call
+                {
+                    [
+                        b"descriptor '".as_slice(),
+                        &name,
+                        b"' requires a '",
+                        &expected,
+                        b"' object but received a '",
+                        &actual,
+                        b"'",
+                    ]
+                    .concat()
+                } else {
+                    [
+                        b"descriptor '".as_slice(),
+                        &name,
+                        b"' for '",
+                        &expected,
+                        b"' objects doesn't apply to a '",
+                        &actual,
+                        b"' object",
+                    ]
+                    .concat()
+                }
+            }
+        } else if context == NativeDescriptorContext::Binding {
+            [
+                b"descriptor '".as_slice(),
+                &name,
+                b"' for type '",
+                &expected,
+                b"' needs either an object or a type",
+            ]
+            .concat()
+        } else if kind == NativeCallableKind::MethodDescriptor {
+            let qualified = CallableMetadata::QualName
+                .load(pointer)
+                .and_then(|bits| crate::object::ops_format::string_obj_bytes(obj_from_bits(bits)))
+                .unwrap_or(name);
+            [
+                b"unbound method ".as_slice(),
+                &qualified,
+                b"() needs an argument",
+            ]
+            .concat()
+        } else {
+            [
+                b"descriptor '".as_slice(),
+                &name,
+                b"' of '",
+                &expected,
+                b"' object needs an argument",
+            ]
+            .concat()
+        };
+        crate::builtins::exceptions::raise_exception_bytes::<()>(py, "TypeError", &message);
+        Ok(())
+    }
+}
+
+/// Binding and direct calls share receiver admission and public metadata.
 pub(crate) unsafe fn native_descriptor_receiver(
     py: &PyToken<'_>,
     pointer: *mut u8,
     kind: NativeCallableKind,
+    context: NativeDescriptorContext,
     owner: Option<u64>,
     instance: Option<u64>,
 ) -> Result<Option<NativeDescriptorReceiver>, ()> {
@@ -362,10 +537,18 @@ pub(crate) unsafe fn native_descriptor_receiver(
         } else {
             instance.map(NativeDescriptorReceiver::borrowed)
         };
+        let declaring = CallableMetadata::Owner
+            .load(pointer)
+            .unwrap_or(MoltObject::none().bits());
         let Some(receiver) = receiver else {
+            if context == NativeDescriptorContext::Call
+                || kind == NativeCallableKind::ClassMethodDescriptor
+            {
+                raise_descriptor_receiver_error(py, pointer, kind, context, declaring, None)?;
+                return Err(());
+            }
             return Ok(None);
         };
-        let declaring = crate::call::function::function_metadata_bits(py, pointer, b"__objclass__");
         let valid = if !obj_from_bits(declaring).is_none() {
             if kind == NativeCallableKind::ClassMethodDescriptor {
                 crate::object::class_layout::try_is_real_subtype(py, receiver.bits(), declaring)
@@ -379,15 +562,14 @@ pub(crate) unsafe fn native_descriptor_receiver(
             false
         };
         if !valid {
-            // The stored name is canonical string data. Formatting arbitrary
-            // objects here could replace the admission failure with a callback.
-            let name = string_obj_to_owned(obj_from_bits(function_name_bits(py, pointer)))
-                .unwrap_or_else(|| "?".to_owned());
-            raise_exception::<u64>(
+            raise_descriptor_receiver_error(
                 py,
-                "TypeError",
-                &format!("descriptor '{name}' does not apply to this receiver"),
-            );
+                pointer,
+                kind,
+                context,
+                declaring,
+                Some(receiver.bits()),
+            )?;
             return Err(());
         }
         Ok(Some(receiver))
@@ -396,7 +578,7 @@ pub(crate) unsafe fn native_descriptor_receiver(
 
 /// Repr reads public identity without exposing private binder storage.
 pub(crate) unsafe fn native_callable_repr(py: &PyToken<'_>, public: *mut u8) -> Option<Vec<u8>> {
-    use crate::object::ops_format::{format_class_name_bytes, string_obj_bytes};
+    use crate::object::ops_format::format_class_name_bytes;
     unsafe {
         let kind = NativeCallableKind::from_class(py, object_class_bits(public))?;
         let bound = object_type_id(public) == TYPE_ID_BOUND_METHOD;
@@ -405,11 +587,11 @@ pub(crate) unsafe fn native_callable_repr(py: &PyToken<'_>, public: *mut u8) -> 
         } else {
             public
         };
-        let name =
-            string_obj_bytes(obj_from_bits(function_name_bits(py, function))).unwrap_or_default();
+        let name = native_callable_name(function).unwrap_or_default();
         if kind.is_descriptor() {
-            let declaring =
-                crate::call::function::function_metadata_bits(py, function, b"__objclass__");
+            let declaring = CallableMetadata::Owner
+                .load(function)
+                .unwrap_or(MoltObject::none().bits());
             let owner = if obj_from_bits(declaring).is_none() {
                 Vec::new()
             } else {
@@ -479,25 +661,28 @@ pub(crate) unsafe fn admit_native_call(
         if !kind.is_descriptor() {
             return true;
         }
-        let Some(receiver) = receiver else {
-            raise_exception::<u64>(py, "TypeError", "descriptor requires a receiver");
-            return false;
-        };
         let (owner, instance) = if kind == NativeCallableKind::ClassMethodDescriptor {
-            (Some(receiver), None)
+            (receiver, None)
         } else {
-            (None, Some(receiver))
+            (None, receiver)
         };
         // Option marks an absent C operand. Python None is a real receiver;
         // only the Python-visible __get__ wrapper normalizes its sentinel.
-        match native_descriptor_receiver(py, function, kind, owner, instance) {
+        match native_descriptor_receiver(
+            py,
+            function,
+            kind,
+            NativeDescriptorContext::Call,
+            owner,
+            instance,
+        ) {
             Ok(Some(_)) => true,
             Err(()) => false,
             Ok(None) => {
                 raise_exception::<u64>(
                     py,
-                    "TypeError",
-                    "descriptor does not apply to this receiver",
+                    "SystemError",
+                    "native descriptor call admitted no receiver",
                 );
                 false
             }

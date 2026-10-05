@@ -20,7 +20,7 @@ from molt.cli.native_link_custody import (
 )
 from molt.cli.native_link_plan import resolve_native_target_spec
 from molt.cli.runtime_artifact_selection import RUNTIME_STATICLIB_ARTIFACTS
-from molt.cli.runtime_build_identity import (
+from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
     require_native_runtime_staticlib_identity,
 )

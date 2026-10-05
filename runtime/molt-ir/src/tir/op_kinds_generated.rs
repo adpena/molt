@@ -38,7 +38,10 @@ pub fn simpleir_kind_is_structural(kind: &str) -> bool {
             | "ret"
             | "ret_void"
             | "nop"
+            | "drop_inserted"
+            | "exception_region_drops_inserted"
             | "state_switch"
+            | "loop_index_end"
     )
 }
 
@@ -375,9 +378,12 @@ pub fn simpleir_kind_is_cfg_or_ssa_consumed(kind: &str) -> bool {
             | "ret"
             | "ret_void"
             | "nop"
+            | "drop_inserted"
+            | "exception_region_drops_inserted"
             | "state_switch"
             | "loop_index_start"
             | "loop_index_next"
+            | "loop_index_end"
             | "phi"
     )
 }
@@ -420,7 +426,8 @@ pub fn simpleir_var_field_role_table(kind: &str) -> SimpleIrVarFieldRole {
         "delete_var" | "store_fast" | "store_var" => SimpleIrVarFieldRole::Definition,
         "checked_add" | "checked_mul" | "iter_next_unboxed" => SimpleIrVarFieldRole::Result,
         "copy_var" | "load_var" => SimpleIrVarFieldRole::MetadataWhenArgs,
-        "box" | "box_from_raw_int" | "unbox" | "unbox_to_raw_int" => {
+        "box" | "box_from_raw_int" | "unbox" | "unbox_to_raw_int" | "type_guard" | "pos"
+        | "unary_pos" | "warn_stderr" | "guard_tag" | "guard_type" => {
             SimpleIrVarFieldRole::Forbidden
         }
         "ret" | "ret_void" => SimpleIrVarFieldRole::Forbidden,
@@ -486,6 +493,42 @@ pub struct SimpleIrOpShape {
 }
 
 pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[
+    SimpleIrOpShape {
+        kind: "pos",
+        family: "unary_numeric",
+        operands: 1,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
+    },
+    SimpleIrOpShape {
+        kind: "unary_pos",
+        family: "unary_numeric",
+        operands: 1,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
+    },
+    SimpleIrOpShape {
+        kind: "type_guard",
+        family: "value_transport",
+        operands: 1,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
+    },
+    SimpleIrOpShape {
+        kind: "guard_tag",
+        family: "runtime_type_guard",
+        operands: 2,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
+    },
+    SimpleIrOpShape {
+        kind: "guard_type",
+        family: "runtime_type_guard",
+        operands: 2,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
+    },
+    SimpleIrOpShape {
+        kind: "warn_stderr",
+        family: "diagnostic_output",
+        operands: 1,
+        value_rule: SimpleIrOpValueRule::Unconstrained,
+    },
     SimpleIrOpShape {
         kind: "frame_context_set",
         family: "execution_frame",
@@ -586,22 +629,28 @@ pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[
 
 pub fn simpleir_op_shape(kind: &str) -> Option<&'static SimpleIrOpShape> {
     match kind {
-        "frame_context_set" => Some(&SIMPLEIR_OP_SHAPES[0]),
-        "frame_home_store" => Some(&SIMPLEIR_OP_SHAPES[1]),
-        "frame_home_cell" => Some(&SIMPLEIR_OP_SHAPES[2]),
-        "frame_home_private_cell" => Some(&SIMPLEIR_OP_SHAPES[3]),
-        "frame_home_load" => Some(&SIMPLEIR_OP_SHAPES[4]),
-        "frame_home_take" => Some(&SIMPLEIR_OP_SHAPES[5]),
-        "frame_home_clear" => Some(&SIMPLEIR_OP_SHAPES[6]),
-        "code_new" => Some(&SIMPLEIR_OP_SHAPES[7]),
-        "code_slot_set" => Some(&SIMPLEIR_OP_SHAPES[8]),
-        "code_slots_init" => Some(&SIMPLEIR_OP_SHAPES[9]),
-        "trace_enter_slot" => Some(&SIMPLEIR_OP_SHAPES[10]),
-        "bytearray_fill_range" => Some(&SIMPLEIR_OP_SHAPES[11]),
-        "box" => Some(&SIMPLEIR_OP_SHAPES[12]),
-        "box_from_raw_int" => Some(&SIMPLEIR_OP_SHAPES[13]),
-        "unbox" => Some(&SIMPLEIR_OP_SHAPES[14]),
-        "unbox_to_raw_int" => Some(&SIMPLEIR_OP_SHAPES[15]),
+        "pos" => Some(&SIMPLEIR_OP_SHAPES[0]),
+        "unary_pos" => Some(&SIMPLEIR_OP_SHAPES[1]),
+        "type_guard" => Some(&SIMPLEIR_OP_SHAPES[2]),
+        "guard_tag" => Some(&SIMPLEIR_OP_SHAPES[3]),
+        "guard_type" => Some(&SIMPLEIR_OP_SHAPES[4]),
+        "warn_stderr" => Some(&SIMPLEIR_OP_SHAPES[5]),
+        "frame_context_set" => Some(&SIMPLEIR_OP_SHAPES[6]),
+        "frame_home_store" => Some(&SIMPLEIR_OP_SHAPES[7]),
+        "frame_home_cell" => Some(&SIMPLEIR_OP_SHAPES[8]),
+        "frame_home_private_cell" => Some(&SIMPLEIR_OP_SHAPES[9]),
+        "frame_home_load" => Some(&SIMPLEIR_OP_SHAPES[10]),
+        "frame_home_take" => Some(&SIMPLEIR_OP_SHAPES[11]),
+        "frame_home_clear" => Some(&SIMPLEIR_OP_SHAPES[12]),
+        "code_new" => Some(&SIMPLEIR_OP_SHAPES[13]),
+        "code_slot_set" => Some(&SIMPLEIR_OP_SHAPES[14]),
+        "code_slots_init" => Some(&SIMPLEIR_OP_SHAPES[15]),
+        "trace_enter_slot" => Some(&SIMPLEIR_OP_SHAPES[16]),
+        "bytearray_fill_range" => Some(&SIMPLEIR_OP_SHAPES[17]),
+        "box" => Some(&SIMPLEIR_OP_SHAPES[18]),
+        "box_from_raw_int" => Some(&SIMPLEIR_OP_SHAPES[19]),
+        "unbox" => Some(&SIMPLEIR_OP_SHAPES[20]),
+        "unbox_to_raw_int" => Some(&SIMPLEIR_OP_SHAPES[21]),
         _ => None,
     }
 }
@@ -653,42 +702,44 @@ impl SimpleIrIntegerSemantics {
 #[inline]
 pub fn simpleir_integer_semantics_table(kind: &str) -> SimpleIrIntegerSemantics {
     match kind {
-        "add" | "inplace_add" | "binop_add" => SimpleIrIntegerSemantics::DynamicAdd,
-        "sub" | "inplace_sub" | "binop_sub" | "mul" | "inplace_mul" | "binop_mul" => {
+        "add" | "binop_add" | "inplace_add" => SimpleIrIntegerSemantics::DynamicAdd,
+        "binop_mul" | "binop_sub" | "inplace_mul" | "inplace_sub" | "mul" | "sub" => {
             SimpleIrIntegerSemantics::DynamicNumeric
         }
         "div" | "true_div" => SimpleIrIntegerSemantics::DynamicTrueDiv,
-        "floor_div" | "floordiv" | "inplace_floordiv" | "binop_floor_div" | "mod" | "modulo"
-        | "mod_" | "inplace_mod" | "binop_mod" => SimpleIrIntegerSemantics::DynamicDivmod,
-        "pow" | "binop_pow" => SimpleIrIntegerSemantics::DynamicPower,
-        "neg" | "unary_neg" | "pos" | "unary_pos" | "abs" | "builtin_abs" => {
+        "binop_floor_div" | "binop_mod" | "floor_div" | "floordiv" | "inplace_floordiv"
+        | "inplace_mod" | "mod" | "mod_" | "modulo" => SimpleIrIntegerSemantics::DynamicDivmod,
+        "binop_pow" | "pow" => SimpleIrIntegerSemantics::DynamicPower,
+        "abs" | "builtin_abs" | "neg" | "pos" | "unary_neg" | "unary_pos" => {
             SimpleIrIntegerSemantics::DynamicUnaryNumeric
         }
-        "band" | "bit_and" | "inplace_bit_and" | "bor" | "bit_or" | "inplace_bit_or" | "bxor"
-        | "bit_xor" | "inplace_bit_xor" | "bit_not" | "invert" | "unary_invert" | "lshift"
-        | "shl" | "inplace_lshift" | "rshift" | "shr" | "inplace_rshift" => {
+        "band" | "bit_and" | "bit_not" | "bit_or" | "bit_xor" | "bor" | "bxor"
+        | "inplace_bit_and" | "inplace_bit_or" | "inplace_bit_xor" | "inplace_lshift"
+        | "inplace_rshift" | "invert" | "lshift" | "rshift" | "shl" | "shr" | "unary_invert" => {
             SimpleIrIntegerSemantics::IntegerOnly
         }
-        "const" | "const_int" | "const_bigint" => SimpleIrIntegerSemantics::IntegerLiteral,
+        "const" | "const_bigint" | "const_int" | "load_const" => {
+            SimpleIrIntegerSemantics::IntegerLiteral
+        }
         "box_from_raw_int"
-        | "unbox_to_raw_int"
+        | "builtin_int"
+        | "builtin_range"
+        | "builtin_sum"
+        | "cast_int"
         | "checked_add"
         | "checked_mul"
-        | "loop_index_start"
-        | "loop_index_next"
+        | "enumerate"
+        | "for_range"
         | "int"
-        | "cast_int"
-        | "builtin_int"
         | "int_from_obj"
         | "int_from_str_of_obj"
+        | "loop_index_next"
+        | "loop_index_start"
         | "operator_index"
-        | "sum"
-        | "builtin_sum"
         | "range"
-        | "builtin_range"
         | "range_new"
-        | "for_range"
-        | "enumerate" => SimpleIrIntegerSemantics::IntegerProducer,
+        | "sum"
+        | "unbox_to_raw_int" => SimpleIrIntegerSemantics::IntegerProducer,
         _ => SimpleIrIntegerSemantics::None,
     }
 }
@@ -778,7 +829,7 @@ pub const ASYNC_RUNTIME_REQUIREMENT_REASON: &str =
 pub const UNSTRUCTURED_CONTROL_REQUIREMENT_REASON: &str =
     "operation requires a target-proven unstructured control-flow lowering";
 pub const HOST_CAPABILITY_REQUIREMENT_REASON: &str =
-    "operation requires a target host filesystem or foreign-function capability";
+    "operation requires a target host filesystem, foreign-function, or device capability";
 pub const EXECUTION_FRAME_REQUIREMENT_REASON: &str =
     "operation requires internal execution-frame stack and source-location custody";
 pub const FRAME_INTROSPECTION_REQUIREMENT_REASON: &str =
@@ -896,98 +947,29 @@ pub fn simpleir_target_runtime_requirements(
 #[inline]
 pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntimeRequirements> {
     match kind {
-        "ABS"
-        | "BINDING_ALIAS"
-        | "BYTEARRAY_FILL_RANGE"
-        | "CHECK_EXCEPTION"
-        | "CONST_ELLIPSIS"
-        | "CONST_NOT_IMPLEMENTED"
-        | "CONST_STR"
-        | "CONTAINS"
-        | "DELATTR"
-        | "DELATTR_NAME"
-        | "DICT_CLEAR"
-        | "DICT_POP"
-        | "DICT_POPITEM"
-        | "DICT_SET"
-        | "DICT_SETDEFAULT"
-        | "DICT_STR_INT_INC"
-        | "DICT_UPDATE"
-        | "DICT_UPDATE_KWSTAR"
-        | "DICT_UPDATE_MISSING"
-        | "EXCEPTION_MATCH_BUILTIN"
-        | "FRAME_HOME_CELL"
-        | "FRAME_HOME_CLEAR"
-        | "FRAME_HOME_LOAD"
-        | "FRAME_HOME_PRIVATE_CELL"
-        | "FRAME_HOME_STORE"
-        | "FRAME_HOME_TAKE"
-        | "FRAME_LOCALS"
-        | "GETATTR"
-        | "GETATTR_GENERIC_OBJ"
-        | "GETATTR_GENERIC_PTR"
-        | "GETATTR_NAME"
-        | "GETATTR_NAME_DEFAULT"
-        | "GETATTR_SPECIAL_OBJ"
-        | "GUARDED_GETATTR"
-        | "GUARDED_SETATTR"
-        | "GUARD_DICT_SHAPE"
-        | "GUARD_LAYOUT"
-        | "GUARD_TAG"
-        | "GUARD_TYPE"
-        | "HASATTR_NAME"
-        | "INPLACE_BIT_AND"
-        | "INPLACE_BIT_OR"
-        | "INPLACE_BIT_XOR"
-        | "INPLACE_DIV"
-        | "INPLACE_FLOORDIV"
-        | "INPLACE_LSHIFT"
-        | "INPLACE_MATMUL"
-        | "INPLACE_MOD"
-        | "INPLACE_POW"
-        | "INPLACE_RSHIFT"
-        | "INVERT"
-        | "ISINSTANCE"
-        | "LEN"
-        | "LIST_APPEND"
-        | "LIST_CLEAR"
-        | "LIST_EXTEND"
-        | "LIST_INSERT"
-        | "LIST_POP"
-        | "LIST_REMOVE"
-        | "LIST_REVERSE"
-        | "LOAD_VAR"
-        | "MATMUL"
-        | "MISSING"
-        | "MODULE_GET_ATTR"
-        | "PHI"
-        | "RAISE_CAUSE"
-        | "RERAISE"
-        | "SETATTR"
-        | "SETATTR_GENERIC_OBJ"
-        | "SETATTR_GENERIC_PTR"
-        | "SETATTR_NAME"
-        | "SET_INDEX"
-        | "STORE_VAR"
-        | "TRY_END"
-        | "TRY_START"
-        | "TYPE_OF"
+        "abs"
         | "add"
-        | "async_for_end"
-        | "async_for_start"
+        | "band"
+        | "binding_alias"
+        | "binop_add"
         | "binop_floor_div"
+        | "binop_mod"
+        | "binop_mul"
+        | "binop_pow"
+        | "binop_sub"
         | "bit_and"
         | "bit_not"
         | "bit_or"
         | "bit_xor"
+        | "bor"
         | "box"
         | "box_from_raw_int"
-        | "build_set"
-        | "build_slice"
-        | "build_tuple"
-        | "call_builtin"
-        | "call_method_ic"
-        | "call_super_method_ic"
+        | "builtin_abs"
+        | "builtin_int"
+        | "builtin_range"
+        | "builtin_sum"
+        | "bxor"
+        | "cast_int"
         | "checked_add"
         | "checked_mul"
         | "const"
@@ -996,37 +978,34 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "const_ellipsis"
         | "const_float"
         | "const_int"
+        | "const_not_implemented"
         | "const_str"
         | "copy"
         | "copy_var"
-        | "del_attr"
-        | "del_boundary"
-        | "delete_var"
         | "div"
         | "drop_inserted"
         | "else"
         | "end_if"
-        | "exception_pending"
+        | "enumerate"
         | "exception_region_drops_inserted"
         | "floor_div"
         | "floordiv"
-        | "for_iter_end"
-        | "for_iter_start"
-        | "free"
-        | "function_defaults_version"
-        | "get_iter"
-        | "gpu_barrier"
-        | "gpu_block_dim"
-        | "gpu_block_id"
-        | "gpu_grid_dim"
-        | "gpu_thread_id"
-        | "guarded_load"
-        | "index_set"
+        | "for_range"
+        | "identity_alias"
         | "inplace_add"
+        | "inplace_bit_and"
+        | "inplace_bit_or"
+        | "inplace_bit_xor"
+        | "inplace_floordiv"
+        | "inplace_lshift"
+        | "inplace_mod"
         | "inplace_mul"
+        | "inplace_rshift"
         | "inplace_sub"
-        | "is_pending"
-        | "load"
+        | "int"
+        | "int_from_obj"
+        | "int_from_str_of_obj"
+        | "invert"
         | "load_const"
         | "load_var"
         | "loop_break"
@@ -1038,40 +1017,36 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "loop_start"
         | "lshift"
         | "mod"
+        | "mod_"
+        | "modulo"
         | "mul"
         | "neg"
         | "nop"
-        | "object_new_bound"
+        | "operator_index"
         | "phi"
         | "pos"
         | "pow"
-        | "range_new"
+        | "range"
         | "ret"
         | "ret_void"
         | "rshift"
         | "shl"
         | "shr"
-        | "stack_alloc"
-        | "state_block_end"
-        | "state_block_start"
-        | "state_set"
-        | "store"
         | "store_var"
-        | "string_eq"
         | "sub"
-        | "task_wait"
+        | "sum"
+        | "true_div"
         | "type_guard"
+        | "unary_invert"
         | "unary_neg"
         | "unary_pos"
         | "unbox"
         | "unbox_to_raw_int"
         | "warn_stderr"
         | "while_end"
-        | "while_start"
-        | "yield"
-        | "yield_from" => Some(SimpleIrRuntimeRequirements(0)),
+        | "while_start" => Some(SimpleIrRuntimeRequirements(0)),
         "is" | "is_not" => Some(SimpleIrRuntimeRequirements(1)),
-        "tuple_new" => Some(SimpleIrRuntimeRequirements(2)),
+        "build_tuple" | "tuple_new" => Some(SimpleIrRuntimeRequirements(2)),
         "check_exception"
         | "except_end"
         | "except_start"
@@ -1090,9 +1065,9 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "exception_new_builtin_empty"
         | "exception_new_builtin_one"
         | "exception_new_from_class"
+        | "exception_pending"
         | "exception_pop"
         | "exception_push"
-        | "exception_set_cause"
         | "exception_set_last"
         | "exception_set_value"
         | "exception_stack_clear"
@@ -1109,10 +1084,14 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "reraise"
         | "try_end"
         | "try_start" => Some(SimpleIrRuntimeRequirements(4)),
-        "borrow" | "dec_ref" | "inc_ref" | "release" => Some(SimpleIrRuntimeRequirements(8)),
+        "borrow" | "dec_ref" | "del_boundary" | "delete_var" | "free" | "inc_ref" | "release" => {
+            Some(SimpleIrRuntimeRequirements(8))
+        }
         "format_string" | "string_format" => Some(SimpleIrRuntimeRequirements(16)),
-        "for_iter" | "iter_next" | "iter_next_unboxed" | "list_fill_new" | "string_join"
-        | "unpack_sequence" => Some(SimpleIrRuntimeRequirements(32)),
+        "for_iter" | "for_iter_end" | "for_iter_start" | "get_iter" | "iter_next"
+        | "iter_next_unboxed" | "list_fill_new" | "string_join" | "unpack_sequence" => {
+            Some(SimpleIrRuntimeRequirements(32))
+        }
         "all"
         | "alloc"
         | "alloc_class"
@@ -1123,6 +1102,8 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "bound_method_new"
         | "build_dict"
         | "build_list"
+        | "build_set"
+        | "build_slice"
         | "builtin_all"
         | "builtin_any"
         | "builtin_reversed"
@@ -1145,6 +1126,7 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "code_slots_init"
         | "const_bytes"
         | "const_none"
+        | "del_attr"
         | "del_attr_generic_obj"
         | "del_attr_generic_ptr"
         | "del_attr_name"
@@ -1162,6 +1144,7 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "frozenset_add"
         | "frozenset_new"
         | "func_new"
+        | "function_defaults_version"
         | "get_attr"
         | "get_attr_generic_obj"
         | "get_attr_generic_ptr"
@@ -1170,7 +1153,9 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "get_item"
         | "guarded_field_get"
         | "guarded_field_set"
+        | "guarded_load"
         | "index"
+        | "index_set"
         | "init_instance"
         | "instance_get_field"
         | "instance_has_field"
@@ -1187,6 +1172,7 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "list_pop"
         | "list_remove"
         | "list_reverse"
+        | "load"
         | "load_attr"
         | "module_cache_del"
         | "module_cache_get"
@@ -1200,6 +1186,7 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "module_new"
         | "module_set_attr"
         | "object_new"
+        | "object_new_bound"
         | "object_set_class"
         | "reversed"
         | "set_add"
@@ -1216,6 +1203,8 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "set_remove"
         | "set_update"
         | "sorted"
+        | "stack_alloc"
+        | "store"
         | "store_attr"
         | "store_index"
         | "store_subscript"
@@ -1237,29 +1226,65 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "or"
         | "unary_not" => Some(SimpleIrRuntimeRequirements(128)),
         "cmp_eq" | "cmp_ge" | "cmp_gt" | "cmp_le" | "cmp_lt" | "cmp_ne" | "contains" | "eq"
-        | "ge" | "gt" | "in" | "le" | "lt" | "ne" | "not_in" => {
+        | "ge" | "gt" | "in" | "le" | "lt" | "ne" | "not_in" | "string_eq" => {
             Some(SimpleIrRuntimeRequirements(256))
         }
-        "ascii_from_obj" | "builtin_float" | "builtin_func" | "builtin_len" | "builtin_print"
-        | "builtin_str" | "call" | "call_bind" | "call_func" | "call_function" | "call_guarded"
-        | "call_indirect" | "call_internal" | "call_method" | "cast_float" | "cast_str" | "chr"
-        | "float" | "float_from_obj" | "len" | "ord" | "ord_at" | "print" | "repr_from_obj"
-        | "str" | "str_from_obj" => Some(SimpleIrRuntimeRequirements(512)),
+        "ascii_from_obj"
+        | "builtin_float"
+        | "builtin_func"
+        | "builtin_len"
+        | "builtin_print"
+        | "builtin_str"
+        | "call"
+        | "call_bind"
+        | "call_builtin"
+        | "call_func"
+        | "call_function"
+        | "call_guarded"
+        | "call_indirect"
+        | "call_internal"
+        | "call_method"
+        | "call_method_ic"
+        | "call_super_method_ic"
+        | "cast_float"
+        | "cast_str"
+        | "chr"
+        | "float"
+        | "float_from_obj"
+        | "len"
+        | "ord"
+        | "ord_at"
+        | "print"
+        | "range_new"
+        | "repr_from_obj"
+        | "str"
+        | "str_from_obj" => Some(SimpleIrRuntimeRequirements(512)),
         "callargs_expand_kwstar" | "callargs_push_kw" => Some(SimpleIrRuntimeRequirements(576)),
         "callargs_expand_star" => Some(SimpleIrRuntimeRequirements(608)),
         "alloc_task"
+        | "async_for_end"
+        | "async_for_start"
         | "block_on"
         | "call_async"
         | "is_native_awaitable"
+        | "is_pending"
+        | "state_block_end"
+        | "state_block_start"
         | "state_label"
+        | "state_set"
         | "state_switch"
         | "state_transition"
         | "state_yield"
-        | "stateful_locals_register" => Some(SimpleIrRuntimeRequirements(1024)),
+        | "stateful_locals_register"
+        | "task_wait"
+        | "yield"
+        | "yield_from" => Some(SimpleIrRuntimeRequirements(1024)),
         "goto" | "jump" | "label" => Some(SimpleIrRuntimeRequirements(2048)),
-        "file_close" | "file_flush" | "file_open" | "file_read" | "file_write" | "invoke_ffi" => {
+        "file_close" | "file_flush" | "file_open" | "file_read" | "file_write" | "gpu_barrier"
+        | "gpu_block_dim" | "gpu_block_id" | "gpu_grid_dim" | "gpu_thread_id" => {
             Some(SimpleIrRuntimeRequirements(4096))
         }
+        "invoke_ffi" => Some(SimpleIrRuntimeRequirements(4608)),
         "frame_context_set"
         | "frame_home_cell"
         | "frame_home_clear"
@@ -2006,7 +2031,6 @@ pub fn copy_kind_mints_owned_value_table(kind: &str) -> bool {
             | "exception_pop"
             | "exception_push"
             | "exception_resolve_captured"
-            | "exception_set_cause"
             | "exception_set_last"
             | "exception_set_value"
             | "exception_stack_clear"
@@ -11849,15 +11873,25 @@ pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {
     }
 }
 
-/// Literal payload kind consumers may record for an opcode.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum LiteralPayloadKind {
-    Int,
-    Bool,
+/// Owned carrier shape shared by IR admission and all backends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnedLiteralPayloadKind {
+    String,
+    Bytes,
+    BigintDecimal,
 }
 
-/// Literal payload classifier. EXHAUSTIVE over OpCode; non-literal
-/// opcodes map to None instead of pass-local wildcards.
+/// Literal payload kind consumers may record for an opcode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LiteralPayloadKind {
+    Int,
+    Float,
+    None,
+    Bool,
+    Owned(OwnedLiteralPayloadKind),
+}
+
+/// Literal payload classifier. EXHAUSTIVE over OpCode.
 #[inline]
 pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloadKind> {
     match opcode {
@@ -11949,12 +11983,14 @@ pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloa
         OpCode::StateBlockStart => None,
         OpCode::StateBlockEnd => None,
         OpCode::ConstInt => Some(LiteralPayloadKind::Int),
-        OpCode::ConstBigInt => None,
-        OpCode::ConstFloat => None,
-        OpCode::ConstStr => None,
+        OpCode::ConstBigInt => Some(LiteralPayloadKind::Owned(
+            OwnedLiteralPayloadKind::BigintDecimal,
+        )),
+        OpCode::ConstFloat => Some(LiteralPayloadKind::Float),
+        OpCode::ConstStr => Some(LiteralPayloadKind::Owned(OwnedLiteralPayloadKind::String)),
         OpCode::ConstBool => Some(LiteralPayloadKind::Bool),
-        OpCode::ConstNone => None,
-        OpCode::ConstBytes => None,
+        OpCode::ConstNone => Some(LiteralPayloadKind::None),
+        OpCode::ConstBytes => Some(LiteralPayloadKind::Owned(OwnedLiteralPayloadKind::Bytes)),
         OpCode::Copy => None,
         OpCode::Import => None,
         OpCode::ImportFrom => None,
@@ -11973,6 +12009,19 @@ pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloa
         OpCode::ScfFor => None,
         OpCode::ScfWhile => None,
         OpCode::ScfYield => None,
+    }
+}
+
+/// Owned-carrier projection of the same literal authority.
+#[inline]
+pub fn opcode_owned_literal_payload_kind_table(opcode: OpCode) -> Option<OwnedLiteralPayloadKind> {
+    match opcode_literal_payload_kind_table(opcode) {
+        Some(LiteralPayloadKind::Owned(kind)) => Some(kind),
+        Some(LiteralPayloadKind::Int) => None,
+        Some(LiteralPayloadKind::Float) => None,
+        Some(LiteralPayloadKind::None) => None,
+        Some(LiteralPayloadKind::Bool) => None,
+        None => None,
     }
 }
 

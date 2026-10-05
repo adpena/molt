@@ -921,20 +921,28 @@ def test_all_valid_relative_levels_resolve_and_beyond_top_fails(tmp_path: Path) 
     (nested / "__init__.py").write_text("\n", encoding="utf-8")
     (nested / "local_leaf.py").write_text("VALUE = 3\n", encoding="utf-8")
     seed = nested / "entry.py"
-    seed.write_text(
-        "from . import local_leaf\n"
-        "from .. import middle_leaf\n"
+    requests = (
+        "from . import local_leaf\n",
+        "from .. import middle_leaf\n",
         "from ... import root_leaf\n",
-        encoding="utf-8",
     )
-
-    closure = local_python_import_closure(tmp_path, (seed,)).paths
-    paths = _relative_paths(tmp_path, closure)
+    paths: set[str] = set()
+    for request in requests:
+        # Each level starts with the loader's initial metadata. Executing an
+        # earlier import can re-enter Python and mutate that metadata.
+        seed.write_text(request, encoding="utf-8")
+        closure = local_python_import_closure(tmp_path, (seed,)).paths
+        paths.update(_relative_paths(tmp_path, closure))
     assert {
         "src/pkg/root_leaf.py",
         "src/pkg/deep/middle_leaf.py",
         "src/pkg/deep/more/local_leaf.py",
     } <= paths
+
+    seed.write_text("".join(requests), encoding="utf-8")
+    covered = local_python_import_closure(tmp_path, (seed,))
+    assert covered.topology_digest
+    assert paths <= _relative_paths(tmp_path, covered.paths)
 
     seed.write_text("from .... import escaped\n", encoding="utf-8")
     with pytest.raises(ValueError, match="escapes local package"):
@@ -1073,7 +1081,7 @@ def test_dynamic_module_name_with_path_separator_fails_closed(tmp_path: Path) ->
     ("source", "message"),
     [
         ("__import__('pkg', level=-1)\n", "negative __import__ level"),
-        ("__import__('pkg', level=1.0)\n", "non-literal __import__ level"),
+        ("__import__('pkg', level=1.0)\n", "invalid __import__ level"),
     ],
 )
 def test_invalid_dunder_import_levels_fail_closed(
@@ -1227,3 +1235,210 @@ def test_import_alias_contexts_share_bytes_not_analysis(
     contexts.clear()
     assert child in local_python_import_closure(tmp_path, (seed,)).paths
     assert contexts == []
+
+
+@pytest.mark.parametrize("source_first", [False, True])
+def test_source_discovery_cache_rows_cannot_be_reused_as_semantic_edges(
+    tmp_path, source_first
+):
+    package = tmp_path / "src" / "pkg"
+    package.mkdir(parents=True)
+    seed, child = package / "entry.py", package / "child.py"
+    seed.write_text("import os\nfrom . import child\n", encoding="utf-8")
+    child.write_text("VALUE = 1\n", encoding="utf-8")
+    source = PythonImportPolicy(
+        False,
+        False,
+        False,
+        purpose="source_dependency",
+        unknown_relative_sources="local_inventory",
+    )
+    semantic = PythonImportPolicy(False, False, False)
+    policies = (source, semantic) if source_first else (semantic, source)
+    for policy in (*policies, *policies):
+        paths = set(local_python_import_closure(tmp_path, (seed,), policy=policy).paths)
+        assert (child in paths) is (policy.purpose == "source_dependency")
+    cache = json.loads(graph.python_source_closure_cache_path(tmp_path).read_text())
+    variants = cache["entries"]["src/pkg/entry.py"]
+    source_key = graph._analysis_policy_digest("pkg.entry", False, source)
+    semantic_key = graph._analysis_policy_digest("pkg.entry", False, semantic)
+    assert source_key != semantic_key
+    assert variants[source_key]["discovery_requests"]
+    assert variants[source_key]["relative_source_obligations"]
+    assert not variants[source_key]["unresolved_dynamic_imports"]
+    assert variants[semantic_key]["discovery_requests"] == []
+    assert variants[semantic_key]["relative_source_obligations"] == []
+    assert variants[semantic_key]["unresolved_dynamic_imports"]
+    assert all(
+        "pkg.child" not in row["candidates"] for row in variants[source_key]["requests"]
+    )
+
+
+def test_float_import_level_is_a_known_type_error():
+    with pytest.raises(TypeError):
+        __import__("pkg", level=1.0)
+
+
+@pytest.mark.parametrize(
+    "statement,package",
+    [
+        ("from .missing.deep import value", "alternate"),
+        ("from ...missing.deep import value", "alternate.extra.deep"),
+        ("from . import value", "alternate"),
+        ("__import__('missing.deep', globals(), None, (), 1)", "alternate"),
+        ("importlib.import_module('.missing.deep', package)", "alternate"),
+    ],
+)
+def test_unknown_relative_inventory_covers_failed_owner_execution(
+    tmp_path, monkeypatch, statement, package
+):
+    """Independent CPython witness: even a failed suffix executes its owner."""
+    import importlib
+    import sys
+
+    marker = tmp_path / "executed.txt"
+    alternate = tmp_path / "alternate.py"
+    alternate.write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\n",
+        encoding="utf-8",
+    )
+    seed = tmp_path / "entry.py"
+    # The operand is unknown to static analysis; the oracle supplies it exactly.
+    seed.write_text("__package__ = package\n" + statement + "\n", encoding="utf-8")
+    namespace = {
+        "__name__": "entry",
+        "package": package,
+        "importlib": importlib,
+    }
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "alternate", raising=False)
+    try:
+        with pytest.raises(ImportError):
+            exec(compile(seed.read_text(), str(seed), "exec"), namespace)
+        assert marker.read_text() == "executed"
+    finally:
+        sys.modules.pop("alternate", None)
+    if statement.startswith("importlib"):
+        seed.write_text("import importlib\n" + seed.read_text(), encoding="utf-8")
+    receipt = local_python_import_closure(tmp_path, (seed,))
+    assert alternate in receipt.paths and receipt.topology_digest
+    cache = json.loads(graph.python_source_closure_cache_path(tmp_path).read_text())
+    variants = cache["entries"]["entry.py"].values()
+    assert any(row["relative_source_obligations"] for row in variants)
+    assert all(not row["unresolved_dynamic_imports"] for row in variants)
+    # Owner coverage is byte custody; it never reparses speculative owner code.
+    assert "alternate.py" not in cache["entries"]
+
+
+def test_relative_inventory_uses_resolver_shadows_namespaces_and_new_topology(
+    tmp_path, monkeypatch
+):
+    from molt.cli.python_import_resolution import LocalPythonModuleResolver
+
+    first, second = tmp_path / "first", tmp_path / "second"
+    for root in (first, second):
+        (root / "ns").mkdir(parents=True)
+    seed = first / "entry.py"
+    seed.write_text("__package__ = unknown\nfrom .missing import value\n")
+    left, right = first / "ns/left.py", second / "ns/right.py"
+    left.write_text("LEFT = 1\n")
+    right.write_text("RIGHT = 1\n")
+    (first / "blocked.py").write_text("BLOCK = 1\n")
+    (second / "blocked").mkdir()
+    hidden = second / "blocked/child.py"
+    hidden.write_text("HIDDEN = 1\n")
+    roots = (first, second)
+    inventory = LocalPythonModuleResolver(roots).source_inventory(
+        allowed_prefix=None, include_parent_packages=True
+    )
+    assert {source.path for source in inventory.sources} == {
+        seed,
+        left,
+        right,
+        first / "blocked.py",
+    }
+    before = local_python_import_closure(tmp_path, (seed,), search_roots=roots)
+    assert left in before.paths and right in before.paths and hidden not in before.paths
+
+    def no_reanalysis(*args, **kwargs):
+        raise AssertionError(
+            "unchanged seed should reuse its symbolic cached obligation"
+        )
+
+    monkeypatch.setattr(graph, "analyze_local_imports", no_reanalysis)
+    # An empty namespace changes topology without changing captured source paths.
+    (first / "new_namespace").mkdir()
+    namespace = local_python_import_closure(tmp_path, (seed,), search_roots=roots)
+    assert namespace.paths == before.paths
+    assert namespace.topology_digest != before.topology_digest
+    assert namespace.content_digest != before.content_digest
+    # A regular package in the later root shadows both earlier namespace portions.
+    initializer = second / "ns/__init__.py"
+    initializer.write_text("VALUE = 1\n")
+    after = local_python_import_closure(tmp_path, (seed,), search_roots=roots)
+    assert left not in after.paths and {right, initializer} <= set(after.paths)
+    added = second / "ns/added.py"
+    added.write_text("VALUE = 2\n")
+    newest = local_python_import_closure(tmp_path, (seed,), search_roots=roots)
+    assert added in newest.paths and newest.content_digest != after.content_digest
+
+
+def test_relative_inventory_keeps_manifest_and_invalid_operand_errors(tmp_path):
+    seed = tmp_path / "entry.py"
+    manifest = tmp_path / graph._DYNAMIC_IMPORT_MANIFEST
+    manifest.parent.mkdir(parents=True)
+    seed.write_text("__package__ = unknown\nfrom . import child\n__import__(name)\n")
+    with pytest.raises(ValueError, match="non-literal dynamic Python import"):
+        local_python_import_closure(tmp_path, (seed,))
+    manifest.write_text(
+        "schema_version = 1\n[[source]]\npath = 'entry.py'\nnonliteral_calls = 1\n"
+    )
+    receipt = local_python_import_closure(tmp_path, (seed,))
+    assert receipt.topology_digest
+    # The exact dynamic count survives full local coverage, including cache hits.
+    seed.write_text(seed.read_text() + "__import__(other)\n")
+    with pytest.raises(ValueError, match="manifest drift"):
+        local_python_import_closure(tmp_path, (seed,))
+    manifest.unlink()
+    for source, message in (
+        ("__package__ = 1\nfrom . import child\n", "invalid import package"),
+        ("from .. import child\n", "no known parent package"),
+        ("__import__('child', globals(), None, (), -1)\n", "negative __import__ level"),
+        (
+            "import importlib\nimportlib.import_module('.child', 1)\n",
+            "invalid import package",
+        ),
+    ):
+        seed.write_text(source)
+        with pytest.raises(ValueError, match=message):
+            local_python_import_closure(tmp_path, (seed,))
+
+
+def test_inventory_failure_and_directory_cycle_never_publish_partial_coverage(
+    tmp_path, monkeypatch
+):
+    from molt.cli import python_import_resolution as resolution
+
+    seed = tmp_path / "entry.py"
+    seed.write_text("__package__ = unknown\nfrom . import child\n")
+    real_scandir = resolution.os.scandir
+
+    def denied(path):
+        if Path(path) == tmp_path:
+            raise PermissionError("cannot inventory owner domain")
+        return real_scandir(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(resolution.os, "scandir", denied)
+        with pytest.raises(
+            ValueError, match="cannot enumerate local Python source domain"
+        ):
+            local_python_import_closure(tmp_path, (seed,))
+    package = tmp_path / "package"
+    package.mkdir()
+    try:
+        (package / "loop").symlink_to(package, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    with pytest.raises(ValueError, match="cyclic local Python search topology"):
+        local_python_import_closure(tmp_path, (seed,))

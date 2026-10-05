@@ -3,6 +3,31 @@
 
 use super::*;
 
+#[test]
+fn compact_type_protocol_storage_is_owned_without_admitting_a_heap_tail() {
+    let first = ManagedTypeAllocation::new(unsafe { std::mem::zeroed() });
+    let second = ManagedTypeAllocation::new(unsafe { std::mem::zeroed() });
+    unsafe {
+        let first_type = first.get();
+        let second_type = second.get();
+        assert!(!(*first_type).tp_as_sequence.is_null());
+        assert_ne!((*first_type).tp_as_sequence, (*second_type).tp_as_sequence);
+        let first_sequence = (*first_type)
+            .tp_as_sequence
+            .cast::<crate::abi_types::PySequenceMethods>();
+        let second_sequence = (*second_type)
+            .tp_as_sequence
+            .cast::<crate::abi_types::PySequenceMethods>();
+        (*first_sequence).sq_length = first_type.cast();
+        assert!((*second_sequence).sq_length.is_null());
+        (*first_type).tp_flags |= crate::abi_types::Py_TPFLAGS_HEAPTYPE;
+        assert!(
+            first.heap().is_none(),
+            "semantic flags cannot admit an unallocated heap tail"
+        );
+    }
+}
+
 fn install(
     bridge: &ObjectBridge,
     bits: AbiHandle,

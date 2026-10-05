@@ -37,10 +37,10 @@ from molt.cli.backend_artifact_contract import (
 )
 from molt.cli.cache_keys import _cache_key, _sorted_ir_functions
 from molt.cli.default_paths import _default_molt_cache
-from molt.file_hashing import _sha256_file
 from molt.file_publication import staged_file_path
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
+    capture_stable_regular_file,
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
@@ -50,6 +50,7 @@ from molt.cli.models import (
     _ModuleGraphMetadata,
     _SharedStdlibCacheValidationToken,
 )
+from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
 
 
 _emitted_name_matches_module_symbol = (
@@ -81,37 +82,45 @@ def _validate_backend_cache_artifact(
     *,
     artifact_contract: BackendArtifactContract,
     identity: StableRegularFileIdentity | None = None,
+    publish_symbol_facts: bool = False,
 ) -> StableRegularFileIdentity:
-    # Shape, symbol facts and the sync receipt must attest the same generation.
-    # Hash once, then retain the shared cheap mutation token through admission.
+    # Native shape, member framing and nm consume one admitted owned handle.
+    # Content-keyed facts are published only after its closing fences pass.
     try:
-        if identity is None:
-            identity = stable_regular_file_identity(
-                path, label="backend cache artifact"
-            )
+        if identity is not None and identity.path != path.expanduser().absolute():
+            raise ValueError("Backend validation identity belongs to another path")
+        if artifact_contract.is_native:
+            with _native_symbols._native_symbol_facts_admission(
+                path,
+                target_triple=artifact_contract.target_triple,
+                identity=identity,
+                publish=publish_symbol_facts,
+                validate_shape=lambda opened: artifact_contract.validate_native_shape(
+                    opened.path, opened=opened
+                ),
+            ) as (_opened, identity, facts):
+                if not (facts.defined or facts.undefined):
+                    raise BackendArtifactValidationError(
+                        f"Native application cache artifact has no symbol surface: {path}"
+                    )
         else:
-            if identity.path != path.expanduser().absolute():
-                raise ValueError("Backend validation identity belongs to another path")
-            verify_stable_regular_file_identity(
-                identity, label="backend cache artifact"
-            )
+            # Non-native validators may invoke external WASM tools; retain the
+            # same admitted handle across their path-based read and close fence.
+            with _native_symbols._open_native_symbol_artifact(path, identity) as (
+                _opened,
+                identity,
+            ):
+                artifact_contract.validate(path)
+        return identity
+    except _native_symbols.NativeSymbolArtifactError as error:
+        raise BackendArtifactValidationError(str(error)) from error
+    except _native_symbols.NativeSymbolInspectionError:
+        # Reader failures are operational failures, never soft cache misses.
+        raise
+    except BackendArtifactValidationError:
+        raise
     except (OSError, ValueError) as error:
         raise BackendArtifactValidationError(str(error)) from error
-    artifact_contract.validate(path)
-    if artifact_contract.is_native:
-        facts = _native_symbols._native_object_global_symbol_facts(
-            path, target_triple=artifact_contract.target_triple, identity=identity
-        )
-        # Empty symbol tables are valid reader results, not application hits.
-        if not (facts.defined or facts.undefined):
-            raise BackendArtifactValidationError(
-                f"Native application cache artifact has no symbol surface: {path}"
-            )
-    try:
-        verify_stable_regular_file_identity(identity, label="backend cache artifact")
-    except (OSError, ValueError) as error:
-        raise BackendArtifactValidationError(str(error)) from error
-    return identity
 
 
 def _is_valid_cached_backend_artifact(
@@ -151,15 +160,17 @@ def _native_object_has_unresolved_module_chunks(
     return any(symbol not in stdlib_defined for symbol in unresolved_chunks)
 
 
-def _read_shared_stdlib_partition_functions(
+def _read_shared_stdlib_partition_facts(
     stdlib_object_path: Path,
-) -> frozenset[str] | None:
+) -> tuple[StableRegularFileIdentity, frozenset[str]] | None:
     try:
-        raw = _stdlib_object_partition_manifest_sidecar_path(
-            stdlib_object_path
-        ).read_text(encoding="utf-8")
+        identity, raw = capture_stable_regular_file(
+            _stdlib_object_partition_manifest_sidecar_path(stdlib_object_path),
+            label="shared stdlib partition manifest",
+            max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+        )
         payload = json.loads(raw)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, ValueError):
         return None
     if not isinstance(payload, dict):
         return None
@@ -174,7 +185,14 @@ def _read_shared_stdlib_partition_functions(
     function_count = payload.get("function_count")
     if isinstance(function_count, int) and function_count != len(functions):
         return None
-    return frozenset(functions)
+    return identity, frozenset(functions)
+
+
+def _read_shared_stdlib_partition_functions(
+    stdlib_object_path: Path,
+) -> frozenset[str] | None:
+    facts = _read_shared_stdlib_partition_facts(stdlib_object_path)
+    return None if facts is None else facts[1]
 
 
 def _unresolved_stdlib_module_symbols(
@@ -201,10 +219,13 @@ def _shared_stdlib_native_symbol_closure_issue(
     *,
     stdlib_module_symbols: Collection[str] | None,
     target_triple: str | None = None,
+    symbol_sets: _native_symbols._NativeObjectSymbolSets | None = None,
+    partition_functions: frozenset[str] | None = None,
 ) -> str | None:
-    symbol_sets = _native_symbols._native_object_global_symbol_sets(
-        stdlib_object_path, target_triple=target_triple
-    )
+    if symbol_sets is None:
+        symbol_sets = _native_symbols._native_object_global_symbol_sets(
+            stdlib_object_path, target_triple=target_triple
+        )
     defined, undefined = symbol_sets
     # All members of a compiler archive are included by the final link plan.
     # References between those members are resolved within this artifact, even
@@ -212,7 +233,10 @@ def _shared_stdlib_native_symbol_closure_issue(
     undefined = undefined - defined
     issues: list[str] = []
 
-    partition_functions = _read_shared_stdlib_partition_functions(stdlib_object_path)
+    if partition_functions is None:
+        partition_functions = _read_shared_stdlib_partition_functions(
+            stdlib_object_path
+        )
     if partition_functions is None:
         issues.append("missing or malformed partition manifest")
     else:
@@ -323,7 +347,9 @@ def _publish_immutable_backend_cache_artifact(
     def existing_generation() -> StableRegularFileIdentity:
         try:
             existing = _validate_backend_cache_artifact(
-                dst, artifact_contract=artifact_contract
+                dst,
+                artifact_contract=artifact_contract,
+                publish_symbol_facts=True,
             )
         except BackendArtifactValidationError:
             warnings.append(
@@ -387,7 +413,7 @@ def _materialize_cached_backend_artifact(
         candidate_identity = _validate_backend_cache_artifact(
             candidate, artifact_contract=artifact_contract, identity=candidate_identity
         )
-    except OSError as exc:
+    except BackendArtifactValidationError as exc:
         warnings.append(f"Cache candidate admission failed: {exc}")
         return False
     if state_path is None:
@@ -1294,8 +1320,21 @@ def _shared_stdlib_cache_matches_key(
     )
     stage_start = time.perf_counter()
     try:
-        actual_object_digest = _sha256_file(stdlib_object_path)
-    except OSError:
+        contract = BackendArtifactContract(
+            BackendArtifactKind.NATIVE_ARCHIVE, target_triple
+        )
+        with _native_symbols._native_symbol_facts_admission(
+            stdlib_object_path,
+            target_triple=target_triple,
+            validate_shape=lambda opened: contract.validate_native_shape(
+                opened.path, opened=opened
+            ),
+        ) as (_opened, admitted, symbol_facts):
+            actual_object_digest = admitted.sha256
+    except (
+        _native_symbols.NativeSymbolArtifactError,
+        BackendArtifactValidationError,
+    ):
         _record_backend_cache_stage_ms(
             stage_timings_ms,
             "backend_cache_stdlib_contract_digest",
@@ -1310,26 +1349,16 @@ def _shared_stdlib_cache_matches_key(
     if cached_object_digest.strip().lower() != actual_object_digest.lower():
         return False
     stage_start = time.perf_counter()
-    artifact_error = _shared_stdlib_artifact_validation_error(
-        stdlib_object_path, target_triple=target_triple
-    )
-    _record_backend_cache_stage_ms(
-        stage_timings_ms,
-        "backend_cache_stdlib_contract_artifact",
-        stage_start,
-    )
-    if artifact_error is not None:
-        return False
-    stage_start = time.perf_counter()
-    try:
-        partition_manifest_digest = _sha256_file(partition_manifest_path)
-    except OSError:
+    partition_facts = _read_shared_stdlib_partition_facts(stdlib_object_path)
+    if partition_facts is None:
         _record_backend_cache_stage_ms(
             stage_timings_ms,
             "backend_cache_stdlib_contract_partition",
             stage_start,
         )
         return False
+    partition_identity, partition_functions = partition_facts
+    partition_manifest_digest = partition_identity.sha256
     _record_backend_cache_stage_ms(
         stage_timings_ms,
         "backend_cache_stdlib_contract_partition",
@@ -1362,6 +1391,8 @@ def _shared_stdlib_cache_matches_key(
             stdlib_object_path,
             stdlib_module_symbols=stdlib_module_symbols,
             target_triple=target_triple,
+            symbol_sets=symbol_facts.symbol_sets(),
+            partition_functions=partition_functions,
         )
         is None
     )
@@ -1505,7 +1536,7 @@ def _shared_stdlib_cache_validation_file_token(
 ) -> StableRegularFileIdentity | None:
     try:
         return _native_symbols._native_symbol_artifact_identity(path)
-    except _native_symbols.NativeSymbolInspectionError:
+    except _native_symbols.NativeSymbolArtifactError:
         return None
 
 

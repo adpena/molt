@@ -5,17 +5,16 @@ use crate::builtins::exceptions::{
 };
 use crate::object::payload_refs;
 use crate::{
-    MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_TYPE, attr_name_bits_from_bytes,
-    call_callable0, call_callable1, call_callable3, class_dict_bits, class_mro_pinned,
-    clear_exception, contextlib_async_exitstack_enter_context_poll_fn_addr,
+    MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_TYPE, attr_name_bits_from_bytes, call_callable0,
+    call_callable1, call_callable3, class_dict_bits, class_mro_pinned, clear_exception,
+    contextlib_async_exitstack_enter_context_poll_fn_addr,
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
-    contextlib_asyncgen_exit_poll_fn_addr, dec_ref_bits, dict_get_in_place,
-    exception_pending, exception_stack_pop,
-    exception_stack_push, has_capability, header_from_obj_ptr, inc_ref_bits, is_missing_bits,
-    is_registered_ptr, is_truthy, missing_bits, molt_call_bind, molt_callargs_expand_kwstar,
-    molt_callargs_expand_star, molt_callargs_new, molt_future_new, molt_future_poll,
-    molt_getattr_builtin, molt_inspect_getasyncgenstate, molt_is_callable, molt_issubclass,
-    molt_object_setattr, molt_raise, obj_from_bits, object_type_id,
+    contextlib_asyncgen_exit_poll_fn_addr, dec_ref_bits, dict_get_in_place, exception_pending,
+    exception_stack_pop, exception_stack_push, has_capability, header_from_obj_ptr, inc_ref_bits,
+    is_missing_bits, is_registered_ptr, is_truthy, missing_bits, molt_call_bind,
+    molt_callargs_expand_kwstar, molt_callargs_expand_star, molt_callargs_new, molt_future_new,
+    molt_future_poll, molt_getattr_builtin, molt_inspect_getasyncgenstate, molt_is_callable,
+    molt_issubclass, molt_raise, molt_set_attr_name, obj_from_bits, object_type_id,
     opaque_handle_bits, path_from_bits, pending_bits_i64, ptr_from_bits, raise_exception,
     release_ptr, string_obj_to_owned,
 };
@@ -306,13 +305,16 @@ fn normalize_exit_exception(
         value
     };
     if !exception_is_instance(_py, value.bits()) {
-        raise_exception::<()>(_py, "TypeError", "calling exception class did not return an exception instance");
+        raise_exception::<()>(
+            _py,
+            "TypeError",
+            "calling exception class did not return an exception instance",
+        );
         return Err(take_pending_exception(_py));
     }
     if !obj_from_bits(tb_bits).is_none()
-        && let Err(message) = exception_replace_field_bits(
-            _py, value.bits(), ExceptionFieldSlot::Traceback, tb_bits,
-        )
+        && let Err(message) =
+            exception_replace_field_bits(_py, value.bits(), ExceptionFieldSlot::Traceback, tb_bits)
     {
         if !exception_pending(_py) {
             raise_exception::<()>(_py, "TypeError", message);
@@ -815,11 +817,17 @@ pub extern "C" fn molt_contextlib_contextdecorator_call(
 
         // ContextDecorator must catch wrapped-body exceptions so __exit__ can decide suppression.
         exception_stack_push();
-        let out = ExceptionValue::adopt(_py, call_with_star_kwargs(_py, func_bits, args_bits, kwargs_bits));
+        let out = ExceptionValue::adopt(
+            _py,
+            call_with_star_kwargs(_py, func_bits, args_bits, kwargs_bits),
+        );
         let body_pending = exception_pending(_py);
         exception_stack_pop(_py);
         if !body_pending {
-            let exit_out = ExceptionValue::adopt(_py, call_method3(_py, cm_bits, b"__exit__", none_bits, none_bits, none_bits));
+            let exit_out = ExceptionValue::adopt(
+                _py,
+                call_method3(_py, cm_bits, b"__exit__", none_bits, none_bits, none_bits),
+            );
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
@@ -832,19 +840,24 @@ pub extern "C" fn molt_contextlib_contextdecorator_call(
         let Some([raised_type, raised, raised_tb]) = exit_exception_triple(_py, raised) else {
             return MoltObject::none().bits();
         };
-        let exit_out = ExceptionValue::adopt(_py, call_method3(
+        let exit_out = ExceptionValue::adopt(
             _py,
-            cm_bits,
-            b"__exit__",
-            raised_type.bits(),
-            raised.bits(),
-            raised_tb.bits(),
-        ));
+            call_method3(
+                _py,
+                cm_bits,
+                b"__exit__",
+                raised_type.bits(),
+                raised.bits(),
+                raised_tb.bits(),
+            ),
+        );
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
         let suppress = is_truthy(_py, obj_from_bits(exit_out.bits()));
-        if exception_pending(_py) { return MoltObject::none().bits(); }
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
         if suppress {
             return MoltObject::none().bits();
         }
@@ -1205,7 +1218,7 @@ pub extern "C" fn molt_contextlib_redirect_enter(
             dec_ref_bits(_py, name_bits);
             return MoltObject::none().bits();
         }
-        let _ = molt_object_setattr(sys_bits, name_bits, new_target_bits);
+        let _ = molt_set_attr_name(sys_bits, name_bits, new_target_bits);
         dec_ref_bits(_py, name_bits);
         if exception_pending(_py) {
             if !obj_from_bits(old_bits).is_none() {
@@ -1230,7 +1243,7 @@ pub extern "C" fn molt_contextlib_redirect_exit(
         let Some(name_bits) = attr_name_bits_from_bytes(_py, stream_name.as_bytes()) else {
             return MoltObject::none().bits();
         };
-        let _ = molt_object_setattr(sys_bits, name_bits, old_target_bits);
+        let _ = molt_set_attr_name(sys_bits, name_bits, old_target_bits);
         dec_ref_bits(_py, name_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -1488,8 +1501,8 @@ pub extern "C" fn molt_contextlib_exitstack_exit(
     crate::with_gil_entry_nopanic!(_py, {
         let none_bits = MoltObject::none().bits();
         let received_exc = !obj_from_bits(exc_type_bits).is_none();
-        let mut current = [exc_type_bits, exc_bits, tb_bits]
-            .map(|bits| ExceptionValue::pin(_py, bits));
+        let mut current =
+            [exc_type_bits, exc_bits, tb_bits].map(|bits| ExceptionValue::pin(_py, bits));
         let mut current_exc_owned = false;
         let mut suppressed = false;
 
@@ -2017,7 +2030,11 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_exit_poll(obj_bits: u64
 
                     if exception_pending(_py) {
                         let new_exc_bits = take_pending_exception(_py);
-                        if !async_exitstack_set_current_exception_owned(_py, payload_ptr, new_exc_bits) {
+                        if !async_exitstack_set_current_exception_owned(
+                            _py,
+                            payload_ptr,
+                            new_exc_bits,
+                        ) {
                             return MoltObject::none().bits() as i64;
                         }
                         continue;
@@ -2027,7 +2044,11 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_exit_poll(obj_bits: u64
                         let callback_suppressed = is_truthy(_py, obj_from_bits(res.bits()));
                         if exception_pending(_py) {
                             let new_exc_bits = take_pending_exception(_py);
-                            if !async_exitstack_set_current_exception_owned(_py, payload_ptr, new_exc_bits) {
+                            if !async_exitstack_set_current_exception_owned(
+                                _py,
+                                payload_ptr,
+                                new_exc_bits,
+                            ) {
                                 return MoltObject::none().bits() as i64;
                             }
                             continue;
@@ -2094,7 +2115,8 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_exit_poll(obj_bits: u64
 
                 if exception_pending(_py) {
                     let new_exc_bits = take_pending_exception(_py);
-                    if !async_exitstack_set_current_exception_owned(_py, payload_ptr, new_exc_bits) {
+                    if !async_exitstack_set_current_exception_owned(_py, payload_ptr, new_exc_bits)
+                    {
                         return MoltObject::none().bits() as i64;
                     }
                     continue;
@@ -2103,7 +2125,8 @@ pub unsafe extern "C" fn molt_contextlib_async_exitstack_exit_poll(obj_bits: u64
                 let awaitable = async_result_poll_owned(_py, out.into_bits());
                 if exception_pending(_py) {
                     let new_exc_bits = take_pending_exception(_py);
-                    if !async_exitstack_set_current_exception_owned(_py, payload_ptr, new_exc_bits) {
+                    if !async_exitstack_set_current_exception_owned(_py, payload_ptr, new_exc_bits)
+                    {
                         return MoltObject::none().bits() as i64;
                     }
                     continue;

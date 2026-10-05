@@ -11,6 +11,18 @@ crate::builtins::methods::native_method_table!(type_method_bits, publish_type_me
             fn_addr!(molt_type_dir_method),
             1,
         )),
+        "__setattr__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).type_obj, "__setattr__").with_text_signature("($self, name, value, /)"),
+            fn_addr!(type_setattr),
+            3,
+        )),
+        "__delattr__" => Some(builtin_func_bits(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).type_obj, "__delattr__").with_text_signature("($self, name, /)"),
+            fn_addr!(type_delattr),
+            2,
+        )),
         "__getattribute__" => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).type_obj, "__getattribute__").with_text_signature("($self, name, /)"),
@@ -284,3 +296,11 @@ crate::builtins::methods::native_method_table!(range_method_bits, publish_range_
             2,
         )),
 });
+
+pub(crate) extern "C" fn type_setattr(receiver: u64, name: u64, value: u64) -> u64 {
+    crate::builtins::attributes::explicit_type_mutate_attr_name(receiver, name, Some(value))
+}
+
+pub(crate) extern "C" fn type_delattr(receiver: u64, name: u64) -> u64 {
+    crate::builtins::attributes::explicit_type_mutate_attr_name(receiver, name, None)
+}

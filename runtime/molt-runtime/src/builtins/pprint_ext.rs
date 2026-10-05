@@ -222,7 +222,9 @@ pub(crate) fn safe_repr_inner(
         TYPE_ID_DICT => {
             let Some(order) = (unsafe {
                 crate::object::ops_dict::dict_snapshot(
-                    _py, ptr, crate::object::ops_dict::DictSnapshotKind::Entries,
+                    _py,
+                    ptr,
+                    crate::object::ops_dict::DictSnapshotKind::Entries,
                 )
             }) else {
                 seen.remove(&bits);
@@ -457,7 +459,9 @@ fn pformat_recursive(
         TYPE_ID_DICT => {
             let Some(order) = (unsafe {
                 crate::object::ops_dict::dict_snapshot(
-                    _py, ptr, crate::object::ops_dict::DictSnapshotKind::Entries,
+                    _py,
+                    ptr,
+                    crate::object::ops_dict::DictSnapshotKind::Entries,
                 )
             }) else {
                 seen.remove(&bits);

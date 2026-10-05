@@ -80,7 +80,11 @@ pub(super) fn wire_fused_loop(
     //        straight-line poll returns from its yield block, whose terminator
     //        the split moved to the post-yield half. ---
     for &rb in &clone.return_blocks {
-        let rb = if rb == clone.yield_block { post_block } else { rb };
+        let rb = if rb == clone.yield_block {
+            post_block
+        } else {
+            rb
+        };
         caller.blocks.get_mut(&rb).unwrap().terminator = Terminator::Branch {
             target: candidate.exit_block,
             args: Vec::new(),

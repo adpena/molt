@@ -171,6 +171,7 @@ impl SimpleBackend {
         let representation_plan_storage =
             ScalarRepresentationPlan::for_function_ir_for_target(&func_ir, target_info);
         let representation_plan = &representation_plan_storage;
+        let guard_facts = molt_tir::passes::RuntimeGuardFacts::for_function(&func_ir);
         let FunctionPreanalysis {
             returns_value,
             stateful,
@@ -537,17 +538,18 @@ impl SimpleBackend {
                 &[],
             )
         });
-        let local_profile_enabled = needs_field_store_profile.then(|| {
-            import_func_ref(
-                &mut self.module,
-                &mut self.import_ids,
-                &mut builder,
-                &mut import_refs,
-                "molt_profile_enabled",
-                &[],
-                &[types::I64],
-            )
-        });
+        let local_profile_enabled = (needs_field_store_profile || guard_facts.has_profile_only())
+            .then(|| {
+                import_func_ref(
+                    &mut self.module,
+                    &mut self.import_ids,
+                    &mut builder,
+                    &mut import_refs,
+                    "molt_profile_enabled",
+                    &[],
+                    &[types::I64],
+                )
+            });
 
         if trace_stride.is_some() {
             let trace_suffix: String = func_ir
@@ -2018,6 +2020,7 @@ impl SimpleBackend {
                         &mut sealed_blocks,
                         &vars,
                         representation_plan,
+                        &alias_roots,
                         &last_use,
                         &field_store_modes,
                         &mut block_tracked_obj,
@@ -2029,10 +2032,10 @@ impl SimpleBackend {
                         entry_block,
                         local_profile_struct,
                         profile_enabled_val,
+                        guard_facts.is_profile_only(&op),
                         local_inc_ref_obj,
                         local_dec_ref_obj,
                         rc_authority,
-                        scalar_fast_paths_enabled,
                         &nbc,
                     );
                     match __flow {

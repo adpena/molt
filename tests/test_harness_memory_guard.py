@@ -52,6 +52,7 @@ def test_guarded_result_transports_child_and_infrastructure_outcomes(
         peak_total=None,
         stdout=child_output,
         stderr=child_error,
+        owned_process_identities=((321, guard.ProcessIdentity(123456)),),
     )
     monkeypatch.setattr(guard, "run_guarded", lambda *_args, **_kwargs: guarded)
     monkeypatch.setattr(
@@ -60,7 +61,9 @@ def test_guarded_result_transports_child_and_infrastructure_outcomes(
         lambda **_: contextlib.nullcontext(),
     )
     monkeypatch.setattr(
-        harness_memory_guard, "_guard_repro_message", lambda **_: "fixture-repro\n"
+        harness_memory_guard,
+        "_guard_repro_message",
+        lambda **_: "fixture-repro --no-retry-oom OOM MemoryError\n",
     )
     profile = tmp_path / "commands.jsonl"
     run = (
@@ -77,11 +80,14 @@ def test_guarded_result_transports_child_and_infrastructure_outcomes(
     assert result.child_returncode == child_returncode
     assert result.infrastructure_failure is failure
     assert result.stdout == child_output
+    assert result.owned_process_identities == guarded.owned_process_identities
+    assert result.child_stderr == child_error
     stderr = result.stderr.decode() if tempfiles else result.stderr
     assert "fixture-repro" in stderr
     assert ("SIGKILL" in stderr) is (child_returncode == 137)
     event = json.loads(profile.read_text())
     assert event["status"] == "infrastructure_error"
+    assert event["owned_process_identities"] == [{"pid": 321, "started_at_ns": 123456}]
     assert event["returncode"] == final_returncode
     assert event["child_returncode"] == child_returncode
     assert event["infrastructure_failure"] == guard.infrastructure_failure_payload(
@@ -3252,3 +3258,56 @@ def test_relative_executable_resolved_when_explicit_disable_is_ignored(
 
     assert result.returncode == 0
     assert result.stdout == "relok-disabled\n"
+
+
+def test_suite_event_publication_failure_remains_typed_after_bounded_scan(
+    monkeypatch, tmp_path
+):
+    guard = harness_memory_guard.memory_guard
+    sentinel = harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="fixture",
+        limits=harness_memory_guard.HarnessMemoryLimits(
+            enabled=True,
+            max_process_rss_gb=1,
+            max_total_rss_gb=1,
+            max_global_rss_gb=1,
+            poll_interval=0.01,
+        ),
+        drain_on_exit=False,
+    )
+    group = harness_memory_guard.process_sentinel.ProcessGroup(
+        pgid=777,
+        matched=True,
+        samples=(
+            guard.ProcessSample(
+                pid=777,
+                ppid=1,
+                pgid=777,
+                rss_kb=2 * 1024 * 1024,
+                command="fixture",
+                started_at_ns=1234,
+            ),
+        ),
+    )
+    monkeypatch.setattr(sentinel, "_current_groups", lambda: [group])
+    monkeypatch.setattr(harness_memory_guard, "_claim_terminated_pgid", lambda _: True)
+    terminated = []
+    monkeypatch.setattr(
+        harness_memory_guard.process_sentinel,
+        "terminate_group",
+        lambda pgid, **kwargs: terminated.append(pgid),
+    )
+
+    def fail_record(payload):
+        raise OSError("event disk fixture unavailable")
+
+    monkeypatch.setattr(sentinel, "_record", fail_record)
+    sentinel.scan_once()
+    assert sentinel.tripped
+    assert terminated == [777]
+    assert sentinel.infrastructure_failure.phase == "rss_trip_evidence"
+    assert (
+        "event disk fixture unavailable" in sentinel.infrastructure_failure.details[0]
+    )

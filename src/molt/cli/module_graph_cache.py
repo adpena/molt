@@ -206,7 +206,7 @@ def _stdlib_intrinsic_source_facts(
         target_python=target_python,
     ).with_suffix(".intrinsic.json")
     identity = {
-        "schema": "molt.stdlib-intrinsic-source.v2",
+        "schema": "molt.stdlib-intrinsic-source.v3",
         "source_sha256": snapshot.sha256,
         "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "module_name": module_name,
@@ -252,7 +252,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 11
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 23
 
 
 def _import_scan_cache_path(
@@ -375,7 +375,12 @@ def _read_persisted_import_scan_record(
             return None
         if not _module_source._payload_source_matches(payload, path, path_stat):
             return None
-    fields = ("imports", "star_modules", "dynamic_relative_import_candidates")
+    fields = (
+        "imports",
+        "star_modules",
+        "dynamic_relative_import_candidates",
+        "dynamic_star_modules",
+    )
     for field in fields:
         values = payload.get(field)
         if not isinstance(values, list) or not all(
@@ -404,6 +409,7 @@ def _read_persisted_import_scan_record(
         tuple(payload["star_modules"]),
         tuple(payload["dynamic_relative_import_candidates"]),
         requires_anchor,
+        tuple(payload["dynamic_star_modules"]),
     )
 
 
@@ -437,6 +443,7 @@ def _write_persisted_import_scan(
         **identity,
         "imports": list(scan.imports),
         "star_modules": list(scan.star_modules),
+        "dynamic_star_modules": list(scan.dynamic_star_modules),
         "source_executions": [
             {"module": request.module_name, "path": _encode_source_path(request.path)}
             for request in scan.source_executions

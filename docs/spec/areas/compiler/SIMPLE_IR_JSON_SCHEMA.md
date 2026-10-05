@@ -20,6 +20,11 @@ target one label. State IDs must be unique and each target label must exist
 exactly once. An explicit empty array means no resume cases. Source IR may omit
 the map before CFG lifting; terminal lowering always emits it, and code generation
 must not reconstruct it from suspension syntax or physical instruction order.
+When suspension operations remain, an explicit map must include the saved state
+of every executable `state_yield` and the pending-state operand of every executable
+`state_transition`. The ready/running state is not a resume requirement. An empty
+map remains valid when no suspension can execute; unreachable suspension syntax
+does not create cases. Missing cases are rejected, never filled by inference.
 The map participates in the same serialized operation and function identity as
 every other semantic IR field.
 
@@ -109,6 +114,17 @@ in a void function it has no machine result. A value payload in a void function
 is invalid. Removing every value-returning path, including making the whole body
 unreachable, does not change the calling convention. Missing or unknown ABI
 values are rejected, not reconstructed from the body.
+
+Whole-function verification rejects every entry-reachable executable transfer
+past the operation stream. Completion follows the canonical operation-level CFG,
+not the last lexical instruction: both arms may return before a trailing `end_if`,
+and a non-returning cycle has no falloff. Loop latches and TRY registration edges
+retain their executable-versus-verifier distinction. Conditional fallthrough,
+loop breaks, dispatch defaults, and missing source resume continuations are real
+exits and cannot be lost when projecting edges onto operation indices. Partial
+control-flow admission validates structure and labels without requiring complete
+function exits. Explicit `state_targets` maps feed that same CFG authority and the
+SSA block projection; suspension itself does not dispatch to every resume target.
 
 `parameter_custody` declares, per parameter, who holds the argument's
 reference (design 20 §1.6). A `transferred` argument moves into the
@@ -469,7 +485,6 @@ user call site that invokes that wrapper as a normal Python callable.
 | `exception_last`            | `out`                 | Get current exception                |
 | `exception_clear`           | `out`                 | Clear current exception              |
 | `exception_set_last`        | `args` [exc], `out`   | Set current exception                |
-| `exception_set_cause`       | `args` [exc, cause], `out` | Set `__cause__` (raise from)    |
 | `exception_context_set`     | `args` [exc], `out`   | Set `__context__`                    |
 | `exception_kind`            | `args` [exc], `out`   | Get exception type tag               |
 | `exception_class`           | `args` [exc], `out`   | Get exception class                  |
@@ -715,8 +730,8 @@ All use the standard `args` + `out` pattern.
 
 | kind             | Fields used   | Description                     |
 |------------------|---------------|---------------------------------|
-| `guard_type`     | `args`        | Deopt if type mismatch          |
-| `guard_tag`      | `args`        | Deopt if NaN-box tag mismatch   |
+| `guard_type`     | `args`        | Read value and expected tag; profile mismatch and return the original value |
+| `guard_tag`      | `args`        | Same runtime contract as `guard_type`; rejected expected tags raise |
 | `guard_dict_shape` | `args`, `out` | Deopt if dict shape changed   |
 | `type_guard`     | --            | Generic type guard              |
 
@@ -923,8 +938,14 @@ frame unwinds after terminal state was set. Suspended terminal views are empty.
 Ordinary functions without a stateful payload retain their existing compiler
 locals-publication contract; no slot layout is invented for stack-only storage.
 
-Explicit source raises and throw injection call `molt_exception_trace_prepend`
-before publishing an already-traced exception. Bare reraises and pending-state
+Explicit source raises evaluate the exception and cause expressions in that order,
+then call `molt_exception_prepare_raise(exc, cause_or_missing)`. This owned-result
+boundary constructs exception classes, validates instances and explicit causes,
+and publishes `__cause__` before instance-only context, traceback or deferred
+pending-state operations. MISSING means no `from` clause; None suppresses context.
+Runtime class ingress shares the same normalization authority. Throw retains its
+distinct class/value/traceback restoration protocol. Both source raise and throw
+injection call `molt_exception_trace_prepend` before publishing an already-traced exception. Bare reraises and pending-state
 transport preserve the existing traceback. The same prefix constructor accepts
 lazy or already-observed tails; materialization preserves eager tail identity.
 

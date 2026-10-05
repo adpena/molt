@@ -560,7 +560,8 @@ fn hash_constructors_share_typed_and_preserved_failure_cfg() {
             "its one box is released once on both paths: {ir}"
         );
         assert_eq!(
-            ir.matches("call void @molt_dec_ref_obj(i64 %aggregate)").count(),
+            ir.matches("call void @molt_dec_ref_obj(i64 %aggregate)")
+                .count(),
             1,
             "only the failure path releases the partial aggregate: {ir}"
         );
@@ -638,9 +639,8 @@ fn hash_constructor_entries_are_boxed_after_the_previous_insertion() {
         .verify()
         .expect("lazy hash aggregate entries must verify");
     let ir = llvm_fn.print_to_string().to_string();
-    let at = |needle: &str| -> Vec<usize> {
-        ir.match_indices(needle).map(|(index, _)| index).collect()
-    };
+    let at =
+        |needle: &str| -> Vec<usize> { ir.match_indices(needle).map(|(index, _)| index).collect() };
     let boxes = at("call i64 @molt_int_from_i64(");
     let inserts = at("call i64 @molt_dict_set(");
     assert_eq!(boxes.len(), 2, "each distinct value is boxed once: {ir}");
@@ -713,7 +713,11 @@ fn direct_compiled_calls_box_scalar_arguments_as_borrowed_temporaries() {
                 ir.find(call).unwrap() < ir.find(release).unwrap(),
                 "the callee borrows its argument, so the box outlives the call: {ir}"
             );
-            assert_eq!(ir.matches("call void @molt_dec_ref_obj(").count(), 1, "{ir}");
+            assert_eq!(
+                ir.matches("call void @molt_dec_ref_obj(").count(),
+                1,
+                "{ir}"
+            );
             assert!(
                 ir.contains("%direct_call_result = phi i64 [ %direct_call, "),
                 "a failed box skips the callee and yields None: {ir}"

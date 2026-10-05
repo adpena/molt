@@ -53,18 +53,100 @@ pub(super) fn finalizer_object(result: ValueId) -> TirOp {
     }
 }
 
-pub(super) fn finalizer_call_bind(result: ValueId) -> TirOp {
-    let mut attrs = AttrDict::new();
-    attrs.insert("_original_kind".into(), AttrValue::Str("call_bind".into()));
-    attrs.insert("defines_del".into(), AttrValue::Bool(true));
-    TirOp {
-        dialect: Dialect::Molt,
-        opcode: OpCode::Call,
-        operands: vec![],
-        results: vec![result],
-        attrs,
-        source_span: None,
-    }
+/// A direct external fixture call. Its target is separate from its arguments;
+/// naming it grants no purity, intrinsic identity, or primitive result fact.
+pub(super) fn named_call(target: &str, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
+    assert!(!target.is_empty(), "a direct fixture call needs a target");
+    let mut call = op(OpCode::Call, operands, results);
+    call.attrs
+        .insert("s_value".into(), AttrValue::Str(target.into()));
+    call
+}
+
+/// Source-call custody is instruction data; method spellings retain their
+/// generated opcode instead of pretending every source call is a plain Call.
+pub(super) fn source_call(
+    kind: &str,
+    target: Option<&str>,
+    operands: Vec<ValueId>,
+    results: Vec<ValueId>,
+    custody: &[ParameterCustody],
+) -> TirOp {
+    use molt_passes::tir::op_kinds_generated::{
+        SimpleIrCallTargetRole, kind_source_call_first_adopted_operand, kind_to_opcode_table,
+        simpleir_call_target_role,
+    };
+    assert!(kind_source_call_first_adopted_operand(kind).is_some());
+    let mut call = match simpleir_call_target_role(kind) {
+        Some(
+            SimpleIrCallTargetRole::InternalRequired | SimpleIrCallTargetRole::ExternalOrRuntime,
+        ) => named_call(
+            target.expect("a direct source call needs its symbol"),
+            operands,
+            results,
+        ),
+        _ => {
+            assert!(
+                target.is_none(),
+                "a dynamic source call takes its target from operands"
+            );
+            assert!(
+                !operands.is_empty(),
+                "a dynamic source call needs its callable or receiver"
+            );
+            op(
+                kind_to_opcode_table(kind).expect("registered source call opcode"),
+                operands,
+                results,
+            )
+        }
+    };
+    call.attrs
+        .insert("_original_kind".into(), AttrValue::Str(kind.into()));
+    call.set_argument_custody(custody);
+    call
+}
+
+pub(super) fn produce(result: ValueId) -> TirOp {
+    named_call("fixture_produce_owned", vec![], vec![result])
+}
+
+pub(super) fn borrow(operands: Vec<ValueId>) -> TirOp {
+    named_call("fixture_borrow_operands", operands, vec![])
+}
+
+/// An external source call adopts each argument. A real module call uses its
+/// declared internal target instead, so document-level reference checks apply.
+pub(super) fn transfer(operands: Vec<ValueId>) -> TirOp {
+    let custody = vec![ParameterCustody::Transferred; operands.len()];
+    source_call(
+        "call",
+        Some("fixture_adopt_operands"),
+        operands,
+        vec![],
+        &custody,
+    )
+}
+
+pub(super) fn call_bind(callable: ValueId, builder: ValueId, results: Vec<ValueId>) -> TirOp {
+    let mut call = op(OpCode::Call, vec![callable, builder], results);
+    call.attrs
+        .insert("_original_kind".into(), AttrValue::Str("call_bind".into()));
+    call
+}
+
+pub(super) fn finalizer_call(result: ValueId) -> TirOp {
+    let mut call = produce(result);
+    call.attrs
+        .insert("defines_del".into(), AttrValue::Bool(true));
+    call
+}
+
+pub(super) fn finalizer_call_bind(callable: ValueId, builder: ValueId, result: ValueId) -> TirOp {
+    let mut call = call_bind(callable, builder, vec![result]);
+    call.attrs
+        .insert("defines_del".into(), AttrValue::Bool(true));
+    call
 }
 
 pub(super) fn count_decrefs(func: &TirFunction) -> usize {
@@ -112,10 +194,21 @@ pub(super) fn try_start(label: i64) -> TirOp {
     start
 }
 
+/// A real zero-operand observable primitive. `WarnStderr` requires an input.
+pub(super) fn marker() -> TirOp {
+    original_copy("print_newline", vec![])
+}
+
+pub(super) fn is_observation(op: &TirOp) -> bool {
+    op.opcode == OpCode::WarnStderr
+        || (op.opcode == OpCode::Copy
+            && op.attrs.get("_original_kind") == Some(&AttrValue::Str("print_newline".into())))
+}
+
 /// One ownership event along an executed path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Event {
-    /// A `WarnStderr` op, standing for an observable statement.
+    /// A diagnostic read or newline, standing for an observable statement.
     Marker,
     /// The last reference to an object, numbered in creation order, went away.
     Freed(usize),
@@ -301,6 +394,13 @@ pub(super) fn execute(
     let mut choices = choices.iter().copied();
     let mut current = func.entry_block;
     for (position, parameter) in func.blocks[&current].args.iter().enumerate() {
+        // These path fixtures supply concrete bool control inputs. They are
+        // not allocated heap objects and must not renumber the RC oracle.
+        // Other annotated parameter families still model unknown heap values.
+        if parameter.ty == TirType::Bool {
+            path.bindings.insert(parameter.id, Binding::Raw);
+            continue;
+        }
         let object = path.create();
         if func.parameter_custody(position) != ParameterCustody::Transferred {
             parameters.push(object);
@@ -318,6 +418,10 @@ pub(super) fn execute(
                 path.access_home(access, op, &mut events)?;
                 continue;
             }
+            if is_observation(op) {
+                events.push(Event::Marker);
+                continue;
+            }
             match op.opcode {
                 OpCode::IncRef | OpCode::DecRef => {
                     let Binding::Object(object) = path.read(op.operands[0])? else {
@@ -332,7 +436,6 @@ pub(super) fn execute(
                         }
                     }
                 }
-                OpCode::WarnStderr => events.push(Event::Marker),
                 OpCode::TryStart => {}
                 OpCode::CheckException => {
                     if choices.next().unwrap_or(false) {
@@ -472,7 +575,12 @@ fn adopt(path: &mut RcPath, events: &mut Vec<Event>, op: &TirOp) -> Result<(), S
     if !adopted.contains(&true) {
         return Ok(());
     }
-    for (&operand, _) in op.operands.iter().zip(&adopted).filter(|&(_, &adopts)| adopts) {
+    for (&operand, _) in op
+        .operands
+        .iter()
+        .zip(&adopted)
+        .filter(|&(_, &adopts)| adopts)
+    {
         if let Binding::Object(object) = path.read(operand)? {
             path.counts[object] -= 1;
             if path.counts[object] == 0 {
@@ -480,7 +588,12 @@ fn adopt(path: &mut RcPath, events: &mut Vec<Event>, op: &TirOp) -> Result<(), S
             }
         }
     }
-    for (&operand, _) in op.operands.iter().zip(&adopted).filter(|&(_, &adopts)| !adopts) {
+    for (&operand, _) in op
+        .operands
+        .iter()
+        .zip(&adopted)
+        .filter(|&(_, &adopts)| !adopts)
+    {
         path.read(operand)?;
     }
     Ok(())
@@ -488,6 +601,12 @@ fn adopt(path: &mut RcPath, events: &mut Vec<Event>, op: &TirOp) -> Result<(), S
 
 /// Runs DropInsertion and checks that a second run inserts nothing more.
 pub(super) fn insert(func: &mut TirFunction) {
+    molt_passes::tir::verify::verify_function(func).unwrap_or_else(|errors| {
+        panic!(
+            "{}: invalid ownership fixture before DropInsertion: {errors:?}",
+            func.name
+        )
+    });
     run(func, &mut AnalysisManager::new());
     let printed = molt_passes::tir::printer::print_function(func);
     run(func, &mut AnalysisManager::new());

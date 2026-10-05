@@ -9,6 +9,8 @@ mod cargo_test_artifacts {
 }
 
 mod labelled_flow;
+mod value_primitives;
+mod wire_domains;
 
 #[test]
 fn compile_checked_rejects_canonical_void_and_value_externs_before_emission() {
@@ -478,7 +480,7 @@ fn compile_keeps_annotation_functions_when_referenced() {
 }
 
 #[test]
-fn compile_int_from_str_of_obj_records_unsupported_integer_authority() {
+fn compile_checked_rejects_int_from_str_of_obj_before_source() {
     let mut backend = RustBackend::new();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
@@ -516,14 +518,11 @@ fn compile_int_from_str_of_obj_records_unsupported_integer_authority() {
         profile: None,
     };
 
-    let source = backend.compile(&ir);
-    assert!(!source.contains("i64::from_str_radix"));
-    assert!(
-        backend
-            .unsupported_ops
-            .iter()
-            .any(|failure| failure.contains("int_from_str_of_obj"))
-    );
+    let error = backend
+        .compile_checked(&ir)
+        .expect_err("integer authority is not admitted");
+    assert!(error.contains("arbitrary-precision"), "{error}");
+    assert!(backend.output.is_empty() && backend.unsupported_ops.is_empty());
 }
 
 #[test]
@@ -765,18 +764,29 @@ fn compile_ord_at_emits_fused_helper() {
         profile: None,
     };
 
-    let source = backend.compile(&ir);
-    assert!(source.contains("fn molt_ord_at(obj: &MoltValue, key: &MoltValue)"));
-    assert!(source.contains("fn molt_get_item(obj: &MoltValue, key: &MoltValue)"));
-    assert!(source.contains("let normalized = if idx < 0 { len as i64 + idx } else { idx };"));
-    assert!(source.contains("normalized < 0 || normalized >= len as i64"));
-    assert!(source.contains("usize::try_from(idx).ok().and_then(|i| s.chars().nth(i))"));
-    assert!(!source.contains("chars: Vec<char>"));
-    assert!(!source.contains(".max(0) as usize"));
-    assert!(source.contains("panic!(\"KeyError: {}\", molt_repr_inner(key))"));
-    assert!(source.contains("fn molt_ord(x: &MoltValue)"));
-    assert!(source.contains("let mut code: MoltValue = molt_ord_at(&s, &i);"));
+    let mut source = backend.compile(&ir);
     assert!(!source.contains("MOLT_STUB"));
+    source.push_str(r#"
+fn molt_main() {
+    let text = MoltValue::Str(PythonString::from_code_points(&[97, 0xe9, 0x1f600, 0xd800]));
+    for (index, expected) in [(0, 97), (1, 0xe9), (2, 0x1f600), (3, 0xd800), (-1, 0xd800), (-4, 97)] {
+        assert_eq!(ord_at_unicode(&mut vec![text.clone(), MoltValue::Int(index)]), MoltValue::Int(expected));
+    }
+    for index in [-5, 4, i64::MIN, i64::MAX] {
+        let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(||
+            ord_at_unicode(&mut vec![text.clone(), MoltValue::Int(index)])
+        )).expect_err("out-of-range indexing must raise");
+        let message = error.downcast_ref::<String>().map(String::as_str)
+            .or_else(|| error.downcast_ref::<&str>().copied()).unwrap();
+        assert!(message.starts_with("IndexError:"), "{message}");
+    }
+    println!("ordinal protocol preserved");
+}
+"#);
+    assert_eq!(
+        compile_and_run_emitted(&source, "ord_at_unicode").trim(),
+        "ordinal protocol preserved"
+    );
 }
 
 #[test]
@@ -1169,7 +1179,11 @@ fn compile_unpack_sequence_uses_exact_arity_runtime_authority() {
         "dict cardinality must be checked before cloning"
     );
     assert!(source.contains("let probe_limit = expected_count.saturating_add(1);"));
-    assert!(source.contains("Vec::with_capacity(expected_count.min(value.len()))"));
+    assert!(
+        source.contains(
+            "Vec::with_capacity(expected_count.min(value.as_surrogatepass_bytes().len()))"
+        )
+    );
     assert!(source.contains("while items.len() < probe_limit"));
     assert!(source.contains("let mut left: MoltValue = MoltValue::None;"));
     assert!(source.contains("let mut right: MoltValue = MoltValue::None;"));
@@ -1404,7 +1418,7 @@ fn compile_checked_rejects_unrepresented_literal_values() {
                 },
                 OpIR {
                     kind: "const_bytes".to_string(),
-                    s_value: Some("payload".to_string()),
+                    bytes: Some(b"payload".to_vec()),
                     out: Some("bytes".to_string()),
                     ..OpIR::default()
                 },
@@ -1981,13 +1995,14 @@ fn main() {
 }
 
 #[test]
-fn not_implemented_remains_distinct_and_fail_closed() {
+fn malformed_string_payload_remains_a_checked_refusal() {
     let mut backend = RustBackend::new();
     backend.emit_op(&OpIR {
-        kind: "const_not_implemented".into(),
-        out: Some("singleton".into()),
+        kind: "const_str".into(),
+        out: Some("text".into()),
+        bytes: Some(vec![0xff]),
         ..OpIR::default()
     });
-    assert!(!backend.unsupported_ops.is_empty());
-    assert!(!backend.output.contains("MoltValue::Ellipsis"));
+    assert!(backend.output.is_empty());
+    assert_eq!(backend.unsupported_ops.len(), 1);
 }

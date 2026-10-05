@@ -66,12 +66,18 @@ unsafe extern "C" fn fake_import_add_module_borrowed(
         return BorrowedHandleResult::ok(module);
     }
     let module = unsafe { support::fake_runtime::alloc_module(name.as_ptr(), name.len()) };
-    unsafe {
-        support::fake_runtime::dict_set(modules, key, module);
+    let status = unsafe {
+        support::fake_runtime::dict_mutate(modules, key, module, 0, None, std::ptr::null_mut())
+    };
+    molt_cpython_abi::api::errors::with_preserved_error(|| unsafe {
         support::fake_runtime::dec_ref(key);
         support::fake_runtime::dec_ref(module);
+    });
+    if status == 0 {
+        BorrowedHandleResult::ok(module)
+    } else {
+        BorrowedHandleResult::error()
     }
-    BorrowedHandleResult::ok(module)
 }
 
 unsafe extern "C" fn fake_import_module_fails(_data: *const u8, _len: usize) -> u64 {

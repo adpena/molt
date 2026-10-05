@@ -250,7 +250,7 @@ pub(super) fn urllib_error_set_attr(
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name.as_bytes()) else {
         return false;
     };
-    crate::bridge::molt_object_setattr(self_bits, name_bits, value_bits);
+    crate::bridge::molt_set_attr_name(self_bits, name_bits, value_bits);
     dec_ref_bits(_py, name_bits);
     !exception_pending(_py)
 }

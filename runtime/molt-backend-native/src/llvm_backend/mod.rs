@@ -56,6 +56,25 @@ pub struct LlvmBackend<'ctx> {
     pub(crate) runtime_callable_symbols: std::collections::BTreeSet<String>,
 }
 
+/// Exact LLVM CPU inputs shared by target-machine construction and cache identity.
+#[cfg(feature = "llvm")]
+pub(crate) fn native_cpu_features() -> (String, String) {
+    if crate::native_codegen_portable() {
+        ("generic".to_string(), String::new())
+    } else {
+        (
+            TargetMachine::get_host_cpu_name()
+                .to_str()
+                .unwrap()
+                .to_string(),
+            TargetMachine::get_host_cpu_features()
+                .to_str()
+                .unwrap()
+                .to_string(),
+        )
+    }
+}
+
 #[cfg(feature = "llvm")]
 impl<'ctx> LlvmBackend<'ctx> {
     pub fn new(context: &'ctx Context, module_name: &str) -> Self {
@@ -267,8 +286,7 @@ impl<'ctx> LlvmBackend<'ctx> {
 
         let triple = TargetMachine::get_default_triple();
         let target = Target::from_triple(&triple).expect("Failed to get target from triple");
-        let cpu = TargetMachine::get_host_cpu_name();
-        let features = TargetMachine::get_host_cpu_features();
+        let (cpu, features) = native_cpu_features();
 
         let llvm_opt = match opt_level {
             MoltOptLevel::None => OptimizationLevel::None,
@@ -279,8 +297,8 @@ impl<'ctx> LlvmBackend<'ctx> {
         target
             .create_target_machine(
                 &triple,
-                cpu.to_str().unwrap(),
-                features.to_str().unwrap(),
+                &cpu,
+                &features,
                 llvm_opt,
                 Self::reloc_mode(),
                 CodeModel::Default,

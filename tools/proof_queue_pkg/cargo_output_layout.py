@@ -18,6 +18,7 @@ import sys
 from typing import Mapping, Sequence
 
 from molt import file_publication
+from molt.dx import checkout_custody
 from molt.exact_json import canonical_json_bytes, canonical_json_sha256
 
 
@@ -327,10 +328,34 @@ class CargoOutputLayout:
         )
 
     @property
-    def supervisor_target(self) -> Path:
-        return file_publication.resolve_owned_path(
-            self.payload_root / "proof-supervisor-target"
+    def supervisor_store(self) -> Path:
+        # Bootstrap source belongs to this implementation, never the guest cwd
+        # or a cached Python fixture. Result paths cannot fragment this store.
+        source = Path(__file__).resolve().parents[2]
+        if self.declaration is not None:
+            root = Path(str(self.declaration["path"]))
+        else:
+            custody = checkout_custody(source).custody_root
+            # Plain clones and temporary source trees use themselves as DX
+            # custody. Bootstrap output instead has a deterministic sibling
+            # address; canonical external custody keeps its existing address.
+            root = source.parent if custody.is_relative_to(source) else custody
+        namespace = hashlib.sha256(os.path.normcase(str(source)).encode()).hexdigest()[
+            :24
+        ]
+        store = file_publication.resolve_owned_path(
+            root / "proof-supervisor" / namespace
         )
+        if _overlaps(store, source) or _overlaps(store, self.result_root):
+            raise ValueError(
+                "supervisor store overlaps source or receipt custody; "
+                "select an external --cargo-output-root"
+            )
+        return store
+
+    @property
+    def supervisor_target(self) -> Path:
+        return file_publication.resolve_owned_path(self.supervisor_store / "target")
 
     @property
     def temporary(self) -> Path:

@@ -60,7 +60,7 @@ def test_intrinsic_source_cache_reuses_analysis_but_resolves_facade_children_liv
     assert first.statuses["_facade"] == stdlib_intrinsic_policy.STATUS_INTRINSIC_SUPPORT
     monkeypatch.setattr(
         stdlib_intrinsic_policy,
-        "analyze_module_import_flow",
+        "stdlib_module_intrinsic_facts",
         lambda *_a, **_kw: pytest.fail("unchanged source was analyzed again"),
     )
     assert classify() == first
@@ -103,7 +103,7 @@ def test_intrinsic_source_cache_keeps_unresolved_relative_obligations(
     assert plan.requires_runtime
     monkeypatch.setattr(
         stdlib_intrinsic_policy,
-        "analyze_module_import_flow",
+        "stdlib_module_intrinsic_facts",
         lambda *_a, **_kw: pytest.fail("cache miss"),
     )
     assert provider("pkg.owner", path) == first
@@ -262,8 +262,6 @@ def test_runtime_seeded_builtins_keeps_real_intrinsic_policy_evidence(
     assert {
         "molt_compile_builtin",
         "molt_input_builtin",
-        "molt_pow",
-        "molt_pow_mod",
         "molt_function_set_builtin",
     } == stdlib_intrinsic_policy.module_required_intrinsic_names(path)
     target = _parse_target_python_version(version)
@@ -471,17 +469,22 @@ def test_real_weakref_facade_uses_shared_intrinsic_classification() -> None:
     )
 
 
-def test_real_io_facade_projects_its_native_provider_without_marker_loads() -> None:
+def test_real_io_wrapper_projects_its_native_provider_without_marker_loads() -> None:
     root = Path(__file__).resolve().parents[2] / "src" / "molt" / "stdlib"
     graph = {name: root / f"{name}.py" for name in ("io", "_io")}
     classification = stdlib_intrinsic_policy.classify_stdlib_module_statuses(
         graph, target_python=_DEFAULT_TARGET_PYTHON_VERSION
     )
     assert classification.statuses == {
-        "io": stdlib_intrinsic_policy.STATUS_INTRINSIC_SUPPORT,
+        "io": stdlib_intrinsic_policy.STATUS_INTRINSIC,
         "_io": stdlib_intrinsic_policy.STATUS_INTRINSIC,
     }
-    assert classification.import_evidence["io"].facade.owners == {"_io"}
+    assert classification.import_evidence["io"].facade is None
+    assert "_io" in classification.import_evidence["io"].proven_modules
+    without_provider = stdlib_intrinsic_policy.classify_stdlib_module_statuses(
+        {"io": graph["io"]}, target_python=_DEFAULT_TARGET_PYTHON_VERSION
+    )
+    assert without_provider.statuses["io"] == stdlib_intrinsic_policy.STATUS_PYTHON_ONLY
     assert not stdlib_intrinsic_policy.module_required_intrinsic_names(graph["io"])
     assert (
         cli_module_stdlib_policy._enforce_intrinsic_stdlib(
@@ -511,3 +514,125 @@ def test_facade_with_missing_or_python_owner_still_fails_cli_enforcement(
         == 2
     )
     assert "_facade" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "prefix", ["import os\n", "items.attribute\n", "def load():\n    "]
+)
+def test_intrinsic_status_never_consumes_unsealed_relative_candidates(tmp_path, prefix):
+    owner = _write_module(
+        tmp_path,
+        "provider.py",
+        "from _intrinsics import require_intrinsic\nValue = require_intrinsic('molt_x')\n",
+    )
+    wrapper = _write_module(
+        tmp_path, "wrapper.py", prefix + "from .provider import Value\n"
+    )
+    classification = stdlib_intrinsic_policy.classify_stdlib_module_statuses(
+        {"pkg.wrapper": wrapper, "pkg.provider": owner},
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
+    evidence = classification.import_evidence["pkg.wrapper"]
+    assert "pkg.provider" not in evidence.proven_modules
+    assert evidence.unresolved_sites
+    assert (
+        classification.statuses["pkg.wrapper"]
+        == stdlib_intrinsic_policy.STATUS_PYTHON_ONLY
+    )
+
+
+def test_relative_facade_requires_metadata_proof_for_every_owner(tmp_path):
+    provider = _write_module(
+        tmp_path,
+        "provider.py",
+        "from _intrinsics import require_intrinsic\nValue = require_intrinsic('molt_x')\n",
+    )
+    facade = _write_module(
+        tmp_path,
+        "facade.py",
+        "from .provider import Value\nfrom .provider import Other\n",
+    )
+    classification = stdlib_intrinsic_policy.classify_stdlib_module_statuses(
+        {"pkg.facade": facade, "pkg.provider": provider},
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
+    evidence = classification.import_evidence["pkg.facade"]
+    assert evidence.facade is not None
+    assert not evidence.facade.resolved
+    assert evidence.facade.bindings[0].owner_module == "pkg.provider"
+    assert evidence.facade.bindings[1].owner_module is None
+    assert (
+        classification.statuses["pkg.facade"]
+        == stdlib_intrinsic_policy.STATUS_PYTHON_ONLY
+    )
+
+
+def test_asyncio_reporting_belongs_to_the_runtime_backed_event_loop_owner():
+    root = Path(__file__).resolve().parents[2] / "src" / "molt" / "stdlib"
+    events = root / "asyncio" / "events.py"
+    owner = root / "asyncio" / "__init__.py"
+    assert not (root / "asyncio" / "_debug.py").exists()
+    classification = stdlib_intrinsic_policy.classify_stdlib_module_statuses(
+        {"asyncio.events": events, "asyncio": owner},
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
+    assert (
+        classification.statuses["asyncio.events"]
+        == stdlib_intrinsic_policy.STATUS_INTRINSIC
+    )
+    assert "asyncio" in classification.import_evidence["asyncio.events"].proven_modules
+    assert (
+        "molt_event_loop_new"
+        in stdlib_intrinsic_policy.module_required_intrinsic_names(owner)
+    )
+    assert (
+        "molt_event_loop_get_exception_handler"
+        in stdlib_intrinsic_policy.module_required_intrinsic_names(owner)
+    )
+
+
+def test_python_stream_protocol_does_not_manufacture_an_intrinsic_provider(tmp_path):
+    source = _write_module(
+        tmp_path,
+        "reporting.py",
+        "import sys\ndef report(message):\n    sys.stderr.write(message)\n    sys.stderr.flush()\n",
+    )
+    root = Path(__file__).resolve().parents[2] / "src" / "molt" / "stdlib"
+    classification = stdlib_intrinsic_policy.classify_stdlib_module_statuses(
+        {"pkg.reporting": source, "sys": root / "sys.py"},
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
+    assert (
+        classification.statuses["pkg.reporting"]
+        == stdlib_intrinsic_policy.STATUS_PYTHON_ONLY
+    )
+
+
+@pytest.mark.parametrize("provider", ["real", "missing", "python-only"])
+def test_real_tk_widgets_require_their_semantic_callable_provider(tmp_path, provider):
+    root = Path(__file__).resolve().parents[2] / "src" / "molt" / "stdlib"
+    graph = {
+        "tkinter": root / "tkinter" / "__init__.py",
+        "tkinter.widgets": root / "tkinter" / "widgets.py",
+        "tkinter.constants": root / "tkinter" / "constants.py",
+        "_tkinter": root / "_tkinter.py",
+    }
+    if provider == "real":
+        graph["tkinter._support"] = root / "tkinter" / "_support.py"
+    elif provider == "python-only":
+        graph["tkinter._support"] = _write_module(
+            tmp_path, "_support.py", "def _require_tk_callable(name): return None\n"
+        )
+    classification = stdlib_intrinsic_policy.classify_stdlib_module_statuses(
+        graph,
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
+    evidence = classification.import_evidence["tkinter.widgets"]
+    assert "tkinter._support" in evidence.proven_modules
+    assert evidence.unresolved_sites  # relative operands still require runtime custody
+    assert "tkinter" not in evidence.proven_modules
+    assert classification.statuses["tkinter.widgets"] == (
+        stdlib_intrinsic_policy.STATUS_INTRINSIC
+        if provider == "real"
+        else stdlib_intrinsic_policy.STATUS_PYTHON_ONLY
+    )

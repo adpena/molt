@@ -610,7 +610,6 @@ fn managed_iteration_rejects_noniterator_results_and_noniterable_values() {
     });
 }
 
-
 extern "C" fn indexed_read_short_length(_: u64) -> u64 {
     MoltObject::from_int(1).bits()
 }
@@ -627,20 +626,37 @@ fn indexed_reads_share_inherited_slots_and_normalize_negative_indices_once() {
         }
         let view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(list);
         assert_eq!(sequence_check_bits(&py, list), 1);
-        assert_eq!(to_i64(obj_from_bits(sequence_item_at_index(&py, list, -1))), Some(33));
+        assert_eq!(
+            to_i64(obj_from_bits(sequence_item_at_index(&py, list, -1))),
+            Some(33)
+        );
         let _ = sequence_item_at_index(&py, list, -4);
-        assert_eq!(errors::PyErr_ExceptionMatches((&raw mut abi_types::PyExc_IndexError).cast()), 1);
+        assert_eq!(
+            errors::PyErr_ExceptionMatches((&raw mut abi_types::PyExc_IndexError).cast()),
+            1
+        );
         errors::PyErr_Clear();
         let class = type_of_bits(&py, list);
-        projection_install(&py, class, b"__len__", indexed_read_short_length as *const ());
+        projection_install(
+            &py,
+            class,
+            b"__len__",
+            indexed_read_short_length as *const (),
+        );
         // Inherited native sq_item uses the new length, then reads raw storage.
-        assert_eq!(to_i64(obj_from_bits(sequence_item_at_index(&py, list, -1))), Some(11));
+        assert_eq!(
+            to_i64(obj_from_bits(sequence_item_at_index(&py, list, -1))),
+            Some(11)
+        );
         let result = abstract_sequence::PySequence_GetItem(view, -1);
         assert!(!result.is_null());
         assert_eq!(numbers::PyLong_AsLongLong(result), 11);
         refcount::Py_DECREF(result);
         assert!(abstract_sequence::PySequence_GetItem(view, -2).is_null());
-        assert_eq!(errors::PyErr_ExceptionMatches((&raw mut abi_types::PyExc_IndexError).cast()), 1);
+        assert_eq!(
+            errors::PyErr_ExceptionMatches((&raw mut abi_types::PyExc_IndexError).cast()),
+            1
+        );
         errors::PyErr_Clear();
         dec_ref_bits(&py, list);
         assert!(!crate::exception_pending(&py));
@@ -652,10 +668,17 @@ fn indexed_foreign_reads_use_native_slots_and_preserve_result_ownership() {
     use crate::object::sequence_index::sequence_item_at_index;
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
-        unsafe extern "C" fn length(_: *mut PyObject) -> isize { 3 }
+        unsafe extern "C" fn length(_: *mut PyObject) -> isize {
+            3
+        }
         unsafe extern "C" fn item(_: *mut PyObject, index: isize) -> *mut PyObject {
             if !(0..3).contains(&index) {
-                unsafe { errors::PyErr_SetString((&raw mut abi_types::PyExc_IndexError).cast(), c"native read exhausted".as_ptr()) };
+                unsafe {
+                    errors::PyErr_SetString(
+                        (&raw mut abi_types::PyExc_IndexError).cast(),
+                        c"native read exhausted".as_ptr(),
+                    )
+                };
                 return std::ptr::null_mut();
             }
             unsafe { molt_cpython_abi::api::numbers::PyLong_FromLongLong(index as i64) }
@@ -666,14 +689,174 @@ fn indexed_foreign_reads_use_native_slots_and_preserve_result_ownership() {
         let mut ty: PyTypeObject = std::mem::zeroed();
         ty.tp_as_sequence = (&raw mut methods).cast();
         ty.tp_name = c"NativeIndexedRead".as_ptr();
-        let mut native = PyObject { ob_refcnt: 1, ob_type: &raw mut ty };
-        let receiver = GLOBAL_BRIDGE.molt_value_for_pyobj(&raw mut native).expect("foreign receiver");
-        assert_eq!(to_i64(obj_from_bits(sequence_item_at_index(&py, receiver, -1))), Some(2));
+        let mut native = PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut ty,
+        };
+        let receiver = GLOBAL_BRIDGE
+            .molt_value_for_pyobj(&raw mut native)
+            .expect("foreign receiver");
+        assert_eq!(
+            to_i64(obj_from_bits(sequence_item_at_index(&py, receiver, -1))),
+            Some(2)
+        );
         let _ = sequence_item_at_index(&py, receiver, -4);
-        assert_eq!(errors::PyErr_ExceptionMatches((&raw mut abi_types::PyExc_IndexError).cast()), 1);
+        assert_eq!(
+            errors::PyErr_ExceptionMatches((&raw mut abi_types::PyExc_IndexError).cast()),
+            1
+        );
         errors::PyErr_Clear();
         dec_ref_bits(&py, receiver);
         assert_eq!(native.ob_refcnt, 1);
+        assert!(!crate::exception_pending(&py));
+    });
+}
+
+extern "C" fn replacement_list_inplace_repeat(_: u64, _: u64) -> u64 {
+    MoltObject::from_int(71).bits()
+}
+
+#[test]
+fn list_root_sequence_slots_preserve_storage_and_follow_override_mutation() {
+    use molt_cpython_abi::api::refcount::OwnedPyObject;
+    use molt_cpython_abi::api::{abstract_number, abstract_sequence, numbers, sequences, typeobj};
+    use molt_cpython_abi::type_slots as slots;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil(|py| unsafe {
+        let value = list_subtype(&py, forbidden_storage_iteration as *const ());
+        crate::molt_list_append(value, MoltObject::from_int(1).bits());
+        crate::molt_list_append(value, MoltObject::from_int(2).bits());
+        let class = crate::type_of_bits(&py, value);
+        let view = OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(value));
+        let class_view =
+            OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(class));
+        assert!(!view.as_ptr().is_null() && !class_view.as_ptr().is_null());
+        let root = &raw mut abi_types::PyList_Type;
+        for slot in [
+            slots::Py_sq_length,
+            slots::Py_sq_concat,
+            slots::Py_sq_repeat,
+            slots::Py_sq_item,
+            slots::Py_sq_ass_item,
+            slots::Py_sq_contains,
+            slots::Py_sq_inplace_concat,
+            slots::Py_sq_inplace_repeat,
+        ] {
+            assert!(!typeobj::PyType_GetSlot(root, slot).is_null());
+        }
+        let root_repeat = typeobj::PyType_GetSlot(root, slots::Py_sq_inplace_repeat);
+        assert_eq!(
+            typeobj::PyType_GetSlot(class_view.as_ptr().cast(), slots::Py_sq_inplace_repeat),
+            root_repeat
+        );
+
+        let concat = OwnedPyObject::from_owned(abstract_sequence::PySequence_Concat(
+            view.as_ptr(),
+            view.as_ptr(),
+        ));
+        let repeated =
+            OwnedPyObject::from_owned(abstract_sequence::PySequence_Repeat(view.as_ptr(), 2));
+        for result in [concat.as_ptr(), repeated.as_ptr()] {
+            assert!(!result.is_null());
+            assert_eq!(sequences::PyList_CheckExact(result), 1);
+            assert_eq!(sequences::PyList_Size(result), 4);
+            for (index, expected) in [1, 2, 1, 2].into_iter().enumerate() {
+                assert_eq!(
+                    numbers::PyLong_AsLongLong(sequences::PyList_GetItem(result, index as isize)),
+                    expected
+                );
+            }
+        }
+        let extended = OwnedPyObject::from_owned(abstract_sequence::PySequence_InPlaceConcat(
+            view.as_ptr(),
+            view.as_ptr(),
+        ));
+        assert_eq!(extended.as_ptr(), view.as_ptr());
+        assert_eq!(sequences::PyList_Size(view.as_ptr()), 4);
+        let repeated = OwnedPyObject::from_owned(abstract_sequence::PySequence_InPlaceRepeat(
+            view.as_ptr(),
+            2,
+        ));
+        assert_eq!(repeated.as_ptr(), view.as_ptr());
+        assert_eq!(sequences::PyList_Size(view.as_ptr()), 8);
+
+        // The direct declaring slot returns a new item reference and mutates
+        // list storage without consulting the subtype's forbidden iterator.
+        type Item = unsafe extern "C" fn(*mut PyObject, isize) -> *mut PyObject;
+        type Assign = unsafe extern "C" fn(*mut PyObject, isize, *mut PyObject) -> c_int;
+        type Contains = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> c_int;
+        let item: Item = std::mem::transmute(typeobj::PyType_GetSlot(root, slots::Py_sq_item));
+        let assign: Assign =
+            std::mem::transmute(typeobj::PyType_GetSlot(root, slots::Py_sq_ass_item));
+        let contains: Contains =
+            std::mem::transmute(typeobj::PyType_GetSlot(root, slots::Py_sq_contains));
+        let eight = OwnedPyObject::from_owned(numbers::PyLong_FromLong(8));
+        assert_eq!(assign(view.as_ptr(), 0, eight.as_ptr()), 0);
+        let first = OwnedPyObject::from_owned(item(view.as_ptr(), 0));
+        assert_eq!(first.as_ptr(), eight.as_ptr());
+        assert_eq!(contains(view.as_ptr(), eight.as_ptr()), 1);
+        assert_eq!(assign(view.as_ptr(), 0, std::ptr::null_mut()), 0);
+        assert_eq!(sequences::PyList_Size(view.as_ptr()), 7);
+        assert_eq!(numbers::PyLong_AsLongLong(first.as_ptr()), 8);
+
+        let overflow = abstract_sequence::PySequence_InPlaceRepeat(view.as_ptr(), isize::MAX);
+        assert!(overflow.is_null());
+        assert_eq!(
+            errors::PyErr_ExceptionMatches((&raw mut abi_types::PyExc_MemoryError).cast()),
+            1
+        );
+        errors::PyErr_Clear();
+        assert_eq!(sequences::PyList_Size(view.as_ptr()), 7);
+
+        let method = MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
+            &py,
+            crate::provenance::abi::expose_function_address(
+                replacement_list_inplace_repeat as *const (),
+            ),
+            2,
+        ))
+        .bits();
+        let key = crate::attr_name_bits_from_bytes(&py, b"__imul__").unwrap();
+        crate::molt_set_attr_name(class, key, method);
+        assert!(!crate::exception_pending(&py));
+        assert!(
+            typeobj::PyType_GetSlot(class_view.as_ptr().cast(), slots::Py_sq_inplace_repeat)
+                .is_null()
+        );
+        // PySequence_InPlaceRepeat keeps the inherited sq_repeat fallback;
+        // Python *= uses nb_inplace_multiply and therefore sees __imul__.
+        let sequence_fallback = OwnedPyObject::from_owned(
+            abstract_sequence::PySequence_InPlaceRepeat(view.as_ptr(), 2),
+        );
+        assert!(!sequence_fallback.as_ptr().is_null());
+        assert_ne!(sequence_fallback.as_ptr(), view.as_ptr());
+        assert_eq!(sequences::PyList_CheckExact(sequence_fallback.as_ptr()), 1);
+        assert_eq!(sequences::PyList_Size(sequence_fallback.as_ptr()), 14);
+        assert_eq!(sequences::PyList_Size(view.as_ptr()), 7);
+        let count = OwnedPyObject::from_owned(numbers::PyLong_FromLong(2));
+        let overridden = OwnedPyObject::from_owned(abstract_number::PyNumber_InPlaceMultiply(
+            view.as_ptr(),
+            count.as_ptr(),
+        ));
+        assert!(!overridden.as_ptr().is_null());
+        assert_eq!(numbers::PyLong_AsLongLong(overridden.as_ptr()), 71);
+        assert_eq!(sequences::PyList_Size(view.as_ptr()), 7);
+        crate::molt_del_attr_name(class, key);
+        assert!(!crate::exception_pending(&py));
+        assert_eq!(
+            typeobj::PyType_GetSlot(class_view.as_ptr().cast(), slots::Py_sq_inplace_repeat),
+            root_repeat
+        );
+        let cleared = OwnedPyObject::from_owned(abstract_sequence::PySequence_InPlaceRepeat(
+            view.as_ptr(),
+            0,
+        ));
+        assert_eq!(cleared.as_ptr(), view.as_ptr());
+        assert_eq!(sequences::PyList_Size(view.as_ptr()), 0);
+        for bits in [key, method, value] {
+            dec_ref_bits(&py, bits);
+        }
+        assert!(errors::PyErr_Occurred().is_null());
         assert!(!crate::exception_pending(&py));
     });
 }

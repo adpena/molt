@@ -854,13 +854,19 @@ def _validated_execution_context(
             output_layout.scratch(execution_nonce)
         ):
             raise ValueError("proof scratch differs from admitted Cargo output layout")
-        provision = supervisor.get("provision_telemetry")
-        if not isinstance(provision, Mapping) or provision.get(
-            "build_target_dir"
-        ) != str(output_layout.supervisor_target):
-            raise ValueError(
-                "supervisor build output differs from admitted Cargo output layout"
-            )
+    from tools.proof_queue_pkg import supervisor_generation
+
+    supervisor_layout = cargo_output_layout.CargoOutputLayout.for_envelope(
+        envelope,
+        result_root=execution_path.parent,
+        source_root=Path(str(source_custody.get("row_cwd"))),
+    )
+    supervisor_generation.validate_receipt(
+        supervisor.get("provision_telemetry"),
+        binary=supervisor_binary_artifact,
+        cas_root=cas_root,
+        expected_target=supervisor_layout.supervisor_target,
+    )
     verified_supervisor = _COMMANDS.run(
         [
             str(binary_path),

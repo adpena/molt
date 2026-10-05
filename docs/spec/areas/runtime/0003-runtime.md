@@ -19,6 +19,19 @@ coercion applies after rounding, and explicit alignment remains independent of
 the zero-fill flag. These are shared semantic requirements; verified target and
 Python-version coverage remains defined by the verified-subset receipts.
 
+`round` selects the type's `__round__` before interpreting a digit argument;
+instance attributes and callable arity do not select this protocol. Omitted or
+None digit arguments invoke the method with no arguments. Inherited int/float
+descriptors and exact builtin fast paths share the numeric rounding owner.
+Integer descriptors use arbitrary-precision `__index__` conversion and the
+existing integer-power admission; float descriptors clip through the shared
+target-sized index conversion before handling NaN, infinity or extreme counts.
+Explicit `int.__round__(value, None)` is rejected on Python 3.12/3.13 targets and
+accepted on 3.14, while builtin `round(value, None)` always omits the argument.
+Rejected index results and callback exceptions retain the
+canonical conversion diagnostics. Signed ties-to-even decimal multiples share
+one decision across integer carriers and negative float digit counts.
+
 Heap objects are referenced directly via tagged 48-bit canonical pointers.
 Rust-owned opaque handles are not heap objects: they are registered in the
 dedicated sharded generational slab and exposed to Python as bounded, synthetic
@@ -158,6 +171,12 @@ contract is defined in `docs/spec/areas/runtime/0026_CONCURRENCY_AND_GIL.md`.
 - **Async (core runtime)**: Built on a custom poll/scheduler loop in
   `molt-runtime` (no tokio dependency). Python `async/await` lowers to Molt
   futures with explicit poll state.
+  Physical coroutine and poll-future admission is owned by
+  `async_rt::generators`; await acquisition, native adapters, attribute lookup,
+  and the exported native-awaitability query consume those same predicates.
+  A poll address alone does not make an ordinary generator, async generator,
+  or coroutine iterator wrapper awaitable. Flagged iterable coroutines retain
+  their code-owned protocol admission; user awaitables use the class protocol.
 - **Async (host services)**: `molt-worker` and `molt-db` use tokio/tokio-postgres
   where OS-level I/O is required.
 
@@ -201,8 +220,16 @@ conversion callbacks.
 Native descriptor slots consume the physical payload directly. Source operators
 use class special-method lookup for subtype overrides; exact receiver fast paths
 cannot bypass those overrides. Inherited sequence concat/repeat slots retain
-sequence fallback ordering after reflected numeric methods. In-place string
-reuse is restricted to exact strings so it cannot overwrite subtype field tails.
+sequence fallback ordering after reflected numeric methods. Concatenation slots
+own rejected-operand diagnostics through `SequenceConcatKind`: str/list/tuple
+report their base sequence kind and the rejected logical type; bytes/bytearray
+report both logical operand types. Diagnostic type names obey CPython's byte
+precision and never select the operation or its dispatch. Generic binary
+rejection remains generic even for user classes named after builtin sequences.
+In-place bytearray rejection uses the same diagnostic authority; buffer
+acquisition errors, reflected callback failures, and allocation/overflow paths
+retain their owning protocols. In-place string reuse is restricted to exact
+strings so it cannot overwrite subtype field tails.
 Managed C-API `PyObject_IsTrue`/`PyObject_Not` and
 `PyObject_Size`/`PyObject_Length` enter the same runtime truth and length
 protocols. Physical container length hooks cannot decide these inquiries:
@@ -327,3 +354,32 @@ visited and detached once by the shared function GC/lifecycle handler, and
 retirement preserves both error channels. This is a resource-layout tradeoff,
 not a measured throughput or allocation improvement; parent acceptance requires
 representative allocation/call measurements after functional verification.
+
+### Instance field dictionary diagnostics
+
+`MOLT_DEBUG_FIELD` enables inline field observations and the shared dictionary
+storage trace. Optional `MOLT_DEBUG_FIELD_NAME` selects one exact field name
+(for example `_coro`) for inline reads/writes, dictionary-backed accesses and
+direct dictionary mutations. Instance publication, replacement, reset and
+lifecycle clearing include the receiver and dictionary identities; direct
+dictionary events correlate through the dictionary identity without a second
+ownership registry. A direct clear/swap is selected by the old physical keys.
+
+`field_dictionary` records the operation, receiver/dictionary addresses and
+reference counts, supplied name/result, entry count and pending-error state.
+`field_dictionary_entry` records matching raw entries, their stored hashes and
+the string object's cached state. These observations do not run Python,
+recompute hashes, change caches, or retain/release values. No matching entry
+line means no matching physical string key at that observation; the trace does
+not substitute this scan for ordinary dictionary equality. An empty instance
+replacement still emits its publication row. Flags are read once per process;
+unset `MOLT_DEBUG_FIELD` disables the entire family. Diagnostic runs are not
+performance measurements or correctness acceptance.
+
+Every observation entry has a small inline gate using the same cached enable
+flag. Enabled work dispatches to cold, noninlined bodies. With the flag unset,
+no diagnostic field iteration, dictionary scan, instance-shape lookup, name
+filter initialization or formatting runs. Raw views remain within synchronous
+observation under the caller's live-owner custody and GIL; the observer performs
+no Python call or ownership mutation. These are source-level properties, not
+measured overhead claims.

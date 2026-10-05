@@ -7,8 +7,8 @@ import pytest
 from molt.compiler_analysis.python_binding_facts import (
     PythonCompletion as Completion,
     PythonCompletionFlow as Flow,
-    PythonIdentity,
 )
+from molt.compiler_analysis.python_value_identity import PythonIdentity
 from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     analyze_python_source_bindings,

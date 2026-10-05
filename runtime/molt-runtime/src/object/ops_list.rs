@@ -746,11 +746,8 @@ pub extern "C" fn molt_list_add_method(list_bits: u64, other_bits: u64) -> u64 {
             }
             let other_obj = obj_from_bits(other_bits);
             let Some(other_ptr) = other_obj.as_ptr() else {
-                let msg = format!(
-                    "can only concatenate list (not \"{}\") to list",
-                    type_name(_py, other_obj)
-                );
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return super::ops_arith::native_slots::SequenceConcatKind::List
+                    .raise(_py, list_bits, other_bits);
             };
             let other_tid = object_type_id(other_ptr);
             if other_tid == TYPE_ID_LIST_BOOL || other_tid == TYPE_ID_LIST_INT {
@@ -760,11 +757,8 @@ pub extern "C" fn molt_list_add_method(list_bits: u64, other_bits: u64) -> u64 {
                 }
             }
             if object_type_id(other_ptr) != TYPE_ID_LIST {
-                let msg = format!(
-                    "can only concatenate list (not \"{}\") to list",
-                    type_name(_py, other_obj)
-                );
-                return raise_exception::<_>(_py, "TypeError", &msg);
+                return super::ops_arith::native_slots::SequenceConcatKind::List
+                    .raise(_py, list_bits, other_bits);
             }
             let Some(combined) = crate::object::seq_access::snapshot_concat(
                 _py,
@@ -1318,29 +1312,28 @@ pub extern "C" fn molt_list_index(list_bits: u64, val_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_tuple_count(tuple_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let tuple_obj = obj_from_bits(tuple_bits);
-        if let Some(ptr) = tuple_obj.as_ptr() {
-            unsafe {
-                if object_type_id(ptr) == TYPE_ID_TUPLE {
-                    return crate::object::seq_access::with_immutable_tuple_slice(ptr, |elems| {
-                        let mut count = 0i64;
-                        for &elem in elems {
-                            let eq = match eq_bool_from_bits(_py, elem, val_bits) {
-                                Some(val) => val,
-                                None => return MoltObject::none().bits(),
-                            };
-                            if eq {
-                                count += 1;
-                            }
-                        }
-                        MoltObject::from_int(count).bits()
-                    })
-                    .unwrap_or_else(|| MoltObject::none().bits());
-                }
-            }
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(tuple) =
+            crate::object::tuple_storage::TupleStorage::admit(py, tuple_bits, "count")
+        else {
+            return MoltObject::none().bits();
+        };
+        let Some(len) = tuple.len() else {
+            return MoltObject::none().bits();
+        };
+        let mut count = 0i64;
+        for index in 0..len {
+            let Some(item) = tuple.comparison_item(index) else {
+                return MoltObject::none().bits();
+            };
+            let equal = unsafe { eq_bool_from_bits(py, item.bits(), val_bits) };
+            drop(item);
+            let Some(equal) = equal else {
+                return MoltObject::none().bits();
+            };
+            count += i64::from(equal);
         }
-        MoltObject::none().bits()
+        int_bits_from_i64(py, count)
     })
 }
 
@@ -1359,84 +1352,60 @@ pub extern "C" fn molt_tuple_index_range(
     start_bits: u64,
     stop_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let missing = missing_bits(_py);
-        let tuple_obj = obj_from_bits(tuple_bits);
-        if let Some(ptr) = tuple_obj.as_ptr() {
-            unsafe {
-                if object_type_id(ptr) == TYPE_ID_TUPLE {
-                    let len = crate::object::seq_access::len(ptr) as i64;
-                    let mut start = if start_bits != missing {
-                        let Some(value) = crate::builtins::numbers::index_ssize_clamped_from_obj(
-                            _py,
-                            start_bits,
-                            "slice indices must be integers or have an __index__ method",
-                        ) else {
-                            return MoltObject::none().bits();
-                        };
-                        value as i64
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(tuple) =
+            crate::object::tuple_storage::TupleStorage::admit(py, tuple_bits, "index")
+        else {
+            return MoltObject::none().bits();
+        };
+        let Some(len) = tuple.len() else {
+            return MoltObject::none().bits();
+        };
+        let missing = missing_bits(py);
+        let bound = |bits, default| {
+            if bits == missing {
+                Some(default)
+            } else {
+                crate::builtins::numbers::index_ssize_clamped_from_obj(
+                    py,
+                    bits,
+                    "slice indices must be integers or have an __index__ method",
+                )
+                .map(|value| {
+                    let value = if value < 0 {
+                        value.saturating_add(len as isize)
                     } else {
-                        0
+                        value
                     };
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    let mut stop = if stop_bits != missing {
-                        let Some(value) = crate::builtins::numbers::index_ssize_clamped_from_obj(
-                            _py,
-                            stop_bits,
-                            "slice indices must be integers or have an __index__ method",
-                        ) else {
-                            return MoltObject::none().bits();
-                        };
-                        value as i64
-                    } else {
-                        len
-                    };
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    if start < 0 {
-                        start += len;
-                    }
-                    if stop < 0 {
-                        stop += len;
-                    }
-                    if start < 0 {
-                        start = 0;
-                    }
-                    if stop < 0 {
-                        stop = 0;
-                    }
-                    if start > len {
-                        start = len;
-                    }
-                    if stop > len {
-                        stop = len;
-                    }
-                    let mut idx = start;
-                    while idx < stop {
-                        let Some(elem_bits) = crate::object::seq_access::item(ptr, idx as usize)
-                        else {
-                            break;
-                        };
-                        let eq = match eq_bool_from_bits(_py, elem_bits, val_bits) {
-                            Some(val) => val,
-                            None => return MoltObject::none().bits(),
-                        };
-                        if eq {
-                            return MoltObject::from_int(idx).bits();
-                        }
-                        idx += 1;
-                    }
-                    return raise_exception::<_>(
-                        _py,
-                        "ValueError",
-                        "tuple.index(x): x not in tuple",
-                    );
-                }
+                    value.clamp(0, len as isize) as usize
+                })
+            }
+        };
+        let Some(start) = bound(start_bits, 0) else {
+            return MoltObject::none().bits();
+        };
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        let Some(stop) = bound(stop_bits, len) else {
+            return MoltObject::none().bits();
+        };
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        for index in start..stop {
+            let Some(item) = tuple.comparison_item(index) else {
+                return MoltObject::none().bits();
+            };
+            let equal = unsafe { eq_bool_from_bits(py, item.bits(), val_bits) };
+            drop(item);
+            let Some(equal) = equal else {
+                return MoltObject::none().bits();
+            };
+            if equal {
+                return int_bits_from_i64(py, index as i64);
             }
         }
-        MoltObject::none().bits()
+        raise_exception(py, "ValueError", "tuple.index(x): x not in tuple")
     })
 }

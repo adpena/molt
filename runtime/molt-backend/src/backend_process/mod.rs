@@ -21,7 +21,6 @@ pub(crate) use input::*;
 pub(crate) use io_limits::*;
 pub(crate) use memory_guard::*;
 pub(crate) use native_artifact::NativeArtifactKind;
-#[cfg(feature = "native-backend")]
 pub(crate) use native_artifact::shared_stdlib_archive_path_from_env;
 #[cfg(feature = "native-backend")]
 pub(crate) use native_batch::*;

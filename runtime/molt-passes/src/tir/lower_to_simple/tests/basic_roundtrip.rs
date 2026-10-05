@@ -10,38 +10,52 @@ fn owned_literal_payload_survives_repeated_ssa_sccp_roundtrips() {
         ("const_bytes", vec![]),
         ("const_bytes", vec![0, 0xff, 0x80]),
     ];
-    let mut cases: Vec<OpIR> = byte_cases.into_iter().map(|(kind, bytes)| OpIR {
-        kind: kind.into(),
-        bytes: Some(bytes),
-        out: Some("v0".into()),
-        ..OpIR::default()
-    }).collect();
-    cases.extend([
-        ("const_str", ""),
-        ("const_str", "a\0é"),
-        ("const_bigint", "-9223372036854775809"),
-    ].into_iter().map(|(kind, text)| OpIR {
-        kind: kind.into(),
-        s_value: Some(text.into()),
-        out: Some("v0".into()),
-        ..OpIR::default()
-    }));
+    let mut cases: Vec<OpIR> = byte_cases
+        .into_iter()
+        .map(|(kind, bytes)| OpIR {
+            kind: kind.into(),
+            bytes: Some(bytes),
+            out: Some("v0".into()),
+            ..OpIR::default()
+        })
+        .collect();
+    cases.extend(
+        [
+            ("const_str", ""),
+            ("const_str", "a\0é"),
+            ("const_bigint", "-9223372036854775809"),
+        ]
+        .into_iter()
+        .map(|(kind, text)| OpIR {
+            kind: kind.into(),
+            s_value: Some(text.into()),
+            out: Some("v0".into()),
+            ..OpIR::default()
+        }),
+    );
     for literal in cases {
         let mut function = FunctionIR {
             name: "owned_literal_roundtrip".into(),
             return_abi: molt_ir::FunctionReturnAbi::Value,
-            ops: vec![literal.clone(), OpIR {
-                kind: "ret".into(),
-                args: Some(vec!["v0".into()]),
-                ..OpIR::default()
-            }],
+            ops: vec![
+                literal.clone(),
+                OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec!["v0".into()]),
+                    ..OpIR::default()
+                },
+            ],
             ..FunctionIR::default()
         };
         for _ in 0..2 {
             let mut tir = lower_to_tir(&function);
             crate::tir::passes::sccp::run(&mut tir);
             function.ops = lower_to_simple_ir(&tir);
-            let actual = function.ops.iter().find(|op| op.kind == literal.kind).unwrap();
+            let actual = function
+                .ops
+                .iter()
+                .find(|op| op.kind == literal.kind)
+                .unwrap();
             assert_eq!(actual.s_value, literal.s_value);
             assert_eq!(actual.bytes, literal.bytes);
         }
@@ -403,6 +417,8 @@ fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
     let resume_block = func.fresh_block();
     let yielded_pair = func.fresh_value();
     let done_value = func.fresh_value();
+    // Saved states and control labels have independent identities.
+    func.label_id_map.insert(resume_block.0, 91);
 
     func.blocks.get_mut(&entry).unwrap().terminator = Terminator::StateDispatch {
         cases: vec![(5, resume_block, vec![])],
@@ -475,7 +491,31 @@ fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
         .get(state_yield_idx + 1)
         .expect("resume continuation after state_yield");
     assert_eq!(next.kind, "state_label", "{ops:?}");
-    assert_eq!(next.value, Some(5), "{ops:?}");
+    assert_eq!(ops[state_yield_idx].value, Some(5), "{ops:?}");
+    let state_targets = ops
+        .iter()
+        .find(|op| op.kind == "state_switch")
+        .and_then(|op| op.state_targets.as_ref())
+        .expect("state dispatch must transport its saved-state/control-label map");
+    assert_eq!(state_targets.as_slice(), &[(5, 91)], "{ops:?}");
+    assert_eq!(next.value, Some(state_targets[0].1), "{ops:?}");
+    molt_ir::ir_schema::validate_state_dispatch(&ops)
+        .expect("production state/label transport covers its suspension");
+    let mut omitted = ops.clone();
+    omitted
+        .iter_mut()
+        .find(|op| op.kind == "state_switch")
+        .unwrap()
+        .state_targets = Some(vec![]);
+    let error = molt_ir::ir_schema::validate_state_dispatch(&omitted).unwrap_err();
+    assert!(
+        error.contains("state_yield saves state 5 absent"),
+        "{error}"
+    );
+    assert!(
+        std::panic::catch_unwind(|| crate::tir::cfg::CFG::build(&omitted)).is_err(),
+        "CFG lifting cannot erase a real resume continuation through an incomplete explicit map"
+    );
     assert!(
         ops[state_yield_idx + 1..]
             .iter()

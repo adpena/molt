@@ -67,7 +67,12 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         }
                     }
                 }
-                None => {}
+                Some(
+                    LiteralPayloadKind::Float
+                    | LiteralPayloadKind::None
+                    | LiteralPayloadKind::Owned(_),
+                )
+                | None => {}
             }
         }
     }
@@ -393,12 +398,7 @@ fn can_reorder_comparison(
 
 /// Rewrites `op` into a copy of `source`, a value equal to its result. The
 /// result keeps the owner it had (`owners`, design 20 §1.2).
-fn replace_with_copy(
-    op: &mut TirOp,
-    source: ValueId,
-    result: ValueId,
-    owners: &mut Replacements,
-) {
+fn replace_with_copy(op: &mut TirOp, source: ValueId, result: ValueId, owners: &mut Replacements) {
     owners.record(op);
     let old = op.clone();
     let mut replacement = TirOp {

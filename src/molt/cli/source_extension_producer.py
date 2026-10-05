@@ -65,13 +65,13 @@ from molt.cli.source_extensions import (
     source_extension_manifest_path,
     validate_source_extension_artifact_object_closure,
 )
-from molt.cli.source_build_environment import (
+from molt.cli.source_build_environment_schema import (
     LockedSourceBuildEnvironment,
     SourceBuildEnvironmentError,
     active_source_build_requirements,
     canonical_source_marker_environment,
-    source_build_environment,
 )
+from molt.cli.source_build_environment import source_build_environment
 from molt.file_locks import _acquire_file_lock, _release_file_lock
 from molt.cli.source_extension_reproducibility import (
     _canonical_extension_manifest_for_wheel,

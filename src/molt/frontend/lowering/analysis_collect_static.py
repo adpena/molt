@@ -537,7 +537,8 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
             ),
             freevars=free_vars,
             cellvars=cell_vars,
-            eager_annotations=self.eager_annotations and not self.future_annotations,
+            target_python=self.target_python,
+            future_annotations=self.future_annotations,
         )
 
     def _collect_code_names_for_body(
@@ -553,8 +554,8 @@ class AnalysisCollectStaticMixin(GeneratorMixinBase):
                 nodes,
                 varnames,
                 freevars=free_vars,
-                eager_annotations=self.eager_annotations
-                and not self.future_annotations,
+                target_python=self.target_python,
+                future_annotations=self.future_annotations,
                 module_scope=module_scope,
             ).names
         )

@@ -29,7 +29,7 @@ fn retained_exception_alias_outlives_its_match_region() {
                 capture,
                 original_copy("exception_clear", vec![]),
                 original_copy("exception_pop", vec![]),
-                op(OpCode::Call, vec![retained], vec![]),
+                named_call("fixture_external_call", vec![retained], vec![]),
             ],
             terminator: Terminator::Return { values: vec![] },
         },
@@ -64,7 +64,7 @@ fn zero_insertion_borrowed_param_function_still_marks_drop_inserted() {
     let param = func.blocks[&func.entry_block].args[0].id;
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops = vec![op(OpCode::Call, vec![param], vec![])];
+        entry.ops = vec![named_call("fixture_external_call", vec![param], vec![])];
         entry.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -260,7 +260,11 @@ fn exception_edge_borrowed_payload_retains_for_owned_handler_arg() {
                 id: handler_arg,
                 ty: TirType::DynBox,
             }],
-            ops: vec![op(OpCode::Call, vec![handler_arg], vec![])],
+            ops: vec![named_call(
+                "fixture_external_call",
+                vec![handler_arg],
+                vec![],
+            )],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -336,7 +340,11 @@ fn try_start_registration_retains_nothing_for_its_payload() {
     check.attrs.insert("value".into(), AttrValue::Int(4));
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops = vec![start, op(OpCode::Call, vec![], vec![]), check];
+        entry.ops = vec![
+            start,
+            named_call("fixture_external_call", vec![], vec![]),
+            check,
+        ];
         entry.terminator = Terminator::Return { values: vec![] };
     }
     func.blocks.insert(
@@ -347,7 +355,11 @@ fn try_start_registration_retains_nothing_for_its_payload() {
                 id: handler_arg,
                 ty: TirType::DynBox,
             }],
-            ops: vec![op(OpCode::Call, vec![handler_arg], vec![])],
+            ops: vec![named_call(
+                "fixture_external_call",
+                vec![handler_arg],
+                vec![],
+            )],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -383,12 +395,14 @@ fn exception_creation_ref_release_is_path_local_for_alternative_raises() {
     let then_raise = func.fresh_block();
     let else_raise = func.fresh_block();
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let exc = func.fresh_value();
 
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops = vec![
-            op(OpCode::ConstBool, vec![], vec![cond]),
+            op(OpCode::Copy, vec![cond_input], vec![cond]),
             original_copy("exception_new_builtin_one", vec![exc]),
         ];
         entry.terminator = Terminator::CondBranch {

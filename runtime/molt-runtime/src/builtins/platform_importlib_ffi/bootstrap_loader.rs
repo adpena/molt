@@ -1045,7 +1045,7 @@ pub(super) fn importlib_coerce_module_name_bits(
 ) -> Result<u64, u64> {
     let module_name_name = intern_runtime_static_name(_py, b"__name__");
     let publish_name = |name_bits| {
-        let result = crate::molt_object_setattr(module_bits, module_name_name, name_bits);
+        let result = crate::molt_set_attr_name(module_bits, module_name_name, name_bits);
         dec_ref_bits(_py, result);
         if exception_pending(_py) {
             dec_ref_bits(_py, name_bits);

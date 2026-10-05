@@ -285,10 +285,41 @@ fn object_class_hook_binds_lookup_owner_through_every_descriptor_surface() {
             let key = crate::attr_name_bits_from_bytes(py, b"__init_subclass__").unwrap();
             let descriptor =
                 crate::builtins::methods::object_method_bits(py, "__init_subclass__").unwrap();
+            let descriptor_ptr = obj_from_bits(descriptor).as_ptr().unwrap();
+            // Native descriptor identity is its declared Python class, not a
+            // managed classmethod wrapper around the portable function payload.
+            assert_eq!(object_type_id(descriptor_ptr), TYPE_ID_FUNCTION);
             assert_eq!(
-                object_type_id(obj_from_bits(descriptor).as_ptr().unwrap()),
-                crate::TYPE_ID_CLASSMETHOD
+                crate::object_class_bits(descriptor_ptr),
+                builtins.classmethod_descriptor
             );
+            assert_eq!(
+                crate::call::function::function_metadata_bits(py, descriptor_ptr, b"__objclass__"),
+                builtins.object
+            );
+            assert!(crate::builtins::attr::descriptor_has_get(py, descriptor));
+            assert!(!crate::builtins::attr::descriptor_is_data(py, descriptor));
+            assert!(callable_matches_runtime_symbol(
+                Some(descriptor),
+                fn_key!(molt_object_init_subclass)
+            ));
+            // Direct invocation and materialized lookup share the same native
+            // descriptor. The raw callable does not invent a missing receiver.
+            for (arguments, rejects) in [
+                (&[][..], true),
+                (&[instance][..], true),
+                (&[child][..], false),
+            ] {
+                let result =
+                    crate::call::function::call_function_obj_vec(py, descriptor, arguments);
+                assert_eq!(exception_pending(py), rejects);
+                if exception_pending(py) {
+                    crate::molt_exception_clear();
+                } else {
+                    assert!(obj_from_bits(result).is_none());
+                }
+                dec_ref_bits(py, result);
+            }
             for (lookup, owner) in [
                 (builtins.object, builtins.object),
                 (base, base),
@@ -300,11 +331,19 @@ fn object_class_hook_binds_lookup_owner_through_every_descriptor_surface() {
                 assert!(!exception_pending(py));
                 let hook_ptr = obj_from_bits(hook).as_ptr().unwrap();
                 assert_eq!(object_type_id(hook_ptr), TYPE_ID_BOUND_METHOD);
+                assert_eq!(
+                    crate::object_class_bits(hook_ptr),
+                    builtins.builtin_function_or_method
+                );
                 assert_eq!(bound_method_self_bits(hook_ptr), owner);
                 let function = bound_method_func_bits(hook_ptr);
+                assert_eq!(
+                    function, descriptor,
+                    "lookup must retain the published descriptor"
+                );
                 assert!(callable_matches_runtime_symbol(
                     Some(function),
-                    fn_addr!(molt_object_init_subclass)
+                    fn_key!(molt_object_init_subclass)
                 ));
                 let builder = molt_callargs_new(0, 0);
                 let result = molt_call_bind(hook, builder);

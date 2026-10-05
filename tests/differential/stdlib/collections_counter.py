@@ -216,7 +216,24 @@ except TypeError:
 
 try:
     collections.Counter.fromkeys("abc")
-except NotImplementedError:
-    show("fromkeys", "undefined")
+except NotImplementedError as error:
+    show("fromkeys", (type(error).__name__, str(error)))
 
 show("keyword-iterable", list(collections.Counter(iterable=4).items()))
+
+
+class UnconsumableKeys:
+    def __iter__(self):
+        raise AssertionError("Counter.fromkeys must reject before consuming keys")
+
+
+class CounterSubclass(collections.Counter):
+    pass
+
+
+for counter_type in (collections.Counter, CounterSubclass):
+    try:
+        counter_type.fromkeys(UnconsumableKeys(), object())
+    except NotImplementedError as error:
+        assert str(error) == "Counter.fromkeys() is undefined.  Use Counter(iterable) instead."
+        show("fromkeys-admission", (counter_type.__name__, type(error).__name__, str(error)))

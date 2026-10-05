@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import subprocess
-import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -15,6 +14,7 @@ from typing import Any, Mapping, cast
 
 from molt.backend_executable_names import backend_executable_name
 from molt.cargo_execution_policy import source_build_disabled_reason
+from molt.cli import progress as _progress
 from molt.cli.artifact_state import (
     _artifact_state_path,
     _artifact_state_path_for_build_state_root,
@@ -855,10 +855,8 @@ def _ensure_backend_binary(
         # Raw Cargo outputs and source-only sidecars do not establish provenance.
         # Confirm the source/feature build before publishing content-bound receipts.
         if not json_output:
-            print(
-                "Backend artifact lacks a matching source/content receipt; "
-                "running Cargo to establish build provenance...",
-                file=sys.stderr,
+            _progress.notice(
+                "Compiler artifact needs a source build to establish provenance"
             )
         # Cache entries include backend/tooling/runtime identity in their keys.
         # A backend rebuild therefore invalidates by selecting new keys, not by

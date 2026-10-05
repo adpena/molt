@@ -511,11 +511,7 @@ pub fn call_callable2(_py: &PyToken, call_bits: u64, arg0: u64, arg1: u64) -> u6
 ///
 /// `ptr` must refer to a live pointer-backed Molt object for the duration of
 /// this call.
-pub unsafe fn lookup_special_method(
-    _py: &PyToken,
-    ptr: *mut u8,
-    name_bits: u64,
-) -> Option<u64> {
+pub unsafe fn lookup_special_method(_py: &PyToken, ptr: *mut u8, name_bits: u64) -> Option<u64> {
     let mut result = 0;
     let present = unsafe { __molt_math_lookup_special_method(ptr, name_bits, &mut result) };
     (present != 0).then_some(result)

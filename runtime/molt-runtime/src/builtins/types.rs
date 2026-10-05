@@ -21,7 +21,7 @@ use crate::{
     isinstance_runtime, issubclass_bits, issubclass_runtime, missing_bits, molt_call_bind,
     molt_callargs_new, molt_callargs_push_kw, molt_callargs_push_pos, molt_contains,
     molt_dict_from_obj, molt_dict_get, molt_eq, molt_getattr_builtin, molt_hash_builtin,
-    molt_index, molt_iter, molt_iter_next, molt_len, molt_object_setattr, molt_repr_from_obj,
+    molt_index, molt_iter, molt_iter_next, molt_len, molt_repr_from_obj, molt_set_attr_name,
     molt_setitem_method, molt_str_from_obj, molt_string_isidentifier, obj_from_bits,
     object_class_bits, object_type_id, property_del_bits, property_get_bits, property_set_bits,
     raise_exception, raise_not_iterable, runtime_state, string_obj_to_owned, to_i64,
@@ -894,8 +894,33 @@ mod tests {
                     dec_ref_bits(_py, key_bits);
                 }
 
+                let cached_classes = [
+                    ("MappingProxyType", mappingproxy_class(_py)),
+                    ("SimpleNamespace", simplenamespace_class(_py)),
+                    ("CapsuleType", capsule_class(_py)),
+                    ("CellType", cell_class(_py)),
+                    ("DynamicClassAttribute", dynamic_class_attribute_class(_py)),
+                    ("MethodType", method_class(_py)),
+                    ("GetSetDescriptorType", getset_descriptor_class(_py)),
+                    ("MemberDescriptorType", member_descriptor_class(_py)),
+                ];
+                for (name, class) in cached_classes {
+                    let key = alloc_string(_py, name.as_bytes());
+                    assert!(!key.is_null());
+                    let key = MoltObject::from_ptr(key).bits();
+                    assert_eq!(dict_get_in_place(_py, first_ptr, key), Some(class));
+                    assert_eq!(dict_get_in_place(_py, second_ptr, key), Some(class));
+                    dec_ref_bits(_py, key);
+                }
+                let refs = cached_classes.map(|(_, class)| ref_count(class));
                 dec_ref_bits(_py, first_bits);
+                for ((_, class), before) in cached_classes.into_iter().zip(refs) {
+                    assert_eq!(ref_count(class), before - 1);
+                }
                 dec_ref_bits(_py, second_bits);
+                for ((_, class), before) in cached_classes.into_iter().zip(refs) {
+                    assert_eq!(ref_count(class), before - 2);
+                }
             }
         });
     }

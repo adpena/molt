@@ -34,7 +34,11 @@ pub(crate) unsafe fn dict_snapshot<'a, 'py>(
     unsafe {
         let length = dict_order(dict).len();
         let count = length / 2;
-        let capacity = if matches!(kind, DictSnapshotKind::Entries) { length } else { count };
+        let capacity = if matches!(kind, DictSnapshotKind::Entries) {
+            length
+        } else {
+            count
+        };
         let Some(storage) = super::backing::tracked_vec_box_with_capacity::<u64>(capacity) else {
             record_memory_error_without_allocation(py);
             return None;

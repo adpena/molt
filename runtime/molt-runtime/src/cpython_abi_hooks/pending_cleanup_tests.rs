@@ -363,7 +363,10 @@ unsafe extern "C" fn sequence_input_drop(object: *mut PyObject) {
     SEQUENCE_INPUT_DROPS.with(|count| count.set(count.get() + 1));
     crate::with_gil_entry_nopanic!(py, {
         unsafe { set_c_error(input.c_error) };
-        crate::record_exception(py, crate::obj_from_bits(input.runtime_error).as_ptr().unwrap());
+        crate::record_exception(
+            py,
+            crate::obj_from_bits(input.runtime_error).as_ptr().unwrap(),
+        );
     });
 }
 
@@ -372,8 +375,8 @@ fn sequence_owners_preserve_both_errors_through_terminal_retirement_and_item_tra
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(register_cpython_hooks());
     crate::with_gil_entry_nopanic!(py, {
-        use crate::object::seq_access::{pin_item, pin_tuple, snapshot};
         use super::native_test_fixture::NativeType;
+        use crate::object::seq_access::{pin_item, pin_tuple, snapshot};
         let runtime = exception_bits(py, "LookupError");
         let original = exception_bits(py, "ValueError");
         let cleanup = exception_bits(py, "TypeError");
@@ -390,10 +393,14 @@ fn sequence_owners_preserve_both_errors_through_terminal_retirement_and_item_tra
             for mode in 0..4 {
                 SEQUENCE_INPUT_DROPS.with(|count| count.set(0));
                 let input = Box::into_raw(Box::new(RetiringSequenceInput {
-                    object: PyObject { ob_refcnt: 1, ob_type: &raw mut *kind },
+                    object: PyObject {
+                        ob_refcnt: 1,
+                        ob_type: &raw mut *kind,
+                    },
                     runtime_error: cleanup,
                     c_error: cleanup_view,
-                })).cast::<PyObject>();
+                }))
+                .cast::<PyObject>();
                 let bits = GLOBAL_BRIDGE.molt_value_for_pyobj(input).unwrap();
                 refcount::Py_DECREF(input);
                 let tuple = alloc_tuple(py, &[bits]);
@@ -401,15 +408,19 @@ fn sequence_owners_preserve_both_errors_through_terminal_retirement_and_item_tra
                 dec_ref_bits(py, bits);
                 let tuple_owner = (mode == 0).then(|| pin_tuple(py, tuple).unwrap());
                 let item_owner = (mode == 1 || mode == 3).then(|| pin_item(py, tuple, 0).unwrap());
-                let snapshot_owner = (mode == 2).then(|| snapshot(py, tuple, "sequence owner test").unwrap());
+                let snapshot_owner =
+                    (mode == 2).then(|| snapshot(py, tuple, "sequence owner test").unwrap());
                 dec_ref_bits(py, MoltObject::from_ptr(tuple).bits());
                 assert_eq!(SEQUENCE_INPUT_DROPS.with(|count| count.get()), 0);
                 set_c_error(original_view);
                 crate::record_exception(py, crate::obj_from_bits(runtime).as_ptr().unwrap());
                 if mode == 3 {
                     let transferred = item_owner.unwrap().into_bits();
-                    assert_eq!(SEQUENCE_INPUT_DROPS.with(|count| count.get()), 0,
-                        "into_bits transfers custody without retiring the item");
+                    assert_eq!(
+                        SEQUENCE_INPUT_DROPS.with(|count| count.get()),
+                        0,
+                        "into_bits transfers custody without retiring the item"
+                    );
                     assert_eq!(crate::exception_last_bits_noinc(py), Some(runtime));
                     errors::with_preserved_error(|| dec_ref_bits(py, transferred));
                 } else {
@@ -417,9 +428,16 @@ fn sequence_owners_preserve_both_errors_through_terminal_retirement_and_item_tra
                 }
                 drop(tuple_owner);
                 drop(snapshot_owner);
-                assert_eq!(SEQUENCE_INPUT_DROPS.with(|count| count.get()), 1,
-                    "the shared owner must really reach the foreign deallocator");
-                assert_eq!(crate::exception_last_bits_noinc(py), Some(runtime), "mode {mode}");
+                assert_eq!(
+                    SEQUENCE_INPUT_DROPS.with(|count| count.get()),
+                    1,
+                    "the shared owner must really reach the foreign deallocator"
+                );
+                assert_eq!(
+                    crate::exception_last_bits_noinc(py),
+                    Some(runtime),
+                    "mode {mode}"
+                );
                 let restored = errors::take_current_error().expect("exact outer C error");
                 assert_eq!(restored.value, original_view, "mode {mode}");
                 errors::with_preserved_error(|| drop(restored));
@@ -679,6 +697,62 @@ fn pending_callback_completion_preserves_emergency_and_publishes_other_operands(
             }
         }
         for bits in targets {
+            dec_ref_bits(py, bits);
+        }
+    });
+}
+
+#[test]
+fn core_owned_iterator_value_preserves_both_errors_during_native_retirement() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    crate::with_gil_entry_nopanic!(py, {
+        use super::native_test_fixture::NativeType;
+        let runtime = exception_bits(py, "LookupError");
+        let original = exception_bits(py, "ValueError");
+        let cleanup = exception_bits(py, "TypeError");
+        unsafe {
+            let original_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(original);
+            let cleanup_view = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(cleanup);
+            let mut kind = NativeType::subtype(
+                &raw mut molt_cpython_abi::abi_types::PyBaseObject_Type,
+                c"OwnedIteratorNativeRetirement",
+            );
+            kind.tp_dealloc = Some(sequence_input_drop);
+            assert_eq!(kind.ready(), 0);
+            for transfer in [false, true] {
+                SEQUENCE_INPUT_DROPS.with(|count| count.set(0));
+                let input = Box::into_raw(Box::new(RetiringSequenceInput {
+                    object: PyObject {
+                        ob_refcnt: 1,
+                        ob_type: &raw mut *kind,
+                    },
+                    runtime_error: cleanup,
+                    c_error: cleanup_view,
+                }))
+                .cast::<PyObject>();
+                let bits = GLOBAL_BRIDGE.molt_value_for_pyobj(input).unwrap();
+                refcount::Py_DECREF(input);
+                let owner =
+                    molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), bits);
+                set_c_error(original_view);
+                crate::record_exception(py, crate::obj_from_bits(runtime).as_ptr().unwrap());
+                if transfer {
+                    let bits = owner.into_bits();
+                    assert_eq!(SEQUENCE_INPUT_DROPS.with(|count| count.get()), 0);
+                    molt_runtime_core::ffi::__molt_runtime_release_owned_value(bits);
+                } else {
+                    drop(owner);
+                }
+                assert_eq!(SEQUENCE_INPUT_DROPS.with(|count| count.get()), 1);
+                assert_eq!(crate::exception_last_bits_noinc(py), Some(runtime));
+                let restored = errors::take_current_error().expect("exact outer C error");
+                assert_eq!(restored.value, original_view);
+                errors::with_preserved_error(|| drop(restored));
+                crate::clear_exception(py);
+            }
+        }
+        for bits in [runtime, original, cleanup] {
             dec_ref_bits(py, bits);
         }
     });

@@ -69,7 +69,7 @@ Close release outcomes in dependency order:
 
 | Outcome | Current barrier | Closure authority |
 | --- | --- | --- |
-| Stable integrated candidate | Preserved WIP and active semantic fixes must converge into one reviewed source; HEAD alone does not identify a dirty candidate. | Existing source snapshots, integration ownership and observed compiler/runtime identities |
+| Stable integrated candidate | Consolidated compiler/runtime authorities need one immutable candidate with source-bound validation; unresolved semantic failures still block qualification. HEAD alone does not identify a dirty candidate. | Existing source snapshots, integration ownership and observed compiler/runtime identities |
 | Useful standalone programs | Exception/class/frame boundaries and asyncio still need complete native/WASM execution coverage in the advertised subset. | Public CLI consumers and the verified-subset contract |
 | Installed compile/edit/run workflow | Runtime-cell delivery, installed dependencies, LLVM availability and build identity binding must close without requiring users to build Molt. | [Packaging](packaging/PACKAGING.md) |
 | Product performance and resource limits | Required runtime, compile latency, startup, size and memory cells must be measured; async idle CPU, wakeup latency and throughput remain unqualified. | [Performance authority](tools/PERF_AUTHORITY.md) |
@@ -81,6 +81,9 @@ implemented, representative execution passed, full acceptance passed and
 published. Review completion, narrow checks, absent measurements and skipped
 cells never advance a later state. Asyncio is a P0 product outcome; integrated
 park/wake code is not closure of its lifecycle, target or performance contract.
+Constructor receiver gaps, including repeat subclass preservation and foreign
+class rejection, remain tracked in the
+[call binding contract](docs/spec/areas/compat/contracts/call_argument_binding_contract.md).
 
 Run one coordinated acceptance campaign after candidate stabilization. Invalidate
 affected evidence when inputs change, retain valid independent results, and
@@ -250,20 +253,32 @@ forward sequencing. Per-run logs and working handoffs are local evidence.
 
 ## Active Blockers
 
+The [type coverage matrix](docs/spec/areas/compat/surfaces/language/type_coverage_matrix.md)
+and [stdlib surface matrix](docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md)
+own the exact compatibility gap records. Roadmap summaries link to those records;
+any duplicated TODO must match its complete canonical record. In particular,
+memoryview character stores after a key releases the view still reject safely,
+even when another export keeps the original storage alive. Exact parity needs
+shared storage-liveness observation that does not block release/resize callbacks
+or defer native exporter release; the type matrix tracks that remaining gap.
+
 - The release workflow does not yet produce and pass both runtime-cell
   inventories required by candidate assembly. The packaging contract remains
   mandatory; source implementation of an assembler is not a successful release.
-- Verified-subset execution has no declared guest-profile axis and defaults to
-  development and ignored stderr. Expected-failure policies also conflict with
-  its all-pass release law. These gaps must be closed without excluding tests
-  or weakening observable exception, warning, or traceback behavior.
+- Verified-subset policy declares both `dev` and `release` guest profiles and
+  execution binds the requested profile to its coordinate. Complete passing
+  coverage remains unqualified. The default stderr comparison and expected-failure
+  policies still need reconciliation with the all-pass release law without
+  excluding tests or weakening observable exception, warning, or traceback behavior.
 - Preserved E1 witness attempts include toolchain and process-custody failures
   before semantic comparison. Recover those exact stages through the existing
   queue and require native and linked-WASM product verdicts; historical failures
   alone do not establish the current product frontier.
-- The performance gate's backend identity lookup still uses the retired
-  compiler profile layout. LLVM remains required by E2 while the prebuilt
-  compiler feature set omits it; neither fact authorizes dropping LLVM evidence.
+- Performance measurement pins host and guest profiles separately and records
+  selected compiler content from build publication observations. That selection
+  does not attest the loaded daemon or its complete feature/runtime identity.
+  LLVM remains required by E2 while the prebuilt compiler feature set omits it;
+  neither fact authorizes dropping LLVM evidence.
 - Semantic execution receipts do not yet bind the actual Molt compiler
   digest/profile/features or runtime cell/generation. Candidate smoke checks
   and a common source SHA cannot establish that qualified binaries ship.

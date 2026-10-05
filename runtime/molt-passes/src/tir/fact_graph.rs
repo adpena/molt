@@ -889,7 +889,10 @@ mod tests {
         func.value_types.insert(c, TirType::I64);
         func.value_types.insert(sum, TirType::I64);
         let block = func.blocks.get_mut(&entry).unwrap();
-        block.ops.push(op(OpCode::ConstInt, vec![], vec![c]));
+        block.ops.push(TirOp {
+            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(13))]),
+            ..op(OpCode::ConstInt, vec![], vec![c])
+        });
         block
             .ops
             .push(op(OpCode::Add, vec![ValueId(0), c], vec![sum]));

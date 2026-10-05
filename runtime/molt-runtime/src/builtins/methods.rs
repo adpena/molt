@@ -54,14 +54,14 @@ macro_rules! native_comparison_descriptor {
                 crate::builtins::functions::native_callable::NativeCallableKind::WrapperDescriptor,
                 $family.owner($py),
                 RichCompareOp::$op.method_name(),
-            ).with_text_signature("($self, value, /)"),
+            )
+            .with_text_signature("($self, value, /)"),
             fn_addr!(invoke),
             2,
         ))
     }};
 }
 pub(crate) use native_comparison_descriptor;
-
 
 mod common;
 mod core_types;
@@ -111,7 +111,8 @@ pub(crate) use common::{
     init_native_callable, set_function_defaults,
 };
 pub(crate) use core_types::{
-    memoryview_method_bits, object_method_bits, range_method_bits, type_method_bits,
+    memoryview_method_bits, object_method_bits, range_method_bits, type_delattr, type_method_bits,
+    type_setattr,
 };
 pub(crate) use dispatch::{builtin_class_method_bits, publish_builtin_class_methods};
 pub(crate) use io::file_method_bits;
@@ -122,7 +123,7 @@ pub(crate) use sequence::{
 pub(crate) use singletons::{
     ellipsis_bits, is_missing_bits, is_not_implemented_bits, missing_bits, not_implemented_bits,
 };
-pub(crate) use specialized::{asyncgen_method_bits, coroutine_method_bits, generator_method_bits};
+pub(crate) use specialized::{asyncgen_method_bits, generator_method_bits};
 
 #[cfg(test)]
 mod tests {

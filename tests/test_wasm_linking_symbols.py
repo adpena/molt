@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
+import os
 
 import pytest
 
@@ -431,6 +433,23 @@ def test_empty_expected_symbols_bypass_file_io(tmp_path: Path) -> None:
     assert (
         wasm_linking_defined_names(tmp_path / "does-not-exist.wasm", {}) == frozenset()
     )
+
+
+def test_observed_mapping_rejects_same_size_content_with_matching_metadata(
+    tmp_path: Path,
+) -> None:
+    from molt.toolchain_identity import stable_regular_file_identity
+
+    member = tmp_path / "member.wasm"
+    member.write_bytes(_module(_function("before", flags=0, index=0)))
+    observed = stable_regular_file_identity(member, label="symbol fixture")
+    before = member.stat()
+    member.write_bytes(_module(_function("after!", flags=0, index=0)))
+    os.utime(member, ns=(before.st_atime_ns, before.st_mtime_ns))
+    current = stable_regular_file_identity(member, label="current metadata fixture")
+    observed = replace(current, sha256=observed.sha256)
+    with pytest.raises(ValueError, match="content changed"):
+        wasm_linking_defined_names(member, {"after!": "function"}, observed=observed)
 
 
 def test_full_and_specialized_filters_share_kind_validation(tmp_path: Path) -> None:

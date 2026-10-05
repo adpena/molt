@@ -491,7 +491,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             "molt_mod"
         };
         let boxed = self
-            .call_runtime_2_boxed(runtime_name, op.operands[0], op.operands[1])
+            .emit_boxed_binary_fallback(runtime_name, op.operands[0], op.operands[1])
             .into_int_value();
         // Zero dispatch raises; the dead value still has the phi's carrier type.
         let slow_value = self
@@ -823,8 +823,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
         // `not in` keeps only the inverted truthiness of the membership result.
         let result_id = op.results[0];
-        let val =
-            self.borrowed_runtime_call_value(contains_fn, &args, false, "contains", "molt_contains");
+        let val = self.borrowed_runtime_call_value(
+            contains_fn,
+            &args,
+            false,
+            "contains",
+            "molt_contains",
+        );
         let truthy_fn = self.ensure_runtime_i64_fn("molt_is_truthy", 1);
         let truthy = self
             .backend

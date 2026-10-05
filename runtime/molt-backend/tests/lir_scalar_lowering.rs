@@ -72,7 +72,7 @@ fn int_attr(value: i64) -> AttrDict {
 
 fn float_attr(value: f64) -> AttrDict {
     let mut attrs = AttrDict::new();
-    attrs.insert("value".into(), AttrValue::Float(value));
+    attrs.insert("f_value".into(), AttrValue::Float(value));
     attrs
 }
 
@@ -163,53 +163,83 @@ fn lower_mixed_add_to_f64_repr() {
 
 #[test]
 fn lower_simple_float_param_arithmetic_return_to_f64_repr() {
-    let func_ir = FunctionIR {
-        return_abi: molt_ir::FunctionReturnAbi::Value,
-        name: "interpolate_like".into(),
-        params: vec!["a".into(), "b".into(), "w".into()],
-        param_types: Some(vec!["float".into(), "float".into(), "float".into()]),
-        ops: vec![
-            opir("sub", &["b", "a"], Some("v0")),
-            const_float_opir("c3", 3.0),
-            const_float_opir("c2", 2.0),
-            opir("mul", &["w", "c2"], Some("v1")),
-            opir("sub", &["c3", "v1"], Some("v2")),
-            opir("mul", &["v0", "v2"], Some("v3")),
-            opir("mul", &["v3", "w"], Some("v4")),
-            opir("mul", &["v4", "w"], Some("v5")),
-            opir("add", &["v5", "a"], Some("v6")),
-            ret_opir("v6"),
-        ],
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        parameter_custody: Vec::new(),
-        execution_context: Default::default(),
-    };
+    for exact in [false, true] {
+        let mut func_ir = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: "interpolate_like".into(),
+            params: vec!["a".into(), "b".into(), "w".into()],
+            param_types: Some(vec!["float".into(), "float".into(), "float".into()]),
+            ops: vec![
+                opir("sub", &["b", "a"], Some("v0")),
+                const_float_opir("c3", 3.0),
+                const_float_opir("c2", 2.0),
+                opir("mul", &["w", "c2"], Some("v1")),
+                opir("sub", &["c3", "v1"], Some("v2")),
+                opir("mul", &["v0", "v2"], Some("v3")),
+                opir("mul", &["v3", "w"], Some("v4")),
+                opir("mul", &["v4", "w"], Some("v5")),
+                opir("add", &["v5", "a"], Some("v6")),
+                ret_opir("v6"),
+            ],
+            source_file: None,
+            is_extern: false,
+            codegen_partition: false,
+            parameter_custody: Vec::new(),
+            execution_context: Default::default(),
+        };
 
-    let tir = lower_to_tir(&func_ir);
-    assert_eq!(tir.return_type, TirType::F64);
-    assert_eq!(tir.blocks[&tir.entry_block].args[0].ty, TirType::F64);
+        if exact {
+            func_ir.params.clear();
+            func_ir.param_types = None;
+            func_ir.ops.splice(
+                0..0,
+                [
+                    const_float_opir("a", 0.5),
+                    const_float_opir("b", 4.0),
+                    const_float_opir("w", 0.25),
+                ],
+            );
+        }
+        let expected = if exact { TirType::F64 } else { TirType::DynBox };
+        let tir = lower_to_tir(&func_ir);
+        assert_eq!(tir.return_type, expected);
+        if !exact {
+            assert!(
+                tir.blocks[&tir.entry_block]
+                    .args
+                    .iter()
+                    .all(|arg| arg.ty == TirType::F64),
+                "annotations survive as metadata without proving exact producers"
+            );
+        }
 
-    let lir = lower_function_to_lir_for_repr_fact_extraction(&tir);
-    let entry = &lir.blocks[&lir.entry_block];
-    let return_value = match &entry.terminator {
-        molt_backend::tir::lir::LirTerminator::Return { values } => values[0],
-        other => panic!("expected return terminator, got {other:?}"),
-    };
-    let return_def = entry
-        .ops
-        .iter()
-        .flat_map(|op| op.result_values.iter())
-        .find(|value| value.id == return_value)
-        .expect("return value should be defined by arithmetic chain");
+        let lir = lower_function_to_lir_for_repr_fact_extraction(&tir);
+        let entry = &lir.blocks[&lir.entry_block];
+        let return_value = match &entry.terminator {
+            molt_backend::tir::lir::LirTerminator::Return { values } => values[0],
+            other => panic!("expected return terminator, got {other:?}"),
+        };
+        let return_def = entry
+            .ops
+            .iter()
+            .flat_map(|op| op.result_values.iter())
+            .find(|value| value.id == return_value)
+            .expect("return value should be defined by arithmetic chain");
 
-    assert_eq!(return_def.ty, TirType::F64);
-    assert_eq!(return_def.repr, molt_backend::tir::lir::LirRepr::F64);
-    assert!(
-        verify_lir_function(&lir).is_ok(),
-        "float parameter arithmetic return must satisfy LIR verifier"
-    );
+        assert_eq!(return_def.ty, expected);
+        assert_eq!(
+            return_def.repr,
+            if exact {
+                molt_backend::tir::lir::LirRepr::F64
+            } else {
+                molt_backend::tir::lir::LirRepr::DynBox
+            }
+        );
+        assert!(
+            verify_lir_function(&lir).is_ok(),
+            "float parameter arithmetic return must satisfy LIR verifier"
+        );
+    }
 }
 
 #[test]
@@ -530,7 +560,17 @@ fn lower_truthy_condition_materializes_bool1_before_branch() {
         1,
         "expected explicit truthiness materialization op"
     );
-    assert_eq!(entry.ops[0].tir_op.opcode, OpCode::CallBuiltin);
+    assert_eq!(entry.ops[0].tir_op.opcode, OpCode::Bool);
+    assert_eq!(entry.ops[0].tir_op.operands, vec![ValueId(0)]);
+    assert_eq!(entry.ops[0].result_values.len(), 1);
+    assert_eq!(
+        entry.ops[0].result_values[0].repr,
+        molt_backend::tir::lir::LirRepr::Bool1
+    );
+    let molt_backend::tir::lir::LirTerminator::CondBranch { cond, .. } = &entry.terminator else {
+        panic!("truthiness result must feed the branch");
+    };
+    assert_eq!(*cond, entry.ops[0].result_values[0].id);
     assert_eq!(
         entry.ops[0].tir_op.attrs.get("lir.truthy_cond"),
         Some(&AttrValue::Bool(true))

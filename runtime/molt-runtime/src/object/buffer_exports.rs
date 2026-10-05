@@ -94,8 +94,7 @@ pub(crate) fn acquire_owner(py: &PyToken<'_>, source: u64) -> Result<u64, ()> {
                     }
                 }
                 crate::TYPE_ID_MEMORYVIEW => {
-                    if super::memoryview_released(ptr) {
-                        let _ = crate::raise_released_memoryview::<u64>(py);
+                    if !super::memoryview::require_exportable(py, ptr) {
                         return Err(());
                     }
                     if (*super::memoryview_ptr(ptr)).exports.acquire().is_err() {

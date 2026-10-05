@@ -689,7 +689,8 @@ fn native_annotation_reads_bind_owned_descriptors_and_reject_static_types() {
         };
         let heap = OwnedPyObject::from_owned(typeobj::PyType_FromSpec(&raw mut spec));
         assert!(!heap.as_ptr().is_null());
-        let dictionary_owner = OwnedPyObject::from_owned(typeobj::PyType_GetDict(heap.as_ptr().cast()));
+        let dictionary_owner =
+            OwnedPyObject::from_owned(typeobj::PyType_GetDict(heap.as_ptr().cast()));
         let dictionary = dictionary_owner.as_ptr();
         assert!(!dictionary.is_null());
         let result = OwnedPyObject::from_owned(sequences::PyList_New(0));

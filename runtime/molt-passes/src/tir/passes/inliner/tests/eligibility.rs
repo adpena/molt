@@ -220,10 +220,10 @@ fn non_closure_same_arity_still_inlineable() {
     // start with the env marker) is still inlinable. The closure gate keys on
     // the marker, not on arity, so a legitimate same-arity function is never
     // de-inlined by the fix.
-    let callee = add_callee(); // params ["p0", "p1"] - not a closure
+    let callee = identity_callee(); // params ["p0", "p1"] - not a closure
     assert!(
         !is_closure(&callee),
-        "add_callee's first param is not the env marker"
+        "identity_callee's first param is not the env marker"
     );
     let m = module(vec![callee]);
     let (cg, sm) = analysis(&m);
@@ -366,47 +366,76 @@ fn inline_classification_owns_context_and_partition_restrictions() {
     }
 }
 
-/// Parameter custody alone never refuses inlining: the splice's activation
-/// owns what the callee owns. A callee that releases a borrowed parameter
-/// other than by `del` would end the caller's reference, which no activation
-/// can give back, so it is refused with that typed reason. The same release of
-/// a transferred parameter ends the activation's own binding and inlines.
+/// Custody and callback safety are independent. The activation's release
+/// predicate still distinguishes an owned parameter from an unowned one;
+/// module eligibility must first refuse every generic finalizer callback.
 #[test]
-fn inline_classification_refuses_only_unowned_parameter_releases() {
+fn inline_classification_preserves_custody_and_callback_precedence() {
     use crate::tir::call_facts::{InlineEligibility, InlineWhyNot};
     use molt_ir::ParameterCustody;
     let tti = TargetInfo::native_release_fast();
-    let eligible = InlineEligibility::Eligible;
-    let refused = InlineEligibility::WhyNot(InlineWhyNot::UnownedParameterRelease);
-    for (custody, release, expected) in [
-        (ParameterCustody::Transferred, None, eligible),
-        (ParameterCustody::Borrowed, Some(OpCode::DelBoundary), eligible),
-        (ParameterCustody::Transferred, Some(OpCode::DeleteVar), eligible),
-        (ParameterCustody::Borrowed, Some(OpCode::DeleteVar), refused),
-        (ParameterCustody::Borrowed, Some(OpCode::DecRef), refused),
+    for (custody, release, unowned_release) in [
+        (ParameterCustody::Transferred, None, false),
+        (ParameterCustody::Borrowed, None, false),
+        (ParameterCustody::Borrowed, Some(OpCode::DelBoundary), false),
+        (
+            ParameterCustody::Transferred,
+            Some(OpCode::DelBoundary),
+            false,
+        ),
+        (
+            ParameterCustody::Transferred,
+            Some(OpCode::DeleteVar),
+            false,
+        ),
+        (ParameterCustody::Borrowed, Some(OpCode::DeleteVar), true),
+        (ParameterCustody::Transferred, Some(OpCode::DecRef), false),
+        (ParameterCustody::Borrowed, Some(OpCode::DecRef), true),
     ] {
-        let mut callee = add_callee();
+        let mut callee = identity_callee();
         callee.set_parameter_custody(&[ParameterCustody::Borrowed, custody]);
         if let Some(opcode) = release {
-            // `DeleteVar` releases the value at operand 1; the others release
-            // their one operand.
+            // DeleteVar releases operand 1 and defines its boundary result;
+            // DelBoundary and DecRef each have one operand and no result.
             let released = ValueId(1);
-            let operands = match opcode {
-                OpCode::DeleteVar => vec![ValueId(0), released],
-                _ => vec![released],
+            let (operands, results) = if opcode == OpCode::DeleteVar {
+                let result = callee.fresh_value();
+                callee.value_types.insert(result, TirType::DynBox);
+                (vec![ValueId(0), released], vec![result])
+            } else {
+                (vec![released], vec![])
             };
             let entry = callee.entry_block;
             callee.blocks.get_mut(&entry).unwrap().ops.push(TirOp {
                 dialect: Dialect::Molt,
                 opcode,
                 operands,
-                results: vec![],
+                results,
                 attrs: AttrDict::new(),
                 source_span: None,
             });
         }
+        crate::tir::verify::verify_function(&callee)
+            .expect("custody classification must use a structurally valid fixture");
+        assert_eq!(
+            super::super::activation::releases_unowned_parameter(&callee, |position| {
+                callee.parameter_custody(position) != ParameterCustody::Transferred
+            }),
+            unowned_release,
+            "{custody:?} released by {release:?}: independent activation custody"
+        );
         let m = module(vec![callee]);
         let (cg, summaries) = analysis(&m);
+        assert_eq!(
+            cg.has_opaque_call(&m.functions[0].name),
+            release.is_some(),
+            "generic finalization is opaque regardless of parameter custody"
+        );
+        let expected = if release.is_some() {
+            InlineEligibility::WhyNot(InlineWhyNot::Recursive)
+        } else {
+            InlineEligibility::Eligible
+        };
         assert_eq!(
             super::super::eligibility::classify_inline_eligibility(
                 &m.functions[0],

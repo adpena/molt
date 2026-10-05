@@ -59,7 +59,6 @@ pub fn c3_merge<T: Copy + Eq + std::hash::Hash>(seqs: &[Vec<T>]) -> Option<Vec<T
     }
 }
 
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LayoutConflict;
 
@@ -71,28 +70,45 @@ pub fn dominant_layout_base<T: Copy, I: Copy>(
     candidate: (T, I),
     mut is_subtype: impl FnMut(I, I) -> bool,
 ) -> Result<(T, I), LayoutConflict> {
-    let Some(winner) = selected else { return Ok(candidate); };
-    if is_subtype(winner.1, candidate.1) { Ok(winner) }
-    else if is_subtype(candidate.1, winner.1) { Ok(candidate) }
-    else { Err(LayoutConflict) }
+    let Some(winner) = selected else {
+        return Ok(candidate);
+    };
+    if is_subtype(winner.1, candidate.1) {
+        Ok(winner)
+    } else if is_subtype(candidate.1, winner.1) {
+        Ok(candidate)
+    } else {
+        Err(LayoutConflict)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{c3_merge, dominant_layout_base, LayoutConflict};
+    use super::{LayoutConflict, c3_merge, dominant_layout_base};
 
     #[test]
     fn preserves_diamond_precedence_and_rejects_inconsistent_orders() {
-        assert_eq!(c3_merge(&[vec![1, 3], vec![2, 3], vec![1, 2]]), Some(vec![1, 2, 3]));
+        assert_eq!(
+            c3_merge(&[vec![1, 3], vec![2, 3], vec![1, 2]]),
+            Some(vec![1, 2, 3])
+        );
         assert_eq!(c3_merge(&[vec![1, 2, 3], vec![2, 1, 3], vec![1, 2]]), None);
         assert_eq!(c3_merge(&[vec![1, 3], vec![1, 3], vec![1, 1]]), None);
         assert_eq!(c3_merge::<u64>(&[]), Some(vec![]));
     }
     #[test]
     fn layout_dominance_retains_first_equal_owner_and_rejects_conflicts() {
-        assert_eq!(dominant_layout_base(Some((10, 1)), (20, 1), |a, b| a == b), Ok((10, 1)));
-        assert_eq!(dominant_layout_base(Some((10, 1)), (20, 2), |a, b| a == b), Err(LayoutConflict));
-        assert_eq!(dominant_layout_base(Some((10, 1)), (20, 2), |a, b| a >= b), Ok((20, 2)));
+        assert_eq!(
+            dominant_layout_base(Some((10, 1)), (20, 1), |a, b| a == b),
+            Ok((10, 1))
+        );
+        assert_eq!(
+            dominant_layout_base(Some((10, 1)), (20, 2), |a, b| a == b),
+            Err(LayoutConflict)
+        );
+        assert_eq!(
+            dominant_layout_base(Some((10, 1)), (20, 2), |a, b| a >= b),
+            Ok((20, 2))
+        );
     }
-
 }

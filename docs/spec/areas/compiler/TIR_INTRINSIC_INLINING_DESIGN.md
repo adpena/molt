@@ -333,7 +333,7 @@ All 373 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_exception_kind` | 1 | Low | |
 | `molt_exception_class` | 1 | Low | |
 | `molt_exception_message` | 1 | Low | |
-| `molt_exception_set_cause` | 1 | Low | |
+| `molt_exception_prepare_raise` | 2 | Low | Owned normalized instance and explicit cause admission. |
 | `molt_exception_set_last` | 1 | Low | |
 | `molt_exception_set_value` | 1 | Low | |
 | `molt_exception_context_set` | 1 | Low | |

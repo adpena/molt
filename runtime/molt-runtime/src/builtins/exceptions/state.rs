@@ -199,7 +199,6 @@ impl ExceptionsRuntimeState {
     }
 }
 
-
 pub(super) fn exceptions_state(_py: &PyToken<'_>) -> &'static ExceptionsRuntimeState {
     &runtime_state(_py).exceptions
 }

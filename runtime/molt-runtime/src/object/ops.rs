@@ -1448,6 +1448,18 @@ pub extern "C" fn molt_inc_ref_obj(bits: u64) {
     })
 }
 
+/// Release a callback-capable temporary while preserving both the runtime and
+/// native pending-error channels through their existing shared transaction.
+#[unsafe(no_mangle)]
+pub extern "C" fn __molt_runtime_release_owned_value(bits: u64) {
+    if !obj_from_bits(bits).is_ptr() {
+        return;
+    }
+    crate::with_gil_entry_nopanic!(_py, {
+        molt_cpython_abi::api::errors::with_preserved_error(|| molt_dec_ref_obj(bits));
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dec_ref_obj(bits: u64) {
     // Fast path: skip GIL for non-pointer values (ints, floats, bools, none).

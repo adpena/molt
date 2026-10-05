@@ -561,10 +561,10 @@ fn owned_binding_alias_copy_is_not_a_transparent_root() {
 // ── The lowering-truth Copy-class contract (over-release keystone) ──────
 
 /// Every `_original_kind` classifies into exactly one [`CopyLowering`] bucket,
-/// and the derived predicates (alias / inert / passthrough-reachable)
-/// are a partition consistent with the classifier. This is the single-source-
-/// of-truth guard: the alias view and the no-incref-passthrough set cannot
-/// drift because both read `classify_copy_kind`.
+/// and the derived custody, inertness, and passthrough predicates agree with
+/// that generated classifier. Non-owning custody alone does not prove source
+/// identity; alias-root unions use the separate shared `no_heap_alias_source`
+/// fact and its declared-shape validation.
 #[test]
 fn copy_lowering_classes_are_total_and_disjoint() {
     // A representative sample spanning the buckets, plus the bare-Copy

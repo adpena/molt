@@ -24,6 +24,7 @@ impl WasmFunctionFramePlan {
             func_ir,
             &crate::tir::target_info::TargetInfo::wasm_release_fast(),
         );
+        let guard_facts = molt_tir::passes::RuntimeGuardFacts::for_function(func_ir);
         let mut requirements = FrameRuntimeRequirements::default();
         for op in &func_ir.ops {
             requirements.observe_op(&scalar_plan, op);
@@ -135,6 +136,12 @@ impl WasmFunctionFramePlan {
             locals.ensure_synthetic(scratch, &mut local_types, &mut local_count);
         }
 
+        let guard_profile_local = guard_facts.has_profile_only().then(|| {
+            let local = local_count;
+            local_types.push(ValType::I64);
+            local_count += 1;
+            local
+        });
         let stateful = requirements.stateful();
         let jumpful = requirements.jumpful();
         let owns_frame = func_ir.execution_context == crate::ir::ExecutionContextPolicy::Local;
@@ -199,6 +206,8 @@ impl WasmFunctionFramePlan {
                 value_occupancy,
                 runtime_lookup_only_vars,
                 scalar_plan,
+                guard_facts,
+                guard_profile_local,
                 control_mode,
                 tail_call_eligible: tail_call_eligible && const_anchors.is_empty(),
                 owned_frame_attempt,

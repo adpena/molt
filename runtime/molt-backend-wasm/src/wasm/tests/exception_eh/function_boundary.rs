@@ -100,7 +100,12 @@ fn python_eh_returns_preserve_guarded_calls_and_dispatch_handlers() {
                 reloc_enabled: false,
                 ..WasmCompileOptions::default()
             })
-            .emit_wasm_module(ir, BTreeMap::new(), trampolines)
+            .emit_wasm_module(
+                &ir,
+                BTreeMap::new(),
+                trampolines,
+                crate::wasm_plan::WasmStageAudit::from_environment(),
+            )
             .wasm;
             wasmparser::Validator::new().validate_all(&wasm).unwrap();
             let (memory_pages, table_entries) = wasm_import_minimums(&wasm);

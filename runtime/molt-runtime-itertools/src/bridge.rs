@@ -77,13 +77,10 @@ unsafe extern "C" {
         name_len: usize,
         layout_size: i64,
         shape_id: u16,
-    ) -> u64;
-    fn molt_itertools_class_set_iter_next(class_bits: u64, iter_fn_bits: u64, next_fn_bits: u64);
-    fn molt_itertools_class_set_new(class_bits: u64, new_fn_bits: u64);
-    fn molt_itertools_alloc_function(fn_ptr: u64, arity: u64) -> u64;
-    fn molt_itertools_alloc_function_with_defaults(
-        fn_ptr: u64,
-        arity: u64,
+        iter_fn: u64,
+        next_fn: u64,
+        new_fn: u64,
+        new_arity: u64,
         defaults_ptr: *const u64,
         defaults_len: usize,
     ) -> u64;
@@ -94,8 +91,6 @@ unsafe extern "C" {
     fn molt_missing() -> u64;
     fn molt_add(a: u64, b: u64) -> u64;
     fn molt_eq(a: u64, b: u64) -> u64;
-    /// Raw `molt_iter_next` — returns a 2-tuple (value, done_bool).
-    pub fn molt_iter_next(iter_bits: u64) -> u64;
     fn molt_callargs_new(pos_capacity_bits: u64, kw_capacity_bits: u64) -> u64;
     fn molt_callargs_expand_star(builder_bits: u64, iterable_bits: u64) -> u64;
     fn molt_call_bind(call_bits: u64, builder_bits: u64) -> u64;
@@ -262,11 +257,6 @@ pub fn molt_iter_bridge(_py: &PyToken, bits: u64) -> u64 {
     unsafe { molt_iter(bits) }
 }
 
-/// Call `molt_iter_next` — returns a 2-tuple (value, done_bool) or None on error.
-pub fn bridge_molt_iter_next(_py: &PyToken, iter_bits: u64) -> u64 {
-    unsafe { molt_iter_next(iter_bits) }
-}
-
 pub fn raise_not_iterable<T: ExceptionSentinel>(_py: &PyToken, bits: u64) -> T {
     let result = unsafe { molt_raise_not_iterable(bits) };
     T::from_bits(result)
@@ -322,32 +312,21 @@ pub fn alloc_itertools_class(
     name: &str,
     layout_size: i64,
     shape: molt_runtime_core::ObjectShapeId,
+    iter_fn: u64,
+    next_fn: u64,
+    constructor: Option<(u64, u64, &[u64])>,
 ) -> u64 {
-    unsafe { molt_itertools_alloc_class(name.as_ptr(), name.len(), layout_size, shape as u16) }
-}
-
-pub fn class_set_iter_next(_py: &PyToken, class_bits: u64, iter_fn_bits: u64, next_fn_bits: u64) {
-    unsafe { molt_itertools_class_set_iter_next(class_bits, iter_fn_bits, next_fn_bits) }
-}
-
-pub fn class_set_new(_py: &PyToken, class_bits: u64, new_fn_bits: u64) {
-    unsafe { molt_itertools_class_set_new(class_bits, new_fn_bits) }
-}
-
-pub fn alloc_function(_py: &PyToken, fn_ptr: u64, arity: u64) -> u64 {
-    unsafe { molt_itertools_alloc_function(fn_ptr, arity) }
-}
-
-pub fn alloc_function_with_defaults(
-    _py: &PyToken,
-    fn_ptr: u64,
-    arity: u64,
-    defaults: &[u64],
-) -> u64 {
+    let (new_fn, new_arity, defaults) = constructor.unwrap_or((0, 0, &[]));
     unsafe {
-        molt_itertools_alloc_function_with_defaults(
-            fn_ptr,
-            arity,
+        molt_itertools_alloc_class(
+            name.as_ptr(),
+            name.len(),
+            layout_size,
+            shape as u16,
+            iter_fn,
+            next_fn,
+            new_fn,
+            new_arity,
             defaults.as_ptr(),
             defaults.len(),
         )

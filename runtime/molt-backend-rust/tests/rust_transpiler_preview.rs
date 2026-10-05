@@ -458,7 +458,7 @@ fn rust_backend_stamps_target_python_version_state() {
     assert!(source.contains("fn molt_sys_version_info(_args: &mut Vec<MoltValue>) -> MoltValue"));
     assert!(source.contains("fn molt_sys_version(_args: &mut Vec<MoltValue>) -> MoltValue"));
     assert!(source.contains("fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue"));
-    assert!(source.contains("MoltValue::Str(state.version.clone())"));
+    assert!(source.contains("MoltValue::Str(state.version.clone().into())"));
     assert!(source.contains("MoltValue::List(vec!["));
 }
 

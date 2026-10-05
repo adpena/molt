@@ -14,17 +14,16 @@ and warm timings, native+LLVM backend parity, repeat-CI classification,
 quiescence, provenance, and stale-tree status. It is the only lane allowed to
 publish `authoritative=true`.
 
-The gate's `release-fast` label currently selects the public CLI's
-`--build-profile release`. Without explicit overrides, that selects a
-`release-output` runtime and an independently built `release` compiler. The
-scoreboard's compiler-identity lookup still probes the older `release-fast`
-layout and must be reconciled with the compiler that actually ran. A label or
-an artifact found in a different profile directory is not proof of that identity.
-The current best-effort search can also select the `molt` launcher or return no
-identity, and omits Windows executable suffixes. An authoritative receipt must
-bind the backend that actually ran using observed build diagnostics and content
-identity, including its profile and feature set, and
-fail closed when that identity is absent.
+The gate's `release-fast` label selects the public CLI's `--build-profile release`
+while its shared profile selection explicitly pins the `release-fast` guest/runtime
+and independently built `release` host compiler. Compiler lookup uses that host
+coordinate and the platform's executable suffix. Measurement records selected
+compiler content from build publication observations rather than relying on a
+pre-build path probe. These observations prove selection and publication; they
+are not loaded-daemon attestation. An authoritative receipt must bind the backend
+that actually ran, including its profile, feature set and runtime identity, and
+fail closed when that execution identity is absent. Profile declarations and
+source-checkout measurements do not qualify the installed release matrix.
 
 LLVM is required by E2 and the verified-subset policy. The current prebuilt
 compiler feature set omits LLVM. Its availability and acceptance remain open;
@@ -57,6 +56,16 @@ the structural-audit JSON, the degrade-to-slow gate report, and a fail-closed
 gate receipt. The two metric artifacts are compared against their checked-in
 baselines and fail closed on any regression; the poison receipt must contain the
 `fail-closed gate: OK` verdict.
+
+The development proof-supervisor bootstrap shares one repository-observer scope
+across setup probes and one Cargo generation producer across direct and queued
+consumers. A same-machine Windows development comparison observed unchanged
+warm selection at 14.2–14.5 seconds before the closure (two samples), versus
+5.4–6.0 seconds afterward (four unprofiled samples). Each selection reported
+zero compiled and 41 fresh Cargo artifacts. Bounded source and local-dependency
+edits with original mtimes rebuilt only owning local crates and dependents;
+registry artifacts stayed fresh. These are development bootstrap observations,
+not installed-user compile latency or E2 performance acceptance.
 
 ## v1.0 Acceptance Scope
 

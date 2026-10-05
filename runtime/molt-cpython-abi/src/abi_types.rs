@@ -1863,6 +1863,10 @@ pub(crate) unsafe fn initialize_static_type_storage() {
         set_name!(PyDateTime_DeltaType, b"datetime.timedelta\0");
         set_name!(PyDateTime_TZInfoType, b"datetime.tzinfo\0");
 
+        // The builtin list owns physical sequence slots. Managed/native
+        // descendants inherit these exact functions through declared owners.
+        crate::api::sequences::list_slots::initialize();
+
         MOLT_TUPLE_AS_SEQUENCE.sq_length = tuple_slot_length as *mut c_void;
         MOLT_TUPLE_AS_SEQUENCE.sq_concat = tuple_slot_concat as *mut c_void;
         MOLT_TUPLE_AS_SEQUENCE.sq_repeat = tuple_slot_repeat as *mut c_void;
@@ -2106,11 +2110,25 @@ pub(crate) unsafe fn initialize_static_type_storage() {
             Py_TPFLAGS_DEFAULT | Py_TPFLAGS_MAPPING,
             object
         );
+        // Runtime-backed exported shells own compact protocol storage and need
+        // real namespace/slot readiness after production hooks are installed.
+        for object in type_static_ptrs() {
+            let tp = object.cast::<PyTypeObject>();
+            if let Some(protocols) = crate::api::typeobj::process_runtime_protocols(tp) {
+                protocols.attach(tp);
+                (*tp).tp_flags &= !Py_TPFLAGS_READY;
+            }
+        }
         // object — root of the hierarchy; DEFAULT|BASETYPE, no base.
         PyBaseObject_Type.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_READY;
         PyBaseObject_Type.tp_base = std::ptr::null_mut();
         PyBaseObject_Type.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
         PyBaseObject_Type.tp_alloc = Some(crate::api::typeobj::PyType_GenericAlloc);
+        PyBaseObject_Type.tp_init = Some(crate::api::typeobj::object_init);
+        PyBaseObject_Type.tp_new = Some(crate::api::typeobj::object_new);
+        PyBaseObject_Type.tp_repr = Some(crate::api::typeobj::object_repr);
+        PyBaseObject_Type.tp_str = Some(crate::api::typeobj::object_str);
+        PyBaseObject_Type.tp_richcompare = Some(crate::api::typeobj::object_richcompare);
         PyBaseObject_Type.tp_dealloc = Some(crate::api::typeobj::object_dealloc);
         PyBaseObject_Type.tp_free = Some(crate::api::memory::PyObject_Free);
         // Ordinary extension types inherit the generic descriptor/dictionary
@@ -2151,6 +2169,10 @@ pub(crate) unsafe fn initialize_static_type_storage() {
         // inherits this at ready-time, so its instances have room for the ht_* tail.
         PyType_Type.tp_basicsize = std::mem::size_of::<PyHeapTypeObject>() as Py_ssize_t;
         PyType_Type.tp_itemsize = std::mem::size_of::<PyMemberDef>() as Py_ssize_t;
+        // CPython type's physical instance dictionary is PyTypeObject.tp_dict.
+        // Generic attribute get/set/delete uses this layout without publishing
+        // semantic type caches or slots; default type mutation owns publication.
+        PyType_Type.tp_dictoffset = core::mem::offset_of!(PyTypeObject, tp_dict) as Py_ssize_t;
         // int — LONG_SUBCLASS|BASETYPE|MATCH_SELF; variable-length (ob_digit tail).
         shell!(
             PyLong_Type,
@@ -2277,6 +2299,17 @@ pub(crate) unsafe fn initialize_static_type_storage() {
             object
         );
         init_exception_singleton_types();
+
+        // Process-owned builtin shells may appear in a managed class's MRO
+        // before their runtime dictionaries are projected. Publish the inherited
+        // object setter now, as an actual C slot. The metatype installs its own
+        // override in init_type_getattro; extension-owned NULL slots stay NULL.
+        for object in type_static_ptrs().into_iter().chain(exc_singleton_ptrs()) {
+            let kind = object.cast::<PyTypeObject>();
+            if (*kind).tp_setattro.is_none() && (*kind).tp_setattr.is_none() {
+                (*kind).tp_setattro = Some(crate::api::object::PyObject_GenericSetAttr);
+            }
+        }
 
         Py_None.ob_type = &raw mut PyNone_Type;
         // `Py_True`/`Py_False` set `ob_base.ob_type = &PyBool_Type` in their const

@@ -14,7 +14,7 @@ use crate::abi_types::{
 use crate::api::callback::CallbackOperands;
 use crate::api::errors::raised_error_pending as exception_already_pending;
 use crate::bridge::{GLOBAL_BRIDGE, resolved_molt_handle};
-use crate::hooks::{AttributeAccess, hooks_or_stubs};
+use crate::hooks::{AttributeAccess, AttributeMutation, hooks_or_stubs};
 use molt_lang_obj_model::MoltObject;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -39,7 +39,7 @@ fn none_bits() -> u64 {
 
 /// Attribute names are admitted before any user-owned native slot is invoked.
 /// The C-API's object and generic variants share Python's string-subtype rule.
-unsafe fn require_attribute_name(name: *mut PyObject) -> bool {
+pub(crate) unsafe fn require_attribute_name(name: *mut PyObject) -> bool {
     if unsafe { crate::api::strings::PyUnicode_Check(name) } != 0 {
         return true;
     }
@@ -228,7 +228,7 @@ pub unsafe extern "C" fn PyObject_SetAttr(
         return -1;
     }
     if GLOBAL_BRIDGE.molt_handle_for_pyobj(o).is_some() {
-        return unsafe { managed_set_attr(o, attr_name, v, AttributeAccess::Normal) };
+        return unsafe { managed_set_attr(o, attr_name, v, AttributeMutation::Normal) };
     }
     let _object = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(o) };
     let tp = unsafe { crate::bridge::semantic_type(o) };
@@ -1126,7 +1126,7 @@ pub unsafe extern "C" fn PyObject_GenericSetAttr(
         return -1;
     }
     if GLOBAL_BRIDGE.molt_handle_for_pyobj(o).is_some() {
-        return unsafe { managed_set_attr(o, name, value, AttributeAccess::Generic) };
+        return unsafe { managed_set_attr(o, name, value, AttributeMutation::Generic) };
     }
     // ── Foreign object (bridge miss): CPython `_PyObject_GenericSetAttrWithDict`
     // — a data descriptor's `tp_descr_set` wins, else assign into the instance
@@ -1138,11 +1138,11 @@ pub unsafe extern "C" fn PyObject_GenericSetAttr(
 /// Normal and explicit generic mutations share operand custody and error
 /// transfer. Recognition precedes observation so a failed managed commit never
 /// falls through to foreign physical storage.
-unsafe fn managed_set_attr(
+pub(crate) unsafe fn managed_set_attr(
     object: *mut PyObject,
     name: *mut PyObject,
     value: *mut PyObject,
-    access: AttributeAccess,
+    access: AttributeMutation,
 ) -> c_int {
     let Some(object) = (unsafe { crate::bridge::RuntimeValue::acquire(object) }) else {
         return -1;

@@ -22,15 +22,12 @@ from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
     RuntimeBuildMemberPlan,
     RuntimeToolchainContentManifest,
-    require_native_runtime_staticlib_identity as require_native_runtime_staticlib_identity,
-    runtime_build_fingerprint as runtime_build_fingerprint,
     _FAMILY_SCHEMA,
     _digest,
     _freeze_json,
     _runtime_toolchain_build_python,
 )
 from molt.dx import _memory_bounded_worker_count
-from molt.file_hashing import content_change_time_ns
 from molt.file_publication import metadata_is_link_like
 from molt.python_environment_identity import (
     python_capture_authority_paths,
@@ -38,6 +35,7 @@ from molt.python_environment_identity import (
 from molt.toolchain_identity import (
     StableRegularFileChangedError,
     StableRegularFileError,
+    StableRegularFileHandle,
     open_stable_regular_file,
     probe_executable,
     resolve_executable,
@@ -72,6 +70,7 @@ _RUNTIME_BUILD_TOOLING_RELPATHS = (
     "src/molt/cli/config_resolution.py",
     "src/molt/cli/diagnostic_text.py",
     "src/molt/cli/installed_runtime.py",
+    "src/molt/cli/installed_runtime_contract.py",
     "src/molt/cli/json_cache.py",
     "src/molt/cli/llvm_wasi_tools.py",
     "src/molt/cli/models.py",
@@ -170,47 +169,11 @@ class _TreeInputCandidate:
 
 @dataclass(frozen=True)
 class _TreeInputFile(_TreeInputCandidate):
-    stat_signature: tuple[int, int, int, int, int, int]
+    opened: StableRegularFileHandle
 
     @property
     def size(self) -> int:
-        return self.stat_signature[1]
-
-
-def _tree_input_change_time_ns(path: Path, value: os.stat_result) -> int:
-    change_time_ns = content_change_time_ns(path, value)
-    if change_time_ns is None:
-        raise OSError(f"runtime input ChangeTime is unavailable: {path}")
-    return change_time_ns
-
-
-def _tree_input_stat_signature(
-    path: Path,
-    value: os.stat_result,
-) -> tuple[int, int, int, int, int, int]:
-    return (
-        value.st_mode,
-        value.st_size,
-        value.st_mtime_ns,
-        _tree_input_change_time_ns(path, value),
-        value.st_dev,
-        value.st_ino,
-    )
-
-
-def _tree_input_handle_signature(
-    value: os.stat_result,
-) -> tuple[int, int, int, int, int]:
-    # Windows reports creation time as path st_ctime but mirrors mtime through
-    # fstat().  File identity, mode, size, and mtime are comparable on all hosts;
-    # the path-only ctime remains part of the before/after mutation guard.
-    return (
-        value.st_mode,
-        value.st_size,
-        value.st_mtime_ns,
-        value.st_dev,
-        value.st_ino,
-    )
+        return self.opened.stat.st_size
 
 
 def _tree_hash_worker_count(file_count: int) -> int:
@@ -240,74 +203,43 @@ def _sha256_open_file(handle: object) -> str:
     return hasher.hexdigest()
 
 
-def _runtime_input_changed(file: _TreeInputFile) -> ValueError:
+def _runtime_input_changed(file: _TreeInputCandidate) -> ValueError:
     return ValueError(
         f"runtime input changed while hashing {file.label!r}: {file.path}"
     )
 
 
-def _snapshot_tree_input_file(candidate: _TreeInputCandidate) -> _TreeInputFile:
-    try:
-        current = candidate.path.lstat()
-        if metadata_is_link_like(current):
-            raise ValueError(
-                f"runtime input path alias is forbidden for "
-                f"{candidate.label!r}: {candidate.path}"
-            )
-        if not stat_module.S_ISREG(current.st_mode):
-            raise ValueError(
-                f"runtime input is no longer a regular file for "
-                f"{candidate.label!r}: {candidate.path}"
-            )
-        return _TreeInputFile(
-            label=candidate.label,
-            path=candidate.path,
-            stat_signature=_tree_input_stat_signature(candidate.path, current),
-        )
-    except (OSError, ValueError) as exc:
-        if isinstance(exc, ValueError):
-            raise
-        raise OSError(
-            f"runtime input snapshot failed for {candidate.label!r}: "
-            f"{candidate.path}: {exc}"
-        ) from exc
-
-
 def _hash_tree_input_file(file: _TreeInputFile) -> str:
+    """Hash only the handle already admitted by the owning capture operation."""
+    return _sha256_open_file(file.opened.stream)
+
+
+def _capture_tree_input_file(candidate: _TreeInputCandidate) -> tuple[int, str]:
+    # Enumeration discovers names. Content admission, the one hash pass and
+    # closing checks share one owned handle; there is no detached metadata
+    # snapshot whose ChangeTime would have to uniquely identify later writes.
     try:
-        expected_handle_signature = (
-            file.stat_signature[0],
-            file.stat_signature[1],
-            file.stat_signature[2],
-            file.stat_signature[4],
-            file.stat_signature[5],
-        )
-        # Source, sysroot and archive captures share the same no-follow handle
-        # transaction. The tree snapshot additionally fences the interval from
-        # enumeration to this read; ChangeTime detects restored-mtime writes.
         with open_stable_regular_file(
-            file.path, label=f"runtime input {file.label!r}"
+            candidate.path, label=f"runtime input {candidate.label!r}"
         ) as opened:
-            if (
-                _tree_input_handle_signature(opened.stat) != expected_handle_signature
-                or opened.content_change_time_ns != file.stat_signature[3]
-            ):
-                raise _runtime_input_changed(file)
-            digest = _sha256_open_file(opened.stream)
-        return digest
+            file = _TreeInputFile(candidate.label, candidate.path, opened)
+            digest = _hash_tree_input_file(file)
+        return file.size, digest
     except StableRegularFileChangedError as exc:
-        raise _runtime_input_changed(file) from exc
+        raise _runtime_input_changed(candidate) from exc
     except StableRegularFileError as exc:
         if isinstance(exc.__cause__, OSError):
             raise OSError(
-                f"runtime input hashing failed for {file.label!r}: {file.path}: {exc}"
+                f"runtime input hashing failed for {candidate.label!r}: "
+                f"{candidate.path}: {exc}"
             ) from exc
         raise
     except (OSError, ValueError) as exc:
         if isinstance(exc, ValueError):
             raise
         raise OSError(
-            f"runtime input hashing failed for {file.label!r}: {file.path}: {exc}"
+            f"runtime input hashing failed for {candidate.label!r}: "
+            f"{candidate.path}: {exc}"
         ) from exc
 
 
@@ -375,23 +307,18 @@ def _bounded_parallel_map(
     return cast(tuple[_ParallelOutput, ...], tuple(results))
 
 
-def _snapshot_tree_input_files(
+def _capture_tree_input_files(
     candidates: Sequence[_TreeInputCandidate],
-) -> tuple[_TreeInputFile, ...]:
-    return _bounded_parallel_map(
+) -> dict[str, tuple[int, str]]:
+    captures = _bounded_parallel_map(
         candidates,
-        _snapshot_tree_input_file,
+        _capture_tree_input_file,
         workers=_tree_hash_worker_count(len(candidates)),
     )
-
-
-def _hash_tree_input_files(files: Sequence[_TreeInputFile]) -> dict[str, str]:
-    digests = _bounded_parallel_map(
-        files,
-        _hash_tree_input_file,
-        workers=_tree_hash_worker_count(len(files)),
-    )
-    return {file.label: digest for file, digest in zip(files, digests, strict=True)}
+    return {
+        candidate.label: capture
+        for candidate, capture in zip(candidates, captures, strict=True)
+    }
 
 
 @dataclass(frozen=True)
@@ -401,6 +328,8 @@ class RuntimeTreeIndex:
     ``_tree_identity`` is ``capture(roots).identity(roots)``. A caller comparing
     several receipts with one source tree captures the union of their roots once
     and projects each receipt's summary without hashing shared files again.
+    Each worker owns at most one admitted file handle. Names are enumerated
+    before content admission; this is not an atomic whole-filesystem snapshot.
     """
 
     root_paths: dict[str, Path]
@@ -463,15 +392,15 @@ class RuntimeTreeIndex:
                     path=candidate,
                 )
             root_files[logical_root] = tuple(label for label, _path in candidates)
-        ordered_files = _snapshot_tree_input_files(
+        captures = _capture_tree_input_files(
             tuple(files[label] for label in sorted(files))
         )
         return cls(
             root_paths=root_labels,
             missing=frozenset(missing),
             root_files=root_files,
-            sizes={file.label: file.size for file in ordered_files},
-            digests=_hash_tree_input_files(ordered_files),
+            sizes={label: size for label, (size, _digest) in captures.items()},
+            digests={label: digest for label, (_size, digest) in captures.items()},
         )
 
     def identity(

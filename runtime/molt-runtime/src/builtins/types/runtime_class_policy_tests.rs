@@ -188,6 +188,11 @@ fn class_semantics_distinguish_static_heap_and_mutable_bank_types() {
         );
         dec_ref_bits(py, args);
         assert!(!exception_pending(py));
+        let operator_classes = [
+            crate::builtins::operator::molt_operator_itemgetter_type(),
+            crate::builtins::operator::molt_operator_attrgetter_type(),
+            crate::builtins::operator::molt_operator_methodcaller_type(),
+        ];
         for (class, expected) in [
             (
                 mappingproxy_class(py),
@@ -218,18 +223,9 @@ fn class_semantics_distinguish_static_heap_and_mutable_bank_types() {
                 type_of_bits(py, partial),
                 ClassSemanticPolicy::heap(true, true),
             ),
-            (
-                crate::builtins::operator::molt_operator_itemgetter_type(),
-                ClassSemanticPolicy::heap(true, false),
-            ),
-            (
-                crate::builtins::operator::molt_operator_attrgetter_type(),
-                ClassSemanticPolicy::heap(true, false),
-            ),
-            (
-                crate::builtins::operator::molt_operator_methodcaller_type(),
-                ClassSemanticPolicy::heap(true, false),
-            ),
+            (operator_classes[0], ClassSemanticPolicy::heap(true, false)),
+            (operator_classes[1], ClassSemanticPolicy::heap(true, false)),
+            (operator_classes[2], ClassSemanticPolicy::heap(true, false)),
         ] {
             let ptr = obj_from_bits(class).as_ptr().unwrap();
             assert_eq!(unsafe { ClassSemanticPolicy::of(py, ptr) }, expected);
@@ -250,6 +246,9 @@ fn class_semantics_distinguish_static_heap_and_mutable_bank_types() {
                     assert!(!(*heap).ht_name.is_null() && !(*heap).ht_qualname.is_null());
                 }
             }
+        }
+        for owned in operator_classes {
+            dec_ref_bits(py, owned);
         }
         dec_ref_bits(py, partial);
         // Static origin and immutability belong to the actual class, never its

@@ -24,9 +24,7 @@ from molt.cli.native_link_plan import NativeLinkPlan, NativeLinkerKind, LinkDial
 from molt.cli.link_member_selection import selected_archive_members
 from molt.cli.native_symbol_inspection import (
     _NativeGlobalSymbolFacts,
-    _native_archive_global_symbol_facts,
     _native_object_global_symbol_facts,
-    _symbol_artifact_members,
 )
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkLoadingPolicy,
@@ -138,12 +136,9 @@ class LinkSelectionAdmission:
                         identity, label="external link input"
                     )
                 else:
-                    reader = (
-                        _native_archive_global_symbol_facts
-                        if _symbol_artifact_members(path) is not None
-                        else _native_object_global_symbol_facts
-                    )
-                    facts[path] = reader(
+                    # One admission detects archives and binds each member's
+                    # symbols to bytes under the same owned descriptor.
+                    facts[path] = _native_object_global_symbol_facts(
                         path,
                         target_triple=requirements.target_triple,
                         identity=identity,

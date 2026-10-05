@@ -47,10 +47,12 @@ from molt.cli.runtime_artifact_selection import (
     RuntimeArtifactSelection,
 )
 from molt.cli.runtime_build_identity import (
-    RuntimeBuildIdentity,
-    RuntimeBuildMemberPlan,
     _tree_hash_worker_count,
     resolve_wasm_runtime_build_family_identities,
+)
+from molt.cli.runtime_identity_schema import (
+    RuntimeBuildIdentity,
+    RuntimeBuildMemberPlan,
 )
 from molt.cli.runtime_cargo_plan import (
     CargoResourceRoot,

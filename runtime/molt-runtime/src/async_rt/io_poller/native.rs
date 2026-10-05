@@ -710,8 +710,8 @@ fn interest_from_events(events: u32) -> Interest {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::blocking::blocking_waiter_id;
+    use super::*;
 
     fn slot(addr: usize) -> PtrSlot {
         PtrSlot(addr as *mut u8)

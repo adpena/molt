@@ -570,6 +570,48 @@ fn native_alias_of_managed_type_completes_its_own_declarations() {
             );
             assert!(errors::PyErr_Occurred().is_null());
 
+            // A separately admitted native alias is another physical cache and
+            // watcher consumer of the same logical type mutation. Origin does
+            // not remove it from publication custody.
+            static WATCHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            unsafe extern "C" fn watched(_: *mut PyObject) -> c_int {
+                WATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                0
+            }
+            let watcher = typeobj::PyType_AddWatcher(Some(watched));
+            assert!(watcher >= 0);
+            assert_eq!(typeobj::PyType_Watch(watcher, managed), 0);
+            assert_eq!(typeobj::PyType_Watch(watcher, alias_pointer.cast()), 0);
+            assert_eq!(typeobj::PyUnstable_Type_AssignVersionTag(managed.cast()), 1);
+            assert_eq!(typeobj::PyUnstable_Type_AssignVersionTag(alias_pointer), 1);
+            WATCHES.store(0, std::sync::atomic::Ordering::Relaxed);
+            let owned_name =
+                crate::class_name_bits(crate::MoltObject::from_bits(class).as_ptr().unwrap());
+            let abstract_methods =
+                crate::MoltObject::from_ptr(crate::alloc_tuple(py, &[owned_name])).bits();
+            crate::builtins::attributes::type_metadata::write(
+                py,
+                class,
+                typeobj::TypeAttributeField::AbstractMethods,
+                Some(abstract_methods),
+            );
+            assert!(!crate::exception_pending(py));
+            assert_eq!(WATCHES.load(std::sync::atomic::Ordering::Relaxed), 2);
+            for pointer in [managed.cast::<PyTypeObject>(), alias_pointer] {
+                assert_eq!((*pointer).tp_version_tag, 0);
+                assert_ne!((*pointer).tp_flags & Py_TPFLAGS_IS_ABSTRACT, 0);
+            }
+            assert_eq!(typeobj::PyType_Unwatch(watcher, managed), 0);
+            assert_eq!(typeobj::PyType_Unwatch(watcher, alias_pointer.cast()), 0);
+            assert_eq!(typeobj::PyType_ClearWatcher(watcher), 0);
+            crate::builtins::attributes::type_metadata::write(
+                py,
+                class,
+                typeobj::TypeAttributeField::AbstractMethods,
+                None,
+            );
+            crate::dec_ref_bits(py, abstract_methods);
+
             // The declaration lives in the shared namespace; retire it before its
             // stack-owned method table and native shell leave scope.
             assert_eq!(

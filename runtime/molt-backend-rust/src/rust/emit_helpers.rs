@@ -19,7 +19,7 @@ pub(super) fn rust_clone(name: &str) -> String {
 }
 
 pub(super) fn rust_slot_key(offset: i64) -> String {
-    format!("MoltValue::Str(\"__slot_{offset}\".to_string())")
+    format!("MoltValue::Str(\"__slot_{offset}\".into())")
 }
 
 pub(super) fn is_assignable_var(name: &str) -> bool {
@@ -31,7 +31,9 @@ pub(super) fn out_var(op: &OpIR) -> String {
 }
 
 pub(super) fn declare_molt_value(out_name: &str, rhs: &str, hoisted: &BTreeSet<String>) -> String {
-    if hoisted.contains(out_name) {
+    if !is_assignable_var(out_name) {
+        format!("let _: MoltValue = {rhs};")
+    } else if hoisted.contains(out_name) {
         format!("{out_name} = {rhs};")
     } else {
         format!("let mut {out_name}: MoltValue = {rhs};")

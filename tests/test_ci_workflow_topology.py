@@ -708,14 +708,15 @@ def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
     assert "wasi_sysroot_url" not in action_text
     # These command families declare both native ld.lld and SDK wasm-ld. The
     # WebAssembly-only SDK must never stand in for the full native LLVM SDK.
-    rust_steps = yaml.safe_load(ci_text)["jobs"]["rust-build-unit-smoke"]["steps"]
-    rust_llvm_steps = [
-        step
-        for step in rust_steps
-        if step.get("uses") == "./.github/actions/setup-llvm"
-    ]
-    assert len(rust_llvm_steps) == 1
-    assert rust_llvm_steps[0]["with"] == {"profile": "full", "wasi": "true"}
+    jobs = yaml.safe_load(ci_text)["jobs"]
+    for job in ("rust-build-unit-smoke", "native-integration"):
+        sdk_steps = [
+            step
+            for step in jobs[job]["steps"]
+            if step.get("uses") == "./.github/actions/setup-llvm"
+        ]
+        assert len(sdk_steps) == 1
+        assert sdk_steps[0]["with"] == {"profile": "full", "wasi": "true"}
     wasm_steps = yaml.safe_load(wasm_text)["jobs"]["wasm-build"]["steps"]
     llvm_steps = [
         step
@@ -1379,13 +1380,18 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
     assert "          cargo install cargo-deny --locked" not in security_text
     assert "          cargo install cargo-audit --locked" not in security_text
 
-    assert (
-        release_text.count(
-            "python tools/guarded_exec.py --prefix MOLT_RELEASE -- \\\n"
-            "            cargo build --locked --profile release-output -p molt-worker"
-        )
-        == 2
-    )
+    release_workflow = yaml.safe_load(release_text)
+    build_steps = [
+        step["run"]
+        for job in release_workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if step.get("name") == "Build independent native release generations"
+    ]
+    assert len(build_steps) == 1
+    assert "for lane in primary secondary; do" in build_steps[0]
+    assert "tools/guarded_exec.py --prefix MOLT_RELEASE --" in build_steps[0]
+    assert "python -m tools.release.build_compiler" in build_steps[0]
+    assert '--output "dist/native-$lane"' in build_steps[0]
     assert "run: cargo build -p molt-worker --release" not in release_text
 
 

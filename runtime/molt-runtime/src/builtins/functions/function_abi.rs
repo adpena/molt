@@ -2044,6 +2044,50 @@ mod wasm_runtime_callable_tests {
     use super::*;
 
     #[test]
+    fn resolved_constructor_identity_does_not_reenter_target_registry() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            // Resolve and publish first. Only read-only predicates run while the
+            // target registry is exclusively held: registration would deadlock.
+            let new = crate::builtins::methods::object_method_bits(py, "__new__");
+            let init = crate::builtins::methods::object_method_bits(py, "__init__");
+            let call = crate::builtins::methods::type_method_bits(py, "__call__");
+            let exception_init = crate::builtins::exceptions::exception_method_bits(py, "__init__");
+            let (default_new, policy, matches) = {
+                let _targets = native_callable_targets().lock().unwrap();
+                unsafe {
+                    (
+                        crate::call::type_policy::resolved_new_is_default_object_new(new),
+                        crate::call::type_policy::resolved_constructor_init_policy(new, init),
+                        [
+                            (new, fn_key!(crate::molt_object_new_bound)),
+                            (init, fn_key!(crate::molt_object_init)),
+                            (call, fn_key!(crate::molt_type_call)),
+                            (
+                                exception_init,
+                                fn_key!(crate::builtins::exceptions::molt_exception_init_owned),
+                            ),
+                        ]
+                        .map(|(actual, expected)| {
+                            crate::call::type_policy::callable_matches_runtime_symbol(
+                                actual, expected,
+                            )
+                        }),
+                    )
+                }
+            };
+            // Report semantic failures after dropping the registry guard so a
+            // failing assertion cannot poison unrelated callable consumers.
+            assert!(default_new);
+            assert_eq!(
+                policy,
+                crate::call::type_policy::InitArgPolicy::RejectConstructorArgs
+            );
+            assert!(matches.into_iter().all(|matched| matched));
+        });
+    }
+
+    #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn raw_core_function_address_does_not_impersonate_named_runtime_key() {
         let raw_type_init = crate::molt_type_init as *const () as usize as u64;

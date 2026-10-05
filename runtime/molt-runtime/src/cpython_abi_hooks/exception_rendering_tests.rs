@@ -164,7 +164,10 @@ unsafe extern "C" fn exception_subclass_check(
 unsafe extern "C" fn payload_drop(value: *mut PyObject) {
     let class = INGRESS_CLASS.load(Ordering::SeqCst);
     if !class.is_null() {
-        INGRESS_CLASS_REFS.store(unsafe { (*class).ob_base.ob_base.ob_refcnt } as usize, Ordering::SeqCst);
+        INGRESS_CLASS_REFS.store(
+            unsafe { (*class).ob_base.ob_base.ob_refcnt } as usize,
+            Ordering::SeqCst,
+        );
     }
     DROPS.fetch_add(1, Ordering::SeqCst);
     drop(unsafe { Box::from_raw(value) });
@@ -181,9 +184,8 @@ unsafe extern "C" fn payload_drop(value: *mut PyObject) {
 unsafe extern "C" fn payload_str(_value: *mut PyObject) -> *mut PyObject {
     let owner = OWNER.load(Ordering::SeqCst);
     let replacement = unsafe { OwnedPyObject::from_owned(sequences::PyTuple_New(1)) };
-    let text = unsafe {
-        OwnedPyObject::from_owned(strings::PyUnicode_FromString(c"after".as_ptr()))
-    };
+    let text =
+        unsafe { OwnedPyObject::from_owned(strings::PyUnicode_FromString(c"after".as_ptr())) };
     assert!(!replacement.as_ptr().is_null() && !text.as_ptr().is_null());
     unsafe { sequences::PyTuple_SetItem(replacement.as_ptr(), 0, text.into_ptr()) };
     let old = unsafe { std::mem::replace(&mut (*owner).args, replacement.into_ptr()) };
@@ -224,11 +226,18 @@ unsafe fn exception(ty: *mut PyTypeObject, values: &[*mut PyObject]) -> OwnedPyO
     for (index, &value) in values.iter().enumerate() {
         unsafe {
             refcount::Py_INCREF(value);
-            assert_eq!(sequences::PyTuple_SetItem(args.as_ptr(), index as isize, value), 0);
+            assert_eq!(
+                sequences::PyTuple_SetItem(args.as_ptr(), index as isize, value),
+                0
+            );
         }
     }
     let result = unsafe {
-        OwnedPyObject::from_owned(errors::molt_native_exception_new(ty, args.as_ptr(), ptr::null_mut()))
+        OwnedPyObject::from_owned(errors::molt_native_exception_new(
+            ty,
+            args.as_ptr(),
+            ptr::null_mut(),
+        ))
     };
     assert!(
         !result.as_ptr().is_null(),
@@ -259,13 +268,16 @@ fn c_error_ingress_preserves_native_identity_and_api_specific_context() {
             };
             let value = value_owner.as_ptr();
             assert!(!value.is_null());
-            assert_eq!(GLOBAL_BRIDGE.molt_handle_for_pyobj(value).is_some(), managed);
-            let handled_owner = OwnedPyObject::from_owned(
-                object::PyObject_CallNoArgs((&raw mut PyExc_ValueError).cast()),
+            assert_eq!(
+                GLOBAL_BRIDGE.molt_handle_for_pyobj(value).is_some(),
+                managed
             );
-            let middle_owner = OwnedPyObject::from_owned(
-                object::PyObject_CallNoArgs((&raw mut PyExc_TypeError).cast()),
-            );
+            let handled_owner = OwnedPyObject::from_owned(object::PyObject_CallNoArgs(
+                (&raw mut PyExc_ValueError).cast(),
+            ));
+            let middle_owner = OwnedPyObject::from_owned(object::PyObject_CallNoArgs(
+                (&raw mut PyExc_TypeError).cast(),
+            ));
             let handled = handled_owner.as_ptr();
             let middle = middle_owner.as_ptr();
             assert!(!handled.is_null() && !middle.is_null());
@@ -289,9 +301,8 @@ fn c_error_ingress_preserves_native_identity_and_api_specific_context() {
             let trace_class = crate::builtin_classes(&py).traceback;
             let trace_class = crate::obj_from_bits(trace_class).as_ptr().unwrap();
             let traceback_bits = crate::alloc_instance_for_class(&py, trace_class);
-            let traceback_owner = OwnedPyObject::from_owned(
-                GLOBAL_BRIDGE.owned_handle_to_pyobj(traceback_bits),
-            );
+            let traceback_owner =
+                OwnedPyObject::from_owned(GLOBAL_BRIDGE.owned_handle_to_pyobj(traceback_bits));
             let traceback = traceback_owner.as_ptr();
             assert!(!traceback.is_null());
             assert_eq!(errors::PyException_SetTraceback(value, traceback), 0);
@@ -309,11 +320,16 @@ fn c_error_ingress_preserves_native_identity_and_api_specific_context() {
             assert_eq!(normalized.exc_type, (&raw mut PyExc_IndexError).cast());
             assert_eq!(normalized.value, value);
             assert!(normalized.traceback.is_null());
-            let retained_traceback = OwnedPyObject::from_owned(errors::PyException_GetTraceback(value));
+            let retained_traceback =
+                OwnedPyObject::from_owned(errors::PyException_GetTraceback(value));
             assert_eq!(retained_traceback.as_ptr(), traceback);
             drop(retained_traceback);
             let context = OwnedPyObject::from_owned(errors::PyException_GetContext(value));
-            assert_eq!(context.as_ptr(), handled, "Normalize does not chain handled context");
+            assert_eq!(
+                context.as_ptr(),
+                handled,
+                "Normalize does not chain handled context"
+            );
             drop(context);
 
             errors::PyErr_Restore(
@@ -323,11 +339,16 @@ fn c_error_ingress_preserves_native_identity_and_api_specific_context() {
             );
             let restored = errors::take_current_error().expect("restored exact error");
             assert_eq!(restored.value, value);
-            let retained_traceback = OwnedPyObject::from_owned(errors::PyException_GetTraceback(value));
+            let retained_traceback =
+                OwnedPyObject::from_owned(errors::PyException_GetTraceback(value));
             assert!(retained_traceback.as_ptr().is_null());
             drop(retained_traceback);
             let context = OwnedPyObject::from_owned(errors::PyException_GetContext(value));
-            assert_eq!(context.as_ptr(), handled, "Restore does not chain handled context");
+            assert_eq!(
+                context.as_ptr(),
+                handled,
+                "Restore does not chain handled context"
+            );
             drop(context);
             drop(restored);
 
@@ -341,9 +362,10 @@ fn c_error_ingress_preserves_native_identity_and_api_specific_context() {
             let rebuilt = errors::take_current_error().expect("rebuilt restore value");
             assert_ne!(rebuilt.value, value);
             assert_eq!(rebuilt.exc_type, (&raw mut PyExc_LookupError).cast());
-            let args = OwnedPyObject::from_owned(
-                object::PyObject_GetAttrString(rebuilt.value, c"args".as_ptr()),
-            );
+            let args = OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+                rebuilt.value,
+                c"args".as_ptr(),
+            ));
             assert_eq!(sequences::PyTuple_Size(args.as_ptr()), 1);
             assert_eq!(sequences::PyTuple_GetItem(args.as_ptr(), 0), value);
             drop(args);
@@ -378,16 +400,23 @@ fn c_error_normalization_transfers_constructor_failure_and_rejects_invalid_class
         assert_eq!(class.ready(), 0);
         let class_ptr = (&raw mut *class).cast::<PyObject>();
         errors::PyErr_SetNone(class_ptr);
-        let raised = errors::take_current_error().expect("constructor failure survives normalization");
+        let raised =
+            errors::take_current_error().expect("constructor failure survives normalization");
         assert_eq!(raised.value, failure);
         drop(raised);
 
-        errors::PyErr_Restore(object::Py_NewRef(class_ptr), ptr::null_mut(), ptr::null_mut());
+        errors::PyErr_Restore(
+            object::Py_NewRef(class_ptr),
+            ptr::null_mut(),
+            ptr::null_mut(),
+        );
         let raised = errors::take_current_error().expect("Restore preserves constructor failure");
         assert_eq!(raised.value, failure);
         drop(raised);
 
-        let trace_class = crate::obj_from_bits(crate::builtin_classes(&py).traceback).as_ptr().unwrap();
+        let trace_class = crate::obj_from_bits(crate::builtin_classes(&py).traceback)
+            .as_ptr()
+            .unwrap();
         let trace_bits = crate::alloc_instance_for_class(&py, trace_class);
         let traceback = OwnedPyObject::from_owned(GLOBAL_BRIDGE.owned_handle_to_pyobj(trace_bits));
         let mut normalized = errors::OwnedCError {
@@ -404,7 +433,11 @@ fn c_error_normalization_transfers_constructor_failure_and_rejects_invalid_class
         let pending = errors::take_current_error();
         assert_eq!(normalized.exc_type, (&raw mut PyExc_LookupError).cast());
         assert_eq!(normalized.value, failure);
-        assert_eq!(normalized.traceback, traceback.as_ptr(), "constructor failure retains the input traceback");
+        assert_eq!(
+            normalized.traceback,
+            traceback.as_ptr(),
+            "constructor failure retains the input traceback"
+        );
         assert!(occurred.is_null());
         drop(pending);
         drop(normalized);
@@ -425,7 +458,8 @@ fn c_error_normalization_transfers_constructor_failure_and_rejects_invalid_class
         DROP_RAISES.store(true, Ordering::SeqCst);
         let drops = DROPS.load(Ordering::SeqCst);
         errors::PyErr_SetNone(class_ptr);
-        let raised = errors::take_current_error().expect("invalid result's cleanup preserves TypeError");
+        let raised =
+            errors::take_current_error().expect("invalid result's cleanup preserves TypeError");
         assert_eq!(raised.exc_type, (&raw mut PyExc_TypeError).cast());
         assert_eq!(DROPS.load(Ordering::SeqCst), drops + 1);
         drop(raised);
@@ -458,7 +492,11 @@ fn c_error_normalization_transfers_constructor_failure_and_rejects_invalid_class
                 assert!(occurred.is_null());
                 raised
             } else {
-                errors::PyErr_Restore(object::Py_NewRef(class_ptr), payload.into_ptr(), ptr::null_mut());
+                errors::PyErr_Restore(
+                    object::Py_NewRef(class_ptr),
+                    payload.into_ptr(),
+                    ptr::null_mut(),
+                );
                 errors::take_current_error().expect("Restore failure with reentrant input cleanup")
             };
             assert_eq!(raised.value, failure);
@@ -471,7 +509,10 @@ fn c_error_normalization_transfers_constructor_failure_and_rejects_invalid_class
         errors::PyErr_SetNone(class_ptr);
         let raised = errors::take_current_error().expect("silent constructor becomes SystemError");
         assert_eq!(raised.exc_type, (&raw mut PyExc_SystemError).cast());
-        assert!(!raised.value.is_null(), "production failure is a real exception instance");
+        assert!(
+            !raised.value.is_null(),
+            "production failure is a real exception instance"
+        );
         drop(raised);
 
         // A callable that is not an exception class must not execute at all.
@@ -514,7 +555,11 @@ fn c_error_normalization_bounds_every_entry_and_recovers_after_recursion() {
                     errors::take_current_error().expect("bounded SetObject normalization")
                 }
                 1 => {
-                    errors::PyErr_Restore(object::Py_NewRef(class_ptr), ptr::null_mut(), ptr::null_mut());
+                    errors::PyErr_Restore(
+                        object::Py_NewRef(class_ptr),
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                    );
                     errors::take_current_error().expect("bounded Restore normalization")
                 }
                 2 => {
@@ -549,7 +594,8 @@ fn c_error_normalization_bounds_every_entry_and_recovers_after_recursion() {
             drop(raised);
 
             errors::PyErr_SetNone((&raw mut PyExc_ValueError).cast());
-            let recovered = errors::take_current_error().expect("depth scope released after recursion");
+            let recovered =
+                errors::take_current_error().expect("depth scope released after recursion");
             assert_eq!(recovered.exc_type, (&raw mut PyExc_ValueError).cast());
             assert!(!recovered.value.is_null());
             drop(recovered);
@@ -571,7 +617,8 @@ fn c_error_setstring_owns_borrowed_inputs_through_replacement() {
         assert_eq!(class.ready(), 0);
         let class_ptr = &raw mut *class;
         let class_refs = class.ob_base.ob_base.ob_refcnt;
-        let mut payload_type = NativeType::subtype(&raw mut PyBaseObject_Type, c"ReplacementFinalizer");
+        let mut payload_type =
+            NativeType::subtype(&raw mut PyBaseObject_Type, c"ReplacementFinalizer");
         payload_type.tp_dealloc = Some(payload_drop);
         assert_eq!(payload_type.ready(), 0);
         let payload = OwnedPyObject::from_owned(Box::into_raw(Box::new(PyObject {
@@ -590,22 +637,31 @@ fn c_error_setstring_owns_borrowed_inputs_through_replacement() {
         DROP_RAISES.store(false, Ordering::SeqCst);
         INGRESS_CLASS.store(ptr::null_mut(), Ordering::SeqCst);
         assert_eq!(DROPS.load(Ordering::SeqCst), 1);
-        assert!(INGRESS_CLASS_REFS.load(Ordering::SeqCst) > class_refs as usize,
-            "the fixture owner plus ingress pin must survive old-error finalization");
+        assert!(
+            INGRESS_CLASS_REFS.load(Ordering::SeqCst) > class_refs as usize,
+            "the fixture owner plus ingress pin must survive old-error finalization"
+        );
         assert_eq!(replaced.exc_type, class_ptr.cast());
         assert_eq!(text(typeobj::PyObject_Str(replaced.value)), "replacement");
         drop(replaced);
 
-        errors::PyErr_SetString(class_ptr.cast(), c"message borrowed from old error".as_ptr());
+        errors::PyErr_SetString(
+            class_ptr.cast(),
+            c"message borrowed from old error".as_ptr(),
+        );
         let previous = errors::take_current_error().expect("old error owns borrowed message");
-        let argument = sequences::PyTuple_GetItem((*previous.value.cast::<PyBaseExceptionObject>()).args, 0);
+        let argument =
+            sequences::PyTuple_GetItem((*previous.value.cast::<PyBaseExceptionObject>()).args, 0);
         let message = strings::PyUnicode_AsUTF8AndSize(argument, ptr::null_mut());
         assert!(!message.is_null());
         errors::restore_current_error_exact(previous);
         errors::PyErr_SetString(errors::PyErr_Occurred(), message);
         let replaced = errors::take_current_error().expect("borrowed inputs are pinned");
         assert_eq!(replaced.exc_type, class_ptr.cast());
-        assert_eq!(text(typeobj::PyObject_Str(replaced.value)), "message borrowed from old error");
+        assert_eq!(
+            text(typeobj::PyObject_Str(replaced.value)),
+            "message borrowed from old error"
+        );
         drop(replaced);
         assert_eq!(class.ob_base.ob_base.ob_refcnt, class_refs);
         assert!(errors::PyErr_Occurred().is_null());
@@ -670,7 +726,11 @@ fn c_error_normalization_uses_generic_subclass_callbacks_but_restore_is_exact() 
                 );
                 assert_eq!(
                     raised.exc_type,
-                    if raises { (&raw mut PyExc_LookupError).cast() } else { (&raw mut PyExc_IndexError).cast() },
+                    if raises {
+                        (&raw mut PyExc_LookupError).cast()
+                    } else {
+                        (&raw mut PyExc_IndexError).cast()
+                    },
                     "raises={raises}, explicit={explicit}, actual_class={:?}",
                     exc_singleton_name(raised.exc_type),
                 );
@@ -683,7 +743,11 @@ fn c_error_normalization_uses_generic_subclass_callbacks_but_restore_is_exact() 
             }
         }
         SUBCLASS_CHECKS.store(0, Ordering::SeqCst);
-        errors::PyErr_Restore(object::Py_NewRef(class_ptr), object::Py_NewRef(input), ptr::null_mut());
+        errors::PyErr_Restore(
+            object::Py_NewRef(class_ptr),
+            object::Py_NewRef(input),
+            ptr::null_mut(),
+        );
         let restored = errors::take_current_error().expect("Restore uses exact class construction");
         assert_eq!(SUBCLASS_CHECKS.load(Ordering::SeqCst), 0);
         assert_eq!(restored.exc_type, class_ptr);
@@ -766,7 +830,10 @@ fn c_error_bootstrap_admits_type_only_before_constructor_allocation() {
                     }
                 };
                 assert_eq!(raised.exc_type, class_ptr);
-                assert!(raised.value.is_null(), "arbitrary payload is never a normalized instance");
+                assert!(
+                    raised.value.is_null(),
+                    "arbitrary payload is never a normalized instance"
+                );
                 assert!(raised.traceback.is_null());
                 assert_eq!(CONSTRUCTOR_CALLS.load(Ordering::SeqCst), 0);
                 assert_eq!(BOOTSTRAP_TEXT_CALLS.load(Ordering::SeqCst), 0);
@@ -794,7 +861,8 @@ fn c_error_bootstrap_admits_type_only_before_constructor_allocation() {
             .unwrap();
         assert!(output.status.success(), "{mode}: {output:?}");
         assert!(
-            String::from_utf8_lossy(&output.stdout).contains("bootstrap normalization admission verified"),
+            String::from_utf8_lossy(&output.stdout)
+                .contains("bootstrap normalization admission verified"),
             "{mode}: {output:?}",
         );
     }
@@ -825,14 +893,19 @@ fn declaring_slots_own_foreign_arguments_and_distinguish_null_fields() {
             "KeyError('x')"
         );
         assert_eq!(text(typeobj::PyObject_Repr(key)), "KeyError('x')");
-        let owner = OwnedPyObject::from_owned(
-            object::PyObject_GetAttrString((&raw mut PyExc_KeyError).cast(), c"__str__".as_ptr()),
-        );
+        let owner = OwnedPyObject::from_owned(object::PyObject_GetAttrString(
+            (&raw mut PyExc_KeyError).cast(),
+            c"__str__".as_ptr(),
+        ));
         let base_owner = OwnedPyObject::from_owned(object::PyObject_GetAttrString(
             (&raw mut PyExc_BaseException).cast(),
             c"__str__".as_ptr(),
         ));
-        assert!(!owner.as_ptr().is_null() && !base_owner.as_ptr().is_null() && owner.as_ptr() != base_owner.as_ptr());
+        assert!(
+            !owner.as_ptr().is_null()
+                && !base_owner.as_ptr().is_null()
+                && owner.as_ptr() != base_owner.as_ptr()
+        );
         drop(owner);
         drop(base_owner);
         drop(key_owner);
@@ -945,21 +1018,19 @@ unsafe fn raised_exception_transfer_cases() {
         let occurred = errors::PyErr_Occurred();
         let refs = (*value).ob_refcnt;
         let raised = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+        assert_eq!(occurred, (&raw mut PyExc_LookupError).cast());
+        assert_eq!(refs, 2, "SetRaisedException steals its reference");
         assert_eq!(
-            occurred,
-            (&raw mut PyExc_LookupError).cast()
+            raised.as_ptr(),
+            value,
+            "the exact existing instance is transferred"
         );
-        assert_eq!(
-            refs,
-            2,
-            "SetRaisedException steals its reference"
-        );
-        assert_eq!(raised.as_ptr(), value, "the exact existing instance is transferred");
         assert!(errors::PyErr_Occurred().is_null());
         let empty = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
         assert!(empty.as_ptr().is_null());
         assert_eq!((*value).ob_refcnt, 2);
-        let preserved_traceback = OwnedPyObject::from_owned(errors::PyException_GetTraceback(raised.as_ptr()));
+        let preserved_traceback =
+            OwnedPyObject::from_owned(errors::PyException_GetTraceback(raised.as_ptr()));
         assert_eq!(preserved_traceback.as_ptr(), traceback);
         drop(preserved_traceback);
         drop(raised);
@@ -967,7 +1038,8 @@ unsafe fn raised_exception_transfer_cases() {
 
         // Retiring a previous exception runs arbitrary finalizers. A finalizer
         // that raises cannot replace the caller's new indicator or undo clear.
-        let mut payload_type = NativeType::subtype(&raw mut PyBaseObject_Type, c"RaisedCleanupPayload");
+        let mut payload_type =
+            NativeType::subtype(&raw mut PyBaseObject_Type, c"RaisedCleanupPayload");
         payload_type.tp_dealloc = Some(payload_drop);
         assert_eq!(payload_type.ready(), 0);
         DROP_RAISES.store(true, Ordering::SeqCst);
@@ -989,7 +1061,8 @@ unsafe fn raised_exception_transfer_cases() {
             errors::PyErr_SetRaisedException(next);
             let raised = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
             assert_eq!(
-                raised.as_ptr(), next,
+                raised.as_ptr(),
+                next,
                 "finalizer errors must not replace the caller's state"
             );
             assert!(errors::PyErr_Occurred().is_null());
@@ -1107,7 +1180,8 @@ unsafe fn python_text_transport_cases() {
             assert_eq!(typeobj::PyType_Ready(class), 0);
         }
 
-        let mut payload_type = NativeType::subtype(&raw mut PyBaseObject_Type, c"PythonTextPayload");
+        let mut payload_type =
+            NativeType::subtype(&raw mut PyBaseObject_Type, c"PythonTextPayload");
         payload_type.tp_str = Some(text_payload_str);
         payload_type.tp_repr = Some(text_payload_repr);
         payload_type.tp_dealloc = Some(text_payload_drop);
@@ -1265,7 +1339,12 @@ unsafe fn python_text_transport_cases() {
         drop(tuple);
         let empty = OwnedPyObject::from_owned(raw_fixture(b""));
         assert_eq!(
-            take_raw(strings::PyUnicode_Replace(pair, empty.as_ptr(), separator.as_ptr(), -1)),
+            take_raw(strings::PyUnicode_Replace(
+                pair,
+                empty.as_ptr(),
+                separator.as_ptr(),
+                -1
+            )),
             b"\0\xed\xa0\x80\0\xed\xb0\x80\0"
         );
         drop(empty);
@@ -1273,13 +1352,16 @@ unsafe fn python_text_transport_cases() {
 
         let mut mapping_slots: PyMappingMethods = std::mem::zeroed();
         mapping_slots.mp_subscript = text_mapping_item as *mut std::ffi::c_void;
-        let mut mapping_type = NativeType::subtype(&raw mut PyBaseObject_Type, c"PythonTextMapping");
+        let mut mapping_type =
+            NativeType::subtype(&raw mut PyBaseObject_Type, c"PythonTextMapping");
         mapping_type.tp_as_mapping = (&raw mut mapping_slots).cast();
         assert_eq!(mapping_type.ready(), 0);
-        assert!(mapping_type.tp_dealloc.is_some(), "object subtype inherits its production deallocator");
-        let mapping = OwnedPyObject::from_owned(
-            typeobj::PyType_GenericAlloc(&raw mut *mapping_type, 0),
+        assert!(
+            mapping_type.tp_dealloc.is_some(),
+            "object subtype inherits its production deallocator"
         );
+        let mapping =
+            OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(&raw mut *mapping_type, 0));
         assert!(!mapping.as_ptr().is_null());
         TEXT_DROPS.store(0, Ordering::SeqCst);
         assert_eq!(
@@ -1287,7 +1369,8 @@ unsafe fn python_text_transport_cases() {
             b"s\xed\xa0\x80\xed\xb0\x80\0z"
         );
         assert_eq!(TEXT_DROPS.load(Ordering::SeqCst), 1);
-        let rendered = OwnedPyObject::from_owned(percent(b"%(key\xed\xa0\x80\0)", mapping.as_ptr()));
+        let rendered =
+            OwnedPyObject::from_owned(percent(b"%(key\xed\xa0\x80\0)", mapping.as_ptr()));
         let occurred = errors::PyErr_Occurred();
         let parse_error = errors::take_current_error();
         assert!(rendered.as_ptr().is_null());
@@ -1304,7 +1387,8 @@ unsafe fn python_text_transport_cases() {
         FAILURE.store(failure, Ordering::SeqCst);
         TEXT_CALLBACK_FAILS.store(true, Ordering::SeqCst);
         TEXT_DROP_RAISES.store(true, Ordering::SeqCst);
-        let rendered = OwnedPyObject::from_owned(percent(b"%(key\xed\xa0\x80\0)s", mapping.as_ptr()));
+        let rendered =
+            OwnedPyObject::from_owned(percent(b"%(key\xed\xa0\x80\0)s", mapping.as_ptr()));
         let raised = errors::take_current_error();
         assert!(rendered.as_ptr().is_null());
         let raised = raised.expect("callback failure preserved");
@@ -1324,13 +1408,12 @@ unsafe fn python_text_transport_cases() {
             b"\xc0\x80",
             b"\xf4\x90\x80\x80",
         ] {
-            let value = OwnedPyObject::from_owned(
-                strings::PyUnicode_FromStringAndSize(
-                    invalid.as_ptr().cast(),
-                    invalid.len() as isize
-                ),
-            );
-            let matches = errors::PyErr_ExceptionMatches((&raw mut PyExc_UnicodeDecodeError).cast());
+            let value = OwnedPyObject::from_owned(strings::PyUnicode_FromStringAndSize(
+                invalid.as_ptr().cast(),
+                invalid.len() as isize,
+            ));
+            let matches =
+                errors::PyErr_ExceptionMatches((&raw mut PyExc_UnicodeDecodeError).cast());
             let _error = errors::take_current_error();
             assert!(value.as_ptr().is_null());
             assert_eq!(matches, 1);

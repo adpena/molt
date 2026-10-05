@@ -24,19 +24,42 @@ fn pickle_apply_dict_state(
         return Err(pickle_raise(_py, "pickle.loads: BUILD state must be dict"));
     }
 
-    // Use setattr for each state entry. This correctly routes values to typed
-    // field slots (TYPE_ID_OBJECT), dataclass descriptor fields
-    // (TYPE_ID_DATACLASS), or __dict__ for fully dynamic instances.
-    let pairs = unsafe { crate::dict_order(state_ptr).to_vec() };
-    let mut idx = 0usize;
-    while idx + 1 < pairs.len() {
-        let key_bits = pairs[idx];
-        let value_bits = pairs[idx + 1];
-        idx += 2;
-        let _ = crate::molt_object_setattr(inst_bits, key_bits, value_bits);
-        if exception_pending(_py) {
-            return Err(MoltObject::none().bits());
-        }
+    // CPython BUILD updates __dict__ directly; only the separate slot-state
+    // dictionary below uses setattr. Materialization moves inferred fields to
+    // their canonical dictionary owner before this update.
+    if unsafe { crate::dict_order(state_ptr).is_empty() } {
+        return Ok(());
+    }
+    let Some(name) = attr_name_bits_from_bytes(_py, b"__dict__") else {
+        return Err(MoltObject::none().bits());
+    };
+    let dictionary = crate::molt_get_attr_name(inst_bits, name);
+    molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, name));
+    if exception_pending(_py) {
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, dictionary));
+        return Err(MoltObject::none().bits());
+    }
+    let Some(_target) = obj_from_bits(dictionary)
+        .as_ptr()
+        .filter(|target| unsafe { object_type_id(*target) == TYPE_ID_DICT })
+    else {
+        dec_ref_bits(_py, dictionary);
+        return Err(pickle_raise(
+            _py,
+            "pickle.loads: instance __dict__ must be dict",
+        ));
+    };
+    unsafe {
+        crate::dict_update_apply(
+            _py,
+            dictionary,
+            crate::dict_update_set_in_place,
+            dict_state_bits,
+        )
+    };
+    molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, dictionary));
+    if exception_pending(_py) {
+        return Err(MoltObject::none().bits());
     }
     Ok(())
 }
@@ -280,7 +303,9 @@ fn pickle_init_missing_fields(_py: &crate::PyToken<'_>, inst_bits: u64) {
         return;
     };
     let type_id = unsafe { object_type_id(inst_ptr) };
-    if crate::object::heap_kind_has_class_shape(type_id) || type_id == crate::TYPE_ID_DATACLASS {
+    if unsafe { crate::object::object_has_class_shape(inst_ptr) }
+        || type_id == crate::TYPE_ID_DATACLASS
+    {
         unsafe { crate::object::field_storage::reset(_py, inst_ptr) };
     }
 }
@@ -327,12 +352,20 @@ pub(crate) fn pickle_apply_build(
                 "pickle.loads: BUILD slot state must be dict",
             ));
         }
-        let pairs = unsafe { crate::dict_order(slot_ptr).to_vec() };
+        let Some(pairs) = (unsafe {
+            crate::object::ops_dict::dict_snapshot(
+                _py,
+                slot_ptr,
+                crate::object::ops_dict::DictSnapshotKind::Entries,
+            )
+        }) else {
+            return Err(MoltObject::none().bits());
+        };
         let mut idx = 0usize;
         while idx + 1 < pairs.len() {
             let key_bits = pairs[idx];
             let value_bits = pairs[idx + 1];
-            let _ = crate::molt_object_setattr(inst_bits, key_bits, value_bits);
+            let _ = crate::molt_set_attr_name(inst_bits, key_bits, value_bits);
             if exception_pending(_py) {
                 return Err(MoltObject::none().bits());
             }

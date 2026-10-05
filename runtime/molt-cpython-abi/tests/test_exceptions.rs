@@ -58,7 +58,10 @@ fn diagnostic_text_requires_class_custody_before_allocation() {
         assert_eq!(UNADMITTED_TEXT_ALLOCATIONS.with(std::cell::Cell::get), 0);
         assert_eq!(errors::PyErr_Occurred(), (&raw mut PyExc_ValueError).cast());
         let raised = errors::PyErr_GetRaisedException();
-        assert!(!raised.is_null(), "native construction remains available without managed text");
+        assert!(
+            !raised.is_null(),
+            "native construction remains available without managed text"
+        );
         assert_eq!((*raised).ob_type, &raw mut PyExc_ValueError);
         refcount::Py_DECREF(raised);
         assert!(errors::PyErr_Occurred().is_null());

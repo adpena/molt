@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from molt.cli.atomic_io import _atomic_copy_file
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.runtime_wasm_cache import (
     _shared_runtime_wasm_cache_root,
     hydrate_runtime_wasm_pair_from_shared_cache,

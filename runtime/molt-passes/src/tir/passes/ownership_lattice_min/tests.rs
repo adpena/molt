@@ -118,6 +118,8 @@ fn iter_next_region(
     let value = f.fresh_value();
     let done = f.fresh_value();
     let flag = f.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let flag_input = crate::fixture_support::append_parameter(&mut f, TirType::Bool);
     let exit = f.fresh_block();
     let body = f.fresh_block();
     let entry = f.entry_block;
@@ -125,7 +127,8 @@ fn iter_next_region(
         let head = f.blocks.get_mut(&entry).unwrap();
         head.ops
             .push(op(OpCode::IterNextUnboxed, vec![iter], vec![value, done]));
-        head.ops.push(op(OpCode::ConstBool, vec![], vec![flag]));
+        head.ops
+            .push(op(OpCode::Copy, vec![flag_input], vec![flag]));
         head.terminator = Terminator::CondBranch {
             cond: if branch_on_done { done } else { flag },
             then_block: exit,
@@ -201,7 +204,7 @@ fn exception_creation_ref_values_select_only_exception_creation_copies() {
 }
 
 #[test]
-fn copy_transparent_alias_selects_only_single_operand_copy_aliases() {
+fn copy_transparent_alias_obeys_declared_source_shape() {
     let mut f = func();
     let source = f.fresh_value();
     let alias_result = f.fresh_value();
@@ -228,6 +231,38 @@ fn copy_transparent_alias_selects_only_single_operand_copy_aliases() {
 
     let non_copy = op(OpCode::Call, vec![source], vec![alias_result]);
     assert_eq!(copy_transparent_alias(&non_copy), None);
+
+    for kind in ["guard_tag", "guard_type"] {
+        let guard = original_kind_copy(kind, vec![source, extra], vec![alias_result]);
+        assert_eq!(
+            copy_transparent_alias(&guard),
+            Some(NoHeapCopyAlias {
+                source,
+                result: alias_result,
+            })
+        );
+        assert!(super::super::value_identity::copy_value_source(&guard).is_none());
+        assert!(!super::super::effects::op_effects_with_types(&guard, &HashMap::new()).nothrow);
+        let mut guarded = func();
+        guarded
+            .blocks
+            .get_mut(&guarded.entry_block)
+            .unwrap()
+            .ops
+            .push(guard.clone());
+        let aliases = build_alias_union_find(&guarded);
+        assert_eq!(aliases.root(alias_result), aliases.root(source), "{kind}");
+        assert_ne!(
+            aliases.root(extra),
+            aliases.root(source),
+            "tag is a separate read"
+        );
+        for count in [0, 1, 3] {
+            let malformed = original_kind_copy(kind, vec![source; count], vec![alias_result]);
+            assert_eq!(copy_transparent_alias(&malformed), None, "{kind}/{count}");
+            assert!(super::super::value_identity::no_heap_alias_source(&malformed).is_none());
+        }
+    }
 }
 
 #[test]
@@ -370,7 +405,10 @@ fn drop_eligibility_combines_root_facts_and_raw_scalar_filter() {
     entry
         .ops
         .push(original_kind_copy("copy", vec![heap], vec![heap_alias]));
-    entry.ops.push(op(OpCode::ConstInt, vec![], vec![raw]));
+    entry.ops.push(TirOp {
+        attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(27))]),
+        ..op(OpCode::ConstInt, vec![], vec![raw])
+    });
     entry.ops.push(original_kind_copy(
         "not_registered_yet",
         vec![heap],
@@ -1020,22 +1058,24 @@ fn declared_custody_owns_transferred_parameters_and_adopts_operands() {
 }
 
 /// A replaced result keeps the owner its operation's result contract gave it,
-/// by the result eligibility DropInsertion reads, and gains none. Four results
+/// by the result eligibility DropInsertion reads, and gains none. Five results
 /// are rewritten into copies of one string, as value numbering rewrites a result
 /// into a copy of its equal:
 /// * an owned `Call` result that is read keeps its reference as an owned alias;
-/// * a borrowed getter's result (`dict_get`), its own alias root yet no owner,
-///   stays a transparent copy;
+/// * a public dictionary lookup's independent +1 stays an owned alias;
+/// * a borrowed frame binding view, its own alias root yet no owner, stays a
+///   transparent copy;
 /// * a no-op `TypeGuard`'s result forwards the string's reference and stays a
 ///   transparent copy;
 /// * an owned result that nothing reads names nothing and stays transparent.
 ///
-/// DropInsertion then releases the string once and the kept owner once.
+/// DropInsertion then releases the string and both kept owners once each.
 #[test]
 fn replaced_results_keep_exactly_the_owners_they_had() {
     let mut f = func();
     let text = f.fresh_value();
-    let (owned, borrowed, guarded, unread) = (
+    let (owned, lookup, borrowed, guarded, unread) = (
+        f.fresh_value(),
         f.fresh_value(),
         f.fresh_value(),
         f.fresh_value(),
@@ -1049,18 +1089,31 @@ fn replaced_results_keep_exactly_the_owners_they_had() {
     guard
         .attrs
         .insert("expected_type".into(), AttrValue::Str("str".into()));
-    let replaced = vec![
+    let mut borrowed_view = original_kind_copy("frame_home_load", vec![], vec![borrowed]);
+    borrowed_view
+        .attrs
+        .insert("value".into(), AttrValue::Int(0));
+    let mut replaced = vec![
         op(OpCode::Call, vec![text], vec![owned]),
-        original_kind_copy("dict_get", vec![text, text], vec![borrowed]),
+        original_kind_copy("dict_get", vec![text, text, text], vec![lookup]),
+        borrowed_view,
         guard,
         op(OpCode::Call, vec![text], vec![unread]),
     ];
+    for operation in &mut replaced {
+        if operation.opcode == OpCode::Call {
+            operation.attrs.insert(
+                "s_value".into(),
+                AttrValue::Str("replacement_fixture_owner".into()),
+            );
+        }
+    }
     let entry = f.blocks.get_mut(&f.entry_block).unwrap();
     entry.ops.push(string);
     entry.ops.extend(replaced.iter().cloned());
     entry.ops.push(op(
         OpCode::WarnStderr,
-        vec![owned, borrowed, guarded],
+        vec![owned, lookup, borrowed, guarded],
         vec![],
     ));
     entry.terminator = Terminator::Return { values: vec![] };
@@ -1089,7 +1142,16 @@ fn replaced_results_keep_exactly_the_owners_they_had() {
         .iter()
         .map(original_kind)
         .collect();
-    assert_eq!(kinds, [Some("binding_alias"), None, None, None]);
+    assert_eq!(
+        kinds,
+        [
+            Some("binding_alias"),
+            Some("binding_alias"),
+            None,
+            None,
+            None
+        ]
+    );
 
     crate::tir::passes::drop_insertion::run(
         &mut f,
@@ -1104,8 +1166,8 @@ fn replaced_results_keep_exactly_the_owners_they_had() {
     released.sort_unstable_by_key(|value| value.0);
     assert_eq!(
         released,
-        [text, owned],
-        "the string and the kept owner, once each"
+        [text, owned, lookup],
+        "the string and both kept owners, once each"
     );
     assert!(
         !f.blocks[&f.entry_block]
@@ -1140,6 +1202,10 @@ fn binding_views_join_through_block_arguments() {
         f.fresh_value(),
     );
     let (entry_cond, loop_cond, rebound) = (f.fresh_value(), f.fresh_value(), f.fresh_value());
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let entry_cond_input = crate::fixture_support::append_parameter(&mut f, TirType::Bool);
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let loop_cond_input = crate::fixture_support::append_parameter(&mut f, TirType::Bool);
     let (looped, mixed, with_raw, handled) = (
         f.fresh_value(),
         f.fresh_value(),
@@ -1167,7 +1233,7 @@ fn binding_views_join_through_block_arguments() {
         store.clone(),
         constant,
         op(OpCode::Call, vec![], vec![fresh]),
-        op(OpCode::ConstBool, vec![], vec![entry_cond]),
+        op(OpCode::Copy, vec![entry_cond_input], vec![entry_cond]),
         check,
     ];
     entry.terminator = Terminator::CondBranch {
@@ -1186,7 +1252,7 @@ fn binding_views_join_through_block_arguments() {
         TirBlock {
             id: header,
             args: vec![argument(looped)],
-            ops: vec![op(OpCode::ConstBool, vec![], vec![loop_cond])],
+            ops: vec![op(OpCode::Copy, vec![loop_cond_input], vec![loop_cond])],
             terminator: Terminator::CondBranch {
                 cond: loop_cond,
                 then_block: body,

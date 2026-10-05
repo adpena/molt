@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import os
 import stat
 from pathlib import Path
 import zipfile
@@ -257,3 +258,125 @@ def test_observed_copy_rejects_source_replacement_before_copy(
         atomic_io._atomic_copy_file(source, destination, observed=observed)
     assert destination.read_bytes() == b"previous"
     assert not list(tmp_path.glob(".molt-*.tmp"))
+
+
+def test_observed_copy_rejects_same_size_content_with_matching_metadata(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+    from molt.toolchain_identity import stable_regular_file_identity
+
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.write_bytes(b"source")
+    destination.write_bytes(b"previous")
+    observed = stable_regular_file_identity(source, label="copy fixture")
+    before = source.stat()
+    source.write_bytes(b"mutate")
+    os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+    current = stable_regular_file_identity(source, label="current metadata fixture")
+    observed = replace(current, sha256=observed.sha256)
+    with pytest.raises(ValueError, match="content changed"):
+        atomic_io._atomic_copy_file(source, destination, observed=observed)
+    assert destination.read_bytes() == b"previous"
+    assert not list(tmp_path.glob(".molt-*.tmp"))
+
+
+@pytest.mark.parametrize("exclusive", [False, True])
+@pytest.mark.parametrize("primary_type", [OSError, KeyboardInterrupt])
+def test_atomic_write_cleanup_failure_preserves_primary_error(
+    tmp_path, monkeypatch, exclusive, primary_type
+):
+    destination = tmp_path / "destination"
+    destination.write_bytes(b"previous")
+    if exclusive:
+        destination.unlink()
+    stage = tmp_path / ".molt-fixture.tmp"
+    primary = primary_type("primary publication failed")
+    cleanup = PermissionError("stage cleanup denied")
+    original_unlink = Path.unlink
+    monkeypatch.setattr(file_publication, "staged_file_path", lambda destination: stage)
+
+    def fail_publish(*args):
+        raise primary
+
+    def fail_cleanup(path, *args, **kwargs):
+        if path == stage:
+            raise cleanup
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(file_publication, "durable_replace", fail_publish)
+    monkeypatch.setattr(file_publication, "durable_publish_exclusive", fail_publish)
+    monkeypatch.setattr(Path, "unlink", fail_cleanup)
+    with pytest.raises(primary_type) as caught:
+        file_publication.atomic_write_bytes(
+            destination, b"replacement", exclusive=exclusive
+        )
+    assert caught.value is primary
+    assert any(
+        "stage cleanup denied" in note and str(stage) in note
+        for note in primary.__notes__
+    )
+    assert stage.read_bytes() == b"replacement"
+    assert (
+        not destination.exists()
+        if exclusive
+        else destination.read_bytes() == b"previous"
+    )
+
+
+def test_atomic_write_cleanup_failure_without_primary_remains_visible(
+    tmp_path, monkeypatch
+):
+    destination = tmp_path / "destination"
+    stage = tmp_path / ".molt-fixture.tmp"
+    cleanup = PermissionError("stage cleanup denied")
+    original_unlink = Path.unlink
+    monkeypatch.setattr(file_publication, "staged_file_path", lambda destination: stage)
+
+    def publish(staged, final):
+        final.write_bytes(staged.read_bytes())
+
+    def fail_cleanup(path, *args, **kwargs):
+        if path == stage:
+            raise cleanup
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_cleanup)
+    with pytest.raises(PermissionError) as caught:
+        file_publication.atomic_write_bytes(
+            destination, b"replacement", replace=publish
+        )
+    assert caught.value is cleanup
+    assert destination.read_bytes() == stage.read_bytes() == b"replacement"
+
+
+@pytest.mark.parametrize("publication_failed", [False, True])
+def test_atomic_write_missing_stage_cleanup_is_ignored(
+    tmp_path, monkeypatch, publication_failed
+):
+    destination = tmp_path / "destination"
+    stage = tmp_path / ".molt-fixture.tmp"
+    primary = OSError("primary publication failed")
+    monkeypatch.setattr(file_publication, "staged_file_path", lambda destination: stage)
+
+    def publish(staged, final):
+        if publication_failed:
+            staged.unlink()
+            raise primary
+        staged.replace(final)
+
+    if publication_failed:
+        with pytest.raises(OSError) as caught:
+            file_publication.atomic_write_bytes(
+                destination, b"replacement", replace=publish
+            )
+        assert caught.value is primary
+        assert not getattr(primary, "__notes__", ())
+        assert not destination.exists()
+    else:
+        file_publication.atomic_write_bytes(
+            destination, b"replacement", replace=publish
+        )
+        assert destination.read_bytes() == b"replacement"
+    assert not stage.exists()

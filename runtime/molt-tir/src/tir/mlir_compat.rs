@@ -427,7 +427,7 @@ mod tests {
             opcode: OpCode::ConstInt,
             operands: vec![],
             results: vec![ValueId(0)],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(10))]),
             source_span: None,
         });
         assert!(validate_mlir_compat(&f).is_err());
@@ -470,7 +470,10 @@ mod tests {
                     opcode: OpCode::ConstInt,
                     operands: vec![],
                     results: vec![v1],
-                    attrs: AttrDict::new(),
+                    attrs: AttrDict::from([(
+                        "value".into(),
+                        molt_ir::tir::ops::AttrValue::Int(11),
+                    )]),
                     source_span: None,
                 }],
             },
@@ -486,7 +489,10 @@ mod tests {
                     opcode: OpCode::ConstInt,
                     operands: vec![],
                     results: vec![v2],
-                    attrs: AttrDict::new(),
+                    attrs: AttrDict::from([(
+                        "value".into(),
+                        molt_ir::tir::ops::AttrValue::Int(12),
+                    )]),
                     source_span: None,
                 }],
             },

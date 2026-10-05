@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
+
 import molt.cli as cli
 from molt.cli import factgraph as factgraph_module
 
@@ -201,9 +203,12 @@ def test_backend_command_prefix_uses_canonical_split_table_boundary(
     ]
 
 
+@pytest.mark.parametrize("custody_failure", [False, True])
 def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
     tmp_path: Path,
     monkeypatch,
+    custody_failure: bool,
+    capsys,
 ) -> None:
     from molt.cli import backend_compile
     from tests.cli.native_link_test_support import (
@@ -250,6 +255,14 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
     def fake_emit_json(payload: dict[str, Any], json_output: bool) -> None:
         assert json_output is True
         emitted.append(payload)
+
+    closed: list[bool] = []
+
+    def finalize_inputs() -> None:
+        assert output.is_file(), "backend must finish before input custody closes"
+        closed.append(True)
+        if custody_failure:
+            raise ValueError("owned producer did not exit")
 
     rc = factgraph_module.emit_pipeline_fact_graph(
         request=factgraph_module.FactGraphRequest(
@@ -300,8 +313,22 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
         emit_json=fake_emit_json,
         json_payload=cli._json_payload,
         entry_override_env=cli.ENTRY_OVERRIDE_ENV,
+        finalize_inputs=finalize_inputs,
     )
 
+    assert closed == [True]
+    assert cleaned == [True]
+    if custody_failure:
+        import json
+
+        assert rc == 2
+        assert emitted == []
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["status"] == "error"
+        assert payload["errors"] == [
+            "Build input custody failed to close: owned producer did not exit"
+        ]
+        return
     assert rc == 0
     assert cleaned == [True]
     assert len(emitted) == 1

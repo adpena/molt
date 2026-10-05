@@ -190,7 +190,10 @@ def _owned_cargo_ancestor(
     watched: set[int],
     identities: Mapping[int, ProcessIdentity],
 ) -> ProcessSample | None:
-    from tools.memory_guard_core.process_model import process_identity
+    from tools.memory_guard_core.process_model import (
+        process_births_are_ordered,
+        process_identity,
+    )
 
     # No generic ancestor walk: a Cargo build script/program can manually spawn
     # Rustc. Wrappers need an explicit source-bound protocol before admission.
@@ -199,11 +202,8 @@ def _owned_cargo_ancestor(
     parent = samples.get(child.ppid)
     if (
         parent is None
-        or type(child.started_at_ns) is not int
-        or type(parent.started_at_ns) is not int
-        or parent.started_at_ns <= 0
+        or not process_births_are_ordered(parent.started_at_ns, child.started_at_ns)
         or identities.get(parent.pid) != process_identity(parent)
-        or parent.started_at_ns > child.started_at_ns
         or parent.ppid == child.pid
     ):
         return None
@@ -470,20 +470,20 @@ def _local_cargo_lock_filesystem(path: Path) -> bool:
 def _observed_incremental_units(
     target_dir: Path, observations: Sequence[CargoIncrementalObservation]
 ) -> dict[Path, Path]:
+    from tools.memory_guard_core.process_model import process_births_are_ordered
+
     root = target_dir.resolve(strict=True)
     units: dict[Path, Path] = {}
     for observed in observations:
         if (
             type(observed.rustc_pid) is not int
             or observed.rustc_pid <= 0
-            or type(observed.rustc_started_at_ns) is not int
-            or observed.rustc_started_at_ns <= 0
             or type(observed.cargo_pid) is not int
             or observed.cargo_pid <= 0
             or observed.cargo_pid == observed.rustc_pid
-            or type(observed.cargo_started_at_ns) is not int
-            or observed.cargo_started_at_ns <= 0
-            or observed.cargo_started_at_ns > observed.rustc_started_at_ns
+            or not process_births_are_ordered(
+                observed.cargo_started_at_ns, observed.rustc_started_at_ns
+            )
         ):
             raise ValueError("incremental observation lacks process birth authority")
         path = Path(observed.incremental_dir)

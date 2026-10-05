@@ -584,7 +584,7 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             kwonly_params: &[],
             vararg: None,
             varkw: None,
-            defaults: &[GeneratedBuiltinDefaultValue::None, GeneratedBuiltinDefaultValue::None, GeneratedBuiltinDefaultValue::EmptyTuple, GeneratedBuiltinDefaultValue::Int(0)],
+            defaults: &[GeneratedBuiltinDefaultValue::Missing, GeneratedBuiltinDefaultValue::None, GeneratedBuiltinDefaultValue::EmptyTuple, GeneratedBuiltinDefaultValue::Int(0)],
             kw_defaults: &[],
             bind_kind: Some(1),
         },

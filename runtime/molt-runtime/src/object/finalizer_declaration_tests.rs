@@ -145,9 +145,7 @@ fn late_base_finalizers_follow_current_mro_without_descendant_flag_copies() {
         let base_del = finalizer(py, false);
         let own_del = finalizer(py, true);
         let preexisting = instance(py, leaf);
-        assert!(!unsafe {
-            object_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap())
-        });
+        assert!(!unsafe { object_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap()) });
 
         crate::molt_set_attr_name(base, del, base_del);
         assert!(unsafe { class_header_declares_finalizer(obj_from_bits(base).as_ptr().unwrap()) });
@@ -156,17 +154,13 @@ fn late_base_finalizers_follow_current_mro_without_descendant_flag_copies() {
                 class_header_declares_finalizer(obj_from_bits(descendant).as_ptr().unwrap())
             });
         }
-        assert!(unsafe {
-            object_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap())
-        });
+        assert!(unsafe { object_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap()) });
         dec_ref_bits(py, preexisting);
         assert_eq!(BASE_FINALIZERS.load(Ordering::SeqCst), 1);
 
         let removed = instance(py, leaf);
         crate::molt_del_attr_name(base, del);
-        assert!(!unsafe {
-            object_has_finalizer(py, obj_from_bits(removed).as_ptr().unwrap())
-        });
+        assert!(!unsafe { object_has_finalizer(py, obj_from_bits(removed).as_ptr().unwrap()) });
         dec_ref_bits(py, removed);
         assert_eq!(BASE_FINALIZERS.load(Ordering::SeqCst), 1);
 
@@ -302,13 +296,9 @@ fn metaclass_finalizers_follow_late_mro_mutation_for_type_payloads() {
             unsafe { object_type_id(obj_from_bits(preexisting).as_ptr().unwrap()) },
             TYPE_ID_TYPE
         );
-        assert!(!unsafe {
-            object_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap())
-        });
+        assert!(!unsafe { object_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap()) });
         crate::molt_set_attr_name(meta, del, base_del);
-        assert!(unsafe {
-            object_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap())
-        });
+        assert!(unsafe { object_has_finalizer(py, obj_from_bits(preexisting).as_ptr().unwrap()) });
         assert!(!unsafe {
             class_header_declares_finalizer(obj_from_bits(derived).as_ptr().unwrap())
         });
@@ -434,9 +424,7 @@ fn builtin_spelled_class_and_metaclass_names_do_not_suppress_finalizers() {
             let ordinary = child_class(py, name, crate::builtin_classes(py).object);
             crate::molt_set_attr_name(ordinary, del, callback);
             let value = instance(py, ordinary);
-            assert!(unsafe {
-                object_has_finalizer(py, obj_from_bits(value).as_ptr().unwrap())
-            });
+            assert!(unsafe { object_has_finalizer(py, obj_from_bits(value).as_ptr().unwrap()) });
             dec_ref_bits(py, value);
             assert_eq!(BASE_FINALIZERS.load(Ordering::SeqCst), 1);
             crate::molt_del_attr_name(ordinary, del);
@@ -453,9 +441,7 @@ fn builtin_spelled_class_and_metaclass_names_do_not_suppress_finalizers() {
                 MoltObject::none().bits(),
             );
             assert!(!crate::exception_pending(py));
-            assert!(unsafe {
-                object_has_finalizer(py, obj_from_bits(class).as_ptr().unwrap())
-            });
+            assert!(unsafe { object_has_finalizer(py, obj_from_bits(class).as_ptr().unwrap()) });
             dec_ref_bits(py, class);
             crate::molt_gc_collect(MoltObject::from_int(2).bits());
             assert_eq!(BASE_FINALIZERS.load(Ordering::SeqCst), 1);

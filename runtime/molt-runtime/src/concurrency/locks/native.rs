@@ -1,5 +1,5 @@
-use crate::builtins::threading_helpers::{ThreadTimeoutPolicy, parse_thread_timeout};
 use crate::MoltObject;
+use crate::builtins::threading_helpers::{ThreadTimeoutPolicy, parse_thread_timeout};
 
 #[cfg(not(target_arch = "wasm32"))]
 use super::super::current_thread_id;

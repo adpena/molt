@@ -127,7 +127,7 @@ Scope: `docs/spec/areas/compiler/0100_MOLT_IR.md` instruction list vs repository
 | Exceptions | ExceptionClear | implemented | `EXCEPTION_CLEAR` | `src/molt/frontend/__init__.py:3898` |  |
 | Exceptions | ExceptionKind | implemented | `EXCEPTION_KIND` | `src/molt/frontend/__init__.py:3889` |  |
 | Exceptions | ExceptionMessage | partial | `EXCEPTION_MESSAGE` | `src/molt/frontend/__init__.py:26747` | Lowering case exists; direct emitter usage is not obvious in current frontend paths. |
-| Exceptions | ExceptionSetCause | implemented | `EXCEPTION_SET_CAUSE` | `src/molt/frontend/__init__.py:23191` |  |
+| Exceptions | Source raise admission | implemented | `CALL molt_exception_prepare_raise` | `src/molt/frontend/visitors/statement_control_flow.py` | Owned normalized instance, including class cause. |
 | Exceptions | ExceptionContextSet | implemented | `EXCEPTION_CONTEXT_SET` | `src/molt/frontend/__init__.py:21181` |  |
 | Exceptions | Raise | implemented | `RAISE` | `src/molt/frontend/__init__.py:3703` |  |
 | Generators/Async | AllocGenerator | partial | `ASYNCGEN_NEW` | `src/molt/frontend/__init__.py:9978` | Generator allocation is represented via asyncgen/generator op family, not literal `ALLOC_GENERATOR`. |

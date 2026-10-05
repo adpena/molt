@@ -257,3 +257,26 @@ mod tests {
         }
     }
 }
+
+impl super::dominators::ProgramPointGraph for LirFunction {
+    fn entry_block(&self) -> BlockId {
+        self.entry_block
+    }
+    fn label_id_map(&self) -> &HashMap<u32, i64> {
+        &self.label_id_map
+    }
+    fn block_ids(&self) -> impl Iterator<Item = BlockId> {
+        self.blocks.keys().copied()
+    }
+    fn block_argument_ids(&self, block: BlockId) -> impl Iterator<Item = ValueId> {
+        self.blocks[&block].args.iter().map(|arg| arg.id)
+    }
+    fn operations(&self, block: BlockId) -> impl Iterator<Item = &TirOp> {
+        self.blocks[&block].ops.iter().map(|op| &op.tir_op)
+    }
+    fn for_each_successor(&self, block: BlockId, mut visit: impl FnMut(BlockId)) {
+        self.blocks[&block]
+            .terminator
+            .for_each_edge(|target, _| visit(target));
+    }
+}

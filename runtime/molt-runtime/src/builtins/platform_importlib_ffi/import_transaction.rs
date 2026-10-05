@@ -464,21 +464,39 @@ pub(super) fn importlib_import_resolved_transaction(
     let Some(fromlist_bits) = fromlist_bits else {
         return Ok(leaf_bits);
     };
-    if let Err(err) =
-        importlib_transaction_prepare_fromlist(_py, resolved, leaf_bits, fromlist_bits)
-    {
-        if !obj_from_bits(leaf_bits).is_none() {
-            dec_ref_bits(_py, leaf_bits);
-        }
-        return Err(err);
+    // __import__ selects the return module before package-only child preparation.
+    // Ordinary modules leave __all__ entirely to indexed IMPORT_STAR; consuming
+    // it here changes its protocol, exception precedence, and partial writes.
+    let has_fromlist = is_truthy(_py, obj_from_bits(fromlist_bits));
+    if exception_pending(_py) {
+        dec_ref_bits(_py, leaf_bits);
+        return Err(MoltObject::none().bits());
     }
-    Ok(importlib_transaction_return_value(
-        _py,
-        resolved,
-        modules_ptr,
-        leaf_bits,
-        fromlist_bits,
-    ))
+    if !has_fromlist {
+        return Ok(importlib_transaction_top_level_value(
+            _py,
+            resolved,
+            modules_ptr,
+            leaf_bits,
+        ));
+    }
+    // Presence is the package boundary, including a falsey/dynamic __path__.
+    // Use the ordinary attribute protocol so only AttributeError is a miss.
+    let path_name = intern_runtime_static_name(_py, b"__path__");
+    let has_path = molt_has_attr_name(leaf_bits, path_name);
+    if exception_pending(_py) {
+        dec_ref_bits(_py, leaf_bits);
+        return Err(MoltObject::none().bits());
+    }
+    if is_truthy(_py, obj_from_bits(has_path)) {
+        if let Err(err) =
+            importlib_transaction_prepare_fromlist(_py, resolved, leaf_bits, fromlist_bits)
+        {
+            dec_ref_bits(_py, leaf_bits);
+            return Err(err);
+        }
+    }
+    Ok(leaf_bits)
 }
 
 pub(super) fn importlib_import_module_impl(
@@ -904,6 +922,15 @@ pub(super) fn importlib_transaction_package_from_globals(
     _py: &PyToken<'_>,
     globals_bits: u64,
 ) -> Result<Option<String>, u64> {
+    // The builtin's C default is NULL, even though its text signature displays
+    // None. Preserve omission through named binding rather than accepting None.
+    if globals_bits == crate::missing_bits(_py) {
+        return Err(raise_exception::<_>(
+            _py,
+            "KeyError",
+            "'__name__' not in globals",
+        ));
+    }
     let Some(globals_ptr) =
         crate::builtins::frames::globals_namespace_storage_ptr(_py, globals_bits)
     else {
@@ -1118,16 +1145,12 @@ fn trace_importlib_transaction(
     );
 }
 
-pub(super) fn importlib_transaction_return_value(
+pub(super) fn importlib_transaction_top_level_value(
     _py: &PyToken<'_>,
     resolved: &str,
     modules_ptr: *mut u8,
     leaf_bits: u64,
-    fromlist_bits: u64,
 ) -> u64 {
-    if is_truthy(_py, obj_from_bits(fromlist_bits)) {
-        return leaf_bits;
-    }
     let Some((top_name, _)) = resolved.split_once('.') else {
         return leaf_bits;
     };
@@ -1232,20 +1255,6 @@ pub(super) fn importlib_transaction_string_items(
     Ok(out)
 }
 
-pub(super) fn importlib_transaction_fromlist_items(
-    _py: &PyToken<'_>,
-    fromlist_bits: u64,
-) -> Result<Vec<String>, u64> {
-    if !is_truthy(_py, obj_from_bits(fromlist_bits)) {
-        return Ok(Vec::new());
-    }
-    importlib_transaction_string_items(
-        _py,
-        fromlist_bits,
-        ImportlibTransactionStringItemsContext::FromList,
-    )
-}
-
 pub(super) fn importlib_transaction_child_name(resolved: &str, item: &str) -> String {
     if resolved == "molt.stdlib" {
         item.to_string()
@@ -1348,7 +1357,11 @@ pub(super) fn importlib_transaction_prepare_fromlist(
     module_bits: u64,
     fromlist_bits: u64,
 ) -> Result<(), u64> {
-    for item in importlib_transaction_fromlist_items(_py, fromlist_bits)? {
+    for item in importlib_transaction_string_items(
+        _py,
+        fromlist_bits,
+        ImportlibTransactionStringItemsContext::FromList,
+    )? {
         if item == "*" {
             importlib_transaction_prepare_fromlist_star(_py, resolved, module_bits)?;
             continue;

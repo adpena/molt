@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from molt.cli import progress as _progress
 from molt.cli.runtime_build_python import BuildPythonAdmission, build_python_scope
 
 import json
@@ -52,10 +53,10 @@ from molt.cli.native_link_manifest import (
 from molt.cli.runtime_artifact_selection import (
     RUNTIME_STATICLIB_ARTIFACTS,
 )
-from molt.cli.runtime_build_identity import (
+from molt.cli.runtime_build_identity import resolve_native_runtime_build_identity
+from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
     require_native_runtime_staticlib_identity,
-    resolve_native_runtime_build_identity,
 )
 from molt.cli.runtime_cargo_plan import RuntimeCargoPlan, resolve_runtime_cargo_plan
 from molt.cli.runtime_features import (
@@ -66,7 +67,6 @@ from molt.cli.runtime_features import (
 )
 from molt.cli.runtime_native_generation import (
     NativeRuntimeGeneration,
-    native_runtime_generation_path,
     publish_native_runtime_generation,
     read_native_runtime_generation,
 )
@@ -348,7 +348,7 @@ def _maybe_start_native_runtime_lib_ready_async(
     ):
         phase_starts["runtime_setup"] = time.perf_counter()
     runtime_state.runtime_lib_ready_future = _native_runtime_ready_executor().submit(
-        _ensure_runtime_lib_ready,
+        _progress.background_task(_ensure_runtime_lib_ready),
         runtime_state,
         target_triple=target_triple,
         json_output=json_output,
@@ -411,7 +411,12 @@ def _ensure_native_runtime_lib_ready_for_codegen(
         if diagnostics_enabled and "runtime_setup" not in phase_starts:
             phase_starts["runtime_setup"] = time.perf_counter()
         try:
-            ready = bool(runtime_state.runtime_lib_ready_future.result())
+            with _progress.subprocess_status(
+                None
+                if json_output or runtime_state.runtime_lib_ready_future.done()
+                else f"Preparing native runtime ({runtime_cargo_profile})"
+            ):
+                ready = bool(runtime_state.runtime_lib_ready_future.result())
             return ready and runtime_state.native_runtime_build_identity is not None
         finally:
             runtime_state.runtime_lib_ready_future = None
@@ -998,12 +1003,7 @@ def _build_native_runtime_under_lock(plan: _NativeRuntimeBuildPlan) -> bool:
     if not plan.build_permitted():
         return False
     if not plan.json_output:
-        message = (
-            "Building optimized runtime (first time only)..."
-            if not native_runtime_generation_path(plan.runtime_lib).exists()
-            else "Runtime generation does not match current build inputs; running Cargo..."
-        )
-        print(message, file=sys.stderr)
+        _progress.notice("Native runtime artifacts need a source build")
     try:
         with _build_slot() as _slot:
             started = time.perf_counter()

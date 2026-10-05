@@ -640,7 +640,7 @@ mod tests {
     fn call() -> TirOp {
         let mut call = op(OpCode::Call);
         call.attrs
-            .insert("callee".into(), AttrValue::Str("work".into()));
+            .insert("s_value".into(), AttrValue::Str("work".into()));
         call
     }
 

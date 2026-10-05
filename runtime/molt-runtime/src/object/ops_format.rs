@@ -1601,7 +1601,9 @@ pub(crate) fn format_obj_output(_py: &PyToken<'_>, obj: MoltObject) -> FormatOut
                     && object_type_id(dict_ptr) == TYPE_ID_DICT
                 {
                     let Some(pairs) = super::ops_dict::dict_snapshot(
-                        _py, dict_ptr, super::ops_dict::DictSnapshotKind::Entries,
+                        _py,
+                        dict_ptr,
+                        super::ops_dict::DictSnapshotKind::Entries,
                     ) else {
                         return Vec::new().into();
                     };

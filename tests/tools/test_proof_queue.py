@@ -65,6 +65,7 @@ from molt.scientific_stack_versions import (
     resolve_scientific_stack,
     scientific_extension_variant,
 )
+from tools.proof_queue_pkg import supervisor_generation
 from tools.proof_queue_pkg import (
     cli,
     command_admission,
@@ -2515,7 +2516,7 @@ def test_supervisor_build_environment_bounds_posix_sccache_startup_socket_path(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows environment contract")
-def test_supervisor_build_environment_preserves_windows_temp_authority(
+def test_supervisor_build_environment_uses_admitted_windows_store_temp(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "proof-supervisor-target"
@@ -2535,6 +2536,8 @@ def test_supervisor_build_environment_preserves_windows_temp_authority(
     assert build_env == {
         **execution_env,
         "CARGO_TARGET_DIR": str(target.resolve(strict=True)),
+        "MOLT_PROOF_SCRATCH_ROOT": str(target.parent / "scratch"),
+        **{name: str(target.parent / "tmp") for name in ("TMPDIR", "TMP", "TEMP")},
     }
 
 
@@ -3993,8 +3996,8 @@ def test_guarded_execution_rejects_source_owned_outputs_before_arming(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        supervisor_custody,
-        "_provision_proof_supervisor",
+        supervisor_generation,
+        "provision",
         lambda **_kwargs: pytest.fail("supervisor provisioned before boundary check"),
     )
     with pytest.raises(ValueError, match="outputs must be outside effective source"):
@@ -4242,6 +4245,11 @@ def test_passed_windows_declared_tree_requires_platform_process_custody(
     assert raw_context is not None
     context = json.loads(raw_context[0])
     context.pop("platform_process_custody")
+    # This case tests the semantic requirement in an otherwise sealed fixture.
+    # An unresealed deletion tests terminal tampering and never reaches it.
+    context["terminal_evidence_sha256"] = supervisor_custody.terminal_evidence_sha256(
+        context, run_id="platform-custody-run", returncode=0
+    )
     state._update_run(
         conn,
         "platform-custody-run",
@@ -16150,8 +16158,8 @@ def test_native_fixture_environment_uses_declared_short_root_and_preserves_input
     assert target.is_relative_to(Path(cargo))
     assert not target.is_relative_to(Path(str(metadata["path"])))
     assert environment["MOLT_FIXTURE_SENTINEL"] == "preserved"
-    assert target.name == "proof-supervisor-target"
-    assert not target.exists()
+    assert target.name == "target"
+    assert target.parent.parent.name == "proof-supervisor"
     owner_files = list(Path(str(metadata["path"])).glob("*/metadata-owner.json"))
     assert any(
         json.loads(p.read_text())["identity"]["nodeid"]
@@ -16178,10 +16186,10 @@ def test_cached_python_authority_never_redirects_supervisor_build_layout(
             "build_target_dir": env["CARGO_TARGET_DIR"]
         }
 
-    monkeypatch.setattr(supervisor_custody, "_provision_proof_supervisor", provision)
+    monkeypatch.setattr(supervisor_generation, "provision", provision)
 
     def execute(request):
-        binary, telemetry = supervisor_custody._provision_proof_supervisor(
+        binary, telemetry = supervisor_generation.provision(
             cwd=repo, env=admitted_environment
         )
         assert binary == Path("real-admitted-image")
@@ -16197,4 +16205,4 @@ def test_cached_python_authority_never_redirects_supervisor_build_layout(
     assert rc == 0 and record["model"] is True
     assert observed == [(repo, admitted_environment)]
     assert not hasattr(authority, "supervisor_target")
-    assert supervisor_custody._provision_proof_supervisor is provision
+    assert supervisor_generation.provision is provision

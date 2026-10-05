@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml"
+OP_KINDS_TABLE = ROOT / "runtime/molt-ir/src/tir/op_kinds.toml"
 LEGACY_OUT_RS = ROOT / "runtime/molt-backend-wasm/src/wasm_abi_generated.rs"
 OUT_RS_DIR = ROOT / "runtime/molt-backend-wasm/src/wasm_abi_generated"
 OUT_RS_FILES = {

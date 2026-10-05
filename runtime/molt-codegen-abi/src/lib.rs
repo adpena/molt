@@ -1471,7 +1471,10 @@ mod tests {
         // Each hardcoded frame fact owns one byte of the fingerprinted word;
         // the kinds share bytes as nibbles.
         assert_eq!(frame_binding_abi_word(), 0x0110_5321_0800_1002);
-        assert_eq!(GENERATED_OBJECT_ABI_FACTS.words()[57], frame_binding_abi_word());
+        assert_eq!(
+            GENERATED_OBJECT_ABI_FACTS.words()[57],
+            frame_binding_abi_word()
+        );
     }
 
     #[test]
@@ -1490,8 +1493,14 @@ mod tests {
             Ok(ENTRY_CUSTODY_ADOPTS)
         );
         // Shapes the one-bit runtime word cannot represent.
-        assert_eq!(function_entry_custody(false, 2, 2, &[true, false]), Err(Mixed));
-        assert_eq!(function_entry_custody(true, 1, 2, &[true, true]), Err(ClosureAdopted));
+        assert_eq!(
+            function_entry_custody(false, 2, 2, &[true, false]),
+            Err(Mixed)
+        );
+        assert_eq!(
+            function_entry_custody(true, 1, 2, &[true, true]),
+            Err(ClosureAdopted)
+        );
         assert_eq!(function_entry_custody(false, 2, 2, &[true]), Err(Length));
         assert_eq!(function_entry_custody(true, 2, 2, &[]), Err(Signature));
         assert_eq!(function_entry_custody(false, 1, 2, &[]), Err(Signature));

@@ -19,13 +19,13 @@ use crate::tir::target_info::TargetInfo;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-/// A callee `fn f(a, b) -> a + b` (single block, two params, one add,
-/// returns the sum).
-fn add_callee() -> TirFunction {
+/// Two annotated parameters feeding one binary operation. The annotations
+/// do not establish exact carriers or exclude Python protocol callbacks.
+fn binary_callee(name: &str, opcode: OpCode, return_type: TirType) -> TirFunction {
     let mut f = TirFunction::new(
-        "addfn".into(),
+        name.into(),
         vec![TirType::I64, TirType::I64],
-        TirType::I64,
+        return_type.clone(),
         molt_ir::FunctionReturnAbi::Value,
     );
     let p0 = ValueId(0);
@@ -35,15 +35,27 @@ fn add_callee() -> TirFunction {
     let block = f.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
         dialect: Dialect::Molt,
-        opcode: OpCode::Add,
+        opcode,
         operands: vec![p0, p1],
         results: vec![sum],
         attrs: AttrDict::new(),
         source_span: None,
     });
     block.terminator = Terminator::Return { values: vec![sum] };
-    f.value_types.insert(sum, TirType::I64);
+    f.value_types.insert(sum, return_type);
     f
+}
+
+/// Generic Python addition remains useful for clone/substitution tests, but
+/// its annotated parameters may implement callbacks and forbid module inline.
+fn add_callee() -> TirFunction {
+    binary_callee("addfn", OpCode::Add, TirType::I64)
+}
+
+/// Object identity reads both arguments without invoking their protocols.
+/// This is a genuine two-argument positive module-inline fixture.
+fn identity_callee() -> TirFunction {
+    binary_callee("identityfn", OpCode::Is, TirType::Bool)
 }
 
 /// A CLOSURE callee shaped like the frontend's lowering of

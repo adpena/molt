@@ -4,10 +4,9 @@ use crate::builtins::exceptions::{
 };
 use crate::{
     CONTEXT_STACK, MoltHeader, MoltObject, PyToken, TYPE_ID_CONTEXT_MANAGER, TYPE_ID_FILE_HANDLE,
-    alloc_object, call_callable0, call_callable3, close_payload,
-    dec_ref_bits, exception_pending, file_handle_enter,
-    file_handle_exit, inc_ref_bits, intern_static_name, obj_from_bits, object_type_id,
-    raise_exception, runtime_state, to_i64,
+    alloc_object, call_callable0, call_callable3, close_payload, dec_ref_bits, exception_pending,
+    file_handle_enter, file_handle_exit, inc_ref_bits, intern_static_name, obj_from_bits,
+    object_type_id, raise_exception, runtime_state, to_i64,
 };
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex, OnceLock};
@@ -182,7 +181,10 @@ fn context_stack_pop(_py: &PyToken<'_>, expected_bits: u64) {
 unsafe fn call_context_exit(py: &PyToken<'_>, method: u64, exception: u64) -> u64 {
     let value = ExceptionValue::pin(py, exception);
     let (class, traceback) = if obj_from_bits(exception).is_none() {
-        (ExceptionValue::pin(py, exception), ExceptionValue::pin(py, exception))
+        (
+            ExceptionValue::pin(py, exception),
+            ExceptionValue::pin(py, exception),
+        )
     } else {
         if !exception_is_instance(py, exception) {
             return raise_exception(py, "TypeError", "value must be an exception instance");
@@ -196,7 +198,9 @@ unsafe fn call_context_exit(py: &PyToken<'_>, method: u64, exception: u64) -> u6
         let Some(traceback) = exception_traceback(py, exception) else {
             return MoltObject::none().bits();
         };
-        if exception_pending(py) { return MoltObject::none().bits(); }
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
         (class, traceback)
     };
     unsafe { call_callable3(py, method, class.bits(), value.bits(), traceback.bits()) }
@@ -231,13 +235,12 @@ unsafe fn context_exit_unchecked(_py: &PyToken<'_>, ctx_bits: u64, exc_bits: u64
         }
         let exit_name_bits =
             intern_static_name(_py, &runtime_state(_py).interned.exit_name, b"__exit__");
-        let Some(exit_bits) = lookup_special_method_bits(_py, MoltObject::from_ptr(ptr).bits(), exit_name_bits) else {
+        let Some(exit_bits) =
+            lookup_special_method_bits(_py, MoltObject::from_ptr(ptr).bits(), exit_name_bits)
+        else {
             return;
         };
-        crate::call::discard_owned_call_result(
-            _py,
-            call_context_exit(_py, exit_bits, exc_bits),
-        );
+        crate::call::discard_owned_call_result(_py, call_context_exit(_py, exit_bits, exc_bits));
         dec_ref_bits(_py, exit_bits);
     }
 }
@@ -347,8 +350,11 @@ pub extern "C" fn molt_context_enter(ctx_bits: u64) -> u64 {
                         &runtime_state(_py).interned.enter_name,
                         b"__enter__",
                     );
-                    let Some(enter_bits) = lookup_special_method_bits(_py, MoltObject::from_ptr(ptr).bits(), enter_name_bits)
-                    else {
+                    let Some(enter_bits) = lookup_special_method_bits(
+                        _py,
+                        MoltObject::from_ptr(ptr).bits(),
+                        enter_name_bits,
+                    ) else {
                         if exception_pending(_py) {
                             return MoltObject::none().bits();
                         }
@@ -411,8 +417,11 @@ pub extern "C" fn molt_context_exit(ctx_bits: u64, exc_bits: u64) -> u64 {
                         &runtime_state(_py).interned.exit_name,
                         b"__exit__",
                     );
-                    let Some(exit_bits) = lookup_special_method_bits(_py, MoltObject::from_ptr(ptr).bits(), exit_name_bits)
-                    else {
+                    let Some(exit_bits) = lookup_special_method_bits(
+                        _py,
+                        MoltObject::from_ptr(ptr).bits(),
+                        exit_name_bits,
+                    ) else {
                         context_stack_pop(_py, ctx_bits);
                         if exception_pending(_py) {
                             return MoltObject::none().bits();

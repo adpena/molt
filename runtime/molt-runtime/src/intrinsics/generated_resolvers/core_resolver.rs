@@ -3,6 +3,10 @@
 #[cold]
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
+        "molt_compatibility_error" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_compatibility_error",
+            crate::molt_compatibility_error as *const (),
+        )),
         "molt_capabilities_trusted" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_capabilities_trusted",
             crate::molt_capabilities_trusted as *const (),
@@ -58,10 +62,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_abc_update_abstractmethods" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_abc_update_abstractmethods",
             crate::molt_abc_update_abstractmethods as *const (),
-        )),
-        "molt_abc_abstractmethod_check" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_abc_abstractmethod_check",
-            crate::molt_abc_abstractmethod_check as *const (),
         )),
         "molt_pow" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_pow",

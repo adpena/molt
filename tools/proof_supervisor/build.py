@@ -18,11 +18,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
-from tools.command_execution import CommandExecutor  # noqa: E402
-from molt.disk_capacity import require_build_capacity  # noqa: E402
-
-
-_COMMANDS = CommandExecutor.for_file(__file__)
+from tools.proof_queue_pkg import supervisor_generation  # noqa: E402
 
 
 def main() -> int:
@@ -31,41 +27,19 @@ def main() -> int:
     parser.add_argument("--target")
     args = parser.parse_args()
 
-    command = [
-        "cargo",
-        "build",
-        "--locked",
-        "--manifest-path",
-        str(ROOT / "Cargo.toml"),
-    ]
-    profile = "debug"
-    if args.release:
-        command.append("--release")
-        profile = "release"
-    if args.target:
-        command.extend(("--target", args.target))
-    target_root = Path(os.environ.get("CARGO_TARGET_DIR", "target"))
-    if not target_root.is_absolute():
-        target_root = ROOT / target_root
-    target_root = target_root.resolve()
-    command.extend(("--target-dir", str(target_root)))
-    output_roots = [target_root]
-    build_dir = os.environ.get("CARGO_BUILD_BUILD_DIR")
-    if build_dir:
-        build_root = Path(build_dir)
-        output_roots.append(
-            build_root if build_root.is_absolute() else ROOT / build_root
+    env = dict(os.environ)
+    with supervisor_generation._provision_guard_scope(env):
+        inputs, identities = supervisor_generation._build_inputs(
+            env, profile="release" if args.release else "debug", target=args.target
         )
-    require_build_capacity(output_roots, env=os.environ)
-    _COMMANDS.run(command, cwd=ROOT, check=True, text=True)
-
-    if args.target:
-        target_root /= args.target
-    target_is_windows = "windows" in args.target if args.target else os.name == "nt"
-    suffix = ".exe" if target_is_windows else ""
-    binary = (target_root / profile / f"molt-proof-supervisor{suffix}").resolve()
-    if not binary.is_file():
-        raise SystemExit(f"cargo succeeded without expected binary: {binary}")
+        binary, completed = supervisor_generation.build_cargo(inputs=inputs, env=env)
+        if completed.stdout:
+            print(completed.stdout, end="")
+        if completed.stderr:
+            print(completed.stderr, file=sys.stderr, end="")
+        if completed.returncode:
+            return completed.returncode
+        supervisor_generation._verify_inputs(inputs, identities, env)
     print(binary)
     return 0
 

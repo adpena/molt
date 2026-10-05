@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.opcode_literal_payloads import LITERAL_PAYLOAD_KINDS as _LITERAL_PAYLOAD_KINDS
+
 # Valid enum values and structural fact vocabularies for op_kinds.toml.
 _PURITY_VALUES = {"pure", "pure_may_throw", "impure"}
 _FRONTEND_EFFECT_VALUES = {"pure", "reads_heap", "writes_heap", "control"}
@@ -82,7 +84,7 @@ _OPERAND_OWNERSHIP_UNIFORM = {"all_borrowed", "all_consumed"}
 # terminator (nothing frees a terminator operand internally), so it is excluded.
 _TERMINATOR_OWNERSHIP_LEAVES = {"borrowed", "transferred", "none"}
 _RESULT_VALIDITY_VALUES = {"conditional_valid_only_on_edge"}
-_LITERAL_PAYLOAD_KINDS = {"int": "Int", "bool": "Bool"}
+
 _GVN_VALUE_KEY_KINDS = {
     "i64_attr": "I64Attr",
     "bool_attr": "BoolAttr",

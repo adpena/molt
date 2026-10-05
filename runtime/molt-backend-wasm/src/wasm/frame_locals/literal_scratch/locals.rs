@@ -1,6 +1,6 @@
 use crate::wasm::const_materialization::WasmConstOpPolicy;
 use crate::wasm::frame_locals::{WasmFrameLocalKind, WasmFrameLocals};
-use crate::wasm_abi_generated::WasmConstLiteralPayload;
+use molt_tir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
 use wasm_encoder::ValType;
 
 #[derive(Clone, Copy)]
@@ -23,14 +23,10 @@ impl WasmFrameLocals {
     pub(in crate::wasm) fn ensure_literal_scratch(
         &mut self,
         out_name: &str,
-        payload: WasmConstLiteralPayload,
+        payload: OwnedLiteralPayloadKind,
         local_types: &mut Vec<ValType>,
         local_count: &mut u32,
     ) -> WasmLiteralScratchLocals {
-        assert!(
-            !matches!(payload, WasmConstLiteralPayload::None),
-            "literal scratch requires a typed literal payload"
-        );
         self.record_literal_scratch_payload(out_name, payload);
         let ptr_local = self.ensure_named_i64(
             Self::literal_ptr_name(out_name),
@@ -57,14 +53,9 @@ impl WasmFrameLocals {
         local_types: &mut Vec<ValType>,
         local_count: &mut u32,
     ) -> Option<WasmLiteralScratchLocals> {
-        policy.needs_literal_scratch().then(|| {
-            self.ensure_literal_scratch(
-                out_name,
-                policy.literal_payload(),
-                local_types,
-                local_count,
-            )
-        })
+        policy
+            .literal_payload()
+            .map(|payload| self.ensure_literal_scratch(out_name, payload, local_types, local_count))
     }
 
     pub(in crate::wasm) fn literal_scratch(&self, out_name: &str) -> WasmLiteralScratchLocals {
@@ -86,7 +77,7 @@ impl WasmFrameLocals {
         })
     }
 
-    fn record_literal_scratch_payload(&mut self, out_name: &str, payload: WasmConstLiteralPayload) {
+    fn record_literal_scratch_payload(&mut self, out_name: &str, payload: OwnedLiteralPayloadKind) {
         if let Some(existing) = self.literal_scratch_payloads.get(out_name) {
             assert_eq!(
                 *existing, payload,

@@ -59,10 +59,11 @@ pub(super) unsafe fn prepare_layout(tp: *mut PyTypeObject) {
     }
 }
 
-pub(super) unsafe fn prepare_new(tp: *mut PyTypeObject) {
+pub(super) unsafe fn prepare_new(tp: *mut PyTypeObject, managed: bool) {
     unsafe {
         let base = (*tp).tp_base;
-        if (*tp).tp_new.is_none()
+        if !managed
+            && (*tp).tp_new.is_none()
             && base == &raw mut PyBaseObject_Type
             && (*tp).tp_flags & Py_TPFLAGS_HEAPTYPE == 0
         {
@@ -101,7 +102,7 @@ unsafe fn copy_declared_slot(tp: *mut PyTypeObject, base: *mut PyTypeObject, slo
     }
 }
 
-pub(super) unsafe fn finish(tp: *mut PyTypeObject) -> c_int {
+pub(super) unsafe fn finish(tp: *mut PyTypeObject, admit_namespace: bool) -> c_int {
     unsafe {
         let mro = crate::api::refcount::OwnedPyObject::from_borrowed((*tp).tp_mro);
         let count = crate::api::sequences::PyTuple_Size(mro.as_ptr());
@@ -221,7 +222,7 @@ pub(super) unsafe fn finish(tp: *mut PyTypeObject) -> c_int {
                 crate::api::memory::PyObject_Free
             });
         }
-        if (*tp).tp_hash.is_none() {
+        if admit_namespace && (*tp).tp_hash.is_none() {
             match own_name(tp, c"__hash__") {
                 Err(()) => return -1,
                 Ok(true) => {}

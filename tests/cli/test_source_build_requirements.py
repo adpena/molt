@@ -12,7 +12,7 @@ import pytest
 
 from molt.cli import source_build_requirements as requirements
 from molt.cli import source_extension_cython_tool as cython
-from molt.cli.source_build_environment import (
+from molt.cli.source_build_environment_schema import (
     active_source_build_requirements,
     canonical_source_marker_environment,
     source_build_environment_problems,

@@ -1,7 +1,7 @@
 //! Mask-proof teeth for real dict iteration: `PyDict_Next` (allocation-free O(1)
 //! cursor) and `PyDict_Merge` (native-dict fast path).
 //!
-//! These need a fake dict model whose `dict_entry`/`dict_set`/`classify_heap`
+//! These need a fake dict model whose `dict_entry`/`dict_mutate`/`classify_heap`
 //! hooks would collide with another test file's first-wins `RUNTIME_HOOKS`
 //! OnceLock, so they get their own test binary (fresh OnceLock). A process-wide
 //! shared support transaction serializes the fixture and builtin-root lifetime.
@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 // The fake `other` dict's entries (key_bits, val_bits), indexed by the cursor.
 static ENTRIES: Mutex<Vec<(u64, u64)>> = Mutex::new(Vec::new());
-// Recorded (dict_bits, key_bits, val_bits) writes via dict_set.
+// Recorded (dict_bits, key_bits, val_bits) writes via dict_mutate.
 static SETS: Mutex<Vec<(u64, u64, u64)>> = Mutex::new(Vec::new());
 // Keys reported present by dict_get (drives the merge override path).
 static PRESENT: Mutex<Vec<u64>> = Mutex::new(Vec::new());
@@ -68,12 +68,34 @@ unsafe extern "C" fn fx_classify_heap(bits: u64) -> u8 {
         unsafe { support::fake_runtime::classify_heap(bits) }
     }
 }
-unsafe extern "C" fn fx_dict_set(d: u64, k: u64, v: u64) -> i32 {
-    if !is_fixture_dict(d) {
-        return unsafe { support::fake_runtime::dict_set(d, k, v) };
+unsafe extern "C" fn fx_dict_mutate(
+    d: u64,
+    k: u64,
+    v: u64,
+    delete: u8,
+    publish: Option<unsafe extern "C" fn(*mut std::ffi::c_void) -> i32>,
+    context: *mut std::ffi::c_void,
+) -> i32 {
+    if is_fixture_dict(d) {
+        // PRESENT is a scripted borrowed lookup, while target mutations use
+        // real owned storage. Materialize a scripted entry before deleting it.
+        let scripted = {
+            let mut present = PRESENT.lock().unwrap();
+            let found = present.contains(&k);
+            present.retain(|key| *key != k);
+            found
+        };
+        if delete != 0 && scripted {
+            assert_eq!(
+                unsafe { support::fake_runtime::dict_mutate(d, k, k, 0, None, ptr::null_mut()) },
+                0
+            );
+        }
+        if delete == 0 {
+            SETS.lock().unwrap().push((d, k, v));
+        }
     }
-    SETS.lock().unwrap().push((d, k, v));
-    0
+    unsafe { support::fake_runtime::dict_mutate(d, k, v, delete, publish, context) }
 }
 unsafe extern "C" fn resolve_fixture_dict(
     bits: u64,
@@ -99,7 +121,7 @@ unsafe extern "C" fn fx_dict_get(
     if PRESENT.lock().unwrap().contains(&k) {
         molt_cpython_abi::hooks::BorrowedHandleResult::ok(k)
     } else {
-        molt_cpython_abi::hooks::BorrowedHandleResult::missing()
+        unsafe { support::fake_runtime::dict_get(d, k, source, hash) }
     }
 }
 unsafe extern "C" fn fx_foreign_new(c_ptr: usize) -> u64 {
@@ -109,34 +131,31 @@ unsafe extern "C" fn fx_foreign_new(c_ptr: usize) -> u64 {
     if unsafe { (*(c_ptr as *mut PyObject)).ob_type.is_null() } {
         assert_eq!(FOREIGN_C_PTR.swap(c_ptr, Ordering::SeqCst), 0);
         assert_eq!(FOREIGN_WRAPPER.swap(bits, Ordering::SeqCst), 0);
+        support::fake_runtime::observe_retirement(bits, observe_retirement);
     }
     bits
 }
-unsafe extern "C" fn fx_dec_ref(bits: u64) {
-    unsafe { support::fake_runtime::dec_ref(bits) };
-    if unsafe { support::fake_runtime::ref_count(bits) } == 0 {
-        if let Some(dicts) = FIXTURE_DICTS.lock().unwrap().as_mut() {
-            dicts.remove(&bits);
-        }
-        let dict = PROXIES
-            .lock()
-            .unwrap()
-            .as_mut()
-            .and_then(|proxies| proxies.remove(&bits));
-        if let Some(dict) = dict {
-            unsafe { fx_dec_ref(dict) };
-        }
+fn observe_retirement(bits: u64) {
+    assert_eq!(unsafe { support::fake_runtime::ref_count(bits) }, 0);
+    if let Some(dicts) = FIXTURE_DICTS.lock().unwrap().as_mut() {
+        dicts.remove(&bits);
     }
-    if bits != 0
-        && bits == FOREIGN_WRAPPER.load(Ordering::SeqCst)
-        && unsafe { support::fake_runtime::ref_count(bits) } == 0
-    {
+    let dict = PROXIES
+        .lock()
+        .unwrap()
+        .as_mut()
+        .and_then(|proxies| proxies.remove(&bits));
+    if let Some(dict) = dict {
+        unsafe { support::fake_runtime::dec_ref(dict) };
+    }
+    if bits == FOREIGN_WRAPPER.load(Ordering::SeqCst) {
         FOREIGN_WRAPPER.store(0, Ordering::SeqCst);
         assert_ne!(FOREIGN_C_PTR.swap(0, Ordering::SeqCst), 0);
     }
 }
 unsafe extern "C" fn fx_mappingproxy_new(dict: u64) -> molt_cpython_abi::hooks::OwnedHandleResult {
     let proxy = support::fake_runtime::fresh_handle();
+    support::fake_runtime::observe_retirement(proxy, observe_retirement);
     unsafe { support::fake_runtime::inc_ref(dict) };
     PROXIES
         .lock()
@@ -175,7 +194,8 @@ unsafe extern "C" fn fx_dict_op(op: u32, dict: u64) -> u64 {
     if op == molt_cpython_abi::DictOp::Clear as u32 {
         CLEARS.lock().unwrap().push(dict);
         ENTRIES.lock().unwrap().clear();
-        MoltObject::none().bits()
+        PRESENT.lock().unwrap().clear();
+        unsafe { support::fake_runtime::dict_op(op, dict) }
     } else {
         0
     }
@@ -188,13 +208,12 @@ fn install() {
     hooks.object_set_item = fx_object_set_item;
     hooks.dict_entry = fx_dict_entry;
     hooks.classify_heap = fx_classify_heap;
-    hooks.dict_set = fx_dict_set;
+    hooks.dict_mutate = fx_dict_mutate;
     hooks.dict_resolve = resolve_fixture_dict;
     hooks.dict_get = fx_dict_get;
     hooks.dict_len = fx_dict_len;
     hooks.dict_op = fx_dict_op;
     hooks.foreign_new = fx_foreign_new;
-    hooks.dec_ref = fx_dec_ref;
     support::prepare_abi_test_thread(hooks);
 }
 
@@ -208,7 +227,8 @@ fn is_fixture_dict(bits: u64) -> bool {
         .is_some_and(|dicts| dicts.contains(&bits))
 }
 fn fake_dict_handle() -> u64 {
-    let bits = support::fake_runtime::fresh_handle();
+    let bits = unsafe { support::fake_runtime::alloc_dict() };
+    support::fake_runtime::observe_retirement(bits, observe_retirement);
     FIXTURE_DICTS
         .lock()
         .unwrap()
@@ -298,6 +318,12 @@ fn setdefaultref_optional_sink_preserves_status_and_reference_ownership() {
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(found) };
 
     PRESENT.lock().unwrap().clear();
+    // The first insertion now owns real storage. Remove it through the same
+    // public dictionary boundary before exercising another absent-key insert.
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::mapping::PyDict_DelItem(dict, key) },
+        0
+    );
     let mut inserted = ptr::null_mut();
     assert_eq!(
         unsafe {

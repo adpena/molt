@@ -1,25 +1,24 @@
 use crate::wasm::const_materialization::WasmConstOpPolicy;
 use crate::wasm::frame_locals::{WasmFrameLocalKind, WasmFrameLocals};
-use crate::wasm_abi_generated::WasmConstLiteralPayload;
+use molt_tir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
 use wasm_encoder::ValType;
 
 #[test]
-fn literal_scratch_rejects_missing_or_changed_payload_before_allocation() {
+fn literal_scratch_skips_scalars_and_rejects_changed_payload_before_allocation() {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     let mut locals = WasmFrameLocals::new();
     let mut local_types = Vec::new();
     let mut local_count = 0;
     assert!(
-        catch_unwind(AssertUnwindSafe(|| {
-            locals.ensure_literal_scratch(
+        locals
+            .ensure_literal_scratch_for_policy(
                 "payload",
-                WasmConstLiteralPayload::None,
+                WasmConstOpPolicy::for_kind("const").unwrap(),
                 &mut local_types,
                 &mut local_count,
-            );
-        }))
-        .is_err()
+            )
+            .is_none()
     );
     assert!(locals.literal_scratch_payloads.is_empty());
     assert!(local_types.is_empty());
@@ -27,7 +26,7 @@ fn literal_scratch_rejects_missing_or_changed_payload_before_allocation() {
 
     let original = locals.ensure_literal_scratch(
         "payload",
-        WasmConstLiteralPayload::String,
+        OwnedLiteralPayloadKind::String,
         &mut local_types,
         &mut local_count,
     );
@@ -35,7 +34,7 @@ fn literal_scratch_rejects_missing_or_changed_payload_before_allocation() {
         catch_unwind(AssertUnwindSafe(|| {
             locals.ensure_literal_scratch(
                 "payload",
-                WasmConstLiteralPayload::Bytes,
+                OwnedLiteralPayloadKind::Bytes,
                 &mut local_types,
                 &mut local_count,
             );
@@ -44,7 +43,7 @@ fn literal_scratch_rejects_missing_or_changed_payload_before_allocation() {
     );
     assert_eq!(
         locals.literal_scratch_payloads.get("payload"),
-        Some(&WasmConstLiteralPayload::String)
+        Some(&OwnedLiteralPayloadKind::String)
     );
     let retained = locals.literal_scratch("payload");
     assert_eq!(retained.ptr_local(), original.ptr_local());
@@ -61,13 +60,13 @@ fn literal_scratch_locals_are_owned_and_reused_by_frame_locals() {
 
     let first = locals.ensure_literal_scratch(
         "payload",
-        WasmConstLiteralPayload::String,
+        OwnedLiteralPayloadKind::String,
         &mut local_types,
         &mut local_count,
     );
     let second = locals.ensure_literal_scratch(
         "payload",
-        WasmConstLiteralPayload::String,
+        OwnedLiteralPayloadKind::String,
         &mut local_types,
         &mut local_count,
     );
@@ -78,7 +77,7 @@ fn literal_scratch_locals_are_owned_and_reused_by_frame_locals() {
     assert_eq!(first.len_local(), 1);
     assert_eq!(
         locals.literal_scratch_payloads.get("payload"),
-        Some(&WasmConstLiteralPayload::String)
+        Some(&OwnedLiteralPayloadKind::String)
     );
     assert_eq!(second.ptr_local(), first.ptr_local());
     assert_eq!(second.len_local(), first.len_local());
@@ -148,13 +147,13 @@ fn literal_scratch_policy_preserves_typed_payloads() {
     );
 
     for (name, scratch, payload) in [
-        ("text", string_scratch, WasmConstLiteralPayload::String),
+        ("text", string_scratch, OwnedLiteralPayloadKind::String),
         (
             "digits",
             bigint_scratch,
-            WasmConstLiteralPayload::BigintDecimal,
+            OwnedLiteralPayloadKind::BigintDecimal,
         ),
-        ("blob", bytes_scratch, WasmConstLiteralPayload::Bytes),
+        ("blob", bytes_scratch, OwnedLiteralPayloadKind::Bytes),
     ] {
         assert_eq!(locals.literal_scratch_payloads.get(name), Some(&payload));
         let lookup = locals.literal_scratch(name);

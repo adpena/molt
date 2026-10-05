@@ -1,7 +1,7 @@
 //! Indexed sequence reads shared by IMPORT_STAR and the boxed C-API.
 //! Mapping subscription and iterator exhaustion have different contracts.
+use crate::object::class_storage::class_native_protocols;
 use crate::*;
-use crate::object::class_storage::{ClassDeclaration, class_declares};
 
 #[derive(Clone, Copy)]
 pub(crate) enum SequenceReadSlot {
@@ -19,13 +19,17 @@ pub(crate) fn sequence_read_slot(py: &PyToken<'_>, receiver: u64) -> Option<Sequ
             let Some(base) = obj_from_bits(base).as_ptr() else {
                 continue;
             };
-            if class_declares(base, ClassDeclaration::NativeSlotLayout) {
-                if class_declares(base, ClassDeclaration::NativeSequenceItem) {
+            if let Some(protocols) = class_native_protocols(base) {
+                if protocols & molt_cpython_abi::hooks::NativeProtocolSlot::SequenceItem.bit() != 0
+                {
                     return Some(SequenceReadSlot::Builtin);
                 }
-            } else if obj_from_bits(class_dict_bits(base)).as_ptr().is_some_and(|namespace| {
-                dict_get_str_bytes_borrowed(py, namespace, b"__getitem__").is_some()
-            }) {
+            } else if obj_from_bits(class_dict_bits(base))
+                .as_ptr()
+                .is_some_and(|namespace| {
+                    dict_get_str_bytes_borrowed(py, namespace, b"__getitem__").is_some()
+                })
+            {
                 return Some(SequenceReadSlot::Special);
             }
         }
@@ -45,11 +49,16 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
         && unsafe { object_type_id(ptr) } == TYPE_ID_FOREIGN
     {
         let Ok(native_index) = isize::try_from(index) else {
-            return raise_exception::<_>(py, "OverflowError", "cannot fit 'int' into an index-sized integer");
+            return raise_exception::<_>(
+                py,
+                "OverflowError",
+                "cannot fit 'int' into an index-sized integer",
+            );
         };
         let result = unsafe {
             molt_cpython_abi::bridge::molt_foreign_sequence_item(
-                crate::object::foreign::foreign_ptr_from_obj(ptr), native_index,
+                crate::object::foreign::foreign_ptr_from_obj(ptr),
+                native_index,
             )
         };
         return match result.decode() {
@@ -65,7 +74,8 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
         return MoltObject::none().bits();
     }
     let Some(slot) = slot else {
-        let mapping = unsafe { crate::builtins::attr::has_special_method(py, receiver, b"__getitem__") };
+        let mapping =
+            unsafe { crate::builtins::attr::has_special_method(py, receiver, b"__getitem__") };
         if exception_pending(py) {
             return MoltObject::none().bits();
         }
@@ -92,7 +102,11 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
                 return MoltObject::none().bits();
             }
             let Some(length) = to_i64(obj_from_bits(length_bits)) else {
-                return raise_exception::<_>(py, "OverflowError", "cannot fit 'int' into an index-sized integer");
+                return raise_exception::<_>(
+                    py,
+                    "OverflowError",
+                    "cannot fit 'int' into an index-sized integer",
+                );
             };
             if length < 0 {
                 return raise_exception::<_>(py, "ValueError", "__len__() should return >= 0");
@@ -106,7 +120,9 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
         return MoltObject::none().bits();
     }
     match slot {
-        SequenceReadSlot::Builtin => crate::object::ops::molt_sequence_item_builtin(receiver, index_bits),
+        SequenceReadSlot::Builtin => {
+            crate::object::ops::molt_sequence_item_builtin(receiver, index_bits)
+        }
         SequenceReadSlot::Special => {
             let method = unsafe {
                 crate::builtins::attr::lookup_special_method(py, receiver, b"__getitem__")
@@ -116,7 +132,11 @@ pub(crate) fn sequence_item_at_index(py: &PyToken<'_>, receiver: u64, mut index:
             }
             let Some(method) = method else {
                 let name = class_name_for_error(type_of_bits(py, receiver));
-                return raise_exception::<_>(py, "TypeError", &format!("'{name}' object is not subscriptable"));
+                return raise_exception::<_>(
+                    py,
+                    "TypeError",
+                    &format!("'{name}' object is not subscriptable"),
+                );
             };
             let value = unsafe { call_callable1(py, method, index_bits) };
             molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, method));

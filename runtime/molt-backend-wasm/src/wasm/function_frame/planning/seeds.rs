@@ -3,8 +3,8 @@ use crate::wasm::WasmFrameLocals;
 use crate::wasm::const_materialization::WasmConstOpPolicy;
 use crate::wasm::frame_locals::{WasmFrameAnonymousLocal, WasmLiteralScratchLocals};
 use crate::wasm::local_analysis::ValueOccupancy;
-use crate::wasm_abi_generated::WasmConstLiteralPayload;
 use crate::wasm_values::box_none;
+use molt_tir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
 use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::ValType;
 
@@ -137,20 +137,22 @@ impl FrameConstSeedPlan {
 
 fn anchor_key(policy: WasmConstOpPolicy, op: &OpIR) -> FrameConstAnchorKey {
     match policy.literal_payload() {
-        WasmConstLiteralPayload::None if op.kind == "const" => FrameConstAnchorKey::Integer(
+        None if op.kind == "const" => FrameConstAnchorKey::Integer(
             op.value
                 .unwrap_or_else(|| panic!("const requires an i64 payload"))
                 .to_string()
                 .into_bytes(),
         ),
-        WasmConstLiteralPayload::BigintDecimal => {
+        Some(OwnedLiteralPayloadKind::BigintDecimal) => {
             FrameConstAnchorKey::Integer(policy.required_simple_ir_literal_bytes(op).to_vec())
         }
-        WasmConstLiteralPayload::None => FrameConstAnchorKey::RuntimeSingleton(op.kind.clone()),
-        _ => FrameConstAnchorKey::Literal {
-            kind: op.kind.clone(),
-            bytes: policy.required_simple_ir_literal_bytes(op).to_vec(),
-        },
+        None => FrameConstAnchorKey::RuntimeSingleton(op.kind.clone()),
+        Some(OwnedLiteralPayloadKind::String | OwnedLiteralPayloadKind::Bytes) => {
+            FrameConstAnchorKey::Literal {
+                kind: op.kind.clone(),
+                bytes: policy.required_simple_ir_literal_bytes(op).to_vec(),
+            }
+        }
     }
 }
 

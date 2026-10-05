@@ -211,7 +211,7 @@ outputs = [
   "runtime/molt-ir/src/tir/op_kinds_generated.rs",
   "src/molt/frontend/lowering/op_kinds_generated.py",
 ]
-source = "runtime/molt-ir/src/tir/op_kinds.toml + tools/generator_io.py"
+source = "runtime/molt-ir/src/tir/op_kinds.toml + tools/op_kinds/runtime_requirements.py + src/molt/opcode_literal_payloads.py + src/molt/rust_source_scan.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_op_kinds.py --check"
 toolchains = ["rustfmt"]
@@ -263,7 +263,7 @@ outputs = [
   "runtime/wasm_table_layout.inc",
   "tools/wasm_allowed_imports.txt",
 ]
-source = "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml + runtime/molt-runtime/src/intrinsics/manifest.pyi + src/molt/rust_source_scan.py + tools/generator_io.py"
+source = "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml + runtime/molt-ir/src/tir/op_kinds.toml + src/molt/opcode_literal_payloads.py + runtime/molt-runtime/src/intrinsics/manifest.pyi + src/molt/rust_source_scan.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_wasm_abi.py --check"
 toolchains = ["rustfmt"]
@@ -390,7 +390,7 @@ discovery_only = false
 [[generator]]
 tool = "tools/gen_luau_support_matrix.py"
 outputs = ["docs/spec/areas/compiler/luau_support_matrix.generated.md"]
-source = "runtime/molt-backend-luau/src/luau + tools/generator_io.py"
+source = "runtime/molt-backend-luau/src/luau + runtime/molt-ir/src/tir/op_kinds.toml + tools/op_kinds/runtime_requirements.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_luau_support_matrix.py --check"
 idempotent = true
@@ -550,4 +550,27 @@ enum_file = "runtime/molt-runtime-core/src/numeric_error_policy_generated.rs"
 enum_name = "NumericErrorContext"
 owned_by = "tools/gen_python_numeric_errors.py"
 source_table = "config/python_numeric_errors.toml"
+audited_defaults = []
+
+
+[[generator]]
+tool = "tools/compatibility_error_protocol.py"
+outputs = [
+  "src/molt/stdlib/_compatibility_errors.py",
+  "runtime/molt-runtime/src/builtins/compatibility_error.rs",
+]
+source = "tools/compatibility_error_protocol.py + config/python_compatibility_error_sources.json + tools/generator_io.py"
+check_mode = true
+check_command = "tools/compatibility_error_protocol.py --check"
+idempotent = true
+sync_test = "tests/test_structural_audit.py"
+closed_domains = ["CompatibilityError"]
+discovery_only = false
+
+[[closed_domain]]
+name = "CompatibilityError"
+enum_file = "runtime/molt-runtime/src/builtins/compatibility_error.rs"
+enum_name = "CompatibilityError"
+owned_by = "tools/compatibility_error_protocol.py"
+source_table = "tools/compatibility_error_protocol.py"
 audited_defaults = []

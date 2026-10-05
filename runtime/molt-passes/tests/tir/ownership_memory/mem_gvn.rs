@@ -82,8 +82,7 @@ fn run_fresh(func: &mut TirFunction) -> PassStats {
 /// reference of its own, which its lowering retains.
 fn is_owned_alias(operation: &TirOp) -> bool {
     operation.opcode == OpCode::Copy
-        && operation.attrs.get("_original_kind")
-            == Some(&AttrValue::Str("binding_alias".into()))
+        && operation.attrs.get("_original_kind") == Some(&AttrValue::Str("binding_alias".into()))
 }
 
 // ── 1. Simple same-block store-to-load forwarding ──────────────────────
@@ -1086,10 +1085,9 @@ fn run_forwards_without_ambient_disable_path() {
 /// production.
 #[test]
 fn every_forward_keeps_its_own_reference() {
-    // Two forwards in one block (a store-to-load AND a redundant-load):
-    //   obj = alloc(16); store(obj,val,0); r1 = load(obj,0);
-    //   r2 = load(obj,0); sum=r1+r2
-    // r1 forwards from the store; r2 is redundant against r1.
+    // Distinct slots expose both forwarding authorities in the same fixture:
+    // slot 0 has a reaching store; slot 8 has only a prior load witness.
+    // Both replacements must mint an independent owned alias.
     let mut func = TirFunction::new(
         "f".into(),
         vec![],
@@ -1099,6 +1097,7 @@ fn every_forward_keeps_its_own_reference() {
     let obj = func.fresh_value();
     let val = func.fresh_value();
     let r1 = func.fresh_value();
+    let leader = func.fresh_value();
     let r2 = func.fresh_value();
     let sum = func.fresh_value();
     {
@@ -1107,7 +1106,8 @@ fn every_forward_keeps_its_own_reference() {
         entry.ops.push(const_str("stored", val));
         entry.ops.push(store(obj, val, 0));
         entry.ops.push(load(obj, 0, r1));
-        entry.ops.push(load(obj, 0, r2));
+        entry.ops.push(load(obj, 8, leader));
+        entry.ops.push(load(obj, 8, r2));
         entry.ops.push(op(OpCode::Add, vec![r1, r2], vec![sum]));
         entry.terminator = Terminator::Return { values: vec![sum] };
     }
@@ -1116,6 +1116,12 @@ fn every_forward_keeps_its_own_reference() {
     assert_eq!(stats.ops_added, 0, "each load is rewritten in place");
 
     let ops = &func.blocks[&func.entry_block].ops;
+    assert_eq!(
+        ops[4].opcode,
+        OpCode::LoadAttr,
+        "the second slot has a real load leader"
+    );
+    assert_eq!(ops[4].results, vec![leader]);
     assert!(
         ops.iter().all(|o| o.opcode != OpCode::IncRef),
         "no forward places a reference operation beside its Copy"
@@ -1127,7 +1133,7 @@ fn every_forward_keeps_its_own_reference() {
         .collect();
     assert_eq!(
         forwarded,
-        [(val, r1), (r1, r2)],
+        [(val, r1), (leader, r2)],
         "each forwarded result owns a reference of its own"
     );
 }

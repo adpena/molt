@@ -439,6 +439,19 @@ pub(super) unsafe fn documentation_part(
     } else {
         unsafe { CStr::from_ptr(name).to_bytes() }
     };
+    let Some(part) = documentation_bytes(prefix, bytes, signature) else {
+        return unsafe { new_reference(&raw mut Py_None) };
+    };
+    unsafe { strings::PyUnicode_FromStringAndSize(part.as_ptr().cast(), part.len() as Py_ssize_t) }
+}
+
+/// Shared internal-document parser for native declarations and runtime-owned
+/// creation docs. The caller supplies the current type/callable name.
+pub fn documentation_bytes<'a>(
+    prefix: &[u8],
+    bytes: &'a [u8],
+    signature: bool,
+) -> Option<&'a [u8]> {
     let split = bytes
         .windows(5)
         .position(|part| part == b"\n--\n\n")
@@ -448,14 +461,12 @@ pub(super) unsafe fn documentation_part(
                 && bytes.get(prefix.len()) == Some(&b'(')
         });
     let part = if signature {
-        let Some(end) = split else {
-            return unsafe { new_reference(&raw mut Py_None) };
-        };
+        let end = split?;
         &bytes[prefix.len()..end]
     } else {
         split.map_or(bytes, |end| &bytes[end + 5..])
     };
-    unsafe { strings::PyUnicode_FromStringAndSize(part.as_ptr().cast(), part.len() as Py_ssize_t) }
+    Some(part)
 }
 
 unsafe extern "C" fn doc(object: *mut PyObject, _: *mut c_void) -> *mut PyObject {

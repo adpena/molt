@@ -9,7 +9,7 @@
 //! instruction adopts one reference per `Transferred` operand, on both of its
 //! continuations: the caller moves a dead owner's own reference into the first
 //! position naming it and retains one for every other position. Runtime helper
-//! calls (the plain `call` spelling here) stay borrowed. The module inliner
+//! calls without source argument custody stay borrowed. The module inliner
 //! keeps the same contract when it splices a call: the inlined activation
 //! releases its frame bindings at each of its exits, a borrowed argument after
 //! the whole body, and the result wherever the caller drops it. Each case runs
@@ -54,43 +54,15 @@ fn flag(func: &mut TirFunction) -> ValueId {
     value
 }
 
-fn produce(result: ValueId) -> TirOp {
-    op(OpCode::Call, vec![], vec![result])
-}
-
 /// A named local: a Python-bound producer whose result a slot store holds.
 fn bind_local(result: ValueId) -> [TirOp; 2] {
     let mut make = produce(result);
-    make.attrs.insert("bound_local".into(), AttrValue::Bool(true));
+    make.attrs
+        .insert("bound_local".into(), AttrValue::Bool(true));
     [
         make,
         original_copy_with_operands("store_var", vec![result], vec![]),
     ]
-}
-
-/// A call that borrows every operand.
-fn borrow(operands: Vec<ValueId>) -> TirOp {
-    op(OpCode::Call, operands, vec![])
-}
-
-/// A source Python call instruction spelled `kind` whose operands take
-/// `custody`.
-fn source_call(kind: &str, operands: Vec<ValueId>, custody: &[ParameterCustody]) -> TirOp {
-    let mut call = op(OpCode::Call, operands, vec![]);
-    call.attrs
-        .insert("_original_kind".into(), AttrValue::Str(kind.into()));
-    call.set_argument_custody(custody);
-    call
-}
-
-/// A direct source call: the instruction adopts every argument.
-fn transfer(operands: Vec<ValueId>) -> TirOp {
-    let custody = vec![TRANSFERRED; operands.len()];
-    source_call("call_internal", operands, &custody)
-}
-
-fn marker() -> TirOp {
-    op(OpCode::WarnStderr, vec![], vec![])
 }
 
 fn observe(label: i64) -> TirOp {
@@ -214,7 +186,9 @@ fn owner_borrowed_by_its_adopting_call_is_retained() {
             produce(receiver),
             source_call(
                 "call_super_method_ic",
+                None,
                 vec![value, receiver, value],
+                vec![],
                 &[BORROWED, TRANSFERRED, TRANSFERRED],
             ),
             marker(),
@@ -263,7 +237,9 @@ fn ordinary_call_adopts_its_callable_and_expanded_call_borrows_it() {
                 new_builder,
                 source_call(
                     "call_bind",
+                    None,
                     vec![callable, builder],
+                    vec![],
                     &[callable_custody, TRANSFERRED],
                 ),
                 marker(),
@@ -281,7 +257,11 @@ fn ordinary_call_adopts_its_callable_and_expanded_call_borrows_it() {
 fn borrowed_parameter_is_retained_for_an_adopting_call() {
     let mut func = function("borrowed_parameter_passed_on", &[BORROWED]);
     let param = parameter(&func, 0);
-    body(&mut func, vec![transfer(vec![param]), marker()], done(vec![]));
+    body(
+        &mut func,
+        vec![transfer(vec![param]), marker()],
+        done(vec![]),
+    );
     insert(&mut func);
     assert_eq!(trace(&func, 0, &[]), [Event::Marker]);
 }
@@ -308,7 +288,13 @@ fn raw_operand_carries_no_reference_into_the_call() {
     let raw = flag(&mut func);
     body(
         &mut func,
-        vec![op(OpCode::ConstBool, vec![], vec![raw]), transfer(vec![raw])],
+        vec![
+            TirOp {
+                attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
+                ..op(OpCode::ConstBool, vec![], vec![raw])
+            },
+            transfer(vec![raw]),
+        ],
         done(vec![]),
     );
     insert(&mut func);
@@ -332,10 +318,7 @@ fn moved_owner_is_released_by_neither_continuation() {
         .insert(handler, block(handler, vec![marker()], done(vec![])));
     insert(&mut func);
     for raises in [false, true] {
-        assert_eq!(
-            trace(&func, 0, &[raises]),
-            [Event::Freed(0), Event::Marker]
-        );
+        assert_eq!(trace(&func, 0, &[raises]), [Event::Freed(0), Event::Marker]);
     }
 }
 
@@ -359,10 +342,7 @@ fn owner_the_handler_reads_is_retained_for_the_call() {
     );
     insert(&mut func);
     for raises in [false, true] {
-        assert_eq!(
-            trace(&func, 0, &[raises]),
-            [Event::Freed(0), Event::Marker]
-        );
+        assert_eq!(trace(&func, 0, &[raises]), [Event::Freed(0), Event::Marker]);
     }
 }
 
@@ -373,11 +353,16 @@ fn owner_moved_on_one_arm_is_released_on_the_other() {
     let mut func = function("moved_on_one_arm", &[]);
     let value = owned(&mut func);
     let cond = flag(&mut func);
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let (then_block, else_block, join) =
         (func.fresh_block(), func.fresh_block(), func.fresh_block());
     body(
         &mut func,
-        vec![produce(value), op(OpCode::ConstBool, vec![], vec![cond])],
+        vec![
+            produce(value),
+            op(OpCode::Copy, vec![cond_input], vec![cond]),
+        ],
         choose(cond, then_block, else_block),
     );
     func.blocks.insert(
@@ -390,10 +375,7 @@ fn owner_moved_on_one_arm_is_released_on_the_other() {
         .insert(join, block(join, vec![marker()], done(vec![])));
     insert(&mut func);
     for taken in [true, false] {
-        assert_eq!(
-            trace(&func, 0, &[taken]),
-            [Event::Freed(0), Event::Marker]
-        );
+        assert_eq!(trace(&func, 0, &[taken]), [Event::Freed(0), Event::Marker]);
     }
 }
 
@@ -404,11 +386,16 @@ fn owner_read_after_the_join_is_retained_on_its_arm() {
     let mut func = function("retained_on_one_arm", &[]);
     let value = owned(&mut func);
     let cond = flag(&mut func);
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let (then_block, else_block, join) =
         (func.fresh_block(), func.fresh_block(), func.fresh_block());
     body(
         &mut func,
-        vec![produce(value), op(OpCode::ConstBool, vec![], vec![cond])],
+        vec![
+            produce(value),
+            op(OpCode::Copy, vec![cond_input], vec![cond]),
+        ],
         choose(cond, then_block, else_block),
     );
     func.blocks.insert(
@@ -423,10 +410,7 @@ fn owner_read_after_the_join_is_retained_on_its_arm() {
     );
     insert(&mut func);
     for taken in [true, false] {
-        assert_eq!(
-            trace(&func, 0, &[taken]),
-            [Event::Freed(0), Event::Marker]
-        );
+        assert_eq!(trace(&func, 0, &[taken]), [Event::Freed(0), Event::Marker]);
     }
 }
 
@@ -437,15 +421,16 @@ fn loop_invariant_owner_is_retained_on_every_iteration() {
     let mut func = function("loop_invariant_owner", &[]);
     let value = owned(&mut func);
     let more = flag(&mut func);
-    let (header, loop_body, exit) =
-        (func.fresh_block(), func.fresh_block(), func.fresh_block());
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let more_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
+    let (header, loop_body, exit) = (func.fresh_block(), func.fresh_block(), func.fresh_block());
     func.loop_roles.insert(header, LoopRole::LoopHeader);
     body(&mut func, vec![produce(value)], jump(header));
     func.blocks.insert(
         header,
         block(
             header,
-            vec![op(OpCode::ConstBool, vec![], vec![more])],
+            vec![op(OpCode::Copy, vec![more_input], vec![more])],
             choose(more, loop_body, exit),
         ),
     );
@@ -459,10 +444,7 @@ fn loop_invariant_owner_is_retained_on_every_iteration() {
     for iterations in 0..3 {
         let mut choices = vec![true; iterations];
         choices.push(false);
-        assert_eq!(
-            trace(&func, 0, &choices),
-            [Event::Freed(0), Event::Marker]
-        );
+        assert_eq!(trace(&func, 0, &choices), [Event::Freed(0), Event::Marker]);
     }
 }
 
@@ -485,7 +467,11 @@ fn transferred_parameter_is_released_at_frame_exit() {
 fn transferred_parameter_passed_on_stays_bound_until_frame_exit() {
     let mut func = function("passes_parameter_on", &[TRANSFERRED]);
     let param = parameter(&func, 0);
-    body(&mut func, vec![transfer(vec![param]), marker()], done(vec![]));
+    body(
+        &mut func,
+        vec![transfer(vec![param]), marker()],
+        done(vec![]),
+    );
     insert(&mut func);
     assert_eq!(trace(&func, 0, &[]), [Event::Marker, Event::Freed(0)]);
 }
@@ -592,7 +578,12 @@ fn captured_read_outlives_its_rebinding_until_its_consumer() {
         insert(&mut func);
         assert_eq!(
             trace(&func, 0, &[]),
-            [Event::Freed(0), Event::Freed(2), Event::Marker, Event::Freed(1)]
+            [
+                Event::Freed(0),
+                Event::Freed(2),
+                Event::Marker,
+                Event::Freed(1)
+            ]
         );
     }
 }
@@ -630,9 +621,7 @@ fn callargs_builder_moves_into_call_bind() {
     let mut func = function("builder_moves", &[BORROWED]);
     let callee = parameter(&func, 0);
     let builder = owned(&mut func);
-    let mut bind = op(OpCode::Call, vec![callee, builder], vec![]);
-    bind.attrs
-        .insert("_original_kind".into(), AttrValue::Str("call_bind".into()));
+    let bind = call_bind(callee, builder, vec![]);
     body(
         &mut func,
         vec![original_copy("callargs_new", vec![builder]), bind, marker()],
@@ -648,6 +637,12 @@ fn callargs_builder_moves_into_call_bind() {
 /// inliner, whose re-optimization of the merged caller runs too, then places
 /// the caller's RC.
 fn inline(caller: TirFunction, callee: TirFunction) -> TirFunction {
+    // The module inliner consumes lifted bodies. Lift through the public
+    // producer so call-return observations are authored before SSA, as in
+    // production; do not fabricate async-work metadata in this fixture.
+    let document = inline_fixture_document(&caller, &callee);
+    let caller = lift_inline_fixture(&document.functions[0]);
+    let callee = lift_inline_fixture(&document.functions[1]);
     let mut module = TirModule {
         name: "inline_custody".into(),
         functions: vec![caller, callee],
@@ -662,9 +657,127 @@ fn inline(caller: TirFunction, callee: TirFunction) -> TirFunction {
         &HashSet::new(),
     );
     let mut merged = module.functions.swap_remove(0);
-    assert_eq!(stats.sites_inlined, 1, "{}: the call must inline", merged.name);
+    assert_eq!(
+        stats.sites_inlined, 1,
+        "{}: the call must inline",
+        merged.name
+    );
     insert(&mut merged);
     merged
+}
+
+fn inline_fixture_document(caller: &TirFunction, callee: &TirFunction) -> molt_ir::SimpleIR {
+    let functions = [caller, callee]
+        .into_iter()
+        .map(|func| {
+            molt_passes::tir::verify::verify_function(func)
+                .expect("the authored inliner fixture must be valid before transport");
+            molt_ir::FunctionIR {
+                return_abi: func.return_abi,
+                name: func.name.clone(),
+                params: func.param_names.clone(),
+                param_types: None,
+                ops: molt_passes::tir::lower_to_simple::lower_to_simple_ir(func),
+                source_file: None,
+                is_extern: false,
+                codegen_partition: false,
+                // The verified TIR projection already owns the canonical
+                // absence of all-borrowed custody. Preserve that absence on
+                // the wire; do not expand it into a second vector encoding.
+                parameter_custody: if func
+                    .attrs
+                    .contains_key(molt_ir::tir::function::PARAMETER_CUSTODY_ATTR)
+                {
+                    (0..func.param_types.len())
+                        .map(|position| func.parameter_custody(position))
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+                execution_context: func.execution_context,
+            }
+        })
+        .collect();
+    let document = molt_ir::SimpleIR {
+        functions,
+        profile: None,
+    };
+    molt_ir::validate_simple_ir(&document).expect(
+        "the whole inline fixture must satisfy production schema and call custody admission",
+    );
+    let report = molt_ir::verify_simple_ir(&document);
+    assert!(
+        report.is_ok(),
+        "the whole inline fixture must satisfy production reference admission: {:?}",
+        report.errors
+    );
+    document
+}
+
+fn lift_inline_fixture(simple: &molt_ir::FunctionIR) -> TirFunction {
+    let lifted = molt_passes::tir::lower_from_simple::lower_to_tir_for_target(
+        simple,
+        &TargetInfo::native_release_fast(),
+    );
+    molt_passes::tir::verify::verify_function(&lifted)
+        .expect("the inliner fixture must enter through valid canonical SSA");
+    for op in lifted
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter(|op| op.opcode == OpCode::Is)
+    {
+        assert_eq!(
+            lifted.value_types.get(&op.results[0]),
+            Some(&TirType::Bool),
+            "lifted Is must be Bool so the RC oracle never allocates it an object identity"
+        );
+    }
+    lifted
+}
+
+/// Opaque finalization/arithmetic can recursively re-enter a generic callee.
+/// Keep that refusal explicit and prove both source activations with the same
+/// ordinary-call RC oracle used by the non-inline custody cases above.
+fn refused_opaque_inline(caller: TirFunction, callee: TirFunction) -> (TirFunction, TirFunction) {
+    use molt_passes::tir::call_facts::{InlineEligibility, InlineWhyNot};
+    use molt_passes::tir::passes::inliner::classify_inline_eligibility;
+    // Even refusal fixtures must satisfy the same document custody/reference
+    // boundary; their original activations remain the independent RC oracle.
+    inline_fixture_document(&caller, &callee);
+    let mut module = TirModule {
+        name: "opaque_inline_custody".into(),
+        functions: vec![caller, callee],
+    };
+    let before: Vec<_> = module
+        .functions
+        .iter()
+        .map(molt_passes::tir::printer::print_function)
+        .collect();
+    let graph = CallGraph::build(&module);
+    let summaries = ModuleSummaries::compute(&module, &graph);
+    let target = TargetInfo::native_release_fast();
+    assert_eq!(
+        classify_inline_eligibility(&module.functions[1], &graph, &summaries, &target),
+        InlineEligibility::WhyNot(InlineWhyNot::Recursive)
+    );
+    let stats = run_inliner(&mut module, &graph, &summaries, &target, &HashSet::new());
+    assert_eq!(stats.sites_inlined, 0);
+    assert_eq!(stats.functions_changed, 0);
+    assert_eq!(
+        module
+            .functions
+            .iter()
+            .map(molt_passes::tir::printer::print_function)
+            .collect::<Vec<_>>(),
+        before,
+        "refusal must preserve both source activations"
+    );
+    let mut callee = module.functions.pop().unwrap();
+    let mut caller = module.functions.pop().unwrap();
+    insert(&mut callee);
+    insert(&mut caller);
+    (caller, callee)
 }
 
 /// A direct call of `callee` whose operands take its parameters' custody.
@@ -672,11 +785,13 @@ fn call(callee: &TirFunction, operands: Vec<ValueId>, results: Vec<ValueId>) -> 
     let custody: Vec<ParameterCustody> = (0..callee.param_types.len())
         .map(|position| callee.parameter_custody(position))
         .collect();
-    let mut call = source_call("call_internal", operands, &custody);
-    call.results = results;
-    call.attrs
-        .insert("s_value".into(), AttrValue::Str(callee.name.clone()));
-    call
+    source_call(
+        "call_internal",
+        Some(&callee.name),
+        operands,
+        results,
+        &custody,
+    )
 }
 
 /// An observable statement that reads `values`.
@@ -695,7 +810,12 @@ fn inlined_owned_parameters_die_at_the_callee_frame_clear() {
         let parameters: Vec<ValueId> = (0..arity)
             .map(|position| parameter(&callee, position))
             .collect();
-        body(&mut callee, vec![read(parameters), marker()], done(vec![]));
+        let mut reads: Vec<_> = parameters
+            .into_iter()
+            .map(|value| read(vec![value]))
+            .collect();
+        reads.push(marker());
+        body(&mut callee, reads, done(vec![]));
         let mut caller = function("passes_a_temporary", &[]);
         let value = owned(&mut caller);
         body(
@@ -710,8 +830,10 @@ fn inlined_owned_parameters_die_at_the_callee_frame_clear() {
         let merged = inline(caller, callee);
         assert_eq!(
             trace(&merged, 0, &[]),
-            [Event::Marker, Event::Marker, Event::Freed(0), Event::Marker],
-            "{arity} parameters"
+            std::iter::repeat_n(Event::Marker, arity + 1)
+                .chain([Event::Freed(0), Event::Marker])
+                .collect::<Vec<_>>(),
+            "{arity} independently read parameters"
         );
     }
 }
@@ -780,11 +902,11 @@ fn every_inlined_exit_clears_the_frame() {
     let merged = inline(caller, callee);
     // Object 0 is the caller's parameter, object 1 its temporary.
     assert_eq!(
-        trace(&merged, 0, &[true]),
+        trace(&merged, 0, &[false, true]),
         [Event::Marker, Event::Freed(1), Event::Marker]
     );
     assert_eq!(
-        trace(&merged, 0, &[false]),
+        trace(&merged, 0, &[false, false]),
         [Event::Marker, Event::Marker, Event::Freed(1), Event::Marker]
     );
 }
@@ -812,10 +934,16 @@ fn inlined_del_of_an_owned_parameter_releases_it_there() {
         vec![produce(value), call(&callee, vec![value], vec![]), marker()],
         done(vec![]),
     );
-    let merged = inline(caller, callee);
+    let (caller, callee) = refused_opaque_inline(caller, callee);
     assert_eq!(
-        trace(&merged, 0, &[]),
-        [Event::Marker, Event::Freed(0), Event::Marker, Event::Marker]
+        trace(&callee, 0, &[]),
+        [Event::Marker, Event::Freed(0), Event::Marker],
+        "the generic callee preserves its exact binding/finalizer boundary"
+    );
+    assert_eq!(
+        trace(&caller, 0, &[]),
+        [Event::Freed(0), Event::Marker],
+        "the retained source call preserves the caller's reference obligations"
     );
 }
 
@@ -857,11 +985,11 @@ fn inlined_raise_clears_the_frame_before_the_caller_handler() {
     let merged = inline(caller, callee);
     // The callee raises, and the caller's observation delivers the exception.
     assert_eq!(
-        trace(&merged, 0, &[true, true]),
+        trace(&merged, 0, &[false, true, true]),
         [Event::Marker, Event::Freed(0), Event::Marker]
     );
     assert_eq!(
-        trace(&merged, 0, &[false, false]),
+        trace(&merged, 0, &[false, false, false]),
         [Event::Marker, Event::Marker, Event::Freed(0), Event::Marker]
     );
 }
@@ -890,10 +1018,16 @@ fn inlined_borrowed_parameter_lives_to_the_end_of_the_helper() {
         vec![produce(value), call(&callee, vec![value], vec![]), marker()],
         done(vec![]),
     );
-    let merged = inline(caller, callee);
+    let (caller, callee) = refused_opaque_inline(caller, callee);
     assert_eq!(
-        trace(&merged, 0, &[]),
-        [Event::Marker, Event::Marker, Event::Freed(0), Event::Marker]
+        trace(&callee, 0, &[]),
+        [Event::Marker, Event::Marker],
+        "the generic callee preserves its exact binding/finalizer boundary"
+    );
+    assert_eq!(
+        trace(&caller, 0, &[]),
+        [Event::Freed(0), Event::Marker],
+        "the retained source call preserves the caller's reference obligations"
     );
 }
 
@@ -961,16 +1095,20 @@ fn inlined_local_equal_to_a_caller_local_keeps_its_own_reference() {
         ],
         done(vec![]),
     );
-    let merged = inline(caller, callee);
+    let (caller, callee) = refused_opaque_inline(caller, callee);
     assert_eq!(
-        trace(&merged, 0, &[]),
+        trace(&callee, 0, &[]),
+        [Event::Marker, Event::Freed(1), Event::Marker],
+        "the generic callee preserves its exact binding/finalizer boundary"
+    );
+    assert_eq!(
+        trace(&caller, 0, &[]),
         [
-            Event::Marker,
-            Event::Marker,
             Event::Marker,
             Event::Freed(0),
             Event::Marker,
             Event::Freed(1)
-        ]
+        ],
+        "the retained source call preserves the caller's reference obligations"
     );
 }

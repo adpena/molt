@@ -16,6 +16,7 @@ pub(super) struct RuntimeServiceOpContext<'a> {
     pub(super) import_ids: &'a TrackedImportIds,
     pub(super) locals: &'a WasmFrameLocals,
     pub(super) reloc_enabled: bool,
+    pub(super) guard_profile_local: Option<u32>,
     pub(super) native_eh_enabled: bool,
     pub(super) func_index: u32,
     pub(super) func_import_count: u32,
@@ -28,6 +29,7 @@ impl RuntimeServiceOpContext<'_> {
             import_ids: self.import_ids,
             locals: self.locals,
             reloc_enabled: self.reloc_enabled,
+            guard_profile_local: self.guard_profile_local,
         }
     }
 }

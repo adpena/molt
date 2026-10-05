@@ -4,11 +4,11 @@
 //! cancellation/close paths already own a canonical exception instance. The
 //! tuple is kept intact during delegation and normalized only at its receiver.
 
-use crate::*;
 use crate::builtins::exceptions::{
     ExceptionFieldSlot, ExceptionValue, exception_class, exception_class_is_subtype,
     exception_field, exception_is_class, exception_is_instance, exception_matches_type,
 };
+use crate::*;
 
 struct ThrowArguments {
     values: [u64; 3],
@@ -116,7 +116,9 @@ fn construct_throw_exception(py: &PyToken<'_>, class: u64, value: u64) -> Option
         unsafe { crate::call_callable1(py, class, value) }
     };
     let instance = ExceptionValue::adopt(py, instance);
-    if exception_pending(py) { return None; }
+    if exception_pending(py) {
+        return None;
+    }
     if !exception_is_instance(py, instance.bits()) {
         return raise_exception::<_>(
             py,
@@ -144,10 +146,15 @@ fn take_throw_normalization_failure(
         let current = exception_field(py, exception.bits(), ExceptionFieldSlot::Traceback)?;
         if obj_from_bits(current.bits()).is_none()
             && let Err(message) = crate::builtins::exceptions::exception_replace_field_bits(
-                py, exception.bits(), ExceptionFieldSlot::Traceback, traceback,
+                py,
+                exception.bits(),
+                ExceptionFieldSlot::Traceback,
+                traceback,
             )
         {
-            return if exception_pending(py) { None } else {
+            return if exception_pending(py) {
+                None
+            } else {
                 raise_exception::<_>(py, "TypeError", message)
             };
         }
@@ -176,63 +183,66 @@ pub(crate) fn normalize_throw_argument(py: &PyToken<'_>, carrier: u64) -> Option
     }
     let is_class = exception_is_class(py, exception);
     let normalized = if exception_is_instance(py, exception) {
-            if !obj_from_bits(value).is_none() {
-                return raise_exception::<_>(
-                    py,
-                    "TypeError",
-                    "instance exception may not have a separate value",
-                );
-            }
-            inc_ref_bits(py, exception);
-            exception
-        } else if is_class {
-            let matching_instance = if exception_is_instance(py, value) {
-                let Some(actual_class) = exception_class(py, value) else {
-                    return take_throw_normalization_failure(py, traceback);
-                };
-                let matched = ExceptionValue::adopt(py, crate::molt_issubclass(actual_class.bits(), exception));
-                if exception_pending(py) {
-                    return take_throw_normalization_failure(py, traceback);
-                }
-                let matches = is_truthy(py, obj_from_bits(matched.bits()));
-                if exception_pending(py) {
-                    return take_throw_normalization_failure(py, traceback);
-                }
-                matches
-            } else { false };
-            if matching_instance {
-                // NormalizeException trusts an existing matching subclass and
-                // updates the exception type to that instance's actual class.
-                inc_ref_bits(py, value);
-                value
-            } else {
-                let Some(instance) = construct_throw_exception(py, exception, value) else {
-                    return take_throw_normalization_failure(py, traceback);
-                };
-                // A freshly constructed result does not replace the requested
-                // type in NormalizeException. The following PyErr_Restore step
-                // accepts an exact class only, constructing once more otherwise.
-                // This includes a constructed subclass, but not a supplied one.
-                let instance = ExceptionValue::adopt(py, instance);
-                let Some(actual_class) = exception_class(py, instance.bits()) else {
-                    return take_throw_normalization_failure(py, traceback);
-                };
-                if actual_class.bits() != exception {
-                    let restored = construct_throw_exception(py, exception, instance.bits());
-                    match restored {
-                        Some(restored) => restored,
-                        None => return take_throw_normalization_failure(py, None),
-                    }
-                } else {
-                    instance.into_bits()
-                }
-            }
-        } else {
+        if !obj_from_bits(value).is_none() {
             return raise_exception::<_>(
                 py,
                 "TypeError",
-                "exceptions must be classes or instances deriving from BaseException",
+                "instance exception may not have a separate value",
             );
+        }
+        inc_ref_bits(py, exception);
+        exception
+    } else if is_class {
+        let matching_instance = if exception_is_instance(py, value) {
+            let Some(actual_class) = exception_class(py, value) else {
+                return take_throw_normalization_failure(py, traceback);
+            };
+            let matched =
+                ExceptionValue::adopt(py, crate::molt_issubclass(actual_class.bits(), exception));
+            if exception_pending(py) {
+                return take_throw_normalization_failure(py, traceback);
+            }
+            let matches = is_truthy(py, obj_from_bits(matched.bits()));
+            if exception_pending(py) {
+                return take_throw_normalization_failure(py, traceback);
+            }
+            matches
+        } else {
+            false
+        };
+        if matching_instance {
+            // NormalizeException trusts an existing matching subclass and
+            // updates the exception type to that instance's actual class.
+            inc_ref_bits(py, value);
+            value
+        } else {
+            let Some(instance) = construct_throw_exception(py, exception, value) else {
+                return take_throw_normalization_failure(py, traceback);
+            };
+            // A freshly constructed result does not replace the requested
+            // type in NormalizeException. The following PyErr_Restore step
+            // accepts an exact class only, constructing once more otherwise.
+            // This includes a constructed subclass, but not a supplied one.
+            let instance = ExceptionValue::adopt(py, instance);
+            let Some(actual_class) = exception_class(py, instance.bits()) else {
+                return take_throw_normalization_failure(py, traceback);
+            };
+            if actual_class.bits() != exception {
+                let restored = construct_throw_exception(py, exception, instance.bits());
+                match restored {
+                    Some(restored) => restored,
+                    None => return take_throw_normalization_failure(py, None),
+                }
+            } else {
+                instance.into_bits()
+            }
+        }
+    } else {
+        return raise_exception::<_>(
+            py,
+            "TypeError",
+            "exceptions must be classes or instances deriving from BaseException",
+        );
     };
     // Class/value restoration replaces the traceback even when it is absent;
     // the single-instance form preserves its existing traceback when omitted.
@@ -245,7 +255,9 @@ pub(crate) fn normalize_throw_argument(py: &PyToken<'_>, carrier: u64) -> Option
             crate::builtins::exceptions::ExceptionFieldSlot::Traceback,
             traceback,
         ) {
-            return if exception_pending(py) { None } else {
+            return if exception_pending(py) {
+                None
+            } else {
                 raise_exception::<_>(py, "TypeError", message)
             };
         }

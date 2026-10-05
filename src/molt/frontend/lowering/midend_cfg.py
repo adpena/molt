@@ -62,7 +62,13 @@ class MidendCFGMixin(GeneratorMixinBase):
         with current_unique_result_definitions(self, ops):
             if not ops:
                 return ops, 0, 0, 0
-            signatures = [self._guard_signature(op) for op in ops]
+            # A runtime type-guard miss is non-trapping and counted on every
+            # execution. Repetition is not an idempotent success fact. Exact
+            # no-mismatch elimination belongs to canonicalization's type facts.
+            signatures = [
+                self._guard_signature(op) if op.kind == "GUARD_DICT_SHAPE" else None
+                for op in ops
+            ]
             universe = {sig for sig in signatures if sig is not None}
             if not universe:
                 return ops, 0, 0, 0

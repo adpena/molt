@@ -2,10 +2,10 @@ use molt_obj_model::MoltObject;
 
 use crate::builtins::numbers::{index_bigint_from_obj, int_bits_from_bigint};
 use crate::{
-    molt_abs_builtin, molt_add, molt_bit_and, molt_bit_or, molt_bit_xor, molt_div,
-    molt_eq, molt_floordiv, molt_ge, molt_gt, molt_invert, molt_is_truthy, molt_le,
-    molt_lshift, molt_lt, molt_matmul, molt_mod, molt_mul, molt_ne, molt_pow,
-    molt_rshift, molt_sub, obj_from_bits, type_name,
+    molt_abs_builtin, molt_add, molt_bit_and, molt_bit_or, molt_bit_xor, molt_div, molt_eq,
+    molt_floordiv, molt_ge, molt_gt, molt_invert, molt_is_truthy, molt_le, molt_lshift, molt_lt,
+    molt_matmul, molt_mod, molt_mul, molt_ne, molt_pow, molt_rshift, molt_sub, obj_from_bits,
+    type_name,
 };
 
 #[unsafe(no_mangle)]

@@ -529,13 +529,14 @@ def test_prepared_named_lane_keeps_exact_registered_payload_and_closure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lane_id: str
 ) -> None:
     from molt.cli import source_build_environment as environment_authority
+    from molt.cli import source_build_environment_schema as environment_authority_schema
 
     custody = tmp_path / "environments"
     root = custody / ("a" * 64)
     python = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     python.parent.mkdir(parents=True)
     python.write_bytes(b"prepared-image")
-    (root / environment_authority.SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text(
+    (root / environment_authority_schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST).write_text(
         "{}", encoding="utf-8"
     )
     monkeypatch.setattr(
@@ -551,7 +552,7 @@ def test_prepared_named_lane_keeps_exact_registered_payload_and_closure(
         command_admission.envelope_for_command([*command, "--changed"])
     with pytest.raises(ValueError, match="direct locked interpreter with -P"):
         command_admission.envelope_for_command([command[0], *command[2:]])
-    (root / environment_authority.SOURCE_BUILD_ENVIRONMENT_MANIFEST).unlink()
+    (root / environment_authority_schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST).unlink()
     with pytest.raises(ValueError, match="content-addressed locked"):
         command_admission.envelope_for_command(command)
 
@@ -612,7 +613,9 @@ def test_uncaptured_environment_image_cannot_borrow_a_prepared_image_identity(
     tmp_path: Path,
 ) -> None:
     import hashlib
-    from molt.cli.source_build_environment import SOURCE_BUILD_ENVIRONMENT_MANIFEST
+    from molt.cli.source_build_environment_schema import (
+        SOURCE_BUILD_ENVIRONMENT_MANIFEST,
+    )
     from tools.proof_queue_pkg import execution_custody
 
     captured = tmp_path / "captured" / "python.exe"

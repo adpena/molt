@@ -2,8 +2,6 @@
 
 from functools import lru_cache, partial
 from pathlib import Path
-import subprocess
-import sys
 
 import pytest
 
@@ -13,26 +11,18 @@ from tests.proof_queue_custody_test_support import (
     assert_execution_context_rejects_substitutions,
     publish_receipt_custody,
 )
-from tools.proof_queue_pkg import command_admission, supervisor_custody
+from tools.proof_queue_pkg import supervisor_custody, supervisor_generation
 
 pytestmark = pytest.mark.slow
 
 
 @lru_cache(maxsize=1)
 def _native_supervisor_binary() -> Path:
-    build = (
-        Path(command_admission.__file__).resolve().parents[1]
-        / "proof_supervisor"
-        / "build.py"
-    )
-    completed = run_custody_subject_process(
-        [sys.executable, str(build), "--release"],
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
+    binary, _receipt = supervisor_generation.provision(
+        cwd=Path(supervisor_custody.__file__).resolve().parents[2],
         env=proof_queue_owned_roots.native_build_environment(source=Path(__file__)),
     )
-    return Path(completed.stdout.splitlines()[-1]).resolve(strict=True)
+    return binary
 
 
 def test_native_execution_context_rehashes_nonce_custody_and_transcript_artifacts(

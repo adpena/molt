@@ -19,7 +19,6 @@ use cranelift_codegen::settings;
 use cranelift_codegen::settings::Configurable;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
 use cranelift_module::{DataDescription, Linkage, Module};
-use cranelift_native::builder_with_options as native_isa_builder_with_options;
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;

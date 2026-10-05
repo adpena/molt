@@ -3,15 +3,59 @@
 
 use super::*;
 
+/// Concatenation rejection belongs to the sequence slot, not generic numeric
+/// dispatch. A Python class name is diagnostic data, never slot identity.
+#[derive(Clone, Copy)]
+pub(in crate::object) enum SequenceConcatKind {
+    String,
+    List,
+    Tuple,
+    BytesLike,
+}
+
+impl SequenceConcatKind {
+    pub(in crate::object) fn raise<T: crate::builtins::exceptions::ExceptionSentinel>(
+        self,
+        py: &PyToken<'_>,
+        left: u64,
+        right: u64,
+    ) -> T {
+        let right_name = type_name(py, obj_from_bits(right));
+        let message = match self {
+            Self::String | Self::List | Self::Tuple => {
+                let sequence = match self {
+                    Self::String => "str",
+                    Self::List => "list",
+                    Self::Tuple => "tuple",
+                    Self::BytesLike => unreachable!(),
+                };
+                // CPython's %.Ns truncates bytes before replacement decoding.
+                let right_name =
+                    String::from_utf8_lossy(&right_name.as_bytes()[..right_name.len().min(200)]);
+                format!("can only concatenate {sequence} (not \"{right_name}\") to {sequence}")
+            }
+            Self::BytesLike => {
+                let left_name = type_name(py, obj_from_bits(left));
+                let left_name =
+                    String::from_utf8_lossy(&left_name.as_bytes()[..left_name.len().min(100)]);
+                let right_name =
+                    String::from_utf8_lossy(&right_name.as_bytes()[..right_name.len().min(100)]);
+                format!("can't concat {right_name} to {left_name}")
+            }
+        };
+        raise_exception(py, "TypeError", &message)
+    }
+}
+
 /// Sequence concat/repeat descriptors do not become numeric slots merely by
 /// inheritance. Reuse runtime-symbol identity from the callable authority.
 pub(crate) unsafe fn is_sequence_slot(raw: Option<u64>) -> bool {
     [
-        fn_addr!(sequence_add_slot),
-        fn_addr!(sequence_repeat_slot),
-        fn_addr!(molt_str_add_method),
-        fn_addr!(molt_list_add_method),
-        fn_addr!(molt_list_mul_method),
+        fn_key!(sequence_add_slot),
+        fn_key!(sequence_repeat_slot),
+        fn_key!(molt_str_add_method),
+        fn_key!(molt_list_add_method),
+        fn_key!(molt_list_mul_method),
     ]
     .into_iter()
     .any(|symbol| unsafe { crate::call::type_policy::callable_matches_runtime_symbol(raw, symbol) })
@@ -27,12 +71,19 @@ pub(crate) fn sequence_add(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
             );
         };
         let kind = object_type_id(lhs);
+        if crate::object::tuple_storage::native_tuple(left).is_some()
+            || (kind == TYPE_ID_TUPLE
+                && crate::object::tuple_storage::native_tuple(right).is_some())
+        {
+            let tuple = crate::object::tuple_storage::TupleStorage::from_bits(py, left).unwrap();
+            return tuple.concat(right);
+        }
         if kind == TYPE_ID_TUPLE {
             let Some(rhs) = obj_from_bits(right)
                 .as_ptr()
                 .filter(|&ptr| object_type_id(ptr) == TYPE_ID_TUPLE)
             else {
-                return raise_exception(py, "TypeError", "can only concatenate tuple to tuple");
+                return SequenceConcatKind::Tuple.raise(py, left, right);
             };
             let Some(items) = crate::object::seq_access::snapshot_concat(
                 py,
@@ -54,7 +105,7 @@ pub(crate) fn sequence_add(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
                 .as_ptr()
                 .filter(|&ptr| object_type_id(ptr) == TYPE_ID_STRING)
             else {
-                return raise_exception(py, "TypeError", "can only concatenate str to str");
+                return SequenceConcatKind::String.raise(py, left, right);
             };
             let lhs = std::slice::from_raw_parts(string_bytes(lhs), string_len(lhs));
             let rhs = std::slice::from_raw_parts(string_bytes(rhs), string_len(rhs));
@@ -63,11 +114,7 @@ pub(crate) fn sequence_add(py: &PyToken<'_>, left: u64, right: u64) -> u64 {
         }
         if matches!(kind, TYPE_ID_BYTES | TYPE_ID_BYTEARRAY) {
             if !crate::object::buffer_exports::supports_buffer(py, right) {
-                return raise_exception(
-                    py,
-                    "TypeError",
-                    "concatenation requires a bytes-like object",
-                );
+                return SequenceConcatKind::BytesLike.raise(py, left, right);
             }
             // Hold the export while reading its detached copy. No mutable byte
             // view survives an exporter callback.
@@ -92,6 +139,13 @@ pub(crate) extern "C" fn sequence_add_slot(left: u64, right: u64) -> u64 {
 
 pub(crate) extern "C" fn sequence_repeat_slot(value: u64, count: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
+        if crate::object::tuple_storage::native_tuple(value).is_some() {
+            let tuple = crate::object::tuple_storage::TupleStorage::from_bits(py, value).unwrap();
+            let Some(count) = sequence_repeat_count(py, count) else {
+                return MoltObject::none().bits();
+            };
+            return tuple.repeat(count as isize);
+        }
         let Some(ptr) = obj_from_bits(value).as_ptr().filter(|&ptr| unsafe {
             matches!(
                 object_type_id(ptr),

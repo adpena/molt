@@ -245,61 +245,6 @@ pub(super) unsafe extern "C" fn object_set<const DELETE: bool>(
     unsafe { status_result(call(self_, values[0], value)) }
 }
 
-/// Reject an explicit base setter that jumps over a native layout override.
-/// Runtime-owned classes have no C override; their shared generic setter remains
-/// the runtime authority after receiver projection.
-unsafe fn setter_admitted(self_: *mut PyObject, wrapped: *mut c_void) -> bool {
-    let ty = unsafe { crate::bridge::semantic_type(self_) };
-    if ty.is_null() {
-        return false;
-    }
-    let _type_owner = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(ty.cast()) };
-    let current = unsafe { (*ty).tp_setattro }.map(|f| f as *const () as *mut c_void);
-    let mut defining = ty;
-    let mro = unsafe { (*ty).tp_mro };
-    if mro.is_null() {
-        return true;
-    }
-    let _mro_owner = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(mro) };
-    if !mro.is_null() {
-        let count = unsafe { sequences::PyTuple_Size(mro) };
-        if count < 0 {
-            return false;
-        }
-        for index in (0..count).rev() {
-            let base = unsafe { sequences::PyTuple_GetItem(mro, index) }.cast::<PyTypeObject>();
-            if base.is_null() {
-                return false;
-            }
-            if crate::bridge::GLOBAL_BRIDGE
-                .managed_handle_for_pyobj(base.cast())
-                .is_some()
-            {
-                continue;
-            }
-            if unsafe { (*base).tp_setattro }.map(|f| f as *const () as *mut c_void) == current {
-                defining = base;
-                break;
-            }
-        }
-    }
-    while !defining.is_null() {
-        let slot = unsafe { (*defining).tp_setattro }.map(|f| f as *const () as *mut c_void);
-        if slot == Some(wrapped) {
-            return true;
-        }
-        if crate::bridge::GLOBAL_BRIDGE
-            .managed_handle_for_pyobj(defining.cast())
-            .is_none()
-        {
-            unsafe { type_error("can't apply this attribute setter across a native override") };
-            return false;
-        }
-        defining = unsafe { (*defining).tp_base };
-    }
-    true
-}
-
 pub(super) unsafe extern "C" fn attribute_set<const DELETE: bool>(
     self_: *mut PyObject,
     args: *mut PyObject,
@@ -309,7 +254,7 @@ pub(super) unsafe extern "C" fn attribute_set<const DELETE: bool>(
     let Some(values) = (unsafe { arguments(args, count, count) }) else {
         return ptr::null_mut();
     };
-    if !unsafe { setter_admitted(self_, wrapped) } {
+    if !unsafe { super::setter_admitted(self_, wrapped, DELETE) } {
         return ptr::null_mut();
     }
     let value = if DELETE { ptr::null_mut() } else { values[1] };

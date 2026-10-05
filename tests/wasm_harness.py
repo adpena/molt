@@ -1563,87 +1563,6 @@ const memoryviewReadScalar = (data, offset, fmt) => {
   }
   return null;
 };
-const memoryviewWriteScalar = (data, offset, fmt, valBits) => {
-  if (offset < 0 || offset + fmt.itemsize > data.length) return null;
-  if (fmt.kind === 'char') {
-    const bytes = getBytes(valBits);
-    if (!bytes) {
-      throw new Error(`TypeError: memoryview: invalid type for format '${fmt.code}'`);
-    }
-    if (bytes.data.length !== 1) {
-      throw new Error(`ValueError: memoryview: invalid value for format '${fmt.code}'`);
-    }
-    data[offset] = bytes.data[0];
-    return true;
-  }
-  if (fmt.kind === 'bool') {
-    data[offset] = isTruthyBits(valBits) ? 1 : 0;
-    return true;
-  }
-  if (fmt.kind === 'float') {
-    let num = numberFromVal(valBits);
-    if (num === null) {
-      const obj = getObj(valBits);
-      if (obj && obj.type === 'bigint') {
-        num = Number(obj.value);
-      }
-    }
-    if (num === null) {
-      throw new Error(`TypeError: memoryview: invalid type for format '${fmt.code}'`);
-    }
-    const buf = new ArrayBuffer(fmt.itemsize);
-    const view = new DataView(buf);
-    if (fmt.itemsize === 4) view.setFloat32(0, num, true);
-    else if (fmt.itemsize === 8) view.setFloat64(0, num, true);
-    else return null;
-    for (let i = 0; i < fmt.itemsize; i += 1) {
-      data[offset + i] = view.getUint8(i);
-    }
-    return true;
-  }
-  const errMsg = `memoryview: invalid type for format '${fmt.code}'`;
-  const value = indexBigIntFromBits(valBits, errMsg);
-  if (value === null) return null;
-  const bits = BigInt(fmt.itemsize * 8);
-  let min = 0n;
-  let max = 0n;
-  if (fmt.kind === 'signed') {
-    const limit = 1n << (bits - 1n);
-    min = -limit;
-    max = limit - 1n;
-  } else if (fmt.kind === 'unsigned') {
-    min = 0n;
-    max = (1n << bits) - 1n;
-  } else {
-    return null;
-  }
-  if (value < min || value > max) {
-    throw new Error(`ValueError: memoryview: invalid value for format '${fmt.code}'`);
-  }
-  const buf = new ArrayBuffer(fmt.itemsize);
-  const view = new DataView(buf);
-  if (fmt.kind === 'signed') {
-    if (fmt.itemsize === 1) view.setInt8(0, Number(value));
-    else if (fmt.itemsize === 2) view.setInt16(0, Number(value), true);
-    else if (fmt.itemsize === 4) view.setInt32(0, Number(value), true);
-    else if (fmt.itemsize === 8) view.setBigInt64(0, value, true);
-    else return null;
-  } else if (fmt.itemsize === 1) {
-    view.setUint8(0, Number(value));
-  } else if (fmt.itemsize === 2) {
-    view.setUint16(0, Number(value), true);
-  } else if (fmt.itemsize === 4) {
-    view.setUint32(0, Number(value), true);
-  } else if (fmt.itemsize === 8) {
-    view.setBigUint64(0, value, true);
-  } else {
-    return null;
-  }
-  for (let i = 0; i < fmt.itemsize; i += 1) {
-    data[offset + i] = view.getUint8(i);
-  }
-  return true;
-};
 const collectBytearrayAssignBytes = (bits) => {
   const bytes = getBytes(bits);
   if (bytes) return [...bytes.data];
@@ -4177,16 +4096,6 @@ const exceptionMatchBuiltin = (excBits, tagBits) => {
   }
   return boxBool(isSubclass(typeOfBits(excBits), getExceptionClassForName(name)));
 };
-const exceptionSetCause = (excBits, causeBits) => {
-  const exc = getException(excBits);
-  if (!exc) return boxNone();
-  if (!isNone(causeBits) && !getException(causeBits)) {
-    throw new Error('TypeError: exception cause must be an exception or None');
-  }
-  exc.causeBits = causeBits;
-  exc.suppressBits = boxBool(true);
-  return boxNone();
-};
 const exceptionSetValue = (excBits, valueBits) => {
   const exc = getException(excBits);
   if (!exc) return boxNone();
@@ -4504,7 +4413,7 @@ const formatTraceback = (traceBits) => {
   }
   return out;
 };
-const raiseException = (excBits) => {
+const normalizeRaiseOperand = (excBits, cause = false) => {
   let exc = getException(excBits);
   if (!exc) {
     const cls = getClass(excBits);
@@ -4514,12 +4423,12 @@ const raiseException = (excBits) => {
         exceptionArgs(
           boxPtr({
             type: 'str',
-            value: 'exceptions must derive from BaseException',
+            value: cause ? 'exception causes must derive from BaseException' : 'exceptions must derive from BaseException',
           }),
         ),
       );
-      excBits = errExc;
-      exc = getException(excBits);
+      raiseException(errExc);
+      return null;
     } else {
       const instBits = exceptionNewFromClass(excBits, tupleFromArray([]));
       if (!isNone(instBits)) {
@@ -4531,13 +4440,31 @@ const raiseException = (excBits) => {
             args.pos.unshift(instBits);
           }
           baseImports.call_bind(initBits, builder);
-          if (exceptionPending() !== 0n) return boxNone();
+          if (exceptionPending() !== 0n) return null;
         }
         excBits = instBits;
         exc = getException(excBits);
       }
     }
   }
+  return exc ? excBits : null;
+};
+const exceptionPrepareRaise = (excBits, causeBits) => {
+  const instance = normalizeRaiseOperand(excBits);
+  if (instance === null) return boxNone();
+  if (causeBits !== missingSentinel()) {
+    const cause = isNone(causeBits) ? causeBits : normalizeRaiseOperand(causeBits, true);
+    if (cause === null) return boxNone();
+    const exc = getException(instance);
+    exc.causeBits = cause;
+    exc.suppressBits = boxBool(true);
+  }
+  return instance;
+};
+const raiseException = (excBits) => {
+  excBits = normalizeRaiseOperand(excBits);
+  if (excBits === null) return boxNone();
+  const exc = getException(excBits);
   if (exc) {
     const traceBits = frameStackTraceBits();
     exc.traceBits = traceBits === null ? boxNone() : traceBits;
@@ -8156,6 +8083,7 @@ BASE_IMPORTS = """\
     if (setLike) return boxBool(setLike.items.has(item));
     return boxBool(false);
   },
+  profile_enabled: () => 0n,
   guard_type: (val, expected) => val,
   guard_layout: (obj, classBits, expected) => {
     if (!isTag(obj, TAG_PTR)) return boxBool(false);
@@ -10966,172 +10894,8 @@ BASE_IMPORTS = """\
       bytearray.data[i] = Number(value);
       return seq;
     }
-    const view = getMemoryview(seq);
-    if (view) {
-      if (view.readonly) {
-        throw new Error('TypeError: cannot modify read-only memory');
-      }
-      const owner = getBytearray(view.ownerBits);
-      if (!owner) {
-        throw new Error('TypeError: memoryview is not writable');
-      }
-      const fmt = memoryviewFormatFromBits(view.formatBits);
-      if (!fmt) return boxNone();
-      const data = owner.data;
-      const shape = memoryviewShape(view);
-      const strides = memoryviewStrides(view);
-      const ndim = shape.length;
-      if (ndim === 0) {
-        const tup = getTuple(idxBits);
-        if (tup && tup.items.length === 0) {
-          const ok = memoryviewWriteScalar(data, view.offset, fmt, val);
-          return ok ? seq : boxNone();
-        }
-        throw new Error('TypeError: invalid indexing of 0-dim memory');
-      }
-      const tup = getTuple(idxBits);
-      if (tup) {
-        let hasSlice = false;
-        let allSlice = true;
-        for (const elem of tup.items) {
-          const slice = getSlice(elem);
-          if (slice) {
-            hasSlice = true;
-          } else {
-            allSlice = false;
-          }
-        }
-        if (hasSlice) {
-          if (allSlice) {
-            throw new Error(
-              'NotImplementedError: memoryview slice assignments are currently restricted to ndim = 1',
-            );
-          }
-          throw new Error('TypeError: memoryview: invalid slice key');
-        }
-        const indices = [];
-        for (const elem of tup.items) {
-          const idx = indexFromBitsWithOverflow(elem, 'memoryview: invalid slice key', null);
-          if (idx === null) return boxNone();
-          indices.push(idx);
-        }
-        if (indices.length < ndim) {
-          throw new Error('NotImplementedError: sub-views are not implemented');
-        }
-        if (indices.length > ndim) {
-          throw new Error(
-            `TypeError: cannot index ${ndim}-dimension view with ${indices.length}-element tuple`,
-          );
-        }
-        if (shape.length !== strides.length) return boxNone();
-        let pos = view.offset;
-        for (let dim = 0; dim < indices.length; dim += 1) {
-          let i = indices[dim];
-          const dimLen = shape[dim];
-          if (i < 0) i += dimLen;
-          if (i < 0 || i >= dimLen) {
-            throw new Error(`IndexError: index out of bounds on dimension ${dim + 1}`);
-          }
-          pos += i * strides[dim];
-        }
-        if (pos < 0 || pos + fmt.itemsize > data.length) {
-          throw new Error('IndexError: index out of bounds on dimension 1');
-        }
-        const ok = memoryviewWriteScalar(data, pos, fmt, val);
-        return ok ? seq : boxNone();
-      }
-      const sliceObj = getSlice(idxBits);
-      if (sliceObj) {
-        if (ndim !== 1) {
-          throw new Error(
-            'NotImplementedError: memoryview slice assignments are currently restricted to ndim = 1',
-          );
-        }
-        if (shape.length === 0) {
-          throw new Error('TypeError: invalid indexing of 0-dim memory');
-        }
-        const indices = normalizeSliceIndices(
-          shape[0],
-          sliceObj.start,
-          sliceObj.stop,
-          sliceObj.step,
-        );
-        if (indices === null) return boxNone();
-        const sliceIndices = collectSliceIndices(
-          indices.start,
-          indices.stop,
-          indices.step,
-        );
-        const elemCount = sliceIndices.length;
-        let srcBytes = null;
-        const bytes = getBytes(val);
-        const bytearray = getBytearray(val);
-        const srcView = getMemoryview(val);
-        if (bytes || bytearray) {
-          if (fmt.code !== 'B') {
-            throw new Error(
-              'ValueError: memoryview assignment: lvalue and rvalue have different structures',
-            );
-          }
-          srcBytes = Array.from(bytes ? bytes.data : bytearray.data);
-        } else if (srcView) {
-          const srcFmt = memoryviewFormatFromBits(srcView.formatBits);
-          if (!srcFmt) return boxNone();
-          const srcShape = memoryviewShape(srcView);
-          if (srcFmt.code !== fmt.code || srcShape.length !== 1 || srcShape[0] !== elemCount) {
-            throw new Error(
-              'ValueError: memoryview assignment: lvalue and rvalue have different structures',
-            );
-          }
-          const buf = memoryviewCollectBytes(srcView);
-          if (buf === null) return boxNone();
-          srcBytes = buf;
-        } else {
-          throw new Error(
-            `TypeError: a bytes-like object is required, not '${typeName(val)}'`,
-          );
-        }
-        const expected = elemCount * fmt.itemsize;
-        if (srcBytes.length !== expected) {
-          throw new Error(
-            'ValueError: memoryview assignment: lvalue and rvalue have different structures',
-          );
-        }
-        let pos = view.offset + indices.start * strides[0];
-        const stepStride = strides[0] * indices.step;
-        for (let i = 0; i < srcBytes.length; i += fmt.itemsize) {
-          if (pos < 0 || pos + fmt.itemsize > data.length) return boxNone();
-          for (let j = 0; j < fmt.itemsize; j += 1) {
-            data[pos + j] = srcBytes[i + j];
-          }
-          pos += stepStride;
-        }
-        return seq;
-      }
-      const idx = indexFromBitsWithOverflow(
-        idxBits,
-        'memoryview: invalid slice key',
-        null,
-      );
-      if (idx === null) return boxNone();
-      if (ndim !== 1) {
-        throw new Error('NotImplementedError: sub-views are not implemented');
-      }
-      if (shape.length === 0) {
-        throw new Error('TypeError: invalid indexing of 0-dim memory');
-      }
-      let i = idx;
-      const len = shape[0];
-      if (i < 0) i += len;
-      if (i < 0 || i >= len) {
-        throw new Error('IndexError: index out of bounds on dimension 1');
-      }
-      const pos = view.offset + i * strides[0];
-      if (pos < 0 || pos + fmt.itemsize > data.length) {
-        throw new Error('IndexError: index out of bounds on dimension 1');
-      }
-      const ok = memoryviewWriteScalar(data, pos, fmt, val);
-      return ok ? seq : boxNone();
+    if (getMemoryview(seq)) {
+      throw new Error('Unsupported: memoryview assignment requires the linked Molt runtime');
     }
     return boxNone();
   },
@@ -13931,7 +13695,9 @@ BASE_IMPORTS = """\
   exception_pending: () => exceptionPending(),
   exception_kind: (exc) => exceptionKind(exc),
   exception_message: (exc) => exceptionMessage(exc),
-  exception_set_cause: (exc, cause) => exceptionSetCause(exc, cause),
+  exception_prepare_raise: (exc, cause) => {
+    return exceptionPrepareRaise(exc, cause);
+  },
   exception_set_value: (exc, value) => exceptionSetValue(exc, value),
   exception_context_set: (exc) => exceptionContextSet(exc),
   exception_set_last: (exc) => exceptionSetLast(exc),

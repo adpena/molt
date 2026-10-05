@@ -87,6 +87,9 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
     if !published {
         return false;
     }
+    if unsafe { !crate::object::class_storage::class_capture_creation_doc(_py, class_ptr) } {
+        return false;
+    }
     // CPython only normalizes plain Python functions, never descriptors or
     // native builtin-function objects supplied by a namespace provider.
     for (name, static_method) in [
@@ -712,8 +715,86 @@ pub extern "C" fn molt_object_new_bound(cls_bits: u64) -> u64 {
                 format!("object.__new__({class_name}) is not safe, use {class_name}.__new__()");
             return raise_exception::<_>(_py, "TypeError", &msg);
         }
-        unsafe { alloc_instance_for_class(_py, cls_ptr) }
+        unsafe {
+            if reject_abstract_object_new(_py, cls_ptr) {
+                return MoltObject::none().bits();
+            }
+            if let Some(instance) =
+                crate::object::builders::alloc_dataclass_for_class_ptr(_py, cls_ptr, cls_bits)
+            {
+                return instance;
+            }
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            alloc_instance_for_class(_py, cls_ptr)
+        }
     })
+}
+
+/// Abstractness constrains object_new, not type_call or custom/native allocators.
+/// Reproduce the iterable/sort/join protocol so its exceptions and live method
+/// names are observed even when the abstract bit was latched before mutation.
+unsafe fn reject_abstract_object_new(py: &PyToken<'_>, class: *mut u8) -> bool {
+    unsafe {
+        if !crate::object::class_storage::class_is_abstract(class) {
+            return false;
+        }
+        let class_bits = MoltObject::from_ptr(class).bits();
+        let methods = crate::builtins::attributes::type_metadata::read(
+            py,
+            class_bits,
+            molt_cpython_abi::api::typeobj::TypeAttributeField::AbstractMethods,
+        );
+        let _methods = obj_from_bits(methods)
+            .as_ptr()
+            .map(crate::PtrDropGuard::preserving);
+        if exception_pending(py) {
+            return true;
+        }
+        let Some(sorted) = crate::object::ops::list_from_iter_bits(py, methods) else {
+            return true;
+        };
+        let sorted_ptr = obj_from_bits(sorted)
+            .as_ptr()
+            .expect("owned abstract method list");
+        let _sorted = crate::PtrDropGuard::preserving(sorted_ptr);
+        crate::molt_list_sort(
+            sorted,
+            MoltObject::none().bits(),
+            MoltObject::from_bool(false).bits(),
+        );
+        if exception_pending(py) {
+            return true;
+        }
+        let separator = alloc_string(py, b"', '");
+        if separator.is_null() {
+            return true;
+        }
+        let _separator = crate::PtrDropGuard::preserving(separator);
+        let joined = crate::molt_string_join(MoltObject::from_ptr(separator).bits(), sorted);
+        let _joined = obj_from_bits(joined)
+            .as_ptr()
+            .map(crate::PtrDropGuard::preserving);
+        if exception_pending(py) {
+            return true;
+        }
+        let joined = string_obj_to_owned(obj_from_bits(joined)).expect("string join result");
+        let plural = if crate::list_len(sorted_ptr) > 1 {
+            "s"
+        } else {
+            ""
+        };
+        raise_exception::<()>(
+            py,
+            "TypeError",
+            &format!(
+                "Can't instantiate abstract class {} without an implementation for abstract method{plural} '{joined}'",
+                class_name_for_error(class_bits),
+            ),
+        );
+        true
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -827,7 +908,7 @@ pub(crate) unsafe fn object_set_class(_py: &PyToken<'_>, obj_ptr: *mut u8, class
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
         }
-        if crate::object::object_poll_fn(obj_ptr) != 0 {
+        if crate::object::object_shape_is_task(crate::object::object_shape_id(obj_ptr)) {
             return raise_exception::<_>(_py, "TypeError", "cannot set class on async object");
         }
         if class_bits == 0 || obj_from_bits(class_bits).is_none() {

@@ -71,7 +71,10 @@ fn with_exception_scope<T, F: FnOnce() -> Result<T, u64>>(
     ) -> i32 {
         let callback = unsafe { &mut *context.cast::<Callback<F, T>>() };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            callback.run.take().expect("HTTP exception callback must run once")()
+            callback
+                .run
+                .take()
+                .expect("HTTP exception callback must run once")()
         }));
         let status = match &result {
             Ok(Ok(_)) => 1,
@@ -82,7 +85,10 @@ fn with_exception_scope<T, F: FnOnce() -> Result<T, u64>>(
         status
     }
 
-    let mut callback = Callback::<F, T> { run: Some(run), result: None };
+    let mut callback = Callback::<F, T> {
+        run: Some(run),
+        result: None,
+    };
     unsafe {
         __molt_http_with_exception_scope(
             i32::from(restore_on_success),
@@ -90,7 +96,10 @@ fn with_exception_scope<T, F: FnOnce() -> Result<T, u64>>(
             (&raw mut callback).cast(),
         );
     }
-    match callback.result.expect("HTTP exception callback must run synchronously") {
+    match callback
+        .result
+        .expect("HTTP exception callback must run synchronously")
+    {
         Ok(result) => result,
         Err(payload) => std::panic::resume_unwind(payload),
     }
@@ -509,15 +518,15 @@ pub fn molt_str_from_obj(bits: u64) -> u64 {
 
 unsafe extern "C" {
     fn __molt_http_molt_module_import(name_bits: u64) -> u64;
-    fn __molt_http_molt_object_setattr(obj_bits: u64, name_bits: u64, value_bits: u64);
+    fn __molt_http_molt_set_attr_name(obj_bits: u64, name_bits: u64, value_bits: u64);
 }
 
 pub fn molt_module_import(name_bits: u64) -> u64 {
     unsafe { __molt_http_molt_module_import(name_bits) }
 }
 
-pub fn molt_object_setattr(obj_bits: u64, name_bits: u64, value_bits: u64) {
-    unsafe { __molt_http_molt_object_setattr(obj_bits, name_bits, value_bits) }
+pub fn molt_set_attr_name(obj_bits: u64, name_bits: u64, value_bits: u64) {
+    unsafe { __molt_http_molt_set_attr_name(obj_bits, name_bits, value_bits) }
 }
 
 // ---------------------------------------------------------------------------

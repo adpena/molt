@@ -7,7 +7,6 @@ import json
 import os
 import shlex
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
@@ -17,6 +16,7 @@ from typing import (
 )
 
 from molt.cargo_execution_policy import source_build_disabled_reason
+from molt.cli import progress as _progress
 from molt.cli import wasm_link_inputs, wasm_toolchain
 from molt.cli.artifact_state import (
     _build_state_root,
@@ -43,10 +43,8 @@ from molt.cli.runtime_artifact_selection import (
     RUNTIME_STATICLIB_ARTIFACTS,
     RuntimeCrateType,
 )
-from molt.cli.runtime_build_identity import (
-    resolve_wasm_cpython_abi_build_identity,
-    runtime_build_fingerprint,
-)
+from molt.cli.runtime_build_identity import resolve_wasm_cpython_abi_build_identity
+from molt.cli.runtime_identity_schema import runtime_build_fingerprint
 from molt.cli.runtime_cargo_plan import (
     CargoExecutableCustody,
     RuntimeCargoPlan,
@@ -350,7 +348,7 @@ def _ensure_wasm_cpython_abi_staticlib(
                     stage = "rebuild-policy"
                     return fail(reason)
                 if not json_output:
-                    print("Building wasm CPython ABI link provider...", file=sys.stderr)
+                    _progress.notice("WASM CPython ABI provider needs a source build")
                 stage = "cargo-execution"
                 with _build_slot() as _slot:
                     build = _run_resolved_cargo_plan(

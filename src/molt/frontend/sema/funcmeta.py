@@ -18,6 +18,10 @@ deliberately does **not** live in this module.
 from __future__ import annotations
 
 import ast
+from molt.compiler_analysis.python_lexical_scope import (
+    expression_contains_yield,
+    function_contains_yield,
+)
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -351,75 +355,6 @@ class StatefulLocalsLayout:
             tuple(slot.cell for slot in self.slots),
             self.closure_offset,
         )
-
-
-def _push_arg_annotations(stack: list[ast.AST], args: ast.arguments) -> None:
-    for arg in (
-        args.posonlyargs
-        + args.args
-        + args.kwonlyargs
-        + ([] if args.vararg is None else [args.vararg])
-        + ([] if args.kwarg is None else [args.kwarg])
-    ):
-        if arg.annotation is not None:
-            stack.append(arg.annotation)
-
-
-def expression_contains_yield(node: ast.AST) -> bool:
-    class YieldVisitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.found = False
-
-        def visit_Yield(self, node: ast.Yield) -> None:
-            self.found = True
-
-        def visit_YieldFrom(self, node: ast.YieldFrom) -> None:
-            self.found = True
-
-        def visit_Lambda(self, node: ast.Lambda) -> None:
-            return
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            return
-
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            return
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            return
-
-    visitor = YieldVisitor()
-    visitor.visit(node)
-    return visitor.found
-
-
-def function_contains_yield(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> bool:
-    stack: list[ast.AST] = list(node.body)
-    while stack:
-        current = stack.pop()
-        if isinstance(current, (ast.Yield, ast.YieldFrom)):
-            return True
-        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            stack.extend(current.decorator_list)
-            stack.extend(current.args.defaults)
-            stack.extend(
-                default for default in current.args.kw_defaults if default is not None
-            )
-            _push_arg_annotations(stack, current.args)
-            if current.returns is not None:
-                stack.append(current.returns)
-            continue
-        if isinstance(current, ast.ClassDef):
-            stack.extend(current.decorator_list)
-            stack.extend(current.bases)
-            stack.extend(keyword.value for keyword in current.keywords)
-            continue
-        if isinstance(current, ast.Lambda):
-            continue
-        stack.extend(ast.iter_child_nodes(current))
-    return False
 
 
 def async_generator_contains_yield_from(node: ast.AsyncFunctionDef) -> bool:

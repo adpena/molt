@@ -9,6 +9,7 @@ from molt.compiler_analysis.static_truth import (
     ExpressionResultLookup,
     StaticExpressionResult,
     static_expression_result,
+    static_subscription_shape,
 )
 
 from molt.compiler_analysis.python_effects_generated import (
@@ -24,18 +25,50 @@ from molt.compiler_analysis.python_effects_generated import (
     READS_OBJECT_STATE,
     SUSPENDS,
     UNKNOWN_EFFECTS,
+    RELEASES_REFERENCE,
+    RUNS_FINALIZER,
+    RUNS_WEAKREF_CALLBACK,
+    WRITES_OBJECT_STATE,
     EffectMask,
     effect_mask_satisfies_capability,
 )
 
 
-def dotted_expression_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        owner = dotted_expression_name(node.value)
-        return f"{owner}.{node.attr}" if owner is not None else None
-    return None
+def binary_operation_effects(
+    left: StaticExpressionResult,
+    right: StaticExpressionResult,
+    *,
+    inplace: bool = False,
+) -> EffectMask:
+    """Project dispatch and operand retirement from retained value facts.
+
+    Exact scalar kinds in the result authority exclude subclasses even when
+    their values are unknown. Their protocols cannot invoke Python, including
+    unsupported operand/operator pairs that raise. Unknown operands retain
+    reflected/in-place dispatch and post-callback retirement conservatively.
+    """
+    effects = ALLOCATES | RAISES | RELEASES_REFERENCE
+    if not (left.is_exact_scalar and right.is_exact_scalar):
+        effects |= EXECUTES_ARBITRARY_PYTHON
+        if inplace:
+            effects |= WRITES_OBJECT_STATE
+        if left.release_may_call or right.release_may_call:
+            effects |= RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
+    return effects
+
+
+def unary_operation_effects(
+    operand: StaticExpressionResult, operator: ast.unaryop
+) -> EffectMask:
+    """Exact scalar protocols are inert except bool inversion's warning path."""
+    effects = ALLOCATES | RAISES | RELEASES_REFERENCE
+    if not operand.is_exact_scalar or (
+        isinstance(operator, ast.Invert) and "bool" in operand.scalar_kinds
+    ):
+        effects |= EXECUTES_ARBITRARY_PYTHON | INVOKES_COMPARISON_CALLBACK
+        if operand.release_may_call:
+            effects |= RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
+    return effects
 
 
 def expression_evaluation_children(node: ast.AST) -> tuple[ast.expr, ...]:
@@ -230,12 +263,32 @@ def expression_effect_mask(
             | RAISES
         )
     if isinstance(node, ast.Subscript):
-        return (
+        owner = static_expression_result(node.value)
+        index = static_expression_result(node.slice)
+        parts = (
+            tuple(
+                static_expression_result(part)
+                if part is not None
+                else StaticExpressionResult.scalar(None)
+                for part in (node.slice.lower, node.slice.upper, node.slice.step)
+            )
+            if isinstance(node.slice, ast.Slice)
+            else None
+        )
+        shape = static_subscription_shape(owner, index, slice_parts=parts)
+        mask = (
             _joined_child_effects(node)
-            | EXECUTES_ARBITRARY_PYTHON
             | READS_OBJECT_STATE
             | RAISES
+            | RELEASES_REFERENCE
         )
+        if shape.invokes_python:
+            mask |= EXECUTES_ARBITRARY_PYTHON
+        if owner.release_may_call or any(
+            part.release_may_call for part in (parts or (index,))
+        ):
+            mask |= RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK
+        return mask
     if isinstance(node, ast.Call):
         return UNKNOWN_EFFECTS
     if isinstance(node, (ast.Await, ast.Yield, ast.YieldFrom)):
@@ -257,7 +310,15 @@ def expression_effect_mask(
             | INVOKES_COMPARISON_CALLBACK
             | RAISES
         )
-    if isinstance(node, (ast.BinOp, ast.UnaryOp, ast.FormattedValue, ast.JoinedStr)):
+    if isinstance(node, ast.BinOp):
+        return _joined_child_effects(node) | binary_operation_effects(
+            static_expression_result(node.left), static_expression_result(node.right)
+        )
+    if isinstance(node, ast.UnaryOp):
+        return _joined_child_effects(node) | unary_operation_effects(
+            static_expression_result(node.operand), node.op
+        )
+    if isinstance(node, (ast.FormattedValue, ast.JoinedStr)):
         return _joined_child_effects(node) | EXECUTES_ARBITRARY_PYTHON | RAISES
     return UNKNOWN_EFFECTS
 

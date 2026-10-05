@@ -1,4 +1,6 @@
 use super::*;
+
+mod wire_domains;
 use crate::tir::op_kinds_generated::{
     SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS, SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS,
     SimpleIrRuntimeRequirements,

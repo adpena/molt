@@ -30,6 +30,7 @@ from molt.dx import (
     development_artifacts_requested,
 )
 from molt.file_locks import _release_file_lock, _try_acquire_file_lock
+from molt.cli import progress as _progress
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.llvm_wasi_tools import llvm_linker_candidates
 from molt.cli.runtime_cargo_plan import RuntimeCargoPlan
@@ -615,6 +616,7 @@ def _run_cargo_attempt(
         timeout=timeout,
         encoding="utf-8",
         errors="strict",
+        progress_label=progress_label,
     )
 
 
@@ -636,17 +638,23 @@ def _run_resolved_cargo_plan(
     progress_label: str | None = None,
 ) -> CargoExecutionResult:
     """Execute one attested plan without changing its tools or environment."""
-    plan.verify()
-    started = time.perf_counter()
-    build = _run_cargo_attempt(
-        list(plan.command),
-        cwd=plan.project_root,
-        env=plan.environment,
-        timeout=timeout,
-        tempfile_runner=tempfile_runner,
-        progress_label=progress_label,
-        resolved_environment=True,
+    status = (
+        None
+        if json_output
+        else (f"{progress_label or label} ({plan.cargo_profile}, {plan.target})")
     )
+    with _progress.subprocess_status(status, announce=True) as keepalive_label:
+        plan.verify()
+        started = time.perf_counter()
+        build = _run_cargo_attempt(
+            list(plan.command),
+            cwd=plan.project_root,
+            env=plan.environment,
+            timeout=timeout,
+            tempfile_runner=tempfile_runner,
+            progress_label=keepalive_label,
+            resolved_environment=True,
+        )
     wrappers = sccache_compiler_wrappers(plan.environment)
     wrapper = wrappers[0][1] if wrappers else None
     failure_kind = (

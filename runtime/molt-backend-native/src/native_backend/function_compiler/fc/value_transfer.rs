@@ -100,6 +100,71 @@ pub(in crate::native_backend::function_compiler) fn def_unboxed_lane_from(
     true
 }
 
+/// Define an alias through the shared carrier and ownership boundary. A
+/// transaction may lend its already-materialized source; a boxed result must
+/// retain that temporary before its transaction releases the physical owner.
+#[cfg(feature = "native-backend")]
+#[allow(clippy::too_many_arguments)]
+pub(in crate::native_backend::function_compiler) fn define_alias_result(
+    op: &OpIR,
+    src_name: &str,
+    out_name: &str,
+    borrowed_boxed_source: Option<Value>,
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+    sealed_blocks: &mut BTreeSet<Block>,
+    vars: &BTreeMap<String, Variable>,
+    representation_plan: &ScalarRepresentationPlan,
+    alias_roots: &BTreeMap<String, String>,
+    rc_authority: NativeRcAuthority,
+    local_inc_ref_obj: FuncRef,
+    nbc: &crate::NanBoxConsts,
+) {
+    if def_unboxed_lane_from(
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        sealed_blocks,
+        vars,
+        representation_plan,
+        nbc,
+        src_name,
+        out_name,
+    ) {
+        return;
+    }
+    let src = borrowed_boxed_source.unwrap_or_else(|| {
+        *var_get_boxed_overflow_safe_fn(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            sealed_blocks,
+            vars,
+            src_name,
+            representation_plan,
+            nbc,
+        )
+        .expect("alias source not found")
+    });
+    let kind = op.kind.as_str();
+    let retained_binding =
+        crate::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(kind)
+            || crate::tir::op_kinds_generated::kind_result_mints_owned_selected_operand_table(kind)
+            || (rc_authority.native_value_tracking_enabled()
+                && (matches!(kind, "cast" | "widen")
+                    || native_alias_mints_owner(alias_roots, src_name, out_name)));
+    let boxed_source = merge_rebind_storage_for_name(src_name, representation_plan)
+        == MergeRebindStorageKind::BoxedI64;
+    if (retained_binding && boxed_source) || (borrowed_boxed_source.is_some() && !boxed_source) {
+        emit_inc_ref_obj(builder, src, local_inc_ref_obj);
+    }
+    def_var_named(builder, vars, out_name, src);
+}
+
 /// Cranelift codegen handlers for value-custody transfer ops: `inc_ref`,
 /// `borrow`, `dec_ref`, `del_boundary`, `release`, `box`, `unbox`, `cast`,
 /// `widen`, and retained alias ops. This owns alias-preserving refcount
@@ -249,44 +314,23 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
                 .first()
                 .expect("alias op requires one source arg");
             if let Some(out_name) = simple_ir_out_result(op) {
-                if !def_unboxed_lane_from(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    representation_plan,
-                    nbc,
+                define_alias_result(
+                    op,
                     src_name,
                     out_name,
-                ) {
-                    let src = *var_get_boxed_overflow_safe(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        &mut *sealed_blocks,
-                        vars,
-                        src_name,
-                        representation_plan,
-                    )
-                    .expect("alias source not found");
-                    let kind = op.kind.as_str();
-                    let retained_binding =
-                        crate::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(kind)
-                            || crate::tir::op_kinds_generated::kind_result_mints_owned_selected_operand_table(kind)
-                            || (rc_authority.native_value_tracking_enabled()
-                                && (matches!(kind, "cast" | "widen")
-                                    || native_alias_mints_owner(alias_roots, src_name, out_name)));
-                    if retained_binding
-                        && merge_rebind_storage_for_name(src_name, representation_plan)
-                            == MergeRebindStorageKind::BoxedI64
-                    {
-                        emit_inc_ref_obj(builder, src, local_inc_ref_obj);
-                    }
-                    def_var_named(&mut *builder, vars, out_name, src);
-                }
+                    None,
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
+                    sealed_blocks,
+                    vars,
+                    representation_plan,
+                    alias_roots,
+                    rc_authority,
+                    local_inc_ref_obj,
+                    nbc,
+                );
             } else if op.kind == "box"
                 && merge_rebind_storage_for_name(src_name, representation_plan)
                     == MergeRebindStorageKind::RawI64

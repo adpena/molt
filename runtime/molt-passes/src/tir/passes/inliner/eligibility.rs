@@ -13,8 +13,8 @@ use crate::tir::target_info::TargetInfo;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-use super::activation::releases_unowned_parameter;
 use super::super::ip_summary::ModuleSummaries;
+use super::activation::releases_unowned_parameter;
 
 /// inlining this arc (and likely permanently - these are never simple leaves).
 fn is_generator_or_async_op(opcode: OpCode) -> bool {

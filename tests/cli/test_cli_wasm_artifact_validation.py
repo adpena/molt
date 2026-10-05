@@ -21,7 +21,7 @@ from molt.cli import wasm_link_inputs
 from molt.cli.models import _RuntimeArtifactState
 from molt.cli import runtime_wasm_pair_build as RUNTIME_WASM_PAIR
 from molt.cli import artifact_state as ARTIFACT_STATE
-from molt.cli import runtime_build_identity as BUILD_IDENTITY
+from molt.cli import runtime_identity_schema as RUNTIME_SCHEMA
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
     bind_runtime_wasm_specs,
@@ -953,7 +953,7 @@ def test_shared_allowlist_is_response_content_not_compile_rustflags(
     validation_specs,
 ) -> None:
     _root, _target, state_root, shared, _reloc = validation_specs(
-        required_exports={"add", "abc_abstractmethod_check"}
+        required_exports={"add", "typing_get_origin"}
     )
     plan = shared.cargo_plan
     assert plan is not None
@@ -970,7 +970,7 @@ def test_shared_allowlist_is_response_content_not_compile_rustflags(
         "--import-table",
         "--growable-table",
         "--export-if-defined=molt_add",
-        "--export-if-defined=molt_abc_abstractmethod_check",
+        "--export-if-defined=molt_typing_get_origin",
     ):
         assert required in text
     assert "--export-dynamic" not in text
@@ -1000,14 +1000,14 @@ def test_runtime_fingerprint_recomputes_when_rustflags_change() -> None:
     payload = original.to_dict()
     family = payload["payload"]["family"]
     family["compile"]["common_config"]["base_rustflags"] = ["-C", "panic=abort"]
-    family["compile_digest"] = BUILD_IDENTITY._digest(family["compile"])
-    changed = BUILD_IDENTITY.RuntimeBuildIdentity(
-        BUILD_IDENTITY._digest(payload["payload"]),
+    family["compile_digest"] = RUNTIME_SCHEMA._digest(family["compile"])
+    changed = RUNTIME_SCHEMA.RuntimeBuildIdentity(
+        RUNTIME_SCHEMA._digest(payload["payload"]),
         family["compile_digest"],
-        BUILD_IDENTITY._digest(family),
+        RUNTIME_SCHEMA._digest(family),
         payload["payload"],
     )
     assert (
-        BUILD_IDENTITY.runtime_build_fingerprint(original)["hash"]
-        != BUILD_IDENTITY.runtime_build_fingerprint(changed)["hash"]
+        RUNTIME_SCHEMA.runtime_build_fingerprint(original)["hash"]
+        != RUNTIME_SCHEMA.runtime_build_fingerprint(changed)["hash"]
     )

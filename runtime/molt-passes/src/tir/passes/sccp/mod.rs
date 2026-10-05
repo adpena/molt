@@ -459,8 +459,7 @@ fn seed_constant_lattice_value(op: &TirOp) -> Option<LatticeValue> {
         }),
         SccpConstantSeedRule::StrAttr => {
             use molt_ir::literal_payload::LiteralPayload;
-            let payload = LiteralPayload::from_tir(op)
-                .unwrap_or_else(|error| panic!("{error}"));
+            let payload = LiteralPayload::from_tir(op).unwrap_or_else(|error| panic!("{error}"));
             Some(match payload {
                 LiteralPayload::Text(value) if value.len() <= MAX_COMPOUND_ELEMENTS => {
                     LatticeValue::Constant(ConstVal::Str(value.to_owned()))

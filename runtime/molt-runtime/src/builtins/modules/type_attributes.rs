@@ -49,7 +49,7 @@ pub extern "C" fn molt_module_setattr(module: u64, name: u64, value: u64) -> u64
         if module_receiver(py, module, "__setattr__").is_none() {
             return MoltObject::none().bits();
         }
-        molt_object_setattr(module, name, value)
+        crate::builtins::attributes::generic_set_attr_name(module, name, value)
     })
 }
 
@@ -59,7 +59,7 @@ pub extern "C" fn molt_module_delattr(module: u64, name: u64) -> u64 {
         if module_receiver(py, module, "__delattr__").is_none() {
             return MoltObject::none().bits();
         }
-        molt_object_delattr(module, name)
+        crate::builtins::attributes::generic_del_attr_name(module, name)
     })
 }
 

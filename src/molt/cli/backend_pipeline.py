@@ -416,7 +416,6 @@ def _run_backend_pipeline(
                     runtime_state=prepared_backend_runtime_context.runtime_state,
                     cargo_timeout=prepared_build_config.cargo_timeout,
                     molt_root=prepared_build_roots.molt_root,
-                    target_triple=output_layout.target_triple,
                     backend_cargo_profile=prepared_build_config.backend_cargo_profile,
                     backend_timeout=prepared_build_config.backend_timeout,
                     backend_daemon_config_digest=prepared_build_preamble.backend_daemon_config_digest,

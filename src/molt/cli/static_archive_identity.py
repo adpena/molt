@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import hashlib
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 import re
 from typing import BinaryIO, Callable, Mapping
 
-from molt.toolchain_identity import StableRegularFileIdentity, open_stable_regular_file
+from molt.toolchain_identity import (
+    StableRegularFileHandle,
+    StableRegularFileIdentity,
+    open_stable_regular_file,
+)
 from molt.exact_json import string_keyed_mapping
 from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
 
@@ -306,6 +310,8 @@ def static_archive_identity(
 @contextmanager
 def open_static_archive_members(
     path: Path,
+    *,
+    opened: StableRegularFileHandle | None = None,
 ) -> Iterator[tuple[tuple[StaticArchiveMember, ...], BinaryIO]]:
     """Expose the canonical member envelope and its one verified source handle.
 
@@ -314,7 +320,14 @@ def open_static_archive_members(
     this authority; no consumer reopens an archive between framing and reads.
     """
     try:
-        with open_stable_regular_file(path, label="static archive") as opened:
+        if opened is not None and opened.path != path.expanduser().absolute():
+            raise StaticArchiveIdentityError("archive handle belongs to another path")
+        with (
+            open_stable_regular_file(path, label="static archive")
+            if opened is None
+            else nullcontext(opened)
+        ) as opened:
+            opened.stream.seek(0)
             members = _static_archive_stream_members(
                 opened.stream, archive_size=opened.stat.st_size
             )
@@ -328,10 +341,13 @@ def open_static_archive_members(
 
 
 def visit_static_archive_members(
-    path: Path, *, visit_member: StaticArchiveMemberVisitor
+    path: Path,
+    *,
+    visit_member: StaticArchiveMemberVisitor,
+    opened: StableRegularFileHandle | None = None,
 ) -> int:
     """Visit resolved members through their canonical stable source handle."""
-    with open_static_archive_members(path) as (members, stream):
+    with open_static_archive_members(path, opened=opened) as (members, stream):
         for member in members:
             visit_member(member, stream)
         return len(members)
@@ -339,6 +355,8 @@ def visit_static_archive_members(
 
 def static_archive_member_identities(
     path: Path,
+    *,
+    opened: StableRegularFileHandle | None = None,
 ) -> tuple[StaticArchiveMemberIdentity, ...]:
     identities: list[StaticArchiveMemberIdentity] = []
 
@@ -350,7 +368,7 @@ def static_archive_member_identities(
             )
         )
 
-    visit_static_archive_members(path, visit_member=identify)
+    visit_static_archive_members(path, visit_member=identify, opened=opened)
     return tuple(identities)
 
 

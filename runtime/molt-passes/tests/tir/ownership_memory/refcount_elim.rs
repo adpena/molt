@@ -204,10 +204,12 @@ fn cross_block_multiple_predecessors_preserve_refs() {
     );
 
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry
         .ops
-        .push(make_op(OpCode::ConstBool, vec![], vec![cond]));
+        .push(make_op(OpCode::Copy, vec![cond_input], vec![cond]));
     entry.ops.push(make_op(OpCode::IncRef, vec![v], vec![]));
     entry.terminator = Terminator::CondBranch {
         cond,
@@ -259,6 +261,8 @@ fn loop_invariant_incref_decref_eliminated() {
     let mut func = make_func();
     let v = func.fresh_value();
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
 
     let exit_bid = add_block(&mut func, vec![], Terminator::Return { values: vec![] });
 
@@ -266,7 +270,7 @@ fn loop_invariant_incref_decref_eliminated() {
         &mut func,
         vec![
             make_op(OpCode::IncRef, vec![v], vec![]),
-            make_op(OpCode::ConstBool, vec![], vec![cond]),
+            make_op(OpCode::Copy, vec![cond_input], vec![cond]),
             make_op(OpCode::DecRef, vec![v], vec![]),
         ],
         Terminator::CondBranch {
@@ -293,13 +297,18 @@ fn loop_invariant_incref_decref_eliminated() {
         args: vec![],
     };
 
+    let condition_before = func.blocks[&header_bid].ops[1].clone();
     let stats = run(
         &mut func,
         &mut molt_passes::tir::analysis::AnalysisManager::new(),
     );
     assert_eq!(stats.ops_removed, 2);
     assert_eq!(func.blocks[&header_bid].ops.len(), 1);
-    assert_eq!(func.blocks[&header_bid].ops[0].opcode, OpCode::ConstBool);
+    let condition_after = &func.blocks[&header_bid].ops[0];
+    assert_eq!(condition_after.opcode, condition_before.opcode);
+    assert_eq!(condition_after.operands, condition_before.operands);
+    assert_eq!(condition_after.results, condition_before.results);
+    assert_eq!(condition_after.attrs, condition_before.attrs);
 }
 
 #[test]
@@ -307,6 +316,8 @@ fn local_pair_inside_loop_header_is_eliminated() {
     let mut func = make_func();
     let v = func.fresh_value();
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
 
     let exit_bid = add_block(&mut func, vec![], Terminator::Return { values: vec![] });
 
@@ -315,7 +326,7 @@ fn local_pair_inside_loop_header_is_eliminated() {
         vec![
             make_op(OpCode::Alloc, vec![], vec![v]),
             make_op(OpCode::IncRef, vec![v], vec![]),
-            make_op(OpCode::ConstBool, vec![], vec![cond]),
+            make_op(OpCode::Copy, vec![cond_input], vec![cond]),
             make_op(OpCode::DecRef, vec![v], vec![]),
         ],
         Terminator::CondBranch {
@@ -915,6 +926,8 @@ fn cfg_forwarded_capture_keeps_original_owner_release() {
         let root = func.fresh_value();
         let parameter = func.fresh_value();
         let control = func.fresh_value();
+        // Keep both CFG paths executable; this fixture condition is not a literal.
+        let control_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
         let call_result = func.fresh_value();
         let destination = add_block(
             &mut func,
@@ -936,7 +949,7 @@ fn cfg_forwarded_capture_keeps_original_owner_release() {
         entry.ops.push(make_op(OpCode::Alloc, vec![], vec![root]));
         entry
             .ops
-            .push(make_op(OpCode::ConstBool, vec![], vec![control]));
+            .push(make_op(OpCode::Copy, vec![control_input], vec![control]));
         entry.terminator = match shape {
             0 => Terminator::Branch {
                 target: destination,
@@ -981,6 +994,8 @@ fn mixed_cfg_value_never_inherits_stack_rc_elision() {
     let stack = func.fresh_value();
     let parameter = func.fresh_value();
     let control = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let control_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let destination = add_block(
         &mut func,
         vec![make_op(OpCode::DecRef, vec![parameter], vec![])],
@@ -1000,7 +1015,7 @@ fn mixed_cfg_value_never_inherits_stack_rc_elision() {
         .push(make_op(OpCode::StackAlloc, vec![], vec![stack]));
     entry
         .ops
-        .push(make_op(OpCode::ConstBool, vec![], vec![control]));
+        .push(make_op(OpCode::Copy, vec![control_input], vec![control]));
     entry.terminator = Terminator::CondBranch {
         cond: control,
         then_block: destination,

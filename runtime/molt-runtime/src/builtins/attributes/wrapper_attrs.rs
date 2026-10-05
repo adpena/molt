@@ -1,5 +1,5 @@
 //! One staged publication authority for versioned builtin namespace members.
-//! Wrapper and root-type descriptors use the ordinary descriptor lookup lane.
+//! Native members use the ordinary descriptor lookup lane.
 use super::*;
 use crate::builtins::functions::native_callable::NativeCallableSpec;
 use crate::builtins::types::{
@@ -13,6 +13,8 @@ enum MemberOwner {
     Classmethod,
     Property,
     Type,
+    Super,
+    Coroutine,
 }
 
 #[derive(Clone, Copy)]
@@ -22,6 +24,11 @@ enum MemberOperation {
     Abstract,
     Dictionary,
     LazyMetadata,
+    SuperReference(usize),
+    CoroutineRunning,
+    CoroutineFrame,
+    CoroutineCode,
+    CoroutineAwait,
     RootMetadata(molt_cpython_abi::api::typeobj::TypeAttributeField),
 }
 
@@ -33,6 +40,11 @@ impl MemberOperation {
             Self::Abstract => 6,
             Self::Dictionary => 7,
             Self::LazyMetadata => 8,
+            Self::SuperReference(index) => 9 + index as u32,
+            Self::CoroutineRunning => 12,
+            Self::CoroutineFrame => 13,
+            Self::CoroutineCode => 14,
+            Self::CoroutineAwait => 15,
             Self::RootMetadata(field) => field as u32,
         }
     }
@@ -44,6 +56,11 @@ impl MemberOperation {
             6 => Self::Abstract,
             7 => Self::Dictionary,
             8 => Self::LazyMetadata,
+            9..=11 => Self::SuperReference((tag - 9) as usize),
+            12 => Self::CoroutineRunning,
+            13 => Self::CoroutineFrame,
+            14 => Self::CoroutineCode,
+            15 => Self::CoroutineAwait,
             _ => return None,
         })
     }
@@ -63,6 +80,62 @@ const PROPERTY_WRAPPER: &[MemberOwner] = &[MemberOwner::Property];
 
 // One authority for publication, mutability, target gating and callback meaning.
 const WRAPPER_MEMBERS: &[WrapperMember] = &[
+    WrapperMember {
+        name: "__thisclass__",
+        owners: &[MemberOwner::Super],
+        flavor: NativeDescriptorFlavor::Member,
+        writable: false,
+        minimum_minor: 0,
+        operation: MemberOperation::SuperReference(0),
+    },
+    WrapperMember {
+        name: "__self__",
+        owners: &[MemberOwner::Super],
+        flavor: NativeDescriptorFlavor::Member,
+        writable: false,
+        minimum_minor: 0,
+        operation: MemberOperation::SuperReference(1),
+    },
+    WrapperMember {
+        name: "__self_class__",
+        owners: &[MemberOwner::Super],
+        flavor: NativeDescriptorFlavor::Member,
+        writable: false,
+        minimum_minor: 0,
+        operation: MemberOperation::SuperReference(2),
+    },
+    WrapperMember {
+        name: "cr_running",
+        owners: &[MemberOwner::Coroutine],
+        flavor: NativeDescriptorFlavor::GetSet,
+        writable: false,
+        minimum_minor: 0,
+        operation: MemberOperation::CoroutineRunning,
+    },
+    WrapperMember {
+        name: "cr_frame",
+        owners: &[MemberOwner::Coroutine],
+        flavor: NativeDescriptorFlavor::GetSet,
+        writable: false,
+        minimum_minor: 0,
+        operation: MemberOperation::CoroutineFrame,
+    },
+    WrapperMember {
+        name: "cr_code",
+        owners: &[MemberOwner::Coroutine],
+        flavor: NativeDescriptorFlavor::Member,
+        writable: false,
+        minimum_minor: 0,
+        operation: MemberOperation::CoroutineCode,
+    },
+    WrapperMember {
+        name: "cr_await",
+        owners: &[MemberOwner::Coroutine],
+        flavor: NativeDescriptorFlavor::GetSet,
+        writable: false,
+        minimum_minor: 0,
+        operation: MemberOperation::CoroutineAwait,
+    },
     WrapperMember {
         name: "__annotate__",
         owners: &[MemberOwner::Type],
@@ -288,6 +361,8 @@ pub(crate) fn prepare_wrapper_members(
             (MemberOwner::Classmethod, builtins.classmethod),
             (MemberOwner::Property, builtins.property),
             (MemberOwner::Type, builtins.type_obj),
+            (MemberOwner::Super, builtins.super_type),
+            (MemberOwner::Coroutine, builtins.coroutine),
         ] {
             let class = obj_from_bits(class_bits).as_ptr().unwrap();
             let dictionary = class_dict_bits(class);
@@ -438,7 +513,19 @@ unsafe fn callback_member(
             return None;
         }
         let object = obj_from_bits(instance).as_ptr()?;
-        WrapperKind::from_type_id(object_type_id(object))?;
+        let valid_shape = match operation {
+            MemberOperation::SuperReference(_) => object_type_id(object) == TYPE_ID_SUPER,
+            MemberOperation::CoroutineRunning
+            | MemberOperation::CoroutineFrame
+            | MemberOperation::CoroutineCode
+            | MemberOperation::CoroutineAwait => {
+                crate::async_rt::generators::is_native_coroutine_bits(instance)
+            }
+            _ => WrapperKind::from_type_id(object_type_id(object)).is_some(),
+        };
+        if !valid_shape {
+            return None;
+        }
         if !crate::object::class_layout::is_real_subtype(
             py,
             type_of_bits(py, instance),
@@ -454,6 +541,57 @@ unsafe fn callback_member(
     }
 }
 
+unsafe fn coroutine_member_value(
+    py: &PyToken<'_>,
+    object: *mut u8,
+    operation: MemberOperation,
+) -> Option<u64> {
+    unsafe {
+        let header = header_from_obj_ptr(object);
+        match operation {
+            MemberOperation::CoroutineRunning => {
+                let running = ((*header).load_synchronized_flags() & HEADER_FLAG_GEN_RUNNING) != 0;
+                return Some(MoltObject::from_bool(running).bits());
+            }
+            MemberOperation::CoroutineFrame => {
+                if crate::object::object_poll_fn(object) == 0
+                    || ((*header).load_synchronized_flags() & HEADER_FLAG_TASK_DONE) != 0
+                {
+                    return Some(MoltObject::none().bits());
+                }
+                let lasti = if crate::object::object_state(object) == 0 {
+                    -1
+                } else {
+                    0
+                };
+                return Some(suspended_frame_bits(py, object, lasti));
+            }
+            MemberOperation::CoroutineCode => {
+                let code_bits = crate::object::aux_header::object_frame_code_bits(object);
+                if code_bits != 0 {
+                    inc_ref_bits(py, code_bits);
+                    return Some(code_bits);
+                }
+                return Some(MoltObject::none().bits());
+            }
+            MemberOperation::CoroutineAwait => {
+                if (*header).load_synchronized_flags()
+                    & (HEADER_FLAG_GEN_RUNNING | HEADER_FLAG_TASK_DONE)
+                    != 0
+                {
+                    return Some(MoltObject::none().bits());
+                }
+                let bits = crate::object::aux_header::object_frame_awaited_bits(object);
+                if bits != 0 {
+                    return Some(crate::async_rt::awaitable::python_awaited_bits(py, bits));
+                }
+                return Some(MoltObject::none().bits());
+            }
+            _ => unreachable!("non-coroutine member operation"),
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_wrapper_member_get(descriptor: u64, instance: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
@@ -462,6 +600,20 @@ pub extern "C" fn molt_wrapper_member_get(descriptor: u64, instance: u64) -> u64
                 return raise_exception::<u64>(py, "TypeError", "invalid wrapper member receiver");
             };
             let result = match operation {
+                MemberOperation::SuperReference(index) => {
+                    let value = match index {
+                        0 => super_type_bits(object),
+                        1 => super_obj_bits(object),
+                        2 => layout::super_receiver_class_bits(object),
+                        _ => unreachable!("invalid super member selector"),
+                    };
+                    inc_ref_bits(py, value);
+                    Some(value)
+                }
+                MemberOperation::CoroutineRunning
+                | MemberOperation::CoroutineFrame
+                | MemberOperation::CoroutineCode
+                | MemberOperation::CoroutineAwait => coroutine_member_value(py, object, operation),
                 MemberOperation::Reference(index) => {
                     let bits = layout::wrapper_reference_bits(object, index);
                     let bits = if is_missing_bits(py, bits) {
@@ -944,6 +1096,8 @@ mod tests {
                         (MemberOwner::Classmethod, classes.classmethod),
                         (MemberOwner::Property, classes.property),
                         (MemberOwner::Type, classes.type_obj),
+                        (MemberOwner::Super, classes.super_type),
+                        (MemberOwner::Coroutine, classes.coroutine),
                     ] {
                         let namespace =
                             obj_from_bits(class_dict_bits(obj_from_bits(owner).as_ptr().unwrap()))

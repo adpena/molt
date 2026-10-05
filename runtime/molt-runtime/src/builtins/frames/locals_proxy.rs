@@ -66,7 +66,11 @@ unsafe fn source_slot(ptr: *mut u8, shape: ObjectShapeId) -> Option<*mut u64> {
 pub(crate) fn frame_object_set_source(py: &PyToken<'_>, frame_ptr: *mut u8, source: u64) -> bool {
     let Some(slot) = (unsafe { source_slot(frame_ptr, ObjectShapeId::TypesFrame) }) else {
         if !exception_pending(py) {
-            raise_exception::<u64>(py, "SystemError", "frame object has no binding source field");
+            raise_exception::<u64>(
+                py,
+                "SystemError",
+                "frame object has no binding source field",
+            );
         }
         return false;
     };
@@ -247,7 +251,11 @@ fn proxy_source(py: &PyToken<'_>, self_bits: u64) -> Result<u64, ()> {
     match frame_source(unsafe { *slot }) {
         FrameSource::Bindings(payload) => Ok(payload),
         FrameSource::Empty | FrameSource::Mapping(_) => {
-            raise_exception::<u64>(py, "SystemError", "FrameLocalsProxy is not bound to a frame");
+            raise_exception::<u64>(
+                py,
+                "SystemError",
+                "FrameLocalsProxy is not bound to a frame",
+            );
             Err(())
         }
     }
@@ -346,8 +354,13 @@ pub extern "C" fn molt_frame_locals_proxy_get(
         let Some(args) = positional_args(py, "get", args_bits, kwargs_bits, 1..=2) else {
             return MoltObject::none().bits();
         };
-        let default = args.get(1).copied().unwrap_or_else(|| MoltObject::none().bits());
-        with_snapshot(py, self_bits, |snapshot| molt_dict_get(snapshot, args[0], default))
+        let default = args
+            .get(1)
+            .copied()
+            .unwrap_or_else(|| MoltObject::none().bits());
+        with_snapshot(py, self_bits, |snapshot| {
+            molt_dict_get(snapshot, args[0], default)
+        })
     })
 }
 
@@ -500,7 +513,10 @@ pub extern "C" fn molt_frame_locals_proxy_setdefault(
             Err(()) => MoltObject::none().bits(),
             Ok(Some(value)) => value,
             Ok(None) => {
-                let default = args.get(1).copied().unwrap_or_else(|| MoltObject::none().bits());
+                let default = args
+                    .get(1)
+                    .copied()
+                    .unwrap_or_else(|| MoltObject::none().bits());
                 if proxy_write(py, self_bits, args[0], Some(default)).is_err() {
                     return MoltObject::none().bits();
                 }
@@ -577,9 +593,8 @@ pub extern "C" fn molt_frame_locals_proxy_update(
         };
         // Items are read before the first write: a write can run a finalizer
         // that changes the source mapping.
-        let pairs: Vec<u64> = unsafe {
-            dict_order(obj_from_bits(source).as_ptr().expect("dict source")).clone()
-        };
+        let pairs: Vec<u64> =
+            unsafe { dict_order(obj_from_bits(source).as_ptr().expect("dict source")).clone() };
         for &bits in &pairs {
             inc_ref_bits(py, bits);
         }

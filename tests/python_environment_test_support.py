@@ -11,7 +11,7 @@ from typing import Iterable, Sequence
 
 from molt import python_environment_identity
 from molt.python_runtime_identity import _NATIVE_DEPENDENCY_POLICIES
-from molt.cli import source_build_environment
+from molt.cli import source_build_environment_schema
 from molt.exact_json import canonical_json_sha256
 from molt.python_external_custody import empty_external_import_custody
 
@@ -30,7 +30,7 @@ def _sealed(material: dict[str, object], digest_field: str) -> dict[str, object]
 
 
 def _host_target() -> tuple[str, str, list[str], str]:
-    marker = source_build_environment.canonical_source_marker_environment()
+    marker = source_build_environment_schema.canonical_source_marker_environment()
     operating_system = {"win32": "windows", "darwin": "macos"}.get(
         sys.platform, "linux"
     )
@@ -51,7 +51,7 @@ def _host_target() -> tuple[str, str, list[str], str]:
 def runtime_identity_manifest() -> dict[str, object]:
     """Return one production-validated synthetic CPython runtime identity."""
 
-    marker = source_build_environment.canonical_source_marker_environment()
+    marker = source_build_environment_schema.canonical_source_marker_environment()
     operating_system, architecture, root_roles, dependency_policy = _host_target()
     nodes = [{"id": "file-node-0", "size": 1, "sha256": "a" * 64}]
     entries = [
@@ -158,7 +158,7 @@ def lock_closure_manifest(
         "requirements": list(requirements),
         "project_requirements": [],
         "marker_environment": (
-            source_build_environment.canonical_source_marker_environment()
+            source_build_environment_schema.canonical_source_marker_environment()
         ),
         "packages": [
             {
@@ -185,7 +185,7 @@ def realized_environment_manifest(
 ) -> dict[str, object]:
     """Return a production-validated isolated environment using ``runtime``."""
 
-    marker = source_build_environment.canonical_source_marker_environment()
+    marker = source_build_environment_schema.canonical_source_marker_environment()
     selected = "Scripts/python.exe" if os.name == "nt" else "bin/python"
     scripts_root = "Scripts" if os.name == "nt" else "bin"
     site_root = (
@@ -376,7 +376,7 @@ def build_environment_manifest(
     )
     if len(selected_requirements) != len(selected_packages):
         raise ValueError("requirements and package rows must have equal length")
-    marker = source_build_environment.canonical_source_marker_environment()
+    marker = source_build_environment_schema.canonical_source_marker_environment()
     runtime = runtime_identity_manifest()
     lock_closure = lock_closure_manifest(
         selected_requirements,
@@ -390,7 +390,7 @@ def build_environment_manifest(
     assert isinstance(selected_executable_path, str)
     realized_executable = Path(selected_executable_path).name
     address = {
-        "schema_version": source_build_environment.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
+        "schema_version": source_build_environment_schema.SOURCE_BUILD_ENVIRONMENT_SCHEMA_VERSION,
         "dependency_group": dependency_group,
         "dependency_group_requirements": selected_requirements,
         "lock_closure": lock_closure,
@@ -426,7 +426,9 @@ def build_environment_manifest(
             "realized_environment": realized,
         },
     }
-    problems = source_build_environment.source_build_environment_problems(payload)
+    problems = source_build_environment_schema.source_build_environment_problems(
+        payload
+    )
     if problems:
         raise AssertionError(
             "invalid synthetic build environment: " + "; ".join(problems)

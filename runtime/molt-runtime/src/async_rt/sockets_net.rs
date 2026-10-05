@@ -22,6 +22,8 @@ use std::os::raw::c_int;
 use std::os::windows::io::{AsRawSocket, BorrowedSocket, FromRawSocket, IntoRawSocket, RawSocket};
 use std::time::Duration;
 
+#[cfg(target_arch = "wasm32")]
+use super::sockets::port_from_bits;
 #[cfg(all(molt_has_net_io, not(unix)))]
 use super::sockets::socket_register_peer_pair;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
@@ -29,8 +31,6 @@ use super::sockets::socket_timeout;
 #[cfg(target_arch = "wasm32")]
 use super::sockets::{decode_sockaddr, errno_from_rc, wasm_socket_meta_insert};
 use super::sockets::{host_from_bits, iter_values_from_bits, service_from_bits};
-#[cfg(target_arch = "wasm32")]
-use super::sockets::port_from_bits;
 #[cfg(molt_has_net_io)]
 use super::sockets::{
     libc_socket, sock_addr_from_storage, sockaddr_from_bits, sockaddr_to_bits, socket_wait_ready,

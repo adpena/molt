@@ -56,18 +56,10 @@ fn flag(func: &mut TirFunction) -> ValueId {
     value
 }
 
-fn produce(result: ValueId) -> TirOp {
-    op(OpCode::Call, vec![], vec![result])
-}
-
 fn int(value: i64, result: ValueId) -> TirOp {
     let mut constant = op(OpCode::ConstInt, vec![], vec![result]);
     constant.attrs.insert("value".into(), AttrValue::Int(value));
     constant
-}
-
-fn marker() -> TirOp {
-    op(OpCode::WarnStderr, vec![], vec![])
 }
 
 /// An observable statement that reads `values`.
@@ -79,18 +71,6 @@ fn observe(label: i64) -> TirOp {
     let mut check = op(OpCode::CheckException, vec![], vec![]);
     check.attrs.insert("value".into(), AttrValue::Int(label));
     check
-}
-
-/// A direct source call that adopts every operand.
-fn transfer(operands: Vec<ValueId>) -> TirOp {
-    let mut call = op(OpCode::Call, operands, vec![]);
-    call.attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str("call_internal".into()),
-    );
-    let custody = vec![TRANSFERRED; call.operands.len()];
-    call.set_argument_custody(&custody);
-    call
 }
 
 /// The frontend's owned capture of a read, CPython's `LOAD_FAST` reference.
@@ -652,9 +632,7 @@ fn generic_consumption_preserves_the_callers_binding() {
     );
     let callable = parameter(&func, 0);
     let builder = parameter(&func, 1);
-    let mut call = op(OpCode::Call, vec![callable, builder], vec![]);
-    call.attrs
-        .insert("_original_kind".into(), AttrValue::Str("call_bind".into()));
+    let call = call_bind(callable, builder, vec![]);
     body(&mut func, vec![call, marker()], done(vec![]));
     insert(&mut func);
     assert_eq!((count_increfs(&func), count_decrefs(&func)), (1, 1));
@@ -688,6 +666,8 @@ fn views_joined_around_a_loop_hold_no_reference() {
     let (initial, first) = (owned(&mut func), owned(&mut func));
     let (next, rebound, current) = (owned(&mut func), owned(&mut func), owned(&mut func));
     let more = flag(&mut func);
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let more_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let (header, loop_body, after) = (func.fresh_block(), func.fresh_block(), func.fresh_block());
     func.loop_roles.insert(header, LoopRole::LoopHeader);
     body(
@@ -697,7 +677,7 @@ fn views_joined_around_a_loop_hold_no_reference() {
     );
     let mut head = block(
         header,
-        vec![op(OpCode::ConstBool, vec![], vec![more])],
+        vec![op(OpCode::Copy, vec![more_input], vec![more])],
         choose(more, loop_body, after),
     );
     argument(&mut head, current);
@@ -750,13 +730,15 @@ fn join_of_a_view_and_an_owner_owns_its_value() {
         owned(&mut func),
     );
     let cond = flag(&mut func);
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let (left, right, join) = (func.fresh_block(), func.fresh_block(), func.fresh_block());
     body(
         &mut func,
         vec![
             produce(value),
             store(0, value, view),
-            op(OpCode::ConstBool, vec![], vec![cond]),
+            op(OpCode::Copy, vec![cond_input], vec![cond]),
         ],
         choose(cond, left, right),
     );
@@ -886,6 +868,8 @@ fn joined_view_returned_without_a_capture_is_refused() {
     let param = parameter(&func, 0);
     let (first, rebound, current) = (owned(&mut func), owned(&mut func), owned(&mut func));
     let more = flag(&mut func);
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let more_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let (header, loop_body, after) = (func.fresh_block(), func.fresh_block(), func.fresh_block());
     func.loop_roles.insert(header, LoopRole::LoopHeader);
     body(
@@ -895,7 +879,7 @@ fn joined_view_returned_without_a_capture_is_refused() {
     );
     let mut head = block(
         header,
-        vec![op(OpCode::ConstBool, vec![], vec![more])],
+        vec![op(OpCode::Copy, vec![more_input], vec![more])],
         choose(more, loop_body, after),
     );
     argument(&mut head, current);
@@ -989,7 +973,9 @@ fn home_accesses_are_neither_numbered_nor_forwarded() {
             load(0, before),
             marker(),
             load(0, after),
-            read(vec![first, before, after]),
+            read(vec![first]),
+            read(vec![before]),
+            read(vec![after]),
             exit(),
         ],
         done(vec![]),
@@ -1014,7 +1000,8 @@ fn store_view_takes_its_operand_type_and_a_load_does_not() {
             int(7, seven),
             store(0, seven, view),
             load(0, loaded),
-            read(vec![view, loaded]),
+            read(vec![view]),
+            read(vec![loaded]),
             exit(),
         ],
         done(vec![]),
@@ -1049,7 +1036,8 @@ fn store_failure_edge_preserves_handler_and_custody_before_later_effects() {
             store(0, source, view),
             observe(51),
             end.clone(),
-            read(vec![view, independent]),
+            read(vec![view]),
+            read(vec![independent]),
             exit(),
         ],
         done(vec![]),
@@ -1073,6 +1061,17 @@ fn store_failure_edge_preserves_handler_and_custody_before_later_effects() {
         Ok(ExceptionBoundaryHandler::Labeled(51)),
     );
     insert(&mut func);
+    let reads: Vec<_> = func.blocks[&func.entry_block]
+        .ops
+        .iter()
+        .filter(|op| op.opcode == OpCode::WarnStderr)
+        .map(|op| op.operands.clone())
+        .collect();
+    assert_eq!(
+        reads,
+        [vec![view], vec![independent]],
+        "each live binding has its own explicit singleton diagnostic read"
+    );
     for failed in [false, true] {
         let events = trace(&func, 0, &[failed]);
         assert_eq!(
@@ -1080,7 +1079,8 @@ fn store_failure_edge_preserves_handler_and_custody_before_later_effects() {
                 .iter()
                 .filter(|event| **event == Event::Marker)
                 .count(),
-            usize::from(!failed)
+            2 * usize::from(!failed),
+            "both singleton reads execute only on the normal continuation"
         );
         for object in [0, 1] {
             assert_eq!(

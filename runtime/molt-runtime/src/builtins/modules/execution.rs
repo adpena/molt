@@ -791,7 +791,7 @@ pub(super) unsafe fn after_module_metadata_set(
             }
             let name_bits = MoltObject::from_ptr(name_ptr).bits();
             let value_bits = MoltObject::from_ptr(value_ptr).bits();
-            let result = crate::molt_setattr_builtin(effective_val_bits, name_bits, value_bits);
+            let result = crate::molt_set_attr_name(effective_val_bits, name_bits, value_bits);
             dec_ref_bits(_py, name_bits);
             dec_ref_bits(_py, value_bits);
             if !obj_from_bits(result).is_none() {

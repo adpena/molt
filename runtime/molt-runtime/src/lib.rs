@@ -35,6 +35,14 @@ const _: () = assert!(
 #[unsafe(export_name = "molt_generated_object_abi_bf06a9269171acab_free_threaded_v3")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
+// Read-only semantic identity. Callable construction uses fn_addr! below to
+// publish the executable target; metadata and dispatch predicates must not.
+macro_rules! fn_key {
+    ($func:path) => {
+        $crate::builtins::functions::runtime_fn_key(stringify!($func), $func as *const ())
+    };
+}
+
 macro_rules! fn_addr {
     ($func:path) => {
         $crate::builtins::functions::runtime_fn_addr(stringify!($func), $func as *const ())
@@ -417,6 +425,7 @@ pub mod ffi_bridge {
 
 #[allow(unused_imports)]
 pub(crate) use crate::async_rt::*;
+pub use crate::builtins::compatibility_error::molt_compatibility_error;
 pub use crate::builtins::strings::{molt_bytes_from_bytes, molt_string_from_bytes};
 pub use crate::concurrency::isolates::*;
 pub(crate) use crate::concurrency::locks::{
@@ -618,8 +627,8 @@ pub(crate) use crate::builtins::exceptions::{
     molt_async_work_poll_and_exception_last_pending, molt_async_work_poll_and_exception_pending,
     molt_exception_active, molt_exception_clear, molt_exception_kind, molt_exception_last,
     molt_exception_last_pending, molt_exception_match_handler, molt_exception_pending,
-    molt_exception_set_last, molt_exception_trace_prepend, molt_raise,
-    molt_unraisable_hook_args_is_exact, raise_exception, raise_key_error_with_key,
+    molt_exception_prepare_raise, molt_exception_set_last, molt_exception_trace_prepend,
+    molt_raise, molt_unraisable_hook_args_is_exact, raise_exception, raise_key_error_with_key,
     raise_not_iterable, raise_unicode_decode_error, raise_unicode_encode_error,
     raise_unsupported_inplace, record_exception, record_memory_error_without_allocation,
     set_generator_raise, set_task_raise_active, sync_current_exception_pending,
@@ -669,8 +678,8 @@ pub(crate) use crate::builtins::numbers::{
     complex_ptr_from_bits, complex_ref, float_pair_from_obj, index_bigint_from_obj,
     index_i64_from_obj, index_i64_integral_bits, index_i64_with_overflow, inline_int_from_i128,
     int_bits_from_bigint, int_bits_from_i64, int_bits_from_i128, int_subclass_value_bits_raw,
-    round_float_ndigits, round_half_even, sequence_index_bigint, sequence_index_i64,
-    sequence_index_i64_with_type_error, split_maxsplit_from_obj, to_bigint, to_f64, to_i64,
+    round_half_even, sequence_index_bigint, sequence_index_i64, sequence_index_i64_with_type_error,
+    split_maxsplit_from_obj, to_bigint, to_f64, to_i64,
 };
 pub use crate::builtins::operator::*;
 #[cfg(not(feature = "stdlib_path"))]
@@ -724,10 +733,9 @@ pub(crate) use crate::call::class_init::{
     call_class_init_with_args, function_attr_bits, function_set_attr_bits, raise_not_callable,
 };
 pub(crate) use crate::call::dispatch::{
-    call_callable0, call_callable1, call_callable2, call_callable3, callable_arity,
+    call_callable0, call_callable1, call_callable2, call_callable3,
 };
 pub(crate) use crate::call::function::{call_function_obj_bound_vec, call_function_obj_vec};
-pub(crate) use crate::call::lookup_call_attr;
 pub use crate::intrinsics::capabilities::*;
 pub use crate::intrinsics::registry::{
     molt_load_intrinsic_runtime, molt_require_intrinsic_runtime, molt_runtime_active_runtime,
@@ -757,19 +765,18 @@ pub(crate) use crate::object::layout::{
     enumerate_index_bits, enumerate_set_cached_inner, enumerate_set_cached_outer,
     enumerate_set_index_bits, enumerate_target_bits, filter_func_bits, filter_iter_bits,
     function_annotate_bits, function_annotations_bits, function_arity, function_arity_usize,
-    function_call_abi, function_closure_bits, function_code_bits,
-    function_execution_closure_bits, function_fn_ptr, function_globals_bits,
-    function_has_execution_closure, function_mutation_version, function_name_bits,
-    function_set_annotate_bits, function_set_annotations_bits, function_set_closure_bits,
-    function_set_code_bits, function_set_globals_bits,
-    function_set_trampoline_ptr, function_trampoline_ptr, generic_alias_args_bits,
-    generic_alias_origin_bits, iter_cached_tuple, iter_index, iter_set_cached_tuple,
-    iter_set_index, iter_target_bits, map_cached_tuple, map_func_bits, map_iters_ptr,
-    map_set_cached_tuple, module_dict_bits, module_name_bits, property_del_bits, property_get_bits,
-    property_set_bits, range_len_i64, range_start_bits, range_step_bits, range_stop_bits,
-    reversed_index, reversed_set_index, reversed_target_bits, seq_vec_ptr, slice_start_bits,
-    slice_step_bits, slice_stop_bits, staticmethod_func_bits, super_obj_bits, super_type_bits,
-    union_type_args_bits, zip_iters_ptr, zip_set_strict_bits, zip_strict_bits,
+    function_call_abi, function_closure_bits, function_code_bits, function_execution_closure_bits,
+    function_fn_ptr, function_globals_bits, function_has_execution_closure,
+    function_mutation_version, function_name_bits, function_set_annotate_bits,
+    function_set_annotations_bits, function_set_closure_bits, function_set_code_bits,
+    function_set_globals_bits, function_set_trampoline_ptr, function_trampoline_ptr,
+    generic_alias_args_bits, generic_alias_origin_bits, iter_cached_tuple, iter_index,
+    iter_set_cached_tuple, iter_set_index, iter_target_bits, map_cached_tuple, map_func_bits,
+    map_iters_ptr, map_set_cached_tuple, module_dict_bits, module_name_bits, property_del_bits,
+    property_get_bits, property_set_bits, range_len_i64, range_start_bits, range_step_bits,
+    range_stop_bits, reversed_index, reversed_set_index, reversed_target_bits, seq_vec_ptr,
+    slice_start_bits, slice_step_bits, slice_stop_bits, staticmethod_func_bits, super_obj_bits,
+    super_type_bits, union_type_args_bits, zip_iters_ptr, zip_set_strict_bits, zip_strict_bits,
 };
 #[cfg(test)]
 pub(crate) use crate::object::layout::{function_dict_bits, function_set_dict_bits};
@@ -779,8 +786,7 @@ pub(crate) use crate::object::memoryview::{
     TypedStridedStorage, TypedStridedStorageError, bytes_like_slice, bytes_like_slice_checked,
     bytes_like_slice_raw, memoryview_bytes_slice, memoryview_collect_bytes,
     memoryview_format_from_bits, memoryview_format_from_str, memoryview_is_c_contiguous_view,
-    memoryview_linear_offset, memoryview_nbytes, memoryview_nbytes_big, memoryview_read_scalar_at,
-    memoryview_shape_product, memoryview_strided_offset, memoryview_write_scalar_at,
+    memoryview_linear_offset, memoryview_nbytes, memoryview_strided_offset,
     raise_released_memoryview,
 };
 pub(crate) use crate::object::ops::HashSecret;

@@ -8,7 +8,9 @@ if TYPE_CHECKING:
     from molt.compiler_analysis.python_binding_facts import (
         PythonCallSiteFact,
         PythonExpressionFact,
+        PythonIterationFact,
         PythonNodeKey,
+        PythonModuleMetadataProof,
         PythonStatementFact,
     )
 
@@ -20,8 +22,8 @@ from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Literal
 
+from molt.compiler_analysis.python_call_arguments import call_argument_schedule
 from molt.compiler_analysis.python_effects import (
-    dotted_expression_name,
     expression_evaluation_children,
 )
 from molt.compiler_analysis.python_source_keys import (
@@ -34,6 +36,14 @@ from molt.compiler_analysis.python_source_keys import (
 )
 
 
+from molt.compiler_analysis.static_truth import (
+    ExpressionResultLookup,
+    StaticExpressionResult,
+    UNKNOWN_EXPRESSION_RESULT,
+    static_expression_result,
+)
+
+
 StaticValueKind = Literal["known", "none", "absent", "invalid", "unknown"]
 ImportOperationKind = Literal["statement", "import_module", "dunder_import"]
 ModuleExecutionKind = Literal["imported", "module", "script"]
@@ -43,6 +53,7 @@ ImportResolutionError = Literal[
     "beyond_top",
     "empty_name",
     "negative_level",
+    "invalid_level",
     "invalid_package",
     "unknown_package",
     "invalid_spec",
@@ -120,6 +131,7 @@ class StaticImportRequest:
     package_argument: StaticMetadataValue | None = None
     globals_state: ModuleImportState | None = None
     globals_were_supplied: bool = False
+    level_is_invalid: bool = False
 
     @classmethod
     def statement(
@@ -235,11 +247,15 @@ class UnresolvedStaticImportError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class ModuleImportFlow:
-    """Source-ordered abstract metadata states at import/call AST sites."""
+    """Execution metadata and opt-in source candidates at import/call sites."""
 
     states_by_node: Mapping[ImportNodeKey, tuple[ModuleImportState, ...]]
     final_states: tuple[ModuleImportState, ...]
     all_states: tuple[ModuleImportState, ...]
+    source_states_by_node: (
+        Mapping[ImportNodeKey, tuple[ModuleImportState, ...]] | None
+    ) = None
+    source_all_states: tuple[ModuleImportState, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -251,6 +267,18 @@ class ModuleImportFlow:
         )
         object.__setattr__(self, "final_states", tuple(self.final_states))
         object.__setattr__(self, "all_states", tuple(self.all_states))
+        if self.source_states_by_node is not None:
+            object.__setattr__(
+                self,
+                "source_states_by_node",
+                MappingProxyType(
+                    {
+                        key: tuple(states)
+                        for key, states in self.source_states_by_node.items()
+                    }
+                ),
+            )
+        object.__setattr__(self, "source_all_states", tuple(self.source_all_states))
 
     def states_for(self, node: ast.AST) -> tuple[ModuleImportState, ...]:
         # An unrecorded execution phase (deferred annotations, lambda/generator
@@ -258,6 +286,14 @@ class ModuleImportFlow:
         # module snapshot. Unioning the observed source-order states is the
         # conservative runtime anchor until that phase has an explicit event.
         return self.states_by_node.get(python_node_source_key(node), self.all_states)
+
+    def source_states_for(self, node: ast.AST) -> tuple[ModuleImportState, ...]:
+        """Source candidates are never execution metadata or storage custody."""
+        if self.source_states_by_node is None:
+            raise ValueError("source import discovery projection was not requested")
+        return self.source_states_by_node.get(
+            python_node_source_key(node), self.source_all_states
+        )
 
 
 def module_spec_parent(spec_name: str, is_package: bool) -> str:
@@ -292,9 +328,9 @@ def parse_module_spec_parent(
 ) -> StaticMetadataValue:
     """Evaluate a statically known, CPython-valid ModuleSpec parent."""
 
-    from molt.compiler_analysis.python_binding_facts import (
+    from molt.compiler_analysis.python_binding_facts import PythonNodeKey
+    from molt.compiler_analysis.python_value_identity import (
         PythonIdentity,
-        PythonNodeKey,
         identity_fact_is_exact,
     )
     from molt.compiler_analysis.python_effects_generated import (
@@ -359,14 +395,62 @@ def parse_module_spec_parent(
     )
 
 
-def _metadata_value(value: ast.AST) -> StaticMetadataValue:
-    if isinstance(value, ast.Constant):
-        if isinstance(value.value, str):
-            return StaticMetadataValue.known(value.value)
-        if value.value is None:
-            return NONE_VALUE
-        return INVALID_VALUE
-    return UNKNOWN_VALUE
+def metadata_value_from_result(result: StaticExpressionResult) -> StaticMetadataValue:
+    """Retain invalid and None metadata alongside exact string values."""
+    if result.kind == "NoneType":
+        return NONE_VALUE
+    if result.kind == "str":
+        return (
+            StaticMetadataValue.known(result.value)
+            if result.value_known and isinstance(result.value, str)
+            else UNKNOWN_VALUE
+        )
+    return INVALID_VALUE if result.kind != "unknown" else UNKNOWN_VALUE
+
+
+def static_import_fromlist_is_empty(result: StaticExpressionResult) -> bool:
+    """Prove falsy scalar operands without borrowing mutable container contents."""
+    return result.value_known and result.truth is False
+
+
+def static_import_level_from_result(
+    result: StaticExpressionResult,
+) -> tuple[int | None, bool]:
+    """Separate exact index values, known type errors and callback-dependent levels."""
+    if result.value_known:
+        value = result.value
+        if type(value) is int:
+            return value, False
+        if type(value) is bool:
+            return int(value), False
+    invalid = result.kind in {
+        "NoneType",
+        "float",
+        "complex",
+        "str",
+        "bytes",
+        "bytearray",
+        "tuple",
+        "list",
+        "set",
+        "frozenset",
+        "dict",
+        "range",
+    }
+    return None, invalid
+
+
+def _metadata_value(
+    value: ast.AST, fact_result: ExpressionResultLookup | None = None
+) -> StaticMetadataValue:
+    if not isinstance(value, ast.expr):
+        return UNKNOWN_VALUE
+    result = (
+        fact_result(value) or UNKNOWN_EXPRESSION_RESULT
+        if fact_result is not None
+        else static_expression_result(value)
+    )
+    return metadata_value_from_result(result)
 
 
 def _globals_subscript_name(target: ast.AST) -> str | None:
@@ -421,103 +505,295 @@ def _unknown_module_import_state(state: ModuleImportState) -> ModuleImportState:
     return ModuleImportState(UNKNOWN_VALUE, UNKNOWN_VALUE, UNKNOWN_VALUE, None)
 
 
+def module_import_context_with_metadata_proof(
+    context: ModuleImportContext, proof: PythonModuleMetadataProof | None
+) -> ModuleImportContext:
+    """Admit the import-state projection only under binding storage custody."""
+    if proof is not None and proof.admits_current_namespace:
+        return context
+    return context.with_state(
+        _unknown_module_import_state(context_import_state(context))
+    )
+
+
 def metadata_value_from_expression(
     expression: ast.expr | None,
     context: ModuleImportContext,
     resolve_string: Callable[[ast.expr], str | None] | None = None,
+    *,
+    fact_result: ExpressionResultLookup | None = None,
+    expression_fact: Callable[[ast.expr], PythonExpressionFact | None] | None = None,
+    allow_activation_metadata_for_discovery: bool = False,
+    call_fact: PythonCallSiteFact | None = None,
 ) -> StaticMetadataValue | None:
     """Evaluate metadata expressions without executing user code."""
 
     if expression is None:
         return None
-    if isinstance(expression, ast.Constant):
-        return _metadata_value(expression)
+    metadata = _metadata_value(expression, fact_result)
+    if metadata.kind != "unknown":
+        return metadata
     if isinstance(expression, ast.Name):
-        state = context_import_state(context)
-        if expression.id == "__package__":
-            return state.package
-        if expression.id == "__name__":
-            return state.name
+        fact = expression_fact(expression) if expression_fact is not None else None
+        if (
+            fact is not None
+            and fact.name_lookup == "global"
+            and expression.id in {"__package__", "__name__"}
+        ):
+            # Lexical candidates are not execution-state authority. A strict
+            # borrow needs clean storage at the read and after argument
+            # evaluation. Unknown bound values cannot borrow loader defaults;
+            # the slot must remain loader-pristine through invocation; deletion
+            # is a stored tombstone, not a loader default. Known scalar
+            # values above retain their already-evaluated value independently.
+            if not allow_activation_metadata_for_discovery and not (
+                fact.module_metadata.admits_loader_borrow(expression.id)
+                and not fact.binding_invalidated
+                and not fact.binding_is_bound
+                and call_fact is not None
+                and call_fact.module_metadata_at_invocation.admits_loader_borrow(
+                    expression.id
+                )
+            ):
+                return UNKNOWN_VALUE
+            state = context_import_state(context)
+            value = state.package if expression.id == "__package__" else state.name
+            # A name read captures an object, never a missing mapping member.
+            # Absence can raise or consult builtins; it cannot make an explicit
+            # dictionary entry disappear and trigger __name__ fallback.
+            return UNKNOWN_VALUE if value.kind == "absent" else value
     resolved = resolve_string(expression) if resolve_string is not None else None
     return (
         StaticMetadataValue.known(resolved) if resolved is not None else UNKNOWN_VALUE
     )
 
 
-def dunder_globals_state_from_expression(
+def _dunder_globals_states_from_expression(
     expression: ast.expr | None,
     context: ModuleImportContext,
     resolve_string: Callable[[ast.expr], str | None] | None = None,
-) -> ModuleImportState | None:
-    """Parse a known globals mapping supplied to builtin ``__import__``."""
-
+    *,
+    fact_result: ExpressionResultLookup | None = None,
+    expression_fact: Callable[[ast.expr], PythonExpressionFact | None] | None = None,
+    allow_possible_current_globals: bool = False,
+    call_fact: PythonCallSiteFact | None = None,
+    captured_values: Callable[[ast.expr], Sequence[StaticMetadataValue | None]]
+    | None = None,
+) -> tuple[ModuleImportState, ...] | None:
+    """One dictionary transfer for strict values and captured source alternatives."""
     if expression is None:
         return None
-    if (
-        isinstance(expression, ast.Call)
-        and isinstance(expression.func, ast.Name)
-        and expression.func.id == "globals"
-        and not expression.args
-        and not expression.keywords
-    ):
-        return context_import_state(context)
+    if expression_fact is not None:
+        from molt.compiler_analysis.python_binding_facts import (
+            current_globals_dict_is_exact,
+        )
+        from molt.compiler_analysis.python_value_identity import PythonIdentity
+
+        fact = expression_fact(expression)
+        if fact is not None and (
+            current_globals_dict_is_exact(fact.identities, fact.result)
+            or allow_possible_current_globals
+            and fact.identities & int(PythonIdentity.CURRENT_GLOBALS)
+        ):
+            # Capturing a mapping reference does not snapshot its contents.
+            # Both views read an actual current-globals mapping at invocation.
+            state = context_import_state(context)
+            if allow_possible_current_globals:
+                if captured_values is not None and not current_globals_dict_is_exact(
+                    fact.identities, fact.result
+                ):
+                    # A possible mapping identity supplies a candidate, not an
+                    # exhaustive operand value. The other branch stays unknown.
+                    return _merge_states((state, _unknown_module_import_state(state)))
+                return (state,)
+            return (
+                context_import_state(
+                    module_import_context_with_metadata_proof(
+                        context,
+                        call_fact.module_metadata_at_invocation
+                        if call_fact is not None
+                        else None,
+                    )
+                ),
+            )
     if not isinstance(expression, ast.Dict):
         return None
-    state = ModuleImportState(ABSENT_VALUE, ABSENT_VALUE, ABSENT_VALUE, False)
+    states: tuple[ModuleImportState, ...] = (
+        ModuleImportState(ABSENT_VALUE, ABSENT_VALUE, ABSENT_VALUE, False),
+    )
     for key, value in zip(expression.keys, expression.values):
         if key is None:
             unpacked = (
-                dunder_globals_state_from_expression(value, context, resolve_string)
+                _dunder_globals_states_from_expression(
+                    value,
+                    context,
+                    resolve_string,
+                    fact_result=fact_result,
+                    expression_fact=expression_fact,
+                    allow_possible_current_globals=allow_possible_current_globals,
+                    call_fact=call_fact,
+                    captured_values=captured_values,
+                )
                 if isinstance(value, ast.Dict)
                 else None
             )
             if unpacked is None:
-                state = _unknown_module_import_state(state)
+                states = _merge_states(
+                    _unknown_module_import_state(state) for state in states
+                )
             else:
-                state = ModuleImportState(
-                    unpacked.package
-                    if unpacked.package.kind != "absent"
-                    else state.package,
-                    unpacked.spec_parent
-                    if unpacked.spec_parent.kind != "absent"
-                    else state.spec_parent,
-                    unpacked.name if unpacked.name.kind != "absent" else state.name,
-                    unpacked.has_path or state.has_path,
+                states = _merge_states(
+                    ModuleImportState(
+                        overlay.package
+                        if overlay.package.kind != "absent"
+                        else state.package,
+                        overlay.spec_parent
+                        if overlay.spec_parent.kind != "absent"
+                        else state.spec_parent,
+                        overlay.name if overlay.name.kind != "absent" else state.name,
+                        overlay.has_path or state.has_path,
+                    )
+                    for state in states
+                    for overlay in unpacked
                 )
             continue
-        if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+        key_value = _metadata_value(key, fact_result)
+        if key_value.kind == "unknown":
+            # An unknown key can equal any metadata member. Retain prior source
+            # candidates, but never certify that this dictionary preserved them.
+            unknown = tuple(_unknown_module_import_state(state) for state in states)
+            states = _merge_states(
+                states if captured_values is not None else (), unknown
+            )
             continue
-        if key.value == "__package__":
-            state = ModuleImportState(
-                metadata_value_from_expression(value, context, resolve_string)
-                or UNKNOWN_VALUE,
-                state.spec_parent,
-                state.name,
-                state.has_path,
+        if key_value.kind != "known":
+            # Canonical exact non-string results cannot select metadata keys.
+            continue
+        if key_value.value in {"__package__", "__name__"}:
+            values = (
+                captured_values(value)
+                if captured_values is not None
+                else (
+                    metadata_value_from_expression(
+                        value,
+                        context,
+                        resolve_string,
+                        fact_result=fact_result,
+                        expression_fact=expression_fact,
+                        allow_activation_metadata_for_discovery=(
+                            allow_possible_current_globals
+                        ),
+                        call_fact=call_fact,
+                    ),
+                )
             )
-        elif key.value == "__spec__":
-            state = ModuleImportState(
-                state.package,
-                parse_module_spec_parent(value),
-                state.name,
-                state.has_path,
+            field = "package" if key_value.value == "__package__" else "name"
+            states = _merge_states(
+                replace(state, **{field: metadata or UNKNOWN_VALUE})
+                for state in states
+                for metadata in values
             )
-        elif key.value == "__name__":
-            state = ModuleImportState(
-                state.package,
-                state.spec_parent,
-                metadata_value_from_expression(value, context, resolve_string)
-                or UNKNOWN_VALUE,
-                state.has_path,
+        elif key_value.value == "__spec__":
+            states = _merge_states(
+                replace(state, spec_parent=parse_module_spec_parent(value))
+                for state in states
             )
-        elif key.value == "__path__":
-            state = ModuleImportState(
-                state.package,
-                state.spec_parent,
-                state.name,
-                True,
+        elif key_value.value == "__path__":
+            states = _merge_states(replace(state, has_path=True) for state in states)
+    return states
+
+
+def dunder_globals_state_from_expression(
+    expression: ast.expr | None,
+    context: ModuleImportContext,
+    resolve_string: Callable[[ast.expr], str | None] | None = None,
+    *,
+    fact_result: ExpressionResultLookup | None = None,
+    expression_fact: Callable[[ast.expr], PythonExpressionFact | None] | None = None,
+    allow_possible_current_globals: bool = False,
+    call_fact: PythonCallSiteFact | None = None,
+) -> ModuleImportState | None:
+    """Project one strict or lexical request through the shared dictionary transfer."""
+    states = _dunder_globals_states_from_expression(
+        expression,
+        context,
+        resolve_string,
+        fact_result=fact_result,
+        expression_fact=expression_fact,
+        allow_possible_current_globals=allow_possible_current_globals,
+        call_fact=call_fact,
+    )
+    if states is None:
+        return None
+    # Without captured source alternatives each field has exactly one value.
+    assert len(states) == 1
+    return states[0]
+
+
+def source_import_requests_from_expressions(
+    request: StaticImportRequest,
+    context: ModuleImportContext,
+    *,
+    package_expression: ast.expr | None = None,
+    globals_expression: ast.expr | None = None,
+    source_contexts_for_read: Callable[[ast.expr], Sequence[ModuleImportContext]],
+    resolve_string: Callable[[ast.expr], str | None] | None = None,
+    fact_result: ExpressionResultLookup | None = None,
+    expression_fact: Callable[[ast.expr], PythonExpressionFact | None] | None = None,
+    call_fact: PythonCallSiteFact | None = None,
+) -> tuple[StaticImportRequest, ...]:
+    """Discover captured operands without re-reading them at invocation.
+
+    Explicit dictionary values and import_module package scalars keep their
+    evaluation-point metadata. Actual globals mappings retain invocation-time
+    contents. Neither path supplies execution storage or catalog custody.
+    """
+
+    def captured_values(
+        expression: ast.expr | None,
+    ) -> tuple[StaticMetadataValue | None, ...]:
+        read_contexts = (
+            source_contexts_for_read(expression)
+            if isinstance(expression, ast.Name)
+            and expression.id in {"__package__", "__name__"}
+            else (context,)
+        )
+        return tuple(
+            dict.fromkeys(
+                metadata_value_from_expression(
+                    expression,
+                    read_context,
+                    resolve_string,
+                    fact_result=fact_result,
+                    expression_fact=expression_fact,
+                    allow_activation_metadata_for_discovery=True,
+                    call_fact=call_fact,
+                )
+                for read_context in read_contexts
             )
-    return state
+        )
+
+    if request.kind == "import_module":
+        return tuple(
+            replace(request, package_argument=value)
+            for value in captured_values(package_expression)
+        )
+    if request.kind != "dunder_import":
+        raise ValueError("captured metadata projection requires an import call")
+    states = _dunder_globals_states_from_expression(
+        globals_expression,
+        context,
+        resolve_string,
+        fact_result=fact_result,
+        expression_fact=expression_fact,
+        allow_possible_current_globals=True,
+        call_fact=call_fact,
+        captured_values=captured_values,
+    )
+    return tuple(
+        replace(request, globals_state=state)
+        for state in (states if states is not None else (None,))
+    )
 
 
 def update_module_import_state(
@@ -525,19 +801,21 @@ def update_module_import_state(
     target: ast.AST,
     value: ast.AST,
     call_fact: PythonCallSiteFact | None = None,
+    *,
+    fact_result: ExpressionResultLookup | None = None,
 ) -> ModuleImportState:
     target_name = import_metadata_target_name(target)
     if target_name is None:
         return state
     if target_name == "__package__":
-        return replace(state, package=_metadata_value(value))
+        return replace(state, package=_metadata_value(value, fact_result))
     if target_name == "__spec__":
         return replace(
             state,
             spec_parent=parse_module_spec_parent(value, call_fact),
         )
     if target_name == "__name__":
-        return replace(state, name=_metadata_value(value))
+        return replace(state, name=_metadata_value(value, fact_result))
     if target_name == "__path__":
         return replace(state, has_path=True)
     return state
@@ -604,39 +882,31 @@ def _normalized_import_context(context: ModuleImportContext) -> ModuleImportCont
     return replace(context, spec_name=context.module_name)
 
 
-def _call_receives_module_globals(
-    node: ast.Call, expression_facts: Mapping[PythonNodeKey, PythonExpressionFact]
-) -> bool:
-    """Project evaluated receiver/argument provenance, never builtin spelling."""
-    from molt.compiler_analysis.python_binding_facts import PythonNodeKey
-
-    expressions = [*node.args, *(keyword.value for keyword in node.keywords)]
-    if isinstance(node.func, ast.Attribute):
-        expressions.append(node.func.value)
-    return any(
-        fact is not None and fact.exposes_module_globals
-        for expression in expressions
-        for fact in (expression_facts.get(PythonNodeKey.from_node(expression)),)
-    )
-
-
 def _analyze_module_import_flow_uncached(
     tree: ast.AST,
     context: ModuleImportContext,
     *,
     statement_facts: Mapping[PythonNodeKey, PythonStatementFact],
+    iteration_facts: Mapping[PythonNodeKey, PythonIterationFact],
     expression_facts: Mapping[PythonNodeKey, PythonExpressionFact],
     assignment_effects: Mapping[PythonNodeKey, int],
     call_facts: Mapping[PythonNodeKey, PythonCallSiteFact],
+    source_discovery: bool = False,
 ) -> ModuleImportFlow:
-    """Project metadata through the canonical statement completion partitions."""
+    """Project one requested metadata view through canonical completion facts.
+
+    Source discovery retains explicit candidates beside unknown callback
+    alternatives. Unknown source writes and completion partitions still apply.
+    Semantic projection keeps every callback invalidation unchanged.
+    """
 
     from molt.compiler_analysis.python_binding_facts import (
         PythonCompletion,
         PythonCompletionFlow,
-        PythonIdentity,
         PythonNodeKey,
+        globals_mutation_call_identity,
     )
+    from molt.compiler_analysis.python_value_identity import PythonIdentity
     from molt.compiler_analysis.python_effects_generated import (
         NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS,
         RAISES,
@@ -647,10 +917,9 @@ def _analyze_module_import_flow_uncached(
     initial = (context_import_state(context),)
     by_node: dict[ImportNodeKey, tuple[ModuleImportState, ...]] = {}
     all_states: set[ModuleImportState] = set(initial)
-    deferred_bodies: dict[ImportNodeKey, tuple[Sequence[ast.stmt], bool]] = {}
+    deferred_bodies: dict[ImportNodeKey, Sequence[ast.stmt]] = {}
     pending_bodies: deque[ImportNodeKey] = deque()
     deferred_expressions: dict[ImportNodeKey, ast.expr] = {}
-    metadata_mutator_functions: set[str] = set()
     future_annotations = any(
         isinstance(statement, ast.ImportFrom)
         and statement.module == "__future__"
@@ -659,17 +928,59 @@ def _analyze_module_import_flow_uncached(
     )
 
     def record(node: ast.AST, states: tuple[ModuleImportState, ...]) -> None:
-        if isinstance(node, (ast.Import, ast.ImportFrom, ast.Call)):
+        # Source operands capture metadata before later sibling argument effects.
+        if isinstance(node, (ast.Import, ast.ImportFrom, ast.Call)) or (
+            source_discovery
+            and isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id in _IMPORT_METADATA_NAMES
+        ):
+            if source_discovery:
+                # Completeness consumes the existing storage proof at the exact
+                # demand point. This covers imports/getters/calls, truth and
+                # release callbacks, and deferred activation without another
+                # syntax/effect classifier or a per-query tree walk.
+                node_key = PythonNodeKey.from_node(node)
+                proof = None
+                requires_proof = True
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    statement = statement_facts.get(node_key)
+                    if statement is not None:
+                        proof = statement.module_metadata_at_entry
+                elif isinstance(node, ast.Name):
+                    read = expression_facts.get(node_key)
+                    if read is not None:
+                        proof = read.module_metadata
+                else:
+                    call = call_facts.get(node_key)
+                    requires_proof = call is not None and bool(
+                        call.possible_import_call_kinds()
+                    )
+                    if requires_proof:
+                        assert call is not None
+                        proof = call.module_metadata_at_invocation
+                if requires_proof and (
+                    proof is None or not proof.admits_current_namespace
+                ):
+                    states = _merge_states(states, unknown_states(states))
             key = python_node_source_key(node)
             previous = by_node.get(key, ())
             by_node[key] = _merge_states(previous, states)
+
+    def expression_result(node: ast.expr) -> StaticExpressionResult:
+        fact = expression_facts.get(PythonNodeKey.from_node(node))
+        return UNKNOWN_EXPRESSION_RESULT if fact is None else fact.result
 
     def metadata_assignment(
         states: tuple[ModuleImportState, ...], target: ast.AST, value: ast.AST
     ) -> tuple[ModuleImportState, ...]:
         updated = _merge_states(
             update_module_import_state(
-                state, target, value, call_facts.get(PythonNodeKey.from_node(value))
+                state,
+                target,
+                value,
+                call_facts.get(PythonNodeKey.from_node(value)),
+                fact_result=expression_result,
             )
             for state in states
         )
@@ -685,12 +996,6 @@ def _analyze_module_import_flow_uncached(
         raised_states: list[tuple[ModuleImportState, ...]] | None = None,
     ) -> tuple[ModuleImportState, ...]:
         current = states
-        value_fact = expression_facts.get(PythonNodeKey.from_node(value))
-        if value_fact is not None and value_fact.exposes_module_globals:
-            # Publishing a module mapping into a binding escapes the metadata
-            # authority; using that same mapping as an immediate store receiver
-            # is handled by the precise assignment facts below.
-            current = unknown_states(current)
         for target in targets:
             if isinstance(target, (ast.Tuple, ast.List)):
                 if isinstance(value, (ast.Tuple, ast.List)) and len(target.elts) == len(
@@ -734,14 +1039,20 @@ def _analyze_module_import_flow_uncached(
         states: tuple[ModuleImportState, ...],
         direct_metadata_names: Collection[str],
     ) -> tuple[ModuleImportState, ...]:
-        effects = assignment_effects.get(
-            PythonNodeKey.from_node(target), UNKNOWN_EFFECTS
-        )
-        if effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS or (
-            effects & WRITES_MODULE_METADATA
-            and not target_writes_metadata(target, direct_metadata_names)
+        key = PythonNodeKey.from_node(target)
+        effects = assignment_effects.get(key, UNKNOWN_EFFECTS)
+        iteration = iteration_facts.get(key)
+        if (
+            iteration is not None
+            and iteration.module_metadata_effects & WRITES_MODULE_METADATA
         ):
-            return unknown_states(states)
+            return callback_states(states)
+        if effects & WRITES_MODULE_METADATA and not target_writes_metadata(
+            target, direct_metadata_names
+        ):
+            return callback_states(states)
+        if effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS:
+            return callback_states(states)
         return states
 
     def unknown_states(
@@ -750,6 +1061,16 @@ def _analyze_module_import_flow_uncached(
         current = _merge_states(_unknown_module_import_state(state) for state in states)
         all_states.update(current)
         return current
+
+    def callback_states(
+        states: tuple[ModuleImportState, ...],
+    ) -> tuple[ModuleImportState, ...]:
+        # Completed callback/escape summaries can choose metadata absent from
+        # visible source. Every such summary uses this projection: semantics
+        # loses the anchor, discovery retains candidates beside uncertainty.
+        # Explicit opaque metadata replacement instead uses unknown_states.
+        unknown = unknown_states(states)
+        return _merge_states(states, unknown) if source_discovery else unknown
 
     def bind_imported_names(
         states: tuple[ModuleImportState, ...],
@@ -776,36 +1097,6 @@ def _analyze_module_import_flow_uncached(
             # those states for handlers, not just the statement endpoints.
             raised_states.append(current)
         return current
-
-    def expression_may_be_metadata_mutator(value: ast.AST) -> bool:
-        if isinstance(value, ast.Name):
-            return value.id in metadata_mutator_functions
-        if isinstance(value, (ast.Tuple, ast.List, ast.Set)):
-            return any(expression_may_be_metadata_mutator(item) for item in value.elts)
-        if isinstance(value, ast.Dict):
-            return any(
-                expression_may_be_metadata_mutator(item) for item in value.values
-            )
-        if isinstance(value, ast.IfExp):
-            return expression_may_be_metadata_mutator(
-                value.body
-            ) or expression_may_be_metadata_mutator(value.orelse)
-        if isinstance(value, ast.NamedExpr):
-            return expression_may_be_metadata_mutator(value.value)
-        if isinstance(value, ast.Subscript):
-            return expression_may_be_metadata_mutator(value.value)
-        return False
-
-    def update_mutator_bindings(
-        targets: Sequence[ast.AST],
-        value: ast.AST,
-    ) -> None:
-        target_names = {target.id for target in targets if isinstance(target, ast.Name)}
-        source_is_mutator = expression_may_be_metadata_mutator(value)
-        for name in target_names:
-            metadata_mutator_functions.discard(name)
-            if source_is_mutator:
-                metadata_mutator_functions.add(name)
 
     def target_writes_metadata(
         target: ast.AST,
@@ -839,54 +1130,6 @@ def _analyze_module_import_flow_uncached(
             pending.extend(ast.iter_child_nodes(node))
         return frozenset(names & _IMPORT_METADATA_NAMES)
 
-    def function_mutates_metadata(
-        statement: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> bool:
-        relevant_globals = scope_global_metadata_names(statement.body)
-        pending: list[ast.AST] = list(statement.body)
-        while pending:
-            child = pending.pop()
-            if isinstance(
-                child,
-                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
-            ):
-                continue
-            if isinstance(child, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-                targets = (
-                    child.targets if isinstance(child, ast.Assign) else (child.target,)
-                )
-                if any(
-                    import_metadata_target_name(target) in _IMPORT_METADATA_NAMES
-                    and (
-                        not isinstance(target, ast.Name)
-                        or target.id in relevant_globals
-                    )
-                    for target in targets
-                ):
-                    return True
-            elif isinstance(child, ast.Delete) and any(
-                import_metadata_target_name(target) in _IMPORT_METADATA_NAMES
-                and (not isinstance(target, ast.Name) or target.id in relevant_globals)
-                for target in child.targets
-            ):
-                return True
-            elif isinstance(child, ast.Call):
-                if isinstance(child.func, ast.Name) and child.func.id in {
-                    "exec",
-                    "eval",
-                }:
-                    return True
-                if (
-                    isinstance(child.func, ast.Name)
-                    and child.func.id == "setattr"
-                    and len(child.args) >= 2
-                    and isinstance(child.args[1], ast.Constant)
-                    and child.args[1].value in _IMPORT_METADATA_NAMES
-                ):
-                    return True
-            pending.extend(ast.iter_child_nodes(child))
-        return False
-
     def expression_effects(
         expression: ast.AST,
         states: tuple[ModuleImportState, ...],
@@ -901,11 +1144,133 @@ def _analyze_module_import_flow_uncached(
             raised_states=raised_states,
         )
         fact = expression_facts.get(PythonNodeKey.from_node(expression))
+        if (
+            not isinstance(expression, ast.Call)
+            and fact is not None
+            and fact.module_metadata_effects & WRITES_MODULE_METADATA
+        ):
+            current = callback_states(current)
         if raised_states is not None and (
             fact is None or (fact.effects | fact.truth_effects) & RAISES
         ):
             raised_states.append(_merge_states(states, current))
         return current
+
+    def comprehension_metadata_transfer(
+        expression: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+        states: tuple[ModuleImportState, ...],
+        *,
+        direct_metadata_names: Collection[str],
+        raised_states: list[tuple[ModuleImportState, ...]] | None,
+    ) -> tuple[ModuleImportState, ...]:
+        # The first iterable was evaluated in the enclosing activation. Every
+        # nested iterable belongs inside its parent's backedge. Protocol and
+        # release effects are projections of completed binding facts.
+        def evaluate(
+            node: ast.AST, incoming: tuple[ModuleImportState, ...]
+        ) -> tuple[ModuleImportState, ...]:
+            return expression_effects(
+                node,
+                incoming,
+                direct_metadata_names=direct_metadata_names,
+                raised_states=raised_states,
+            )
+
+        def unreachable_tail(index: int, condition_index: int = 0) -> None:
+            for skipped in expression.generators[index].ifs[condition_index:]:
+                record_unreachable(skipped)
+            for skipped_generator in expression.generators[index + 1 :]:
+                record_unreachable(skipped_generator)
+            if isinstance(expression, ast.DictComp):
+                record_unreachable(expression.key)
+                record_unreachable(expression.value)
+            else:
+                record_unreachable(expression.elt)
+
+        def generate(
+            index: int, incoming: tuple[ModuleImportState, ...]
+        ) -> PythonCompletionFlow[tuple[ModuleImportState, ...]]:
+            generator = expression.generators[index]
+            entry = evaluate(generator.iter, incoming) if index else incoming
+            iteration = iteration_facts.get(PythonNodeKey.from_node(generator))
+
+            def filters(
+                condition_index: int, current: tuple[ModuleImportState, ...]
+            ) -> PythonCompletionFlow[tuple[ModuleImportState, ...]]:
+                if condition_index == len(generator.ifs):
+                    if index + 1 < len(expression.generators):
+                        return generate(index + 1, current)
+                    payloads = (
+                        (expression.key, expression.value)
+                        if isinstance(expression, ast.DictComp)
+                        else (expression.elt,)
+                    )
+                    for payload in payloads:
+                        current = evaluate(payload, current)
+                    return PythonCompletionFlow(normal=current)
+                condition = generator.ifs[condition_index]
+                current = evaluate(condition, current)
+                truth = expression_truth(condition)
+                flow: PythonCompletionFlow[tuple[ModuleImportState, ...]] = (
+                    PythonCompletionFlow(
+                        continued=current if truth is not True else None
+                    )
+                )
+                if truth is not False:
+                    flow = flow.merge(
+                        filters(condition_index + 1, current), join_states=_merge_states
+                    )
+                else:
+                    unreachable_tail(index, condition_index + 1)
+                return flow
+
+            def advance(
+                header: tuple[ModuleImportState, ...],
+            ) -> tuple[
+                tuple[ModuleImportState, ...] | None,
+                PythonCompletionFlow[tuple[ModuleImportState, ...]],
+            ]:
+                current = (
+                    callback_states(header)
+                    if iteration is None
+                    or (iteration.effects | iteration.module_metadata_effects)
+                    & (NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS | WRITES_MODULE_METADATA)
+                    else header
+                )
+                if raised_states is not None and (
+                    iteration is None or iteration.effects & RAISES
+                ):
+                    raised_states.append(current)
+                if iteration is not None and iteration.empty:
+                    unreachable_tail(index)
+                    return current, PythonCompletionFlow()
+                assigned = expression_effects(
+                    generator.target,
+                    current,
+                    direct_metadata_names=(),
+                    raised_states=raised_states,
+                )
+                if target_writes_metadata(generator.target, ()):
+                    assigned = unknown_states(assigned)
+                assigned = target_completion_states(generator.target, assigned, ())
+                return current, filters(0, assigned)
+
+            return PythonCompletionFlow.loop(
+                entry,
+                advance,
+                lambda exhausted: PythonCompletionFlow(normal=exhausted),
+                join_states=_merge_states,
+                equivalent_states=lambda left, right: left == right,
+                widen_state=unknown_states,
+                finalize=(
+                    lambda state: PythonCompletionFlow(normal=callback_states(state))
+                )
+                if iteration is not None and iteration.release_effects
+                else None,
+            )
+
+        flow = generate(0, states)
+        return flow.normal or ()
 
     def expression_metadata_transfer(
         expression: ast.AST,
@@ -926,6 +1291,28 @@ def _analyze_module_import_flow_uncached(
                 raised_states=raised_states,
             )
 
+        if isinstance(
+            expression, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+        ):
+            current = transfer(expression.generators[0].iter, current)
+            if isinstance(expression, ast.GeneratorExp):
+                # Only first-iterator acquisition runs at creation. Its body is
+                # projected with the existing deferred-expression worklist.
+                deferred_expressions[python_node_source_key(expression)] = expression
+                iteration = iteration_facts.get(
+                    PythonNodeKey.from_node(expression.generators[0])
+                )
+                if iteration is None or (
+                    iteration.effects | iteration.module_metadata_effects
+                ) & (NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS | WRITES_MODULE_METADATA):
+                    current = callback_states(current)
+                return current
+            return comprehension_metadata_transfer(
+                expression,
+                current,
+                direct_metadata_names=direct_metadata_names,
+                raised_states=raised_states,
+            )
         if isinstance(expression, ast.IfExp):
             current = transfer(expression.test, current)
             truth = expression_truth(expression.test)
@@ -966,13 +1353,24 @@ def _analyze_module_import_flow_uncached(
                 # rather than forcing the last comparator's writes on all exits.
                 outcomes.append(current)
             return _merge_states(*outcomes)
-        for child in expression_evaluation_children(expression):
-            current = expression_effects(
-                child,
-                current,
-                direct_metadata_names=direct_metadata_names,
-                raised_states=raised_states,
-            )
+        if isinstance(expression, ast.Call):
+            current = transfer(expression.func, current)
+            arguments = (*expression.args, *expression.keywords)
+            for step in call_argument_schedule(expression):
+                if step.action == "evaluate":
+                    current = transfer(step.expression, current)
+                elif step.action in {"star", "kwstar"}:
+                    iteration = iteration_facts.get(
+                        PythonNodeKey.from_node(arguments[step.index])
+                    )
+                    if (
+                        iteration is None
+                        or iteration.module_metadata_effects & WRITES_MODULE_METADATA
+                    ):
+                        current = callback_states(current)
+        else:
+            for child in expression_evaluation_children(expression):
+                current = transfer(child, current)
         # Calls observe import metadata after their callee and arguments run.
         # Recursive pre-recording would stamp later siblings with stale state.
         record(expression, current)
@@ -990,62 +1388,49 @@ def _analyze_module_import_flow_uncached(
             isinstance(expression, ast.Call)
             and call is not None
             and (
-                call.callee_is(PythonIdentity.GLOBALS_SETITEM)
-                or call.callee_is(PythonIdentity.GLOBALS_DELITEM)
+                mutation := globals_mutation_call_identity(
+                    expression, call.callee_identities
+                )
             )
+            is not None
+            and (source_discovery or call.callee_is(mutation))
         ):
-            # Binding flow owns method identity, argument admission and old-value
-            # release. A spelled globals()/__setitem__ is not mutation authority.
+            # Shared binding authority owns possible identity and argument shape.
+            # Only execution transfer requires an exact callable; source transfer
+            # retains the possible publication beside an unknown alternative.
             effects = assignment_effects.get(
                 PythonNodeKey.from_node(expression), UNKNOWN_EFFECTS
             )
-            if effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS:
+            if not source_discovery and effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS:
                 return unknown_states(current)
             key_fact = expression_facts.get(PythonNodeKey.from_node(expression.args[0]))
             name = None if key_fact is None else key_fact.static_value
             if not isinstance(name, str):
-                return (
-                    unknown_states(current)
-                    if effects & WRITES_MODULE_METADATA
-                    else current
-                )
-            if name not in _IMPORT_METADATA_NAMES:
-                return current
-            target = ast.Name(id=name)
-            if call.callee_is(PythonIdentity.GLOBALS_DELITEM):
-                return _merge_states(
-                    invalidate_module_import_state(state, target, deleted=True)
-                    for state in current
-                )
-            return metadata_assignment(current, target, expression.args[1])
-        if isinstance(expression, ast.Call) and (
-            isinstance(expression.func, ast.Name)
-            and expression.func.id in {"exec", "eval"}
-            or expression_may_be_metadata_mutator(expression.func)
-        ):
-            return unknown_states(current)
-        if isinstance(expression, ast.Call) and _call_receives_module_globals(
-            expression, expression_facts
-        ):
-            return unknown_states(current)
-        if isinstance(expression, ast.Call):
+                if effects & WRITES_MODULE_METADATA:
+                    current = callback_states(current)
+            elif name in _IMPORT_METADATA_NAMES:
+                target = ast.Name(id=name)
+                if mutation == PythonIdentity.GLOBALS_DELITEM:
+                    current = _merge_states(
+                        invalidate_module_import_state(state, target, deleted=True)
+                        for state in current
+                    )
+                else:
+                    current = metadata_assignment(current, target, expression.args[1])
+            # CPython publishes the replacement/deletion before releasing the
+            # previous value. Even an unrelated key can release a metadata writer.
             if (
-                isinstance(expression.func, ast.Name)
-                and expression.func.id == "setattr"
-                and len(expression.args) >= 3
-                and isinstance(expression.args[1], ast.Constant)
-                and isinstance(expression.args[1].value, str)
+                not call.callee_is(mutation)
+                or effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS
             ):
-                attribute_name = expression.args[1].value
-                if attribute_name in _IMPORT_METADATA_NAMES:
-                    # setattr may invoke a descriptor or release an old value.
-                    # It cannot publish a precise caller-module anchor merely
-                    # because the supplied member has a metadata spelling.
-                    return unknown_states(current)
-        # Executing Python is not by itself authority to poison the caller's
-        # module globals. The explicit exec/globals/local-mutator paths above
-        # are the mutation boundaries; ordinary callees own a different global
-        # mapping. ModuleSpec parsing consumes canonical call-site identity.
+                current = callback_states(current)
+            return current
+        fact = expression_facts.get(PythonNodeKey.from_node(expression))
+        if fact is not None and fact.module_metadata_effects & WRITES_MODULE_METADATA:
+            return callback_states(current)
+        # Ordinary foreign code has its own global mapping. Completed binding
+        # execution facts own local deferred mutation and namespace escape;
+        # ModuleSpec parsing consumes the same canonical call-site identity.
         return current
 
     def record_unreachable(node: ast.AST) -> None:
@@ -1112,7 +1497,6 @@ def _analyze_module_import_flow_uncached(
                     direct_metadata_names=direct_metadata_names,
                     raised_states=pending_expression_raises,
                 )
-                update_mutator_bindings(statement.targets, statement.value)
             elif isinstance(statement, ast.AnnAssign):
                 if statement.value is not None:
                     current = evaluate(statement.value, current)
@@ -1123,7 +1507,6 @@ def _analyze_module_import_flow_uncached(
                         direct_metadata_names=direct_metadata_names,
                         raised_states=pending_expression_raises,
                     )
-                    update_mutator_bindings((statement.target,), statement.value)
                 else:
                     current = evaluate(statement.target, current)
                 if (
@@ -1206,9 +1589,13 @@ def _analyze_module_import_flow_uncached(
                         # The binding/completion authority owns iterator and
                         # target callbacks; import consumers project its facts.
                         tested = (
-                            unknown_states(header)
+                            callback_states(header)
                             if iteration is None
-                            or iteration.effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS
+                            or (iteration.effects | iteration.module_metadata_effects)
+                            & (
+                                NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS
+                                | WRITES_MODULE_METADATA
+                            )
                             else header
                         )
                         if iteration is None or iteration.effects & RAISES:
@@ -1260,7 +1647,9 @@ def _analyze_module_import_flow_uncached(
                     equivalent_states=lambda left, right: left == right,
                     widen_state=unknown_states,
                     finalize=(
-                        lambda state: PythonCompletionFlow(normal=unknown_states(state))
+                        lambda state: PythonCompletionFlow(
+                            normal=callback_states(state)
+                        )
                     )
                     if iteration is not None and iteration.release_effects
                     else None,
@@ -1302,18 +1691,10 @@ def _analyze_module_import_flow_uncached(
                         annotations.append(statement.returns)
                     for expression in annotations:
                         current = evaluate(expression, current)
-                mutates_metadata = function_mutates_metadata(statement)
                 deferred_key = python_node_source_key(statement)
                 if deferred_key not in deferred_bodies:
                     pending_bodies.append(deferred_key)
-                deferred_bodies[deferred_key] = (statement.body, mutates_metadata)
-                if mutates_metadata:
-                    metadata_mutator_functions.add(statement.name)
-                if any(
-                    dotted_expression_name(decorator) in metadata_mutator_functions
-                    for decorator in statement.decorator_list
-                ):
-                    current = unknown_states(current)
+                deferred_bodies[deferred_key] = statement.body
             elif isinstance(statement, ast.ClassDef):
                 for expression in (
                     *statement.decorator_list,
@@ -1334,16 +1715,6 @@ def _analyze_module_import_flow_uncached(
                     # Metaclass construction and class-name publication run only
                     # after a normally completed class body.
                     pending_expression_raises.append(outcome.normal)
-                if any(
-                    dotted_expression_name(decorator) in metadata_mutator_functions
-                    for decorator in statement.decorator_list
-                ):
-                    outcome = outcome.sequence(
-                        lambda state: PythonCompletionFlow(
-                            normal=unknown_states(state)
-                        ),
-                        join_states=_merge_states,
-                    )
             elif isinstance(statement, getattr(ast, "TypeAlias", ())):
                 deferred_expressions[python_node_source_key(statement.value)] = (
                     statement.value
@@ -1374,7 +1745,7 @@ def _analyze_module_import_flow_uncached(
                         direct_metadata_names=direct_metadata_names,
                         raised_states=raised,
                     )
-                    entered = unknown_states(evaluated)
+                    entered = callback_states(evaluated)
                     prefix = PythonCompletionFlow(
                         raised=_merge_states(incoming, entered, *raised),
                     )
@@ -1382,6 +1753,10 @@ def _analyze_module_import_flow_uncached(
                     # their failures may be suppressed by its exit callback.
                     assigned = PythonCompletionFlow(normal=entered)
                     if item.optional_vars is not None:
+                        if target_writes_metadata(
+                            item.optional_vars, direct_metadata_names
+                        ):
+                            entered = unknown_states(entered)
                         assigned = PythonCompletionFlow(normal=entered, raised=entered)
                     body = assigned.sequence(
                         lambda normal: enter_context(index + 1, normal),
@@ -1390,8 +1765,8 @@ def _analyze_module_import_flow_uncached(
                     return prefix.merge(
                         body.unwind_context(
                             lambda state: PythonCompletionFlow(
-                                normal=unknown_states(state),
-                                raised=unknown_states(state),
+                                normal=callback_states(state),
+                                raised=callback_states(state),
                             ),
                             join_states=_merge_states,
                         ),
@@ -1483,7 +1858,7 @@ def _analyze_module_import_flow_uncached(
                         ) -> PythonCompletionFlow[tuple[ModuleImportState, ...]]:
                             # ExceptionGroup subclasses may implement split/derive
                             # in Python, independently of handler type expressions.
-                            changed = unknown_states(incoming)
+                            changed = callback_states(incoming)
                             return PythonCompletionFlow(
                                 normal=changed,
                                 raised=_merge_states(incoming, changed),
@@ -1590,6 +1965,13 @@ def _analyze_module_import_flow_uncached(
                 record(statement, current)
                 current = evaluate(statement, current)
             fact = statement_facts.get(PythonNodeKey.from_node(statement))
+            if (
+                fact is not None
+                and fact.module_metadata_effects & WRITES_MODULE_METADATA
+            ):
+                current = callback_states(current)
+                if outcome is not None:
+                    outcome = outcome.map_states(callback_states)
             mask = (
                 fact.completions
                 if fact is not None
@@ -1642,18 +2024,25 @@ def _analyze_module_import_flow_uncached(
     # union every reachable module state; frontend lowering keeps them relative.
     while pending_bodies:
         body_key = pending_bodies.popleft()
-        deferred_body, mutates_metadata = deferred_bodies[body_key]
-        body_states = (
-            unknown_states(deferred_states) if mutates_metadata else deferred_states
-        )
+        deferred_body = deferred_bodies[body_key]
+        body_states = deferred_states
         flow_statements(
             deferred_body,
             body_states,
             eager_annotations=False,
             direct_metadata_names=scope_global_metadata_names(deferred_body),
         )
-    for deferred_expression in deferred_expressions.values():
-        expression_effects(deferred_expression, deferred_states)
+    while deferred_expressions:
+        _key, deferred_expression = deferred_expressions.popitem()
+        if isinstance(deferred_expression, ast.GeneratorExp):
+            comprehension_metadata_transfer(
+                deferred_expression,
+                deferred_states,
+                direct_metadata_names=_IMPORT_METADATA_NAMES,
+                raised_states=None,
+            )
+        else:
+            expression_effects(deferred_expression, deferred_states)
     return ModuleImportFlow(
         by_node, final_states, _merge_states(all_states, final_states)
     )
@@ -1807,6 +2196,8 @@ def project_static_import_request(
     request: StaticImportRequest,
     context: ModuleImportContext,
 ) -> StaticImportProjection:
+    if request.level_is_invalid:
+        return StaticImportProjection((), "invalid_level")
     if not request.name and request.level == 0:
         return StaticImportProjection((), "empty_name")
     if request.level < 0:
@@ -1879,6 +2270,63 @@ def plan_static_import_request(
         requires_runtime,
         requires_runtime_execution,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class StaticImportDiscovery:
+    """Dependency candidates carry no semantic import admission."""
+
+    source_modules: tuple[str, ...] = ()
+    lexical_modules: tuple[str, ...] = ()
+    # Candidate presence is not completeness: an unresolved sibling context
+    # retains its runtime/manifest obligation even beside a known source branch.
+    source_complete: bool = False
+
+    @property
+    def modules(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys((*self.source_modules, *self.lexical_modules)))
+
+
+def static_import_discovery(
+    request: StaticImportRequest,
+    contexts: Sequence[ModuleImportContext],
+    *,
+    lexical_request: StaticImportRequest | None = None,
+) -> StaticImportDiscovery:
+    """Project source possibilities and an explicitly separate loader twin.
+
+    Development dependency closure can use a resolved source-state projection
+    without claiming the runtime namespace is immutable. A genuinely unknown
+    source anchor has no such projection; only product graph discovery may
+    retain its lexical twin while arranging exact runtime catalog custody.
+    """
+    if not contexts:
+        return StaticImportDiscovery()
+    plan = plan_static_import_request(request, contexts)
+    source = StaticImportDiscovery(
+        source_modules=plan.modules,
+        source_complete=not plan.requires_runtime and not plan.errors,
+    )
+    if not plan.requires_runtime:
+        return source
+    if lexical_request is None:
+        if request.kind != "statement" or request.level <= 0:
+            return source
+        lexical_request = request
+    lexical_contexts = tuple(
+        ModuleImportContext(
+            context.module_name,
+            context.is_package,
+            spec_name=context.spec_name,
+            target_python=context.target_python,
+            execution_kind=context.execution_kind,
+        )
+        for context in contexts
+    )
+    lexical_plan = plan_static_import_request(lexical_request, lexical_contexts)
+    if lexical_plan.requires_runtime or lexical_plan.errors:
+        return source
+    return replace(source, lexical_modules=lexical_plan.modules)
 
 
 def require_static_import_modules(

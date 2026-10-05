@@ -7,6 +7,8 @@ use super::import_tokens::WasmRuntimeImport;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LirRuntimeCall {
+    ProfileEnabled,
+    GuardType,
     Add,
     InplaceAdd,
     Sub,
@@ -122,6 +124,8 @@ pub(crate) enum LirRuntimeCall {
 impl LirRuntimeCall {
     #[cfg(test)]
     pub(crate) const ALL: &'static [Self] = &[
+        Self::ProfileEnabled,
+        Self::GuardType,
         Self::Add,
         Self::InplaceAdd,
         Self::Sub,
@@ -236,6 +240,8 @@ impl LirRuntimeCall {
 
     pub(crate) const fn import(self) -> WasmRuntimeImport {
         match self {
+            Self::ProfileEnabled => WasmRuntimeImport::ProfileEnabled,
+            Self::GuardType => WasmRuntimeImport::GuardType,
             Self::Add => WasmRuntimeImport::Add,
             Self::InplaceAdd => WasmRuntimeImport::InplaceAdd,
             Self::Sub => WasmRuntimeImport::Sub,
@@ -351,6 +357,7 @@ impl LirRuntimeCall {
 
     pub(crate) const fn boxed_operand_count(self) -> Option<usize> {
         match self {
+            Self::GuardType => Some(2),
             Self::Add => Some(2),
             Self::InplaceAdd => Some(2),
             Self::Sub => Some(2),
@@ -425,6 +432,10 @@ pub(crate) struct LirFixedRuntimeCall {
 #[inline]
 pub(crate) fn lir_fixed_runtime_call(kind: &str) -> Option<LirFixedRuntimeCall> {
     match kind {
+        "guard_type" => Some(LirFixedRuntimeCall {
+            call: LirRuntimeCall::GuardType,
+            operand_count: 2,
+        }),
         "import" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleImport,
             operand_count: 1,
@@ -516,6 +527,10 @@ pub(crate) fn lir_fixed_runtime_call(kind: &str) -> Option<LirFixedRuntimeCall> 
         "context_closing" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ContextClosing,
             operand_count: 1,
+        }),
+        "guard_tag" => Some(LirFixedRuntimeCall {
+            call: LirRuntimeCall::GuardType,
+            operand_count: 2,
         }),
         "add" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Add,
@@ -954,7 +969,22 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
                 OpLoopRuntimeArgSpec::Local(0),
                 OpLoopRuntimeArgSpec::Local(1),
             ],
-            required_imports: &[WasmRuntimeImport::GuardType],
+            required_imports: &[
+                WasmRuntimeImport::GuardType,
+                WasmRuntimeImport::ProfileEnabled,
+            ],
+            discard_result: false,
+        }),
+        "guard_type" => Some(OpLoopRuntimeCallSpec {
+            import: WasmRuntimeImport::GuardType,
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            required_imports: &[
+                WasmRuntimeImport::GuardType,
+                WasmRuntimeImport::ProfileEnabled,
+            ],
             discard_result: false,
         }),
         "string_format" => Some(OpLoopRuntimeCallSpec {
@@ -1590,15 +1620,6 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
                 OpLoopRuntimeArgSpec::Local(1),
             ],
             required_imports: &[WasmRuntimeImport::ExceptiongroupMatch],
-            discard_result: false,
-        }),
-        "exception_set_cause" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::ExceptionSetCause,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-            ],
-            required_imports: &[WasmRuntimeImport::ExceptionSetCause],
             discard_result: false,
         }),
         "exception_set_value" => Some(OpLoopRuntimeCallSpec {

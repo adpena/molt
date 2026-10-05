@@ -368,7 +368,10 @@ fn tuple_scalarize_no_tuples_no_changes() {
     let c = func.fresh_value();
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![c]));
+        entry.ops.push(TirOp {
+            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(24))]),
+            ..make_op(OpCode::ConstInt, vec![], vec![c])
+        });
         entry.terminator = Terminator::Return { values: vec![c] };
     }
 

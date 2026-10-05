@@ -1,10 +1,22 @@
 """Shared tkinter capability/runtime gating helpers."""
 
+import _tkinter as _tk_runtime
+
 from _intrinsics import require_intrinsic as _require_intrinsic
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 _MOLT_TK_AVAILABLE = _require_intrinsic("molt_tk_available")
 _MOLT_TK_LAST_ERROR = _require_intrinsic("molt_tk_last_error")
+
+
+# Keep the actual _tkinter wrapper function: these callables accept both
+# TkappType and raw interpreter handles through the shared _unwrap_app law.
+# Missing or replaced non-callable providers fail at acquisition.
+def _require_tk_callable(attr):
+    candidate = getattr(_tk_runtime, attr, None)
+    if not callable(candidate):
+        raise RuntimeError(f"tkinter runtime callable unavailable: {attr}")
+    return candidate
 
 
 def has_gui_capability():

@@ -38,9 +38,9 @@ def test_guard_backedge_cannot_borrow_preloop_fact(backedge: str) -> None:
     assert sum(item.kind == "GUARD_TYPE" for item in result) == 2
 
 
-def test_preserved_loop_fact_still_elides_redundant_guard() -> None:
+def test_runtime_guard_repetition_preserves_each_profile_event() -> None:
     ops = [guard(), op("LOOP_START"), guard(), op("LOOP_END"), guard()]
-    assert sum(item.kind == "GUARD_TYPE" for item in elide(ops)) == 1
+    assert sum(item.kind == "GUARD_TYPE" for item in elide(ops)) == 3
 
 
 def test_loop_break_uses_exit_path_not_textual_suffix() -> None:

@@ -120,7 +120,6 @@ define_interned_names! {
     molt_bind_kind,
     defaults_name,
     kwdefaults_name,
-    abstractmethods_name,
     lt_name,
     le_name,
     gt_name,
@@ -416,6 +415,40 @@ pub(crate) fn intern_bridge_write_name(_py: &PyToken<'_>, key: &[u8]) -> Result<
     } else {
         Ok(Some(bits))
     }
+}
+
+/// Allocate one owned keyword-marker object for a runtime cache publication.
+/// Zero is the cache initialization failure value; Python None is never a
+/// marker candidate. Both itertools bridge profiles and functools use this
+/// allocator, preserving the original allocation error and leaving retry open.
+pub(crate) fn alloc_kwd_mark(py: &PyToken<'_>) -> u64 {
+    if crate::exception_pending(py) {
+        return 0;
+    }
+    let ptr = crate::alloc_object(
+        py,
+        std::mem::size_of::<crate::MoltHeader>(),
+        crate::TYPE_ID_OBJECT,
+    );
+    if ptr.is_null() {
+        0
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+/// Give a Python-callable result its own reference to a borrowed cached handle.
+/// Cache initialization transfers an owner to the slot; neither a cache hit nor
+/// its first publication transfers that owner to the caller. A zero handle is
+/// failed initialization: return None without replacing the pending exception.
+/// Retaining tuple/dict publication already owns borrowed inputs and does not
+/// use this result boundary.
+pub(crate) fn retain_cached_result(py: &PyToken<'_>, bits: u64) -> u64 {
+    if bits == 0 {
+        return MoltObject::none().bits();
+    }
+    crate::inc_ref_bits(py, bits);
+    bits
 }
 
 fn release_atomic_cache_owner(_py: &PyToken<'_>, bits: u64) {

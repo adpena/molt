@@ -197,10 +197,10 @@ pub(super) fn list_int_getitem_impl(
         }
         let Some(ptr) = obj_from_bits(list_bits).as_ptr() else {
             return if normalize_negative {
-                    molt_index(list_bits, index_bits)
-                } else {
-                    molt_sequence_item_builtin(list_bits, index_bits)
-                };
+                molt_index(list_bits, index_bits)
+            } else {
+                molt_sequence_item_builtin(list_bits, index_bits)
+            };
         };
         unsafe {
             if specialized_key_requires_boxed_list(py, ptr, index_bits, TYPE_ID_LIST_INT) {
@@ -336,10 +336,10 @@ pub(super) fn list_bool_getitem_impl(
         }
         let Some(ptr) = obj_from_bits(list_bits).as_ptr() else {
             return if normalize_negative {
-                    molt_index(list_bits, index_bits)
-                } else {
-                    molt_sequence_item_builtin(list_bits, index_bits)
-                };
+                molt_index(list_bits, index_bits)
+            } else {
+                molt_sequence_item_builtin(list_bits, index_bits)
+            };
         };
         unsafe {
             if specialized_key_requires_boxed_list(py, ptr, index_bits, TYPE_ID_LIST_BOOL) {

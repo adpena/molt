@@ -24,11 +24,6 @@ pub struct RuntimeBoxedAbi {
 
 pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
-        symbol: "molt_abc_abstractmethod_check",
-        arity: 1,
-        result: RuntimeBoxedReturn::OwnedValue,
-    },
-    RuntimeBoxedAbi {
         symbol: "molt_abc_bootstrap",
         arity: 0,
         result: RuntimeBoxedReturn::OwnedValue,
@@ -2001,6 +1996,11 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
     RuntimeBoxedAbi {
         symbol: "molt_compare_digest",
         arity: 2,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_compatibility_error",
+        arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -4344,13 +4344,13 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_exception_resolve_captured",
-        arity: 1,
+        symbol: "molt_exception_prepare_raise",
+        arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
-        symbol: "molt_exception_set_cause",
-        arity: 2,
+        symbol: "molt_exception_resolve_captured",
+        arity: 1,
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
@@ -5262,6 +5262,11 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         symbol: "molt_gt",
         arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
+        symbol: "molt_guard_type",
+        arity: 2,
+        result: RuntimeBoxedReturn::BorrowedValue,
     },
     RuntimeBoxedAbi {
         symbol: "molt_gzip_close",

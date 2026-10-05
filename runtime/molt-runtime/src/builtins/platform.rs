@@ -2047,7 +2047,7 @@ fn importlib_set_attr(
     value_bits: u64,
 ) -> Result<(), u64> {
     let attr_name = intern_static_name(_py, slot, name);
-    let result_bits = crate::molt_object_setattr(target_bits, attr_name, value_bits);
+    let result_bits = crate::molt_set_attr_name(target_bits, attr_name, value_bits);
     if !obj_from_bits(result_bits).is_none() {
         dec_ref_bits(_py, result_bits);
     }

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import os
 from dataclasses import replace
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.runtime_wasm_generation import (
     RuntimeWasmExpectedPair,
     bind_runtime_wasm_codegen,
@@ -92,6 +94,51 @@ def _publish_pair(
         source_reloc=source_reloc,
     )
     return generation, shared_identity, reloc_identity
+
+
+@pytest.mark.parametrize("operation", ["publish", "bind"])
+def test_wasm_pair_remains_owned_through_receipt_publication(
+    tmp_path, monkeypatch, operation
+):
+    from molt.cli import runtime_wasm_generation as module
+
+    generation, _, _ = _publish_pair(tmp_path)
+    active = {}
+    original_open = module.open_stable_regular_file
+
+    @contextmanager
+    def own(path, **kwargs):
+        with original_open(path, **kwargs) as opened:
+            active[opened.path] = opened
+            try:
+                yield opened
+            finally:
+                del active[opened.path]
+
+    monkeypatch.setattr(module, "open_stable_regular_file", own)
+    hook = "_atomic_write_json" if operation == "publish" else "atomic_write_bytes"
+    original_publish = getattr(module, hook)
+    checked = []
+
+    def publish(path, *args, **kwargs):
+        assert generation.shared in active and generation.reloc in active
+        assert all(not handle.stream.closed for handle in active.values())
+        checked.append(path)
+        return original_publish(path, *args, **kwargs)
+
+    monkeypatch.setattr(module, hook, publish)
+    if operation == "publish":
+        publish_runtime_wasm_generation(
+            tmp_path / "molt_runtime.wasm",
+            tmp_path / "molt_runtime_reloc.wasm",
+            shared_identity=generation.shared_identity,
+            reloc_identity=generation.reloc_identity,
+            source_shared=generation.shared,
+            source_reloc=generation.reloc,
+        )
+    else:
+        bind_runtime_wasm_codegen(generation, None)
+    assert len(checked) == 1 and not active
 
 
 def test_codegen_binding_survives_cache_selection_replacement(tmp_path: Path) -> None:
@@ -486,20 +533,39 @@ def test_hydrate_rechecks_staged_hash_after_validated_pointer(
         )
 
 
-def test_binding_reuses_member_observations_and_freezes_nested_payload(
+def test_binding_readmits_member_content_and_freezes_nested_payload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from dataclasses import replace
+    from molt import toolchain_identity
     from molt.cli import runtime_wasm_generation as module
 
     generation, _, _ = _publish_pair(tmp_path)
 
-    def no_hash(*args, **kwargs):
-        pytest.fail("binding hashed an already admitted runtime member")
+    captured = []
+    capture = toolchain_identity.stable_regular_file_handle_identity
 
-    monkeypatch.setattr(module, "stable_regular_file_identity", no_hash)
+    def current(opened, **kwargs):
+        captured.append(opened.path)
+        return capture(opened, **kwargs)
+
+    monkeypatch.setattr(
+        toolchain_identity, "stable_regular_file_handle_identity", current
+    )
+    monkeypatch.setattr(module, "stable_regular_file_handle_identity", current)
     binding = bind_runtime_wasm_codegen(generation, None)
+    assert captured == [
+        generation.shared,
+        generation.reloc,
+        binding.generation.manifest,
+    ]
+    captured.clear()
     binding.verify()
+    assert captured == [
+        generation.shared,
+        generation.reloc,
+        binding.generation.manifest,
+    ]
     assert (
         binding.generation.shared_member_identity is generation.shared_member_identity
     )
@@ -511,26 +577,95 @@ def test_binding_reuses_member_observations_and_freezes_nested_payload(
         bind_runtime_wasm_codegen(replace(generation, payload=corrupt), None)
 
 
-def test_hydration_uses_admitted_source_and_observes_each_destination_once(
+def test_binding_rejects_changed_member_content_with_matching_metadata(
+    tmp_path: Path,
+) -> None:
+    generation, _, _ = _publish_pair(tmp_path)
+    path = generation.shared
+    before = path.stat()
+    path.write_bytes(b"change")
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    current = stable_regular_file_identity(path, label="current metadata fixture")
+    generation = replace(
+        generation,
+        shared_member_identity=replace(
+            current, sha256=generation.shared_member_identity.sha256
+        ),
+    )
+    with pytest.raises(ValueError, match="content changed since identity capture"):
+        bind_runtime_wasm_codegen(generation, None)
+
+
+def test_binding_rejects_changed_receipt_content_with_matching_metadata(
+    tmp_path: Path,
+) -> None:
+    generation, _, _ = _publish_pair(tmp_path)
+    binding = bind_runtime_wasm_codegen(generation, None)
+    old = binding.generation.receipt_identity
+    assert old is not None
+    before = old.path.stat()
+    data = bytearray(old.path.read_bytes())
+    data[0] ^= 1
+    old.path.write_bytes(data)
+    os.utime(old.path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    current = stable_regular_file_identity(old.path, label="current metadata fixture")
+    binding = replace(
+        binding,
+        generation=replace(
+            binding.generation, receipt_identity=replace(current, sha256=old.sha256)
+        ),
+    )
+    with pytest.raises(ValueError, match="content changed"):
+        binding.verify()
+
+
+def test_generation_staging_checks_supplied_digest_without_a_receipt(
+    tmp_path: Path,
+) -> None:
+    from molt.cli import runtime_wasm_generation as module
+
+    source = tmp_path / "source.wasm"
+    source.write_bytes(b"before")
+    observed = stable_regular_file_identity(source, label="stage fixture")
+    before = source.stat()
+    source.write_bytes(b"after!")
+    os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+    current = stable_regular_file_identity(source, label="current metadata fixture")
+    observed = replace(current, sha256=observed.sha256)
+    with pytest.raises(ValueError, match="content changed"):
+        module._stage_artifact(
+            source,
+            tmp_path / "stage",
+            published_name="molt_runtime.wasm",
+            identity=_identity("shared"),
+            observed=observed,
+        )
+
+
+def test_hydration_reuses_source_receipt_and_readmits_destination_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from molt.cli import runtime_wasm_generation as module
+    from molt import toolchain_identity
 
     source = tmp_path / "source"
     source.mkdir()
     generation, shared_identity, reloc_identity = _publish_pair(source)
     captured = []
-    original = module.stable_regular_file_identity
+    original = toolchain_identity.stable_regular_file_handle_identity
 
-    def capture(path, **kwargs):
-        captured.append(path)
-        return original(path, **kwargs)
+    def capture(opened, **kwargs):
+        captured.append(opened.path)
+        return original(opened, **kwargs)
 
     def no_reread(*args, **kwargs):
         pytest.fail("hydration reopened an admitted source receipt")
 
     monkeypatch.setattr(module, "read_runtime_wasm_generation", no_reread)
-    monkeypatch.setattr(module, "stable_regular_file_identity", capture)
+    monkeypatch.setattr(
+        toolchain_identity, "stable_regular_file_handle_identity", capture
+    )
+    monkeypatch.setattr(module, "stable_regular_file_handle_identity", capture)
     hydrated = hydrate_runtime_wasm_generation(
         source_manifest=generation.manifest,
         source_generation=generation,
@@ -539,6 +674,8 @@ def test_hydration_uses_admitted_source_and_observes_each_destination_once(
         expected_shared_identity=shared_identity,
         expected_reloc_identity=reloc_identity,
     )
+    # Pair admission retains both owned members through manifest publication.
+    # Source bytes are hashed in the stage copy; each destination is hashed once.
     assert captured == [hydrated.shared, hydrated.reloc]
     assert hydrated.shared.read_bytes() == generation.shared.read_bytes()
     assert hydrated.reloc.read_bytes() == generation.reloc.read_bytes()

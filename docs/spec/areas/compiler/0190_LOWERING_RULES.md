@@ -266,6 +266,34 @@ lexical storage owner. Name, callee and attribute-receiver evaluation retain
 their local/cell loads and unbound guards after callbacks; only names whose
 canonical binding fact selects global lookup re-read the module namespace.
 
+Frontend consumer witnesses follow the value through its semantic owner.
+Assignment-expression capture precedes `FRAME_HOME_STORE`, which publishes the
+binding and releases its displaced owner; `STORE_VAR` transports only the
+borrowed view. Code-name tables follow lexical compiler visitation before dead
+branch removal, while executable imports and statements follow reachability.
+Fused dictionary increments consume their kernel's boolean admission result and
+run the original statement only on decline. Published module calls retain the
+loaded callable before argument effects and select positional or CallArgs
+dispatch from actual syntax; import spelling does not select an FFI lane.
+Opcode serialization fixtures remain distinct from these producer/consumer
+checks, so a valid wire opcode is never evidence that a source pattern must emit
+it. `test_frontend_ir_alias_ops.py` checks these ownership, ordering and operand
+links; code metadata uses an independent CPython reference.
+
+Code-name projection receives the target Python version and future-annotation
+mode separately. Eager namespace annotations visit their annotation expression;
+future-string annotations do not. Both record `__annotations__` at a simple
+named annotation, even in a dead branch; parenthesized names, attributes and
+subscripts do not write that dictionary. Python 3.14 module metadata prepends
+`__conditional_annotations__` when its lexical body contains an annotated
+assignment and records deferred `__annotate__` publication after the body when a
+simple annotation requires it. These are name-table facts, not permission to
+execute dead statements. Function-local annotations contribute only evaluated
+target/value operations. Nested class and function bodies remain separate
+lexical regions; inline class annotation storage keeps its existing namespace
+owner. Module/callable metadata oracles do not claim standalone class code-object
+support.
+
 Generic attribute reads keep boxed receivers and enter `molt_get_attr_object_ic`,
 which caches only an owned interned name before invoking `molt_get_attr_name`.
 Stable function/source-operation identity selects the name-cache site; the actual

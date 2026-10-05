@@ -24,6 +24,7 @@ from molt.cli.python_import_resolution import (
     LocalPythonImportAnalysis,
     LocalPythonImportDiagnostic,
     LocalPythonImportRequest,
+    LocalPythonRelativeImportObligation,
     PythonImportPolicy,
     analyze_local_imports,
     local_import_analysis_identity,
@@ -36,9 +37,11 @@ _EXECUTABLE_TOOL_IMPORT_POLICY = PythonImportPolicy(
     module_level_only=False,
     include_parent_packages=True,
     fail_on_nonliteral_dynamic_import=True,
+    purpose="source_dependency",
+    unknown_relative_sources="local_inventory",
 )
 _DYNAMIC_IMPORT_MANIFEST = Path("src/molt/cli/python_source_closure.toml")
-_GRAPH_CACHE_SCHEMA_VERSION = 5
+_GRAPH_CACHE_SCHEMA_VERSION = 19
 _GraphQuery = tuple[Path, tuple[Path, ...], tuple[Path, ...], PythonImportPolicy]
 _GRAPH_TRANSACTION: ContextVar[dict[_GraphQuery, LocalPythonSourceClosure] | None] = (
     ContextVar("_GRAPH_TRANSACTION", default=None)
@@ -57,6 +60,9 @@ class LocalPythonSourceClosure:
     source_sha256: Mapping[Path, str]
     content_digest: str
     source_bytes: int
+    # Nonempty only when complete local-domain coverage was required. The
+    # digest commits to root order, module aliases and namespace locations.
+    topology_digest: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -189,6 +195,14 @@ def _analysis_payload(analysis: LocalPythonImportAnalysis) -> dict[str, object]:
         "unresolved_dynamic_imports": [
             asdict(diagnostic) for diagnostic in analysis.unresolved_dynamic_imports
         ],
+        "discovery_requests": [
+            {**asdict(request), "candidates": list(request.candidates)}
+            for request in analysis.discovery_requests
+        ],
+        "relative_source_obligations": [
+            {**asdict(request), "fromlist": list(request.fromlist)}
+            for request in analysis.relative_source_obligations
+        ],
     }
 
 
@@ -203,12 +217,20 @@ def _cached_analysis(
     ):
         return None
     rows = value.get("requests")
+    discovery_rows = value.get("discovery_requests")
     diagnostics = value.get("unresolved_dynamic_imports")
-    if not isinstance(rows, list) or not isinstance(diagnostics, list):
+    relative_rows = value.get("relative_source_obligations")
+    if (
+        not isinstance(rows, list)
+        or not isinstance(discovery_rows, list)
+        or not isinstance(diagnostics, list)
+        or not isinstance(relative_rows, list)
+    ):
         return None
     requests: list[LocalPythonImportRequest] = []
     unresolved: list[LocalPythonImportDiagnostic] = []
-    for row in rows:
+    relative_obligations: list[LocalPythonRelativeImportObligation] = []
+    for row in (*rows, *discovery_rows):
         if not isinstance(row, dict):
             return None
         kind, candidates = row.get("kind"), row.get("candidates")
@@ -246,7 +268,40 @@ def _cached_analysis(
         ):
             return None
         unresolved.append(LocalPythonImportDiagnostic(line, column, message))
-    return LocalPythonImportAnalysis(tuple(requests), tuple(unresolved))
+    for row in relative_rows:
+        if not isinstance(row, dict):
+            return None
+        kind, name, level = row.get("kind"), row.get("name"), row.get("level")
+        fromlist, line, column = row.get("fromlist"), row.get("line"), row.get("column")
+        if (
+            kind not in ("statement", "import_module", "dunder_import")
+            or not isinstance(name, str)
+            or type(level) is not int
+            or level <= 0
+            or not isinstance(fromlist, list)
+            or not all(isinstance(item, str) for item in fromlist)
+            or type(line) is not int
+            or line < 0
+            or type(column) is not int
+            or column < 0
+        ):
+            return None
+        relative_obligations.append(
+            LocalPythonRelativeImportObligation(
+                cast(Literal["statement", "import_module", "dunder_import"], kind),
+                name,
+                level,
+                tuple(fromlist),
+                line,
+                column,
+            )
+        )
+    return LocalPythonImportAnalysis(
+        tuple(requests[: len(rows)]),
+        tuple(unresolved),
+        tuple(requests[len(rows) :]),
+        tuple(relative_obligations),
+    )
 
 
 def _molt_cli_lazy_targets(
@@ -397,9 +452,13 @@ def local_python_import_closure(
     Seeds may name files or whole Python source directories. Executable tools
     default to ``tools``/``src``/repository search order, full lexical imports,
     parent-package execution and checked dynamic manifests. Lowering supplies its existing
-    module-level-only policy and ``src`` root. No failed analysis becomes an
-    empty closure. Cached grouped requests always resolve against fresh topology
-    outside the explicit build transaction, including previously missing members.
+    module-level-only policy and ``src`` root. Unknown literal-relative anchors
+    require the complete local source domain, resolved and captured once per
+    traversal. That byte inventory does not promote speculative owners to AST
+    analysis; ordinary graph edges keep their error and manifest validation.
+    No failed analysis becomes an empty closure. Cached grouped requests and
+    symbolic coverage obligations always resolve against fresh topology outside
+    the explicit build transaction, including previously missing members.
     """
 
     root = project_root.resolve()
@@ -423,6 +482,8 @@ def local_python_import_closure(
         return transaction[query]
     resolver = LocalPythonModuleResolver(roots)
     snapshots: dict[Path, PythonSourceSnapshot] = {}
+    covered_sources: set[Path] = set()
+    topology_digest = ""
 
     def capture(path: Path) -> PythonSourceSnapshot:
         if path not in snapshots:
@@ -507,6 +568,32 @@ def local_python_import_closure(
                 resolver,
                 policy,
             )
+            if analysis.relative_source_obligations and not topology_digest:
+                inventory = resolver.source_inventory(
+                    allowed_prefix=policy.allowed_prefix,
+                    include_parent_packages=policy.include_parent_packages,
+                )
+                # Inventory members are byte dependencies, not executable graph
+                # requests. Complete coverage requires no recursive AST analysis
+                # of these speculative owners. Ordinary reached sources still
+                # follow their graph and validate all exact manifest obligations.
+                for item in inventory.sources:
+                    capture(item.path)
+                    covered_sources.add(item.path)
+                topology = {
+                    "roots": [_relative_cache_key(root, path) for path in roots],
+                    "sources": [
+                        [item.name, _relative_cache_key(root, item.path)]
+                        for item in inventory.sources
+                    ],
+                    "packages": [
+                        [name, [_relative_cache_key(root, path) for path in locations]]
+                        for name, locations in inventory.packages
+                    ],
+                }
+                topology_digest = hashlib.sha256(
+                    json.dumps(topology, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
         except ValueError as exc:
             raise ValueError(
                 f"cannot derive Python tooling import closure for {source}: {exc}"
@@ -516,11 +603,17 @@ def local_python_import_closure(
                 pending.append(dependency)
     if cache_pruned or next_entries != cached_entries:
         _write_graph_cache(root, next_entries)
-    content_by_path = {path: snapshots[path].content for path in reached}
+    content_by_path = {
+        path: snapshots[path].content for path in reached | covered_sources
+    }
     if manifest is not None:
         content_by_path[manifest[0]] = manifest[1]
     paths = tuple(sorted(content_by_path, key=lambda path: path.as_posix()))
     digest = hashlib.sha256()
+    if topology_digest:
+        digest.update(b"local-python-source-domain-v1\0")
+        digest.update(topology_digest.encode("ascii"))
+        digest.update(b"\0")
     hashes: dict[Path, str] = {}
     source_bytes = 0
     for path in paths:
@@ -535,7 +628,9 @@ def local_python_import_closure(
             else hashlib.sha256(content).hexdigest()
         )
         source_bytes += len(content)
-    result = LocalPythonSourceClosure(paths, hashes, digest.hexdigest(), source_bytes)
+    result = LocalPythonSourceClosure(
+        paths, hashes, digest.hexdigest(), source_bytes, topology_digest
+    )
     if transaction is not None:
         transaction[query] = result
     return result

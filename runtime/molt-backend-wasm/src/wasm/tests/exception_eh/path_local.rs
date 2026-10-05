@@ -55,7 +55,12 @@ fn dispatch_keeps_handler_checks_and_runtime_frames_for_every_eh_request() {
             reloc_enabled,
             ..WasmCompileOptions::default()
         })
-        .emit_wasm_module(ir.clone(), BTreeMap::new(), analysis)
+        .emit_wasm_module(
+            &ir,
+            BTreeMap::new(),
+            analysis,
+            crate::wasm_plan::WasmStageAudit::from_environment(),
+        )
         .wasm;
         wasmparser::Validator::new()
             .validate_all(&wasm)

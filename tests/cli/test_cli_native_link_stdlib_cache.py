@@ -157,7 +157,7 @@ def test_prepare_native_link_keeps_current_keyed_stdlib_when_runtime_is_newer(
         runtime_codegen_binding=native_codegen_binding(
             runtime_lib, runtime_build_identity
         ),
-        target_triple=link_target,
+        target=resolve_native_target_spec(link_target),
         sysroot_path=None,
         profile="dev",
         project_root=project_root,
@@ -237,7 +237,7 @@ def test_prepare_native_link_snapshots_same_root_stdlib_input(
         runtime_codegen_binding=native_codegen_binding(
             runtime_lib, runtime_build_identity
         ),
-        target_triple=link_target,
+        target=resolve_native_target_spec(link_target),
         sysroot_path=None,
         profile="dev",
         project_root=project_root,

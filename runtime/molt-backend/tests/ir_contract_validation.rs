@@ -38,9 +38,16 @@ fn operation_shape_fixture(
         }],
     );
     function.params = params;
+    function.return_abi = molt_ir::FunctionReturnAbi::Void;
+    // Keep the subject at op#0 while satisfying its generated frame contract.
+    // Frame consumers inherit their caller's context; only entry owns a local
+    // lifecycle. Parameters retain ordinary borrowed custody, independent of
+    // the generated frame-home storage adoption performed by ownership lowering.
     if shape.kind == "trace_enter_slot" {
         function.execution_context = molt_ir::ExecutionContextPolicy::Local;
         function.ops.push(op("trace_exit"));
+    } else if function.ops[0].uses_execution_frame() {
+        function.execution_context = molt_ir::ExecutionContextPolicy::Inherited;
     }
     function.ops.push(op("ret_void"));
     SimpleIR {
@@ -54,9 +61,20 @@ fn generated_operation_shapes_agree_across_all_transport_boundaries() {
     use molt_ir::tir::op_kinds_generated::{SIMPLEIR_OP_SHAPES, SimpleIrOpValueRule};
     for shape in SIMPLEIR_OP_SHAPES {
         let value = (shape.value_rule == SimpleIrOpValueRule::NonNegative).then_some(0);
-        for operands in [shape.operands, shape.operands + 1] {
+        let mut cases = vec![
+            (shape.operands, value, None),
+            (shape.operands + 1, value, Some("args")),
+        ];
+        if shape.operands > 0 {
+            cases.push((shape.operands - 1, value, Some("args")));
+        }
+        if shape.value_rule == SimpleIrOpValueRule::NonNegative {
+            cases.push((shape.operands, None, Some("value")));
+            cases.push((shape.operands, Some(-1), Some("value")));
+        }
+        for (operands, value, invalid_field) in cases {
             let ir = operation_shape_fixture(shape, operands, value);
-            let valid = operands == shape.operands;
+            let valid = invalid_field.is_none();
             let encoded = serde_json::to_string(&ir).unwrap();
             let mut function = serde_json::to_value(&ir.functions[0]).unwrap();
             function["kind"] = "function".into();
@@ -75,7 +93,8 @@ fn generated_operation_shapes_agree_across_all_transport_boundaries() {
                 assert_eq!(result.is_ok(), valid, "{}: {result:?}", shape.kind);
                 if let Err(error) = result {
                     assert!(
-                        error.contains(shape.kind) && error.contains("args"),
+                        error.contains(shape.kind)
+                            && error.contains(invalid_field.expect("malformed fixture")),
                         "{error}"
                     );
                     assert!(error.contains("op#0"), "{error}");
@@ -83,6 +102,101 @@ fn generated_operation_shapes_agree_across_all_transport_boundaries() {
             }
             let fragment = molt_ir::ir_schema::validate_function_op_shapes(&ir.functions[0]);
             assert_eq!(fragment.is_ok(), valid);
+        }
+    }
+}
+
+#[test]
+fn runtime_guard_transport_preserves_two_reads_without_weakening_unary_aliases() {
+    // The independent operation contract must survive JSON and streamed input.
+    // Ownership transparency says which object is returned, not how many
+    // operands the validation effect reads.
+    for (kind, expected) in [
+        ("guard_tag", 2),
+        ("guard_type", 2),
+        ("copy", 1),
+        ("identity_alias", 1),
+        ("binding_alias", 1),
+    ] {
+        for count in 0..=3 {
+            for var in [None, Some("source"), Some("tag")] {
+                for out in [None, Some("none"), Some("checked")] {
+                    let inputs = ["source", "tag", "extra"];
+                    let mut function = test_func(
+                        "guard_operand_transport",
+                        vec![
+                            OpIR {
+                                kind: kind.into(),
+                                args: Some(
+                                    inputs[..count].iter().map(|name| (*name).into()).collect(),
+                                ),
+                                var: var.map(str::to_string),
+                                out: out.map(str::to_string),
+                                ..OpIR::default()
+                            },
+                            op("ret_void"),
+                        ],
+                    );
+                    function.params = inputs.iter().map(|name| (*name).into()).collect();
+                    let ir = SimpleIR {
+                        functions: vec![function],
+                        profile: None,
+                    };
+                    // Runtime guards require two args. Copy/owned aliases can
+                    // use their existing sole semantic `var` read instead.
+                    let valid = if expected == 2 {
+                        count == 2 && var.is_none()
+                    } else {
+                        count + usize::from(var.is_some()) == 1
+                    };
+                    if expected == 2 {
+                        assert_eq!(
+                            molt_ir::ir_schema::validate_function_op_shapes(&ir.functions[0])
+                                .is_ok(),
+                            valid,
+                            "isolated {kind} count={count} var={var:?}",
+                        );
+                    }
+                    let encoded = serde_json::to_string(&ir).unwrap();
+                    let mut streamed = serde_json::to_value(&ir.functions[0]).unwrap();
+                    streamed["kind"] = "function".into();
+                    let ndjson = format!(
+                        "{{\"kind\":\"ir_stream_start\"}}\n{streamed}\n{{\"kind\":\"ir_stream_end\"}}\n"
+                    );
+                    for result in [
+                        validate_simple_ir(&ir),
+                        SimpleIR::from_json_str(&encoded).map(|_| ()),
+                        SimpleIR::from_ndjson_reader(std::io::Cursor::new(ndjson.as_bytes()))
+                            .map(|_| ()),
+                    ] {
+                        assert_eq!(
+                            result.is_ok(),
+                            valid,
+                            "{kind} count={count} var={var:?} out={out:?}: {result:?}"
+                        );
+                    }
+                }
+            }
+        }
+        if expected == 2 {
+            let mut function = test_func(
+                "undefined_guard_tag",
+                vec![
+                    OpIR {
+                        kind: kind.into(),
+                        args: Some(vec!["source".into(), "tag".into()]),
+                        ..OpIR::default()
+                    },
+                    op("ret_void"),
+                ],
+            );
+            function.params = vec!["source".into()];
+            let error = validate_simple_ir(&SimpleIR {
+                functions: vec![function],
+                profile: None,
+            })
+            .unwrap_err();
+            assert!(error.contains("uses undefined value `tag`"), "{error}");
         }
     }
 }

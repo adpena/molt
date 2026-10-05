@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 import mmap
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
-from molt.toolchain_identity import StableRegularFileIdentity, open_stable_regular_file
+from molt.toolchain_identity import (
+    StableRegularFileIdentity,
+    open_stable_regular_file,
+    verify_stable_regular_file_content,
+)
 
 from molt.wasm_artifact import (
     WASM_EXTERN_KIND_FUNCTION,
@@ -523,8 +528,22 @@ def _read_mapped(
         path, label="WASM linking symbols", observed=observed
     ) as opened:
         if opened.stat.st_size == 0:
+            if observed is not None:
+                verify_stable_regular_file_content(
+                    observed,
+                    sha256=hashlib.sha256(b"").hexdigest(),
+                    size=0,
+                    label="WASM linking symbols",
+                )
             return _parse_wasm_linking_symbols(b"", expected_by_kind_and_length)
         with mmap.mmap(opened.stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
+            if observed is not None:
+                verify_stable_regular_file_content(
+                    observed,
+                    sha256=hashlib.sha256(data).hexdigest(),
+                    size=len(data),
+                    label="WASM linking symbols",
+                )
             return _parse_wasm_linking_symbols(data, expected_by_kind_and_length)
 
 

@@ -10,13 +10,15 @@ import pytest
 from molt.compiler_analysis import python_binding_flow as flow
 from molt.compiler_analysis.literal_identity import literal_identity_key
 from molt.compiler_analysis.python_binding_facts import (
-    OTHER_IDENTITY,
-    UNBOUND_IDENTITY,
     PythonBindingTelemetry,
     PythonExpressionFact,
-    PythonIdentity,
     PythonParameterRef,
     python_static_value_key,
+)
+from molt.compiler_analysis.python_value_identity import (
+    OTHER_IDENTITY,
+    UNBOUND_IDENTITY,
+    PythonIdentity,
 )
 from molt.compiler_analysis.static_truth import (
     ExpressionKind,
@@ -50,11 +52,9 @@ def _reference_result_join(
             continue
         child_results = (
             tuple(
-                result.element_result
-                for result in current
-                if result.element_result is not None
+                result.element_result or UNKNOWN_EXPRESSION_RESULT for result in current
             )
-            if all(result.element_result is not None for result in current)
+            if any(result.element_result is not None for result in current)
             else None
         )
         child_key = (
@@ -100,6 +100,14 @@ def _reference_result_join(
                 else None
             ),
             element_result=(None if child_key is None else completed[child_key]),
+            identities=sum(
+                int(identity)
+                for identity in PythonIdentity
+                if any(result.identities & int(identity) for result in current)
+            ),
+            exposes_module_globals=any(
+                result.exposes_module_globals for result in current
+            ),
             _publication_release_stable=all(
                 bool(result._publication_release_stable) for result in current
             ),
@@ -216,8 +224,17 @@ def test_static_bool_int_identity_reaches_writes_interning_join_and_facts(
     node = flow._Analyzer(flow.PythonBindingFlowPolicy(), "static-identity")._node_key(
         ast.parse("x").body[0]
     )
-    fact = PythonExpressionFact(node, 0, INERT, 0, True)
+    fact = PythonExpressionFact(
+        node, 0, 0, True, result=StaticExpressionResult(identities=INERT)
+    )
     assert fact != replace(fact, static_value=1)
+    observed = replace(fact, module_namespace_observable=True)
+    assert fact != observed and fact.result == observed.result
+    assert not observed.exposes_module_globals
+    exposed = replace(fact, result=replace(fact.result, exposes_module_globals=True))
+    assert fact != exposed and fact.result != exposed.result
+    assert len({fact.result, exposed.result}) == 2
+    assert not exposed.module_namespace_observable
     assert python_static_value_key(True) != python_static_value_key(1)
 
 
@@ -388,6 +405,28 @@ def _detached(
     return replace(node, children=tuple(_detached(child) for child in node.children))
 
 
+def _reference_possible_provenance(
+    result: StaticExpressionResult,
+) -> StaticExpressionResult:
+    """Small dense oracle: retain symbols, never old shape or reference safety."""
+    child = result.element_result
+    projected = _reference_possible_provenance(child) if child is not None else None
+    if projected == UNKNOWN_EXPRESSION_RESULT:
+        projected = None
+    symbols = result.identities & ~int(
+        PythonIdentity.OTHER
+        | PythonIdentity.UNBOUND
+        | PythonIdentity.INERT_VALUE
+        | PythonIdentity.STATIC_FALSE
+    )
+    return replace(
+        UNKNOWN_EXPRESSION_RESULT,
+        identities=OTHER_IDENTITY | symbols,
+        exposes_module_globals=result.exposes_module_globals,
+        element_result=projected,
+    )
+
+
 def _dense_join_projection(
     pool: flow._StatePool, parents: tuple[int, ...], slot: int
 ) -> tuple[object, ...]:
@@ -410,8 +449,63 @@ def _dense_join_projection(
         owner = 0
     if not clean:
         identities |= OTHER_IDENTITY
-        static, result, owner = None, UNKNOWN_EXPRESSION_RESULT, 0
+        static, owner = None, 0
+        result = _reference_possible_provenance(result)
     return identities, python_static_value_key(static), result, clean, owner
+
+
+@pytest.mark.parametrize("wide", [False, True])
+def test_dirty_join_preserves_exposure_without_value_or_owner_proof(wide: bool) -> None:
+    pool = flow._StatePool()
+    namespace = StaticExpressionResult(
+        kind="dict", identities=int(PythonIdentity.CURRENT_GLOBALS)
+    )
+    result = StaticExpressionResult(
+        kind="tuple", element_result=namespace, length=1, release_may_call=False
+    )
+    base = pool.set_binding(0, 2048, INERT, result=result, owner_token=7)
+    tainted = pool.taint_exposed_bindings(base)
+    siblings = tuple(pool.set_binding(base, slot, INERT, slot) for slot in range(5))
+    parents = (base, tainted, *siblings) if wide else (base, tainted)
+    joined = pool.join(*parents)
+    pool.set_taint_domain((1 << 2048) | (1 << 2049))
+    _assert_dense_join(pool, parents, joined, (2048, 2049))
+    for state in (tainted, joined):
+        projected = pool._binding_resolution(state, 2048).public()
+        assert projected.result.exposes_module_globals
+        assert projected.result.kind == "unknown"
+        assert projected.result.items is None
+        element = projected.result.element_result
+        assert element is not None and element.kind == "unknown"
+        assert element.identities == OTHER_IDENTITY | int(
+            PythonIdentity.CURRENT_GLOBALS
+        )
+        assert element.items is None and element.length is None
+        assert element.release_may_call and not element.fresh_container
+        assert projected.result.release_may_call and projected.owner_token == 0
+        assert not projected.clean and projected.present
+    rebound = pool.set_binding(joined, 2048, INERT, 7, StaticExpressionResult.scalar(7))
+    assert not pool.result(rebound, 2048).exposes_module_globals
+    assert pool.static_value(rebound, 2048) == 7
+
+
+def test_deferred_history_exposure_uses_sparse_suffix_without_stale_values() -> None:
+    pool = flow._StatePool()
+    exposed = StaticExpressionResult(kind="tuple", exposes_module_globals=True)
+    plain = pool.set_binding(0, 0, INERT, 7, StaticExpressionResult.scalar(7))
+    published = pool.set_binding(plain, 0, INERT, result=exposed)
+    rebound = pool.set_binding(published, 0, INERT, 9, StaticExpressionResult.scalar(9))
+    history = [plain, published, rebound]
+    summary = flow._HistorySummary.build(pool, history)
+    for start in range(len(history)):
+        projected = summary.result(pool, start, 0)
+        assert projected.exposes_module_globals is (start < 2)
+        assert projected.kind == "unknown" and not projected.value_known
+        assert projected.identities == OTHER_IDENTITY and projected.release_may_call
+    history.append(pool.set_binding(rebound, 0, INERT, result=exposed))
+    assert summary.result(pool, 2, 0).exposes_module_globals
+    pool.set_taint_domain(1)
+    assert summary.result(pool, 2, 0).exposes_module_globals
 
 
 def _assert_dense_join(
@@ -500,7 +594,7 @@ def test_wide_join_preserves_epoch_absence_and_late_domain_projection(
     history = [base]
     for _ in range(6):
         history.append(pool.set_bindings(history[-1], (binding,), record_writes=True))
-    stale = pool.taint_module_bindings(base)
+    stale = pool.taint_exposed_bindings(base)
     changed = pool.set_binding(base, 32, INERT, 9)
     parents = (*history, stale, changed, 0)
     if detach:

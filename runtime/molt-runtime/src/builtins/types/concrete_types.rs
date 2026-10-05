@@ -174,7 +174,7 @@ pub(crate) fn mappingproxy_class(_py: &PyToken<'_>) -> u64 {
             2,
         ),
     ];
-    init_cached_runtime_class(
+    init_cached_runtime_class_configured(
         _py,
         &state.mappingproxy_class,
         "mappingproxy",
@@ -182,7 +182,16 @@ pub(crate) fn mappingproxy_class(_py: &PyToken<'_>) -> u64 {
         16,
         Some(crate::object::ObjectShapeId::TypesMappingProxy),
         Some(crate::object::class_storage::ClassSlotPolicy::default()),
-        &methods,
+        |class_bits, dict_ptr| {
+            use molt_cpython_abi::hooks::NativeProtocolSlot as P;
+            unsafe {
+                crate::object::class_storage::class_declare_native_protocols(
+                    obj_from_bits(class_bits).as_ptr().unwrap(),
+                    &[P::MappingLength, P::MappingSubscript, P::SequenceContains],
+                )
+            };
+            configure_runtime_class_methods(_py, class_bits, dict_ptr, &methods)
+        },
     )
 }
 
@@ -406,6 +415,18 @@ pub(crate) fn frame_locals_proxy_class(_py: &PyToken<'_>) -> u64 {
         Some(crate::object::ObjectShapeId::TypesFrameLocalsProxy),
         Some(crate::object::class_storage::ClassSlotPolicy::default()),
         |class_bits, dict_ptr| {
+            use molt_cpython_abi::hooks::NativeProtocolSlot as P;
+            unsafe {
+                crate::object::class_storage::class_declare_native_protocols(
+                    obj_from_bits(class_bits).as_ptr().unwrap(),
+                    &[
+                        P::MappingLength,
+                        P::MappingSubscript,
+                        P::MappingAssignSubscript,
+                        P::SequenceContains,
+                    ],
+                )
+            };
             configure_runtime_class_methods(_py, class_bits, dict_ptr, &methods)
                 && set_class_method(_py, dict_ptr, "__hash__", MoltObject::none().bits())
         },
@@ -1075,6 +1096,13 @@ pub extern "C" fn molt_types_simplenamespace_init(
     kwargs_bits: u64,
 ) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        let Some(self_ptr) = obj_from_bits(self_bits).as_ptr() else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "SimpleNamespace requires a namespace receiver",
+            );
+        };
         let args_ptr = obj_from_bits(args_bits).as_ptr();
         let has_args = if let Some(args_ptr) = args_ptr {
             unsafe {
@@ -1129,7 +1157,10 @@ pub extern "C" fn molt_types_simplenamespace_init(
                         dec_ref_bits(_py, dict_bits);
                         return raise_exception::<_>(_py, "TypeError", "keywords must be strings");
                     }
-                    let _ = molt_object_setattr(self_bits, key_bits, val_bits);
+                    // SimpleNamespace.__init__ populates its dictionary
+                    // directly, like CPython: neither subclass setters nor
+                    // data descriptors participate in constructor state.
+                    crate::object::field_storage::set_item(_py, self_ptr, key_bits, val_bits);
                     if exception_pending(_py) {
                         dec_ref_bits(_py, dict_bits);
                         return MoltObject::none().bits();

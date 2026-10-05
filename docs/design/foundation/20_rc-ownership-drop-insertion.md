@@ -35,6 +35,18 @@ Every operation that returns a new heap reference returns it with `ref_count += 
 - **Owned**: the current SSA value-holder is responsible for exactly one dec-ref before it goes out of scope.
 - **Borrowed**: the value was not newly allocated by this operation and the holder has no dec-ref obligation unless it inc-refs first.
 
+Runtime cache initialization transfers one owned reference to the cache slot;
+both initial publication and later internal lookups return a **borrowed** handle
+(`molt-runtime-core::cached_handle::get_or_init`, reached through
+`init_atomic_bits`). A direct Python-callable cached result retains a separate
+caller reference through `state::cache::retain_cached_result`. This covers the
+operator getter classes, importlib ModuleSpec/compiled loader and functools
+keyword marker. A bootstrap dictionary or tuple instead retains its borrowed
+inputs through the container publication itself; its construction does not
+consume the cache anchor. Releasing module aliases, collecting cycles and
+retiring a runtime must therefore release only those owners actually held;
+GC roots, immortal flags and shutdown ordering cannot replace a missing retain.
+
 ### 1.2 Ownership Table by OpCode
 
 The following table specifies the ownership state of the **result** of each major opcode class, and the ownership treatment of its **operands** (borrow = no transfer, takes-ownership = decrefs its argument internally).
@@ -236,8 +248,46 @@ The following summarizes the C-ABI that generated code and the runtime both comm
 | `molt_object_new_bound(class_bits)` | Borrowed (instance retains class) | Owned |
 | `molt_object_init_stack(storage, class_bits, payload_size)` (unsafe runtime API, not a compiler opcode) | Caller proves backing outlives every owner; borrowed class | Owned; runtime validates stable class lifetime before touching caller storage |
 | Compiled function call `f(a, b, ...)` | Per parameter custody (§1.6): borrowed `+0`, or transferred `+1` that the call adopts | Owned |
-| `molt_iter_next(iter)` | Borrowed | Owned |
+| `molt_iter_next(iter)` | Borrowed iterator | Owned `(value, done)` carrier; its item is borrowed while that carrier lives |
+| `molt_iter_next_unboxed(iter, value_out)` | Borrowed iterator; writable result slot | False transfers one owned item; true means exhaustion; a pending error leaves a defined `None` result |
 | Generator `_poll(frame, send_val)` | Borrowed | Owned |
+
+Runtime iterator consumers share `molt-runtime-core::iter_next_owned`, the owned
+projection of `molt_iter_next_unboxed`. Runtime `OwnedIterator`, `functools.reduce`,
+and both compiled itertools profiles use this transport. A pending exception
+stops advancement; successful items transfer one owner, and exhaustion/error
+payloads, skipped items, callback results and partial collections are released.
+No consumer borrows an item from an unreleased tuple carrier to simulate ownership.
+The adapter borrows an `OwnedRuntimeValue` for its iterator: callers pin captured
+field handles once for their whole operation, including every repeated advance
+and reentrant field retirement. Runtime `OwnedIterator` passes its existing
+owner, so the adapter adds no per-item iterator retain/release transaction.
+
+`OwnedRuntimeValue` is a transparent one-word handle with
+`PhantomData<&PyToken>`: the GIL token constrains lifetime and thread affinity
+without adding a pointer to each collected item. The runtime GIL token embeds
+the zero-sized core token at both native and WASM `GilGuard::token` boundaries
+and exposes a safe borrowed `core_token`; runtime consumers never synthesize
+custody per item. Its borrowed bits slice does
+not allocate or retain; `into_bits` transfers the guard's reference to a result
+or field. Guard release crosses the private
+`__molt_runtime_release_owned_value` bridge and uses the existing
+`errors::with_preserved_error` transaction. Managed and native pending errors,
+including an empty error state, survive Python or foreign cleanup callbacks.
+Compiler refcount operations retain their existing effect and custody contracts.
+
+Mutable iterator fields publish their new state and acquire any caller result
+reference before releasing displaced owners. Callback operands remain owned
+across reentry. Presence is a separate phase fact, never a raw-zero test on a
+Python value: `+0.0` has zero bits. Accumulate moves its initial owner into total
+before yielding, while omitted initial and explicit `None` mean absence.
+Groupby owns its target, current key/value and grouper edges separately; its
+current-grouper identity is non-owning, compared only, and invalidated on parent
+advance. Groupby revalidates current-value presence and exhaustion after
+comparison, truth conversion and operand release; groupers also revalidate
+active identity after input callbacks before transferring any current field.
+GC traversal and detach enumerate the actual field owners, not borrowed
+sentinels or comparison-only identities.
 
 ### 1.6 Parameter and Operand Custody
 

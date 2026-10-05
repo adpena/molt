@@ -16,7 +16,7 @@ from molt.cli.native_link_manifest import (
     read_native_link_dependency_manifest,
     write_native_link_dependency_manifest,
 )
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from tests.cli.native_link_test_support import (
     RUNTIME_BUILD_IDENTITY,
     write_test_native_link_manifest,

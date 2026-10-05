@@ -308,7 +308,13 @@ pub(super) fn clone_and_rewrite_poll(
             });
         }
 
-        let mut new_ops: Vec<TirOp> = Vec::with_capacity(src.ops.len());
+        let mut new_ops: Vec<TirOp> = Vec::with_capacity(src.ops.len() + 1);
+        // Materialize the control-slot value before recording any split point.
+        // When entry itself yields, a later prepend would move the pair's
+        // definition across the recorded yield boundary into the continuation.
+        if bid == poll.entry_block {
+            new_ops.push(const_none_op(none_for_control));
+        }
         for (op_index, op) in src.ops.iter().enumerate() {
             // Drop bookkeeping + the lone state_switch.
             if op.opcode == OpCode::StateSwitch || is_bookkeeping_op(op) {
@@ -402,9 +408,9 @@ pub(super) fn clone_and_rewrite_poll(
             };
             for &slot in &plan.joins[join] {
                 args.push(match exit {
-                    Some(state) => resolve(
-                        state[slot].expect("a slot plan defines every slot a join merges"),
-                    ),
+                    Some(state) => {
+                        resolve(state[slot].expect("a slot plan defines every slot a join merges"))
+                    }
                     None => none_for_control,
                 });
             }
@@ -424,15 +430,7 @@ pub(super) fn clone_and_rewrite_poll(
         );
     }
 
-    // Materialize the shared `None` for control-slot reads at the top of the
-    // cloned entry block (dominates every use).
     let entry_clone = remap_block(poll.entry_block);
-    caller
-        .blocks
-        .get_mut(&entry_clone)
-        .unwrap()
-        .ops
-        .insert(0, const_none_op(none_for_control));
 
     // Transfer the poll's value_types for cloned values (remapped keys).
     let poll_param_ids: HashSet<ValueId> = poll.blocks[&poll.entry_block]

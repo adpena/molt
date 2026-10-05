@@ -5,9 +5,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
 
-from ._intrinsic_symbols import intrinsic_runtime_symbol_name
-from .source_root import compiler_source_root
-from ._wasm_abi_generated import (
+from molt._intrinsic_symbols import intrinsic_runtime_symbol_name
+from molt.source_root import compiler_source_root
+from molt._wasm_abi_generated import (
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_BY_SPLIT_EXPORT_NAME,
     WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,

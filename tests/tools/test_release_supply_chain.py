@@ -1407,7 +1407,9 @@ def test_installed_consumer_rejects_extracted_native_receipt_substitution(
     def extract(archive, destination):
         original_extract(archive, destination)
         if changed == "worker" and destination.name == "worker":
-            binary = next(destination.rglob(target.worker_filename))
+            workers = list(destination.glob(f"*/bin/{target.worker_filename}"))
+            assert len(workers) == 1 and workers[0].is_file()
+            binary = workers[0]
             binary.write_bytes(binary.read_bytes() + b"substituted worker")
         elif changed == "source" and destination.name == "bundle":
             manifest_path = next(destination.rglob(compiler_payload.MANIFEST_NAME))

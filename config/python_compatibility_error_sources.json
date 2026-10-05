@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "version": "3.12.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.12.0/Lib/asyncio/base_events.py",
+      "path": "Lib/asyncio/base_events.py",
+      "sha256": "479734b19a02aa49a3f79e19b57816ad3dce13b6f5e5a47988f4fc92cae9386c"
+    },
+    {
+      "version": "3.12.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.12.0/Lib/asyncio/events.py",
+      "path": "Lib/asyncio/events.py",
+      "sha256": "f6ddd89a45150566f93c6e725c635d867adc44d29ab480e5ab7ed03756804fac"
+    },
+    {
+      "version": "3.12.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.12.0/Lib/asyncio/proactor_events.py",
+      "path": "Lib/asyncio/proactor_events.py",
+      "sha256": "199d554fda7ec1a7e6a53e78f3f00f6e84dff27f0ed74107846d63106c895955"
+    },
+    {
+      "version": "3.12.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.12.0/Lib/asyncio/selector_events.py",
+      "path": "Lib/asyncio/selector_events.py",
+      "sha256": "f1a28d70dc68a1064c452beba924e412aa149ea1c81e2a109b5048e83dfb8550"
+    },
+    {
+      "version": "3.12.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.12.0/Lib/asyncio/windows_events.py",
+      "path": "Lib/asyncio/windows_events.py",
+      "sha256": "c4c30238bda9e8abde7b677117117cc2531931237dc720983f520748ac6dbb51"
+    },
+    {
+      "version": "3.12.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.12.0/Lib/collections/__init__.py",
+      "path": "Lib/collections/__init__.py",
+      "sha256": "d298975e5069d5944316e45d80fa68b495baccba504eb877a5ca3b0200c2b4a8"
+    },
+    {
+      "version": "3.12.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.12.0/Modules/arraymodule.c",
+      "path": "Modules/arraymodule.c",
+      "sha256": "8e81dc644129386dfc8d10fbb57a8e15ca31f7b07baf289d9685695b06745769"
+    },
+    {
+      "version": "3.12.13",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.12.13/Objects/memoryobject.c",
+      "path": "Objects/memoryobject.c",
+      "sha256": "43728748a34eab47c0f7c7d3e3d7b0f155ee236ce6eb768ba64d202c902f9bb5"
+    },
+    {
+      "version": "3.13.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.13.0/Lib/asyncio/base_events.py",
+      "path": "Lib/asyncio/base_events.py",
+      "sha256": "06368fda7fba857cedfa5dec24d907b1d04f0a3ac8313e9b059b5191734ea354"
+    },
+    {
+      "version": "3.13.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.13.0/Lib/asyncio/events.py",
+      "path": "Lib/asyncio/events.py",
+      "sha256": "efe55dd6896b16d5038b0a62dedb3d0e27f8f6471158a6d1ea226180b37927ab"
+    },
+    {
+      "version": "3.13.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.13.0/Lib/asyncio/proactor_events.py",
+      "path": "Lib/asyncio/proactor_events.py",
+      "sha256": "bf5db8a08001a7e919944bc67c32099bf6d6bfaed9315f392b1acb35cfb3ffe2"
+    },
+    {
+      "version": "3.13.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.13.0/Lib/asyncio/selector_events.py",
+      "path": "Lib/asyncio/selector_events.py",
+      "sha256": "b09c5fe58ae66a9d124468ab10305f14f6f89bdf4931f39e346f27e70736fd44"
+    },
+    {
+      "version": "3.13.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.13.0/Lib/asyncio/windows_events.py",
+      "path": "Lib/asyncio/windows_events.py",
+      "sha256": "a17ebab22bd32f8ac9b33004f9de6aa811cbf43b47b41d96a8a1b9e1fef67839"
+    },
+    {
+      "version": "3.13.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.13.0/Lib/collections/__init__.py",
+      "path": "Lib/collections/__init__.py",
+      "sha256": "9d2fb944932526a29c70b83238fadc6a5a05c86910623776820e61a5e1deb69c"
+    },
+    {
+      "version": "3.13.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.13.0/Modules/arraymodule.c",
+      "path": "Modules/arraymodule.c",
+      "sha256": "d11d49c954023686eb5b1e87f2175afa9daf08c4fe450332836d162799927e20"
+    },
+    {
+      "version": "3.13.11",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.13.11/Objects/memoryobject.c",
+      "path": "Objects/memoryobject.c",
+      "sha256": "53cf958a7a9e4a07f13f7ff13c3d2620e6998e418d4b342263b6b0aa53285af5"
+    },
+    {
+      "version": "3.14.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.14.0/Lib/asyncio/base_events.py",
+      "path": "Lib/asyncio/base_events.py",
+      "sha256": "a82285b1ccb379d4bc18f3c1b05a2876040daed1523e7fb6bc05c0a86977894d"
+    },
+    {
+      "version": "3.14.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.14.0/Lib/asyncio/events.py",
+      "path": "Lib/asyncio/events.py",
+      "sha256": "b1a138015c6e1878d7f8c6be51896da451d7f25c24f6ef18d76ceff249050d94"
+    },
+    {
+      "version": "3.14.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.14.0/Lib/asyncio/proactor_events.py",
+      "path": "Lib/asyncio/proactor_events.py",
+      "sha256": "bf5db8a08001a7e919944bc67c32099bf6d6bfaed9315f392b1acb35cfb3ffe2"
+    },
+    {
+      "version": "3.14.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.14.0/Lib/asyncio/selector_events.py",
+      "path": "Lib/asyncio/selector_events.py",
+      "sha256": "5cf1b72c1ca5841159caa79cf8d68ff46c711497bbf913434196bc2db5170e7b"
+    },
+    {
+      "version": "3.14.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.14.0/Lib/asyncio/windows_events.py",
+      "path": "Lib/asyncio/windows_events.py",
+      "sha256": "886afa6f0f2e2ee02560c3b5dac8d0beb1239f9f34bd1a38a8b4c796ee4da43e"
+    },
+    {
+      "version": "3.14.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.14.0/Lib/collections/__init__.py",
+      "path": "Lib/collections/__init__.py",
+      "sha256": "48c99883422ce3b02863c98acd7157373828d59b88bc3144654ff5f90161ddf0"
+    },
+    {
+      "version": "3.14.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.14.0/Modules/arraymodule.c",
+      "path": "Modules/arraymodule.c",
+      "sha256": "348c4574ff3158b9a41d42a0a343ebfd0a0ba7e6920d9094cc42748bc5d06cde"
+    },
+    {
+      "version": "3.14.3",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.14.3/Objects/memoryobject.c",
+      "path": "Objects/memoryobject.c",
+      "sha256": "afc705f7c5f1543e6fac358034d2f39693576d1abd03b85f8914ca05989fc4b1"
+    }
+  ]
+}

@@ -50,19 +50,13 @@ fn done() -> Terminator {
 
 fn int(value: i64, result: ValueId) -> TirOp {
     let mut constant = op(OpCode::ConstInt, vec![], vec![result]);
-    constant
-        .attrs
-        .insert("value".into(), AttrValue::Int(value));
+    constant.attrs.insert("value".into(), AttrValue::Int(value));
     constant
 }
 
 /// `lhs + rhs`: on exact strings, value numbering merges equal ones.
 fn concat(lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
     op(OpCode::Add, vec![lhs, rhs], vec![result])
-}
-
-fn marker() -> TirOp {
-    op(OpCode::WarnStderr, vec![], vec![])
 }
 
 /// An observable statement that reads `values`.
@@ -130,7 +124,12 @@ fn numbered_binding_outlives_the_del_of_its_equal() {
     insert(&mut func);
     assert_eq!(
         trace(&func, 0, &[]),
-        [Event::Freed(0), Event::Marker, Event::Marker, Event::Freed(1)]
+        [
+            Event::Freed(0),
+            Event::Marker,
+            Event::Marker,
+            Event::Freed(1)
+        ]
     );
 }
 
@@ -183,6 +182,8 @@ fn numbered_binding_joined_after_the_del_of_its_equal() {
     let mut func = function("equal_binding_joins");
     let (text, a, b) = (func.fresh_value(), func.fresh_value(), func.fresh_value());
     let (cond, joined) = (func.fresh_value(), func.fresh_value());
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     func.value_types.insert(cond, TirType::Bool);
     let (left, right, join) = (func.fresh_block(), func.fresh_block(), func.fresh_block());
     body(
@@ -190,7 +191,7 @@ fn numbered_binding_joined_after_the_del_of_its_equal() {
         vec![
             const_str(text),
             concat(text, text, a),
-            op(OpCode::ConstBool, vec![], vec![cond]),
+            op(OpCode::Copy, vec![cond_input], vec![cond]),
         ],
         Terminator::CondBranch {
             cond,
@@ -222,7 +223,12 @@ fn numbered_binding_joined_after_the_del_of_its_equal() {
     for taken in [true, false] {
         assert_eq!(
             trace(&func, 0, &[taken]),
-            [Event::Freed(0), Event::Marker, Event::Marker, Event::Freed(1)],
+            [
+                Event::Freed(0),
+                Event::Marker,
+                Event::Marker,
+                Event::Freed(1)
+            ],
             "left arm taken: {taken}"
         );
     }
@@ -235,12 +241,7 @@ fn numbered_binding_joined_after_the_del_of_its_equal() {
 fn numbered_binding_passed_beside_its_equal_keeps_its_own_reference() {
     let mut func = function("equal_bindings_passed_together");
     let (text, a, b) = (func.fresh_value(), func.fresh_value(), func.fresh_value());
-    let mut call = op(OpCode::Call, vec![a, b], vec![]);
-    call.attrs.insert(
-        "_original_kind".into(),
-        AttrValue::Str("call_internal".into()),
-    );
-    call.set_argument_custody(&[ParameterCustody::Transferred, ParameterCustody::Transferred]);
+    let call = transfer(vec![a, b]);
     body(
         &mut func,
         vec![
@@ -259,7 +260,12 @@ fn numbered_binding_passed_beside_its_equal_keeps_its_own_reference() {
     insert(&mut func);
     assert_eq!(
         trace(&func, 0, &[]),
-        [Event::Freed(0), Event::Marker, Event::Marker, Event::Freed(1)]
+        [
+            Event::Freed(0),
+            Event::Marker,
+            Event::Marker,
+            Event::Freed(1)
+        ]
     );
 }
 
@@ -405,9 +411,7 @@ fn forwarded_load_keeps_the_reference_the_load_gave_it() {
     let mut func = function("forwarded_load_owner");
     let (object, text, loaded) = (func.fresh_value(), func.fresh_value(), func.fresh_value());
     let mut allocation = op(OpCode::Alloc, vec![], vec![object]);
-    allocation
-        .attrs
-        .insert("value".into(), AttrValue::Int(16));
+    allocation.attrs.insert("value".into(), AttrValue::Int(16));
     let mut store = op(OpCode::StoreAttr, vec![object, text], vec![]);
     store.attrs.insert("value".into(), AttrValue::Int(0));
     store

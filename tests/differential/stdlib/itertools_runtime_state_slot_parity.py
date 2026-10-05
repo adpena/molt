@@ -1,17 +1,16 @@
-"""Purpose: exercise every itertools class/next-fn/sentinel slot so the
-RuntimeState-scoped object slots (in-tree builtins/itertools.rs and the
-molt-runtime-itertools satellite, reconciled in Move R.1b) produce byte-identical
-output. This same source runs under the default (full) tier — which compiles the
-SATELLITE — and under MOLT_DIFF_STDLIB_PROFILE=micro — which compiles the IN-TREE
-copy. Identical output across both tiers proves the two physical copies share one
-behavior for the lazily-cached itertools type objects.
+"""Exercise every itertools class and sentinel through real iterator behavior.
 
-The slots are populated lazily on first use of each constructor; constructing and
-re-constructing every itertools type exercises the get-or-init path for all 21
-class slots, the 21 next-fn slots, the shared iter-self function slot, and the
-keyword-marker sentinel slot.
+Full builds use the satellite transport; micro builds include the shared source
+in-tree. Both publish methods through the same runtime class authority. Running
+the source under each tier checks that transport does not change behavior.
+
+Constructing every iterator twice exercises lazy class publication followed by
+cached class reuse. Each class namespace owns its declared iterator methods;
+there are no separate iterator-callable caches. The keyword-marker sentinel
+retains its runtime-scoped cache.
 """
 
+import functools
 import itertools
 
 
@@ -30,6 +29,14 @@ def drive():
     # accumulate (default + binary func)
     out.append(list(itertools.accumulate([1, 2, 3, 4])))
     out.append(list(itertools.accumulate([1, 2, 3, 4], lambda a, b: a * b)))
+
+    # Presence is independent of float bits; initial None is omitted by CPython.
+    out.append(list(itertools.accumulate([1.0, 2.0], initial=0.0)))
+    out.append(list(itertools.accumulate([], initial=-0.0)))
+    out.append(list(itertools.accumulate([1, 2], initial=None)))
+    out.append(list(itertools.accumulate([[1], [2]], initial=[])))
+    out.append(functools.reduce(lambda a, b: a + b, [[1], [2]], []))
+    out.append(functools.reduce(lambda a, b: a + b, [[1], [2]]))
 
     # batched
     out.append([list(b) for b in itertools.batched(range(7), 3)])
@@ -58,6 +65,16 @@ def drive():
         [(k, list(g)) for k, g in itertools.groupby(range(8), key=lambda n: n // 3)]
     )
 
+    out.append(
+        [(k, list(g)) for k, g in itertools.groupby([None, None, 0.0, -0.0, None])]
+    )
+    groups = itertools.groupby("AABAA")
+    first_key, first_group = next(groups)
+    second_key, second_group = next(groups)
+    third_key, third_group = next(groups)
+    # A stale grouper cannot resume when an equal key appears again.
+    out.append((first_key, second_key, third_key, list(first_group), list(third_group)))
+
     # tee independence
     a, b = itertools.tee([1, 2, 3], 2)
     out.append((list(a), list(b)))
@@ -69,7 +86,7 @@ def drive():
 
 
 # Run the full battery twice: the second pass hits the already-initialized slots
-# (the cached class/next-fn objects), so any divergence between the lazy-init and
+# (the cached classes and namespace-owned methods), so divergence between lazy-init and
 # cached-read paths would show up here too.
 for _ in range(2):
     for row in drive():

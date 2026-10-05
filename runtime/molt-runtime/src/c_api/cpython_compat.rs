@@ -1313,14 +1313,9 @@ pub extern "C" fn PyObject_GetAttrString(obj: u64, name: *const std::ffi::c_char
 /// `PyObject_SetAttr(obj, name, value)` — set obj.name = value. Returns 0 on success, -1 on error.
 pub extern "C" fn PyObject_SetAttr(obj: u64, name: u64, value: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_object_setattr(obj, name, value);
-        if exception_pending(_py) || obj_from_bits(res).is_none() {
-            return -1;
-        }
-        if !obj_from_bits(res).is_none() {
-            dec_ref_bits(_py, res);
-        }
-        0
+        let result = molt_set_attr_name(obj, name, value);
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, result));
+        if exception_pending(_py) { -1 } else { 0 }
     })
 }
 
@@ -1379,14 +1374,9 @@ pub extern "C" fn PyObject_HasAttrString(obj: u64, name: *const std::ffi::c_char
 /// `PyObject_DelAttr(obj, name)` — delete obj.name. Returns 0 on success, -1 on error.
 pub extern "C" fn PyObject_DelAttr(obj: u64, name: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_object_delattr(obj, name);
-        if exception_pending(_py) || obj_from_bits(res).is_none() {
-            return -1;
-        }
-        if !obj_from_bits(res).is_none() {
-            dec_ref_bits(_py, res);
-        }
-        0
+        let result = molt_del_attr_name(obj, name);
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, result));
+        if exception_pending(_py) { -1 } else { 0 }
     })
 }
 

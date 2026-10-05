@@ -73,9 +73,10 @@ from molt.cli.output import (
     subprocess_output_text as _subprocess_output_text,
 )
 from molt.cli.runtime_build import _initialize_runtime_artifact_state
-from molt.cli.installed_runtime import InstalledRuntimeError
+from molt.cli.installed_runtime_contract import InstalledRuntimeError
 from molt.cli.runtime_features import SOURCE_EXTENSION_RUNTIME_FEATURES
 from molt.cli.runtime_wasm_build_policy import runtime_wasm_simd_policy
+from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.native_link_plan import NativeArtifactKind
 from molt.cli.runtime_callable_symbols import (
     _stage_runtime_callable_symbols_for_native_codegen,
@@ -210,6 +211,14 @@ def _prepare_backend_setup(
     stage_timings_ms: dict[str, float] | None = None,
     build_python_admission: BuildPythonAdmission | None = None,
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
+    try:
+        artifact_contract = resolve_backend_artifact_contract(
+            target=target, emit_mode=emit_mode, target_triple=target_triple
+        )
+    except ValueError as exc:
+        return None, _fail(str(exc), json_output, command="build")
+    if artifact_contract.native_target is not None:
+        target_triple = artifact_contract.native_target.cargo_target
     extra_runtime_features: tuple[str, ...] = ()
     if native_artifact_plan.artifacts and not is_wasm:
         extra_runtime_features = SOURCE_EXTENSION_RUNTIME_FEATURES
@@ -311,7 +320,7 @@ def _prepare_backend_setup(
             cache_enabled=cache,
             ir=ir,
             target=target,
-            target_triple=target_triple,
+            artifact_contract=artifact_contract,
             profile=profile,
             runtime_cargo_profile=runtime_cargo_profile,
             backend_cargo_profile=backend_cargo_profile,
@@ -467,7 +476,6 @@ def _start_backend_daemon_under_lock(
     *,
     cargo_profile: str,
     project_root: Path,
-    target_triple: str | None,
     config_digest: str | None,
     startup_timeout: float | None,
     json_output: bool,
@@ -488,7 +496,6 @@ def _start_backend_daemon_under_lock(
                 daemon_socket,
                 cargo_profile=cargo_profile,
                 project_root=project_root,
-                target_triple=target_triple,
                 config_digest=config_digest,
                 startup_timeout=startup_timeout,
                 json_output=json_output,
@@ -636,7 +643,6 @@ def _prepare_backend_dispatch(
             daemon_socket,
             cargo_profile=backend_cargo_profile,
             project_root=molt_root,
-            target_triple=target_triple,
             config_digest=daemon_config_digest,
             startup_timeout=startup_timeout,
             json_output=json_output,
@@ -675,7 +681,6 @@ def _execute_backend_compile(
     cache_key: str | None,
     function_cache_key: str | None,
     cache_setup: _BackendCacheSetup,
-    target_triple: str | None,
     backend_daemon_config_digest: str | None,
     entry_module: str,
     ir: Mapping[str, Any],
@@ -694,6 +699,7 @@ def _execute_backend_compile(
     backend_daemon_health: dict[str, Any] | None,
     native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
 ) -> tuple[_BackendExecutionResult | None, _CliFailure | None]:
+    target_triple = cache_setup.artifact_contract.target_triple
     try:
         if (
             cache_setup.artifact_contract.is_native
@@ -888,7 +894,6 @@ def _execute_backend_compile(
                     daemon_socket,
                     cargo_profile=backend_cargo_profile,
                     project_root=molt_root,
-                    target_triple=target_triple,
                     config_digest=backend_daemon_config_digest,
                     startup_timeout=restart_timeout,
                     json_output=json_output,
@@ -1021,19 +1026,7 @@ def _execute_backend_compile(
             # cleared the cache tree, and the backend's own
             # ensure_output_parent_dir may race with ld -r timing.
             backend_output.parent.mkdir(parents=True, exist_ok=True)
-            # Progress indicator for long builds (Issue 2.2 / 7.1).
-            if not json_output:
-                import sys as _sys
-
-                _entry_name = (
-                    entry_module.rsplit(".", 1)[-1] if entry_module else "program"
-                )
-                print(
-                    f"Compiling {_entry_name}...",
-                    end="",
-                    flush=True,
-                    file=_sys.stderr,
-                )
+            _entry_name = entry_module or "program"
             try:
                 ir_file_path = _ensure_backend_ir_file_path()
                 cmd_with_output.extend(["--ir-file", str(ir_file_path)])
@@ -1041,7 +1034,11 @@ def _execute_backend_compile(
                     cmd_with_output,
                     env=backend_env,
                     timeout=backend_timeout,
-                    progress_label=None if json_output else "Backend compilation",
+                    progress_label=None
+                    if json_output
+                    else (
+                        f"Compiling {_entry_name} ({target_triple or 'native'}, {backend_cargo_profile} compiler)"
+                    ),
                 )
             except subprocess.TimeoutExpired:
                 return None, _fail(
@@ -1094,10 +1091,6 @@ def _execute_backend_compile(
                     command="build",
                 )
             backend_output_written = True
-            if not json_output:
-                import sys as _sys
-
-                print(" done", file=_sys.stderr)
         if backend_output_written and not (
             daemon_ready and backend_compiled and backend_output_exists
         ):
@@ -1168,7 +1161,6 @@ def _prepare_backend_compile(
     runtime_state: _RuntimeArtifactState,
     cargo_timeout: float | None,
     molt_root: Path,
-    target_triple: str | None,
     backend_cargo_profile: str,
     backend_timeout: float | None,
     backend_daemon_config_digest: str | None,
@@ -1185,6 +1177,7 @@ def _prepare_backend_compile(
     if diagnostics_enabled:
         phase_starts["cache_lookup"] = time.perf_counter()
     cache_enabled = cache_setup.cache_enabled
+    target_triple = cache_setup.artifact_contract.target_triple
     wasm_layout = None
     if is_wasm:
         try:
@@ -1287,7 +1280,6 @@ def _prepare_backend_compile(
                     cache_key=cache_key,
                     function_cache_key=function_cache_key,
                     cache_setup=cache_setup,
-                    target_triple=target_triple,
                     backend_daemon_config_digest=(
                         prepared_backend_dispatch.backend_daemon_config_digest
                     ),

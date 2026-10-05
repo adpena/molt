@@ -63,7 +63,13 @@ impl LuauBackend {
         let runtime_locals =
             self.emit_prelude_conditional(&func_body, runtime_prelude::needs_builtin_namespace(ir));
         let total_decls = emit_funcs.len() + extra_forward_decls.len();
-        if self.uses_forward_decls && runtime_locals + total_decls <= 198 {
+        if runtime_locals + total_decls > runtime_prelude::CHUNK_LOCAL_LIMIT {
+            self.unsupported_ops.push(format!(
+                "runtime exports and guest function declarations need {} chunk locals, exceeding the {} available before the entry-point guard",
+                runtime_locals + total_decls,
+                runtime_prelude::CHUNK_LOCAL_LIMIT,
+            ));
+        } else if self.uses_forward_decls {
             self.emit_line("-- Forward declarations");
             for func in &emit_funcs {
                 let name = emit_function_ident(&func.name);
@@ -73,11 +79,6 @@ impl LuauBackend {
                 self.emit_line(&format!("local {name}"));
             }
             self.output.push('\n');
-        } else if !self.uses_forward_decls && runtime_locals + total_decls > 198 {
-            self.unsupported_ops.push(
-                "runtime helpers and the local entry function exceed Luau's chunk-local limit"
-                    .to_string(),
-            );
         }
 
         // Phase 4: Combine prelude + optimized function bodies.

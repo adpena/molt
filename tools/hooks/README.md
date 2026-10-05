@@ -36,7 +36,13 @@ harm -> guard -> live-canary registry).
 - **Loop-safe + event-triggered.** The `Stop` block is a re-engage NUDGE
   (exit 0), never a wedge: guarded by `stop_hook_active` + a persisted
   `last_block_head` marker (blocks at most once per HEAD state), silent when no
-  substantive activity. It **composes with** (does not replace) the autonomous
+  potentially mutating activity. The landing leg parses actual assistant tool
+  records in a bounded transcript tail; read-only tools do not require a commit
+  or an invented blocker. SessionStart uses the same `READ_ONLY_TOOLS` set to
+  explain the requirement and scopes its landing directive to potentially
+  mutating work. Shell and unfamiliar tools still count, without
+  guessing intent from command text. Malformed/unavailable transcripts allow
+  continuation with a visible diagnostic. It **composes with** (does not replace) the autonomous
   `/goal` Stop loop.
 - **Windows.** `msvcrt` locks (not `fcntl`); ASCII-safe, UTF-8-explicit
   (reuses `tools/_io_utf8.force_utf8_stdio`, M43 cp1252 class). Stdlib-only, so

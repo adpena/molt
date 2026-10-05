@@ -19,6 +19,9 @@ pub enum TypeAttributeField {
     Dictionary = 6,
     Annotations = 7,
     Annotate = 8,
+    Doc = 9,
+    TextSignature = 10,
+    AbstractMethods = 11,
 }
 impl TypeAttributeField {
     pub fn from_operation(operation: u32) -> Option<Self> {
@@ -32,6 +35,9 @@ impl TypeAttributeField {
             6 => Self::Dictionary,
             7 => Self::Annotations,
             8 => Self::Annotate,
+            9 => Self::Doc,
+            10 => Self::TextSignature,
+            11 => Self::AbstractMethods,
             _ => return None,
         })
     }
@@ -46,6 +52,9 @@ impl TypeAttributeField {
             Self::Dictionary => "__dict__",
             Self::Annotations => "__annotations__",
             Self::Annotate => "__annotate__",
+            Self::Doc => "__doc__",
+            Self::TextSignature => "__text_signature__",
+            Self::AbstractMethods => "__abstractmethods__",
         }
     }
 }
@@ -87,6 +96,148 @@ pub(super) unsafe fn add_type_documentation(tp: *mut PyTypeObject) -> c_int {
             return -1;
         }
         mapping::PyDict_SetItemString((*tp).tp_dict, c"__doc__".as_ptr(), documentation.as_ptr())
+    }
+}
+
+/// Internal native documentation is independent of the mutable namespace.
+/// Heap docs bind an own descriptor; abstract methods never bind or inherit.
+unsafe fn native_namespace_metadata(tp: *mut PyTypeObject, field: Field) -> *mut PyObject {
+    unsafe {
+        if field == Field::TextSignature
+            || (field == Field::Doc
+                && (*tp).tp_flags & Py_TPFLAGS_HEAPTYPE == 0
+                && !(*tp).tp_doc.is_null())
+        {
+            let qualified = std::ffi::CStr::from_ptr((*tp).tp_name).to_bytes();
+            let short = qualified
+                .rsplit(|byte| *byte == b'.')
+                .next()
+                .unwrap_or(qualified);
+            return descriptors::documentation_part(
+                (*tp).tp_name.add(qualified.len() - short.len()),
+                (*tp).tp_doc,
+                field == Field::TextSignature,
+            );
+        }
+        let value =
+            if field == Field::AbstractMethods && tp == &raw mut crate::abi_types::PyType_Type {
+                ptr::null_mut()
+            } else {
+                let dictionary = type_dict_borrowed(tp);
+                if dictionary.is_null() {
+                    return ptr::null_mut();
+                }
+                let key = if field == Field::Doc {
+                    c"__doc__"
+                } else {
+                    c"__abstractmethods__"
+                };
+                mapping::_PyDict_GetItemStringWithError(dictionary, key.as_ptr())
+            };
+        if descriptors::pending() {
+            return ptr::null_mut();
+        }
+        if value.is_null() {
+            if field == Field::Doc {
+                return object::Py_NewRef(&raw mut crate::abi_types::Py_None);
+            }
+            errors::PyErr_SetString(
+                (&raw mut crate::abi_types::PyExc_AttributeError).cast(),
+                c"__abstractmethods__".as_ptr(),
+            );
+            return ptr::null_mut();
+        }
+        let value = OwnedPyObject::from_borrowed(value);
+        if field == Field::Doc {
+            crate::api::descriptor::get(value.as_ptr(), ptr::null_mut(), tp.cast())
+                .unwrap_or_else(|| value.into_ptr())
+        } else {
+            value.into_ptr()
+        }
+    }
+}
+
+unsafe fn set_native_namespace_metadata(
+    tp: *mut PyTypeObject,
+    field: Field,
+    value: *mut PyObject,
+) -> c_int {
+    unsafe {
+        if field == Field::Doc && value.is_null() {
+            errors::PyErr_Format(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast(),
+                c"cannot delete '__doc__' attribute of immutable type '%s'".as_ptr(),
+                (*tp).tp_name,
+            );
+            return -1;
+        }
+        let incoming = OwnedPyObject::from_borrowed(value);
+        let abstract_type = if field == Field::AbstractMethods && !value.is_null() {
+            let truth = object::PyObject_IsTrue(value);
+            if truth < 0 {
+                return -1;
+            }
+            truth != 0
+        } else {
+            false
+        };
+        let dictionary = OwnedPyObject::from_owned(PyType_GetDict(tp));
+        if dictionary.as_ptr().is_null() {
+            return -1;
+        }
+        let key =
+            OwnedPyObject::from_owned(strings::PyUnicode_FromString(if field == Field::Doc {
+                c"__doc__".as_ptr()
+            } else {
+                c"__abstractmethods__".as_ptr()
+            }));
+        if key.as_ptr().is_null() {
+            return -1;
+        }
+        struct Publication {
+            tp: *mut PyTypeObject,
+            field: Field,
+            abstract_type: bool,
+        }
+        unsafe extern "C" fn publish(context: *mut std::ffi::c_void) -> c_int {
+            let state = unsafe { &*context.cast::<Publication>() };
+            unsafe {
+                if state.field == Field::AbstractMethods {
+                    if state.abstract_type {
+                        (*state.tp).tp_flags |= crate::abi_types::Py_TPFLAGS_IS_ABSTRACT;
+                    } else {
+                        (*state.tp).tp_flags &= !crate::abi_types::Py_TPFLAGS_IS_ABSTRACT;
+                    }
+                }
+                PyType_Modified(state.tp);
+            }
+            0
+        }
+        let mut state = Publication {
+            tp,
+            field,
+            abstract_type,
+        };
+        let status = mapping::dict_mutate(
+            dictionary.as_ptr(),
+            key.as_ptr(),
+            incoming.as_ptr(),
+            value.is_null(),
+            Some(publish),
+            (&raw mut state).cast(),
+        );
+        if status < 0
+            && value.is_null()
+            && errors::PyErr_ExceptionMatches((&raw mut crate::abi_types::PyExc_KeyError).cast())
+                != 0
+        {
+            errors::PyErr_Clear();
+            errors::PyErr_SetObject(
+                (&raw mut crate::abi_types::PyExc_AttributeError).cast(),
+                key.as_ptr(),
+            );
+        }
+        status
     }
 }
 
@@ -142,6 +293,9 @@ pub unsafe fn native_type_attribute_get(
             Field::Annotations | Field::Annotate => {
                 native_annotation(tp, field, ptr::null_mut(), false, false, deferred)
             }
+            Field::Doc | Field::TextSignature | Field::AbstractMethods => {
+                native_namespace_metadata(tp, field)
+            }
             Field::Class => unreachable!(),
         }
     }
@@ -167,14 +321,16 @@ pub unsafe fn native_type_attribute_set(
             return reject_type_layout(c"type metadata requires a type");
         }
         let tp = object.cast::<PyTypeObject>();
-        if (*tp).tp_flags & Py_TPFLAGS_HEAPTYPE == 0
-            || (*tp).tp_flags & Py_TPFLAGS_IMMUTABLETYPE != 0
+        if field != Field::AbstractMethods
+            && ((*tp).tp_flags & Py_TPFLAGS_HEAPTYPE == 0
+                || (*tp).tp_flags & Py_TPFLAGS_IMMUTABLETYPE != 0)
         {
             return reject_type_layout(c"cannot set metadata of an immutable type");
         }
         match field {
             Field::Name | Field::QualName => set_native_name(tp, field, value),
             Field::Bases => hierarchy::set_bases(tp, value),
+            Field::Doc | Field::AbstractMethods => set_native_namespace_metadata(tp, field, value),
             Field::Annotations | Field::Annotate => {
                 let result = native_annotation(tp, field, value, true, value.is_null(), deferred);
                 if result.is_null() {
@@ -195,19 +351,108 @@ pub unsafe fn native_type_attribute_set(
     }
 }
 
-pub(super) unsafe extern "C" fn type_setattro(
+pub(crate) unsafe extern "C" fn type_setattro(
     object: *mut PyObject,
     name: *mut PyObject,
     value: *mut PyObject,
 ) -> c_int {
     unsafe {
         if (*object.cast::<PyTypeObject>()).tp_flags & Py_TPFLAGS_IMMUTABLETYPE != 0 {
-            return reject_type_layout(c"cannot set attributes of an immutable type");
+            errors::PyErr_Format(
+                (&raw mut crate::abi_types::PyExc_TypeError).cast(),
+                c"cannot set %R attribute of immutable type '%s'".as_ptr(),
+                name,
+                (*object.cast::<PyTypeObject>()).tp_name,
+            );
+            return -1;
         }
-        // Generic descriptor dispatch reaches the runtime-owned metadata
-        // declarations. Ordinary native namespace/slot mutation retains its
-        // existing admission; it requires a separate complete slot-update owner.
-        object::PyObject_GenericSetAttr(object, name, value)
+        if !object::require_attribute_name(name) {
+            return -1;
+        }
+        // CPython type_setattro canonicalizes string subclasses here. Normal
+        // user overrides and raw GenericSetAttr keep their original name object.
+        let name = OwnedPyObject::from_owned(strings::PyUnicode_FromObject(name));
+        if name.as_ptr().is_null() {
+            return -1;
+        }
+        if GLOBAL_BRIDGE.molt_handle_for_pyobj(object).is_some() {
+            return object::managed_set_attr(
+                object,
+                name.as_ptr(),
+                value,
+                crate::hooks::AttributeMutation::TypeDefault,
+            );
+        }
+        native_type_namespace_mutation(object.cast(), name.as_ptr(), value)
+    }
+}
+
+/// Native type defaults own namespace mutation and physical slot publication.
+/// Descriptor writers keep their own metadata transactions. Namespace values,
+/// name/value aliases and the type/dictionary stay pinned until publication and
+/// cache invalidation complete, matching the annotation transaction below.
+unsafe fn native_type_namespace_mutation(
+    tp: *mut PyTypeObject,
+    name: *mut PyObject,
+    value: *mut PyObject,
+) -> c_int {
+    unsafe {
+        let _type_owner = OwnedPyObject::from_borrowed(tp.cast());
+        let incoming = OwnedPyObject::from_borrowed(value);
+        let meta = crate::bridge::semantic_type(tp.cast());
+        if meta.is_null() {
+            return -1;
+        }
+        let _meta_owner = OwnedPyObject::from_borrowed(meta.cast());
+        let descriptor = OwnedPyObject::from_borrowed(_PyType_Lookup(meta, name));
+        if descriptors::pending() {
+            return -1;
+        }
+        if let Some(status) = crate::api::descriptor::set(descriptor.as_ptr(), tp.cast(), value) {
+            return status;
+        }
+        let dictionary = OwnedPyObject::from_owned(PyType_GetDict(tp));
+        if dictionary.as_ptr().is_null() {
+            return -1;
+        }
+        let slots = match super::native_slot_mutation::prepare(tp, name) {
+            Ok(slots) => slots,
+            Err(()) => return -1,
+        };
+        struct Publication<'a> {
+            tp: *mut PyTypeObject,
+            slots: &'a super::native_slot_mutation::Mutation,
+        }
+        unsafe extern "C" fn publish(context: *mut std::ffi::c_void) -> c_int {
+            let publication = unsafe { &*context.cast::<Publication<'_>>() };
+            unsafe {
+                PyType_Modified(publication.tp);
+                publication.slots.publish()
+            }
+        }
+        let mut publication = Publication { tp, slots: &slots };
+        let status = mapping::dict_mutate(
+            dictionary.as_ptr(),
+            name,
+            incoming.as_ptr(),
+            value.is_null(),
+            Some(publish),
+            (&raw mut publication).cast(),
+        );
+        if status < 0
+            && value.is_null()
+            && errors::PyErr_ExceptionMatches((&raw mut crate::abi_types::PyExc_KeyError).cast())
+                != 0
+        {
+            errors::PyErr_Clear();
+            errors::PyErr_Format(
+                (&raw mut crate::abi_types::PyExc_AttributeError).cast(),
+                c"type object '%s' has no attribute %R".as_ptr(),
+                (*tp).tp_name,
+                name,
+            );
+        }
+        status
     }
 }
 

@@ -32,4 +32,6 @@ pub(super) struct LirLowerCtx<'a> {
     /// Validated reachable topology, consumed by shared TIR graph analysis.
     pub(super) cfg: molt_tir::tir::function::TirFunction,
     operation_owners: Option<LirOperationOwners>,
+    pub(super) guard_facts: molt_tir::passes::SsaRuntimeGuardFacts,
+    pub(super) guard_profile_local: Option<u32>,
 }

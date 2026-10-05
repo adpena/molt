@@ -4,6 +4,7 @@
 //! etc. is a separate linker symbol so that `wasm-ld --gc-sections` can drop
 //! unused entries.
 
+use crate::object::memoryview::memoryview_prepare_iter;
 use crate::object::{
     ObjectAuxPreselection, dec_ref_ptr, inc_ref_ptr, object_init_poll_fn_unpublished,
     object_init_state_unpublished,
@@ -800,6 +801,8 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                         || type_id == TYPE_ID_LIST_INT
                         || type_id == TYPE_ID_LIST_BOOL
                         || type_id == TYPE_ID_TUPLE
+                        || (builtin_only
+                            && crate::object::tuple_storage::native_tuple(iter_bits).is_some())
                         || type_id == TYPE_ID_STRING
                         || type_id == TYPE_ID_BYTES
                         || type_id == TYPE_ID_BYTEARRAY
@@ -813,36 +816,8 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                         || type_id == TYPE_ID_MEMORYVIEW
                     {
                         if type_id == TYPE_ID_MEMORYVIEW {
-                            // memory_iter validates rank and format syntax at construction;
-                            // scalar format support belongs to the first element read.
-                            let ndim = memoryview_ndim(ptr);
-                            if ndim == 0 {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "TypeError",
-                                    "invalid indexing of 0-dim memory",
-                                );
-                            }
-                            if ndim != 1 {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "NotImplementedError",
-                                    "multi-dimensional sub-views are not implemented",
-                                );
-                            }
-                            let format =
-                                string_obj_to_owned(obj_from_bits(memoryview_format_bits(ptr)))
-                                    .unwrap_or_default();
-                            let code = format.strip_prefix('@').unwrap_or(&format);
-                            if code.len() != 1 {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "NotImplementedError",
-                                    &format!("memoryview: unsupported format {format}"),
-                                );
-                            }
-                            if memoryview_released(ptr) {
-                                return raise_released_memoryview(_py);
+                            if memoryview_prepare_iter(_py, ptr).is_none() {
+                                return MoltObject::none().bits();
                             }
                         }
                         let total = std::mem::size_of::<MoltHeader>()
@@ -1847,6 +1822,30 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                 }
                 if let Some(target_ptr) = target_obj.as_ptr() {
                     let target_type = object_type_id(target_ptr);
+                    if target_type == crate::TYPE_ID_FOREIGN
+                        && crate::object::tuple_storage::native_tuple(target_bits).is_some()
+                    {
+                        let tuple =
+                            crate::object::tuple_storage::TupleStorage::from_bits(_py, target_bits)
+                                .unwrap();
+                        let Some(len) = tuple.len() else {
+                            return MoltObject::none().bits();
+                        };
+                        if idx >= len {
+                            return iter_return_cached(
+                                _py,
+                                ptr,
+                                MoltObject::none().bits(),
+                                true,
+                                false,
+                            );
+                        }
+                        let Some(value) = tuple.item(idx) else {
+                            return MoltObject::none().bits();
+                        };
+                        iter_set_index(ptr, idx + 1);
+                        return iter_return_cached(_py, ptr, value, false, true);
+                    }
                     if target_type == TYPE_ID_MEMORYVIEW {
                         // Shape is immutable. Exhaustion precedes released/unsupported
                         // element checks, matching memoryiter_next even after callbacks.
@@ -1863,6 +1862,9 @@ pub extern "C" fn molt_iter_next(iter_bits: u64) -> u64 {
                                 true,
                                 false,
                             );
+                        }
+                        if memoryview_released(target_ptr) {
+                            return raise_released_memoryview(_py);
                         }
                         iter_set_index(ptr, idx + 1);
                         let value = crate::object::ops::molt_getitem_builtin(

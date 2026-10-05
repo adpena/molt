@@ -744,6 +744,218 @@ fn dict_runtime_dependency_closure_keeps_view_equality_without_call_authority() 
     assert!(dict_runtime::DICT_CORE_RUNTIME.len() < source.len());
 }
 
+fn scoped_runtime_fixture() -> runtime_prelude::RuntimeLibrary {
+    runtime_prelude::RuntimeLibrary::new(vec![
+        (
+            "base",
+            "local molt_rawequal = rawequal\nlocal molt_order = {}\n".to_string(),
+        ),
+        (
+            "left",
+            r#"local private_state = {0}
+local private_odd: any
+local function private_even(n)
+    if n == 0 then return true end
+    return private_odd(n - 1)
+end
+private_odd = function(n)
+    if n == 0 then return false end
+    return private_even(n - 1)
+end
+local function molt_left(n)
+    if n == 0 then return private_even(10) end
+    return molt_right(n - 1)
+end
+local function molt_identity()
+    private_state[1] += 1
+    return private_odd, private_state[1]
+end
+local left_initialized = table.insert(molt_order, "left")
+"#
+            .to_string(),
+        ),
+        (
+            "right",
+            r#"local function molt_right(n)
+    if n == 0 then return true end
+    return molt_left(n - 1)
+end
+local right_initialized = table.insert(molt_order, "right")
+"#
+            .to_string(),
+        ),
+    ])
+    .unwrap()
+}
+
+const SCOPED_RUNTIME_ORACLE: &str = r#"
+;(function()
+    assert(molt_left(9) and molt_right(9))
+    local first, first_count = molt_identity()
+    local second, second_count = molt_identity()
+    assert(molt_rawequal(first, second) and first(9) and not first(10))
+    assert(first_count == 1 and second_count == 2)
+    assert(#molt_order == 2 and molt_order[1] == "left" and molt_order[2] == "right")
+    print("luau-provider-scopes-ok")
+end)()
+"#;
+
+#[test]
+fn runtime_provider_scopes_hoist_only_guest_and_cross_provider_exports() {
+    let prelude = scoped_runtime_fixture()
+        .emit(SCOPED_RUNTIME_ORACLE, false)
+        .unwrap();
+    assert_eq!(prelude.local_count, 5);
+    let (exports, providers) = prelude
+        .source
+        .split_once("do -- Runtime provider:")
+        .unwrap();
+    for name in [
+        "molt_rawequal",
+        "molt_order",
+        "molt_left",
+        "molt_right",
+        "molt_identity",
+    ] {
+        assert!(
+            exports.contains(&format!("local {name}: any\n")),
+            "{exports}"
+        );
+    }
+    for name in [
+        "private_state",
+        "private_even",
+        "private_odd",
+        "left_initialized",
+        "right_initialized",
+    ] {
+        assert!(!exports.contains(name), "{exports}");
+        assert!(
+            providers.contains(&format!("\tlocal {name}: any\n")),
+            "{providers}"
+        );
+    }
+    assert!(
+        providers.find("Runtime provider: left").unwrap()
+            < providers.find("Runtime provider: right").unwrap()
+    );
+    assert!(providers.contains("return private_odd(n - 1)"));
+    assert!(providers.contains("return molt_right(n - 1)"));
+    validate_luau_source(&format!("{}{SCOPED_RUNTIME_ORACLE}", prelude.source)).unwrap();
+}
+
+#[test]
+#[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
+fn runtime_provider_scopes_preserve_recursive_cells_and_initialization_order() {
+    let prelude = scoped_runtime_fixture()
+        .emit(SCOPED_RUNTIME_ORACLE, false)
+        .unwrap();
+    let source = format!("{}{SCOPED_RUNTIME_ORACLE}", prelude.source);
+    let output = execute_lune_oracle("provider_scopes", &source);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("luau-provider-scopes-ok"));
+}
+
+#[test]
+fn runtime_provider_budget_counts_concurrent_private_cells() {
+    let provider = |prefix: &str, private_count: usize| {
+        let mut source = String::new();
+        for index in 0..private_count {
+            source.push_str(&format!("local {prefix}_private_{index} = {index}\n"));
+        }
+        source.push_str(&format!(
+            "local function molt_{prefix}() return {prefix}_private_0 end\n"
+        ));
+        source
+    };
+    let library = |private_count| {
+        runtime_prelude::RuntimeLibrary::new(vec![
+            ("base", "local molt_rawequal = rawequal\n".to_string()),
+            ("left", provider("left", private_count)),
+            ("right", provider("right", private_count)),
+        ])
+        .unwrap()
+    };
+    let prelude = library(runtime_prelude::CHUNK_LOCAL_LIMIT - 3)
+        .emit("molt_left(); molt_right()", false)
+        .unwrap();
+    assert_eq!(prelude.local_count, 3);
+    let error = library(runtime_prelude::CHUNK_LOCAL_LIMIT - 2)
+        .emit("molt_left(); molt_right()", false)
+        .err()
+        .expect("one provider plus exports must still fit the concurrent limit");
+    assert!(
+        error.contains("199 simultaneously active locals"),
+        "{error}"
+    );
+}
+
+#[test]
+fn runtime_provider_definitions_cannot_create_implicit_globals() {
+    let library = runtime_prelude::RuntimeLibrary::new(vec![
+        ("base", "local molt_rawequal = rawequal\n".to_string()),
+        (
+            "assignment",
+            "molt_scalar = 42\nlocal function molt_read() return molt_scalar end\n".to_string(),
+        ),
+    ])
+    .unwrap();
+    let prelude = library.emit("molt_read()", false).unwrap();
+    assert!(prelude.source.contains("\tlocal molt_scalar: any\n"));
+    assert!(prelude.source.contains("\tmolt_scalar = 42\n"));
+    // A provider factory exports its returned closure through one explicit
+    // initializer. Its recursive implementation remains private to the factory.
+    let json = runtime_prelude::library()
+        .unwrap()
+        .emit("molt_json_dumps(molt_pack_list(1))", false)
+        .unwrap();
+    assert!(json.source.contains("\tmolt_json_dumps = (function()"));
+    assert!(
+        json.source
+            .contains("\t\treturn function(value: any): string")
+    );
+    assert!(!json.source.contains("molt_json_dumps = function(value"));
+    validate_luau_source(&json.source).unwrap();
+    for source in [
+        "function unknown() end\n",
+        "local function unknown.member() end\n",
+        "local first, second = 1, 2\n",
+        "first, second = 1, 2\n",
+        "unknown += 1\n",
+        "local first = 1\nlocal first = 2\n",
+        "local missing: any\nlocal function outer()\n    local missing = 1\nend\n",
+        "local hidden\n;(function()\n    hidden = function() end\nend)()\n",
+    ] {
+        assert!(
+            runtime_prelude::RuntimeLibrary::new(vec![("mutation", source.to_string())]).is_err(),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn compile_checked_rejects_guest_declarations_over_the_chunk_local_budget() {
+    let ir = SimpleIR {
+        functions: (0..runtime_prelude::CHUNK_LOCAL_LIMIT)
+            .map(|index| FunctionIR {
+                name: format!("local_budget_probe_{index}"),
+                return_abi: molt_ir::FunctionReturnAbi::Void,
+                ops: vec![OpIR {
+                    kind: "ret_void".to_string(),
+                    ..OpIR::default()
+                }],
+                ..FunctionIR::default()
+            })
+            .collect(),
+        profile: None,
+    };
+    let error = LuauBackend::new().compile_checked(&ir).unwrap_err();
+    assert!(
+        error.contains("runtime exports and guest function declarations"),
+        "{error}"
+    );
+    assert!(error.contains("before the entry-point guard"), "{error}");
+}
+
 #[test]
 fn compile_checked_callargs_family_uses_one_builder_invocation_authority() {
     let ir = SimpleIR {
@@ -2012,6 +2224,50 @@ fn public_builtin_acquisition_uses_operand_and_one_published_namespace() {
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
 fn public_builtin_lookup_preserves_capture_identity_none_and_mapping_errors() {
     let mut ir = public_builtin_lookup_ir();
+    // The appended oracle uses this frame protocol outside its provider scope.
+    // Root the real helpers through guest IR, just as compiled code would.
+    ir.functions.push(FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
+        name: "namespace_frame_protocol_roots".to_string(),
+        params: [
+            "id", "code", "globals", "slot", "context", "depth", "identity", "owner",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+        ops: vec![
+            OpIR {
+                kind: "call_internal".into(),
+                s_value: Some("molt_frame_bind_code".into()),
+                args: Some(vec!["id".into(), "code".into(), "globals".into()]),
+                out: Some("bound".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "call_internal".into(),
+                s_value: Some("molt_frame_enter_slot".into()),
+                args: Some(vec!["slot".into()]),
+                out: Some("entered".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "call_internal".into(),
+                s_value: Some("molt_frame_exit".into()),
+                args: Some(vec![
+                    "context".into(),
+                    "depth".into(),
+                    "identity".into(),
+                    "owner".into(),
+                ]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            },
+        ],
+        ..FunctionIR::default()
+    });
     // Include the sibling emitted consumer, not a hand-written global probe.
     ir.functions.push(FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -2331,7 +2587,7 @@ fn public_any_all_execute_transitive_helpers_with_many_guest_functions() {
     }
     let source = LuauBackend::new().compile_checked(&ir).unwrap();
     assert!(source.contains("function molt_bool("));
-    assert!(!source.contains(&format!(
+    assert!(source.contains(&format!(
         "local {}\n",
         emit_function_ident("additional_builtin_probe_79")
     )));
@@ -3414,17 +3670,21 @@ fn identity_primitive_and_runtime_helpers_cannot_be_shadowed_by_user_symbols() {
 
     let source = LuauBackend::new().compile_checked(&ir).unwrap();
     assert!(source.contains("molt_rawequal = rawequal"), "{source}");
-    assert!(source.contains("rawequal: any"), "{source}");
+    let signature = source
+        .lines()
+        .find(|line| line.starts_with("local function shadow_helpers("))
+        .unwrap();
+    assert!(signature.contains("rawequal: any"), "{signature}");
     assert!(
-        source.contains("_m_user_6d6f6c745f726177657175616c: any"),
-        "{source}"
+        signature.contains("_m_user_6d6f6c745f726177657175616c: any"),
+        "{signature}"
     );
     assert!(
-        source.contains("_m_user_6d6f6c745f657175616c: any"),
-        "{source}"
+        signature.contains("_m_user_6d6f6c745f657175616c: any"),
+        "{signature}"
     );
-    assert!(!source.contains("molt_rawequal: any"), "{source}");
-    assert!(!source.contains("molt_equal: any"), "{source}");
+    assert!(!signature.contains("molt_rawequal: any"), "{signature}");
+    assert!(!signature.contains("molt_equal: any"), "{signature}");
 }
 
 #[test]

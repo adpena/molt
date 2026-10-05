@@ -723,7 +723,11 @@ def atomic_write_bytes(
     exclusive: bool = False,
     replace: DurableReplace | None = None,
 ) -> None:
-    """Publish complete bytes atomically after crossing the durability barrier."""
+    """Publish complete bytes atomically after crossing the durability barrier.
+
+    Only an absent stage is harmless cleanup. A cleanup failure propagates,
+    or annotates an existing publication error without replacing that error.
+    """
 
     destination = canonical_file_leaf(path, create_parent=True)
     if exclusive and destination.exists():
@@ -732,6 +736,7 @@ def atomic_write_bytes(
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(staged, flags, 0o666)
+    primary: BaseException | None = None
     try:
         with os.fdopen(descriptor, "wb", buffering=0) as stream:
             pending = memoryview(data)
@@ -744,6 +749,19 @@ def atomic_write_bytes(
             durable_publish_exclusive(staged, destination)
         else:
             (replace or durable_replace)(staged, destination)
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
-        with contextlib.suppress(OSError):
+        try:
             staged.unlink()
+        except FileNotFoundError:
+            pass
+        except BaseException as cleanup_error:
+            if primary is None:
+                raise
+            BaseException.add_note(
+                primary,
+                f"atomic publication stage cleanup failed for {staged}: "
+                f"{type(cleanup_error).__name__}: {cleanup_error}",
+            )

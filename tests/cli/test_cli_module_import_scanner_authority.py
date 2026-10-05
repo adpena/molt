@@ -21,7 +21,6 @@ _MODULE_IMPORT_SCANNER_NAMES = (
     "_IMPORT_SCAN_MODES",
     "_RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES",
     "_RUNTIME_IMPORT_PROTOCOL_MARKERS",
-    "_RUNTIME_IMPORT_PROTOCOL_TARGETS",
     "_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES",
     "_DynamicRelativeImportDiscovery",
     "_collect_import_star_modules",
@@ -37,8 +36,6 @@ _MODULE_IMPORT_SCANNER_NAMES = (
     "_module_init_scan_nodes",
     "_module_uses_runtime_import_protocol",
     "_qualified_child",
-    "_resolve_runtime_import_expr_name",
-    "_runtime_import_alias_bindings",
     "_source_may_use_runtime_import_protocol",
     "_StaticImportCallPayload",
     "_static_import_helper_qualnames",
@@ -55,7 +52,6 @@ _MODULE_IMPORT_SCANNER_DEFINITIONS = (
     "_IMPORT_SCAN_MODES =",
     "_RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES =",
     "_RUNTIME_IMPORT_PROTOCOL_MARKERS =",
-    "_RUNTIME_IMPORT_PROTOCOL_TARGETS =",
     "_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES =",
     "class _DynamicRelativeImportDiscovery:",
     "def _collect_import_star_modules(",
@@ -71,8 +67,6 @@ _MODULE_IMPORT_SCANNER_DEFINITIONS = (
     "def _module_init_scan_nodes(",
     "def _module_uses_runtime_import_protocol(",
     "def _qualified_child(",
-    "def _resolve_runtime_import_expr_name(",
-    "def _runtime_import_alias_bindings(",
     "def _source_may_use_runtime_import_protocol(",
     "class _StaticImportCallPayload:",
     "def _static_import_helper_qualnames(",
@@ -135,7 +129,7 @@ def test_direct_synthetic_scans_retain_digest_fallback(
 
 def test_static_scan_uses_selected_target_annotation_policy() -> None:
     tree = ast.parse(
-        "items[(__package__ := 'target')]: "
+        "{}[(__package__ := 'target')]: "
         "globals().__setitem__('__package__', 'annotation')\n"
         "from . import *\n"
     )
@@ -302,7 +296,7 @@ def test_callback_bearing_finally_retains_runtime_import_custody() -> None:
         )
 
 
-def test_a_raising_handler_does_not_taint_the_imports_after_its_try() -> None:
+def test_prior_import_requires_custody_even_when_its_handler_raises() -> None:
     raising = ast.parse(
         "try:\n"
         "    from . import multiarray\n"
@@ -312,9 +306,16 @@ def test_a_raising_handler_does_not_taint_the_imports_after_its_try() -> None:
         "    raise\n"
         "from . import umath\n"
     )
-    assert "pkg.umath" in module_import_scanner._collect_imports(
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+        module_import_scanner._collect_imports(
+            raising, module_name="pkg", is_package=True, import_scan_mode="module_init"
+        )
+    projection = module_import_scanner._collect_imports_for_graph(
         raising, module_name="pkg", is_package=True, import_scan_mode="module_init"
     )
+    assert "pkg.multiarray" in projection.imports
+    assert "pkg.umath" not in projection.imports
+    assert "pkg.umath" in projection.dynamic_relative_import_candidates
 
     falls_through = ast.parse(
         "try:\n"

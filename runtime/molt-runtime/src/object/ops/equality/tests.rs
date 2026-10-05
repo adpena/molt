@@ -461,11 +461,25 @@ fn exact_integer_real_and_complex_equality_preserves_nonfinite_and_fractional_ed
                 let complex = complex_bits(_py, value, -0.0);
                 for real in [float, complex] {
                     assert_eq!(
-                        obj_eq(_py, obj_from_bits(bits), obj_from_bits(real)),
+                        unsafe {
+                            eq_bool_from_bits(
+                                _py,
+                                obj_from_bits(bits).bits(),
+                                obj_from_bits(real).bits(),
+                            )
+                        }
+                        .expect("numeric equality must complete"),
                         expected
                     );
                     assert_eq!(
-                        obj_eq(_py, obj_from_bits(real), obj_from_bits(bits)),
+                        unsafe {
+                            eq_bool_from_bits(
+                                _py,
+                                obj_from_bits(real).bits(),
+                                obj_from_bits(bits).bits(),
+                            )
+                        }
+                        .expect("numeric equality must complete"),
                         expected
                     );
                 }
@@ -474,16 +488,36 @@ fn exact_integer_real_and_complex_equality_preserves_nonfinite_and_fractional_ed
             }
             let nan = crate::object::ops::float_result_bits(_py, f64::NAN);
             let imaginary = complex_bits(_py, 0.0, 1.0);
-            assert!(!obj_eq(_py, obj_from_bits(bits), obj_from_bits(nan)));
-            assert!(!obj_eq(_py, obj_from_bits(bits), obj_from_bits(imaginary)));
+            assert!(
+                !unsafe {
+                    eq_bool_from_bits(_py, obj_from_bits(bits).bits(), obj_from_bits(nan).bits())
+                }
+                .expect("numeric equality must complete")
+            );
+            assert!(
+                !unsafe {
+                    eq_bool_from_bits(
+                        _py,
+                        obj_from_bits(bits).bits(),
+                        obj_from_bits(imaginary).bits(),
+                    )
+                }
+                .expect("numeric equality must complete")
+            );
             dec_ref_bits(_py, nan);
             dec_ref_bits(_py, imaginary);
             dec_ref_bits(_py, bits);
         }
         let complex = complex_bits(_py, 7.0, 0.0);
         let real = MoltObject::from_float(7.0);
-        assert!(obj_eq(_py, real, obj_from_bits(complex)));
-        assert!(obj_eq(_py, obj_from_bits(complex), real));
+        assert!(
+            unsafe { eq_bool_from_bits(_py, real.bits(), obj_from_bits(complex).bits()) }
+                .expect("numeric equality must complete")
+        );
+        assert!(
+            unsafe { eq_bool_from_bits(_py, obj_from_bits(complex).bits(), real.bits()) }
+                .expect("numeric equality must complete")
+        );
         dec_ref_bits(_py, complex);
         assert_eq!(crate::molt_exception_pending(), 0);
     });

@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 import tomllib
 
-from molt.source_root import compiler_source_root
+from .source_root import compiler_source_root
 
 
 CI_CARGO_POLICY_SCHEMA = "molt.ci-resource-policy.v2"

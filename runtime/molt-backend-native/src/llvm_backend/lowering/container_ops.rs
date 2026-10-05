@@ -254,13 +254,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             self.borrowed_operands_continue_if_clear(&mut custody, "inserted");
         }
-        let result = self.finish_borrowed_operands(custody, aggregate, "aggregate_result", |this| {
-            let release = this.ensure_runtime_import(MOLT_DEC_REF_OBJ);
-            this.backend
-                .builder
-                .build_call(release, &[aggregate.into()], "aggregate_abort_release")
-                .unwrap();
-        });
+        let result =
+            self.finish_borrowed_operands(custody, aggregate, "aggregate_result", |this| {
+                let release = this.ensure_runtime_import(MOLT_DEC_REF_OBJ);
+                this.backend
+                    .builder
+                    .build_call(release, &[aggregate.into()], "aggregate_abort_release")
+                    .unwrap();
+            });
         self.bind_owned_runtime_result(op, result.into());
     }
 
@@ -362,9 +363,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .into_int_value();
         // An iterator that could not be boxed was never advanced: its value
         // slot publishes None, never a previous iteration's word.
-        let done_bits = self.finish_borrowed_operands(custody, done_bits, "iter_next_unboxed", |this| {
-            this.backend.builder.build_store(val_ptr, none).unwrap();
-        });
+        let done_bits =
+            self.finish_borrowed_operands(custody, done_bits, "iter_next_unboxed", |this| {
+                this.backend.builder.build_store(val_ptr, none).unwrap();
+            });
         let value_bits = self
             .backend
             .builder

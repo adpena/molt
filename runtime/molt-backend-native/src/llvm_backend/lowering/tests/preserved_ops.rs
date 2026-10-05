@@ -105,10 +105,6 @@ fn named_builtin_llvm_lowering_never_drops_the_first_argument() {
 fn lower_preserved_passthrough_class_routes_to_runtime() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
-    // `exception_set_cause` is an exact boxed-ABI kind on the admitted route.
-    backend
-        .runtime_callable_symbols
-        .insert("molt_exception_set_cause".into());
     backend.function_linkage_abis.insert(
         "gen_fn".to_string(),
         test_native_linkage_abi(vec![], Some(TirType::DynBox)),
@@ -127,13 +123,6 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
         ("gen_throw", 2, true, None, "molt_generator_throw"),
         ("gen_close", 1, true, None, "molt_generator_close"),
         (
-            "exception_set_cause",
-            2,
-            false,
-            None,
-            "molt_exception_set_cause",
-        ),
-        (
             "get_attr_special_obj",
             1,
             true,
@@ -144,6 +133,9 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
         ("binding_alias", 1, true, None, "molt_inc_ref_obj"),
         ("release", 1, true, None, "molt_dec_ref_obj"),
         ("guard_tag", 2, false, None, "molt_guard_type"),
+        ("guard_tag", 2, true, None, "molt_guard_type"),
+        ("guard_type", 2, false, None, "molt_guard_type"),
+        ("guard_type", 2, true, None, "molt_guard_type"),
         ("guard_layout", 3, true, None, "molt_guard_layout"),
         ("guard_dict_shape", 3, true, None, "molt_guard_layout"),
         ("dataclass_new", 4, true, None, "molt_dataclass_new"),
@@ -448,7 +440,6 @@ fn retired_exact_runtime_kinds_take_the_admitted_boxed_route() {
         ("ord", 1),
         ("string_join", 2),
         ("module_set_attr", 3),
-        ("exception_set_cause", 2),
         ("exception_stack_exit", 1),
         ("context_unwind_to", 2),
         ("class_merge_layout", 3),
@@ -1941,4 +1932,88 @@ fn lower_preserved_super_new_calls_runtime() {
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let ir = llvm_fn.print_to_string().to_string();
     assert!(ir.contains("molt_super_new"), "{ir}");
+}
+
+#[test]
+fn runtime_guard_results_return_the_original_operand_after_checking() {
+    for kind in ["guard_tag", "guard_type"] {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new(
+            format!("checked_alias_{kind}"),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        let source = entry.args[0].id;
+        let tag = entry.args[1].id;
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![source, tag],
+            results: vec![result],
+            attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let ir = try_lower_tir_to_llvm(&func, &backend)
+            .expect("guard lowering")
+            .print_to_string()
+            .to_string();
+        assert!(ir.contains("@molt_guard_type(i64 %0, i64 %1)"), "{ir}");
+        assert!(
+            ir.contains("ret i64 %0"),
+            "guard must return its source: {ir}"
+        );
+    }
+}
+
+#[test]
+fn runtime_guard_literal_tag_loads_one_entry_profile_flag_and_keeps_source() {
+    for kind in ["guard_tag", "guard_type"] {
+        let ctx = Context::create();
+        let backend = make_backend(&ctx);
+        let mut func = TirFunction::new(
+            format!("profile_guard_{kind}"),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let tag = func.fresh_value();
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        let source = entry.args[0].id;
+        entry.ops.push(const_int_def(tag, 5));
+        for _ in 0..2 {
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Copy,
+                operands: vec![source, tag],
+                results: vec![],
+                attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
+                source_span: None,
+            });
+        }
+        entry.ops.last_mut().unwrap().results = vec![result];
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let llvm = try_lower_tir_to_llvm(&func, &backend).expect("profile guard lowering");
+        assert!(llvm.verify(true));
+        let ir = llvm.print_to_string().to_string();
+        assert_eq!(
+            ir.matches("call i64 @molt_profile_enabled()").count(),
+            1,
+            "{ir}"
+        );
+        assert_eq!(ir.matches("call i64 @molt_guard_type(").count(), 2, "{ir}");
+        assert!(
+            ir.contains("guard_profile") && ir.contains("ret i64 %0"),
+            "{ir}"
+        );
+    }
 }

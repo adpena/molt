@@ -1,6 +1,10 @@
 {
   "authority": "tools/proof_plan.toml",
   "authority_inputs": [
+    "tools/compatibility_error_protocol.py",
+    "config/python_compatibility_error_sources.json",
+    "src/molt/stdlib/_compatibility_errors.py",
+    "runtime/molt-runtime/src/builtins/compatibility_error.rs",
     "tools/git_identity.py",
     "tools/proof_plan_cli.py",
     "src/molt/backend_daemon_suite_custody.py",
@@ -308,7 +312,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "bcf35f8ec86227bcb34c24b652f4e3e9b694b4d2fd733afdd689d03422ac1dd3",
+  "authority_sha256": "55d5c2e6add0fb28d771319c17d06cb72a6d135b76ec8d16321308fb00ff5e0c",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -708,6 +712,7 @@
         "src/molt/cli/module_graph.py",
         "src/molt/cli/python_module_names.py",
         "src/molt/cli/source_build_environment.py",
+        "src/molt/cli/source_build_environment_schema.py",
         "src/molt/cli/source_build_inventory.py",
         "src/molt/python_*.py",
         "src/molt/native_artifact_header.py",
@@ -3514,7 +3519,8 @@
         "rustc",
         "clang",
         "llvm-ar",
-        "llvm-nm"
+        "llvm-nm",
+        "wasm-ld"
       ]
     },
     {
@@ -4467,6 +4473,31 @@
         "python",
         "uv"
       ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/compatibility_error_protocol.py",
+        "--check"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.python-compatibility-errors.generated",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
     }
   ],
   "executor": {
@@ -4524,7 +4555,7 @@
         "headroom_seconds": 180,
         "projected_makespan_seconds": 3420,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 3060
+          "repository-policy": 3135
         }
       },
       "rust": {

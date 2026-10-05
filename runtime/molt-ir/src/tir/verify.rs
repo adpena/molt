@@ -212,14 +212,13 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
             // attribute handling remains separate from this generated table.
             match opcode_tir_verify_attr_rule_table(op.opcode) {
                 TirVerifyAttrRule::CallCallee if !op_has_call_callee(op) => {
-                    // Callee can be either an attribute or the first operand
-                    // (SimpleIR encodes it as `var`, which becomes an
-                    // operand). Direct native symbols carry executable callee
-                    // identity in metadata and may be zero-argument calls.
+                    // Direct calls carry a symbol; opaque calls carry a
+                    // callable operand. Native direct symbols may have no
+                    // operands, and builtins retain their own dispatch form.
                     errors.push(VerifyError::op(
                         *bid,
                         op_idx,
-                        format!("{:?} op has no callee (attr or operand)", op.opcode),
+                        format!("{:?} op has no callee for its call target role", op.opcode),
                     ));
                 }
                 TirVerifyAttrRule::CallMethod
@@ -285,21 +284,30 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 }
 
 fn op_has_call_callee(op: &super::ops::TirOp) -> bool {
-    if op.attrs.contains_key("callee")
-        || op.attrs.contains_key("s_value")
-        || !op.operands.is_empty()
-    {
+    use super::op_kinds_generated::{SimpleIrCallTargetRole, simpleir_call_target_role};
+
+    // Admit exactly the builtin identity and argument convention consumed by
+    // lowering and analysis; attribute or operand presence is not authority.
+    if op.opcode == super::ops::OpCode::CallBuiltin {
+        return op.builtin_call().is_some();
+    }
+    if super::call_targets::direct_call_symbol_for_op(op).is_some() {
         return true;
     }
-
-    matches!(
-        (
-            op.attrs.get("native_callable_binding"),
-            op.attrs.get("native_callable_symbol"),
-        ),
-        (Some(AttrValue::Str(binding)), Some(AttrValue::Str(symbol)))
-            if binding == "direct_symbol" && !symbol.is_empty()
-    )
+    let kind = match op.attrs.get("_original_kind") {
+        None => "call",
+        Some(AttrValue::Str(kind)) => kind.as_str(),
+        Some(_) => return false,
+    };
+    if simpleir_call_target_role(kind) != Some(SimpleIrCallTargetRole::Opaque) {
+        return false;
+    }
+    // The native ABI validator below checks the complete metadata and arity.
+    // Only invoke_ffi can replace its callable operand with a native symbol.
+    !op.operands.is_empty()
+        || (kind == "invoke_ffi"
+            && attr_str(op, "native_callable_binding") == Some("direct_symbol")
+            && attr_str(op, "native_callable_symbol").is_some_and(|symbol| !symbol.is_empty()))
 }
 
 fn attr_str<'a>(op: &'a super::ops::TirOp, key: &str) -> Option<&'a str> {
@@ -811,6 +819,260 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The verifier must admit the identity that lowering actually transports.
+    /// Operand presence cannot turn a direct call into a dynamic one, and a
+    /// symbol on an opaque spelling cannot replace its callable operand.
+    #[test]
+    fn call_target_roles_require_transportable_identity() {
+        use super::super::ops::{AttrDict, Dialect, OpCode, TirOp};
+        use super::super::types::TirType;
+
+        let check = |opcode,
+                     original: Option<AttrValue>,
+                     target: Option<(&str, AttrValue)>,
+                     operands,
+                     valid| {
+            let mut func = TirFunction::new(
+                "call_role".into(),
+                vec![TirType::DynBox],
+                TirType::None,
+                crate::FunctionReturnAbi::Void,
+            );
+            let mut attrs = AttrDict::new();
+            if let Some(kind) = original {
+                attrs.insert("_original_kind".into(), kind);
+            }
+            if let Some((key, value)) = target {
+                attrs.insert(key.into(), value);
+            }
+            let block = func.blocks.get_mut(&func.entry_block).unwrap();
+            block.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode,
+                operands: if operands { vec![ValueId(0)] } else { vec![] },
+                results: vec![],
+                attrs,
+                source_span: None,
+            });
+            block.terminator = Terminator::Return { values: vec![] };
+            let result = verify_function(&func);
+            if valid {
+                assert!(result.is_ok(), "{func:?}: {result:?}");
+            } else {
+                let errors = result.expect_err("untransportable call identity must fail");
+                assert!(
+                    errors
+                        .iter()
+                        .any(|error| error.message.contains("has no callee")),
+                    "{errors:?}"
+                );
+            }
+        };
+        for kind in [None, Some("call"), Some("call_internal")] {
+            for operands in [false, true] {
+                let original = kind.map(|kind| AttrValue::Str(kind.into()));
+                check(
+                    OpCode::Call,
+                    original.clone(),
+                    Some(("s_value", AttrValue::Str("fixture_target".into()))),
+                    operands,
+                    true,
+                );
+                for target in [
+                    None,
+                    Some(("callee", AttrValue::Str("fixture_target".into()))),
+                    Some(("s_value", AttrValue::Str(String::new()))),
+                    Some(("s_value", AttrValue::Int(1))),
+                ] {
+                    check(OpCode::Call, original.clone(), target, operands, false);
+                }
+            }
+        }
+        for kind in [
+            "call_func",
+            "call_function",
+            "call_indirect",
+            "call_bind",
+            "call_guarded",
+            "invoke_ffi",
+        ] {
+            for target in [
+                None,
+                Some(("s_value", AttrValue::Str("incidental".into()))),
+                Some(("callee", AttrValue::Str("incidental".into()))),
+            ] {
+                for operands in [false, true] {
+                    check(
+                        OpCode::Call,
+                        Some(AttrValue::Str(kind.into())),
+                        target.clone(),
+                        operands,
+                        operands,
+                    );
+                }
+            }
+        }
+        for original in [AttrValue::Str("unknown_call".into()), AttrValue::Bool(true)] {
+            check(
+                OpCode::Call,
+                Some(original),
+                Some(("s_value", AttrValue::Str("fixture_target".into()))),
+                true,
+                false,
+            );
+        }
+        for kind in ["gpu_thread_id", "gpu_barrier"] {
+            let symbol =
+                super::super::call_targets::gpu_runtime_symbol_for_simple_kind(kind).unwrap();
+            check(
+                OpCode::Call,
+                Some(AttrValue::Str(kind.into())),
+                Some(("s_value", AttrValue::Str(symbol.into()))),
+                false,
+                true,
+            );
+            check(
+                OpCode::Call,
+                Some(AttrValue::Str(kind.into())),
+                Some(("s_value", AttrValue::Str("wrong_symbol".into()))),
+                true,
+                false,
+            );
+        }
+        // Dedicated builtin dispatch retains its separate admission contract.
+        check(OpCode::CallBuiltin, None, None, true, true);
+        check(
+            OpCode::CallBuiltin,
+            None,
+            Some(("s_value", AttrValue::Str("len".into()))),
+            false,
+            true,
+        );
+        check(OpCode::CallBuiltin, None, None, false, false);
+    }
+
+    /// Admission follows the executable builtin convention, including named
+    /// zero-argument calls and the specialized range/print wire spellings.
+    #[test]
+    fn builtin_call_admission_uses_canonical_dispatch_contract() {
+        use super::super::ops::{AttrDict, Dialect, OpCode, TirOp};
+        use super::super::types::TirType;
+
+        let check = |attrs: AttrDict, operands: usize, results: usize, valid: bool| {
+            let mut func = TirFunction::new(
+                "builtin_admission".into(),
+                vec![TirType::DynBox; operands],
+                TirType::None,
+                crate::FunctionReturnAbi::Void,
+            );
+            let results = (0..results).map(|_| func.fresh_value()).collect();
+            let block = func.blocks.get_mut(&func.entry_block).unwrap();
+            block.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::CallBuiltin,
+                operands: (0..operands).map(|index| ValueId(index as u32)).collect(),
+                results,
+                attrs,
+                source_span: None,
+            });
+            block.terminator = Terminator::Return { values: vec![] };
+            let result = verify_function(&func);
+            if valid {
+                assert!(result.is_ok(), "{func:?}: {result:?}");
+            } else {
+                let errors = result.expect_err("malformed builtin dispatch must fail admission");
+                assert!(
+                    errors
+                        .iter()
+                        .any(|error| error.message.contains("CallBuiltin op has no callee")),
+                    "{errors:?}"
+                );
+            }
+        };
+        for operands in [0, 1, 3] {
+            for results in [0, 1] {
+                for key in ["name", "s_value"] {
+                    check(
+                        AttrDict::from([(key.into(), AttrValue::Str("len".into()))]),
+                        operands,
+                        results,
+                        true,
+                    );
+                }
+                check(
+                    AttrDict::from([
+                        ("name".into(), AttrValue::Str("len".into())),
+                        ("s_value".into(), AttrValue::Str("len".into())),
+                    ]),
+                    operands,
+                    results,
+                    true,
+                );
+                check(AttrDict::new(), operands, results, operands != 0);
+                for kind in ["print", "builtin_print"] {
+                    check(
+                        AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
+                        operands,
+                        results,
+                        true,
+                    );
+                }
+            }
+        }
+        for operands in 0..=4 {
+            check(
+                AttrDict::from([("_original_kind".into(), AttrValue::Str("range_new".into()))]),
+                operands,
+                1,
+                operands == 3,
+            );
+        }
+        for operands in [0, 1] {
+            for key in ["name", "s_value", "_original_kind"] {
+                for value in [AttrValue::Str(String::new()), AttrValue::Int(1)] {
+                    check(AttrDict::from([(key.into(), value)]), operands, 1, false);
+                }
+            }
+            for key in [
+                "callee",
+                "runtime_symbol",
+                "native_callable_symbol",
+                "native_callable_export",
+            ] {
+                let mut attrs = AttrDict::from([(key.into(), AttrValue::Str("len".into()))]);
+                check(attrs.clone(), operands, 1, false);
+                attrs.insert("name".into(), AttrValue::Str("len".into()));
+                check(attrs, operands, 1, false);
+            }
+        }
+        for attrs in [
+            AttrDict::from([
+                ("name".into(), AttrValue::Str("len".into())),
+                ("s_value".into(), AttrValue::Str("abs".into())),
+            ]),
+            AttrDict::from([
+                ("name".into(), AttrValue::Str("len".into())),
+                ("_original_kind".into(), AttrValue::Str("print".into())),
+            ]),
+            AttrDict::from([
+                ("name".into(), AttrValue::Str("len".into())),
+                ("_original_kind".into(), AttrValue::Str("range_new".into())),
+            ]),
+            AttrDict::from([(
+                "_original_kind".into(),
+                AttrValue::Str("unknown_builtin".into()),
+            )]),
+        ] {
+            check(attrs, 3, 1, false);
+        }
+        check(
+            AttrDict::from([("name".into(), AttrValue::Str("len".into()))]),
+            1,
+            2,
+            false,
+        );
+    }
 
     #[test]
     fn generated_preserved_shapes_fail_before_target_lowering() {

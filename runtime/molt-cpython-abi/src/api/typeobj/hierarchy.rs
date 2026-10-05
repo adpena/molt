@@ -4,7 +4,11 @@ use super::*;
 use crate::api::refcount::OwnedPyObject;
 use crate::api::sequences::{PyTuple_GetItem, PyTuple_New, PyTuple_SetItem, PyTuple_Size};
 
-pub(super) unsafe fn prepare(tp: *mut PyTypeObject, projected: bool) -> c_int {
+pub(super) unsafe fn prepare(
+    bridge: &crate::bridge::ObjectBridge,
+    tp: *mut PyTypeObject,
+    projected: bool,
+) -> c_int {
     unsafe {
         let object = &raw mut crate::abi_types::PyBaseObject_Type;
         if (*tp).tp_base.is_null() && tp != object {
@@ -16,7 +20,7 @@ pub(super) unsafe fn prepare(tp: *mut PyTypeObject, projected: bool) -> c_int {
         let base = (*tp).tp_base;
         let _base = OwnedPyObject::from_borrowed(base.cast());
         if !base.is_null() {
-            if PyType_Ready(base) < 0 {
+            if ready_type(bridge, base) < 0 {
                 return -1;
             }
             if (*tp).ob_base.ob_base.ob_type.is_null() {
@@ -51,7 +55,7 @@ pub(super) unsafe fn prepare(tp: *mut PyTypeObject, projected: bool) -> c_int {
             }
             for index in 0..count {
                 let base = PyTuple_GetItem(bases.as_ptr(), index);
-                if base.is_null() || PyType_Ready(base.cast()) < 0 {
+                if base.is_null() || ready_type(bridge, base.cast()) < 0 {
                     return -1;
                 }
             }

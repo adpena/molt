@@ -4,6 +4,14 @@ import re
 import runpy
 from pathlib import Path
 
+from molt.rust_source_scan import (
+    mask_rust_comments_and_strings,
+    mask_rust_test_items,
+    rust_block_region,
+    rust_delimiter_end,
+    rust_token_range,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -20,17 +28,14 @@ MEMORYVIEW_OFFSET_FILES = [
     ROOT / "runtime/molt-runtime/src/object/memoryview.rs",
 ]
 MOLT_HEADER_PATH = ROOT / "include/molt/molt.h"
-PYTHON_HEADER_PATH = ROOT / "include/molt/Python.h"
 RUNTIME_MEMORYVIEW_PATH = ROOT / "runtime/molt-runtime/src/object/memoryview.rs"
 RUNTIME_BUILDERS_PATH = ROOT / "runtime/molt-runtime/src/object/builders.rs"
+RUNTIME_OPS_ITER_PATH = ROOT / "runtime/molt-runtime/src/object/ops_iter.rs"
 C_API_MOLT_API_PATH = ROOT / "runtime/molt-runtime/src/c_api/molt_api.rs"
-C_API_MOD_PATH = ROOT / "runtime/molt-runtime/src/c_api/mod.rs"
 C_API_SURFACE_PATH = (
     ROOT / "docs/spec/areas/compat/surfaces/c_api/libmolt_c_api_surface.md"
 )
 CPYTHON_ABI_HOOKS_PATH = ROOT / "runtime/molt-cpython-abi/src/hooks.rs"
-CPYTHON_ABI_TYPES_PATH = ROOT / "runtime/molt-cpython-abi/src/abi_types.rs"
-CPYTHON_ABI_BUFFER_PATH = ROOT / "runtime/molt-cpython-abi/src/api/buffer.rs"
 HTTP_BRIDGE_PATH = ROOT / "runtime/molt-runtime-http/src/bridge.rs"
 
 MOLT_BUFFER_VIEW_FIELDS = [
@@ -56,36 +61,27 @@ FORBIDDEN_RAW_STRIDE_PATTERNS = [
 ]
 
 
-def _function_body(source: str, name: str) -> str:
-    match = re.search(rf"\b{name}\s*\([^)]*\)\s*\{{", source)
-    assert match is not None, f"{name} is missing"
-    depth = 1
-    pos = match.end()
-    while pos < len(source) and depth:
-        char = source[pos]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-        pos += 1
-    assert depth == 0, f"{name} body is unbalanced"
-    return source[match.end() : pos - 1]
+def _rust_block_body(source: str, header: str, *, depth: int | None = None) -> str:
+    region = rust_block_region(source, header, depth=depth)
+    assert region is not None, f"{header} is missing, ambiguous or unbalanced"
+    return mask_rust_comments_and_strings(source[slice(*region)])
 
 
-def _rust_function_body(source: str, name: str) -> str:
-    match = re.search(rf"\bfn\s+{re.escape(name)}\b[^\{{]*\{{", source)
-    assert match is not None, f"{name} is missing"
-    depth = 1
-    pos = match.end()
-    while pos < len(source) and depth:
-        char = source[pos]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-        pos += 1
-    assert depth == 0, f"{name} body is unbalanced"
-    return source[match.end() : pos - 1]
+def _rust_function_body(source: str, name: str, *, owner: str | None = None) -> str:
+    # Select one production declaration in its owning scope. Comments, literals
+    # and test-only stand-ins cannot satisfy these source contracts.
+    code = mask_rust_comments_and_strings(mask_rust_test_items(source))
+    if owner is not None:
+        code = _rust_block_body(code, owner, depth=0)
+    declaration = rust_token_range(code, f"fn {name}", depth=0)
+    assert declaration is not None, f"{name} is missing or ambiguous in {owner}"
+    opening = code.find("{", declaration[1])
+    assert opening >= 0 and ";" not in code[declaration[1] : opening], (
+        f"{name} has no function body"
+    )
+    end = rust_delimiter_end(code, opening)
+    assert end is not None, f"{name} body is unbalanced"
+    return code[opening + 1 : end - 1]
 
 
 def _c_molt_buffer_fields(source: str) -> list[str]:
@@ -105,13 +101,10 @@ def _c_molt_buffer_fields(source: str) -> list[str]:
     return fields
 
 
-def _rust_molt_buffer_fields(source: str) -> list[str]:
-    match = re.search(
-        r"pub\s+struct\s+MoltBufferView\s*\{(?P<body>.*?)\n\}", source, re.S
-    )
-    assert match is not None, "Rust MoltBufferView struct is missing"
+def _rust_molt_buffer_fields(source: str, name: str = "MoltBufferView") -> list[str]:
+    body = _rust_block_body(mask_rust_test_items(source), f"pub struct {name}", depth=0)
     fields: list[str] = []
-    for raw_line in match.group("body").splitlines():
+    for raw_line in body.splitlines():
         line = raw_line.strip()
         if line.startswith("pub "):
             fields.append(line.removeprefix("pub ").split(":", 1)[0].strip())
@@ -128,22 +121,13 @@ def _c_define_value(source: str, name: str) -> int:
     return int(match.group(1))
 
 
-def _rust_const_value(source: str, name: str) -> int:
-    match = re.search(
-        rf"^\s*pub(?:\(crate\))?\s+const\s+{re.escape(name)}\s*:\s*\w+\s*=\s*([0-9]+)\s*;",
-        source,
-        re.M,
-    )
-    assert match is not None, f"{name} is missing from Rust source"
-    return int(match.group(1))
-
-
 def test_memoryview_offsets_use_checked_stride_primitives() -> None:
     offenders: list[str] = []
     for path in MEMORYVIEW_OFFSET_FILES:
-        for lineno, line in enumerate(
-            path.read_text(encoding="utf-8").splitlines(), start=1
-        ):
+        code = mask_rust_comments_and_strings(
+            mask_rust_test_items(path.read_text(encoding="utf-8"))
+        )
+        for lineno, line in enumerate(code.splitlines(), start=1):
             if any(pattern.search(line) for pattern in FORBIDDEN_RAW_STRIDE_PATTERNS):
                 offenders.append(f"{path.relative_to(ROOT)}:{lineno}: {line.strip()}")
 
@@ -154,17 +138,37 @@ def test_memoryview_offsets_use_checked_stride_primitives() -> None:
     )
 
 
-def test_memoryview_contains_uses_strided_search_without_materializing_view() -> None:
+def test_memoryview_contains_streams_shared_iterator_and_scalar_access() -> None:
     subscript_source = (
         ROOT / "runtime/molt-runtime/src/object/ops/subscript.rs"
     ).read_text(encoding="utf-8")
-    contains_body = _rust_function_body(subscript_source, "molt_contains")
+    iter_source = RUNTIME_OPS_ITER_PATH.read_text(encoding="utf-8")
+    contains_body = _rust_function_body(subscript_source, "contains_impl")
+    search_body = _rust_function_body(subscript_source, "iterable_contains")
 
-    assert "unsafe fn memoryview_strided_contains_byte" in subscript_source
-    assert "unsafe fn memoryview_strided_contains_bytes" in subscript_source
-    assert "memoryview_strided_contains_byte(" in contains_body
-    assert "memoryview_strided_contains_bytes(" in contains_body
-    assert "Vec::with_capacity(len)" not in contains_body
+    for entry, builtin in (
+        ("molt_contains", "false"),
+        ("molt_contains_builtin", "true"),
+    ):
+        assert f"contains_impl(container_bits, item_bits, {builtin})" in (
+            _rust_function_body(subscript_source, entry)
+        )
+    assert "TYPE_ID_MEMORYVIEW" not in contains_body
+    assert "return iterable_contains(_py, container_bits, item_bits)" in contains_body
+    assert "memoryview_strided_contains_" not in mask_rust_comments_and_strings(
+        subscript_source
+    )
+    assert "OwnedIterator::new(_py, container_bits)" in search_body
+    assert "match iter.next()" in search_body
+    assert "compare_object_eq_bool(_py, obj_from_bits(value), item)" in search_body
+    step_body = _rust_block_body(
+        _rust_function_body(iter_source, "molt_iter_next"),
+        "if target_type == TYPE_ID_MEMORYVIEW",
+    )
+    assert "molt_getitem_builtin(" in step_body
+    for body in (contains_body, search_body, step_body):
+        for materialization in ("Vec::", ".collect(", ".to_vec(", "memoryview_tobytes"):
+            assert materialization not in body
 
 
 def test_molt_buffer_view_v2_layout_is_mirrored() -> None:
@@ -179,9 +183,7 @@ def test_molt_buffer_view_v2_layout_is_mirrored() -> None:
     assert _rust_molt_buffer_fields(cpython_abi_source) == MOLT_BUFFER_VIEW_FIELDS
     assert (
         _canonical_buffer_fields(
-            _rust_molt_buffer_fields(
-                http_bridge_source.replace("BufferExport", "MoltBufferView")
-            )
+            _rust_molt_buffer_fields(http_bridge_source, "BufferExport")
         )
         == MOLT_BUFFER_VIEW_FIELDS
     )
@@ -224,31 +226,57 @@ def test_molt_buffer_backing_capacity_is_runtime_admission_authority() -> None:
     builders_source = RUNTIME_BUILDERS_PATH.read_text(encoding="utf-8")
     c_api_source = C_API_MOLT_API_PATH.read_text(encoding="utf-8")
 
-    assert "pub(crate) span_len: usize" in runtime_source
-    assert "pub(crate) min_offset: isize" in runtime_source
-    assert "pub(crate) max_end_offset: isize" in runtime_source
-    assert "pub(crate) fn memoryview_strided_bounds" in runtime_source
-    assert "fn memoryview_strided_span_len" not in runtime_source
-    assert "span_len: bounds.span_len" in runtime_source
-    assert "backing_capacity_len" in runtime_source
+    storage_body = _rust_block_body(
+        mask_rust_test_items(runtime_source),
+        "pub(crate) struct TypedStridedStorage",
+        depth=0,
+    )
+    assert "pub(crate) span_len: usize" in storage_body
+    assert "pub(crate) min_offset: isize" in storage_body
+    assert "pub(crate) max_end_offset: isize" in storage_body
+    assert "fn memoryview_strided_span_len" not in mask_rust_comments_and_strings(
+        runtime_source
+    )
+    storage_new = _rust_function_body(
+        runtime_source, "new", owner="impl TypedStridedStorage"
+    )
+    assert (
+        "memoryview_strided_bounds(shape.as_slice(), strides.as_slice(), itemsize)?"
+        in (storage_new)
+    )
+    assert "span_len: bounds.span_len" in storage_new
+    assert "self.fits_in_base_len(base_slice.len())" in _rust_function_body(
+        runtime_source, "backing_capacity_len", owner="impl TypedStridedStorage"
+    )
     span_body = _rust_function_body(runtime_source, "memoryview_strided_bounds")
     assert "stride < 0" not in span_body
     assert "min_offset" in span_body
     assert "max_end_offset" in span_body
 
-    alloc_body = _rust_function_body(builders_source, "alloc_memoryview_from_storage")
-    assert "storage.span_len" in alloc_body
-    assert "storage.fits_in_base_len(base_slice.len())" in alloc_body
+    wrapper_body = _rust_function_body(builders_source, "alloc_memoryview_from_storage")
+    assert "match PinnedMemoryViewStorage::new(py, storage)" in wrapper_body
+    assert "Ok(pinned) => pinned.allocate()" in wrapper_body
+    assert "alloc_object(" not in wrapper_body
+    owner = "impl<'a, 'py> PinnedMemoryViewStorage<'a, 'py>"
+    pin_body = _rust_function_body(builders_source, "new", owner=owner)
+    assert "ScopedBufferExport::new(py, storage.owner_bits)?" in pin_body
+    alloc_body = _rust_function_body(builders_source, "allocate", owner=owner)
+    # The existing runtime null/span/capacity cases own behavior. These guards
+    # keep backing admission in the pinned allocation authority after the move.
+    assert "storage.base_bits == 0 && storage.span_len == 0" in alloc_body
     assert "std::ptr::NonNull::<u8>::dangling().as_ptr()" in alloc_body
+    assert "storage.fits_in_base_len(base_slice.len())" in alloc_body
 
     from_buffer_body = _rust_function_body(c_api_source, "molt_memoryview_from_buffer")
-    assert "view.backing_capacity" in from_buffer_body
+    assert "usize::try_from(view.backing_capacity)" in from_buffer_body
+    source_body = _rust_block_body(from_buffer_body, "if source_owner != 0")
+    assert "TypedStridedStorage::from_object_bits(source_owner)" in source_body
+    assert "array_storage_from_object_bits(" in source_body
     assert "storage.fits_in_backing_len(backing_capacity)" in from_buffer_body
-    assert "storage.fits_in_base_len(base_len)" in from_buffer_body
-    assert "array_storage_from_object_bits" in from_buffer_body
-    assert "data_matches_base" in from_buffer_body
-    assert "base_data.add(offset).cast_mut()" in from_buffer_body
-    assert "== view.data" in from_buffer_body
+    admission_body = _rust_block_body(
+        from_buffer_body, "if logical_len == view.len && valid"
+    )
+    assert "alloc_memoryview_from_storage(_py, storage)" in admission_body
     assert "storage.fits_in_backing_len(backing_len)" not in from_buffer_body
 
 

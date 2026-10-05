@@ -746,21 +746,26 @@ pub fn run_simple_ir_module_pipeline_from_cached_tir(
         &mut options.stage_observer,
         TirSimpleIrModulePipelineStage::AfterModuleLower { module: &module },
     );
-    let module_pipeline_start = std::time::Instant::now();
+    // This duration exists solely for the optional stage observer.
+    let module_pipeline_start = options
+        .stage_observer
+        .is_some()
+        .then(std::time::Instant::now);
     let module_analysis = super::module_phase::run_module_pipeline(
         &mut module,
         options.target_info,
         options.non_inlinable,
     );
-    let module_pipeline_elapsed_ms = module_pipeline_start.elapsed().as_millis();
-    emit_simple_ir_module_stage(
-        &mut options.stage_observer,
-        TirSimpleIrModulePipelineStage::AfterModulePipeline {
-            module: &module,
-            changed_functions: module_analysis.changed_functions.len(),
-            elapsed_ms: module_pipeline_elapsed_ms,
-        },
-    );
+    if let Some(start) = module_pipeline_start {
+        emit_simple_ir_module_stage(
+            &mut options.stage_observer,
+            TirSimpleIrModulePipelineStage::AfterModulePipeline {
+                module: &module,
+                changed_functions: module_analysis.changed_functions.len(),
+                elapsed_ms: start.elapsed().as_millis(),
+            },
+        );
+    }
     backconvert_changed_tir_module_to_simple_ir(
         functions,
         &module,

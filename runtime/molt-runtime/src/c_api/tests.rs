@@ -800,8 +800,7 @@ extern "C" fn c_api_test_init_stores_tag_and_borrows_self(self_bits: u64, tag_bi
         }
         let name_bits = unsafe { molt_string_from(b"tag".as_ptr(), 3) };
         assert!(!obj_from_bits(name_bits).is_none());
-        let result =
-            crate::object::ops_builtins::molt_object_setattr(self_bits, name_bits, tag_bits);
+        let result = crate::molt_set_attr_name(self_bits, name_bits, tag_bits);
         dec_ref_bits(_py, name_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();

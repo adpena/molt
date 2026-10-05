@@ -128,8 +128,9 @@ _FRONTEND_AUX_SOURCE_RELPATHS: tuple[str, ...] = (
 
 
 # Roots of the frontend lowering computation. Reachability starts here and
-# follows module-level ``molt`` imports; anything not reached provably never runs
-# while a module is lowered and so cannot change the lowering result.
+# follows module-level ``molt`` imports. If a literal-relative anchor becomes
+# unknown, every admitted local owner can execute before a suffix fails; the
+# shared closure then captures the complete ``molt`` source domain.
 #
 #   * ``frontend/`` -- the whole Python->TIR frontend (visitors, sema, lowering),
 #     kept wholesale because its subpackages import one another.
@@ -146,16 +147,22 @@ _FRONTEND_AUX_SOURCE_RELPATHS: tuple[str, ...] = (
 #
 # These are a structural naming rule, not a hand-maintained membership list: a new
 # ``frontend_*`` / ``module_*`` driver is picked up automatically, and a new
-# backend/link/cargo file is excluded automatically because it is not a seed and
-# is not reachable from one.
+# backend/link/cargo file is excluded when no reachable edge or unknown-relative
+# coverage obligation includes it. Coverage deliberately broadens invalidation.
 _LOWERING_SCOPE_SEED_CLI_PREFIXES: tuple[str, ...] = ("frontend_", "module_")
 
 
 _FRONTEND_LOWERING_IMPORT_POLICY = PythonImportPolicy(
     module_level_only=True,
     include_parent_packages=False,
-    fail_on_nonliteral_dynamic_import=False,
+    # Persisted lowering results require complete eager dependency identity.
+    # Deferred bodies stay outside this projection. Unknown literal-relative
+    # anchors require full local byte coverage; nonliteral names still require
+    # the existing exact dynamic contract rather than partial candidates.
+    fail_on_nonliteral_dynamic_import=True,
     allowed_prefix="molt",
+    purpose="source_dependency",
+    unknown_relative_sources="local_inventory",
 )
 
 
@@ -184,6 +191,8 @@ def _lowering_scope_source_closure(project_root: Path) -> LocalPythonSourceClosu
     inputs remain seeds. Grouped fromlist requests prefer actual named submodules
     without importing package aggregates. New edges/topology are discovered on
     every build; only the explicit build transaction may reuse a whole closure.
+    Unknown literal-relative anchors widen source coverage to all admitted local
+    owners, including sources that can execute before the import fails.
     """
     return local_python_import_closure(
         project_root,
@@ -199,6 +208,7 @@ class _SourceFingerprintInputs:
 
     paths: tuple[Path, ...]
     source_sha256: Mapping[Path, str] = field(default_factory=dict)
+    topology_digest: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -217,9 +227,12 @@ def _frontend_semantic_tooling_sources(project_root: Path) -> _SourceFingerprint
     ``_lowering_scope_source_closure``): the whole ``frontend/`` tree plus
     every ``molt``-owned file reachable from the frontend/module drivers by
     module-level import, plus the shared aux semantic files. No hand-maintained
-    denylist: adding a backend/link/cargo file never enters this scope (it is not
-    reachable from a lowering seed), while a new lowering-relevant module that a
-    driver imports is picked up automatically.
+    denylist: known requests remain reachability-scoped. An unknown literal
+    relative anchor requires complete local-owner coverage and consequently
+    includes backend/link/cargo, guest stdlib and GPU Python sources as bytes.
+    This is an invalidation cost, not a claim that these sources execute on the
+    host or a grant of guest import metadata. New files and namespace topology
+    are recaptured on the next operation.
 
     The bias is strictly toward inclusion -- every file on the frontend import
     path is hashed, so a spurious cold-start is the worst outcome; a stale
@@ -243,7 +256,9 @@ def _frontend_semantic_tooling_sources(project_root: Path) -> _SourceFingerprint
         # Existing aux sources have already been admitted and captured by the
         # closure. Only absent or aliased lexical paths still need resolving.
         paths.append(source if source in closure.source_sha256 else source.resolve())
-    return _SourceFingerprintInputs(tuple(sorted(set(paths))), closure.source_sha256)
+    return _SourceFingerprintInputs(
+        tuple(sorted(set(paths))), closure.source_sha256, closure.topology_digest
+    )
 
 
 # Per-process cache of source-tree content digests. The key includes a
@@ -436,6 +451,10 @@ def _source_tree_cache_fingerprint(
     extra_fingerprint_inputs: str,
 ) -> str:
     path_keys = tuple(str(path) for path in inputs.paths)
+    if inputs.topology_digest:
+        extra_fingerprint_inputs += (
+            f"\nlocal-python-topology:{inputs.topology_digest}\n"
+        )
     root = root.resolve()
     transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
     transaction_key = (
@@ -576,8 +595,8 @@ def _frontend_semantic_tooling_fingerprint() -> str:
 
     Identical in construction to ``_cache_tooling_fingerprint`` but over the
     lowering-relevant scope only (see ``_frontend_semantic_tooling_sources``),
-    so an unrelated backend/link/daemon/cargo/toolchain edit does not cold-start a
-    module's persisted analysis / lowering / import-graph entry. The distinct
+    so known import graphs exclude unrelated backend/link/daemon/cargo/toolchain
+    edits. Unknown relative anchors require broader local coverage. The distinct
     ``scope`` tag keeps this digest namespace-separated from the broad
     ``frontend-tooling`` fingerprint.
     """
@@ -594,17 +613,32 @@ def _frontend_semantic_tooling_snapshot() -> _FrontendSemanticSourceSnapshot:
         snapshot = transaction.frontend_semantic_sources.get(root)
         if snapshot is not None:
             return snapshot
-    inputs = _frontend_semantic_tooling_sources(root)
-    snapshot = _FrontendSemanticSourceSnapshot(
-        root=root,
-        source_paths=inputs.paths,
-        fingerprint=_source_tree_cache_fingerprint(
+    from molt.cli.compiler_identity import installed_compiler_admission
+
+    installed = installed_compiler_admission(root)
+    if installed is not None:
+        # The admitted release already commits to every shipped input. Reuse
+        # that generation authority without walking its mutable-source graph.
+        # Domain separation is for this cache consumer, not runtime metadata.
+        snapshot = _FrontendSemanticSourceSnapshot(
             root=root,
-            inputs=inputs,
-            scope="frontend-semantic-tooling",
-            extra_fingerprint_inputs="",
-        ),
-    )
+            source_paths=(),
+            fingerprint=_compute_source_tree_content_digest(
+                (), "frontend-semantic-tooling", f"installed:{installed.fingerprint}\n"
+            ),
+        )
+    else:
+        inputs = _frontend_semantic_tooling_sources(root)
+        snapshot = _FrontendSemanticSourceSnapshot(
+            root=root,
+            source_paths=inputs.paths,
+            fingerprint=_source_tree_cache_fingerprint(
+                root=root,
+                inputs=inputs,
+                scope="frontend-semantic-tooling",
+                extra_fingerprint_inputs="",
+            ),
+        )
     if transaction is not None:
         transaction.frontend_semantic_sources[root] = snapshot
     return snapshot

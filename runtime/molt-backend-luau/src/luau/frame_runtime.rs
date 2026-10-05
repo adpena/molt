@@ -333,14 +333,31 @@ local function molt_exception_set_value(exception: any, value: any): nil
 	return nil
 end
 
-local function molt_exception_set_cause(exception: any, cause: any): nil
-	exception.__cause__ = cause
-	exception.__suppress_context__ = true
-	return nil
-end
-
 local function molt_exception_reraise(): nil
 	return molt_exception_set_last(molt_exception_active() or {__type="RuntimeError", __msg="No active exception to reraise"})
+end
+
+local function molt_exception_normalize_raise(value: any, cause: boolean): any
+	if type(value) == "table" and rawget(value, "__molt_is_type") == true then
+		if not molt_issubclass(value, molt_builtin_type(102)) then
+			error({__type="TypeError", __msg=if cause then "exception causes must derive from BaseException" else "exceptions must derive from BaseException"}, 0)
+		end
+		value = molt_call_checked(value)
+	end
+	if type(value) ~= "table" or rawget(value, "__type") == nil or not molt_exception_match(value, "BaseException") then
+		error({__type="TypeError", __msg=if cause then "exception causes must derive from BaseException" else "exceptions must derive from BaseException"}, 0)
+	end
+	return value
+end
+
+local function molt_exception_prepare_raise(exception: any, cause: any): any
+	exception = molt_exception_normalize_raise(exception, false)
+	if cause ~= molt_missing_sentinel then
+		if cause ~= nil then cause = molt_exception_normalize_raise(cause, true) end
+		rawset(exception, "__cause__", cause)
+		rawset(exception, "__suppress_context__", true)
+	end
+	return exception
 end
 
 local function molt_exception_propagate(): nil

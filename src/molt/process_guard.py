@@ -135,6 +135,7 @@ def run_completed_command(
     stderr: int | None = None,
     encoding: str | None = None,
     errors: str | None = None,
+    progress_label: str | None = None,
     guard_loader: GuardLoader = load_harness_memory_guard,
 ) -> subprocess.CompletedProcess[Any]:
     if isinstance(cmd, (str, bytes)):
@@ -200,6 +201,7 @@ def run_completed_command(
         timeout=timeout,
         encoding=encoding or "utf-8",
         errors=errors or "strict",
+        progress_label=progress_label,
     )
     if stderr == subprocess.DEVNULL:
         result.stderr = None

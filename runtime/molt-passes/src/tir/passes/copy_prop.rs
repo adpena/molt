@@ -235,7 +235,10 @@ mod tests {
         let c = func.fresh_value();
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![a]));
+        entry.ops.push(TirOp {
+            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(14))]),
+            ..make_op(OpCode::ConstInt, vec![], vec![a])
+        });
         entry.ops.push(make_op(OpCode::Copy, vec![a], vec![b]));
         entry.ops.push(make_op(OpCode::Copy, vec![b], vec![c]));
         entry.terminator = Terminator::Return { values: vec![c] };
@@ -265,7 +268,10 @@ mod tests {
         let b = func.fresh_value();
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![a]));
+        entry.ops.push(TirOp {
+            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(15))]),
+            ..make_op(OpCode::ConstInt, vec![], vec![a])
+        });
         // Copy with a fused attribute — must NOT be propagated.
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
@@ -342,7 +348,10 @@ mod tests {
         let a = func.fresh_value();
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![a]));
+        entry.ops.push(TirOp {
+            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(16))]),
+            ..make_op(OpCode::ConstInt, vec![], vec![a])
+        });
         entry.terminator = Terminator::Return { values: vec![a] };
 
         let stats = run(&mut func);

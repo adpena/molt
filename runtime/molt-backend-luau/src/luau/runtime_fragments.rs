@@ -82,10 +82,15 @@ pub(super) fn fragments() -> Vec<(&'static str, String)> {
     fragments.push(("float divmod", std::mem::take(&mut source)));
     source.push_str("local molt_numeric_error_policy = {\n");
     for context in numeric_error_policy_generated::NumericErrorContext::ALL {
-        let messages = [12, 13, 14].map(|minor| context.message(3, minor).expect("admitted target"));
+        let messages =
+            [12, 13, 14].map(|minor| context.message(3, minor).expect("admitted target"));
         source.push_str(&format!(
             "\t[{:?}] = {{class={:?}, [12]={:?}, [13]={:?}, [14]={:?}}},\n",
-            context.wire_key(), context.error_class(), messages[0], messages[1], messages[2]
+            context.wire_key(),
+            context.error_class(),
+            messages[0],
+            messages[1],
+            messages[2]
         ));
     }
     source.push_str(concat!(
@@ -208,7 +213,7 @@ end
         ),
         (
             "molt_bool",
-            "local function molt_bool(x: any): boolean\n\tif x == nil or x == false or x == 0 or x == \"\" then return false end\n\tif type(x) == \"table\" then local binary = molt_binary_metadata[x]; if binary ~= nil then return #binary.value > 0 end; if molt_dict_is_ordered(x) then return molt_dict_len(x) > 0 end; if molt_dict_view_is(x) then return molt_dict_view_len(x) > 0 end; if molt_set_is(x) then return molt_set_len(x) > 0 end; local packed = rawget(x, molt_sequence_length_key); if type(packed) == \"number\" then return packed > 0 end end\n\treturn true\nend\n",
+            "local function molt_bool(x: any): boolean\n\tif x == molt_not_implemented then\n\t\tif molt_sys_version_info[1] > 3 or (molt_sys_version_info[1] == 3 and molt_sys_version_info[2] >= 14) then error({__type=\"TypeError\", __msg=\"NotImplemented should not be used in a boolean context\"}) end\n\t\treturn true\n\tend\n\tif x == molt_ellipsis then return true end\n\tif x == nil or x == false or x == 0 or x == \"\" then return false end\n\tif type(x) == \"table\" then local binary = molt_binary_metadata[x]; if binary ~= nil then return #binary.value > 0 end; if molt_dict_is_ordered(x) then return molt_dict_len(x) > 0 end; if molt_dict_view_is(x) then return molt_dict_view_len(x) > 0 end; if molt_set_is(x) then return molt_set_len(x) > 0 end; local packed = rawget(x, molt_sequence_length_key); if type(packed) == \"number\" then return packed > 0 end end\n\treturn true\nend\n",
         ),
         (
             "molt_builtin_type",
@@ -216,7 +221,7 @@ end
         ),
         (
             "molt_type_of",
-            "local function molt_type_of(x: any): {[string]: any}\n\tif type(x) == \"table\" and x.__type then return {__name__ = x.__type, __molt_is_type = true} end\n\tif type(x) == \"table\" then\n\t\tif x.__molt_is_type then return molt_builtin_type(101) end\n\t\tlocal mt = getmetatable(x)\n\t\tif type(mt) == \"table\" and mt.__molt_is_type then return mt end\n\tend\n\tlocal t = type(x)\n\tif t == \"nil\" then return {__name__ = \"NoneType\", __molt_is_type = true} end\n\tif t == \"number\" then return molt_builtin_type(1) end\n\tif t == \"string\" then return molt_builtin_type(5) end\n\tif t == \"boolean\" then return molt_builtin_type(3) end\n\tif t == \"function\" then return {__name__ = \"function\", __molt_is_type = true} end\n\treturn {__name__ = t, __molt_is_type = true}\nend\n",
+            "local function molt_type_of(x: any): {[string]: any}\n\tif x == molt_not_implemented then return {__name__ = \"NotImplementedType\", __molt_is_type = true} end\n\tif x == molt_ellipsis then return {__name__ = \"ellipsis\", __molt_is_type = true} end\n\tif type(x) == \"table\" and x.__type then return {__name__ = x.__type, __molt_is_type = true} end\n\tif type(x) == \"table\" then\n\t\tif x.__molt_is_type then return molt_builtin_type(101) end\n\t\tlocal mt = getmetatable(x)\n\t\tif type(mt) == \"table\" and mt.__molt_is_type then return mt end\n\tend\n\tlocal t = type(x)\n\tif t == \"nil\" then return {__name__ = \"NoneType\", __molt_is_type = true} end\n\tif t == \"number\" then return molt_builtin_type(1) end\n\tif t == \"string\" then return molt_builtin_type(5) end\n\tif t == \"boolean\" then return molt_builtin_type(3) end\n\tif t == \"function\" then return {__name__ = \"function\", __molt_is_type = true} end\n\treturn {__name__ = t, __molt_is_type = true}\nend\n",
         ),
         (
             "molt_issubclass",
@@ -356,7 +361,8 @@ end
             .map(|&(name, source)| (name, source.to_string())),
     );
     source.push_str("local molt_not_implemented = {__molt_not_implemented = true}\n");
-    fragments.push(("not implemented", std::mem::take(&mut source)));
+    source.push_str("local molt_ellipsis = {}\n");
+    fragments.push(("singletons", std::mem::take(&mut source)));
     source.push_str(concat!(
         "local molt_exception_hierarchy = {\n",
         "\tZeroDivisionError = \"ArithmeticError\",\n",

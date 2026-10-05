@@ -14,12 +14,15 @@ from molt.cli.models import (
 )
 from molt.cli.module_import_scanner import (
     _DynamicRelativeImportDiscovery,
+    _collect_import_scan_requests,
     _collect_import_star_modules,
+    _complete_import_scan,
     _collect_imports,
     _collect_imports_for_graph,
     _sealed_import_modules,
 )
 from molt.cli.module_resolution import _ModuleResolutionCache
+from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 from molt.compiler_analysis.python_source_keys import (
     _PythonAstDigestAdmission,
     python_ast_digest,
@@ -75,9 +78,34 @@ def _custody(
         ("load_builtin('admitted.target', **options)", "admitted.target", "path"),
         ("load_builtin('admitted.target', **options)", "admitted.target", "ast"),
         ("load_builtin('admitted.target', **options)", "admitted.target", "missing"),
+        (
+            "__import__('admitted.target', fromlist=options)",
+            "admitted.target",
+            "matching",
+        ),
+        (
+            "load_builtin('admitted.target', fromlist=options)",
+            "admitted.target",
+            "matching",
+        ),
+        ("__import__('admitted.target', fromlist=[1])", "admitted.target", "matching"),
+        (
+            "__import__('admitted.target', fromlist=('*',))",
+            "admitted.target",
+            "matching",
+        ),
+        ("__import__('admitted.target', level=options)", "admitted.target", "matching"),
+        ("__import__('admitted.target', fromlist=options)", "admitted.target", "name"),
+        ("__import__('admitted.target', fromlist=options)", "admitted.target", "path"),
+        ("__import__('admitted.target', fromlist=options)", "admitted.target", "ast"),
+        (
+            "__import__('admitted.target', fromlist=options)",
+            "admitted.target",
+            "missing",
+        ),
     ],
 )
-def test_expanded_import_calls_require_exact_runtime_source_custody(
+def test_dynamic_import_operands_require_exact_runtime_source_custody(
     tmp_path: Path, call: str, candidate: str | None, claim: str
 ) -> None:
     source = (
@@ -112,6 +140,81 @@ def test_expanded_import_calls_require_exact_runtime_source_custody(
     else:
         with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
             collect()
+
+
+@pytest.mark.parametrize(
+    "namespace_expression",
+    [
+        "{'__package__': __package__, '__name__': 'wrong.mod'}",
+        "{**{'__package__': __package__}, '__name__': 'wrong.mod'}",
+        "{'__package__': __package__, '__name__': (__package__ := 'inside')}",
+    ],
+)
+@pytest.mark.parametrize(
+    "later_effect",
+    [
+        "globals().__delitem__('__package__')",
+        "globals().__setitem__('__package__', 'later')",
+    ],
+)
+def test_captured_dictionary_metadata_precedes_later_argument_effects(
+    namespace_expression, later_effect
+) -> None:
+    source = f"__import__('child', {namespace_expression}, {later_effect}, [], 1)\n"
+    captured = []
+
+    def importing(name, globals, locals, fromlist, level):
+        captured.append((name, dict(globals), fromlist, level))
+
+    namespace = {
+        "__package__": "pkg",
+        "__name__": "pkg.entry",
+        "__import__": importing,
+    }
+    exec(compile(source, "<captured-import-metadata>", "exec"), namespace)
+    assert captured[0][1]["__package__"] == "pkg"
+    assert namespace.get("__package__") != "pkg"
+
+    projection = _collect_imports_for_graph(ast.parse(source), "pkg.entry")
+    assert "pkg.child" in projection.dynamic_relative_import_candidates
+    assert not {"wrong.child", "later.child", "inside.child"} & set(
+        projection.dynamic_relative_import_candidates
+    )
+    assert "pkg.child" not in projection.imports
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+        _collect_imports(ast.parse(source), "pkg.entry")
+
+
+def test_captured_name_fallback_uses_its_read_point() -> None:
+    source = (
+        "__import__('child', {'__package__': None, '__spec__': None, "
+        "'__name__': __name__}, "
+        "globals().__setitem__('__name__', 'wrong.mod'), [], 1)\n"
+    )
+    projection = _collect_imports_for_graph(ast.parse(source), "pkg.entry")
+    assert "pkg.child" in projection.dynamic_relative_import_candidates
+    assert "wrong.child" not in projection.dynamic_relative_import_candidates
+    assert "wrong.child" not in projection.imports
+
+
+def test_current_globals_mapping_retains_invocation_time_contents() -> None:
+    source = (
+        "__import__('child', globals(), "
+        "globals().__setitem__('__package__', 'later'), [], 1)\n"
+    )
+    captured = []
+
+    def importing(name, globals, locals, fromlist, level):
+        captured.append(globals["__package__"])
+
+    namespace = {"__package__": "pkg", "__import__": importing}
+    exec(compile(source, "<live-import-metadata>", "exec"), namespace)
+    assert captured == ["later"]
+    projection = _collect_imports_for_graph(ast.parse(source), "pkg.entry")
+    assert "later.child" in (
+        *projection.imports,
+        *projection.dynamic_relative_import_candidates,
+    )
 
 
 @pytest.mark.parametrize("statement", ["from . import child", "from . import *"])
@@ -282,8 +385,8 @@ def test_foreign_relative_metadata_remains_semantic_not_lexical(body: str) -> No
     assert "foreign.child" in projection.imports
 
 
-def test_graph_projection_does_not_hide_non_anchor_resolution_errors() -> None:
-    top = StaticMetadataValue.known("top")
+def test_graph_projection_does_not_hide_nondeferrable_statement_errors() -> None:
+    top = StaticMetadataValue("invalid")
     module_name = StaticMetadataValue.known("pkg.entry")
     contexts = (
         ModuleImportContext(
@@ -298,7 +401,7 @@ def test_graph_projection_does_not_hide_non_anchor_resolution_errors() -> None:
         ),
     )
 
-    with pytest.raises(UnresolvedStaticImportError, match="beyond_top"):
+    with pytest.raises(UnresolvedStaticImportError, match="invalid_package"):
         _sealed_import_modules(
             StaticImportRequest.statement("", level=2, fromlist=("child",)),
             contexts,
@@ -513,6 +616,9 @@ def test_real_asyncio_and_importlib_dynamic_sources_join_runtime_custody(
     )
 
     assert error is None and prepared is not None
+    assert "asyncio.events" in prepared.module_graph
+    assert "asyncio._debug" not in prepared.module_graph
+    assert not (stdlib / "asyncio" / "_debug.py").exists()
     custody = prepared.runtime_import_scan_custody
     assert custody is not None
     assert (
@@ -748,3 +854,698 @@ def test_every_owner_scan_entry_rejects_incomplete_depth(
                 tree=tree,
                 runtime_import_custody=custody,
             )
+
+
+@pytest.mark.parametrize("fromlist", ["names", "[1]", "('*',)"])
+@pytest.mark.parametrize("prefix", ["", "__package__ = choose_package()\n"])
+def test_dynamic_fromlist_keeps_known_relative_level(
+    tmp_path: Path, fromlist: str, prefix: str
+) -> None:
+    source = (
+        prefix + "def load(names):\n"
+        f"    return __import__('child', globals(), None, {fromlist}, 1)\n"
+    )
+    owner, custody = _custody(tmp_path, source)
+    tree = ast.parse(source)
+    projection = _collect_imports_for_graph(tree, "pkg.entry")
+
+    assert projection.requires_runtime_package_anchor
+    assert projection.dynamic_relative_import_candidates == ("pkg.child",)
+    assert "child" not in projection.imports
+    assert "pkg.child" not in projection.imports
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+        _collect_imports(tree, "pkg.entry", source_path=owner)
+    assert set(custody.modules) <= set(
+        _collect_imports(
+            tree, "pkg.entry", source_path=owner, runtime_import_custody=custody
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "globals_expr,candidates",
+    [
+        ("{'__package__': 'foreign'}", ("foreign.child",)),
+        ("foreign_globals", ()),
+    ],
+)
+def test_dynamic_fromlist_preserves_explicit_globals_authority(
+    globals_expr: str, candidates: tuple[str, ...]
+) -> None:
+    tree = ast.parse(
+        "def load(names):\n"
+        f"    return __import__('child', {globals_expr}, None, names, 1)\n"
+    )
+    projection = _collect_imports_for_graph(tree, "pkg.entry")
+    assert projection.requires_runtime_package_anchor
+    assert projection.dynamic_relative_import_candidates == candidates
+    assert "pkg.child" not in projection.imports
+    assert "foreign.child" not in projection.imports
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    ["_MOLT_IMPORTLIB_IMPORT_TRANSACTION", "molt_importlib_import_transaction"],
+)
+def test_import_transaction_spelling_neither_grants_nor_blocks_identity(
+    spelling: str,
+) -> None:
+    body = f"{spelling}('child', globals(), None, ('*',), 1)\n"
+    fake = ast.parse(f"{spelling} = object()\n" + body)
+    projection = _collect_imports_for_graph(fake, "pkg.entry")
+    assert projection.imports == ()
+    assert projection.dynamic_relative_import_candidates == ()
+    assert not projection.requires_runtime_package_anchor
+    assert _collect_import_star_modules(fake, "pkg.entry") == ()
+
+    canonical = ast.parse(f"from builtins import __import__ as {spelling}\n" + body)
+    projection = _collect_imports_for_graph(canonical, "pkg.entry")
+    assert projection.requires_runtime_package_anchor
+    assert projection.dynamic_relative_import_candidates == ("pkg.child",)
+    assert "child" not in projection.imports
+
+
+@pytest.mark.parametrize(
+    "source,mode,expected_base,expected_children",
+    [
+        (
+            "__import__('bundle', fromlist=('*',))\n",
+            "full",
+            "bundle",
+            ("bundle.child",),
+        ),
+        (
+            "import bundle\n__import__('bundle', fromlist=('*',))\n",
+            "full",
+            "bundle",
+            ("bundle.child",),
+        ),
+        (
+            "from builtins import __import__ as load\n"
+            "load('bundle', fromlist=('*',))\n",
+            "full",
+            "bundle",
+            ("bundle.child",),
+        ),
+        (
+            "from builtins import __import__ as load\n"
+            "def helper(name):\n    return load(name, fromlist=('*',))\n"
+            "helper('bundle')\n",
+            "module_init",
+            "bundle",
+            ("bundle.child",),
+        ),
+        (
+            "__package__ = choose_package()\n"
+            "__import__('bundle', globals(), None, ('*',), 1)\n",
+            "full",
+            "pkg.bundle",
+            ("pkg.bundle.child",),
+        ),
+        (
+            "__import__('bundle', fromlist=('named', '*'))\n",
+            "full",
+            "bundle",
+            ("bundle.named", "bundle.child"),
+        ),
+    ],
+)
+def test_call_star_uses_live_all_expansion_without_promoting_discovery(
+    tmp_path: Path,
+    source: str,
+    mode: ImportScanMode,
+    expected_base: str,
+    expected_children: tuple[str, ...],
+) -> None:
+    package = tmp_path.joinpath(*expected_base.split("."))
+    package.mkdir(parents=True)
+    if expected_base.startswith("pkg."):
+        (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    init = package / "__init__.py"
+    init.write_text("__all__ = ['child']\n", encoding="utf-8")
+    for child in ("child", "named", "later"):
+        (package / f"{child}.py").write_text("VALUE = 1\n", encoding="utf-8")
+    owner = tmp_path / "entry.py"
+    owner.write_text(source, encoding="utf-8")
+    tree = ast.parse(source)
+    target = _DEFAULT_TARGET_PYTHON_VERSION
+    projection = _collect_imports_for_graph(tree, "pkg.entry", import_scan_mode=mode)
+    requests = _collect_import_scan_requests(
+        projection,
+        tree,
+        source_path=owner,
+        module_name="pkg.entry",
+        import_scan_mode=mode,
+        target_python=target,
+        ast_digest_admission=_PythonAstDigestAdmission(tree),
+        source=source,
+    )
+    assert requests.star_modules == ()
+    assert requests.dynamic_star_modules == (expected_base,)
+    cache = _ModuleResolutionCache()
+
+    def complete():
+        return _complete_import_scan(
+            requests,
+            source_path=owner,
+            roots=[tmp_path],
+            stdlib_root=tmp_path,
+            stdlib_allowlist=set(),
+            resolution_cache=cache,
+            target_python=target,
+        )
+
+    completed = complete()
+    assert expected_base in completed.dynamic_relative_import_candidates
+    assert all(
+        child in completed.dynamic_relative_import_candidates
+        for child in expected_children
+    )
+    assert all(child not in completed.imports for child in expected_children)
+    assert (expected_base in completed.imports) == source.startswith("import bundle\n")
+    # Filesystem-derived __all__ expansion remains live, not cached source closure.
+    init.write_text("__all__ = ['later']\n", encoding="utf-8")
+    changed = complete()
+    assert expected_base + ".later" in changed.dynamic_relative_import_candidates
+    assert expected_base + ".child" not in changed.dynamic_relative_import_candidates
+
+
+@pytest.mark.parametrize(
+    "call,error",
+    [
+        ("__import__('child', level=-1)", "negative_level"),
+        ("__import__('child', level=1)", "missing_globals"),
+        ("importlib.import_module('.child')", "no_parent"),
+        ("importlib.import_module('.child', package=1)", "invalid_package"),
+    ],
+)
+@pytest.mark.parametrize("claim", ["matching", "missing", "name", "path", "ast"])
+def test_catchable_call_resolution_errors_require_exact_custody(
+    tmp_path: Path,
+    call: str,
+    error: str,
+    claim: str,
+) -> None:
+    source = (
+        "import importlib\ndef caught():\n    try:\n"
+        f"        return {call}\n"
+        "    except (ValueError, TypeError, ImportError):\n        return 'caught'\n"
+    )
+    owner, custody = _custody(tmp_path, source)
+    tree = ast.parse(source)
+    projection = _collect_imports_for_graph(tree, "pkg.entry")
+    assert projection.requires_runtime_package_anchor
+    assert projection.dynamic_relative_import_candidates == ()
+    assert "child" not in projection.imports
+    if claim == "ast":
+        tree = ast.parse(source + "changed = True\n")
+
+    def collect():
+        return _collect_imports(
+            tree,
+            "other.entry" if claim == "name" else "pkg.entry",
+            source_path=tmp_path / "other.py" if claim == "path" else owner,
+            runtime_import_custody=None if claim == "missing" else custody,
+        )
+
+    if claim == "matching":
+        assert set(custody.modules) <= set(collect())
+    elif claim == "ast":
+        with pytest.raises(ValueError, match="source AST changed"):
+            collect()
+    else:
+        with pytest.raises(UnresolvedStaticImportError, match=error):
+            collect()
+
+
+@pytest.mark.parametrize(
+    "prefix,statement,error",
+    [
+        ("", "from .. import child", "beyond_top"),
+        ("__package__ = ''\n", "from . import child", "no_parent"),
+        ("", "from .. import *", "beyond_top"),
+    ],
+)
+@pytest.mark.parametrize("claim", ["matching", "missing", "name", "path", "ast"])
+def test_catchable_relative_statement_errors_require_exact_custody(
+    tmp_path: Path,
+    prefix: str,
+    statement: str,
+    error: str,
+    claim: str,
+) -> None:
+    source = prefix + "try:\n    " + statement + "\nexcept ImportError:\n    pass\n"
+    owner, custody = _custody(tmp_path, source)
+    tree = ast.parse(source)
+    projection = _collect_imports_for_graph(tree, "pkg.entry")
+    assert projection.requires_runtime_package_anchor
+    assert projection.imports == ()
+    assert projection.dynamic_relative_import_candidates == ()
+    if claim == "ast":
+        tree = ast.parse(source + "changed = True\n")
+
+    def collect():
+        return _collect_imports(
+            tree,
+            "other.entry" if claim == "name" else "pkg.entry",
+            source_path=tmp_path / "other.py" if claim == "path" else owner,
+            runtime_import_custody=None if claim == "missing" else custody,
+        )
+
+    if claim == "matching":
+        assert set(custody.modules) <= set(collect())
+    elif claim == "ast":
+        with pytest.raises(ValueError, match="source AST changed"):
+            collect()
+    else:
+        with pytest.raises(UnresolvedStaticImportError, match=error):
+            collect()
+
+
+def test_relative_statement_invalid_metadata_stays_rejected_under_custody(
+    tmp_path: Path,
+) -> None:
+    source = "__package__ = 1\nfrom . import child\n"
+    owner, custody = _custody(tmp_path, source)
+    tree = ast.parse(source)
+    with pytest.raises(UnresolvedStaticImportError, match="invalid_package"):
+        _collect_imports_for_graph(tree, "pkg.entry")
+    with pytest.raises(UnresolvedStaticImportError, match="invalid_package"):
+        _collect_imports(
+            tree, "pkg.entry", source_path=owner, runtime_import_custody=custody
+        )
+
+
+@pytest.mark.parametrize("damage", [None, "missing", "invalid", "old_schema"])
+def test_persisted_scan_retains_explicit_dynamic_star_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str | None,
+) -> None:
+    import json
+    from molt.cli import module_graph_cache, module_source
+    from molt.cli.models import _ImportScanRequests
+
+    owner = tmp_path / "entry.py"
+    owner.write_text(
+        "import bundle\n__import__('bundle', fromlist=('*',))\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        module_graph_cache,
+        "_frontend_semantic_tooling_fingerprint",
+        lambda: "star-provenance",
+    )
+    requests = _ImportScanRequests(
+        imports=("bundle",),
+        source_executions=(),
+        dynamic_relative_import_candidates=("bundle",),
+        requires_runtime_package_anchor=True,
+        dynamic_star_modules=("bundle",),
+    )
+    module_graph_cache._write_persisted_import_scan(
+        tmp_path,
+        owner,
+        module_name="entry",
+        is_package=False,
+        import_scan_mode="full",
+        scan=requests,
+        snapshot=module_source.PythonSourceSnapshot.capture(owner),
+    )
+    if damage is not None:
+        path = module_graph_cache._import_scan_cache_path(
+            tmp_path,
+            owner,
+            module_name="entry",
+            is_package=False,
+            import_scan_mode="full",
+        )
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if damage == "missing":
+            del payload["dynamic_star_modules"]
+        elif damage == "invalid":
+            payload["dynamic_star_modules"] = [1]
+        else:
+            payload["version"] -= 1
+        path.write_text(json.dumps(payload), encoding="utf-8")
+    restored = module_graph_cache._read_persisted_import_scan_record(
+        tmp_path,
+        owner,
+        module_name="entry",
+        is_package=False,
+        import_scan_mode="full",
+    )
+    if damage is None:
+        assert restored == requests
+        assert restored.star_modules == ()
+        assert restored.dynamic_star_modules == ("bundle",)
+    else:
+        assert restored is None
+
+
+@pytest.mark.parametrize(
+    "setup,call,error",
+    [
+        ("", "__import__('child', level=~0)", "negative_level"),
+        ("level = -1\n", "__import__('child', level=level)", "negative_level"),
+        ("level = +1\n", "__import__('child', level=-level)", "negative_level"),
+        ("", "__import__('child', level=1.5)", "invalid_level"),
+        ("level = None\n", "__import__('child', level=level)", "invalid_level"),
+        (
+            "bad = -1\n",
+            "__import__('child', {'__package__': bad}, level=1)",
+            "invalid_package",
+        ),
+        (
+            "bad = +1.5\n",
+            "__import__('child', {'__name__': bad}, level=1)",
+            "invalid_name",
+        ),
+        ("bad = -1\n", "importlib.import_module('.child', bad)", "invalid_package"),
+    ],
+)
+@pytest.mark.parametrize("claim", ["matching", "missing", "name", "path", "ast"])
+def test_known_scalar_import_errors_keep_no_candidate_and_exact_custody(
+    tmp_path: Path,
+    setup: str,
+    call: str,
+    error: str,
+    claim: str,
+) -> None:
+    # Locals keep source-owned scalar facts independently of imported-module
+    # initialization and the function's replaceable global namespace.
+    source = (
+        "import importlib\ndef caught():\n"
+        + "".join("    " + line + "\n" for line in setup.splitlines())
+        + "    try:\n        return "
+        + call
+        + "\n    except (ValueError, TypeError, ImportError):\n        return 'caught'\n"
+    )
+    owner, custody = _custody(tmp_path, source)
+    tree = ast.parse(source)
+    projection = _collect_imports_for_graph(tree, "pkg.entry")
+    assert projection.requires_runtime_package_anchor
+    assert projection.dynamic_relative_import_candidates == ()
+    assert "child" not in projection.imports
+    if claim == "ast":
+        tree = ast.parse(source + "changed = True\n")
+
+    def collect():
+        return _collect_imports(
+            tree,
+            "other.entry" if claim == "name" else "pkg.entry",
+            source_path=tmp_path / "other.py" if claim == "path" else owner,
+            runtime_import_custody=None if claim == "missing" else custody,
+        )
+
+    if claim == "matching":
+        assert set(custody.modules) <= set(collect())
+    elif claim == "ast":
+        with pytest.raises(ValueError, match="source AST changed"):
+            collect()
+    else:
+        with pytest.raises(UnresolvedStaticImportError, match=error):
+            collect()
+
+
+@pytest.mark.parametrize("level", ["+1", "-(-1)", "~~1", "True", "+True"])
+def test_numeric_unary_and_bool_import_levels_preserve_foreign_package(
+    level: str,
+) -> None:
+    tree = ast.parse(
+        f"__import__('child', {{'__package__': 'foreign'}}, level={level})\n"
+    )
+    projection = _collect_imports_for_graph(tree, "pkg.entry")
+    assert "foreign.child" in projection.imports
+    assert "pkg.child" not in projection.imports
+    assert projection.dynamic_relative_import_candidates == ()
+    assert not projection.requires_runtime_package_anchor
+
+
+@pytest.mark.parametrize("expression", ["None", "False", "0", "''", "()", "[]"])
+def test_proven_falsy_fromlist_is_not_an_unknown_import_operand(
+    expression: str,
+) -> None:
+    tree = ast.parse(f"__import__('pkg.child', fromlist={expression})\n")
+    projection = _collect_imports_for_graph(tree, "entry")
+    assert "pkg.child" in projection.imports
+    assert not projection.requires_runtime_package_anchor
+    assert projection.dynamic_relative_import_candidates == ()
+    assert "pkg.child" in _collect_imports(tree, "entry")
+
+
+def test_bound_none_fromlist_retains_the_null_fact() -> None:
+    tree = ast.parse("children = None\n__import__('pkg.child', fromlist=children)\n")
+    projection = _collect_imports_for_graph(tree, "entry")
+    assert "pkg.child" in projection.imports
+    assert not projection.requires_runtime_package_anchor
+
+
+def test_local_package_parameter_never_borrows_module_metadata() -> None:
+    tree = ast.parse(
+        "import importlib\ndef load(__package__):\n"
+        "    return importlib.import_module('.child', __package__)\n"
+    )
+    projection = _collect_imports_for_graph(tree, "pkg.entry")
+    assert projection.requires_runtime_package_anchor
+    assert projection.dynamic_relative_import_candidates == ()
+    assert "pkg.child" not in projection.imports
+
+
+def test_star_requests_share_one_cached_custodied_graph_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt.cli import module_import_scanner as scanner
+    from molt.cli.module_graph_discovery import _load_module_import_scan
+
+    source = "__import__('bundle', fromlist=('*',))\n"
+    owner = (tmp_path / "entry.py").resolve()
+    owner.write_text(source, encoding="utf-8")
+    package = tmp_path / "bundle"
+    package.mkdir()
+    init = (package / "__init__.py").resolve()
+    init.write_text("__all__ = ['child']\n", encoding="utf-8")
+    (package / "child.py").write_text("VALUE = 1\n", encoding="utf-8")
+    tree = ast.parse(source)
+    custody = _RuntimeImportScanCustody(
+        owners=(("pkg.entry", owner),),
+        catalog=(("pkg.entry", owner), ("bundle", init)),
+        owner_ast_digests=(("pkg.entry", python_ast_digest(tree)),),
+    )
+    via = tmp_path / "via"
+    via.mkdir()
+    raw_path = via / ".." / owner.name
+    cache = _ModuleResolutionCache()
+    original = scanner._collect_imports
+    calls = 0
+
+    def collect(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(scanner, "_collect_imports", collect)
+    for path in (raw_path, owner):
+        loaded = _load_module_import_scan(
+            path,
+            module_name="pkg.entry",
+            is_package=False,
+            import_scan_mode="full",
+            resolution_cache=cache,
+            project_root=None,
+            tree=tree,
+            source=source,
+            roots=[tmp_path],
+            stdlib_root=tmp_path,
+            stdlib_allowlist=set(),
+            runtime_import_custody=custody,
+        )
+        assert "bundle.child" in loaded.scan.imports
+        assert "bundle.child" not in loaded.scan.dynamic_relative_import_candidates
+    assert calls == 1
+    projection = next(iter(cache.graph_import_scan_cache.values()))
+    assert "bundle" in projection.star_modules
+    assert projection.dynamic_star_modules == ()
+
+
+@pytest.mark.parametrize("operator", ["+", "-", "~"])
+def test_unary_index_callbacks_keep_dynamic_level_custody(operator: str) -> None:
+    source = "level = unknown\n__import__('child', level=" + operator + "level)\n"
+    projection = _collect_imports_for_graph(ast.parse(source), "pkg.entry")
+    assert projection.requires_runtime_package_anchor
+    assert projection.dynamic_relative_import_candidates == ("child",)
+    assert "child" not in projection.imports
+
+
+def test_shadowed_globals_call_never_acquires_current_package_authority() -> None:
+    source = "def globals():\n    return foreign_mapping\n__import__('child', globals(), level=1)\n"
+    projection = _collect_imports_for_graph(ast.parse(source), "pkg.entry")
+    assert projection.requires_runtime_package_anchor
+    assert projection.dynamic_relative_import_candidates == ()
+    assert "pkg.child" not in projection.imports
+
+
+def test_current_globals_alias_preserves_its_canonical_package_identity() -> None:
+    source = "namespace = globals\n__import__('child', namespace(), level=1)\n"
+    projection = _collect_imports_for_graph(ast.parse(source), "pkg.entry")
+    assert "pkg.child" in projection.imports
+    assert not projection.requires_runtime_package_anchor
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def read():\n    return globals()\n",
+        "def read():\n    def anchor(): pass\n    return anchor.__globals__\n",
+        "def read():\n    import inspect\n    return inspect.currentframe().f_globals\n",
+        "def read():\n    from builtins import globals as current_globals\n"
+        "    return current_globals()\n",
+    ],
+)
+def test_possible_globals_provenance_is_only_a_discovery_alternative(source) -> None:
+    from molt.compiler_analysis.python_binding_flow import (
+        analyze_python_source_bindings,
+    )
+    from molt.compiler_analysis.python_imports import (
+        dunder_globals_state_from_expression,
+    )
+
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    expression = tree.body[0].body[-1].value
+    context = ModuleImportContext("pkg.entry", False)
+    assert (
+        dunder_globals_state_from_expression(
+            expression, context, expression_fact=index.expression_fact
+        )
+        is None
+    )
+    discovery = dunder_globals_state_from_expression(
+        expression,
+        context,
+        expression_fact=index.expression_fact,
+        allow_possible_current_globals=True,
+    )
+    assert discovery is not None
+    assert discovery.package == StaticMetadataValue.known("pkg")
+
+
+@pytest.mark.parametrize(
+    "name,expected", [("__package__", "pkg"), ("__name__", "pkg.entry")]
+)
+def test_explicit_metadata_global_load_requires_stable_activation(
+    name, expected
+) -> None:
+    from molt.compiler_analysis.python_binding_flow import (
+        analyze_python_source_bindings,
+    )
+    from molt.compiler_analysis.python_imports import metadata_value_from_expression
+
+    context = ModuleImportContext("pkg.entry", False)
+    source = f"def read():\n    return {name}\n"
+    tree = ast.parse(source)
+    expression = tree.body[0].body[0].value
+    index = analyze_python_source_bindings(source)
+    fact = index.expression_fact(expression)
+    assert fact is not None and not fact.module_metadata.activation_namespace_stable
+    assert (
+        metadata_value_from_expression(
+            expression, context, expression_fact=index.expression_fact
+        )
+        == UNKNOWN_VALUE
+    )
+    assert metadata_value_from_expression(
+        expression,
+        context,
+        expression_fact=index.expression_fact,
+        allow_activation_metadata_for_discovery=True,
+    ) == StaticMetadataValue.known(expected)
+
+
+def test_deferred_import_module_package_load_keeps_candidate_without_authority() -> (
+    None
+):
+    source = (
+        "import importlib\ndef load():\n"
+        "    return importlib.import_module('.child', __package__)\n"
+    )
+    projection = _collect_imports_for_graph(ast.parse(source), "pkg.entry")
+    assert projection.requires_runtime_package_anchor
+    assert "pkg.child" in projection.dynamic_relative_import_candidates
+    assert "pkg.child" not in projection.imports
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+        _collect_imports(ast.parse(source), module_name="pkg.entry")
+
+
+def test_proven_local_metadata_remains_authoritative_in_deferred_activation() -> None:
+    source = (
+        "import importlib\ndef load():\n"
+        "    loader = importlib.import_module\n"
+        "    __package__ = 'explicit.pkg'\n"
+        "    return loader('.child', __package__)\n"
+    )
+    projection = _collect_imports_for_graph(ast.parse(source), "pkg.entry")
+    assert "explicit.pkg.child" in projection.imports
+    assert not projection.requires_runtime_package_anchor
+
+
+def test_definitely_shadowed_globals_never_acquires_discovery_namespace() -> None:
+    source = (
+        "def load(globals):\n"
+        "    return __import__('child', globals(), None, ('*',), 1)\n"
+    )
+    projection = _collect_imports_for_graph(ast.parse(source), "pkg.entry")
+    assert projection.requires_runtime_package_anchor
+    assert projection.dynamic_relative_import_candidates == ()
+    assert "pkg.child" not in projection.imports
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "items.attribute\nfrom . import child\n",
+        "items.attribute\n__import__('child', globals(), level=1)\n",
+        "from . import sibling\nfrom . import child\n",
+        "import importlib\nfrom . import sibling\nimportlib.import_module('.child', __package__)\n",
+        "def load():\n    from . import child\n",
+        "__import__('child', {'__package__': __package__, '__name__': 'other.mod'}, globals().__delitem__('__package__'), [], 1)\n",
+    ],
+)
+@pytest.mark.parametrize("claim", ["matching", "name", "path", "ast", "missing"])
+def test_statement_and_expression_metadata_share_exact_catalog_custody(
+    tmp_path, source, claim
+):
+    owner, original = _custody(tmp_path, source)
+    child = tmp_path / "child.py"
+    child.write_text("", encoding="utf-8")
+    custody = _RuntimeImportScanCustody(
+        owners=original.owners,
+        catalog=(*original.catalog, ("pkg.child", child.resolve())),
+        owner_ast_digests=original.owner_ast_digests,
+    )
+    tree = ast.parse(source)
+    projection = _collect_imports_for_graph(tree, "pkg.entry")
+    assert projection.requires_runtime_package_anchor
+    assert "pkg.child" in projection.dynamic_relative_import_candidates
+    assert "pkg.child" not in projection.imports
+    assert "other.child" not in projection.imports
+    assert "other.child" not in projection.dynamic_relative_import_candidates
+    if claim == "ast":
+        tree = ast.parse(source + "changed = True\n")
+
+    def collect():
+        return _collect_imports(
+            tree,
+            "other.entry" if claim == "name" else "pkg.entry",
+            runtime_import_custody=None if claim == "missing" else custody,
+            source_path=tmp_path / "other.py" if claim == "path" else owner,
+        )
+
+    if claim == "matching":
+        assert set(custody.modules) <= set(collect())
+    elif claim == "ast":
+        with pytest.raises(ValueError, match="source AST changed"):
+            collect()
+    else:
+        with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+            collect()

@@ -1365,7 +1365,6 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         "abc_reset_registry": 1,
         "abc_reset_caches": 1,
         "abc_update_abstractmethods": 1,
-        "abc_abstractmethod_check": 1,
     }.items():
         assert imports[name]["runtime_name"] == f"molt_{name}"
         assert imports[name]["callable_arity"] == arity
@@ -1781,6 +1780,10 @@ def test_dynamic_builtin_family_uses_shared_python_specs_and_reserved_abi() -> N
     ):
         assert rows[name]["runtime_name"] == symbol
         assert rows[name]["arity"] == arity
+    assert (
+        gen._rust_builtin_default_value(rows["__import__"]["defaults"][0])
+        == "GeneratedBuiltinDefaultValue::Missing"
+    )
     assert (
         gen._rust_builtin_default_value(rows["__import__"]["defaults"][2])
         == "GeneratedBuiltinDefaultValue::EmptyTuple"
@@ -2507,7 +2510,7 @@ def test_wasm_abi_manifest_owns_bulk_memory_ops() -> None:
         manifest.validate_loaded_manifest(broken_arg_count)
 
 
-def test_wasm_abi_manifest_owns_const_op_policy() -> None:
+def test_wasm_abi_policy_projects_ir_owned_literals() -> None:
     gen = _load_gen_wasm_abi()
     data = gen.load_manifest()
     policies = {entry["kind"]: entry for entry in data["const_op_policy"]}
@@ -2542,7 +2545,8 @@ def test_wasm_abi_manifest_owns_const_op_policy() -> None:
     assert "WASM_CONST_OP_POLICIES" in rendered_rs
     assert "WasmConstScalarPayload::Int" in rendered_rs
     assert "required_tir_scalar_value" in rendered_rs
-    assert "WasmConstLiteralPayload::BigintDecimal" in rendered_rs
+    assert "Some(OwnedLiteralPayloadKind::BigintDecimal)" in rendered_rs
+    assert "enum WasmConstLiteralPayload" not in rendered_rs
     assert "wasm_const_op_policy" in rendered_rs
     assert "wasm_const_op_policy_for_opcode" in rendered_rs
     assert "opcode_canonical_kind_table(opcode)" in rendered_rs
@@ -2864,3 +2868,28 @@ def test_runtime_execution_token_exports_are_wasm_only() -> None:
         )
         assert declaration in execution
     assert execution.count('pub extern "C" fn molt_runtime_execution_') == 2
+
+
+def test_wasm_literal_projection_includes_aliases_and_rejects_local_drift() -> None:
+    from molt.opcode_literal_payloads import owned_literal_payloads_by_kind
+
+    table = {
+        "opcode": [{"name": "Literal"}],
+        "literal_payload_opcodes": [{"opcode": "Literal", "literal": "bytes"}],
+        "kind": [
+            {"canonical": "literal", "aliases": ["alias"], "mapper_opcode": "Literal"}
+        ],
+    }
+    assert owned_literal_payloads_by_kind(table) == {
+        "literal": "bytes",
+        "alias": "bytes",
+    }
+    gen = _load_gen_wasm_abi()
+    data = copy.deepcopy(gen.load_manifest())
+    next(row for row in data["const_op_policy"] if row["kind"] == "const_str")[
+        "literal_payload"
+    ] = "bytes"
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="disagrees with op_kinds.toml"
+    ):
+        manifest.validate_loaded_manifest(data)

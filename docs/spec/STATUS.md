@@ -970,10 +970,12 @@ regression coverage, not an installed release receipt or other-platform proof.
   still use compiler-input roots for their execution or cleanup and need their
   public role and mutable-output boundary reconciled.
 - The release workflow lacks required runtime-inventory production and inputs.
-  Verified-subset execution has no declared guest-profile axis, defaults to
-  development, and ignores stderr by default. Performance receipts
-  also need the actual compiler profile/identity, and the required LLVM gate
-  does not match the current prebuilt feature set. See the
+  Verified-subset policy declares both development and release guest profiles;
+  complete passing coverage remains open, and execution ignores stderr by default.
+  Performance tooling selects host and guest profiles separately and records
+  selected compiler content from build publication observations. Loaded-backend
+  feature and runtime identity still need execution evidence, and the required
+  LLVM gate does not match the current prebuilt feature set. See the
   [release authority](../../packaging/PACKAGING.md) and
   [performance authority](../../tools/PERF_AUTHORITY.md).
 - Shared fused-reduction, inline-storage and operand-custody corrections are

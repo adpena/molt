@@ -380,33 +380,42 @@ simpleir_integer_producer_semantics_kinds = [
 
 # Runtime/object-model semantic roles used for target admission. These are
 # target-neutral requirements; backends advertise only capabilities they can
-# prove CPython-exact before source generation.
+# prove CPython-exact before source generation. Canonical kind requirements
+# flow to every declared alias; alias-only requirements may only add bits.
+# Typed constructor/call/state spellings participate in the same requirements
+# as their preserved runtime spellings. Registration never grants a capability.
 simpleir_identity_semantics_kinds = ["is", "is_not"]
-simpleir_tuple_semantics_kinds = ["tuple_new"]
+simpleir_tuple_semantics_kinds = [
+    "tuple_new",
+    "build_tuple",
+]
 simpleir_exception_semantics_kinds = [
     "raise", "reraise", "check_exception", "async_work_poll", "loop_break_if_exception",
     "try_start", "try_end", "except_start", "except_end", "finally_start", "finally_end",
     "exception_push", "exception_pop", "exception_clear", "exception_active",
     "exception_stack_clear", "exception_stack_enter", "exception_stack_exit",
     "exception_stack_set_depth", "exception_stack_depth",
-    "exception_set_last", "exception_set_value", "exception_set_cause", "exception_context_set",
+    "exception_set_last", "exception_set_value", "exception_context_set",
     "exception_last", "exception_last_pending", "exception_finally_pending_observer",
     "exception_new", "exception_new_builtin", "exception_new_from_class",
     "exception_new_builtin_empty", "exception_new_builtin_one",
     "exception_match_builtin", "exception_kind", "exception_class", "exception_message",
     "exceptiongroup_match", "exceptiongroup_combine",
+    "exception_pending",
 ]
 simpleir_deterministic_lifetime_semantics_kinds = [
     "inc_ref", "dec_ref", "borrow", "release",
+    "free", "del_boundary", "delete_var",
 ]
 # Terminal drop-phase completion markers prove pipeline state but perform no
 # runtime lifetime action. They need explicit neutral classification because
 # they are preserved SimpleIR artifacts rather than first-class opcodes.
-# CONST_ELLIPSIS is a frontend-only effect spelling; serialization emits the
-# lowercase wire operation below. Its immutable immediate singleton requires
-# no runtime service. This does not admit general identity/object protocols.
+# Frontend singleton effect spellings serialize as these lowercase wire ops.
+# Immutable singleton materialization and owned value-copy transport require no
+# runtime service; identity observation, mutable objects and Python finalizers
+# continue to require their independent runtime capabilities.
 simpleir_runtime_neutral_semantics_kinds = [
-    "const_ellipsis",
+    "const_ellipsis", "const_not_implemented", "binding_alias", "identity_alias",
     "drop_inserted", "exception_region_drops_inserted",
 ]
 # Internal execution-frame state used to preserve source-location and unwind
@@ -442,7 +451,7 @@ simpleir_runtime_requirement_roles = [
     { table = "simpleir_fallible_protocol_semantics_kinds", constant = "FALLIBLE_PROTOCOL", bit = 9, reason = "operation can raise and requires structured catchable Python exceptions" },
     { table = "simpleir_async_runtime_semantics_kinds", constant = "ASYNC_RUNTIME", bit = 10, reason = "operation requires an exact async scheduler and suspension-state model" },
     { table = "simpleir_unstructured_control_semantics_kinds", constant = "UNSTRUCTURED_CONTROL", bit = 11, reason = "operation requires a target-proven unstructured control-flow lowering" },
-    { table = "simpleir_host_capability_semantics_kinds", constant = "HOST_CAPABILITY", bit = 12, reason = "operation requires a target host filesystem or foreign-function capability" },
+    { table = "simpleir_host_capability_semantics_kinds", constant = "HOST_CAPABILITY", bit = 12, reason = "operation requires a target host filesystem, foreign-function, or device capability" },
     { table = "simpleir_execution_frame_semantics_kinds", constant = "EXECUTION_FRAME", bit = 13, runtime_symbols = ["molt_frame_context_set", "molt_super_from_frame"], reason = "operation requires internal execution-frame stack and source-location custody" },
     { table = "simpleir_frame_introspection_semantics_kinds", constant = "FRAME_INTROSPECTION", bit = 14, runtime_symbols = ["molt_getframe", "molt_inspect_currentframe", "molt_sys_settrace", "molt_sys_gettrace", "molt_sys_setprofile", "molt_sys_getprofile"], reason = "operation requires exact Python-visible frame objects, locals, globals, and tracing state" },
     { table = "simpleir_import_protocol_semantics_kinds", constant = "IMPORT_PROTOCOL", bit = 16, runtime_symbols = ["molt_module_import", "molt_module_import_from", "molt_module_import_star", "molt_module_ensure", "molt_importlib_import_transaction", "molt_importlib_import_module", "molt_importlib_import_optional", "molt_importlib_import_required", "molt_importlib_import_or_fallback", "molt_importlib_reload", "molt_importlib_load_module_shim", "molt_importlib_load_module_from_spec", "molt_importlib_sourcefileloader_exec_module", "molt_importlib_zip_source_loader_exec_module", "molt_importlib_extension_loader_exec_module", "molt_importlib_sourceless_loader_exec_module", "molt_runpy_run_module", "molt_runpy_run_path"], reason = "operation requires Python import dispatch, module initialization, and transactional package resolution" },
@@ -531,12 +540,15 @@ simpleir_var_result_kinds = ["checked_add", "checked_mul", "iter_next_unboxed"]
 simpleir_var_metadata_when_args_kinds = ["copy_var", "load_var"]
 # Canonical shaped kinds whose args are their sole input carrier. Aliases
 # inherit this field role; return-family roles remain owned by return_shape.
-simpleir_var_forbidden_kinds = ["box", "unbox"]
+simpleir_var_forbidden_kinds = [
+    "box", "unbox", "type_guard", "pos", "warn_stderr", "guard_tag", "guard_type",
+]
 simpleir_format_protocol_semantics_kinds = ["format_string", "string_format"]
 simpleir_iterable_protocol_semantics_kinds = [
     "string_join", "unpack_sequence", "list_fill_new",
     "for_iter", "iter_next", "iter_next_unboxed",
     "callargs_expand_star",
+    "get_iter", "for_iter_start", "for_iter_end",
 ]
 simpleir_object_model_semantics_kinds = [
     "const_none", "const_bytes",
@@ -574,6 +586,7 @@ simpleir_object_model_semantics_kinds = [
     # does not claim Luau implements arbitrary Python keys/getitem mappings.
     "callargs_new", "callargs_push_pos", "callargs_expand_star",
     "callargs_push_kw", "callargs_expand_kwstar",
+    "stack_alloc", "object_new_bound", "build_set", "build_slice", "del_attr", "function_defaults_version",
 ]
 # Target-instance admission and support documentation consume this same set.
 simpleir_luau_ordered_mapping_kinds = ["callargs_expand_kwstar"]
@@ -594,11 +607,13 @@ simpleir_fallible_protocol_semantics_kinds = [
     "len", "builtin_len", "float", "cast_float", "builtin_float", "float_from_obj",
     "str", "cast_str", "builtin_str", "str_from_obj", "repr_from_obj", "ascii_from_obj",
     "chr", "ord", "ord_at", "print", "builtin_print",
+    "call_builtin", "call_method_ic", "call_super_method_ic",
 ]
 simpleir_async_runtime_semantics_kinds = [
     "alloc_task", "call_async", "block_on", "is_native_awaitable",
     "stateful_locals_register",
     "state_label", "state_switch", "state_transition", "state_yield",
+    "yield", "yield_from", "state_block_start", "state_block_end", "state_set", "is_pending", "task_wait", "async_for_start", "async_for_end",
 ]
 # Servicing CPython pending calls and the eval breaker is independent from task
 # scheduling and suspension-state semantics. The explicit wire alias carries
@@ -610,6 +625,7 @@ simpleir_unstructured_control_semantics_kinds = [
 simpleir_host_capability_semantics_kinds = [
     "file_open", "file_read", "file_write", "file_close", "file_flush",
     "invoke_ffi",
+    "gpu_thread_id",
 ]
 
 # ===========================================================================
@@ -914,7 +930,6 @@ classifier_owned_value = [
     "exception_pop",
     "exception_push",
     "exception_resolve_captured",
-    "exception_set_cause",
     "exception_set_last",
     "exception_set_value",
     "exception_stack_clear",
@@ -1452,7 +1467,12 @@ i64_shift_count_guard_opcodes = [
 
 literal_payload_opcodes = [
     { opcode = "ConstInt", literal = "int" },
+    { opcode = "ConstFloat", literal = "float" },
+    { opcode = "ConstNone", literal = "none" },
     { opcode = "ConstBool", literal = "bool" },
+    { opcode = "ConstStr", literal = "string" },
+    { opcode = "ConstBytes", literal = "bytes" },
+    { opcode = "ConstBigInt", literal = "bigint_decimal" },
 ]
 
 # gvn_*_opcodes: GVN numbering roles. Always-numberable ops are pure value
@@ -1945,6 +1965,39 @@ classifier_no_heap_move = [
 # Aliases inherit each canonical shape through the existing kind mapping;
 # result cardinality and discarded-result effects remain opcode-owned.
 [[simpleir_op_shape]]
+kind = "pos"
+family = "unary_numeric"
+operands = 1
+value_rule = "unconstrained"
+
+[[simpleir_op_shape]]
+kind = "type_guard"
+family = "value_transport"
+operands = 1
+value_rule = "unconstrained"
+
+# Runtime validation reads both the value and its dynamic expected tag. The
+# result aliases operand zero; no-heap-move ownership does not make it unary.
+# These preserved Copy kinds are distinct from the unary TypeGuard refinement.
+[[simpleir_op_shape]]
+kind = "guard_tag"
+family = "runtime_type_guard"
+operands = 2
+value_rule = "unconstrained"
+
+[[simpleir_op_shape]]
+kind = "guard_type"
+family = "runtime_type_guard"
+operands = 2
+value_rule = "unconstrained"
+
+[[simpleir_op_shape]]
+kind = "warn_stderr"
+family = "diagnostic_output"
+operands = 1
+value_rule = "unconstrained"
+
+[[simpleir_op_shape]]
 kind = "frame_context_set"
 family = "execution_frame"
 operands = 3
@@ -2381,6 +2434,44 @@ wasm_stateful_dispatch = false
 wasm_state_resume_after = false
 wasm_state_resume_at = false
 
+
+[[simpleir_control_kind]]
+kind = "drop_inserted"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+wasm_split_barrier = false
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = false
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
+
+
+[[simpleir_control_kind]]
+kind = "exception_region_drops_inserted"
+structural = true
+terminator = false
+suspend = false
+repoll = false
+block_leader = false
+block_ender = false
+conditional_branch = false
+pre_ssa_rewritten = false
+ssa_only = false
+wasm_split_barrier = false
+wasm_dispatch_block_leader = false
+wasm_dispatch_block_terminator = false
+wasm_stateful_dispatch = false
+wasm_state_resume_after = false
+wasm_state_resume_at = false
+
 [[simpleir_control_kind]]
 kind = "state_switch"
 structural = true
@@ -2473,7 +2564,7 @@ wasm_state_resume_at = false
 
 [[simpleir_control_kind]]
 kind = "loop_index_end"
-structural = false
+structural = true
 terminator = false
 suspend = false
 repoll = false
@@ -5965,10 +6056,6 @@ reason = "structural: test for a pending exception"
 [[frontend_check_exception_skip]]
 kind = "EXCEPTION_FINALLY_PENDING_OBSERVER"
 reason = "structural: observe pending exception for finally save/restore"
-
-[[frontend_check_exception_skip]]
-kind = "EXCEPTION_SET_CAUSE"
-reason = "structural: set __cause__ on an exception object"
 
 [[frontend_check_exception_skip]]
 kind = "EXCEPTION_SET_LAST"

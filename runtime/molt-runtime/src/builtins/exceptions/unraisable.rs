@@ -4,6 +4,7 @@ use super::raised_state::{
     RaisedSnapshot, discard_current_raised, release_raised, resolve_raised, take_raised,
 };
 use super::*;
+use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
 use crate::{
     alloc_property_obj, call_callable1, missing_bits, molt_get_attr_name, molt_is_callable,
@@ -448,50 +449,13 @@ fn set_class_attr(_py: &PyToken<'_>, class_ptr: *mut u8, name: &str, value_bits:
     !exception_pending(_py)
 }
 
-fn alloc_runtime_method(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> u64 {
-    crate::builtins::methods::alloc_builtin_function(_py, fn_ptr, arity)
-}
-
 fn init_class_edge(_py: &PyToken<'_>, ptr: *mut u8, class_bits: u64) -> bool {
     unsafe { object_init_class_edge_unpublished(_py, ptr, class_bits, ClassEdgeOwnership::Owned) }
 }
 
-fn install_method(
-    _py: &PyToken<'_>,
-    class_ptr: *mut u8,
-    name: &str,
-    fn_ptr: u64,
-    arity: u64,
-) -> bool {
-    let func_bits = alloc_runtime_method(_py, fn_ptr, arity);
-    if func_bits == 0 {
-        return false;
-    }
-    let installed = set_class_attr(_py, class_ptr, name, func_bits);
-    dec_ref_bits(_py, func_bits);
-    installed
-}
-
-fn install_method_with_defaults(
-    py: &PyToken<'_>,
-    class_ptr: *mut u8,
-    name: &str,
-    fn_ptr: u64,
-    arity: u64,
-    defaults: &[u64],
-) -> bool {
-    let function =
-        crate::builtins::methods::alloc_builtin_function_with_defaults(py, fn_ptr, arity, defaults);
-    if function == 0 {
-        return false;
-    }
-    let installed = set_class_attr(py, class_ptr, name, function);
-    dec_ref_bits(py, function);
-    installed
-}
-
 fn install_readonly_field(_py: &PyToken<'_>, class_ptr: *mut u8, name: &str, getter: u64) -> bool {
-    let getter_bits = alloc_runtime_method(_py, getter, 1);
+    // Property dispatch passes self explicitly, so its callback must not bind.
+    let getter_bits = crate::builtins::methods::alloc_builtin_function(_py, getter, 1);
     if getter_bits == 0 {
         return false;
     }
@@ -508,15 +472,17 @@ fn install_readonly_field(_py: &PyToken<'_>, class_ptr: *mut u8, name: &str, get
 }
 
 fn discard_unraisable_args_class(_py: &PyToken<'_>, class_bits: u64) -> u64 {
-    if !obj_from_bits(class_bits).is_none() {
-        // This constructor-owned class was never published. Release its
-        // namespace first while any already-built identity remains readable.
-        if let Some(ptr) = obj_from_bits(class_bits).as_ptr() {
-            unsafe { crate::object::class_storage::clear_class_runtime_contents(_py, ptr) };
+    molt_cpython_abi::api::errors::with_preserved_error(|| {
+        if !obj_from_bits(class_bits).is_none() {
+            // Retire constructor-owned contents before detaching identity and
+            // the new descriptor/constructor back-edges to the declaring class.
+            if let Some(ptr) = obj_from_bits(class_bits).as_ptr() {
+                unsafe { crate::object::class_storage::clear_class_runtime_contents(_py, ptr) };
+            }
+            class_break_cycles(_py, class_bits);
+            dec_ref_bits(_py, class_bits);
         }
-        class_break_cycles(_py, class_bits);
-        dec_ref_bits(_py, class_bits);
-    }
+    });
     0
 }
 
@@ -605,21 +571,23 @@ fn build_unraisable_args_class(_py: &PyToken<'_>) -> u64 {
     let match_args_set = set_class_attr(_py, class_ptr, "__match_args__", match_args_bits);
     dec_ref_bits(_py, match_args_bits);
     if !match_args_set
-        || !install_method_with_defaults(
+        || crate::builtins::methods::builtin_func_bits_with_defaults_tuple(
             _py,
-            class_ptr,
-            "__new__",
+            NativeCallableSpec::constructor(class_bits),
             molt_unraisable_hook_args_new as *const () as usize as u64,
             3,
             &[missing_bits(_py)],
-        )
-        || !install_method(
+        ) == 0
+        || crate::builtins::methods::builtin_func_bits(
             _py,
-            class_ptr,
-            "__repr__",
+            NativeCallableSpec::declared(
+                NativeCallableKind::MethodDescriptor,
+                class_bits,
+                "__repr__",
+            ),
             molt_unraisable_hook_args_repr as *const () as usize as u64,
             1,
-        )
+        ) == 0
         || !install_readonly_field(
             _py,
             class_ptr,
@@ -654,9 +622,7 @@ fn build_unraisable_args_class(_py: &PyToken<'_>) -> u64 {
         return discard_unraisable_args_class(_py, class_bits);
     }
     if exception_pending(_py)
-        || !unsafe {
-            crate::builtins::attr::capture_class_slot_declaration_for_seal(_py, class_ptr)
-        }
+        || unsafe { crate::object::class_finish_definition(_py, class_ptr) }.is_err()
     {
         return discard_unraisable_args_class(_py, class_bits);
     }
@@ -1212,6 +1178,27 @@ mod tests {
             assert!(!repr_name_ptr.is_null());
             let repr_name_bits = MoltObject::from_ptr(repr_name_ptr).bits();
             let original_repr = class_dict_value(_py, class_bits, "__repr__");
+            let repr_ptr = obj_from_bits(original_repr).as_ptr().unwrap();
+            assert_eq!(
+                unsafe { object_class_bits(repr_ptr) },
+                builtin_classes(_py).method_descriptor
+            );
+            assert_eq!(
+                unsafe {
+                    crate::call::function::function_metadata_bits(_py, repr_ptr, b"__objclass__")
+                },
+                class_bits
+            );
+            let bound_repr = molt_get_attr_name(args_bits, repr_name_bits);
+            assert!(!exception_pending(_py));
+            let repr_bits = unsafe { crate::call_callable0(_py, bound_repr) };
+            assert!(
+                !exception_pending(_py),
+                "instance repr must receive its bound receiver"
+            );
+            assert_eq!(string_obj_to_owned(obj_from_bits(repr_bits)), Some("UnraisableHookArgs(exc_type=1, exc_value=2, exc_traceback=None, err_msg=4, object=True)".to_string()));
+            dec_ref_bits(_py, repr_bits);
+            dec_ref_bits(_py, bound_repr);
             let class_mutation =
                 crate::molt_set_attr_name(class_bits, repr_name_bits, MoltObject::none().bits());
             assert_eq!(
@@ -1229,8 +1216,22 @@ mod tests {
             let source_ptr = alloc_tuple(_py, &fields);
             assert!(!source_ptr.is_null());
             let source_bits = MoltObject::from_ptr(source_ptr).bits();
-            let constructed_bits =
-                molt_unraisable_hook_args_new(class_bits, source_bits, missing_bits(_py));
+            let new_name = attr_name_bits_from_bytes(_py, b"__new__").unwrap();
+            let constructor = molt_get_attr_name(args_bits, new_name);
+            assert_eq!(constructor, class_dict_value(_py, class_bits, "__new__"));
+            let builder = crate::molt_callargs_new(
+                MoltObject::from_int(2).bits(),
+                MoltObject::from_int(0).bits(),
+            );
+            unsafe { crate::molt_callargs_push_pos(builder, class_bits) };
+            unsafe { crate::molt_callargs_push_pos(builder, source_bits) };
+            let constructed_bits = crate::molt_call_bind(constructor, builder);
+            assert!(
+                !exception_pending(_py),
+                "nonbinding constructor must retain its optional argument"
+            );
+            dec_ref_bits(_py, constructor);
+            dec_ref_bits(_py, new_name);
             assert!(unraisable_args_is_exact(_py, constructed_bits));
             assert_ne!(constructed_bits, source_bits);
             dec_ref_bits(_py, constructed_bits);

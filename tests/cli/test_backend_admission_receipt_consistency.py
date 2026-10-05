@@ -425,7 +425,6 @@ def test_daemon_lock_failures_share_framing_and_timing(
         tmp_path / "daemon.sock",
         cargo_profile="release",
         project_root=tmp_path,
-        target_triple=None,
         config_digest="fixture",
         startup_timeout=1.0,
         json_output=True,

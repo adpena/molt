@@ -19,11 +19,20 @@ fn reject_prefix(prefix: RejectedTable) {
 
 #[test]
 fn incompatible_hook_tables_are_rejected_before_reading_callbacks() {
-    reject_prefix(RejectedTable {
-        magic: RUNTIME_HOOKS_ABI_MAGIC,
-        version: RUNTIME_HOOKS_ABI_VERSION - 1,
-        size: std::mem::size_of::<RejectedTable>() as u32,
-    });
+    for version in [RUNTIME_HOOKS_ABI_VERSION - 1, RUNTIME_HOOKS_ABI_VERSION + 1] {
+        // A changed signature can have the same table size. Version alone
+        // must reject it before reading even one callback.
+        for size in [
+            std::mem::size_of::<RejectedTable>(),
+            std::mem::size_of::<RuntimeHooks>(),
+        ] {
+            reject_prefix(RejectedTable {
+                magic: RUNTIME_HOOKS_ABI_MAGIC,
+                version,
+                size: size as u32,
+            });
+        }
+    }
     reject_prefix(RejectedTable {
         magic: RUNTIME_HOOKS_ABI_MAGIC,
         version: RUNTIME_HOOKS_ABI_VERSION,
@@ -153,17 +162,29 @@ fn rejected_hook_prefix_does_not_cross_guard_page() {
                 .cast::<u8>()
                 .add(pages.page_size - length - usize::from(unaligned))
         };
-        let prefix = RejectedTable {
-            magic: RUNTIME_HOOKS_ABI_MAGIC,
-            version: RUNTIME_HOOKS_ABI_VERSION,
-            size: length as u32,
-        };
-        unsafe {
-            pointer.cast::<RejectedTable>().write_unaligned(prefix);
+        for (version, size) in [
+            (RUNTIME_HOOKS_ABI_VERSION, length),
+            (
+                RUNTIME_HOOKS_ABI_VERSION - 1,
+                std::mem::size_of::<RuntimeHooks>(),
+            ),
+            (
+                RUNTIME_HOOKS_ABI_VERSION + 1,
+                std::mem::size_of::<RuntimeHooks>(),
+            ),
+        ] {
+            let prefix = RejectedTable {
+                magic: RUNTIME_HOOKS_ABI_MAGIC,
+                version,
+                size: size as u32,
+            };
+            unsafe {
+                pointer.cast::<RejectedTable>().write_unaligned(prefix);
+            }
+            assert_eq!(
+                unsafe { molt_cpython_abi_register_hooks(pointer.cast()) },
+                -1
+            );
         }
-        assert_eq!(
-            unsafe { molt_cpython_abi_register_hooks(pointer.cast()) },
-            -1
-        );
     }
 }

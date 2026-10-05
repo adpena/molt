@@ -726,3 +726,62 @@ def test_runtime_builds_have_no_private_sccache_retry_lane() -> None:
     assert 'Path(wrapper).name == "sccache"' not in source
     assert "_run_cargo_with_sccache_retry(" not in source
     assert "_run_resolved_cargo_plan(" in source
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (("cargo", "rustc"), "dev"),
+        (("cargo", "rustc", "--release"), "release"),
+        (("cargo", "rustc", "--profile", "dev-fast"), "dev-fast"),
+        (("cargo", "rustc", "--profile=release-fast"), "release-fast"),
+        (("cargo", "rustc", "--", "--profile", "unused"), "dev"),
+    ],
+)
+def test_presented_profile_comes_only_from_cargo_arguments(
+    runtime_fixture_root, tmp_path, arguments, expected
+):
+    plan = runtime_cargo_plan(
+        tmp_path,
+        fixture_root=runtime_fixture_root,
+        env=_cargo_env(tmp_path / "cargo-target"),
+        cargo_command=arguments,
+    )
+    assert plan.cargo_profile == expected
+
+
+def test_source_compilation_presents_exact_plan_and_restores_status(
+    runtime_fixture_root, tmp_path, monkeypatch
+):
+    import io
+    from molt.cli import progress
+
+    plan = runtime_cargo_plan(
+        tmp_path,
+        fixture_root=runtime_fixture_root,
+        env=_cargo_env(tmp_path / "cargo-target"),
+        cargo_command=("cargo", "rustc", "--profile", "dev-fast"),
+    )
+    stream = io.StringIO()
+
+    def run(command, **kwargs):
+        assert command == list(plan.command)
+        assert kwargs["env"] == dict(plan.environment)
+        assert kwargs["progress_label"] is None
+        assert stream.getvalue().splitlines()[-1] == (
+            f"molt: Runtime build (dev-fast, {plan.target})"
+        )
+        return _completed(command, 7, stdout="diagnostic", stderr="build failed")
+
+    monkeypatch.setattr(CARGO, "_run_completed_command", run)
+    with progress.BuildProgress(stream=stream):
+        progress.phase("backend_pipeline")
+        result = CARGO._run_resolved_cargo_plan(
+            plan, timeout=1.0, json_output=False, label="Runtime build"
+        )
+    assert stream.getvalue().splitlines()[-1] == "molt: Generating and linking output"
+    assert (result.returncode, result.stdout, result.stderr) == (
+        7,
+        "diagnostic",
+        "build failed",
+    )

@@ -156,7 +156,10 @@ pub extern "C" fn molt_slice_hash(slice_bits: u64) -> u64 {
 pub extern "C" fn molt_slice_eq(slice_bits: u64, other_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         crate::object::ops_compare::builtin_families::BuiltinComparison::Slice.invoke(
-            py, slice_bits, other_bits, molt_obj_model::sequence_compare::RichCompareOp::Eq,
+            py,
+            slice_bits,
+            other_bits,
+            molt_obj_model::sequence_compare::RichCompareOp::Eq,
         )
     })
 }

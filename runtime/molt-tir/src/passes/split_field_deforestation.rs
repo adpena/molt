@@ -52,6 +52,7 @@ pub fn deforest_split_field_reads(func_ir: &mut FunctionIR) {
         kind_is_eq: bool,
         kind_is_typeguard: bool,
     }
+    let satisfied_guards = super::guard_elision::statically_satisfied_guards(func_ir);
     let mut uses_by_name: BTreeMap<String, Vec<Use>> = BTreeMap::new();
     for (op_index, op) in func_ir.ops.iter().enumerate() {
         let Some(args) = op.args.as_ref() else {
@@ -59,10 +60,10 @@ pub fn deforest_split_field_reads(func_ir: &mut FunctionIR) {
         };
         let kind = op.kind.as_str();
         let (is_len, is_ord_at, is_eq) = (kind == "len", kind == "ord_at", kind == "eq");
-        // A `guard_tag` / `guard_type` asserting the field's type is redundant
-        // (a `string_split_field` provably yields a `str` or raises first), so it
-        // is a bounds-expressible use that the rewrite simply DROPS.
-        let is_typeguard = kind == "guard_tag" || kind == "guard_type";
+        // Only a proved matching guard without an alias result is removable.
+        // A mismatching/dynamic tag or observed result still needs the object.
+        let is_typeguard = satisfied_guards.contains(&op_index)
+            && crate::tir::simple_def_use::simple_ir_out_result(op).is_none();
         for (arg_pos, arg) in args.iter().enumerate() {
             uses_by_name.entry(arg.clone()).or_default().push(Use {
                 op_index,

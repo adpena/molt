@@ -659,7 +659,7 @@ def test_prepare_native_link_preserves_codegen_runtime_for_stdlib_profile(
         json_output=True,
         output_binary=output_binary,
         runtime_codegen_binding=binding,
-        target_triple=None,
+        target=resolve_native_target_spec(None),
         sysroot_path=None,
         profile="dev",
         project_root=project_root,

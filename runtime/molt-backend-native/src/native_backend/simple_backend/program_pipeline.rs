@@ -85,9 +85,7 @@ impl SimpleBackend {
         dump_raw_ir_if_requested(&ir.functions);
 
         let native_tti = (!use_llvm).then(|| {
-            crate::tir::target_info::TargetInfo::native_from_simd_caps(
-                crate::tir::target_info::SimdCaps::detect_host(),
-            )
+            crate::tir::target_info::TargetInfo::native_from_simd_caps(self.target_simd_caps())
         });
         let mut native_cached_tir = native_tti.as_ref().map(|native_tti| {
             crate::tir::pipeline_cache::run_cached_tir_pipeline(

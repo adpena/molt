@@ -4,7 +4,7 @@ use molt_passes::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use molt_passes::tir::passes::alias_analysis::AliasAnalysisResult;
 use molt_passes::tir::passes::module_slot_promotion::run_module_slot_promotion;
 use molt_passes::tir::types::TirType;
-use molt_passes::tir::values::{TirValue, ValueId};
+use molt_passes::tir::values::ValueId;
 
 fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
@@ -163,20 +163,6 @@ fn module_loop_func() -> TirFunction {
     f
 }
 
-fn append_annotated_param(func: &mut TirFunction, ty: TirType) -> ValueId {
-    let value = func.fresh_value();
-    func.param_names
-        .push(format!("p{}", func.param_names.len()));
-    func.param_types.push(ty.clone());
-    func.value_types.insert(value, ty.clone());
-    func.blocks
-        .get_mut(&func.entry_block)
-        .unwrap()
-        .args
-        .push(TirValue { id: value, ty });
-    value
-}
-
 fn count_module_ops_in(func: &TirFunction, blocks: &[BlockId]) -> usize {
     blocks
         .iter()
@@ -243,8 +229,8 @@ fn promotes_bench_sum_shaped_loop() {
 #[test]
 fn annotation_only_module_arithmetic_refuses_promotion() {
     let mut f = module_loop_func();
-    let annotated_zero = append_annotated_param(&mut f, TirType::I64);
-    let annotated_n = append_annotated_param(&mut f, TirType::I64);
+    let annotated_zero = crate::fixture_support::append_parameter(&mut f, TirType::I64);
+    let annotated_n = crate::fixture_support::append_parameter(&mut f, TirType::I64);
     {
         let entry = f.blocks.get_mut(&f.entry_block).unwrap();
         entry.ops[2].operands[2] = annotated_zero;
@@ -270,7 +256,7 @@ fn annotation_only_module_arithmetic_refuses_promotion() {
 #[test]
 fn unknown_loop_writer_refuses_transaction_without_mutation() {
     let mut f = module_loop_func();
-    let unknown = append_annotated_param(&mut f, TirType::DynBox);
+    let unknown = crate::fixture_support::append_parameter(&mut f, TirType::DynBox);
     f.blocks.get_mut(&BlockId(2)).unwrap().ops[5].operands[2] = unknown;
     let before = format!("{f:?}");
     let mut module = TirModule {
@@ -508,7 +494,7 @@ fn field_initialization_does_not_hide_allocation_or_old_value_callbacks() {
         "poll",
     ] {
         let mut f = typed_field_initialization_loop();
-        let class = append_annotated_param(&mut f, TirType::DynBox);
+        let class = crate::fixture_support::append_parameter(&mut f, TirType::DynBox);
         let body = f.blocks.get_mut(&BlockId(2)).unwrap();
         match boundary {
             "object_new_bound" => {

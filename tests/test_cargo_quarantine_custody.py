@@ -632,6 +632,64 @@ def test_reused_parent_birth_never_grants_incremental_observation(tmp_path):
     )
 
 
+@pytest.mark.parametrize(
+    "cargo_birth,rustc_birth,admitted",
+    [
+        (200, 300, True),
+        (300, 300, True),
+        (400, 300, False),
+        (None, 300, False),
+        (200, None, False),
+        (0, 300, False),
+        (200, 0, False),
+        (-1, 300, False),
+        (200, -1, False),
+        (True, 300, False),
+        (1, True, False),
+        (200.0, 300, False),
+        (200, 300.0, False),
+        ("200", 300, False),
+        (200, "300", False),
+    ],
+)
+def test_live_and_persisted_cargo_edges_require_ordered_exact_births(
+    tmp_path, cargo_birth, rustc_birth, admitted
+):
+    target = tmp_path / "target"
+    incremental = unit(target).parent.resolve()
+    parent = SimpleNamespace(
+        command_kind="full",
+        pid=90050,
+        ppid=1,
+        started_at_ns=cargo_birth,
+        command="cargo",
+        argv=("cargo",),
+    )
+    child = SimpleNamespace(
+        command_kind="full",
+        pid=90051,
+        ppid=90050,
+        started_at_ns=rustc_birth,
+        command="rustc",
+        argv=("rustc", "-C", f"incremental={incremental}"),
+    )
+    samples = {parent.pid: parent, child.pid: child}
+    identities = {pid: process_identity(sample) for pid, sample in samples.items()}
+    observation = cargo.CargoIncrementalObservation(
+        90051, rustc_birth, str(incremental), 90050, cargo_birth
+    )
+    assert cargo.observe_owned_incremental_state(samples, set(samples), identities) == (
+        {observation} if admitted else set()
+    )
+    if admitted:
+        assert cargo._observed_incremental_units(target, (observation,)) == {
+            incremental: incremental.parent
+        }
+    else:
+        with pytest.raises(ValueError, match="lacks process birth authority"):
+            cargo._observed_incremental_units(target, (observation,))
+
+
 def test_release_interrupt_attempts_all_handles_then_propagates(tmp_path, monkeypatch):
     import molt.file_locks as locks
 
@@ -1304,17 +1362,22 @@ def test_bounded_model_lock_settle_preserves_authority(tmp_path, monkeypatch, ca
     if case != "never_release":
         worker = threading.Thread(target=release_later)
         worker.start()
-    if case == "closure_unknown":
-        monkeypatch.setattr(cargo, "_observed_compilers_closed", lambda *args: False)
+    # These PIDs are modeled observations, never native process authority.
+    monkeypatch.setattr(
+        cargo, "_observed_compilers_closed", lambda *args: case != "closure_unknown"
+    )
+    calls = []
     if case == "acquire_error":
         from molt import file_locks
 
         original = file_locks._try_acquire_file_lock
-        calls = []
+        # Fail this transaction's second coordinate, not the second global
+        # lock call, which unrelated guard activity may consume concurrently.
+        error_path = lock_path.parent / ".cargo-lock"
 
         def injected(path):
-            calls.append(path)
-            if len(calls) == 2:
+            if path == error_path:
+                calls.append(path)
                 raise OSError("native lock query failed")
             return original(path)
 
@@ -1339,6 +1402,9 @@ def test_bounded_model_lock_settle_preserves_authority(tmp_path, monkeypatch, ca
         else:
             _release_file_lock(handle)
     assert time.perf_counter() - started < 2
+    if case == "acquire_error":
+        assert calls == [error_path]
+        assert receipt.errors == ("OSError: native lock query failed",)
     if case == "release":
         assert released.is_set() and receipt.ownership_status == "quarantined"
         assert not owned.exists()

@@ -292,29 +292,38 @@ def test_custody_revalidates_existing_extraction(tmp_path: Path) -> None:
         ensure_native_link_custody(runtime, custody)
 
 
-def test_custody_observation_reuses_bytes_but_always_checks_membership(
+def test_custody_observation_revalidates_bytes_and_reuses_only_archive_parsing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runtime, custody, _archive, _entry = _published_custody(tmp_path)
+    runtime, custody, archive, _entry = _published_custody(tmp_path)
     observation = custody_authority.observe_native_link_custody(runtime, custody)
+    captures = []
+    capture = custody_authority.stable_regular_file_handle_identity
+
+    def current(opened, **kwargs):
+        captures.append(opened.path)
+        return capture(opened, **kwargs)
 
     def no_read(*args, **kwargs):
-        pytest.fail("unchanged custody generation was read again")
+        pytest.fail("unchanged custody archive was parsed again")
 
-    monkeypatch.setattr(custody_authority, "_file_identity", no_read)
+    monkeypatch.setattr(
+        custody_authority, "stable_regular_file_handle_identity", current
+    )
     monkeypatch.setattr(custody_authority.tarfile, "open", no_read)
     assert (
         ensure_native_link_custody(runtime, custody, previous=observation)
         == observation.paths()
     )
     [member] = observation.paths().values()
+    assert captures == [archive, member]
     (member.parent / "unadmitted.o").write_bytes(b"extra")
     with pytest.raises(NativeLinkCustodyError, match="closure"):
         ensure_native_link_custody(runtime, custody, previous=observation)
 
 
 @pytest.mark.parametrize("target", ["archive", "extracted"])
-def test_custody_replacement_observes_only_the_replaced_generation(
+def test_custody_identical_byte_replacement_revalidates_all_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
 ) -> None:
     runtime, custody, archive, _entry = _published_custody(tmp_path)
@@ -324,16 +333,68 @@ def test_custody_replacement_observes_only_the_replaced_generation(
     replacement = replaced.with_name(replaced.name + ".replacement")
     replacement.write_bytes(replaced.read_bytes())
     replacement.replace(replaced)
-    original = custody_authority._file_identity
+    original = custody_authority.stable_regular_file_handle_identity
     captures = []
 
-    def capture(path):
-        captures.append(path)
-        return original(path)
+    def capture(opened, **kwargs):
+        captures.append(opened.path)
+        return original(opened, **kwargs)
 
-    monkeypatch.setattr(custody_authority, "_file_identity", capture)
+    monkeypatch.setattr(
+        custody_authority, "stable_regular_file_handle_identity", capture
+    )
     refreshed = custody_authority.observe_native_link_custody(
         runtime, custody, previous=observation
     )
     assert refreshed.paths() == observation.paths()
-    assert captures == [replaced]
+    assert captures == [archive, extracted]
+
+
+@pytest.mark.parametrize("target", ["archive", "extracted"])
+def test_warm_custody_rejects_same_size_rewrite_with_matching_metadata(
+    tmp_path: Path, target: str
+) -> None:
+    from dataclasses import replace
+    from molt.toolchain_identity import stable_regular_file_identity
+
+    runtime, custody, archive, _entry = _published_custody(tmp_path)
+    observation = custody_authority.observe_native_link_custody(runtime, custody)
+    [(identifier, extracted_identity)] = observation.files
+    path = archive if target == "archive" else extracted_identity.path
+    before = path.stat()
+    data = bytearray(path.read_bytes())
+    data[-1] ^= 1
+    path.write_bytes(data)
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    current = stable_regular_file_identity(path, label="current metadata fixture")
+    old = observation.archive if target == "archive" else extracted_identity
+    assert old is not None
+    collided = replace(current, sha256=old.sha256)
+    observation = (
+        replace(observation, archive=collided)
+        if target == "archive"
+        else replace(observation, files=((identifier, collided),))
+    )
+    with pytest.raises(NativeLinkCustodyError, match="identity mismatch"):
+        ensure_native_link_custody(runtime, custody, previous=observation)
+
+
+def test_copied_custody_borrow_requires_its_live_owned_archive(tmp_path: Path) -> None:
+    runtime, custody, _archive, _entry = _published_custody(tmp_path)
+    retained = tmp_path / "retained" / runtime.name
+    retained.parent.mkdir()
+    retained.write_bytes(runtime.read_bytes())
+    with custody_authority.copy_native_link_custody_archive(
+        runtime, retained, custody
+    ) as admission:
+        observation = admission.borrow(retained, custody)
+        assert observation.archive is not None
+        assert observation.files
+        assert all(
+            path.is_relative_to(retained.parent)
+            for path in observation.paths().values()
+        )
+        with pytest.raises(NativeLinkCustodyError, match="another path"):
+            admission.borrow(runtime, custody)
+    with pytest.raises(NativeLinkCustodyError, match="expired"):
+        admission.borrow(retained, custody)

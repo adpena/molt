@@ -938,6 +938,7 @@ class QueueListener:
 
 
 class Logger(Filterer):
+    # Filterer already owns dictionary and weak-reference storage.
     __slots__ = (
         "name",
         "level",
@@ -946,8 +947,6 @@ class Logger(Filterer):
         "propagate",
         "disabled",
         "_handle",
-        "__dict__",
-        "__weakref__",
     )
     manager: "Manager"
 

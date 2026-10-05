@@ -656,9 +656,21 @@ unsafe fn register_module_capi(
             module_state_size(def),
             !attach_legacy_state,
             hooks::ModuleGcCallbacks {
-                traverse: if (*def).m_traverse.is_null() { None } else { Some(std::mem::transmute((*def).m_traverse)) },
-                clear: if (*def).m_clear.is_null() { None } else { Some(std::mem::transmute((*def).m_clear)) },
-                free: if (*def).m_free.is_null() { None } else { Some(std::mem::transmute((*def).m_free)) },
+                traverse: if (*def).m_traverse.is_null() {
+                    None
+                } else {
+                    Some(std::mem::transmute((*def).m_traverse))
+                },
+                clear: if (*def).m_clear.is_null() {
+                    None
+                } else {
+                    Some(std::mem::transmute((*def).m_clear))
+                },
+                free: if (*def).m_free.is_null() {
+                    None
+                } else {
+                    Some(std::mem::transmute((*def).m_free))
+                },
             },
         )
     };

@@ -2,6 +2,21 @@
 
 # Generator Fusion — Complete Implementation Blueprint
 
+The current module driver admits only polls outside the shared call graph's
+recursion-capable set. Opaque Python callbacks, including marked asynchronous
+work observations and unknown-value finalization, retain that conservative
+refusal. Primitive tuple construction uses `BuildTuple`; a generic `Copy`
+carrying a tuple spelling is not an equivalent callback proof. Eligible polls
+and consumers must already have their target-required observations before they
+are spliced.
+
+The transactional splice records its yield split point only after constructing
+the complete cloned entry prefix. The pair definition must stay before that
+point even when entry itself yields; promoted parameter references are bound
+before the resulting pre-yield block executes. Splice validity and latch/owner
+preservation are tested separately from module admission, with both an admitted
+callback-free poll and byte-identical refusal of callback-bearing polls.
+
 ## 1. Precise Problem Statement
 
 **Why it is load-bearing for the 5-year perf goals.**

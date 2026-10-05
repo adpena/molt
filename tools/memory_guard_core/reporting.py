@@ -19,6 +19,7 @@ from tools.memory_guard_core.common import utc_compact_timestamp, utc_timestamp
 from tools.memory_guard_core.payloads import (
     _rss_record_payload,
     guarded_child_process_payload,
+    process_identities_payload,
     memory_limits_payload,
     termination_reports_payload,
     windows_job_cleanup_payload,
@@ -414,6 +415,9 @@ def write_summary_json(
         "descendants_closed": result.descendants_closed,
         "orphaned_process_groups": list(result.orphaned_process_groups),
         "child_process": guarded_child_process_payload(result.child_process),
+        "owned_process_identities": process_identities_payload(
+            result.owned_process_identities
+        ),
         "termination_reports": termination_reports_payload(result.termination_reports),
         "sampling_telemetry": sampling_telemetry_payload(result.sampling_telemetry),
         "cargo_incremental_quarantine": _cargo_incremental_quarantine_payload(

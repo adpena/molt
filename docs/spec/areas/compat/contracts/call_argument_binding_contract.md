@@ -65,7 +65,10 @@ publication table initializes their sealed bind kind and typed parameter/default
 metadata. That same kind governs binder execution, raw-call admission and inline
 cache admission. Public names, textual introspection signatures and call-site
 spellings do not select executable semantics. Captured aliases keep their callable
-when the builtin namespace is replaced.
+when the builtin namespace is replaced. The `__import__` globals slot preserves
+omission with the internal MISSING default; its public text signature continues
+to display `globals=None`. Direct, aliased and expanded calls consume the same
+generated default, so explicit None cannot become omission during binding.
 
 The `native_arguments` admission core serves this family and native constructor
 parsers. It checks total argument count, binds required slots, checks occupied
@@ -181,6 +184,43 @@ parallel public-method atomic cache or address-based binding classifier exists.
 Private executable callbacks may retain private atomic caches. Constructor
 declarations publish ordinary native functions whose public self is the owner.
 
+Runtime-created itertools classes declare their own `__iter__` and `__next__`
+method descriptors during canonical class construction, before class-cache
+publication. Reduced and satellite profiles only transport the callback ABI and
+constructor defaults to this authority. `repeat.__new__` and
+`UnraisableHookArgs.__new__` remain nonbinding native constructors with retained
+positional defaults; `UnraisableHookArgs.__repr__` binds its declaring receiver.
+Readonly-property getter callbacks receive explicit self from property dispatch
+and remain nonbinding functions. Public `repeat(value)` uses the private missing
+argument sentinel; explicit `repeat(value, None)` reaches normal index conversion
+and raises `TypeError`. Only the internal repeat intrinsic translates its
+intentional `None` representation to the same unbounded sentinel.
+
+Constructor receiver conformance remains open for `repeat`: its current raw
+constructor allocates the canonical repeat type instead of a supplied subclass
+and does not reject an unrelated supplied class. The CPython expectations are
+that `RepeatSubclass(value, count)` preserves the subclass and
+`repeat.__new__(str, value, count)` raises `TypeError`. Method publication and
+argument-default corrections do not establish these receiver cases; they remain
+release gaps rather than a change to the supported contract.
+
+Exception initializer descriptors admit both the real declaring subtype and the
+physical `ExceptionStorage` representation before mutating a receiver. A foreign
+wrapper never supplies managed exception offsets. `BaseException.__init__` and
+`BaseExceptionGroup.__init__` update only the shared args field, preserving typed
+tails; concrete native exception initialization uses the existing C initializer.
+Owned argument packs and projected C arguments preserve both raised-error channels
+while they retire on success or failure.
+
+Native invalid-keyword mutation ordering remains an unclosed conformance lead in
+the existing C initializer (`molt_native_exception_init`), not a support exemption.
+It currently rejects unknown keywords before replacing args. The CPython
+discriminator is a real FromSpec native subtype of `AttributeError`, constructed
+as `x = NativeAttributeError("old", name="before")`, followed by
+`AttributeError.__init__(x, "new", unexpected="bad")`: after catching `TypeError`,
+CPython requires `x.args == ("new",)` and `x.name == "before"`. Physical storage
+admission and the valid native initializer path do not close that semantic gap.
+
 Native public metadata reads admit the members of the declared role. Private
 argument names, defaults, keyword defaults, code and binder metadata remain
 available to internal binders without becoming a public instance dictionary.
@@ -232,8 +272,13 @@ metadata. A custom namespace's type-owned `__getitem__` is bound by the ordinary
 call authority; only `KeyError` means absence, and other exceptions propagate.
 The bootstrap decision consumes canonical IR runtime requirements, including
 module-cache and attribute-only programs. Runtime provider source owns helper
-exports and transitive dependencies; helper bindings are hoisted once and share
-the chunk-local budget with guest function declarations. Explicit runtime
+bindings and transitive dependencies. Guest and cross-provider references select
+the exports hoisted at chunk scope; each provider retains its private bindings
+in its own lexical scope, preserving recursive cells, closure identity, and
+source initialization order. The local budget counts simultaneously active
+exports and provider-private cells during initialization, then exports and guest
+declarations, with space reserved for the entry-point guard. An oversized program
+is rejected rather than emitting guest functions as globals. Explicit runtime
 constructors must have a closed provider dependency set before source emission.
 
 The Luau preview has no executable default provider for `hash`, `id`, `iter`,
@@ -496,6 +541,13 @@ plans, and the binder use that same selection. Trampoline availability is not
 evidence that Python arguments already match the runtime ABI. Already-bound
 execution uses the explicit bound-call lane and must not recursively rebind.
 
+Published native constructors use their declaration's variadic signature and
+`native_constructors`/`native_arguments` receiver admission. The raw runtime
+primitives they call, such as `molt_int_new`, do not acquire a second Python
+binder by address. Regression fixtures obtain the actual published `__new__`
+for every native constructor owner and check builder/vector failure custody and
+inline-cache routing with the real callable entry intact.
+
 Materialized argument packs passed to a borrowing builtin ABI have scoped
 ownership in `BuiltinArgumentStorage`. Formatting tuples and keyword mappings,
 print argument tuples, set-operation operand tuples, and type-construction
@@ -511,7 +563,10 @@ after that observation; the exceptional edge performs its own unwind. Async-work
 placement uses the same observation, including a uniquely reached successor
 block, so cleanup cannot run a finalizer before the pending failure transfers.
 
-Builtin `object.__init_subclass__` is a classmethod descriptor. Direct class,
+Builtin `object.__init_subclass__` is a native `classmethod_descriptor`, whose
+portable storage is a function payload. Its public class and declaring owner
+govern binding; a managed `classmethod` wrapper is a different Python object.
+Raw direct calls validate the explicit class receiver. Direct class,
 inherited class, instance, and class-mode `super` lookups all bind the lookup
 owner before dispatch. The constructor invokes that bound inherited hook once;
 cooperative hooks own continuation through the MRO. No binder invents a missing

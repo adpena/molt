@@ -141,6 +141,33 @@ fn main() -> io::Result<()> {
     install_process_memory_guard();
 
     let args: Vec<String> = env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--native-codegen-identity") {
+        #[cfg(feature = "native-backend")]
+        {
+            if args.len() != 3 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "--native-codegen-identity requires exactly one target triple",
+                ));
+            }
+            let identity = molt_backend::SimpleBackend::object_codegen_identity(Some(&args[2]));
+            serde_json::to_writer(
+                io::stdout().lock(),
+                &serde_json::json!({
+                    "schema": "molt.native-codegen-identity.v1",
+                    "requested_target": args[2],
+                    "identity": identity,
+                }),
+            )?;
+            println!();
+            return Ok(());
+        }
+        #[cfg(not(feature = "native-backend"))]
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "molt-backend was built without native codegen identity support",
+        ));
+    }
     if args.get(1).map(String::as_str) == Some("--scan-wasm-link-facts") {
         #[cfg(feature = "wasm-backend")]
         {

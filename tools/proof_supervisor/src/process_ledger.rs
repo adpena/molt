@@ -385,9 +385,12 @@ impl ProcessLedger {
             return Err("observed executable image path is not absolute".to_owned());
         }
         validate_digest(&image.sha256, "observed executable image")?;
-        let expected = self
-            .policy
-            .classify_observed_image(&image.path, image.file_id.clone(), image.size_bytes, image.sha256.clone());
+        let expected = self.policy.classify_observed_image(
+            &image.path,
+            image.file_id.clone(),
+            image.size_bytes,
+            image.sha256.clone(),
+        );
         if &expected != image {
             return Err(format!(
                 "event image classification disagrees with sealed policy: {}",

@@ -133,7 +133,7 @@ unsafe fn has_builtin_staticmethod_call(py: &PyToken<'_>, ptr: *mut u8) -> bool 
                 py,
                 ptr,
                 b"__call__",
-                fn_addr!(crate::molt_staticmethod_call),
+                fn_key!(crate::molt_staticmethod_call),
             )
     }
 }

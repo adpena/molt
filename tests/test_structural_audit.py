@@ -1697,6 +1697,32 @@ def test_cli_ratchet_rejects_invalid_baseline_numbers(tmp_path, capsys, bad_valu
     assert expected in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("regression", [False, True])
+def test_cli_check_verdict_is_independent_of_output_format(
+    tmp_path, capsys, json_output, regression
+):
+    baseline = tmp_path / "tools/structural_audit_baseline.json"
+    baseline.parent.mkdir()
+    baseline.write_text(json.dumps(SA.ratchet_metrics([])))
+    source = tmp_path / "src/molt/stdlib/fixture.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "def operation():\n    raise NotImplementedError\n"
+        if regression
+        else "def operation():\n    return 1\n"
+    )
+    args = ["--root", str(tmp_path), "--check"]
+    if json_output:
+        args.append("--json")
+    assert SA.main(args) == int(regression)
+    output = capsys.readouterr()
+    if json_output:
+        assert json.loads(output.out)["metrics"]["python_stub_surfaces_total"] == int(
+            regression
+        )
+
+
 @pytest.mark.parametrize(
     "call", ["self.emit_unsupported_op(op)", "emit_unsupported_op(self, op)"]
 )
@@ -1920,3 +1946,447 @@ def test_cli_baseline_json_integrity_matches_receipt_authority(
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_guarded_wildcard_does_not_hide_fail_closed_default():
+    source = """fn classify(op: &TirOp) {
+        match op.opcode {
+            OpCode::A | OpCode::B | OpCode::C => Ok(None),
+            _ if bookkeeping(op) => Ok(None),
+            _ => Err(()),
+        }
+    }
+    """
+    assert _scan_rust_string(source, "tir/passes/effects.rs") == []
+    assert (
+        len(
+            _scan_rust_string(
+                source.replace("_ => Err(())", "_ => None"), "tir/passes/effects.rs"
+            )
+        )
+        == 1
+    )
+
+
+def test_rust_regions_use_lexical_offsets_and_exact_test_scope():
+    source = 'const BAIT: &str = r#"{\nfn fake() {}\n"#;\n'
+    source += "#[cfg(test)]\nmod spec { fn oracle() {} }\n"
+    source += 'fn live() { let s = "}"; }\n'
+    source += "struct Stats {\n#[cfg(test)] scanned: Map<u32, u32>,\nlive: usize,\n}\n"
+    source += "fn sibling() {}\n"
+    regions = SA._rust_top_level_regions(source)
+    assert [
+        (region.name, region.start_line, region.end_line) for region in regions
+    ] == [("live", 6, 6), ("Stats", 7, 10), ("sibling", 11, 11)]
+    masked = SA.mask_rust_test_items(source)
+    assert "scanned" not in masked
+    assert "live: usize" in masked
+
+
+def test_declared_external_oracle_is_not_production_debt(tmp_path):
+    source = tmp_path / "runtime/sample/src"
+    source.mkdir(parents=True)
+    (source / "main.rs").write_text(
+        '#[cfg(test)] #[path = "specifications.rs"] mod assertions;\n', encoding="utf-8"
+    )
+    (source / "specifications.rs").write_text(
+        "fn oracle(opcode: OpCode) -> bool {\n"
+        "matches!(opcode, OpCode::A | OpCode::B | OpCode::C)\n"
+        '}\nfn fixture() { panic!("MOLT_STUB"); }\n',
+        encoding="utf-8",
+    )
+    assert SA.probe_semantic_fallthroughs(tmp_path) == []
+    assert SA.probe_rust_stub_surfaces(tmp_path) == []
+    (source / "main.rs").write_text("mod specifications;\n", encoding="utf-8")
+    assert len(SA.probe_semantic_fallthroughs(tmp_path)) == 1
+    assert len(SA.probe_rust_stub_surfaces(tmp_path)) == 1
+
+
+def test_shared_rust_admission_proof_requires_dominating_validation(tmp_path):
+    import shutil
+    from tools.structural_audit_rust_admission import _body, proven_rejected_kinds
+
+    source = (ROOT / "runtime/molt-backend-rust/src/rust.rs").read_text(
+        encoding="utf-8"
+    )
+    consumer = _body(source, "compile_checked")
+    assert consumer is not None
+    denied = proven_rejected_kinds(ROOT, consumer)
+    assert denied is not None
+    assert {"class_new", "module_import", "const_bytes", "int"} <= denied
+    assert "const_str" not in denied
+    assert (
+        proven_rejected_kinds(
+            ROOT, consumer.replace("let admitted =", "let bypassed =", 1)
+        )
+        is None
+    )
+    for relative in (
+        "runtime/molt-tir/src/target_admission.rs",
+        "runtime/molt-tir/src/target_admission/runtime.rs",
+        "runtime/molt-tir/src/target_admission/numeric.rs",
+        "runtime/molt-ir/src/tir/target_info.rs",
+        "runtime/molt-ir/src/ir.rs",
+        "runtime/molt-ir/src/tir/op_kinds_generated.rs",
+        "runtime/molt-ir/src/tir/op_kinds.toml",
+        "src/molt/frontend/lowering/op_kinds_generated.py",
+        "runtime/molt-backend-rust/src/rust.rs",
+    ):
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, destination)
+    shutil.copytree(
+        ROOT / "runtime/molt-backend-rust/src/rust",
+        tmp_path / "runtime/molt-backend-rust/src/rust",
+    )
+    assert proven_rejected_kinds(tmp_path, consumer) == denied
+    runtime = tmp_path / "runtime/molt-tir/src/target_admission/runtime.rs"
+    runtime.write_text(
+        runtime.read_text(encoding="utf-8").replace(
+            "requirements.difference(supported_requirements)",
+            "supported_requirements",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    assert proven_rejected_kinds(tmp_path, consumer) is None
+
+
+def test_dispatch_admission_projection_preserves_unknown_and_guarded_arms():
+    from tools.structural_audit_rust_admission import literal_dispatch_arm_ranges
+
+    source = 'match op.kind.as_str() { "denied" | "other" => self.refuse(op), "conditional" if allowed(op) => self.refuse(op), _ => self.refuse(op), }'
+    arms = literal_dispatch_arm_ranges(source)
+    assert [kinds for _, _, kinds in arms] == [frozenset({"denied", "other"})]
+
+
+def _copy_live_rust_admission_sources(destination):
+    """Copy the actual source authority, never a handwritten support fixture."""
+    import shutil
+
+    for relative in (
+        "runtime/molt-tir/src/target_admission.rs",
+        "runtime/molt-tir/src/target_admission/runtime.rs",
+        "runtime/molt-tir/src/target_admission/numeric.rs",
+        "runtime/molt-ir/src/tir/target_info.rs",
+        "runtime/molt-ir/src/ir.rs",
+        "runtime/molt-ir/src/ir_schema.rs",
+        "runtime/molt-ir/src/literal_payload.rs",
+        "runtime/molt-ir/src/tir/simple_def_use.rs",
+        "runtime/molt-ir/src/tir/op_kinds_generated.rs",
+        "runtime/molt-ir/src/tir/op_kinds.toml",
+        "src/molt/frontend/lowering/op_kinds_generated.py",
+        "runtime/molt-backend-rust/Cargo.toml",
+        "runtime/molt-backend-rust/src/rust.rs",
+    ):
+        path = destination / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, path)
+    shutil.copytree(
+        ROOT / "runtime/molt-backend-rust/src/rust",
+        destination / "runtime/molt-backend-rust/src/rust",
+    )
+
+
+def test_live_rust_admitted_domains_close_refusal_paths(tmp_path):
+    from tools.structural_audit_rust_admission import _body, proven_admitted_wire_domain
+
+    _copy_live_rust_admission_sources(tmp_path)
+    source = (tmp_path / "runtime/molt-backend-rust/src/rust.rs").read_text(
+        encoding="utf-8"
+    )
+    domain = proven_admitted_wire_domain(tmp_path, _body(source, "compile_checked"))
+    assert domain is not None
+    assert {"const_int", "load_const", "const_bigint"} <= domain.denied
+    assert {"inplace_floordiv", "inplace_mod", "mod_", "binop_pow"} <= domain.denied
+    assert "store_local" not in domain.registered
+    assert "const_float" in domain.possible
+    assert SA.probe_rust_backend_lowering_gaps(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("capability", "kinds"),
+    [
+        ("cpython_float_divmod", {"inplace_floordiv", "inplace_mod", "mod_"}),
+        ("cpython_power", {"pow", "binop_pow"}),
+    ],
+)
+def test_rust_admitted_domain_numeric_total_rejection_requires_each_branch(
+    tmp_path, capability, kinds
+):
+    from tools.structural_audit_rust_admission import _body, proven_admitted_wire_domain
+
+    _copy_live_rust_admission_sources(tmp_path)
+    consumer = _body(
+        (tmp_path / "runtime/molt-backend-rust/src/rust.rs").read_text(
+            encoding="utf-8"
+        ),
+        "compile_checked",
+    )
+    baseline = proven_admitted_wire_domain(tmp_path, consumer)
+    assert baseline is not None and kinds <= baseline.denied
+    numeric = tmp_path / "runtime/molt-tir/src/target_admission/numeric.rs"
+    source = numeric.read_text(encoding="utf-8")
+    before = f"(!capabilities.{capability}).then_some("
+    assert source.count(before) == 1
+    numeric.write_text(
+        source.replace(before, f"(capabilities.{capability}).then_some(", 1),
+        encoding="utf-8",
+    )
+    # The changed float branch now succeeds with the same false capability.
+    # Neither role nor wire spelling may retain its unconditional exclusion.
+    changed = proven_admitted_wire_domain(tmp_path, consumer)
+    assert changed is not None
+    assert kinds.isdisjoint(changed.denied)
+
+
+@pytest.mark.parametrize(
+    ("relative", "before", "after", "expected_probe"),
+    [
+        (
+            "runtime/molt-ir/src/ir.rs",
+            "validate_simple_ir_transport_contract(ir)?;",
+            "",
+            "rust_backend_rejection_applicability",
+        ),
+        (
+            "runtime/molt-ir/src/ir_schema.rs",
+            "validate_value_transport(op)?;",
+            "",
+            "rust_backend_rejection_applicability",
+        ),
+        (
+            "runtime/molt-ir/src/ir_schema.rs",
+            "operands.unwrap_or(0) != shape.operands",
+            "operands.unwrap_or(0) > shape.operands",
+            "rust_backend_rejection_applicability",
+        ),
+        (
+            "runtime/molt-ir/src/ir_schema.rs",
+            'name.is_empty() || name == "none"',
+            'name.is_empty() || name == "n one"',
+            "rust_backend_rejection_applicability",
+        ),
+        (
+            "runtime/molt-tir/src/target_admission/runtime.rs",
+            "requirements.difference(supported_requirements)",
+            "supported_requirements",
+            "rust_backend_lowering_gap",
+        ),
+        (
+            "runtime/molt-ir/src/tir/target_info.rs",
+            "Self::runtime_semantics_for(TargetKind::Rust)",
+            "Self::runtime_semantics_for(TargetKind::NativeCranelift)",
+            "rust_backend_lowering_gap",
+        ),
+        (
+            "runtime/molt-ir/src/tir/op_kinds_generated.rs",
+            '"build_tuple" | "tuple_new" => Some(SimpleIrRuntimeRequirements(2))',
+            '"build_tuple" | "tuple_new" => Some(SimpleIrRuntimeRequirements(0))',
+            "rust_backend_lowering_gap",
+        ),
+        (
+            "runtime/molt-tir/src/target_admission/numeric.rs",
+            "if capabilities.arbitrary_precision_integers\n",
+            "if capabilities.arbitrary_precision_integers || true\n",
+            "rust_backend_rejection_applicability",
+        ),
+        (
+            "runtime/molt-backend-rust/src/rust/op_emitter.rs",
+            '"warn_stderr" => self.emit_op_warn_stderr(op),',
+            "",
+            "rust_backend_lowering_gap",
+        ),
+        (
+            "runtime/molt-backend-rust/src/rust/op_emitter.rs",
+            "if self.emit_op_literal(op)",
+            "if false && self.emit_op_literal(op)",
+            "rust_backend_lowering_gap",
+        ),
+        (
+            "runtime/molt-backend-rust/src/rust/op_emitter/values.rs",
+            "SimpleLiteral::Float(value) => Ok(format!(",
+            "SimpleLiteral::Float(value) => Err(format!(",
+            "rust_backend_rejection_applicability",
+        ),
+        (
+            "runtime/molt-backend-rust/src/rust/op_emitter/values.rs",
+            "let source = source.name;",
+            'self.emit_unsupported_op(op, "new valid-input rejection"); let source = source.name;',
+            "rust_backend_rejection_applicability",
+        ),
+        (
+            "runtime/molt-backend-rust/src/rust/op_emitter/gaps.rs",
+            'if out != "_" && out != "none" && !out.is_empty()',
+            "if true",
+            "rust_backend_rejection_applicability",
+        ),
+        (
+            "runtime/molt-backend-rust/src/rust.rs",
+            "let is_main = func.name",
+            "self.emit_op_local_copy(&OpIR::default()); let is_main = func.name",
+            "rust_backend_rejection_applicability",
+        ),
+        (
+            "runtime/molt-backend-rust/src/rust.rs",
+            "func.ops.clone()",
+            "Vec::new()",
+            "rust_backend_lowering_gap",
+        ),
+    ],
+)
+def test_rust_admitted_domain_mutations_restore_obligations(
+    tmp_path, relative, before, after, expected_probe
+):
+    _copy_live_rust_admission_sources(tmp_path)
+    path = tmp_path / relative
+    source = path.read_text(encoding="utf-8")
+    assert before in source
+    path.write_text(source.replace(before, after, 1), encoding="utf-8")
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert any(finding.probe == expected_probe for finding in findings), findings
+
+
+def test_rust_branch_projection_preserves_semantic_string_tokens():
+    from tools.structural_audit_rust_domains import _same, match_arms
+
+    assert not _same('name == "none"', 'name == "n one"')
+    arms = match_arms(
+        'match op.kind.as_str() { "live" => { self.ok(op); } _ => self.fail(op), }',
+        "op.kind.as_str()",
+    )
+    assert arms is not None and len(arms) == 2
+    assert arms[0].pattern.strip() == '"live"'
+    assert arms[1].pattern.strip() == "_"
+
+
+def test_rust_branch_projection_sibling_parsers_keep_exact_literal_ranges():
+    from tools.structural_audit_rust_admission import literal_dispatch_arm_ranges
+    from tools.structural_audit_rust_domains import match_arms
+
+    source = (
+        'match op.kind.as_str() { /* before */ "first" | "_alias" => self.one(op), '
+        '"guarded" if predicate("=>") => self.two(op), '
+        '"last" => { self.three(op); } _ => self.fail(op), }'
+    )
+    arms = match_arms(source, "op.kind.as_str()")
+    assert arms is not None and len(arms) == 4
+    ranges = literal_dispatch_arm_ranges(source)
+    assert [names for _, _, names in ranges] == [
+        frozenset({"first", "_alias"}),
+        frozenset({"last"}),
+    ]
+    assert [start for start, _, _ in ranges] == [
+        source.index('"first"'),
+        source.index('"last"'),
+    ]
+    assert "self.one(op)" in source[ranges[0][0] : ranges[0][1]]
+    assert "self.fail(op)" not in source[ranges[1][0] : ranges[1][1]]
+    assert arms[-1].start == source.index("_ =>")
+
+
+def test_generated_literal_table_preserves_wire_literal_content():
+    from tools.structural_audit_rust_admission import _generated_literal_table
+
+    source = 'match kind { "nop" => Some(Mask(0)), /* skip */ _ => None, }'
+    result = r"Some\(Mask\((?P<value>\d+)\)\)"
+    assert _generated_literal_table(source, result, "_=>None,") == {"nop": "0"}
+    assert (
+        _generated_literal_table(source.replace('"nop"', '"n op"'), result, "_=>None,")
+        is None
+    )
+    assert (
+        _generated_literal_table(
+            source.replace('"nop"', 'r#"nop"#'), result, "_=>None,"
+        )
+        is None
+    )
+
+
+def test_rust_admitted_domain_unknown_wire_requires_fail_closed_admission(tmp_path):
+    _copy_live_rust_admission_sources(tmp_path)
+    dispatcher = tmp_path / "runtime/molt-backend-rust/src/rust/op_emitter.rs"
+    source = dispatcher.read_text(encoding="utf-8")
+    assert "_ => self.emit_op_other(op)," in source
+    dispatcher.write_text(
+        source.replace(
+            "_ => self.emit_op_other(op),",
+            '"__unregistered_wire" => self.emit_op_other(op),\n_ => self.emit_op_other(op),',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    # An unknown spelling does not become an admitted operation merely because
+    # a dispatcher contains an explicit refusal for it.
+    assert SA.probe_rust_backend_lowering_gaps(tmp_path) == []
+    runtime = tmp_path / "runtime/molt-tir/src/target_admission/runtime.rs"
+    source = runtime.read_text(encoding="utf-8")
+    before = "let Some(requirements) = op.runtime_requirements() else {"
+    assert before in source
+    runtime.write_text(
+        source.replace(before, before + " continue;", 1), encoding="utf-8"
+    )
+    findings = SA.probe_rust_backend_lowering_gaps(tmp_path)
+    assert any(finding.probe == "rust_backend_lowering_gap" for finding in findings)
+
+
+def test_compatibility_protocol_inventory_fails_closed(tmp_path):
+    protocol = SA.compatibility_errors
+    # The same byte-exact projection used by the gate must match the committed
+    # consumer after the normal repository formatting/generation convergence.
+    assert protocol.projection_errors(ROOT) == []
+    receipt = tmp_path / protocol.SOURCE_RECEIPTS
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    receipt.write_text(
+        (ROOT / protocol.SOURCE_RECEIPTS).read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    for name, source in protocol.projections().items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+    for facts in protocol.OUTCOMES.values():
+        path = tmp_path / facts.witness
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    assert protocol.projection_errors(tmp_path) == []
+    source = "from _compatibility_errors import counter_fromkeys_error as error\nraise error()\n"
+    assert protocol.python_inventory(source, True)[0].proved
+    assert not protocol.python_inventory(
+        source.replace("error()", "error(context)"), True
+    )[0].proved
+    assert not protocol.python_inventory(
+        source.replace("counter_fromkeys_error", "unknown_error"), True
+    )[0].proved
+    assert not protocol.python_inventory(source + "error = object()\n", True)[0].proved
+    assert not protocol.python_inventory(source, False)[0].proved
+    rust = "use crate::builtins::compatibility_error::CompatibilityError; CompatibilityError::MemoryviewLookup { rank: 2 }.raise(py);"
+    assert protocol.rust_inventory(rust, SA.mask_rust_comments_and_strings(rust), True)[
+        0
+    ].proved
+    unknown = rust.replace("MemoryviewLookup", "Unknown")
+    assert not protocol.rust_inventory(unknown, unknown, True)[0].proved
+    emitter = tmp_path / protocol.RUST_PATH
+    canonical = emitter.read_text(encoding="utf-8")
+    emitter.write_bytes(canonical.replace("\n", "\r\n").encode("utf-8"))
+    assert protocol.projection_errors(tmp_path) == []
+    # Checkout newline policy is harmless; diagnostic spacing and predicates
+    # are semantic and cannot be erased by token/whitespace normalization.
+    emitter.write_text(
+        canonical.replace(
+            "multi-dimensional sub-views", "multi-dimensional  sub-views"
+        ),
+        encoding="utf-8",
+    )
+    assert protocol.projection_errors(tmp_path)
+    emitter.write_text(canonical.replace("rank > 1", "rank > 0"), encoding="utf-8")
+    assert protocol.projection_errors(tmp_path)
+    findings = SA.probe_rust_stub_surfaces(tmp_path)
+    assert any(item.probe == "rust_stub_surface" for item in findings)
+
+
+def test_compatibility_classification_does_not_exempt_raw_raises(tmp_path):
+    source = 'raise NotImplementedError("Counter.fromkeys() is undefined.  Use Counter(iterable) instead.")'
+    hits = SA._python_stub_surface_hits(tmp_path / "unrelated.py", source)
+    assert len(hits) == 1
+    rust = 'fn unrelated() { raise_exception(py, "NotImplementedError", "multi-dimensional sub-views are not implemented"); }'
+    assert len(SA._rust_stub_surface_hits(rust)) == 1

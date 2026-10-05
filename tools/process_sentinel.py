@@ -21,6 +21,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from tools import guarded_entrypoints, memory_guard  # noqa: E402
 from tools.memory_guard_core.process_model import (  # noqa: E402
+    birth_fenced_descendants,
     process_identity_has_creation_marker,
 )
 
@@ -406,13 +407,16 @@ def _propagate_ownership_to_descendants(
     samples: Mapping[int, memory_guard.ProcessSample],
     owned: set[int],
 ) -> set[int]:
-    changed = True
-    while changed:
-        changed = False
-        for sample in samples.values():
-            if sample.pid not in owned and sample.ppid in owned:
-                owned.add(sample.pid)
-                changed = True
+    # Explicit roots keep their existing admission; only live, ordered births
+    # can extend their custody to another process instance.
+    observed = {
+        pid: sample.started_at_ns
+        for pid in owned
+        if (sample := samples.get(pid)) is not None
+        and type(sample.started_at_ns) is int
+    }
+    descendants, _unresolved = birth_fenced_descendants(samples, observed)
+    owned.update(descendants)
     return owned
 
 
@@ -484,17 +488,10 @@ def _explicitly_owned_molt_process_ids(
             and memory_guard.process_identity(sample) == known_identity
         ) or is_molt_process(sample, root=root, self_pid=self_pid):
             roots.add(pid)
-    owned = set(roots)
-    changed = True
-    while changed:
-        changed = False
-        for sample in samples.values():
-            if sample.pid in owned or sample.pid not in owned_pids:
-                continue
-            if sample.ppid in owned:
-                owned.add(sample.pid)
-                changed = True
-    return owned
+    return _propagate_ownership_to_descendants(
+        {pid: sample for pid, sample in samples.items() if pid in owned_pids},
+        roots,
+    )
 
 
 def _windows_snapshot_helper_tree_ids(
@@ -510,6 +507,7 @@ def _windows_snapshot_helper_tree_ids(
     }
     if not helper_pids:
         return set()
+    # Protection includes uncertain descendants; it never admits cleanup custody.
     blocked = set(helper_pids)
     changed = True
     while changed:

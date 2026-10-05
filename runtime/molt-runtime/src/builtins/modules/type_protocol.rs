@@ -161,7 +161,10 @@ pub extern "C" fn molt_module_type_new(args_bits: u64, kwargs_bits: u64) -> u64 
 pub extern "C" fn molt_module_init(args_bits: u64, kwargs_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let Some(call) = crate::builtins::native_arguments::NativeArguments::read(
-            py, "__init__", args_bits, kwargs_bits,
+            py,
+            "__init__",
+            args_bits,
+            kwargs_bits,
         ) else {
             return MoltObject::none().bits();
         };
@@ -190,8 +193,11 @@ pub extern "C" fn molt_module_init(args_bits: u64, kwargs_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         let [name, doc] = *bound;
-        initialize_module_namespace(py, receiver,
+        initialize_module_namespace(
+            py,
+            receiver,
             name.expect("required name admitted"),
-            doc.unwrap_or_else(|| MoltObject::none().bits()))
+            doc.unwrap_or_else(|| MoltObject::none().bits()),
+        )
     })
 }

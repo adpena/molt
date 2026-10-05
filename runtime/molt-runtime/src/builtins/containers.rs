@@ -669,19 +669,7 @@ crate::builtins::methods::native_method_table!(list_method_bits, publish_list_me
 /// Explicit base descriptors admit their physical receiver before delegating
 /// to owner-agnostic builtin operations. Subclass overrides remain bypassed.
 fn tuple_sequence_receiver(py: &PyToken<'_>, bits: u64, method: &str) -> bool {
-    if obj_from_bits(bits)
-        .as_ptr()
-        .is_some_and(|ptr| unsafe { object_type_id(ptr) == crate::TYPE_ID_TUPLE })
-    {
-        return true;
-    }
-    let received = crate::type_name(py, obj_from_bits(bits));
-    crate::raise_exception::<()>(
-        py,
-        "TypeError",
-        &format!("descriptor '{method}' requires a 'tuple' object but received a '{received}'"),
-    );
-    false
+    crate::object::tuple_storage::TupleStorage::admit(py, bits, method).is_some()
 }
 
 extern "C" fn tuple_iter_slot(bits: u64) -> u64 {
