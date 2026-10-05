@@ -424,7 +424,7 @@ def test_installed_cargo_artifact_lock_conflicts_with_recovery_exclusion(tmp_pat
 
     manifest = tmp_path / "Cargo.toml"
     manifest.write_text(
-        '[package]\nname="molt-custody-lock-probe"\nversion="0.0.0"\nedition="2021"\n'
+        '[package]\nname="molt-custody-lock-probe"\nversion="0.0.0"\nedition="2021"\n\n[workspace]\n'
     )
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "lib.rs").write_text("pub fn unused() {}")
@@ -761,7 +761,7 @@ def test_actual_cargo_held_profile_locks_defer_recovery(tmp_path):
 
     manifest = tmp_path / "Cargo.toml"
     manifest.write_text(
-        '[package]\nname="molt-custody-held-lock"\nversion="0.0.0"\nedition="2021"\n'
+        '[package]\nname="molt-custody-held-lock"\nversion="0.0.0"\nedition="2021"\n\n[workspace]\n'
     )
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "lib.rs").write_text("pub fn unused() {}")
@@ -1278,7 +1278,7 @@ def test_actual_windows_job_cargo_observer_preserves_completed_cache_on_late_tim
 
     (tmp_path / "src").mkdir()
     (tmp_path / "Cargo.toml").write_text(
-        '[package]\nname="molt-job-custody-probe"\nversion="0.0.0"\nedition="2021"\n'
+        '[package]\nname="molt-job-custody-probe"\nversion="0.0.0"\nedition="2021"\n\n[workspace]\n'
     )
     (tmp_path / "src/lib.rs").write_text("pub fn answer() -> u32 { 42 }\n")
     (tmp_path / "build.rs").write_text(

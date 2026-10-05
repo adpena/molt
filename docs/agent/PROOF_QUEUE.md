@@ -402,6 +402,11 @@ requested build rather than falling back to PATH changes or copied aliases.
 Guard scratch is owned by `src/molt/temporary_artifacts.py`. The parent allocates
 one short `pt-*` directory before child launch and passes it through
 `MOLT_GUARD_SCRATCH_ROOT`; pytest and guarded helpers consume that allocation.
+Scratch generation, marker and target identities use `resolve_owned_path` on
+both sides of each receipt/environment comparison. This authority rejects
+lexical links/reparse points before resolution and gives Windows DOS/UNC paths
+one spelling regardless of an extended-length prefix. Receipt digests still
+bind the original serialized bytes; parent allocation records remain immutable.
 Keep human-readable run/platform identity in receipts, not every scratch path:
 native compiler/linker descendants still have classic path-length limits.
 Nested guards rebind an inherited guard-default pytest root to their new lease;

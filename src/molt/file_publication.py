@@ -68,6 +68,8 @@ def resolve_owned_path(path: Path) -> Path:
 
     Check the supplied spelling before resolution can erase an indirect root,
     including dangling links and components preceding a parent traversal.
+    Windows DOS and UNC paths have one spelling, independent of whether the
+    caller or the filesystem resolver supplied an extended-length prefix.
     """
 
     lexical = Path(path).expanduser()
@@ -78,7 +80,14 @@ def resolve_owned_path(path: Path) -> Path:
         cursor /= part
         if is_link_like(cursor):
             raise ValueError(f"owned path traverses a link or junction: {cursor}")
-    return lexical.resolve()
+    resolved = lexical.resolve()
+    if os.name == "nt":
+        spelling = str(resolved)
+        if spelling.startswith("\\\\?\\UNC\\"):
+            resolved = Path("\\\\" + spelling[8:])
+        elif spelling.startswith("\\\\?\\") and re.match(r"[a-zA-Z]:\\", spelling[4:]):
+            resolved = Path(spelling[4:])
+    return resolved
 
 
 def windows_move_file_api() -> tuple[MoveFileEx, GetLastError]:

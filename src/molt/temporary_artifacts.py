@@ -153,6 +153,14 @@ def _owner_mismatch(
     )
 
 
+def _same_owned_path(expected: object, observed: object) -> bool:
+    return (
+        isinstance(expected, str)
+        and isinstance(observed, str)
+        and resolve_owned_path(Path(expected)) == resolve_owned_path(Path(observed))
+    )
+
+
 def _owner(generation: Path) -> dict[str, object]:
     value = read_exact(
         resolve_owned_path(generation / "owner.json"),
@@ -167,7 +175,12 @@ def _owner(generation: Path) -> dict[str, object]:
         ("generation", str(generation)),
     ):
         observed = value.get(field)
-        if observed != expected:
+        matches = (
+            _same_owned_path(expected, observed)
+            if field == "generation"
+            else observed == expected
+        )
+        if not matches:
             raise _owner_mismatch(generation, field, expected, observed)
     states = {
         "leased",
@@ -231,8 +244,10 @@ def guard_scratch(repo_root: Path, environ: Mapping[str, str]) -> Path:
     target = _target(generation, owner)
     if (
         owner["state"] != "leased"
-        or owner.get("guard_marker") != environ.get("MOLT_MEMORY_GUARD_MARKER")
-        or str(target) != environ.get(SCRATCH_ENV)
+        or not _same_owned_path(
+            owner.get("guard_marker"), environ.get("MOLT_MEMORY_GUARD_MARKER")
+        )
+        or not _same_owned_path(str(target), environ.get(SCRATCH_ENV))
         or _identity(target) != owner["target_identity"]
     ):
         raise ValueError("scratch is not the active parent's allocation")
@@ -272,8 +287,8 @@ def _terminal(generation: Path, owner: Mapping[str, object]) -> _ScratchTerminal
         terminal.get("schema") != SCHEMA
         or terminal.get("token") != owner["token"]
         or terminal.get("target_identity") != owner["target_identity"]
-        or terminal.get("target") != owner.get("target")
-        or terminal.get("generation") != str(generation)
+        or not _same_owned_path(terminal.get("target"), owner.get("target"))
+        or not _same_owned_path(str(generation), terminal.get("generation"))
         or terminal.get("closed") is not True
         or type(success) is not bool
         or type(finished_ns) is not int
