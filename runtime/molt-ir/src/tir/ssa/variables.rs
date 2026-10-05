@@ -61,7 +61,7 @@ pub(super) fn simple_ir_ssa_result_count(op: &OpIR) -> usize {
     count
 }
 
-fn visit_simple_ir_ssa_result_slots<'a>(
+pub(super) fn visit_simple_ir_ssa_result_slots<'a>(
     op: &'a OpIR,
     mut visit: impl FnMut(Option<&'a str>, usize),
 ) {
