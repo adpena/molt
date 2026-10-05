@@ -259,108 +259,35 @@ _SYS_FLAGS_SEQUENCE_FIELDS = (
     "safe_path",
     "int_max_str_digits",
 )
-_SYS_FLAGS_SEQUENCE_INDEX = {}
-for _i__SYS_FLAGS_SEQUENCE_INDEX in range(len(_SYS_FLAGS_SEQUENCE_FIELDS)):
-    _SYS_FLAGS_SEQUENCE_INDEX[
-        _SYS_FLAGS_SEQUENCE_FIELDS[_i__SYS_FLAGS_SEQUENCE_INDEX]
-    ] = _i__SYS_FLAGS_SEQUENCE_INDEX
-_SYS_FLAGS_GIL = 1
+# CPython types these sequence fields as bool; the runtime payload carries ints.
+_SYS_FLAGS_BOOL_FIELDS = frozenset(("dev_mode", "safe_path"))
+# Named fields outside the sequence, with the first target minor exposing each.
+_SYS_FLAGS_EXTRA_FIELDS = (
+    ("gil", 13),
+    ("context_aware_warnings", 14),
+    ("thread_inherit_context", 14),
+)
 
 
-def _resolve_flags_payload(payload: object) -> tuple[tuple[int, ...], int]:
+def _resolve_flags_payload(
+    payload: object, target_minor: int
+) -> tuple[tuple[int | bool, ...], dict[str, int]]:
     intrinsic_name = "molt_sys_flags_payload"
     if not isinstance(payload, dict):
         raise RuntimeError(f"{intrinsic_name} returned invalid value")
-    values: list[int] = []
+    values: list[int | bool] = []
     for field in _SYS_FLAGS_SEQUENCE_FIELDS:
-        values.append(_expect_int(payload.get(field), intrinsic_name, field))
-    gil = _expect_int(payload.get("gil"), intrinsic_name, "gil")
-    return tuple(values), gil
+        value = _expect_int(payload.get(field), intrinsic_name, field)
+        values.append(bool(value) if field in _SYS_FLAGS_BOOL_FIELDS else value)
+    extras: dict[str, int] = {}
+    for field, minor in _SYS_FLAGS_EXTRA_FIELDS:
+        if target_minor >= minor:
+            extras[field] = _expect_int(payload.get(field), intrinsic_name, field)
+    return tuple(values), extras
 
-
-_FlagsTuple = None
-
-
-def _flags_tuple_type():
-    global _FlagsTuple
-    if _FlagsTuple is not None:
-        return _FlagsTuple
-
-    class _FlagsTupleType(tuple):
-        __slots__ = ()
-        n_fields = len(_SYS_FLAGS_SEQUENCE_FIELDS)
-        n_sequence_fields = len(_SYS_FLAGS_SEQUENCE_FIELDS)
-        n_unnamed_fields = 0
-
-        def __new__(cls, values: tuple[int, ...]) -> "_FlagsTupleType":
-            if len(values) != len(_SYS_FLAGS_SEQUENCE_FIELDS):
-                raise RuntimeError("molt_sys_flags_payload returned invalid value")
-            return tuple.__new__(cls, values)
-
-        def __getattr__(self, name: str) -> object:
-            index = _SYS_FLAGS_SEQUENCE_INDEX.get(name)
-            if index is not None:
-                return self[index]
-            if name == "gil":
-                return _SYS_FLAGS_GIL
-            raise AttributeError(name)
-
-        def __repr__(self) -> str:
-            items = ", ".join(
-                f"{field}={self[index]!r}"
-                for index, field in enumerate(_SYS_FLAGS_SEQUENCE_FIELDS)
-            )
-            return f"sys.flags({items})"
-
-    _FlagsTuple = _FlagsTupleType
-    return _FlagsTuple
-
-
-# --- version_info structured tuple ---
 
 _VERSION_INFO_FIELDS = ("major", "minor", "micro", "releaselevel", "serial")
-_VERSION_INFO_INDEX = {}
-for _idx__VERSION_INFO_INDEX in range(len(_VERSION_INFO_FIELDS)):
-    _VERSION_INFO_INDEX[_VERSION_INFO_FIELDS[_idx__VERSION_INFO_INDEX]] = (
-        _idx__VERSION_INFO_INDEX
-    )
 
-
-_VersionInfoTuple = None
-
-
-def _version_info_tuple_type():
-    global _VersionInfoTuple
-    if _VersionInfoTuple is not None:
-        return _VersionInfoTuple
-
-    class _VersionInfoTupleType(tuple):
-        __slots__ = ()
-        n_fields = len(_VERSION_INFO_FIELDS)
-        n_sequence_fields = len(_VERSION_INFO_FIELDS)
-        n_unnamed_fields = 0
-
-        def __new__(cls, values: object) -> "_VersionInfoTupleType":
-            return tuple.__new__(cls, values)
-
-        def __getattr__(self, name: str) -> object:
-            index = _VERSION_INFO_INDEX.get(name)
-            if index is not None:
-                return self[index]
-            raise AttributeError(name)
-
-        def __repr__(self) -> str:
-            items = ", ".join(
-                f"{field}={self[index]!r}"
-                for index, field in enumerate(_VERSION_INFO_FIELDS)
-            )
-            return f"sys.version_info({items})"
-
-    _VersionInfoTuple = _VersionInfoTupleType
-    return _VersionInfoTuple
-
-
-# --- float_info structured tuple ---
 
 _FLOAT_INFO_FIELDS = (
     "max",
@@ -375,47 +302,7 @@ _FLOAT_INFO_FIELDS = (
     "radix",
     "rounds",
 )
-_FLOAT_INFO_INDEX = {}
-for _idx__FLOAT_INFO_INDEX in range(len(_FLOAT_INFO_FIELDS)):
-    _FLOAT_INFO_INDEX[_FLOAT_INFO_FIELDS[_idx__FLOAT_INFO_INDEX]] = (
-        _idx__FLOAT_INFO_INDEX
-    )
 
-
-_FloatInfoTuple = None
-
-
-def _float_info_tuple_type():
-    global _FloatInfoTuple
-    if _FloatInfoTuple is not None:
-        return _FloatInfoTuple
-
-    class _FloatInfoTupleType(tuple):
-        __slots__ = ()
-        n_fields = len(_FLOAT_INFO_FIELDS)
-        n_sequence_fields = len(_FLOAT_INFO_FIELDS)
-        n_unnamed_fields = 0
-
-        def __new__(cls, values: object) -> "_FloatInfoTupleType":
-            return tuple.__new__(cls, values)
-
-        def __getattr__(self, name: str) -> object:
-            index = _FLOAT_INFO_INDEX.get(name)
-            if index is not None:
-                return self[index]
-            raise AttributeError(name)
-
-        def __repr__(self) -> str:
-            items = ", ".join(
-                f"{f}={self[i]!r}" for i, f in enumerate(_FLOAT_INFO_FIELDS)
-            )
-            return f"sys.float_info({items})"
-
-    _FloatInfoTuple = _FloatInfoTupleType
-    return _FloatInfoTuple
-
-
-# --- int_info structured tuple ---
 
 _INT_INFO_FIELDS = (
     "bits_per_digit",
@@ -423,45 +310,7 @@ _INT_INFO_FIELDS = (
     "default_max_str_digits",
     "str_digits_check_threshold",
 )
-_INT_INFO_INDEX = {}
-for _idx__INT_INFO_INDEX in range(len(_INT_INFO_FIELDS)):
-    _INT_INFO_INDEX[_INT_INFO_FIELDS[_idx__INT_INFO_INDEX]] = _idx__INT_INFO_INDEX
 
-
-_IntInfoTuple = None
-
-
-def _int_info_tuple_type():
-    global _IntInfoTuple
-    if _IntInfoTuple is not None:
-        return _IntInfoTuple
-
-    class _IntInfoTupleType(tuple):
-        __slots__ = ()
-        n_fields = len(_INT_INFO_FIELDS)
-        n_sequence_fields = len(_INT_INFO_FIELDS)
-        n_unnamed_fields = 0
-
-        def __new__(cls, values: object) -> "_IntInfoTupleType":
-            return tuple.__new__(cls, values)
-
-        def __getattr__(self, name: str) -> object:
-            index = _INT_INFO_INDEX.get(name)
-            if index is not None:
-                return self[index]
-            raise AttributeError(name)
-
-        def __repr__(self) -> str:
-            items = ", ".join(
-                f"{f}={self[i]!r}" for i, f in enumerate(_INT_INFO_FIELDS)
-            )
-            return f"sys.int_info({items})"
-
-    _IntInfoTuple = _IntInfoTupleType
-    return _IntInfoTuple
-
-
-# --- hash_info structured tuple ---
 
 _HASH_INFO_FIELDS = (
     "width",
@@ -474,89 +323,119 @@ _HASH_INFO_FIELDS = (
     "seed_bits",
     "cutoff",
 )
-_HASH_INFO_INDEX = {}
-for _idx__HASH_INFO_INDEX in range(len(_HASH_INFO_FIELDS)):
-    _HASH_INFO_INDEX[_HASH_INFO_FIELDS[_idx__HASH_INFO_INDEX]] = _idx__HASH_INFO_INDEX
 
-
-_HashInfoTuple = None
-
-
-def _hash_info_tuple_type():
-    global _HashInfoTuple
-    if _HashInfoTuple is not None:
-        return _HashInfoTuple
-
-    class _HashInfoTupleType(tuple):
-        __slots__ = ()
-        n_fields = len(_HASH_INFO_FIELDS)
-        n_sequence_fields = len(_HASH_INFO_FIELDS)
-        n_unnamed_fields = 0
-
-        def __new__(cls, values: object) -> "_HashInfoTupleType":
-            return tuple.__new__(cls, values)
-
-        def __getattr__(self, name: str) -> object:
-            index = _HASH_INFO_INDEX.get(name)
-            if index is not None:
-                return self[index]
-            raise AttributeError(name)
-
-        def __repr__(self) -> str:
-            items = ", ".join(
-                f"{f}={self[i]!r}" for i, f in enumerate(_HASH_INFO_FIELDS)
-            )
-            return f"sys.hash_info({items})"
-
-    _HashInfoTuple = _HashInfoTupleType
-    return _HashInfoTuple
-
-
-# --- thread_info structured tuple ---
 
 _THREAD_INFO_FIELDS = (
     "name",
     "lock",
     "version",
 )
-_THREAD_INFO_INDEX = {}
-for _idx__THREAD_INFO_INDEX in range(len(_THREAD_INFO_FIELDS)):
-    _THREAD_INFO_INDEX[_THREAD_INFO_FIELDS[_idx__THREAD_INFO_INDEX]] = (
-        _idx__THREAD_INFO_INDEX
-    )
 
 
-_ThreadInfoTuple = None
+class _StructSequence(tuple):
+    """CPython struct-sequence shape: a tuple with fixed, named fields.
 
+    Each public type is a small subclass published by `_struct_sequence_type`;
+    construction, field access and repr live here once.
+    """
 
-def _thread_info_tuple_type():
-    global _ThreadInfoTuple
-    if _ThreadInfoTuple is not None:
-        return _ThreadInfoTuple
+    __slots__ = ()
+    _fields: tuple[str, ...] = ()
+    _repr_prefix = ""
+    # CPython refuses Python-level construction of some struct sequences
+    # (sys.flags, sys.version_info); the bootstrap builds them with `_make`.
+    _creatable = True
+    n_fields = 0
+    n_sequence_fields = 0
+    n_unnamed_fields = 0
 
-    class _ThreadInfoTupleType(tuple):
-        __slots__ = ()
-        n_fields = len(_THREAD_INFO_FIELDS)
-        n_sequence_fields = len(_THREAD_INFO_FIELDS)
-        n_unnamed_fields = 0
+    def __new__(cls, values: object) -> "_StructSequence":
+        if not cls._creatable:
+            raise TypeError(f"cannot create '{cls._repr_prefix}' instances")
+        return cls._make(values)
 
-        def __new__(cls, values: object) -> "_ThreadInfoTupleType":
-            return tuple.__new__(cls, values)
-
-        def __getattr__(self, name: str) -> object:
-            index = _THREAD_INFO_INDEX.get(name)
-            if index is not None:
-                return self[index]
-            raise AttributeError(name)
-
-        def __repr__(self) -> str:
-            items = ", ".join(
-                f"{f}={self[i]!r}" for i, f in enumerate(_THREAD_INFO_FIELDS)
+    @classmethod
+    def _make(cls, values: object) -> "_StructSequence":
+        items = tuple(values)
+        if len(items) != len(cls._fields):
+            raise TypeError(
+                f"{cls._repr_prefix}() takes a {len(cls._fields)}-sequence "
+                f"({len(items)}-sequence given)"
             )
-            return f"sys.thread_info({items})"
+        return tuple.__new__(cls, items)
 
-    _ThreadInfoTuple = _ThreadInfoTupleType
-    return _ThreadInfoTuple
+    def __getattr__(self, name: str) -> object:
+        fields = type(self)._fields
+        if name in fields:
+            return self[fields.index(name)]
+        raise AttributeError(name)
+
+    def __repr__(self) -> str:
+        cls = type(self)
+        items = ", ".join(
+            f"{field}={value!r}" for field, value in zip(cls._fields, self)
+        )
+        return f"{cls._repr_prefix}({items})"
+
+
+def _struct_sequence_type(
+    cls: type, name: str, fields: tuple[str, ...], *, module: str = "sys"
+) -> None:
+    """Publish `cls` under CPython's type identity for a struct sequence."""
+    cls._fields = fields
+    cls._repr_prefix = name if module == "builtins" else f"{module}.{name}"
+    cls.n_fields = cls.n_sequence_fields = len(fields)
+    cls.__name__ = cls.__qualname__ = name
+    cls.__module__ = module
+
+
+class _Flags(_StructSequence):
+    __slots__ = ()
+    _creatable = False
+    # Target-gated named fields outside the sequence, set once at bootstrap.
+    _extra_values: dict[str, int] = {}
+
+    def __getattr__(self, name: str) -> object:
+        extra_values = type(self)._extra_values
+        if name in extra_values:
+            return extra_values[name]
+        return _StructSequence.__getattr__(self, name)
+
+
+class _VersionInfo(_StructSequence):
+    __slots__ = ()
+    _creatable = False
+
+
+class _FloatInfo(_StructSequence):
+    __slots__ = ()
+
+
+class _IntInfo(_StructSequence):
+    __slots__ = ()
+
+
+class _HashInfo(_StructSequence):
+    __slots__ = ()
+
+
+class _ThreadInfo(_StructSequence):
+    __slots__ = ()
+
+
+class _AsyncgenHooks(_StructSequence):
+    __slots__ = ()
+
+
+_struct_sequence_type(_Flags, "flags", _SYS_FLAGS_SEQUENCE_FIELDS)
+_struct_sequence_type(_VersionInfo, "version_info", _VERSION_INFO_FIELDS)
+_struct_sequence_type(_FloatInfo, "float_info", _FLOAT_INFO_FIELDS)
+_struct_sequence_type(_IntInfo, "int_info", _INT_INFO_FIELDS)
+_struct_sequence_type(_HashInfo, "hash_info", _HASH_INFO_FIELDS)
+_struct_sequence_type(_ThreadInfo, "thread_info", _THREAD_INFO_FIELDS)
+_struct_sequence_type(
+    _AsyncgenHooks, "asyncgen_hooks", ("firstiter", "finalizer"), module="builtins"
+)
 
 
 if "abiflags" in globals():
@@ -584,23 +463,26 @@ def _metadata_tuple(payload: object, name: str, count: int) -> tuple[object, ...
 
 def _init_metadata_views() -> None:
     """Finalize public shapes once, during the canonical module initializer."""
-    global _SYS_FLAGS_GIL
     g = globals()
     _validate_bootstrap_scalars()
     raw_version = _expect_version_info_tuple(g["version_info"], "canonical sys bootstrap", "version_info")
     implementation_value = _resolve_implementation(g["implementation"])
-    flags_values, _SYS_FLAGS_GIL = _resolve_flags_payload(_MOLT_SYS_FLAGS_PAYLOAD())
+    flags_values, flag_extras = _resolve_flags_payload(
+        _MOLT_SYS_FLAGS_PAYLOAD(), raw_version[1]
+    )
     float_values = _metadata_tuple(_MOLT_SYS_FLOAT_INFO(), "molt_sys_float_info", len(_FLOAT_INFO_FIELDS))
     int_values = _metadata_tuple(_MOLT_SYS_INT_INFO(), "molt_sys_int_info", len(_INT_INFO_FIELDS))
     hash_values = _metadata_tuple(_MOLT_SYS_HASH_INFO(), "molt_sys_hash_info", len(_HASH_INFO_FIELDS))
     thread_values = _metadata_tuple(_MOLT_SYS_THREAD_INFO(), "molt_sys_thread_info", len(_THREAD_INFO_FIELDS))
-    g["version_info"] = _version_info_tuple_type()(raw_version)
+    g["version_info"] = _VersionInfo._make(raw_version)
     g["implementation"] = implementation_value
-    g["flags"] = _flags_tuple_type()(flags_values)
-    g["float_info"] = _float_info_tuple_type()(float_values)
-    g["int_info"] = _int_info_tuple_type()(int_values)
-    g["hash_info"] = _hash_info_tuple_type()(hash_values)
-    g["thread_info"] = _thread_info_tuple_type()(thread_values)
+    _Flags._extra_values = flag_extras
+    _Flags.n_fields = len(_SYS_FLAGS_SEQUENCE_FIELDS) + len(flag_extras)
+    g["flags"] = _Flags._make(flags_values)
+    g["float_info"] = _FloatInfo._make(float_values)
+    g["int_info"] = _IntInfo._make(int_values)
+    g["hash_info"] = _HashInfo._make(hash_values)
+    g["thread_info"] = _ThreadInfo._make(thread_values)
     g["stdlib_module_names"] = frozenset(g["stdlib_module_names"])
 
 
@@ -610,34 +492,6 @@ _molt_bootstrap_venv_site_packages = ()
 _molt_bootstrap_pwd = "/"
 _molt_bootstrap_include_cwd = False
 _molt_bootstrap_stdlib_root = None
-
-
-_AsyncgenHooksTuple = None
-
-
-def _asyncgen_hooks_tuple_type():
-    global _AsyncgenHooksTuple
-    if _AsyncgenHooksTuple is not None:
-        return _AsyncgenHooksTuple
-
-    class _AsyncgenHooksTupleType(tuple):
-        __slots__ = ()
-
-        def __new__(
-            cls, firstiter: object | None, finalizer: object | None
-        ) -> "_AsyncgenHooksTupleType":
-            return tuple.__new__(cls, (firstiter, finalizer))
-
-        @property
-        def firstiter(self) -> object | None:
-            return self[0]
-
-        @property
-        def finalizer(self) -> object | None:
-            return self[1]
-
-    _AsyncgenHooksTuple = _AsyncgenHooksTupleType
-    return _AsyncgenHooksTuple
 
 
 def getrecursionlimit() -> int:
@@ -672,8 +526,7 @@ def get_asyncgen_hooks() -> object:
     hooks = _MOLT_ASYNCGEN_HOOKS_GET()
     if not isinstance(hooks, tuple) or len(hooks) != 2:
         raise RuntimeError("asyncgen hooks intrinsic returned invalid value")
-    firstiter, finalizer = hooks
-    return _AsyncgenHooksTuple(firstiter, finalizer)
+    return _AsyncgenHooks._make(hooks)
 
 
 def set_asyncgen_hooks(
@@ -836,7 +689,6 @@ def audit(event: str, *args: object) -> None:
 
 # Direct aliases preserve callable identity without an export registry.
 _getframe = _MOLT_GETFRAME
-asyncgen_hooks = _asyncgen_hooks_tuple_type()
 __displayhook__ = displayhook
 __excepthook__ = excepthook
 __unraisablehook__ = unraisablehook
