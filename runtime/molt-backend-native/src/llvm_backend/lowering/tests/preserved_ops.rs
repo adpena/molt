@@ -103,12 +103,6 @@ fn named_builtin_llvm_lowering_never_drops_the_first_argument() {
 /// (so the generic fallback would have declined) or which are result-less.
 #[test]
 fn lower_preserved_passthrough_class_routes_to_runtime() {
-    let ctx = Context::create();
-    let mut backend = make_backend(&ctx);
-    backend.function_linkage_abis.insert(
-        "gen_fn".to_string(),
-        test_native_linkage_abi(vec![], Some(TirType::DynBox)),
-    );
     // (kind, n_operands, with_result, s_value, expected runtime symbol)
     let cases: &[(&str, usize, bool, Option<&str>, &str)] = &[
         ("abs", 1, true, None, "molt_abs_builtin"),
@@ -165,6 +159,12 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
         ("asyncgen_new", 1, true, None, "molt_asyncgen_new"),
     ];
     for &(kind, nops, with_result, s_value, sym) in cases {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        backend.function_linkage_abis.insert(
+            "gen_fn".to_string(),
+            test_native_linkage_abi(vec![], Some(TirType::DynBox)),
+        );
         let ir = lower_preserved_kind_ir(&backend, kind, nops, with_result, s_value)
             .unwrap_or_else(|e| {
                 panic!(
