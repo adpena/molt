@@ -1520,7 +1520,7 @@ regression coverage, not an installed release receipt or other-platform proof.
 ## Compatibility Summary
 
 <!-- GENERATED:compat-summary:start -->
-- Stdlib lowering audit: `881` modules audited; `41` intrinsic-backed; `837` intrinsic-partial; `0` policy-gate; `0` python-only.
+- Stdlib lowering audit: `881` modules audited; `41` intrinsic-backed; `838` intrinsic-partial; `0` policy-gate; `0` python-only.
 - Platform availability metadata: `66` modules with explicit availability notes; `41` WASI-blocked; `37` Emscripten-blocked in CPython docs.
 - Deep evidence: see the stdlib intrinsics audit and platform availability matrices under `docs/spec/areas/compat/surfaces/stdlib/`.
 <!-- GENERATED:compat-summary:end -->

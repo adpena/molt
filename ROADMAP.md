@@ -42,8 +42,8 @@ acceptance scope; do not infer it from an aggregate speedup or a smaller test.
 ## Strategic Target
 
 - Reach full CPython `>=3.12` parity for the supported Molt subset.
-- Ship standalone binaries. Host-CPython fallback in compiled programs is
-  prohibited, including as a future compatibility path.
+- Ship standalone binaries. Compiled programs prohibit host-CPython fallback,
+  including as a future compatibility path.
 - Outperform CPython on the benchmark suites Molt claims as core product lanes.
 - Treat tiny-program cold start and output binary size as product-critical
   axes across native, browser/WASM, Luau, and MLIR, with release artifacts
