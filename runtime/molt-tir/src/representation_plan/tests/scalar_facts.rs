@@ -1898,6 +1898,51 @@ fn physical_storage_requires_inline_admission_and_closed_aliases_in_both_consume
 }
 
 #[test]
+fn flat_storage_index_keys_require_exact_integers_not_inline_carriers() {
+    for (case, key, expected) in [
+        ("inline", const_int("i", 0), true),
+        ("wide", const_int("i", 1_i64 << 62), true),
+        ("bool", const_bool("i", true), true),
+        ("annotation", op("copy", Some("i"), None, &["key"]), false),
+    ] {
+        for access in ["index", "store_index"] {
+            let args = if access == "index" {
+                vec!["xs", "i"]
+            } else {
+                vec!["xs", "i", "fill"]
+            };
+            let func = function(
+                case,
+                &["key"],
+                Some(vec!["int"]),
+                vec![
+                    const_int("n", 4),
+                    const_int("fill", 7),
+                    op("list_int_new", Some("xs"), None, &["n", "fill"]),
+                    key.clone(),
+                    op(access, Some("result"), None, &args),
+                ],
+            );
+            let plan = native_representation_plan(&func);
+            assert_eq!(
+                plan.op_has_container_storage(4, &func.ops[4], ContainerStorageKind::FlatListInt),
+                expected,
+                "{case} {access}"
+            );
+            let mut tir =
+                lower_to_tir_for_target(&func, &crate::tir::TargetInfo::native_release_fast());
+            refine_types(&mut tir);
+            let lir = crate::tir::lower_to_lir::lower_function_to_lir(&tir);
+            assert_eq!(
+                !lir.container_storage.is_empty(),
+                expected,
+                "LIR {case} {access}"
+            );
+        }
+    }
+}
+
+#[test]
 fn canonical_repeat_proves_singleton_aliases_before_publishing_flat_storage() {
     for (mutation, expected) in [(false, true), (true, false)] {
         for reverse in [false, true] {

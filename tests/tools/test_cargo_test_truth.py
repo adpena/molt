@@ -890,8 +890,11 @@ def test_truth_runner_main_finalizes_compile_failure_before_attribution(
     assert "could not compile" in workspace_phase["evidence"]["tail"]
 
 
+@pytest.mark.parametrize(
+    "test_output", [[], ["unsupported op"], None, 42, True, "stdout"]
+)
 def test_streamed_workspace_output_is_exact_on_disk_and_bounded_in_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, test_output: object
 ) -> None:
     runner = _load_tool(
         "run_cargo_test_truth_bounded_stream", "run_cargo_test_truth.py"
@@ -907,9 +910,10 @@ def test_streamed_workspace_output_is_exact_on_disk_and_bounded_in_receipt(
         + "\n"
     )
     diagnostic = "error[E0004]: " + ("x" * 1_000_000) + "\n"
+    json_stdout = json.dumps(test_output) + "\n"
 
     class FakeProcess:
-        stdout = iter((artifact, diagnostic))
+        stdout = iter((json_stdout, artifact, diagnostic, json_stdout))
 
         @staticmethod
         def wait() -> int:
@@ -940,11 +944,12 @@ def test_streamed_workspace_output_is_exact_on_disk_and_bounded_in_receipt(
             "target": None,
         },
     )
-    assert evidence_path.read_text(encoding="utf-8") == artifact + diagnostic
-    assert result.evidence["bytes"] == len((artifact + diagnostic).encode())
+    expected_output = json_stdout + artifact + diagnostic + json_stdout
+    assert evidence_path.read_text(encoding="utf-8") == expected_output
+    assert result.evidence["bytes"] == len(expected_output.encode())
     assert (
         result.evidence["sha256"]
-        == hashlib.sha256((artifact + diagnostic).encode()).hexdigest()
+        == hashlib.sha256(expected_output.encode()).hexdigest()
     )
     assert len(result.evidence["tail"].encode()) <= 16_384
     assert result.evidence["contains_compiler_error"] is True
