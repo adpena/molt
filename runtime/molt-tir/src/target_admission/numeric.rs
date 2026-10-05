@@ -49,7 +49,11 @@ fn numeric_admission_failure(
     match role {
         Role::None => None,
         Role::IntegerLiteral => {
-            if capabilities.arbitrary_precision_integers
+            // A missing or mistyped payload is malformed IR, not a literal that
+            // is too large; report it as such instead of blaming the target.
+            if molt_ir::literal_payload::validate_simple_literal(op).is_err() {
+                Some("integer literal payload is malformed for its kind")
+            } else if capabilities.arbitrary_precision_integers
                 || capabilities
                     .exact_integer_literal_max_magnitude
                     .is_some_and(|max| exact_integer_literal_value(op, max).is_some())

@@ -115,6 +115,15 @@ mod tests {
         }
     }
 
+    /// A side-effecting direct call; the TIR verifier requires a named callee.
+    fn call_out(out: &str, callee: &str, args: &[&str]) -> OpIR {
+        OpIR {
+            s_value: Some(callee.to_string()),
+            value: Some(0),
+            ..op_out_args("call", out, args)
+        }
+    }
+
     // ---------------------------------------------------------------------------
     // Test 1: Straight-line arithmetic
     // ---------------------------------------------------------------------------
@@ -1515,7 +1524,7 @@ mod tests {
             int_literal("idx", 0),  // idx = 0
             op("loop_start"),
             // Loop body: a call that must NOT be eliminated
-            op_out_args("call", "result", &["idx"]),
+            call_out("result", "observe", &["idx"]),
             // Increment
             int_literal("one", 1),
             op_out_args("add", "idx2", &["idx", "one"]),
@@ -1542,7 +1551,7 @@ mod tests {
             int_literal("stop", 3),
             int_literal("idx", 0),
             op("loop_start"),
-            op_out_args("call", "result", &["idx"]),
+            call_out("result", "observe", &["idx"]),
             int_literal("one", 1),
             op_out_args("add", "idx2", &["idx", "one"]),
             op("loop_end"),
