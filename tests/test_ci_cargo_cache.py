@@ -17,9 +17,12 @@ def test_cache_projection_preserves_actual_cargo_target(tmp_path: Path, selectio
         "GITHUB_WORKSPACE": str(workspace),
         "GITHUB_ENV": str(github_env),
         "GITHUB_OUTPUT": str(github_output),
+        "RUNNER_TEMP": str(tmp_path / "runner-temp"),
         "CARGO_INCREMENTAL": "1",
     }
-    expected = workspace / "target" / "ci"
+    # The default lives outside the checkout (verified ephemeral custody
+    # rejects in-checkout targets) at a run-stable path for actions/cache.
+    expected = tmp_path / "runner-temp" / "molt-cargo-target"
     if selection == "relative":
         env["CARGO_TARGET_DIR"] = "target/sessions/wasm-ci"
         expected = workspace / "target" / "sessions" / "wasm-ci"
@@ -40,10 +43,10 @@ def test_cache_projection_preserves_actual_cargo_target(tmp_path: Path, selectio
     )
     assert Path(values["CARGO_TARGET_DIR"]) == expected
     assert values["CARGO_INCREMENTAL"] == "0"
-    relative = Path(outputs["target-dir"])
-    assert not relative.is_absolute()
-    assert (workspace / relative).resolve() == expected
+    assert Path(outputs["target-dir"]) == expected
     assert expected.is_dir()
+    if selection in ("default", "external"):
+        assert not expected.is_relative_to(workspace)
 
 
 @pytest.mark.parametrize("character", ["\r", "\n", "\0"])
