@@ -231,6 +231,32 @@ def test_completed_cache_retention_requires_complete_interruption_inventory(tmp_
     )
 
 
+def test_restored_non_incremental_artifacts_remain_admitted_guard_inputs(tmp_path):
+    from tools.harness_memory_guard import canonical_harness_env
+
+    target = tmp_path / "restored-target"
+    dependency = target / "debug" / "deps" / "librestored.rlib"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_bytes(b"restored non-incremental dependency")
+    canonical = canonical_harness_env(
+        {"CARGO_TARGET_DIR": str(target), "CARGO_INCREMENTAL": "0"}
+    )
+    assert canonical["CARGO_TARGET_DIR"] == str(target)
+    assert canonical["CARGO_INCREMENTAL"] == "0"
+    receipt = cargo._quarantine_cargo_incremental_state(
+        reason="timeout",
+        target_dir=target,
+        command=("cargo", "test"),
+        cwd=tmp_path,
+        descendants_closed=True,
+        interruption_inventory_complete=True,
+    )
+    assert receipt.ownership_status == "not_required"
+    assert receipt.errors == () and receipt.moved_paths == ()
+    assert dependency.read_bytes() == b"restored non-incremental dependency"
+    assert not (target / ".molt_state").exists()
+
+
 @pytest.mark.parametrize("compiler_name", ["rustc", "clippy-driver"])
 def test_interruption_inventory_rejects_unowned_or_unobserved_compilers(
     tmp_path, compiler_name

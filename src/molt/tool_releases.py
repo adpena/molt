@@ -1,7 +1,7 @@
 """Pinned, digest-bound releases of standalone tool binaries.
 
 ``config/tool_releases.toml`` is the one authority for tools that ship as
-prebuilt release binaries (today: ``wasm-tools``). CI installs the same pin
+prebuilt release binaries, including ``wasm-tools`` and ``lune``. CI installs the same pin
 (gated by tests/test_ci_workflow_topology.py), the proof plan's toolchain
 policy cites it as setup evidence, and the proof queue provisions the host
 asset into ``<toolchain root>/toolchains/<name>-<version>/bin`` before a lane that

@@ -8,7 +8,7 @@
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 310 |
+| Hashed executable authority inputs | 1 | 312 |
 | Local path rules | 35 | 43 |
 | Unique local commands | 73 | 96 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -99,7 +99,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `uv` | `executable` | — | `^uv 0\.11\.24\b` | `.` | `0.11.24` | 1 |
 | `node` | `executable` | — | `^v24\.16\.0$` | `.` | `24.16.0` | 3 |
 | `rustc` | `executable` | — | `^rustc 1\.96\.1\b` | `.` | `1.96.1` | 3 |
-| `lune` | `executable` | — | `^lune 0\.10\.5$` | `.` | `0.10.5` | 1 |
+| `lune` | `executable` | — | `^lune 0\.10\.5$` | `.` | `0.10.5` | 2 |
 | `cargo` | `executable` | — | `^cargo 1\.96\.1\b` | `.` | `1.96.1` | 3 |
 | `git` | `executable` | — | `^git version 2\.` | `.` | `2.x` | 1 |
 | `rustfmt` | `executable` | — | `^rustfmt 1\.9\.0-stable\b` | `.` | `1.9.0` | 3 |
@@ -289,7 +289,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `table-drift` | 8 | 2 | no |
 | `findings-registry` | 4 | 1 | no |
 | `memory-graph` | 5 | 2 | no |
-| `ci-wiring` | 49 | 2 | no |
+| `ci-wiring` | 51 | 2 | no |
 | `apparatus-hooks` | 11 | 3 | no |
 | `apparatus-learning-protection` | 15 | 3 | no |
 | `apparatus-a11` | 10 | 5 | no |

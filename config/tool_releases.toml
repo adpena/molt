@@ -50,6 +50,51 @@ size = 5121483
 sha256 = "b662d939220b2c49ea9f1d81a19776e47d72bb5ba580f08107c7dc865e1f8c66"
 archive_member = "wasm-tools-1.259.0-aarch64-macos/wasm-tools"
 
+[tools.lune]
+version = "0.10.5"
+executable = "lune"
+
+[tools.lune.provenance]
+kind = "github-release"
+url = "https://api.github.com/repos/lune-org/lune/releases/tags/v0.10.5"
+release_id = 348167792
+
+[tools.lune.assets.x86_64-windows]
+url = "https://github.com/lune-org/lune/releases/download/v0.10.5/lune-0.10.5-windows-x86_64.zip"
+size = 5178086
+sha256 = "ad0305f5cc6d7ff20996644b40bf7de0de613812f431ca241456e16f9fc89cda"
+archive_member = "lune.exe"
+
+[tools.lune.assets.aarch64-windows]
+url = "https://github.com/lune-org/lune/releases/download/v0.10.5/lune-0.10.5-windows-aarch64.zip"
+size = 4877541
+sha256 = "b98bc49ded9183951c1d01b428872cd8ce518f200b48824ea3b31e3d7dec28ae"
+archive_member = "lune.exe"
+
+[tools.lune.assets.x86_64-linux]
+url = "https://github.com/lune-org/lune/releases/download/v0.10.5/lune-0.10.5-linux-x86_64.zip"
+size = 5373877
+sha256 = "1fb5dee6a1afa1d300092805c6e660fe06144d29dd68c45cf6956f040667f791"
+archive_member = "lune"
+
+[tools.lune.assets.aarch64-linux]
+url = "https://github.com/lune-org/lune/releases/download/v0.10.5/lune-0.10.5-linux-aarch64.zip"
+size = 5279931
+sha256 = "176e1272d41ba3d9ea30087b528048a4a97e3d74cfa0eaa5d35d9e0d4122caa6"
+archive_member = "lune"
+
+[tools.lune.assets.x86_64-macos]
+url = "https://github.com/lune-org/lune/releases/download/v0.10.5/lune-0.10.5-macos-x86_64.zip"
+size = 5140529
+sha256 = "f4b43cfd495994b7ef783ac2bb0aa24f1f940f3804b28018121bb3cc2171c1a7"
+archive_member = "lune"
+
+[tools.lune.assets.aarch64-macos]
+url = "https://github.com/lune-org/lune/releases/download/v0.10.5/lune-0.10.5-macos-aarch64.zip"
+size = 4944295
+sha256 = "bdb94f47bc1d3af3e3fe796cfce9c7f406042d4aada9cc41a1c53836f3e3b411"
+archive_member = "lune"
+
 [tools.sccache]
 version = "0.18.0"
 executable = "sccache"
