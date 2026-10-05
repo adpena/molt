@@ -398,6 +398,10 @@ reconstructing host flags or admitting every installed linker. Receipts retain
 each unit's selection provenance and frozen images; verification rehashes those
 images without repeating compiler selection. Missing custody fails before the
 requested build rather than falling back to PATH changes or copied aliases.
+Rust command-debug output may prefix the quoted driver with quoted environment
+assignments (including Linux `LC_ALL` and `PATH`). Decode those assignments before
+selecting the driver argv in both target and host-unit probes; assignment-only,
+malformed, missing, and multiple-command selections still fail closed.
 
 Guard scratch is owned by `src/molt/temporary_artifacts.py`. The parent allocates
 one short `pt-*` directory before child launch and passes it through
@@ -1141,6 +1145,9 @@ cache, a broad selector, or a stale generated file.
   canonical external checkout custody is reused; plain clones and temporary
   sources place the store beside the source. Source and receipt overlap, links,
   and Windows path-budget violations are rejected before provisioning.
+  Synthetic layout tests model the implementation source, receipts, and declared
+  output roots as siblings through the layout's implementation-source authority;
+  pytest temporary directories may themselves be inside the real checkout.
 - Every supervisor selection runs Cargo `build --locked`. The direct driver and
   proof producer share the same captured-input build authority. Each local crate
   receives its own content digest through Cargo's tracked environment inputs;

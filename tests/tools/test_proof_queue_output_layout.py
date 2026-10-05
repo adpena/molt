@@ -36,6 +36,9 @@ from tools.proof_queue_pkg import (
 )
 
 
+pytestmark = pytest.mark.usefixtures("cargo_output_implementation_source")
+
+
 def _root(tmp_path):
     root = tmp_path / "selected-volume"
     root.mkdir()
@@ -670,6 +673,22 @@ def test_cli_propagates_root_without_opt_in_to_disposal(tmp_path, monkeypatch, d
     )
     assert captured["cargo_output_root"] == str(root)
     assert captured["cargo_output_lifetime"] == "retain"
+
+
+@pytest.mark.parametrize("protected", ["source", "receipts"])
+def test_supervisor_store_rejects_overlapping_custody(
+    tmp_path, cargo_output_implementation_source, protected
+):
+    root = (
+        cargo_output_implementation_source if protected == "source" else _root(tmp_path)
+    )
+    metadata = (
+        root / "proof-supervisor" if protected == "receipts" else tmp_path / "receipts"
+    )
+    selected = layout.CargoOutputLayout(metadata, layout.declare_root(str(root)))
+    with pytest.raises(ValueError, match="overlaps source or receipt custody"):
+        _ = selected.supervisor_store
+    assert not (root / "proof-supervisor").exists()
 
 
 def test_supervisor_intermediates_are_external_but_executable_cas_stays_canonical(

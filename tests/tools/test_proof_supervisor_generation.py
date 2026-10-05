@@ -26,6 +26,9 @@ from tools.proof_queue_pkg import (
 )
 
 
+pytestmark = pytest.mark.usefixtures("cargo_output_implementation_source")
+
+
 def _model(tmp_path, monkeypatch, *, during_build=None):
     target = tmp_path / "store" / "target"
     target.mkdir(parents=True)
@@ -338,15 +341,15 @@ def test_undeclared_supervisor_store_is_external_by_construction(
     tmp_path, monkeypatch, custody_kind
 ):
     source = tmp_path / "plain-clone"
-    module = source / "tools" / "proof_queue_pkg" / "cargo_output_layout.py"
-    module.parent.mkdir(parents=True)
-    module.write_text("# model implementation", encoding="utf-8")
+    source.mkdir()
     custody = {
         "source": source,
         "nested": source / "tmp",
         "external": tmp_path / "canonical",
     }[custody_kind]
-    monkeypatch.setattr(cargo_output_layout, "__file__", str(module))
+    monkeypatch.setattr(
+        cargo_output_layout, "implementation_source_root", lambda: source
+    )
     monkeypatch.setattr(
         cargo_output_layout,
         "checkout_custody",

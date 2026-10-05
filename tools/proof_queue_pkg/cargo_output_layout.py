@@ -27,6 +27,11 @@ TARGET_LAYOUT = "molt.proof-cargo-target.v2"
 _HISTORICAL_TARGET_LAYOUT = "molt.proof-cargo-target.v1"
 
 
+def implementation_source_root() -> Path:
+    """Own bootstrap placement independently of the admitted guest source."""
+    return Path(__file__).resolve().parents[2]
+
+
 def recorded_target_layout(record: Mapping[str, object]) -> str:
     """Absent means the historical nested address, never current acquisition."""
     version = record.get("cargo_target_layout", _HISTORICAL_TARGET_LAYOUT)
@@ -331,7 +336,7 @@ class CargoOutputLayout:
     def supervisor_store(self) -> Path:
         # Bootstrap source belongs to this implementation, never the guest cwd
         # or a cached Python fixture. Result paths cannot fragment this store.
-        source = Path(__file__).resolve().parents[2]
+        source = implementation_source_root()
         if self.declaration is not None:
             root = Path(str(self.declaration["path"]))
         else:

@@ -29,6 +29,9 @@ from tools.proof_queue_pkg import (
 )
 
 
+pytestmark = pytest.mark.usefixtures("cargo_output_implementation_source")
+
+
 @pytest.fixture
 def generation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request):
     parameters = getattr(request, "param", (101, True))

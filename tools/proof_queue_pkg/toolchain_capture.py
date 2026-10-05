@@ -38,6 +38,7 @@ from tools.proof_queue_pkg.process_image_capture import (
 
 CAPTURE_SCHEMA = "molt.proof-toolchain-capture.v1"
 VERIFICATION_SCHEMA = "molt.proof-toolchain-verification.v1"
+_COMMAND_ENVIRONMENT_ASSIGNMENT = re.compile(r'[A-Za-z_][A-Za-z0-9_]*=(?=")')
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 
@@ -319,13 +320,25 @@ def _command_tokens(line: str) -> list[str]:
     tokens: list[str] = []
     decoder = json.JSONDecoder()
     index = 0
+    while assignment := _COMMAND_ENVIRONMENT_ASSIGNMENT.match(line, index):
+        value, end = decoder.raw_decode(line, assignment.end())
+        if not isinstance(value, str) or end >= len(line) or not line[end].isspace():
+            raise ValueError(
+                "rust linker command contains a malformed environment assignment"
+            )
+        index = end
+        while index < len(line) and line[index].isspace():
+            index += 1
+    if index and (index >= len(line) or line[index] != '"'):
+        raise ValueError("rust linker environment assignments have no quoted command")
+    command_start = index
     while index < len(line):
         while index < len(line) and line[index].isspace():
             index += 1
         if index >= len(line):
             break
         if line[index] != '"':
-            return shlex.split(line, posix=os.name != "nt")
+            return shlex.split(line[command_start:], posix=os.name != "nt")
         value, end = decoder.raw_decode(line, index)
         if not isinstance(value, str):
             raise ValueError("rust linker command contains a non-string argument")
@@ -338,7 +351,9 @@ def _selected_command_lines(output: str) -> list[list[str]]:
     commands: list[list[str]] = []
     for line in output.splitlines():
         stripped = line.strip()
-        if not stripped.startswith('"'):
+        if not stripped.startswith('"') and not _COMMAND_ENVIRONMENT_ASSIGNMENT.match(
+            stripped
+        ):
             continue
         try:
             tokens = _command_tokens(stripped)
