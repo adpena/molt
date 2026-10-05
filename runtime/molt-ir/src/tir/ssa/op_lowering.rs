@@ -10,12 +10,11 @@ use super::super::op_kinds_generated::{
     simpleir_kind_may_carry_async_work_poll_marker, simpleir_kind_preserves_original_kind_for_ssa,
 };
 use super::super::ops::{ASYNC_WORK_POLL_ATTR, AttrDict, AttrValue, Dialect, OpCode, TirOp};
-use super::super::simple_def_use::{SimpleIrResultField, visit_simple_ir_results};
 use super::super::types::TirType;
 use super::super::values::ValueId;
 use super::variables::{
     is_variable, simple_ir_ssa_result_count, simple_var_field_is_transport_fact,
-    simple_var_field_is_value_operand,
+    simple_var_field_is_value_operand, visit_simple_ir_ssa_result_slots,
 };
 use super::*;
 
@@ -217,17 +216,17 @@ impl<'a> SsaContext<'a> {
         if let Some(ref out) = op.out {
             attrs.insert("_simple_out".into(), AttrValue::Str(out.clone()));
         }
-        let mut positional_results = false;
-        visit_simple_ir_results(op, |result| {
-            positional_results |= result.field == SimpleIrResultField::Var;
-            if positional_results && let Some(name) = result.name {
-                let index = match result.field {
-                    SimpleIrResultField::Var => 0,
-                    SimpleIrResultField::Out => 1,
-                    SimpleIrResultField::Arg(_) => {
-                        unreachable!("fixed results cannot carry trailing outputs")
-                    }
-                };
+        // Every named SSA result slot keeps its authored SimpleIR spelling,
+        // including trailing-argument results such as `unpack_sequence`
+        // outputs. Re-lifts recover these as source names, and the synthetic
+        // `_v{N}` allocator only avoids spellings it knows; an unrecorded
+        // output name could otherwise be reissued to an unrelated value and
+        // inherit that value's raw-carrier representation. A sole `out`
+        // result is already named by `_simple_out`.
+        visit_simple_ir_ssa_result_slots(op, |name, index| {
+            if let Some(name) = name
+                && !(result_count == 1 && op.out.as_deref() == Some(name))
+            {
                 attrs.insert(
                     format!("_simple_result_{index}"),
                     AttrValue::Str(name.to_string()),
@@ -443,6 +442,44 @@ mod positional_result_tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn trailing_argument_results_keep_their_authored_names() {
+        let ops = vec![
+            OpIR {
+                kind: "const_none".into(),
+                out: Some("pair".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "unpack_sequence".into(),
+                args: Some(vec!["pair".into(), "first".into(), "second".into()]),
+                value: Some(2),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["second".into()]),
+                ..OpIR::default()
+            },
+        ];
+        let cfg = CFG::build(&ops);
+        let output = super::super::convert_to_ssa(&cfg, &ops);
+        let unpack = output
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .find(|op| op.opcode == OpCode::UnpackSequence)
+            .expect("unpack_sequence lifts to a first-class opcode");
+        assert_eq!(unpack.results.len(), 2);
+        for (index, name) in ["first", "second"].into_iter().enumerate() {
+            assert_eq!(
+                unpack.attrs.get(&format!("_simple_result_{index}")),
+                Some(&AttrValue::Str(name.into())),
+                "unpack output {index} must keep its authored name"
+            );
         }
     }
 }
