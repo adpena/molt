@@ -1,3 +1,4 @@
+use molt_tir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
 mod inline_seed;
 mod literal_bytes;
 mod materialization;
@@ -8,9 +9,8 @@ mod tests;
 
 use crate::OpIR;
 use crate::wasm_abi_generated::{
-    WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstLiteralPayload, WasmConstOpPolicySpec,
-    WasmConstRawIntEffect, WasmConstScalarValue, WasmRuntimeImport, wasm_const_op_policy,
-    wasm_const_op_policy_for_opcode,
+    WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstOpPolicySpec, WasmConstRawIntEffect,
+    WasmConstScalarValue, WasmRuntimeImport, wasm_const_op_policy, wasm_const_op_policy_for_opcode,
 };
 use molt_tir::tir::ops::{OpCode, TirOp};
 
@@ -34,7 +34,7 @@ impl WasmConstOpPolicy {
         self.0.inline_seed
     }
 
-    pub(in crate::wasm) fn literal_payload(self) -> WasmConstLiteralPayload {
+    pub(in crate::wasm) fn literal_payload(self) -> Option<OwnedLiteralPayloadKind> {
         self.0.literal_payload
     }
 
@@ -51,7 +51,7 @@ impl WasmConstOpPolicy {
     }
 
     pub(in crate::wasm) fn needs_literal_scratch(self) -> bool {
-        !matches!(self.literal_payload(), WasmConstLiteralPayload::None)
+        self.literal_payload().is_some()
     }
 
     pub(in crate::wasm) fn needs_runtime_anchor(self) -> bool {
@@ -59,12 +59,7 @@ impl WasmConstOpPolicy {
     }
 
     pub(in crate::wasm) fn materialization_can_fail(self) -> bool {
-        matches!(
-            self.literal_payload(),
-            WasmConstLiteralPayload::String
-                | WasmConstLiteralPayload::BigintDecimal
-                | WasmConstLiteralPayload::Bytes
-        ) || matches!(self.inline_seed(), WasmConstInlineSeed::Int)
+        self.literal_payload().is_some() || matches!(self.inline_seed(), WasmConstInlineSeed::Int)
     }
 
     pub(in crate::wasm) fn required_tir_scalar_value(self, op: &TirOp) -> WasmConstScalarValue {

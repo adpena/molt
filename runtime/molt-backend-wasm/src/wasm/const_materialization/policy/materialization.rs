@@ -2,9 +2,7 @@ use super::super::{WasmConstMaterialization, WasmConstMaterializationScratch};
 use super::WasmConstOpPolicy;
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
-use crate::wasm_abi_generated::{
-    WasmConstInlineSeed, WasmConstLiteralPayload, WasmConstScalarValue, WasmRuntimeImport,
-};
+use crate::wasm_abi_generated::{WasmConstInlineSeed, WasmConstScalarValue, WasmRuntimeImport};
 use molt_tir::tir::ops::TirOp;
 
 impl WasmConstOpPolicy {
@@ -31,9 +29,7 @@ impl WasmConstOpPolicy {
             .as_ref()
             .unwrap_or_else(|| panic!("const op {} requires an output", self.0.kind));
         match self.literal_payload() {
-            WasmConstLiteralPayload::None
-                if matches!(self.inline_seed(), WasmConstInlineSeed::Int) =>
-            {
+            None if matches!(self.inline_seed(), WasmConstInlineSeed::Int) => {
                 WasmConstMaterialization::scalar_i64(
                     self.required_materializer_import(),
                     out_local,
@@ -42,11 +38,11 @@ impl WasmConstOpPolicy {
                     }),
                 )
             }
-            WasmConstLiteralPayload::None => WasmConstMaterialization::runtime_singleton(
+            None => WasmConstMaterialization::runtime_singleton(
                 self.required_materializer_import(),
                 out_local,
             ),
-            payload => WasmConstMaterialization::literal(
+            Some(payload) => WasmConstMaterialization::literal(
                 self.required_materializer_import(),
                 out_local,
                 payload,
@@ -63,9 +59,7 @@ impl WasmConstOpPolicy {
         scratch: Option<WasmConstMaterializationScratch>,
     ) -> WasmConstMaterialization {
         match self.literal_payload() {
-            WasmConstLiteralPayload::None
-                if matches!(self.inline_seed(), WasmConstInlineSeed::Int) =>
-            {
+            None if matches!(self.inline_seed(), WasmConstInlineSeed::Int) => {
                 let value = match self.required_tir_scalar_value(op) {
                     WasmConstScalarValue::Int(value) => value,
                     other => panic!(
@@ -79,11 +73,11 @@ impl WasmConstOpPolicy {
                     value,
                 )
             }
-            WasmConstLiteralPayload::None => WasmConstMaterialization::runtime_singleton(
+            None => WasmConstMaterialization::runtime_singleton(
                 self.required_materializer_import(),
                 out_local,
             ),
-            payload => WasmConstMaterialization::literal(
+            Some(payload) => WasmConstMaterialization::literal(
                 self.required_materializer_import(),
                 out_local,
                 payload,

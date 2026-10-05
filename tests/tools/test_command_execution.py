@@ -173,17 +173,19 @@ def test_executor_loads_process_guard_without_repo_package_importable(
     assert "ModuleNotFoundError" not in completed.stderr
 
 
-def test_process_guard_direct_loader_has_one_sibling_policy_authority() -> None:
-    source = (ROOT / "tools" / "command_execution.py").read_text(encoding="utf-8")
-    process_guard_source = (ROOT / "src" / "molt" / "process_guard.py").read_text(
-        encoding="utf-8"
+def test_process_guard_direct_loader_uses_owning_policy_and_source_authority() -> None:
+    authority = command_execution._process_guard_authority(str(ROOT))
+    policy = sys.modules[authority.cargo_subprocess_environment.__module__]
+    source = sys.modules[authority.compiler_source_root.__module__]
+    assert (
+        Path(policy.__file__).resolve()
+        == (ROOT / "src" / "molt" / "cargo_execution_policy.py").resolve()
     )
-
-    assert "load_sibling_package_module_from_path" in source
-    assert "spec_from_file_location" not in source
-    assert "from .cargo_execution_policy import cargo_subprocess_environment" in (
-        process_guard_source
+    assert (
+        Path(source.__file__).resolve()
+        == (ROOT / "src" / "molt" / "source_root.py").resolve()
     )
+    assert authority.compiler_source_root() == ROOT.resolve()
 
 
 def test_process_guard_authority_is_isolated_per_worktree(tmp_path: Path) -> None:

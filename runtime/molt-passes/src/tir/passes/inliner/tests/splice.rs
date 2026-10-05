@@ -293,7 +293,10 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
                 opcode: OpCode::Call,
                 operands: vec![],
                 results: vec![temporary],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::from([(
+                    "s_value".into(),
+                    AttrValue::Str("fixture_produce_owned".into()),
+                )]),
                 source_span: None,
             },
             call,
@@ -352,7 +355,11 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
         let bindings = aliases_of(argument);
         if pass_parameter {
             assert!(bindings.is_empty(), "the caller's parameter binds directly");
-            assert_eq!(releases_of(argument), 0, "the activation releases no borrow");
+            assert_eq!(
+                releases_of(argument),
+                0,
+                "the activation releases no borrow"
+            );
             continue;
         }
         assert_eq!(bindings.len(), 1, "one owned binding where the call was");

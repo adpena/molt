@@ -10,7 +10,9 @@ struct PinnedGcSnapshot<'a, 'py> {
 
 impl PinnedGcSnapshot<'_, '_> {
     fn push(&mut self, edge: molt_cpython_abi::NativeGcEdge) -> bool {
-        if self.edges.try_reserve(1).is_err() { return false; }
+        if self.edges.try_reserve(1).is_err() {
+            return false;
+        }
         unsafe {
             if edge.kind == molt_cpython_abi::NativeGcEdgeKind::ManagedHandle as u8 {
                 crate::inc_ref_bits(self.py, edge.value);
@@ -35,8 +37,10 @@ impl Drop for PinnedGcSnapshot<'_, '_> {
                     crate::dec_ref_bits(self.py, edge.value);
                 } else {
                     molt_cpython_abi::api::refcount::Py_DECREF(
-                        core::ptr::with_exposed_provenance_mut::<molt_cpython_abi::abi_types::PyObject>(
-                            usize::try_from(edge.value).unwrap_or_else(|_| std::process::abort()),
+                        core::ptr::with_exposed_provenance_mut::<
+                            molt_cpython_abi::abi_types::PyObject,
+                        >(
+                            usize::try_from(edge.value).unwrap_or_else(|_| std::process::abort())
                         ),
                     );
                 }
@@ -53,26 +57,40 @@ pub(super) unsafe extern "C" fn hook_managed_gc_traverse(
 ) -> c_int {
     crate::concurrency::gil::with_gil(|py| unsafe {
         let Some(ptr) = crate::obj_from_bits(bits).as_ptr() else {
-            crate::raise_exception::<()>(&py, "SystemError", "GC traversal requires a managed object");
+            crate::raise_exception::<()>(
+                &py,
+                "SystemError",
+                "GC traversal requires a managed object",
+            );
             return -1;
         };
         crate::inc_ref_bits(&py, bits);
-        let mut snapshot = PinnedGcSnapshot { py: &py, owner: bits, edges: Vec::new() };
+        let mut snapshot = PinnedGcSnapshot {
+            py: &py,
+            owner: bits,
+            edges: Vec::new(),
+        };
         let mut reserved = true;
         let status = crate::object::heap_lifecycle::visit_owned_gc_edges(&py, ptr, &mut |edge| {
-            if reserved { reserved = snapshot.push(edge); }
+            if reserved {
+                reserved = snapshot.push(edge);
+            }
         });
         if !reserved {
             crate::raise_exception::<()>(&py, "MemoryError", "cannot snapshot builtin GC edges");
             return -1;
         }
-        if status != 0 { return status; }
+        if status != 0 {
+            return status;
+        }
         // Enumeration has dropped every runtime/bridge/module storage lock.
         // Pins protect this exact inventory if the visitor reenters or clears
         // the source; mirrored C holds were never added as independent edges.
         for &edge in &snapshot.edges {
             let status = visit(edge, context);
-            if status != 0 { return status; }
+            if status != 0 {
+                return status;
+            }
         }
         0
     })
@@ -85,7 +103,11 @@ pub(super) unsafe extern "C" fn hook_managed_gc_clear(bits: u64) -> c_int {
             return -1;
         };
         crate::inc_ref_bits(&py, bits);
-        let _pin = PinnedGcSnapshot { py: &py, owner: bits, edges: Vec::new() };
+        let _pin = PinnedGcSnapshot {
+            py: &py,
+            owner: bits,
+            edges: Vec::new(),
+        };
         crate::object::heap_lifecycle::try_clear_cycle_edges(&py, ptr)
     })
 }

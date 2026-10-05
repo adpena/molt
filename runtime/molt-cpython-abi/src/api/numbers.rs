@@ -2371,7 +2371,9 @@ pub unsafe extern "C" fn PyFloat_AsDouble(op: *mut PyObject) -> c_double {
         unsafe { crate::api::errors::PyErr_BadArgument() };
         return -1.0;
     }
-    let Some(observed) = crate::bridge::observe_pyobject(op) else { return -1.0; };
+    let Some(observed) = crate::bridge::observe_pyobject(op) else {
+        return -1.0;
+    };
     if let Some(value) = unsafe { layout_float_value(op) } {
         return value;
     }

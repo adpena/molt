@@ -739,7 +739,8 @@ fn validate_direct_call_custody(ir: &SimpleIR) -> Result<(), String> {
             let arity = op.args.as_ref().map_or(0, Vec::len);
             let Some(target) = targets.get(symbol) else {
                 if op.argument_custody.is_some()
-                    && crate::runtime_boxed_abi_generated::runtime_boxed_abi(symbol, arity).is_some()
+                    && crate::runtime_boxed_abi_generated::runtime_boxed_abi(symbol, arity)
+                        .is_some()
                 {
                     return Err(format!(
                         "function `{}` op#{op_index}: runtime entry `{symbol}` borrows its operands; argument_custody names a source call",
@@ -3352,7 +3353,11 @@ mod json_parse_tests {
         };
         let closure = crate::MOLT_CLOSURE_PARAM_NAME;
         for (params, custody, expected) in [
-            (&["a", "b"][..], vec![Transferred], "names 1 entries for 2 positions"),
+            (
+                &["a", "b"][..],
+                vec![Transferred],
+                "names 1 entries for 2 positions",
+            ),
             (&["a"][..], vec![Borrowed], "transfers nothing"),
             (
                 &[closure, "a"][..],
@@ -3408,7 +3413,11 @@ mod json_parse_tests {
                 vec![Transferred, Transferred],
                 "operand 0 custody Transferred disagrees with its source call, which borrows it",
             ),
-            ("call_func", vec![Transferred], "names 1 entries for 2 positions"),
+            (
+                "call_func",
+                vec![Transferred],
+                "names 1 entries for 2 positions",
+            ),
             ("call_func", vec![Borrowed, Borrowed], "transfers nothing"),
             (
                 "invoke_ffi",
@@ -3531,7 +3540,7 @@ mod json_parse_tests {
                 ops: vec![
                     OpIR {
                         kind: "call".into(),
-                        s_value: Some("molt_abc_abstractmethod_check".into()),
+                        s_value: Some("molt_typing_get_origin".into()),
                         args: Some(vec!["value".into()]),
                         argument_custody: Some(vec![Transferred]),
                         out: Some("result".into()),

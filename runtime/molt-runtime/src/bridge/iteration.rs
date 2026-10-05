@@ -10,10 +10,6 @@ pub fn molt_iter_bridge(_py: &CoreGilToken, bits: u64) -> u64 {
     crate::object::ops_iter::molt_iter(bits)
 }
 
-pub fn bridge_molt_iter_next(_py: &CoreGilToken, iter_bits: u64) -> u64 {
-    crate::object::ops_iter::molt_iter_next(iter_bits)
-}
-
 pub fn molt_iter_next(_py: &CoreGilToken, iter_bits: u64) -> Option<u64> {
     let result = crate::object::ops_iter::molt_iter_next(iter_bits);
     if result == MoltObject::none().bits() {

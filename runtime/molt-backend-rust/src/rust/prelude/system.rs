@@ -5,19 +5,10 @@ impl RustBackend {
         let used = |name: &str| func_body.contains(name);
         // sys target-version state. The frontend stamps this before user code,
         // and standalone Rust must preserve the same contract as native/WASM.
-        let needs_sys_version_state = used("molt_sys_set_version_info(")
-            || used("molt_sys_version_info(")
-            || used("molt_sys_version(")
-            || used("molt_sys_hexversion(")
-            || used("molt_unpack_sequence(")
-            || ["molt_div(", "molt_floor_div(", "molt_mod(", "molt_pow("]
-                .iter()
-                .any(|name| used(name));
         let needs_module_cache = used("molt_module_cache_get(")
             || used("molt_module_cache_set(")
             || used("molt_module_cache_del(");
-        if needs_sys_version_state {
-            self.output.push_str(
+        self.output.push_str(
                 r#"#[derive(Clone)]
 struct MoltSysVersionInfo {
     major: i64,
@@ -86,7 +77,7 @@ fn molt_sys_arg_int(args: &[MoltValue], index: usize, default: i64) -> i64 {
 
 fn molt_sys_arg_str(args: &[MoltValue], index: usize, default: &str) -> String {
     args.get(index)
-        .map(molt_str)
+        .map(|value| molt_str(value).to_utf8().unwrap_or_else(|_| panic!("ValueError: sys version metadata contains a surrogate")))
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| default.to_string())
 }
@@ -113,14 +104,14 @@ fn molt_sys_version_info(_args: &mut Vec<MoltValue>) -> MoltValue {
         MoltValue::Int(state.major),
         MoltValue::Int(state.minor),
         MoltValue::Int(state.micro),
-        MoltValue::Str(state.releaselevel),
+        MoltValue::Str(state.releaselevel.into()),
         MoltValue::Int(state.serial),
     ])
 }
 
 fn molt_sys_version(_args: &mut Vec<MoltValue>) -> MoltValue {
     let state = molt_sys_version_state().lock().unwrap().clone();
-    MoltValue::Str(state.version.clone())
+    MoltValue::Str(state.version.clone().into())
 }
 
 fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
@@ -129,13 +120,12 @@ fn molt_sys_hexversion(_args: &mut Vec<MoltValue>) -> MoltValue {
 }
 
 "#,
-            );
-        }
+        );
 
         if needs_module_cache {
             self.output.push_str(concat!(
-                "fn molt_module_cache() -> &'static std::sync::Mutex<std::collections::BTreeMap<String, MoltValue>> {\n",
-                "    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeMap<String, MoltValue>>> = std::sync::OnceLock::new();\n",
+                "fn molt_module_cache() -> &'static std::sync::Mutex<std::collections::BTreeMap<PythonString, MoltValue>> {\n",
+                "    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeMap<PythonString, MoltValue>>> = std::sync::OnceLock::new();\n",
                 "    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))\n",
                 "}\n\n",
                 "fn molt_module_cache_get(name: &MoltValue) -> MoltValue {\n",

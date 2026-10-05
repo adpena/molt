@@ -6,7 +6,7 @@ from molt.cli.native_link_manifest import (
     NativeLinkInputs,
     read_native_link_flags,
 )
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
 
 

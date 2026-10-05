@@ -502,7 +502,7 @@ fn native_projectable_bool_result(
             Some(Repr::Bool)
         }
         ReprProjectableBoolResultRule::CopySourceBool
-            if crate::tir::passes::value_identity::copy_value_source(op)
+            if crate::tir::passes::value_identity::no_heap_alias_source(op)
                 .is_some_and(|source| carrier_by_value.get(&source) == Some(&Repr::Bool)) =>
         {
             Some(Repr::Bool)
@@ -544,7 +544,7 @@ fn native_projectable_float_result(
         }
         ReprProjectableFloatResultRule::CopySourceFloat
             if op_original_kind(op) == Some("float_from_obj")
-                || crate::tir::passes::value_identity::copy_value_source(op).is_some_and(
+                || crate::tir::passes::value_identity::no_heap_alias_source(op).is_some_and(
                     |source| {
                         carrier_by_value
                             .get(&source)
@@ -650,7 +650,7 @@ fn propagate_native_projectable_identity_values(
             all_value_ids.push(arg.id);
         }
         for op in &block.ops {
-            if let Some(source) = crate::tir::passes::value_identity::copy_value_source(op)
+            if let Some(source) = crate::tir::passes::value_identity::no_heap_alias_source(op)
                 && let Some(&result) = op.results.first()
             {
                 copy_source.insert(result, source);
@@ -842,23 +842,12 @@ fn propagate_raw_i64_identity_values_with_phi_support(
             all_value_ids.push(arg.id);
         }
         for op in &block.ops {
-            // Forward raw-i64 safety through a `Copy` ONLY when it is a genuine
-            // value-identity move (`copy`/`copy_var`/`store_var`/`load_var`/
-            // `identity_alias`, or a plain attribute-free SSA copy) — the
-            // fail-closed `copy_value_source` predicate, shared with the
-            // value-range pass so the two cannot drift. A Copy that CARRIES an
-            // operator (`inplace_lshift`/`inplace_add`/`str_from_obj`/… — the
-            // frontend lifts the in-place augmented ops and conversions to
-            // `Copy{_original_kind}`) is NOT a value move: its result is the
-            // operator's result, not operand 0. Forwarding safety through it
-            // unconditionally marked an `a <<= 80` result (a `Copy{inplace_lshift}`
-            // of a small lhs) RawI64Safe purely because the lhs `1` fit inline —
-            // so the LLVM/WASM shift lane emitted a RAW machine shift by 80, which
-            // LLVM constant-folds to `poison` (shift >= bit width is UB). The
-            // value-range op-result range for the first-class `Shl`/`Shr` already
-            // refuses the overflow case; this aligns the propagation's Copy
-            // forwarding with that same value-identity contract.
-            if let Some(source) = crate::tir::passes::value_identity::copy_value_source(op)
+            // Carrier identity includes effectful runtime guards. The shared
+            // alias-source fact validates shape and selects operand zero; it
+            // does not erase effects or refine the source from an expected tag.
+            // Opaque Copy operators (arithmetic, conversions, constructors)
+            // fail closed rather than borrowing their operand's representation.
+            if let Some(source) = crate::tir::passes::value_identity::no_heap_alias_source(op)
                 && let Some(&result) = op.results.first()
             {
                 copy_source.insert(result, source);

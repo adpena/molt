@@ -261,6 +261,13 @@ class LocalBindingMixin(GeneratorMixinBase):
         return self._emit_name_from_obj(type_val)
 
     def _box_local(self, name: str) -> None:
+        # Class-body Python names already have their mutable home in the
+        # prepared namespace mapping. They cannot acquire a slot in the
+        # enclosing optimized frame, including when control flow requests
+        # boxing. Comprehension locals and scaffolding are excluded by the
+        # same authority used for class loads and stores.
+        if self._active_class_ns_scope(name) is not None:
+            return
         binding = self.comprehension_bindings.get(name)
         if binding is not None:
             if not binding.is_cell:

@@ -515,7 +515,9 @@ pub extern "C" fn __molt_math_lookup_special_method(
     crate::with_gil_entry_nopanic!(_py, {
         match unsafe {
             crate::builtins::attr::lookup_special_method_bits(
-                _py, MoltObject::from_ptr(ptr).bits(), name_bits,
+                _py,
+                MoltObject::from_ptr(ptr).bits(),
+                name_bits,
             )
         } {
             Some(bits) => {

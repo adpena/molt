@@ -237,11 +237,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_abc_abstractmethod_check",
-        import: WasmRuntimeImport::AbcAbstractmethodCheck,
-        arity: 1,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_array_new",
         import: WasmRuntimeImport::ArrayNew,
         arity: 1,
@@ -384,6 +379,11 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
     RuntimeCallableImportSpec {
         runtime_name: "molt_frame_cell_publish",
         import: WasmRuntimeImport::FrameCellPublish,
+        arity: 2,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_exception_prepare_raise",
+        import: WasmRuntimeImport::ExceptionPrepareRaise,
         arity: 2,
     },
     RuntimeCallableImportSpec {
@@ -2940,6 +2940,11 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         runtime_name: "molt_generator_throw_method",
         import: WasmRuntimeImport::GeneratorThrowMethod,
         arity: 2,
+    },
+    RuntimeCallableImportSpec {
+        runtime_name: "molt_compatibility_error",
+        import: WasmRuntimeImport::CompatibilityError,
+        arity: 1,
     },
     RuntimeCallableImportSpec {
         runtime_name: "molt_tk_available",
@@ -13324,7 +13329,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_abc_reset_registry" => Some(WasmRuntimeImport::AbcResetRegistry),
         "molt_abc_reset_caches" => Some(WasmRuntimeImport::AbcResetCaches),
         "molt_abc_update_abstractmethods" => Some(WasmRuntimeImport::AbcUpdateAbstractmethods),
-        "molt_abc_abstractmethod_check" => Some(WasmRuntimeImport::AbcAbstractmethodCheck),
         "molt_array_new" => Some(WasmRuntimeImport::ArrayNew),
         "molt_array_from_list" => Some(WasmRuntimeImport::ArrayFromList),
         "molt_array_append" => Some(WasmRuntimeImport::ArrayAppend),
@@ -13354,6 +13358,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_frame_locals_begin" => Some(WasmRuntimeImport::FrameLocalsBegin),
         "molt_locals_builtin" => Some(WasmRuntimeImport::LocalsBuiltin),
         "molt_frame_cell_publish" => Some(WasmRuntimeImport::FrameCellPublish),
+        "molt_exception_prepare_raise" => Some(WasmRuntimeImport::ExceptionPrepareRaise),
         "molt_exception_trace_prepend" => Some(WasmRuntimeImport::ExceptionTracePrepend),
         "molt_exception_active" => Some(WasmRuntimeImport::ExceptionActive),
         "molt_exception_current" => Some(WasmRuntimeImport::ExceptionCurrent),
@@ -13977,6 +13982,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_coroutine_wrapper_iter" => Some(WasmRuntimeImport::CoroutineWrapperIter),
         "molt_coroutine_wrapper_next" => Some(WasmRuntimeImport::CoroutineWrapperNext),
         "molt_generator_throw_method" => Some(WasmRuntimeImport::GeneratorThrowMethod),
+        "molt_compatibility_error" => Some(WasmRuntimeImport::CompatibilityError),
         "molt_tk_available" => Some(WasmRuntimeImport::TkAvailable),
         "molt_tk_app_new" => Some(WasmRuntimeImport::TkAppNew),
         "molt_tk_quit" => Some(WasmRuntimeImport::TkQuit),
@@ -16347,7 +16353,6 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_abc_reset_registry" => Some(1),
         "molt_abc_reset_caches" => Some(1),
         "molt_abc_update_abstractmethods" => Some(1),
-        "molt_abc_abstractmethod_check" => Some(1),
         "molt_array_new" => Some(1),
         "molt_array_from_list" => Some(2),
         "molt_array_append" => Some(2),
@@ -16377,6 +16382,7 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_frame_locals_begin" => Some(0),
         "molt_locals_builtin" => Some(0),
         "molt_frame_cell_publish" => Some(2),
+        "molt_exception_prepare_raise" => Some(2),
         "molt_exception_trace_prepend" => Some(1),
         "molt_exception_active" => Some(0),
         "molt_exception_current" => Some(0),
@@ -16888,6 +16894,7 @@ pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {
         "molt_coroutine_wrapper_iter" => Some(1),
         "molt_coroutine_wrapper_next" => Some(1),
         "molt_generator_throw_method" => Some(2),
+        "molt_compatibility_error" => Some(1),
         "molt_tk_available" => Some(0),
         "molt_tk_app_new" => Some(1),
         "molt_tk_quit" => Some(1),

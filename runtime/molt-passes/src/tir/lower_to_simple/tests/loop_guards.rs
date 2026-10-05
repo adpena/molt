@@ -350,7 +350,7 @@ fn explicit_loop_cond_block_is_not_reclassified_as_guard_when_exit_raises() {
                     opcode: OpCode::ConstInt,
                     operands: vec![],
                     results: vec![raise_value],
-                    attrs: AttrDict::new(),
+                    attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(8))]),
                     source_span: None,
                 },
                 TirOp {

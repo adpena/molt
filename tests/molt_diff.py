@@ -14,7 +14,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -60,6 +60,7 @@ from tools.compat import backends as compat_backends  # noqa: E402
 from tools.compat import comparison as compat_comparison  # noqa: E402
 from tools.compat import diff_output_layout  # noqa: E402
 from tools.compat import test_policy  # noqa: E402
+from tools.memory_guard_core import harness_outcomes  # noqa: E402
 from molt.build_state_layout import build_state_root  # noqa: E402
 
 _DYLD_GUARD_MARKER = "dyld_guard.json"
@@ -71,7 +72,7 @@ _BATCH_COMPILE_SERVER_CLIENT_PID = 0
 _BATCH_COMPILE_SERVER_DISABLED_UNTIL = 0.0
 _BATCH_COMPILE_SERVER_DISABLE_REASON = ""
 _BATCH_COMPILE_SERVER_FAILURE_COUNT = 0
-_DIFF_MEMORY_GUARD_TRIP_FILE_ENV = "MOLT_DIFF_MEMORY_GUARD_TRIP_FILE"
+_DIFF_MEMORY_GUARD_TRIP_FILE_ENV = harness_outcomes.SUITE_TRIP_FILE_ENV
 _DIFF_MEMORY_GUARD_EVENTS_JSONL_ENV = "MOLT_DIFF_MEMORY_GUARD_EVENTS_JSONL"
 _DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL_ENV = (
     "MOLT_DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL"
@@ -2107,9 +2108,11 @@ def _diff_memory_guard_root() -> Path:
 
 def _diff_memory_guard_trip_file() -> Path:
     raw = os.environ.get(_DIFF_MEMORY_GUARD_TRIP_FILE_ENV, "").strip()
-    path = Path(raw).expanduser() if raw else _diff_memory_guard_root() / "tripped.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+    return (
+        Path(raw).expanduser()
+        if raw
+        else _diff_root() / "memory_guard" / "tripped.json"
+    )
 
 
 def _diff_memory_guard_events_jsonl() -> Path:
@@ -2295,33 +2298,27 @@ def _memory_guard_message(
 
 
 def _mark_memory_guard_tripped(payload: dict[str, object]) -> None:
-    trip_file = _diff_memory_guard_trip_file()
     data = {"ts": time.time(), **payload}
-    tmp_path = trip_file.with_name(f"{trip_file.name}.{os.getpid()}.tmp")
-    try:
-        tmp_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
-        tmp_path.replace(trip_file)
-    except OSError:
-        with contextlib.suppress(OSError):
-            tmp_path.unlink()
+    harness_outcomes.publish_suite_trip(_diff_memory_guard_trip_file(), data)
     _record_memory_guard_event(data)
 
 
-def _memory_guard_trip_message() -> str | None:
-    trip_file = _diff_memory_guard_trip_file()
-    if not trip_file.exists():
-        return None
-    try:
-        payload = json.loads(trip_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return "molt_diff memory guard: global guard tripped"
-    message = payload.get("message")
-    if isinstance(message, str) and message:
-        return message
-    reason = payload.get("reason")
-    if isinstance(reason, str) and reason:
-        return f"molt_diff memory guard: {reason}"
-    return "molt_diff memory guard: global guard tripped"
+def _memory_guard_trip_outcome(
+    sentinel: harness_memory_guard.RepoProcessMemorySentinel | None = None,
+) -> compat_backends.BackendResult | None:
+    failure = getattr(sentinel, "infrastructure_failure", None)
+    evidence = (
+        harness_outcomes.SuiteTripEvidence(infrastructure_failure=failure)
+        if failure is not None
+        else harness_outcomes.read_suite_trip(
+            os.environ, path=_diff_memory_guard_trip_file()
+        )
+    )
+    if evidence is None and getattr(sentinel, "tripped", False):
+        evidence = harness_outcomes.suite_trip_failure(
+            "memory_guard: suite sentinel tripped without published victim evidence"
+        )
+    return compat_backends.suite_trip_outcome(evidence)
 
 
 def _prepare_memory_guard_run(config: _DiffMemoryGuardConfig) -> None:
@@ -2333,7 +2330,7 @@ def _prepare_memory_guard_run(config: _DiffMemoryGuardConfig) -> None:
     os.environ[_DIFF_MEMORY_GUARD_GLOBAL_SAMPLES_JSONL_ENV] = str(
         guard_root / "global_samples.jsonl"
     )
-    with contextlib.suppress(OSError):
+    with contextlib.suppress(FileNotFoundError):
         Path(os.environ[_DIFF_MEMORY_GUARD_TRIP_FILE_ENV]).unlink()
     _record_memory_guard_event(
         {
@@ -2494,15 +2491,10 @@ def _force_close_diff_process_group(proc: subprocess.Popen[str]) -> None:
 
 def _run_subprocess(
     cmd: list[str], *, env: dict[str, str], timeout: float | None
-) -> subprocess.CompletedProcess[str]:
-    trip_message = _memory_guard_trip_message()
-    if trip_message is not None:
-        return subprocess.CompletedProcess(
-            cmd,
-            _DIFF_MEMORY_GUARD_RETURN_CODE,
-            "",
-            trip_message + "\n",
-        )
+) -> compat_backends.BackendResult:
+    trip = _memory_guard_trip_outcome()
+    if trip is not None:
+        return trip
 
     guard_context = harness_memory_guard.HarnessExecutionContext.from_env(
         "MOLT_DIFF",
@@ -2532,13 +2524,12 @@ def _run_subprocess(
             output=stdout,
             stderr=stderr,
         )
-    returncode = result.returncode
-    trip_message = _memory_guard_trip_message()
-    if trip_message is not None:
-        returncode = _DIFF_MEMORY_GUARD_RETURN_CODE
-        if trip_message not in stderr:
-            stderr = f"{stderr}{trip_message}\n"
-    elif getattr(result, "violation", None) is not None:
+    outcome = compat_backends.merge_suite_trip_result(
+        compat_backends.BackendResult.from_process(result),
+        result,
+        harness_outcomes.read_suite_trip(env, path=_diff_memory_guard_trip_file()),
+    )
+    if getattr(result, "violation", None) is not None:
         guard_message = (
             "molt_diff memory guard: RSS limit exceeded under shared harness "
             "subprocess guard; inspect preceding memory_guard diagnostic for "
@@ -2552,13 +2543,8 @@ def _run_subprocess(
                 "violation": _memory_guard_record(getattr(result, "violation", None)),
             }
         )
-        stderr = f"{stderr}{guard_message}\n"
-    # Preserve the shared guard's typed outcome; flattening this to a plain
-    # CompletedProcess turns custody failures into compiler/runtime evidence.
-    result.returncode = returncode
-    result.stdout = stdout
-    result.stderr = stderr
-    return result
+        outcome = replace(outcome, stderr=outcome.stderr + guard_message + "\n")
+    return outcome
 
 
 def _run_with_optional_time(
@@ -2567,7 +2553,7 @@ def _run_with_optional_time(
     env: dict[str, str],
     timeout: float | None,
     time_path: Path | None,
-):
+) -> compat_backends.BackendResult:
     run_cmd = cmd
     if time_path is not None:
         time_bin = _time_tool()
@@ -2636,10 +2622,7 @@ class _BatchCompileServerClient(BatchCompileServerClient):
         request_timeout = timeout
         if request_timeout is None:
             request_timeout = _diff_batch_compile_server_request_timeout()
-        if not force and self._proc.poll() is None:
-            with contextlib.suppress(Exception):
-                self.request("shutdown", timeout=request_timeout)
-        self.force_close()
+        super().close(force=force, timeout=request_timeout)
 
 
 def _shutdown_batch_compile_server(*, force: bool = True) -> None:
@@ -2732,6 +2715,14 @@ def _run_batch_compile_build(
     attempts = 2 if strict_mode else 1
     last_error: Exception = RuntimeError("batch compile server request failed")
     for attempt in range(attempts):
+        admission = compat_backends.suite_trip_outcome(
+            harness_outcomes.read_suite_trip(env, path=_diff_memory_guard_trip_file())
+        )
+        if admission is not None:
+            return admission.as_build_failure(
+                detail="suite guard stopped batch admission",
+                fallback="suite guard tripped",
+            )
         if strict_mode and attempt > 0:
             _batch_compile_server_reset_disabled()
         client, start_error = _batch_compile_server_client(
@@ -2747,6 +2738,16 @@ def _run_batch_compile_build(
                     stderr=str(last_error),
                     build_failed=True,
                 )
+            admission = compat_backends.suite_trip_outcome(
+                harness_outcomes.read_suite_trip(
+                    env, path=_diff_memory_guard_trip_file()
+                )
+            )
+            if admission is not None:
+                return admission.as_build_failure(
+                    detail="suite guard stopped batch startup",
+                    fallback="suite guard tripped",
+                )
             if strict_mode and attempt + 1 < attempts:
                 continue
             raise last_error
@@ -2758,14 +2759,44 @@ def _run_batch_compile_build(
             )
         except Exception as exc:
             last_error = exc
+            # Freeze request custody before shutdown starts another request or
+            # changes the server exit observation. Classify before retry/fallback.
+            failure = compat_backends.BackendResult(
+                None, str(exc), 127, build_failed=True
+            )
+            evidence = harness_outcomes.read_suite_trip(
+                env, path=_diff_memory_guard_trip_file()
+            )
+            failure = (
+                compat_backends.merge_suite_trip_result(
+                    failure,
+                    getattr(exc, "batch_request_custody", None),
+                    evidence,
+                )
+                if not isinstance(exc, TimeoutError)
+                else failure
+            )
             _batch_compile_server_mark_disabled(str(last_error))
             _shutdown_batch_compile_server(force=True)
+            if failure.rss_limit_exceeded:
+                return failure
             if isinstance(exc, TimeoutError):
                 return compat_backends.BackendResult.from_deadline(
                     timeout=request_timeout,
                     stderr=str(exc),
                     build_failed=True,
                 )
+            if evidence is not None:
+                # An unattributed interruption still failed. Retain the suite
+                # verdict; a retry/fallback must not manufacture a passing cell.
+                if evidence.infrastructure_failure is not None:
+                    return compat_backends.suite_trip_outcome(
+                        evidence
+                    ).as_build_failure(
+                        detail="invalid suite trip evidence",
+                        fallback="suite guard failure",
+                    )
+                return failure
             if strict_mode and attempt + 1 < attempts:
                 continue
             raise last_error
@@ -2784,6 +2815,14 @@ def _run_batch_compile_build(
                 err_text = error
         _batch_compile_server_reset_disabled()
         result = compat_backends.BackendResult(out_text, err_text, returncode)
+        if returncode != 0:
+            result = compat_backends.merge_suite_trip_result(
+                result,
+                response.custody,
+                harness_outcomes.read_suite_trip(
+                    env, path=_diff_memory_guard_trip_file()
+                ),
+            )
         if returncode != 0:
             return result.as_build_failure(
                 detail="batch compile failed",
@@ -3237,8 +3276,6 @@ def _run_molt_owned(
     timeout = _diff_timeout()
     build_timeout = _diff_build_timeout(timeout)
     rss_limit_kb = _diff_fail_rss_kb()
-    build_stdout = ""
-    build_stderr = ""
     build_rc = 0
     build_via_batch_server = False
     batch_requested = _diff_batch_compile_server_enabled()
@@ -3298,8 +3335,7 @@ def _run_molt_owned(
                 return batch_result
             build_via_batch_server = True
             build_rc = batch_result.returncode
-            build_stdout = batch_result.stdout or ""
-            build_stderr = batch_result.stderr
+            build_outcome = batch_result
 
     build_cmd = [
         _resolve_molt_cli_python(),
@@ -3366,8 +3402,7 @@ def _run_molt_owned(
                 fallback="guard infrastructure failed",
             )
         build_rc = build_res.returncode
-        build_stdout = build_res.stdout
-        build_stderr = build_res.stderr
+        build_outcome = compat_backends.BackendResult.from_process(build_res)
     exceeded, detail = _rss_exceeded(build_metrics, rss_limit_kb)
     if exceeded:
         message = f"Build RSS limit exceeded: {detail}"
@@ -3379,7 +3414,15 @@ def _run_molt_owned(
             run_rc=None,
             status="build_rss_exceeded",
         )
-        return compat_backends.BackendResult(None, message, 125, build_failed=True)
+        failure = build_outcome.as_build_failure(
+            detail="build RSS limit exceeded", fallback=message
+        )
+        return replace(
+            failure,
+            stderr="\n".join(part for part in (failure.stderr, message) if part),
+            returncode=125,
+            rss_limit_exceeded=True,
+        )
     if build_rc != 0:
         _record_rss_metrics(
             file_path,
@@ -3389,8 +3432,8 @@ def _run_molt_owned(
             run_rc=None,
             status="build_failed",
         )
-        return compat_backends.BackendResult(
-            None, build_stderr or build_stdout, build_rc, build_failed=True
+        return build_outcome.as_build_failure(
+            detail=build_outcome.detail, fallback="build failed"
         )
 
     preflight_err = _dyld_preflight_error(output_binary)
@@ -3454,7 +3497,13 @@ def _run_molt_owned(
             run_rc=125,
             status="run_rss_exceeded",
         )
-        return compat_backends.BackendResult("", message, 125)
+        outcome = compat_backends.BackendResult.from_process(run_res)
+        return replace(
+            outcome,
+            stderr="\n".join(part for part in (outcome.stderr, message) if part),
+            returncode=125,
+            rss_limit_exceeded=True,
+        )
     run_status = "ok" if run_res.returncode == 0 else "run_failed"
     _record_rss_metrics(
         file_path,
@@ -3465,39 +3514,6 @@ def _run_molt_owned(
         status=run_status,
     )
     return compat_backends.BackendResult.from_process(run_res)
-
-
-def _is_oom_returncode(code: int | None) -> bool:
-    if code is None:
-        return False
-    if code in {137, 9}:
-        return True
-    if code < 0 and abs(code) in {9, 137}:
-        return True
-    return False
-
-
-def _is_oom_error(stderr: str) -> bool:
-    needle = stderr.lower()
-    # Keep OOM detection strict to avoid false positives like "boom".
-    if re.search(r"\boom\b", needle):
-        return True
-    return any(
-        token in needle
-        for token in (
-            "out of memory",
-            "std::bad_alloc",
-            "memoryerror",
-            "cannot allocate memory",
-            "allocation failed",
-        )
-    )
-
-
-def _should_retry_oom(code: int | None, stderr: str) -> bool:
-    if code == 124:
-        return False
-    return _is_oom_returncode(code) or _is_oom_error(stderr)
 
 
 def _is_dyld_unknown_imports(stderr: str) -> bool:
@@ -3896,10 +3912,12 @@ def _run_native_backend(
         context.build_profile,
         execution_context=context,
     )
-    if outcome.timed_out or outcome.infrastructure_failure is not None:
+    if outcome.blocks_build_recovery:
         return outcome
     saw_dyld_retry = False
-    if _diff_retry_dyld_default() and _is_dyld_unknown_imports(outcome.stderr):
+    if _diff_retry_dyld_default() and _is_dyld_unknown_imports(
+        outcome.diagnostic_stderr or ""
+    ):
         _mark_dyld_guard(file_path)
         saw_dyld_retry = True
         print(
@@ -3914,10 +3932,8 @@ def _run_native_backend(
             no_cache=False,
             execution_context=context,
         )
-        if (
-            not outcome.timed_out
-            and outcome.infrastructure_failure is None
-            and _is_dyld_unknown_imports(outcome.stderr)
+        if not outcome.blocks_build_recovery and _is_dyld_unknown_imports(
+            outcome.diagnostic_stderr or ""
         ):
             print(
                 "[RETRY] "
@@ -3932,9 +3948,8 @@ def _run_native_backend(
                 execution_context=context,
             )
         if (
-            not outcome.timed_out
-            and outcome.infrastructure_failure is None
-            and _is_dyld_unknown_imports(outcome.stderr)
+            not outcome.blocks_build_recovery
+            and _is_dyld_unknown_imports(outcome.diagnostic_stderr or "")
             and _diff_force_rebuild_on_dyld()
         ):
             print(
@@ -3951,9 +3966,8 @@ def _run_native_backend(
                 execution_context=context,
             )
         if (
-            not outcome.timed_out
-            and outcome.infrastructure_failure is None
-            and _is_dyld_unknown_imports(outcome.stderr)
+            not outcome.blocks_build_recovery
+            and _is_dyld_unknown_imports(outcome.diagnostic_stderr or "")
             and _diff_retry_isolated_default()
         ):
             use_local_retry = _diff_dyld_local_fallback()
@@ -3976,7 +3990,7 @@ def _run_native_backend(
                 local_tmp=use_local_retry,
                 environment=context.environment,
             )
-    if outcome.infrastructure_failure is not None:
+    if outcome.blocks_build_recovery:
         return outcome
     if saw_dyld_retry and _diff_disable_daemon_on_dyld():
         os.environ["MOLT_BACKEND_DAEMON"] = "0"
@@ -4002,10 +4016,9 @@ def _run_native_backend(
                 "remaining tests in this run (shared target retained)."
             )
     if (
-        not outcome.timed_out
-        and outcome.infrastructure_failure is None
+        not outcome.blocks_build_recovery
         and outcome.stdout is None
-        and _is_backend_daemon_build_error(outcome.stderr)
+        and _is_backend_daemon_build_error(outcome.diagnostic_stderr or "")
     ):
         print(
             "[RETRY] "
@@ -4020,10 +4033,9 @@ def _run_native_backend(
             execution_context=context,
         )
         if (
-            not outcome.timed_out
-            and outcome.infrastructure_failure is None
+            not outcome.blocks_build_recovery
             and outcome.stdout is None
-            and _is_backend_daemon_build_error(outcome.stderr)
+            and _is_backend_daemon_build_error(outcome.diagnostic_stderr or "")
             and _diff_retry_isolated_default()
         ):
             print(
@@ -4043,9 +4055,9 @@ def _run_native_backend(
                 environment=context.environment,
             )
         if (
-            outcome.infrastructure_failure is None
+            not outcome.blocks_build_recovery
             and outcome.stdout is None
-            and _is_backend_daemon_build_error(outcome.stderr)
+            and _is_backend_daemon_build_error(outcome.diagnostic_stderr or "")
         ):
             os.environ["MOLT_BACKEND_DAEMON"] = "0"
             print(
@@ -4190,6 +4202,9 @@ def _record_backend_result(
             ),
             "build_failed": outcome.build_failed,
             "timed_out": outcome.timed_out,
+            "resource_failure": outcome.resource_failure,
+            "rss_limit_exceeded": outcome.rss_limit_exceeded,
+            "guard_signal": outcome.guard_signal,
             "detail": outcome.detail,
         }
         stdout, stderr = outcome.stdout or "", outcome.stderr
@@ -4200,6 +4215,9 @@ def _record_backend_result(
             "infrastructure_failure": None,
             "build_failed": False,
             "timed_out": False,
+            "resource_failure": None,
+            "rss_limit_exceeded": False,
+            "guard_signal": None,
             "detail": outcome.reason,
         }
         stdout, stderr = "", outcome.reason
@@ -4330,6 +4348,9 @@ def diff_test(
         )
         record["cpython_returncode"] = cp_ret
         record["cpython_child_returncode"] = cpython.child_returncode
+        record["cpython_resource_failure"] = cpython.resource_failure
+        record["cpython_rss_limit_exceeded"] = cpython.rss_limit_exceeded
+        record["cpython_guard_signal"] = cpython.guard_signal
         record["cpython_infrastructure_failure"] = (
             memory_guard.infrastructure_failure_payload(cpython.infrastructure_failure)
         )
@@ -4365,7 +4386,7 @@ def diff_test(
             record["resolved_status"] = "fail"
             record["reason_tag"] = "timeout"
             return "fail"
-        if _should_retry_oom(cp_ret, cp_err):
+        if cpython.resource_failure is not None:
             print(f"[OOM] {file_path} (cpython)")
             print(cp_err)
             record["raw_status"] = "oom"
@@ -4458,9 +4479,7 @@ def diff_test(
                 continue
             # Record and diagnose each completed backend immediately. A later
             # resource failure must never discard already observed results.
-            if not outcome.timed_out and _should_retry_oom(
-                outcome.returncode, outcome.stderr
-            ):
+            if outcome.resource_failure is not None:
                 _record_backend_result(
                     record,
                     file_path,
@@ -4548,14 +4567,16 @@ def _parallel_diff_results(
     *,
     jobs: int,
     fail_fast: bool,
+    trip_outcome: Callable[[], compat_backends.BackendResult | None] | None = None,
 ) -> Iterator[dict[str, object]]:
     """Bound admission, stop replenishing on failure, and retain running results."""
+    trip_outcome = _memory_guard_trip_outcome if trip_outcome is None else trip_outcome
     remaining = iter(test_files)
     pending: dict[concurrent.futures.Future, str] = {}
     stopped = False
     errors: list[Exception] = []
     while True:
-        stopped |= _memory_guard_trip_message() is not None
+        stopped |= trip_outcome() is not None
         while not stopped and len(pending) < jobs:
             file_path = next(remaining, None)
             if file_path is None:
@@ -4587,7 +4608,7 @@ def _parallel_diff_results(
                 continue
             stopped |= fail_fast and result["status"] in _FAILURE_STATUSES
             yield result
-        stopped |= _memory_guard_trip_message() is not None
+        stopped |= trip_outcome() is not None
         if stopped:
             # Cancellation never kills running children: their complete results
             # are drained above and persist through the normal receipt/log path.
@@ -4665,6 +4686,9 @@ def run_diff(
     sentinel_env_previous = os.environ.get(sentinel_env_key)
     sentinel_closed = False
 
+    def suite_trip_outcome() -> compat_backends.BackendResult | None:
+        return _memory_guard_trip_outcome(suite_sentinel)
+
     def close_suite_sentinel() -> None:
         nonlocal sentinel_closed
         if sentinel_closed:
@@ -4720,6 +4744,8 @@ def run_diff(
                 shared_cache = str(_diff_cache_root())
                 os.environ["MOLT_CACHE"] = shared_cache
             for file_path in test_files:
+                if suite_trip_outcome() is not None:
+                    break
                 context = _backend_execution_context(
                     str(file_path),
                     python_exe,
@@ -4744,6 +4770,8 @@ def run_diff(
             with _open_log_file(log_file) as log_handle:
                 with _open_log_file(log_aggregate) as aggregate_handle:
                     for file_path in test_files:
+                        if suite_trip_outcome() is not None:
+                            break
                         _emit_line(f"[RUN] {file_path}", log_handle, echo=True)
                         payload = _diff_run_single(
                             str(file_path),
@@ -4775,7 +4803,7 @@ def run_diff(
                             )
                         if fail_fast and status in _FAILURE_STATUSES:
                             break
-                        if _memory_guard_trip_message() is not None:
+                        if suite_trip_outcome() is not None:
                             break
         else:
             if log_dir is not None:
@@ -4820,6 +4848,7 @@ def run_diff(
                             compiler_target_python,
                             jobs=jobs,
                             fail_fast=fail_fast,
+                            trip_outcome=suite_trip_outcome,
                         ):
                             path = result["path"]
                             status = result["status"]
@@ -4878,7 +4907,12 @@ def run_diff(
         _prune_orphan_diff_workers()
         _prune_orphan_build_helpers()
         _prune_backend_daemons()
-        guard_trip_message = _memory_guard_trip_message()
+        guard_trip_outcome = suite_trip_outcome()
+        guard_trip_message = (
+            None
+            if guard_trip_outcome is None
+            else guard_trip_outcome.stderr.rstrip("\n")
+        )
         status_by_path = {path: status for path, status in results}
         if jobs > 1 and retry_oom and not fail_fast and guard_trip_message is None:
             oom_paths = [p for p, s in status_by_path.items() if s == "oom"]
@@ -4889,6 +4923,8 @@ def run_diff(
                     echo=True,
                 )
             for path in oom_paths:
+                if suite_trip_outcome() is not None:
+                    break
                 retry_payload = _diff_run_single(
                     path,
                     python_exe,
@@ -4901,6 +4937,12 @@ def run_diff(
                 status_by_path[path] = retry_status
                 duration_by_path[path] = float(retry_payload["duration_s"])
                 outputs[path] = retry_payload
+        guard_trip_outcome = suite_trip_outcome()
+        guard_trip_message = (
+            None
+            if guard_trip_outcome is None
+            else guard_trip_outcome.stderr.rstrip("\n")
+        )
         discovered = len(status_by_path)
         failed_files = [
             path
@@ -4914,10 +4956,14 @@ def run_diff(
         passed = len([None for status in status_by_path.values() if status == "pass"])
         skipped = len(skipped_files)
         oom = len([None for status in status_by_path.values() if status == "oom"])
-        if guard_trip_message is not None:
+        guard_infrastructure_failures = 0
+        if guard_trip_outcome is not None:
             failed_files.append("<memory_guard>")
             failed += 1
-            oom += 1
+            oom += int(guard_trip_outcome.resource_failure is not None)
+            guard_infrastructure_failures += int(
+                guard_trip_outcome.infrastructure_failure is not None
+            )
         total = passed + failed
         try:
             limit = int(os.environ.get("MOLT_DIFF_RSS_TOP", "5"))
@@ -4959,6 +5005,7 @@ def run_diff(
             "passed": passed,
             "failed": failed,
             "oom": oom,
+            "guard_infrastructure_failures": guard_infrastructure_failures,
             "skipped": skipped,
             "failed_files": failed_files,
             "skipped_files": skipped_files,
@@ -5002,7 +5049,13 @@ def run_diff(
                     "sample_max_bytes": _memory_guard_jsonl_max_bytes(
                         _diff_memory_guard_global_samples_jsonl()
                     ),
-                    "tripped": guard_trip_message is not None,
+                    "tripped": guard_trip_outcome is not None
+                    and guard_trip_outcome.resource_failure is not None,
+                    "admission_stopped": guard_trip_outcome is not None,
+                    "infrastructure_failure": guard_trip_outcome.infrastructure_failure.json_payload()
+                    if guard_trip_outcome is not None
+                    and guard_trip_outcome.infrastructure_failure is not None
+                    else None,
                     "trip_message": guard_trip_message,
                     "trip_file": str(_diff_memory_guard_trip_file()),
                 },

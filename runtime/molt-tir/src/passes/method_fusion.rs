@@ -1,20 +1,11 @@
 use super::purity::{SimpleIrScalarPurityFacts, simple_ir_op_is_provably_nonthrowing_with_facts};
 use crate::tir::op_kinds_generated::{
     SimpleIrVarFieldRole, kind_source_call_first_adopted_operand, kind_to_opcode_table,
-    opcode_is_side_effecting_table, simpleir_kind_is_exception_check, simpleir_var_field_role_table,
+    opcode_is_side_effecting_table, simpleir_kind_is_exception_check,
+    simpleir_var_field_role_table,
 };
 use crate::{FunctionIR, OpIR};
 
-/// Eliminate redundant `guard_tag` ops on typed float/int variables.
-///
-/// `guard_tag(val, expected_tag)` calls `molt_guard_type` — a runtime
-/// function call — to assert the NaN-boxing tag matches. For variables
-/// that are provably typed (the result of `const_float`, `const`,
-/// float/int arithmetic, or loaded from a typed `store_var` chain),
-/// the tag is guaranteed correct and the guard is dead weight.
-///
-/// In the mandelbrot inner loop, two `guard_tag` ops per iteration add
-/// two unnecessary function calls.
 #[cfg_attr(
     not(any(feature = "native-backend", feature = "wasm-backend")),
     allow(dead_code)

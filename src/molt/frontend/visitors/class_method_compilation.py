@@ -8,6 +8,10 @@ layout, namespace, and dataclass construction authority.
 
 from __future__ import annotations
 
+from molt.compiler_analysis.python_lexical_scope import (
+    function_contains_yield,
+)
+
 import ast
 from molt.python_private_names import python_definition_name
 from typing import Literal, cast
@@ -31,7 +35,6 @@ from molt.frontend.sema import (
     FunctionKind,
     async_generator_contains_return_value,
     async_generator_contains_yield_from,
-    function_contains_yield,
     signature_contains_yield,
     stateful_function_frame_plan,
 )

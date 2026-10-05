@@ -36,7 +36,7 @@ except Exception:  # pragma: no cover - path-invocation fallback
 WORKTREE_DEBT_THRESHOLD = 24  # M67: 130+ worktrees = poison; keep the count low.
 
 STANDING_DIRECTIVES = [
-    "M12  LAND every work turn (commit/proof/passing test) or NAME a real blocker; reporting without landing is poison.",
+    "M12  LAND potentially mutating work (commit/proof/passing test) or NAME a real blocker; read-only reviews are complete outcomes.",
     "M05  Zero fakes; independently verify every deliverable incl. subagents'; a PASS is a hypothesis until reproduced.",
     "M17  NEVER destructive git (reset --hard/checkout --/clean -fd/stash drop) on the shared checkout.",
     "M20  Commit with `git commit -- <pathspec>`; `git add X && git commit` sweeps other agents' WIP.",
@@ -180,6 +180,11 @@ def _section_directives(out: io.StringIO) -> None:
     out.write("STANDING DIRECTIVES (now enforced by the hook spine):\n")
     for d in STANDING_DIRECTIVES:
         out.write(f"  - {d}\n")
+    out.write(
+        "  Read-only tools (shared landing-gate classification): "
+        + ", ".join(sorted(landing_gate.READ_ONLY_TOOLS))
+        + ".\n"
+    )
     out.write("  (full index: memory/MEMORY.md + POINTERS.md)\n")
 
 
@@ -190,7 +195,8 @@ def _section_footer(out: io.StringIO) -> None:
         "override once-verified with MOLT_GUARD_OK=1 <cmd> (audited).\n"
     )
     out.write(
-        "  Stop landing-gate: land a commit/proof, or "
+        "  Stop landing-gate: read-only reviews can finish without a commit or blocker. "
+        "Potentially mutating work: land a commit/proof, or "
         '`python tools/hooks/landing_gate.py --record-blocker "<reason>"`.\n'
     )
     out.write(

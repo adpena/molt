@@ -391,13 +391,21 @@ fn constants_resolve_to_concrete_types() {
             vec![ValueId(2)],
             str_attr("hello"),
         ),
-        make_op(OpCode::ConstBool, vec![], vec![ValueId(3)], AttrDict::new()),
+        make_op(
+            OpCode::ConstBool,
+            vec![],
+            vec![ValueId(3)],
+            AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
+        ),
         make_op(OpCode::ConstNone, vec![], vec![ValueId(4)], AttrDict::new()),
         make_op(
             OpCode::ConstBytes,
             vec![],
             vec![ValueId(5)],
-            AttrDict::new(),
+            AttrDict::from([(
+                "bytes".into(),
+                molt_ir::tir::ops::AttrValue::Bytes(vec![0, 0xff]),
+            )]),
         ),
     ];
     let mut func = single_block_func(ops, 6);
@@ -821,7 +829,12 @@ fn truth_and_containment_callbacks_survive_dead_predicate_chains() {
         };
         let mut func = single_block_func(
             vec![
-                make_op(OpCode::ConstBool, vec![], vec![ValueId(2)], AttrDict::new()),
+                make_op(
+                    OpCode::ConstBool,
+                    vec![],
+                    vec![ValueId(2)],
+                    AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
+                ),
                 make_op(opcode, operands, vec![ValueId(3)], AttrDict::new()),
                 make_op(OpCode::CheckException, vec![], vec![], AttrDict::new()),
                 make_op(
@@ -876,7 +889,7 @@ fn double_not_elimination_requires_exact_bool_input() {
         let mut ops = vec![];
         if exact_bool {
             ops.push(make_op(
-                OpCode::ConstBool,
+                OpCode::ExceptionPending,
                 vec![],
                 vec![ValueId(0)],
                 AttrDict::new(),
@@ -991,7 +1004,7 @@ fn int_from_obj_copy_of_float_is_i64_not_aliased_to_operand() {
             OpCode::ConstFloat,
             vec![],
             vec![ValueId(0)],
-            AttrDict::new(),
+            AttrDict::from([("f_value".into(), molt_ir::tir::ops::AttrValue::Float(1.25))]),
         ),
         // sec = int(t)  →  Copy[int_from_obj](t). MUST type to I64, not F64.
         make_op(
@@ -1127,7 +1140,12 @@ fn dynamic_operand_selects_do_not_inherit_stale_bool_representations() {
     for opcode in [OpCode::And, OpCode::Or] {
         let mut func = single_block_func(
             vec![
-                make_op(OpCode::ConstBool, vec![], vec![ValueId(1)], AttrDict::new()),
+                make_op(
+                    OpCode::ConstBool,
+                    vec![],
+                    vec![ValueId(1)],
+                    AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
+                ),
                 make_op(
                     opcode,
                     vec![ValueId(0), ValueId(1)],

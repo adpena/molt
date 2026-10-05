@@ -7,6 +7,11 @@ visit_Lambda, and visit_Return. Async function/generator visitor methods live in
 
 from __future__ import annotations
 
+from molt.compiler_analysis.python_lexical_scope import (
+    expression_contains_yield,
+    function_contains_yield,
+)
+
 import ast
 from molt.python_private_names import python_definition_name
 
@@ -21,8 +26,6 @@ from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.sema import (
     FunctionKind,
-    expression_contains_yield,
-    function_contains_yield,
     signature_contains_yield,
     stateful_function_frame_plan,
 )

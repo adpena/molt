@@ -482,6 +482,8 @@ struct FunctionLowering<'ctx, 'func> {
     /// The entry slot holding the base address of the binding homes that own
     /// a synchronous Python frame's bindings, once `molt_frame_homes` lent it.
     frame_homes: Option<inkwell::values::PointerValue<'ctx>>,
+    guard_facts: molt_tir::passes::SsaRuntimeGuardFacts,
+    guard_profile_flag: Option<inkwell::values::IntValue<'ctx>>,
 }
 
 #[cfg(feature = "llvm")]
@@ -579,6 +581,8 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         diagnostics: RefCell::new(Vec::new()),
         repr_facts,
         frame_homes: None,
+        guard_facts: molt_tir::passes::SsaRuntimeGuardFacts::for_function(func),
+        guard_profile_flag: None,
     };
 
     // 2. Create LLVM basic blocks for each TIR block.

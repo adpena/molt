@@ -25,11 +25,10 @@ use crate::object::native_handle::{native_handle_arc, native_handle_new};
 use crate::object::ops::string_obj_to_owned;
 use crate::object::ops_sys::{collect_slice_indices, normalize_slice_indices, slice_error};
 use crate::{
-    MoltObject, PyToken, TYPE_ID_OBJECT, TYPE_ID_SLICE, alloc_bytes, alloc_list,
-    alloc_string, alloc_tuple, dec_ref_bits, inc_ref_bits, instance_dict_bits,
-    int_bits_from_i64, is_missing_bits, obj_from_bits, object_class_bits,
-    object_type_id, raise_exception, slice_start_bits, slice_step_bits, slice_stop_bits, to_f64,
-    to_i64,
+    MoltObject, PyToken, TYPE_ID_OBJECT, TYPE_ID_SLICE, alloc_bytes, alloc_list, alloc_string,
+    alloc_tuple, dec_ref_bits, inc_ref_bits, instance_dict_bits, int_bits_from_i64,
+    is_missing_bits, obj_from_bits, object_class_bits, object_type_id, raise_exception,
+    slice_start_bits, slice_step_bits, slice_stop_bits, to_f64, to_i64,
 };
 
 // ---------------------------------------------------------------------------
@@ -499,17 +498,21 @@ unsafe fn object_array_handle_bits(py: &PyToken<'_>, object: *mut u8) -> Option<
     unsafe {
         if let Some(class) = obj_from_bits(object_class_bits(object)).as_ptr()
             && object_type_id(class) == crate::TYPE_ID_TYPE
-            && let Some(offsets) = obj_from_bits(crate::object::layout::class_field_offsets_bits(class)).as_ptr()
+            && let Some(offsets) =
+                obj_from_bits(crate::object::layout::class_field_offsets_bits(class)).as_ptr()
             && let Some(offset) = dict_get_str_bytes_borrowed(py, offsets, b"_handle")
-            && let Some(offset) = to_i64(obj_from_bits(offset)).and_then(|n| usize::try_from(n).ok())
+            && let Some(offset) =
+                to_i64(obj_from_bits(offset)).and_then(|n| usize::try_from(n).ok())
             && let Some(field) = field_storage::field_at_offset(py, object, offset)
         {
             let slot = object.add(field.offset).cast::<u64>();
             let bits = match field_storage::resolve(py, object, field.offset, slot)? {
                 FieldStorage::Inline(slot) => *slot,
-                FieldStorage::Dictionary { dictionary, .. } => {
-                    dict_get_str_bytes_borrowed(py, obj_from_bits(dictionary).as_ptr()?, b"_handle")?
-                }
+                FieldStorage::Dictionary { dictionary, .. } => dict_get_str_bytes_borrowed(
+                    py,
+                    obj_from_bits(dictionary).as_ptr()?,
+                    b"_handle",
+                )?,
             };
             return (!is_missing_bits(py, bits)).then_some(bits);
         }
@@ -530,14 +533,17 @@ pub(crate) fn array_storage_from_object_bits(
         return Err(TypedStridedStorageError::NotBuffer);
     };
     let guard = cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if guard.typecode == Typecode::U {
-        return Err(TypedStridedStorageError::InvalidDescriptor);
-    }
     let itemsize = guard.typecode.itemsize();
     let stride =
         isize::try_from(itemsize).map_err(|_| TypedStridedStorageError::InvalidDescriptor)?;
     let data = guard.data.as_ptr().cast_mut();
-    let format = guard.typecode.as_char() as u8;
+    // CPython exports native wchar as u (16-bit) or w (32-bit). The
+    // descriptor is valid even though memoryview scalar access rejects it.
+    let format = if guard.typecode == Typecode::U && itemsize == 4 {
+        b'w'
+    } else {
+        guard.typecode.as_char() as u8
+    };
     let storage =
         TypedStridedStorage::one_dim(data, false, guard.len(), itemsize, stride, 0, bits, 0);
     // C descriptors carry their format inline. No transient Python allocation

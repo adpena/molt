@@ -869,7 +869,10 @@ mod tests {
                 opcode: OpCode::Call,
                 operands: vec![ValueId(0)],
                 results: vec![],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::from([(
+                    "s_value".into(),
+                    AttrValue::Str("fixture_borrow_operands".into()),
+                )]),
                 source_span: None,
             },
             labeled(OpCode::CheckException),
@@ -1022,14 +1025,14 @@ mod tests {
         // body → header (back-edge).
         let mut func = TirFunction::new(
             "loopfn".into(),
-            vec![],
+            vec![TirType::Bool],
             TirType::None,
             molt_ir::FunctionReturnAbi::Void,
         );
         let header = func.fresh_block();
         let body = func.fresh_block();
         let exit = func.fresh_block();
-        let cond = func.fresh_value();
+        let cond = func.blocks[&func.entry_block].args[0].id;
         func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
             target: header,
             args: vec![],
@@ -1039,14 +1042,7 @@ mod tests {
             TirBlock {
                 id: header,
                 args: vec![],
-                ops: vec![TirOp {
-                    dialect: Dialect::Molt,
-                    opcode: OpCode::ConstBool,
-                    operands: vec![],
-                    results: vec![cond],
-                    attrs: AttrDict::new(),
-                    source_span: None,
-                }],
+                ops: vec![],
                 terminator: Terminator::CondBranch {
                     cond,
                     then_block: body,
@@ -1087,6 +1083,7 @@ mod tests {
         func.label_id_map.insert(exit.0, 90);
         func.loop_roles.insert(header, LoopRole::LoopHeader);
 
+        crate::tir::verify::verify_function(&func).expect("valid dynamic loop fixture");
         let pm = build_default_pipeline(TargetInfo::native_release_fast());
         // Force the per-pass analysis self-check on for this run.
         let stats = pm.run_inner(&mut func, true);
@@ -1095,6 +1092,12 @@ mod tests {
         // moved them to the separate terminal `build_drop_pipeline`), and
         // block-argument pruning waits for that terminal phase.
         assert_eq!(stats.len(), 27);
+        assert!(
+            func.blocks
+                .values()
+                .any(|block| matches!(block.terminator, Terminator::CondBranch { .. })),
+            "the unknown input must retain the loop branch through optimization"
+        );
 
         // The drop pipeline runs its two passes under the same verify guard.
         // (This trivial loop carries no heap-allocated values, so drop_insertion
@@ -1157,24 +1160,16 @@ mod tests {
     fn ambiguous_exception_match_ref_depth_function() -> TirFunction {
         let mut func = TirFunction::new(
             "ambiguous_exception_region".into(),
-            vec![],
+            vec![TirType::Bool],
             TirType::None,
             molt_ir::FunctionReturnAbi::Void,
         );
         let before_try = func.fresh_block();
         let handler = func.fresh_block();
-        let cond = func.fresh_value();
+        let cond = func.blocks[&func.entry_block].args[0].id;
         let exc = func.fresh_value();
         func.label_id_map.insert(handler.0, 7);
 
-        func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![TirOp {
-            dialect: Dialect::Molt,
-            opcode: OpCode::ConstBool,
-            operands: vec![],
-            results: vec![cond],
-            attrs: AttrDict::new(),
-            source_span: None,
-        }];
         func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::CondBranch {
             cond,
             then_block: before_try,
@@ -1288,7 +1283,10 @@ mod tests {
                 opcode: OpCode::Call,
                 operands: vec![parameter],
                 results: vec![],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::from([(
+                    "s_value".into(),
+                    AttrValue::Str("fixture_borrow_operands".into()),
+                )]),
                 source_span: None,
             });
             block.terminator = Terminator::Return { values: vec![] };

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from molt.cli.native_link_plan import resolve_native_target_spec
+
+from tests.operation_probe import same_thread_probe
 from tests.compiler_identity_helper import (
     stub_compiler_admission,
     write_compiler_source,
@@ -134,6 +137,8 @@ from tests.native_artifact_fixtures import (
 )
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
+    mock_wasm_optimizer_cache_fact,
+    mock_wasm_optimizer_publications,
 )
 from tests.cli.process_guard import (
     cli_test_popen_kwargs,
@@ -2179,11 +2184,13 @@ def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
     assert "def dtype_error" in internal_source
 
 
+@pytest.mark.parametrize("mixed_package_state", [False, True])
 @_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_compiles_native_runtime_package_import_init(
     native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    mixed_package_state: bool,
 ) -> None:
     external_root = tmp_path / "site"
     source_path = tmp_path / "native_exec.c"
@@ -2198,14 +2205,42 @@ def test_materialize_import_plan_compiles_native_runtime_package_import_init(
     child_path = external_root / "nativepkg" / "_child.py"
     expired_path = external_root / "nativepkg" / "_expired.py"
     package_init.parent.mkdir(parents=True)
-    package_init.write_text(
-        "from nativepkg import _child\n"
-        "from ._expired import EXPIRED\n"
-        "VALUE = _child.VALUE\n",
-        encoding="utf-8",
-    )
+    package_source = "from . import _child\n"
+    if mixed_package_state:
+        package_source += (
+            "if flag is None:\n"
+            "    __package__ = 'nativepkg.alt'\n"
+            "else:\n"
+            "    __package__ = choose_package()\n"
+            "from . import _expired\n"
+            "EXPIRED = _expired.EXPIRED\n"
+        )
+    else:
+        package_source += "from ._expired import EXPIRED\n"
+    package_init.write_text(package_source + "VALUE = _child.VALUE\n", encoding="utf-8")
     child_path.write_text("VALUE = 42\n", encoding="utf-8")
     expired_path.write_text("EXPIRED = {'old': 'new'}\n", encoding="utf-8")
+    expected_support = {
+        "nativepkg/_child.py": child_path,
+        "nativepkg/_expired.py": expired_path,
+    }
+    expected_modules = {"nativepkg", "nativepkg._child", "nativepkg._expired"}
+    if mixed_package_state:
+        alternate = package_init.parent / "alt"
+        alternate.mkdir()
+        alternate_init = alternate / "__init__.py"
+        alternate_expired = alternate / "_expired.py"
+        alternate_init.write_text("", encoding="utf-8")
+        alternate_expired.write_text(
+            "EXPIRED = {'known': 'branch'}\n", encoding="utf-8"
+        )
+        expected_support.update(
+            {
+                "nativepkg/alt/__init__.py": alternate_init,
+                "nativepkg/alt/_expired.py": alternate_expired,
+            }
+        )
+        expected_modules.update({"nativepkg.alt", "nativepkg.alt._expired"})
     _write_external_native_artifact(
         external_root,
         native_archives=native_archives,
@@ -2234,11 +2269,15 @@ def test_materialize_import_plan_compiles_native_runtime_package_import_init(
     assert policy_error is None
     assert policy is not None
     artifact = policy.native_artifact_plan.artifacts[0]
-    assert artifact.runtime_python_import_modules == (
-        "nativepkg",
-        "nativepkg._child",
-        "nativepkg._expired",
-    )
+    assert artifact.runtime_python_import_modules == tuple(sorted(expected_modules))
+    # Sequential relatives and a known branch beside a dynamic package both
+    # retain checksummed support sources without granting execution proof.
+    sealed_support = dict(artifact.support_file_sha256)
+    for relative, support_path in expected_support.items():
+        assert (
+            sealed_support[relative]
+            == hashlib.sha256(support_path.read_bytes()).hexdigest()
+        )
     module_reasons: dict[str, set[str]] = {}
     prepared, error = cli._prepare_entry_module_graph(
         source_path=entry_path,
@@ -2269,12 +2308,9 @@ def test_materialize_import_plan_compiles_native_runtime_package_import_init(
         diagnostics_enabled=False,
     )
 
-    assert "nativepkg" in import_plan.compile_modules
-    assert "nativepkg._child" in import_plan.compile_modules
-    assert "nativepkg._expired" in import_plan.compile_modules
-    assert "native_support_source" in module_reasons["nativepkg"]
-    assert "native_support_source" in module_reasons["nativepkg._child"]
-    assert "native_support_source" in module_reasons["nativepkg._expired"]
+    assert expected_modules <= set(import_plan.compile_modules)
+    for module in expected_modules:
+        assert "native_support_source" in module_reasons[module]
     init_source = import_plan.module_graph["nativepkg"].read_text(encoding="utf-8")
     assert "VALUE = _child.VALUE" in init_source
 
@@ -2983,6 +3019,7 @@ def test_entry_collections_closure_preserves_static_helper_import_edges(
 @_source_tree_fingerprint_transaction()
 def test_collections_static_helper_copy_reaches_backend_symbol_contract(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("import collections\n")
@@ -3043,7 +3080,9 @@ def test_collections_static_helper_copy_reaches_backend_symbol_contract(
         cache_enabled=False,
         ir={"functions": []},
         target="native",
-        target_triple=None,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin", target_triple=None
+        ),
         profile="dev",
         runtime_cargo_profile="dev-fast",
         backend_cargo_profile="dev-fast",
@@ -11258,20 +11297,15 @@ def test_collect_imports_resolves_name_argument_for_import_module() -> None:
     assert "pathlib" in imports
 
 
-def test_collect_imports_resolves_importlib_intrinsic_transaction_wrapper() -> None:
+def test_collect_imports_resolves_canonical_importlib_wrapper() -> None:
     tree = ast.parse(
-        "_MOLT_IMPORTLIB_RESOLVE_NAME = object()\n"
-        "_MOLT_IMPORTLIB_IMPORT_TRANSACTION = object()\n"
-        "def import_module(name: str, package: object = None):\n"
-        "    resolved = _MOLT_IMPORTLIB_RESOLVE_NAME(name, package)\n"
-        "    mod = _MOLT_IMPORTLIB_IMPORT_TRANSACTION(\n"
-        "        resolved, globals(), locals(), ('*',), 0\n"
-        "    )\n"
-        "    return mod\n"
-        "machinery = import_module('importlib.machinery')\n"
-        "util = import_module('importlib.util')\n"
-        "_bootstrap = import_module('importlib._bootstrap')\n"
-        "_bootstrap_external = import_module('importlib._bootstrap_external')\n"
+        "from importlib import import_module as canonical_import_module\n"
+        "def load(name: str, package: object = None):\n"
+        "    return canonical_import_module(name, package)\n"
+        "machinery = load('importlib.machinery')\n"
+        "util = load('importlib.util')\n"
+        "_bootstrap = load('importlib._bootstrap')\n"
+        "_bootstrap_external = load('importlib._bootstrap_external')\n"
     )
 
     imports = cli_module_import_scanner._collect_imports(
@@ -11287,16 +11321,12 @@ def test_collect_imports_resolves_importlib_intrinsic_transaction_wrapper() -> N
     assert "importlib._bootstrap_external" in imports
 
 
-def test_collect_imports_resolves_importlib_relative_resolve_name() -> None:
+def test_collect_imports_resolves_canonical_relative_importlib_wrapper() -> None:
     tree = ast.parse(
-        "_MOLT_IMPORTLIB_RESOLVE_NAME = object()\n"
-        "_MOLT_IMPORTLIB_IMPORT_TRANSACTION = object()\n"
-        "def import_module(name, package=None):\n"
-        "    resolved = _MOLT_IMPORTLIB_RESOLVE_NAME(name, package)\n"
-        "    return _MOLT_IMPORTLIB_IMPORT_TRANSACTION(\n"
-        "        resolved, globals(), locals(), ('*',), 0\n"
-        "    )\n"
-        "value = import_module('.machinery', package='importlib')\n"
+        "from importlib import import_module as canonical_import_module\n"
+        "def load(name, package=None):\n"
+        "    return canonical_import_module(name, package)\n"
+        "value = load('.machinery', package='importlib')\n"
     )
 
     imports = cli_module_import_scanner._collect_imports(
@@ -11934,7 +11964,7 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
         runtime_codegen_binding=native_codegen_binding(
             runtime_lib, runtime_build_identity
         ),
-        target_triple=None,
+        target=resolve_native_target_spec(None),
         sysroot_path=None,
         profile="dev",
         project_root=tmp_path,
@@ -11994,7 +12024,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
         runtime_codegen_binding=native_codegen_binding(
             runtime_lib, runtime_build_identity
         ),
-        target_triple=None,
+        target=resolve_native_target_spec(None),
         sysroot_path=None,
         profile="dev",
         project_root=tmp_path,
@@ -12027,7 +12057,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
         runtime_codegen_binding=native_codegen_binding(
             runtime_lib, runtime_build_identity
         ),
-        target_triple=None,
+        target=resolve_native_target_spec(None),
         sysroot_path=None,
         profile="dev",
         project_root=tmp_path,
@@ -12089,7 +12119,7 @@ def test_prepare_native_link_stages_stdlib_object_for_link_command(
         runtime_codegen_binding=native_codegen_binding(
             runtime_lib, runtime_build_identity
         ),
-        target_triple=None,
+        target=resolve_native_target_spec(None),
         sysroot_path=None,
         profile="dev",
         project_root=tmp_path,
@@ -12233,7 +12263,7 @@ def test_prepare_native_link_stages_external_native_artifacts_for_runtime_custod
         runtime_codegen_binding=native_codegen_binding(
             runtime_lib, runtime_build_identity
         ),
-        target_triple=None,
+        target=resolve_native_target_spec(None),
         sysroot_path=None,
         profile="dev",
         project_root=tmp_path,
@@ -12348,7 +12378,7 @@ def test_prepare_native_link_rejects_external_native_artifact_checksum_drift(
         runtime_codegen_binding=native_codegen_binding(
             runtime_lib, RUNTIME_BUILD_IDENTITY
         ),
-        target_triple=None,
+        target=resolve_native_target_spec(None),
         sysroot_path=None,
         profile="dev",
         project_root=tmp_path,
@@ -12461,7 +12491,7 @@ def test_build_native_link_plan_does_not_read_ambient_stdlib_env(
         stub_path=stub_path,
         runtime_lib=runtime_lib,
         output_binary=output_binary,
-        target_triple=None,
+        target=resolve_native_target_spec(None),
         sysroot_path=None,
         profile="dev",
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
@@ -12499,7 +12529,7 @@ def test_linux_release_link_omits_safe_icf_without_capable_linker(
         stub_path=stub_path,
         runtime_lib=runtime_lib,
         output_binary=output_binary,
-        target_triple=None,
+        target=resolve_native_target_spec(None, host_platform="linux"),
         sysroot_path=None,
         profile="release",
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
@@ -12538,7 +12568,7 @@ def test_linux_link_places_source_extension_archives_in_runtime_group(
         stub_path=stub_path,
         runtime_lib=runtime_lib,
         output_binary=output_binary,
-        target_triple=None,
+        target=resolve_native_target_spec(None, host_platform="linux"),
         sysroot_path=None,
         profile="release",
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
@@ -12622,7 +12652,9 @@ def test_darwin_link_force_loads_each_source_extension_archive_without_runtime_e
         stub_path=stub_path,
         runtime_lib=runtime_lib,
         output_binary=output_binary,
-        target_triple=None,
+        target=resolve_native_target_spec(
+            None, host_platform="darwin", host_arch="arm64"
+        ),
         sysroot_path=None,
         profile="release",
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
@@ -12682,7 +12714,7 @@ def test_linux_release_link_selects_lld_without_icf_for_fn_identity(
         stub_path=stub_path,
         runtime_lib=runtime_lib,
         output_binary=output_binary,
-        target_triple=None,
+        target=resolve_native_target_spec(None, host_platform="linux"),
         sysroot_path=None,
         profile="release",
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
@@ -12718,7 +12750,7 @@ def test_windows_link_omits_icf_for_fn_identity(
         stub_path=stub_path,
         runtime_lib=runtime_lib,
         output_binary=output_binary,
-        target_triple=None,
+        target=resolve_native_target_spec(None, host_platform="win32"),
         sysroot_path=None,
         profile="release",
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
@@ -12755,7 +12787,7 @@ def test_windows_link_force_loads_source_extension_archives_without_wildcard_exp
         stub_path=stub_path,
         runtime_lib=runtime_lib,
         output_binary=output_binary,
-        target_triple=None,
+        target=resolve_native_target_spec(None, host_platform="win32"),
         sysroot_path=None,
         profile="release",
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
@@ -12812,7 +12844,7 @@ def test_windows_gnu_link_uses_gnu_system_lib_flags(
         stub_path=stub_path,
         runtime_lib=runtime_lib,
         output_binary=output_binary,
-        target_triple="x86_64-pc-windows-gnu",
+        target=resolve_native_target_spec("x86_64-pc-windows-gnu"),
         sysroot_path=None,
         profile="release",
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
@@ -12832,7 +12864,7 @@ def test_windows_native_object_output_rejects_archive_masquerading_as_object(
         output_artifact=output_obj,
         stdlib_obj_path=None,
         json_output=True,
-        target_triple="x86_64-pc-windows-msvc",
+        target=resolve_native_target_spec("x86_64-pc-windows-msvc"),
     )
     assert artifact is None
     assert failure is not None
@@ -13131,7 +13163,9 @@ def test_shared_module_resolution_cache_reuses_resolved_paths(
         resolve_calls += 1
         return original_resolve(self, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "resolve", wrapped_resolve)
+    monkeypatch.setattr(
+        Path, "resolve", same_thread_probe(original_resolve, wrapped_resolve)
+    )
 
     cache = cli_module_resolution._ModuleResolutionCache()
     module_roots = [tmp_path]
@@ -13159,7 +13193,7 @@ def test_shared_module_resolution_cache_skips_resolve_for_normalized_absolute_pa
         raise AssertionError(f"resolve() should not run for {self}")
 
     with monkeypatch.context() as scoped:
-        scoped.setattr(Path, "resolve", fail_resolve)
+        scoped.setattr(Path, "resolve", same_thread_probe(Path.resolve, fail_resolve))
         assert cache.resolved_path(path) == path
 
 
@@ -13179,7 +13213,9 @@ def test_shared_module_resolution_cache_resolves_relative_paths(
             return resolved_path
         return original_resolve(self, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "resolve", wrapped_resolve)
+    monkeypatch.setattr(
+        Path, "resolve", same_thread_probe(original_resolve, wrapped_resolve)
+    )
     assert cache.resolved_path(rel_path) == resolved_path
     assert calls == 1
 
@@ -20377,7 +20413,6 @@ def test_start_backend_daemon_leaves_warming_process_running(
             socket_path,
             cargo_profile="dev-fast",
             project_root=tmp_path,
-            target_triple=None,
             config_digest=None,
             startup_timeout=2.0,
             backend_env={},  # Fake process owns no outer guard scratch or suite lease.
@@ -20496,7 +20531,6 @@ def test_start_backend_daemon_trusts_verified_busy_socket_with_live_pid(
             socket_path,
             cargo_profile="dev-fast",
             project_root=tmp_path,
-            target_triple=None,
             config_digest=None,
             startup_timeout=2.0,
             backend_env={},  # Fake process owns no outer guard scratch or suite lease.
@@ -20586,7 +20620,6 @@ def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
                 socket_path,
                 cargo_profile="dev-fast",
                 project_root=tmp_path,
-                target_triple=None,
                 config_digest=None,
                 startup_timeout=2.0,
                 backend_env={},  # Fake process owns no outer guard scratch or suite lease.
@@ -20692,7 +20725,6 @@ def test_start_backend_daemon_refuses_to_kill_unverified_stale_identity(
             socket_path,
             cargo_profile="dev-fast",
             project_root=project_root,
-            target_triple=None,
             config_digest=None,
             startup_timeout=2.0,
             backend_env={},  # Fake process owns no outer guard scratch or suite lease.
@@ -21378,6 +21410,9 @@ def test_ensure_native_runtime_lib_ready_for_codegen_awaits_async_future(
         def __init__(self) -> None:
             self.calls = 0
 
+        def done(self) -> bool:
+            return False
+
         def result(self) -> bool:
             self.calls += 1
             return True
@@ -21780,11 +21815,19 @@ def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
 def _install_fake_wasm_link_runner(
     monkeypatch: pytest.MonkeyPatch,
     *,
+    fixture_root: RuntimeFixtureRoot,
     link_calls: list[list[str]] | None = None,
     linked_bytes: bytes = b"\0asm\x01\0\0\0",
     app_bytes: bytes | None = None,
 ) -> dict[Path, SourceExtensionLinkRequirements]:
     plans: dict[Path, SourceExtensionLinkRequirements] = {}
+    # This child is mocked, but its scanner remains a real content input.
+    # The shared native-image fixture proves custody, not scanner behavior.
+    scanner = fixture_root.native_executable("molt-backend")
+    optimizer_fact = mock_wasm_optimizer_cache_fact(fixture_root)
+    monkeypatch.setattr(
+        cli_non_native_output, "wasm_optimizer_cache_fact", lambda: optimizer_fact
+    )
 
     def fake_run(
         cmd: list[str],
@@ -21803,6 +21846,15 @@ def _install_fake_wasm_link_runner(
             )
         if "--output" not in command:
             return subprocess.CompletedProcess(command, 0, "", "")
+        assert command[command.index("--wasm-facts-scanner") + 1] == str(scanner)
+        expected_inputs = [
+            (Path(command[index + 1]), command[index + 2])
+            for index, argument in enumerate(command)
+            if argument == "--expected-input"
+        ]
+        assert scanner.resolve() in {path for path, _digest in expected_inputs}
+        for path, digest in expected_inputs:
+            assert digest == hashlib.sha256(path.read_bytes()).hexdigest()
         if link_calls is not None:
             link_calls.append(command)
         output_path = Path(command[command.index("--output") + 1])
@@ -21822,6 +21874,9 @@ def _install_fake_wasm_link_runner(
                 runtime=(split_dir / "molt_runtime.wasm", valid_wasm),
                 size_attestation=(split_dir / "wasm_size_attestation.json", b"{}\n"),
             )
+        payloads.update(
+            mock_wasm_optimizer_publications(command, payloads, optimizer_fact)
+        )
         candidates = {}
         for role, (final, payload) in payloads.items():
             stage = artifact_publication.staged_output_path(final)
@@ -21925,6 +21980,7 @@ def _prepared_runtime_pair_state(
 
 
 def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -21944,7 +22000,10 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
 
     linked_bytes = b"\0asm\x01\0\0\0\x00\x03\x01xA"
     _install_fake_wasm_link_runner(
-        monkeypatch, link_calls=link_calls, linked_bytes=linked_bytes
+        monkeypatch,
+        fixture_root=runtime_fixture_root,
+        link_calls=link_calls,
+        linked_bytes=linked_bytes,
     )
     closure_digest = ["captured-tooling-generation-one"]
     monkeypatch.setattr(
@@ -21962,11 +22021,19 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
 
     def capture_link_fingerprint(**kwargs: Any) -> dict[str, Any]:
         assert wasm_link not in kwargs["inputs"]
-        assert kwargs["tool_facts"][0] == {
+        by_role = {
+            fact["role"]: fact for fact in kwargs["tool_facts"] if "role" in fact
+        }
+        optimizer = [
+            fact for fact in kwargs["tool_facts"] if fact.get("tool") == "wasm-opt"
+        ]
+        assert len(optimizer) == 1
+        assert set(optimizer[0]) == {"tool", "sha256", "binaryen_version"}
+        assert by_role["wasm-link-source-closure"] == {
             "role": "wasm-link-source-closure",
             "content_digest": closure_digest[0],
         }
-        assert kwargs["tool_facts"][1]["role"] == "wasm-native-link-plan"
+        assert by_role["wasm-native-link-plan"]["role"] == "wasm-native-link-plan"
         assert "--native-link-plan" not in kwargs["link_cmd"]
         assert "--runtime-generation" not in kwargs["link_cmd"]
         assert "--runtime-expected-identity" not in kwargs["link_cmd"]
@@ -22089,8 +22156,13 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     )
     receipt = cli_link_fingerprints._read_link_fingerprint(fingerprint_path)
     assert receipt is not None
-    assert set(receipt["outputs"]) == {"linked", "manifest"}
+    assert set(receipt["outputs"]) == {"linked", "manifest", "optimizer"}
     assert receipt["outputs"]["linked"]["path"] == str(linked_wasm.resolve())
+    for record in receipt["outputs"].values():
+        assert (
+            record["identity"]["sha256"]
+            == hashlib.sha256(Path(record["path"]).read_bytes()).hexdigest()
+        )
 
     # An input timestamp is a metadata hint, not a reason to discard identical bytes.
     source_stat = output_wasm.stat()
@@ -22149,6 +22221,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     "fail_after_rival,change_source", [(False, False), (True, False), (False, True)]
 )
 def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     fail_after_rival: bool,
@@ -22169,7 +22242,10 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
     payload_a = output.read_bytes() + b"\x00\x03\x01xA"
     payload_b = output.read_bytes() + b"\x00\x03\x01xB"
     _install_fake_wasm_link_runner(
-        monkeypatch, linked_bytes=payload_a, app_bytes=payload_a
+        monkeypatch,
+        fixture_root=runtime_fixture_root,
+        linked_bytes=payload_a,
+        app_bytes=payload_a,
     )
     common = dict(
         is_rust_transpile=False,
@@ -22206,7 +22282,10 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
             rival_published = True
             with monkeypatch.context() as rival:
                 _install_fake_wasm_link_runner(
-                    rival, linked_bytes=payload_b, app_bytes=payload_b
+                    rival,
+                    fixture_root=runtime_fixture_root,
+                    linked_bytes=payload_b,
+                    app_bytes=payload_b,
                 )
                 prepared, error = (
                     cli_non_native_output._prepare_non_native_build_result(
@@ -22275,6 +22354,7 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
 
 
 def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_linked_wasm(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -22292,7 +22372,7 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
     vfs_support.write_text("globalThis.MoltVfs = class {};\n", encoding="utf-8")
     pair_required: list[frozenset[str]] = []
 
-    _install_fake_wasm_link_runner(monkeypatch)
+    _install_fake_wasm_link_runner(monkeypatch, fixture_root=runtime_fixture_root)
 
     def collect_import_names(path: Path, module_name: str) -> set[str]:
         del path
@@ -22389,6 +22469,7 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
 
 
 def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_surface(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -22464,7 +22545,9 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     link_calls: list[list[str]] = []
     link_fingerprint_inputs: list[Path] = []
 
-    native_plans = _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
+    native_plans = _install_fake_wasm_link_runner(
+        monkeypatch, fixture_root=runtime_fixture_root, link_calls=link_calls
+    )
     real_link_fingerprint = cli_link_fingerprints._link_fingerprint
 
     def capture_link_fingerprint(**kwargs: Any) -> dict[str, Any]:
@@ -22759,6 +22842,7 @@ def test_external_package_bundle_is_independent_of_absolute_source_roots(
 
 
 def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -22815,7 +22899,9 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
     )
     link_calls: list[list[str]] = []
 
-    _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
+    _install_fake_wasm_link_runner(
+        monkeypatch, fixture_root=runtime_fixture_root, link_calls=link_calls
+    )
 
     def collect_import_names(path: Path, module_name: str) -> set[str]:
         if module_name == "molt_runtime":
@@ -22925,6 +23011,7 @@ def test_split_runtime_deployment_attestation_rejects_hidden_active_table_slot(
 
 
 def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -23016,7 +23103,9 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
     )
     link_calls: list[list[str]] = []
     pair_required: list[set[str]] = []
-    native_plans = _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
+    native_plans = _install_fake_wasm_link_runner(
+        monkeypatch, fixture_root=runtime_fixture_root, link_calls=link_calls
+    )
     monkeypatch.setattr(
         cli_non_native_output,
         "_collect_wasm_module_import_names",
@@ -23089,6 +23178,7 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
 
 
 def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -23168,7 +23258,9 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
     )
     link_calls: list[list[str]] = []
     pair_required: list[set[str]] = []
-    native_plans = _install_fake_wasm_link_runner(monkeypatch, link_calls=link_calls)
+    native_plans = _install_fake_wasm_link_runner(
+        monkeypatch, fixture_root=runtime_fixture_root, link_calls=link_calls
+    )
     monkeypatch.setattr(
         cli_non_native_output,
         "_collect_wasm_module_import_names",
@@ -23405,6 +23497,7 @@ def test_browser_native_callable_manifest_is_import_driven(tmp_path: Path) -> No
 
 
 def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_import(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -23421,7 +23514,7 @@ def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_i
     _write_split_runtime_vfs_support(tmp_path)
     missing_symbol = "molt_nativepkg_missing"
 
-    _install_fake_wasm_link_runner(monkeypatch)
+    _install_fake_wasm_link_runner(monkeypatch, fixture_root=runtime_fixture_root)
 
     def collect_import_names(path: Path, module_name: str) -> set[str]:
         del path
@@ -23489,6 +23582,7 @@ def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_i
 
 
 def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_table_refs(
+    runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -23503,7 +23597,7 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
     runtime_reloc_wasm.write_bytes(b"\0asm\x01\0\0\0reloc")
     _write_split_runtime_vfs_support(tmp_path)
 
-    _install_fake_wasm_link_runner(monkeypatch)
+    _install_fake_wasm_link_runner(monkeypatch, fixture_root=runtime_fixture_root)
 
     def collect_import_names(path: Path, module_name: str) -> set[str]:
         del path
@@ -26454,6 +26548,12 @@ def test_native_backend_compile_routes_stdlib_object_env(
         captured_envs.append(env)
         assert env is not None
         assert "MOLT_STDLIB_OBJ" in env
+        assert (
+            cmd[cmd.index("--target-triple") + 1]
+            == resolve_backend_artifact_contract(
+                target="native", emit_mode="bin"
+            ).target_triple
+        )
         assert "--ir-file" in cmd
         assert kwargs.get("input") is None
         output_path = Path(cmd[cmd.index("--output") + 1])
@@ -26503,7 +26603,6 @@ def test_native_backend_compile_routes_stdlib_object_env(
             cache_hit=False,
             cache_hit_tier=None,
         ),
-        target_triple=None,
         backend_daemon_config_digest=None,
         ir={"functions": []},
         json_output=False,
@@ -26606,7 +26705,6 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
             cache_hit_tier=None,
             stdlib_module_symbols_json='["builtins","sys"]',
         ),
-        target_triple=None,
         backend_daemon_config_digest=None,
         ir={"functions": []},
         json_output=False,
@@ -26705,7 +26803,6 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
             cache_hit_tier=None,
             stdlib_module_symbols_json=None,
         ),
-        target_triple=None,
         backend_daemon_config_digest=None,
         ir={"functions": []},
         json_output=False,
@@ -26808,7 +26905,6 @@ def test_backend_compile_stages_one_shot_output_into_cache(
             cache_hit=False,
             cache_hit_tier=None,
         ),
-        target_triple=None,
         backend_daemon_config_digest=None,
         entry_module="pkg.app",
         ir={"functions": []},
@@ -26939,7 +27035,6 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
             cache_hit=False,
             cache_hit_tier=None,
         ),
-        target_triple=None,
         backend_daemon_config_digest="digest123",
         entry_module="pkg.app",
         ir={"functions": [{"name": "heavy"}]},
@@ -27073,7 +27168,6 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
             cache_hit=False,
             cache_hit_tier=None,
         ),
-        target_triple=None,
         backend_daemon_config_digest="digest123",
         entry_module="pkg.app",
         ir={"functions": [{"name": "heavy"}]},
@@ -27196,7 +27290,6 @@ def test_execute_backend_compile_does_not_retry_after_full_daemon_request(
             cache_hit=False,
             cache_hit_tier=None,
         ),
-        target_triple=None,
         backend_daemon_config_digest="digest123",
         entry_module="pkg.app",
         ir={"functions": [{"name": "heavy"}]},
@@ -27305,7 +27398,6 @@ def test_execute_backend_compile_fails_closed_after_daemon_failure(
             cache_hit=False,
             cache_hit_tier=None,
         ),
-        target_triple=None,
         backend_daemon_config_digest="digest123",
         entry_module="pkg.app",
         ir={"functions": [{"name": "heavy"}]},
@@ -27412,7 +27504,6 @@ def test_execute_backend_compile_verbose_prints_only_fresh_daemon_log(
             cache_hit=False,
             cache_hit_tier=None,
         ),
-        target_triple=None,
         backend_daemon_config_digest="digest123",
         entry_module="pkg.app",
         ir={"functions": [{"name": "changed"}]},
@@ -27500,7 +27591,6 @@ def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
             cache_hit=False,
             cache_hit_tier=None,
         ),
-        target_triple=None,
         backend_daemon_config_digest="digest123",
         entry_module="pkg.app",
         ir={"functions": [{"name": "heavy"}]},
@@ -28215,7 +28305,6 @@ def test_start_backend_daemon_rejects_overlong_unix_socket_paths(
         socket_path,
         cargo_profile="dev-fast",
         project_root=tmp_path,
-        target_triple=None,
         config_digest=None,
         startup_timeout=2.0,
         json_output=True,
@@ -31427,7 +31516,6 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
         cache_enabled=True,
         ir=tiny_ir,
         target="native",
-        target_triple=None,
         profile="release",
         runtime_cargo_profile="release",
         backend_cargo_profile="release",
@@ -31444,6 +31532,9 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
     setup_split = cli_backend_cache_setup._prepare_backend_cache_setup(
         backend_bin=tmp_path / "molt-backend",
         emit_mode="bin",
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin"
+        ),
         output_artifact=tmp_path / "dummy_split.a",
         **common,
     )
@@ -31451,6 +31542,9 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
     setup_mono = cli_backend_cache_setup._prepare_backend_cache_setup(
         backend_bin=tmp_path / "molt-backend",
         emit_mode="obj",
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj"
+        ),
         output_artifact=tmp_path / "dummy_mono.o",
         **common,
     )
@@ -31464,9 +31558,17 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
     )
 
 
+@pytest.mark.parametrize(
+    "requested_target",
+    [None, " X86_64-UNKNOWN-LINUX-GNU ", "aarch64-apple-darwin"],
+)
 def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requested_target: str | None
 ) -> None:
+    monkeypatch.setattr(
+        "molt.cli.native_link_plan._host_target_triple",
+        lambda **_kwargs: "x86_64-unknown-linux-gnu",
+    )
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "ambient-cache"))
     explicit_cache = tmp_path / "explicit-cache"
     tiny_ir: dict = {
@@ -31492,7 +31594,9 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
         cache_enabled=True,
         ir=tiny_ir,
         target="native",
-        target_triple=None,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin", target_triple=requested_target
+        ),
         profile="dev",
         runtime_cargo_profile="dev-fast",
         backend_cargo_profile="dev-fast",
@@ -31512,11 +31616,27 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
     assert setup.stdlib_object_path is not None
     assert setup.cache_path.parent == explicit_cache
     assert setup.stdlib_object_path.parent == explicit_cache
+    expected_target = (
+        requested_target.strip().lower()
+        if requested_target is not None
+        else "x86_64-unknown-linux-gnu"
+    )
+    assert setup.artifact_contract.target_triple == expected_target
+    assert setup.stdlib_object_manifest is not None
+    assert json.loads(setup.stdlib_object_manifest)["target_triple"] == expected_target
 
 
+@pytest.mark.parametrize(
+    "requested_target",
+    [None, " X86_64-UNKNOWN-LINUX-GNU ", "aarch64-apple-darwin"],
+)
 def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_cache_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requested_target: str | None
 ) -> None:
+    monkeypatch.setattr(
+        "molt.cli.native_link_plan._host_target_triple",
+        lambda **_kwargs: "x86_64-unknown-linux-gnu",
+    )
     monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "ambient-cache"))
     explicit_cache = tmp_path / "explicit-cache"
     tiny_ir: dict = {
@@ -31542,7 +31662,9 @@ def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_c
         cache_enabled=False,
         ir=tiny_ir,
         target="native",
-        target_triple=None,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin", target_triple=requested_target
+        ),
         profile="dev",
         runtime_cargo_profile="dev-fast",
         backend_cargo_profile="dev-fast",
@@ -31562,10 +31684,17 @@ def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_c
     assert setup.stdlib_object_path is not None
     assert setup.stdlib_object_path.parent == explicit_cache
 
-
-# ---------------------------------------------------------------------------
-# C2.2  Link fingerprint hashes stdlib partition artifact contents
-# ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # C2.2  Link fingerprint hashes stdlib partition artifact contents
+    # ---------------------------------------------------------------------------
+    expected_target = (
+        requested_target.strip().lower()
+        if requested_target is not None
+        else "x86_64-unknown-linux-gnu"
+    )
+    assert setup.artifact_contract.target_triple == expected_target
+    assert setup.stdlib_object_manifest is not None
+    assert json.loads(setup.stdlib_object_manifest)["target_triple"] == expected_target
 
 
 def test_link_fingerprint_changes_when_stdlib_artifact_content_changes(

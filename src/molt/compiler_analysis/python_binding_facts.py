@@ -15,10 +15,17 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Final, Literal, Mapping, TypeAlias
 
 from molt.compiler_analysis.literal_identity import literal_identity_key
+from molt.compiler_analysis.python_value_identity import (
+    IdentityMask,
+    PythonIdentity,
+    identity_fact_is_exact,
+    identity_fact_may_be,
+)
 from molt.compiler_analysis.python_builtin_shapes import BUILTIN_SHAPE_NAMES
 from molt.compiler_analysis.python_effects_generated import EffectMask
 from molt.compiler_analysis.python_source_keys import python_node_source_key
 from molt.compiler_analysis.static_truth import (
+    DeferredExecution,
     StaticExpressionResult,
     UNKNOWN_EXPRESSION_RESULT,
     iterable_element_result,
@@ -29,71 +36,7 @@ if TYPE_CHECKING:
     from molt.compiler_analysis.python_imports import ModuleImportFlow
 
 
-class PythonIdentity(IntFlag):
-    """Compiler-relevant runtime identities.
-
-    ``OTHER`` and ``UNBOUND`` are alternatives, not identities.  A fact is exact
-    only when it contains one non-sentinel bit and neither sentinel.
-    """
-
-    IMPORTLIB_MODULE = 1 << 0
-    IMPORTLIB_IMPORT_MODULE = 1 << 1
-    IMPORTLIB_MACHINERY_MODULE = 1 << 2
-    MODULE_SPEC_CLASS = 1 << 3
-    MODULE_SPEC_INSTANCE = 1 << 4
-    BUILTINS_MODULE = 1 << 5
-    BUILTINS_IMPORT = 1 << 6
-    SYS_MODULE = 1 << 7
-    SYS_MODULES = 1 << 8
-    INSPECT_MODULE = 1 << 9
-    INSPECT_CURRENTFRAME = 1 << 10
-    CURRENT_MODULE = 1 << 11
-    CURRENT_GLOBALS = 1 << 12
-    CURRENT_LOCALS = 1 << 13
-    CURRENT_FRAME = 1 << 14
-    BUILTIN_GLOBALS = 1 << 15
-    BUILTIN_LOCALS = 1 << 16
-    BUILTIN_VARS = 1 << 17
-    BUILTIN_SETATTR = 1 << 18
-    BUILTIN_EVAL = 1 << 19
-    BUILTIN_EXEC = 1 << 20
-    USER_FUNCTION = 1 << 21
-    USER_CLASS = 1 << 22
-    INERT_VALUE = 1 << 23
-    IMPORTLIB_UTIL_MODULE = 1 << 24
-    IMPORTLIB_FIND_SPEC = 1 << 25
-    TYPING_MODULE = 1 << 26
-    STATIC_FALSE = 1 << 27
-    INTRINSICS_MODULE = 1 << 28
-    INTRINSICS_REQUIRE = 1 << 29
-    OTHER = 1 << 30
-    UNBOUND = 1 << 31
-    GLOBALS_SETITEM = 1 << 32
-    GLOBALS_DELITEM = 1 << 33
-    BUILTIN_BOOL = 1 << 34
-    BUILTIN_INT = 1 << 35
-    BUILTIN_FLOAT = 1 << 36
-    BUILTIN_COMPLEX = 1 << 37
-    BUILTIN_STR = 1 << 38
-    BUILTIN_BYTES = 1 << 39
-    BUILTIN_BYTEARRAY = 1 << 40
-    BUILTIN_TUPLE = 1 << 41
-    BUILTIN_LIST = 1 << 42
-    BUILTIN_SET = 1 << 43
-    BUILTIN_FROZENSET = 1 << 44
-    BUILTIN_DICT = 1 << 45
-    BUILTIN_RANGE = 1 << 46
-    BUILTIN_LEN = 1 << 47
-    BUILTIN_OPEN = 1 << 48
-
-
-IdentityMask: TypeAlias = int
 PythonImportCallKind: TypeAlias = Literal["import_module", "dunder_import"]
-NO_IDENTITIES: Final[IdentityMask] = 0
-OTHER_IDENTITY: Final[IdentityMask] = int(PythonIdentity.OTHER)
-UNBOUND_IDENTITY: Final[IdentityMask] = int(PythonIdentity.UNBOUND)
-UNKNOWN_IDENTITY: Final[IdentityMask] = OTHER_IDENTITY | UNBOUND_IDENTITY
-_SENTINEL_IDENTITIES: Final[IdentityMask] = OTHER_IDENTITY | UNBOUND_IDENTITY
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +88,8 @@ class PythonIterationFact:
     empty: bool = False
     mutable: bool = True
     release_effects: EffectMask = 0
+    deferred_execution: frozenset[DeferredExecution] = frozenset()
+    module_metadata_effects: EffectMask = 0
 
     @classmethod
     def from_result(
@@ -177,7 +122,17 @@ class PythonIterationFact:
                     strings.add(str(item.result.value))
                 else:
                     strings_known = False
-        element_result = iterable_element_result(result) or UNKNOWN_EXPRESSION_RESULT
+        element_result = iterable_element_result(result)
+        if element_result is None:
+            # An owner is not its yielded item. Only possible namespace access
+            # crosses the fallback; a wholly unknown projection is canonical.
+            element_result = (
+                StaticExpressionResult(exposes_module_globals=True)
+                if result.exposes_module_globals
+                else UNKNOWN_EXPRESSION_RESULT
+            )
+        elif element_result == UNKNOWN_EXPRESSION_RESULT:
+            element_result = UNKNOWN_EXPRESSION_RESULT
         return cls(
             effects=effects,
             element_strings=PythonStringAlternatives(frozenset(strings))
@@ -197,6 +152,9 @@ class PythonIterationFact:
                 "file_bytes",
             },
             release_effects=release_effects,
+            deferred_execution=frozenset(
+                ref for ref in result.deferred if ref.phase in {"resume", "escape"}
+            ),
         )
 
     def merge(self, other: PythonIterationFact) -> PythonIterationFact:
@@ -214,6 +172,10 @@ class PythonIterationFact:
             empty=self.empty and other.empty,
             mutable=self.mutable or other.mutable,
             release_effects=self.release_effects | other.release_effects,
+            deferred_execution=self.deferred_execution | other.deferred_execution,
+            module_metadata_effects=(
+                self.module_metadata_effects | other.module_metadata_effects
+            ),
         )
 
 
@@ -248,6 +210,12 @@ class PythonMember(IntFlag):
     BUILTINS_RANGE = 1 << 25
     BUILTINS_LEN = 1 << 26
     BUILTINS_OPEN = 1 << 27
+    BUILTINS_GLOBALS = 1 << 28
+    BUILTINS_LOCALS = 1 << 29
+    BUILTINS_VARS = 1 << 30
+    BUILTINS_SETATTR = 1 << 31
+    BUILTINS_EVAL = 1 << 32
+    BUILTINS_EXEC = 1 << 33
 
 
 MemberMask: TypeAlias = int
@@ -271,31 +239,31 @@ _BUILTIN_SHAPE_NAMES_BY_IDENTITY: Final[Mapping[IdentityMask, str]] = MappingPro
 )
 
 
-def exact_identity(identity: PythonIdentity) -> IdentityMask:
-    return int(identity)
+def current_globals_dict_is_exact(
+    identities: IdentityMask, result: StaticExpressionResult
+) -> bool:
+    """Shared namespace mutation and strict metadata admission predicate."""
+    return identities == int(PythonIdentity.CURRENT_GLOBALS) and result.kind == "dict"
 
 
-def possible_identity(identity: PythonIdentity) -> IdentityMask:
-    return int(identity) | OTHER_IDENTITY
+def globals_mutation_call_identity(
+    node: ast.Call, identities: IdentityMask
+) -> PythonIdentity | None:
+    """Admit fixed arguments to a possible canonical namespace dict method.
 
-
-def identity_fact_is_exact(mask: IdentityMask, identity: PythonIdentity) -> bool:
-    return mask == int(identity)
-
-
-def identity_fact_may_be(mask: IdentityMask, identity: PythonIdentity) -> bool:
-    return bool(mask & int(identity))
-
-
-def identity_fact_is_proven(mask: IdentityMask) -> bool:
-    known = mask & ~_SENTINEL_IDENTITIES
-    return not (mask & _SENTINEL_IDENTITIES) and known.bit_count() == 1
-
-
-def identity_fact_names(mask: IdentityMask) -> tuple[str, ...]:
-    return tuple(
-        identity.name.lower() for identity in PythonIdentity if mask & int(identity)
-    )
+    The returned alternative is not an exact receiver or callable proof.
+    Execution transfer separately requires exact identity; discovery retains
+    this alternative beside the unknown callable/receiver obligation.
+    """
+    if node.keywords or any(isinstance(arg, ast.Starred) for arg in node.args):
+        return None
+    for identity, arity in (
+        (PythonIdentity.GLOBALS_SETITEM, 2),
+        (PythonIdentity.GLOBALS_DELITEM, 1),
+    ):
+        if identities & int(identity) and len(node.args) == arity:
+            return identity
+    return None
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -319,6 +287,34 @@ PythonNameLookup: TypeAlias = Literal[
 
 
 @dataclass(frozen=True, slots=True)
+class PythonModuleMetadataProof:
+    """Binding storage custody shared by reads, import calls and statements."""
+
+    activation_namespace_stable: bool = False
+    callback_clean: bool = False
+    pristine_names: frozenset[str] = frozenset()
+
+    @property
+    def admits_current_namespace(self) -> bool:
+        return self.activation_namespace_stable and self.callback_clean
+
+    def admits_loader_borrow(self, name: str) -> bool:
+        return self.admits_current_namespace and name in self.pristine_names
+
+    def intersect(self, other: PythonModuleMetadataProof) -> PythonModuleMetadataProof:
+        if self is other:
+            return self
+        return PythonModuleMetadataProof(
+            self.activation_namespace_stable and other.activation_namespace_stable,
+            self.callback_clean and other.callback_clean,
+            self.pristine_names & other.pristine_names,
+        )
+
+
+NO_MODULE_METADATA_PROOF = PythonModuleMetadataProof()
+
+
+@dataclass(frozen=True, slots=True)
 class PythonExpressionFact:
     """Expression identity plus source-point name storage/specialization facts.
 
@@ -331,17 +327,22 @@ class PythonExpressionFact:
 
     node: PythonNodeKey
     scope_id: int
-    identities: IdentityMask
     effects: EffectMask
     static_value: PythonStaticValue = field(default=None, compare=False)
     _static_identity: tuple[object, ...] = field(init=False, repr=False)
     binding_invalidated: bool = False
     binding_is_bound: bool = False
-    result: StaticExpressionResult = UNKNOWN_EXPRESSION_RESULT
+    # Executing this expression may observe the namespace even if its result
+    # does not expose the globals mapping (for example, a captured callable).
     module_namespace_observable: bool = False
+    result: StaticExpressionResult = UNKNOWN_EXPRESSION_RESULT
     truth_effects: EffectMask = 0
     name_lookup: PythonNameLookup = "none"
     binding_capture_required: bool = False
+    # Binding-flow proof at this read, independent of lexical import state.
+    module_metadata: PythonModuleMetadataProof = NO_MODULE_METADATA_PROOF
+    deferred_execution: frozenset[DeferredExecution] = frozenset()
+    module_metadata_effects: EffectMask = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -349,12 +350,13 @@ class PythonExpressionFact:
         )
 
     @property
+    def identities(self) -> IdentityMask:
+        return self.result.identities
+
+    @property
     def exposes_module_globals(self) -> bool:
-        """A mapping result or an observed container can publish module custody."""
-        return bool(self.identities & int(PythonIdentity.CURRENT_GLOBALS)) or (
-            self.result.kind in {"tuple", "list", "set", "dict"}
-            and self.module_namespace_observable
-        )
+        """This value can publish the globals mapping, directly or in contents."""
+        return self.result.exposes_module_globals
 
     @property
     def class_namespace_lookup(self) -> bool:
@@ -669,6 +671,9 @@ class PythonStatementFact:
     module_namespace_observable: bool
     completions: PythonCompletion
     iteration: PythonIterationFact | None = None
+    module_metadata_at_entry: PythonModuleMetadataProof = NO_MODULE_METADATA_PROOF
+    deferred_execution: frozenset[DeferredExecution] = frozenset()
+    module_metadata_effects: EffectMask = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -685,6 +690,8 @@ class PythonCallSiteFact:
     callee_retention_safe: bool
     maybe_invalidated_members_after: MemberMask
     definitely_invalidated_members_after: MemberMask
+    # Snapshot after all arguments/expansions, before invocation and cleanup.
+    module_metadata_at_invocation: PythonModuleMetadataProof = NO_MODULE_METADATA_PROOF
 
     def callee_is(self, identity: PythonIdentity) -> bool:
         return identity_fact_is_exact(self.callee_identities, identity)
@@ -915,10 +922,7 @@ __all__ = [
     "ALL_INVALID_MEMBERS",
     "BUILTIN_SHAPE_IDENTITIES",
     "BUILTIN_SHAPE_MEMBERS",
-    "IdentityMask",
     "MemberMask",
-    "NO_IDENTITIES",
-    "OTHER_IDENTITY",
     "PythonBindingFacts",
     "PythonBindingIndex",
     "PythonBindingTelemetry",
@@ -926,7 +930,6 @@ __all__ = [
     "PythonCompletion",
     "PythonCompletionFlow",
     "PythonExpressionFact",
-    "PythonIdentity",
     "PythonImportCallKind",
     "PythonMember",
     "PythonNodeKey",
@@ -936,14 +939,8 @@ __all__ = [
     "PythonIterationFact",
     "PythonStringAlternatives",
     "PythonScopeFact",
-    "UNKNOWN_IDENTITY",
-    "UNBOUND_IDENTITY",
-    "exact_identity",
-    "identity_fact_is_exact",
-    "identity_fact_is_proven",
-    "identity_fact_may_be",
-    "identity_fact_names",
-    "possible_identity",
+    "current_globals_dict_is_exact",
+    "globals_mutation_call_identity",
     "python_static_value_key",
     "same_python_static_value",
 ]

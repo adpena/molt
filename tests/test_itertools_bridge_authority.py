@@ -17,7 +17,7 @@ def test_itertools_class_construction_has_one_runtime_authority() -> None:
         "pub(crate) fn alloc_itertools_class(", maxsplit=1
     )[1].split("#[cfg(test)]", maxsplit=1)[0]
     direct_class = direct.split("pub fn alloc_itertools_class(", maxsplit=1)[1].split(
-        "pub fn class_set_iter_next(", maxsplit=1
+        "pub fn alloc_kwd_mark(", maxsplit=1
     )[0]
     ffi_class = ffi.split('pub extern "C" fn molt_itertools_alloc_class(', maxsplit=1)[
         1
@@ -26,12 +26,18 @@ def test_itertools_class_construction_has_one_runtime_authority() -> None:
     assert canonical.count("pub(crate) fn alloc_itertools_class(") == 1
     assert "class_set_instance_shape_id(class_ptr, shape)" in canonical_class
     assert direct_class.count("crate::itertools_class::alloc_itertools_class(") == 1
-    assert ffi_class.count("alloc_itertools_class(_py, name, layout_size, shape)") == 1
+    assert ffi_class.count("crate::itertools_class::alloc_itertools_class(") == 1
     for duplicate_authority in (
         "alloc_class_obj(",
         "class_set_instance_shape_id(",
         "object_init_class_edge_unpublished(",
         "__molt_layout_size__",
+        "NativeCallableSpec::",
+        "dict_set_in_place(",
     ):
         assert duplicate_authority not in direct_class
         assert duplicate_authority not in ffi_class
+
+    for removed_setter in ("class_set_iter_next", "class_set_new"):
+        assert removed_setter not in direct
+        assert removed_setter not in ffi

@@ -3,6 +3,8 @@
 import sys
 import warnings
 
+from tkinter._support import _require_tk_callable
+
 from .constants import RAISED
 from . import (
     CallWrapper,
@@ -21,15 +23,18 @@ from . import (
     _normalize_tk_options,
     _normalize_trace_mode,
     _next_variable_name,
-    _TK_TEXT_TAG_BIND_REGISTER,
-    _TK_TEXT_TAG_BIND_UNREGISTER,
-    _TK_TRACE_ADD,
-    _TK_TRACE_CLEAR,
-    _TK_TRACE_INFO,
-    _TK_TRACE_REMOVE,
-    _TK_WIDGET_BIND_REGISTER,
-    _TK_WIDGET_BIND_UNREGISTER,
 )
+
+
+# Widget-specific wrapper custody belongs here, not to the aggregate parent.
+_TK_WIDGET_BIND_REGISTER = _require_tk_callable("widget_bind_register")
+_TK_WIDGET_BIND_UNREGISTER = _require_tk_callable("widget_bind_unregister")
+_TK_TEXT_TAG_BIND_REGISTER = _require_tk_callable("text_tag_bind_register")
+_TK_TEXT_TAG_BIND_UNREGISTER = _require_tk_callable("text_tag_bind_unregister")
+_TK_TRACE_ADD = _require_tk_callable("trace_add")
+_TK_TRACE_REMOVE = _require_tk_callable("trace_remove")
+_TK_TRACE_CLEAR = _require_tk_callable("trace_clear")
+_TK_TRACE_INFO = _require_tk_callable("trace_info")
 
 
 class Widget(Misc):

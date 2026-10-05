@@ -21,8 +21,8 @@ paths, `__init__` handling, covered namespace-package stubs/basics, a Rust
 import transaction for the active importlib/`builtins.__import__` runtime paths,
 ordinary source import payload lowering for the focused active paths,
 transaction-owned graph-proven `fromlist` child auto-import/binding for the
-covered native path, static package `__all__` child auto-import for source
-`from package import *`, CPython 3.12 package-context resolution for the covered
+covered native path, static package `__all__` child discovery for source
+`from package import *` and canonically identified call-form star requests, CPython 3.12 package-context resolution for the covered
 relative `builtins.__import__` cases, public resolver validation for
 `importlib.import_module` and `importlib.util.resolve_name`,
 `FileLoader`/`SourceFileLoader.load_module` execution through the Rust
@@ -219,14 +219,193 @@ effect projection does not carry a separate registry of pure callable names.
   unresolved expansion. Missing, excess, duplicate, and unexpected arguments
   remain ordinary runtime calls so their argument expressions execute and their
   binding `TypeError` can be caught; they do not request an imported module.
-  Calls with unresolved `*args`/`**kwargs` use the existing source/AST/catalog
-  custody of executable graph scans. Explicit module names are discovery
-  candidates only until runtime binding succeeds; expansion may change package,
-  level, or fromlist. Strict source-closure scans still require their dynamic
+  Calls with unresolved `*args`/`**kwargs`, dynamic `__import__` fromlists or
+  levels, and star fromlists use the existing source/AST/catalog custody of
+  executable graph scans. A known level and globals/package context remain
+  part of the base request even when its fromlist is dynamic, invalid or star:
+  level-one `child` in `pkg.entry` discovers `pkg.child`, never a bare `child`.
+  Explicit foreign metadata retains its own authority; unknown foreign metadata
+  does not acquire a lexical package fallback. Only unresolved binding or level
+  uses a bare-name candidate. Candidates remain separate from semantic imports
+  until runtime custody is established. Strict source-closure scans still require their dynamic
   import manifest. Argument expressions retain their own import edges in both
   cases. This classification applies to aliases and to `__import__`,
   `importlib.import_module`, and the scanner's `importlib.util.find_spec` calls;
   it grants no imports outside the admitted runtime catalog.
+  Import call identity comes from canonical binding facts, including aliases;
+  transaction or resolver spellings bound to arbitrary objects grant no import
+  authority. Helper forwarding and statement/call star collection share the
+  same scanner and request planner. Statically resolved call-form star bases
+  feed the existing live package `__all__` child expansion. A discovery-only
+  base keeps its expanded children in discovery rather than semantic imports.
+  Source requests and their cache carry explicit `dynamic_star_modules`
+  provenance; an ordinary import of the same base does not promote those
+  children. Cache entries lacking that projection are invalidated;
+  dynamic or mutated `__all__` remains outside this static expansion contract.
+  Both star projections come from the same cached source scan, with the same
+  resolved source path and custody admission. Runtime-support detection consumes
+  canonical possible call identities and completion reachability, including
+  conditional aliases. A possible globals()/locals()/vars() result retains its
+  canonical namespace alternative for lexical discovery only. Strict metadata
+  projection and callback-free globals mutation share the exact namespace plus
+  evaluated exact built-in `dict` admission predicate. Deferred `__globals__`,
+  `f_globals` and imported `globals` spellings confer no additional authority.
+  Bare builtins, imported builtins and canonical module members share the same
+  identity and mutation guards. Re-importing a member after callbacks or an
+  explicit replacement cannot restore exact identity. A possible no-argument
+  `inspect.currentframe` call retains a possible frame/globals discovery path
+  with arbitrary-Python effects; it supplies no strict metadata authority.
+  Explicit `__package__`/`__name__` global loads likewise borrow loader metadata
+  only from stable activations with callback-clean module metadata storage at
+  the read and import invocation. Both points must retain loader-pristine raw
+  storage: an unbound identity after deletion is not an untouched loader slot.
+  Deleted-slot tombstones survive joins and callback-domain growth. Captured
+  unknown loads cannot borrow metadata written or deleted by a later argument. Exact globals mappings are checked after all
+  arguments, before invocation: an earlier globals() capture does not freeze
+  metadata against later callbacks. Binding flow owns this storage predicate,
+  including absent-slot taint; import consumers do not classify callback syntax.
+  Lexical discovery twins retain their candidates separately. Proven explicit
+  metadata values remain authoritative in any scope. Namespace
+  provenance alone does not authorize `__setitem__`/`__delitem__` identity,
+  subscript publication, stored-argument retention, or bound-method cleanup:
+  a `FunctionType` activation can use a dictionary subclass. Module bootstrap
+  supplies its exact dictionary proof to eager descendant scopes through the
+  shared activation-namespace ownership fact, including classes and eager
+  comprehensions. Deferred activations and their eager descendants do not
+  inherit the bootstrap proof. Their unproven receivers retain descriptor,
+  mutation and release callbacks; class-local mappings are a separate owner.
+  Relative statements use the same binding-storage proof at statement entry
+  that exact current-globals calls use at invocation. Prior relative imports,
+  getters and arbitrary callbacks invalidate it conservatively, including when
+  no writer is visible in the source: shared references and `sys.modules` can
+  reach the metadata. This precision cost does not exclude external reflection
+  or justify a second callback classifier. Deferred statements retain lexical
+  source-dependency candidates, including projected source-state possibilities,
+  in the existing discovery fields and require exact source/AST/catalog custody
+  for execution. Local analysis records an explicit semantic or development
+  source-dependency purpose. Both full-depth tooling and eager lowering source
+  closures retain known source-state candidates in separate discovery rows when
+  callbacks or deferred activation prevent execution sealing. Unknown source
+  metadata still needs the existing unresolved-import count and explicit target
+  manifest; a lexical twin cannot replace that contract. Semantic local scans
+  and intrinsic status consume only proven metadata. Cache policy identities and
+  payloads preserve this separation. Eager traversal uses canonical lexical
+  regions, including branches, defaults, decorators and class bodies while
+  excluding deferred function/generator bodies and lazy annotations. External
+  native support-file discovery unions graph candidates before capturing file
+  custody; product execution still requires the exact source/AST/catalog gate.
+  The shared import planner owns both source-state and lexical discovery, with
+  their provenance retained separately. A known source branch remains a candidate
+  even beside an unknown or erroneous source branch. Candidate presence does not
+  establish completeness: the planner separately records whether every source
+  context resolved without an error or dynamic anchor. Local dependency closure
+  keeps partial source candidates in their original owner/fromlist groups and
+  retains unresolved diagnostics and obligations; lexical candidates cannot
+  fill those gaps. Product graph and external support-file discovery may
+  union both candidate classes while retaining their exact runtime custody gate.
+  Discovery never grants intrinsic status.
+  Source candidates and execution metadata are separate views of the same
+  canonical completion transfer. A callback-capable store can revoke execution
+  custody without deleting a source-declared package choice. That choice remains
+  accompanied by an unknown alternative: finalizers, descriptors and protocol
+  callbacks can select metadata not declared at the import site. Dictionary
+  replacement/deletion publishes its change before the previous value is released;
+  source candidates follow that order while preserving the callback obligation.
+  Discovery consumers request the candidate view explicitly; semantic-only
+  analyses do not compute it. Completeness uses canonical binding storage proofs
+  at metadata reads, import invocations, and import-statement entry. Missing or
+  revoked proofs retain an unknown alternative beside source candidates; runtime
+  catalog admission is a separate gate and is not a source-completeness input.
+  Exact evaluated scalar facts remain authoritative independently of namespace
+  storage. The candidate view reuses cached binding facts and has its own immutable
+  state map in that context projection. Discovery derives from the cached strict
+  context projection and adds one bounded source transfer, not another strict
+  transfer, binding fixpoint or traversal per import site. The source pass also
+  checks demand proofs when strict metadata uses the invariant-state fast path;
+  the shared core retains canonical assignment effects, including no-effect
+  stores, so their absence cannot invent callback uncertainty.
+  Explicit unknown writes and unresolved sibling branches retain
+  their diagnostics/manifest requirements. Statements and dynamic calls both
+  consume the candidate view without sealing it as runtime metadata. Binding,
+  local closure, and product scan cache schemas invalidate the older projection.
+  Eager and full-depth local analysis use the same final unresolved-import
+  validator. Candidate-only policies retain diagnostics. Complete tooling
+  consumers explicitly select `unknown_relative_sources="local_inventory"`:
+  a canonical unknown package/spec/name anchor on a literal relative statement
+  or import call becomes a typed source-coverage obligation, separate from
+  semantic requests and nonliteral import diagnostics. Definite invalid operands
+  remain errors; dynamic names/levels/fromlists and argument expansions retain
+  their exact checked manifest contract. A manifest's declared count is never
+  discounted because an inventory covers local bytes.
+  The existing local resolver owns the complete inventory under admitted search
+  roots and the consumer's allowed prefix. It follows its forward shadowing,
+  regular-package precedence and namespace search locations, retains aliases,
+  and rejects enumeration errors or cyclic directory topology. Suffix-only
+  matching is insufficient: any local owner may execute before a requested
+  suffix fails, even when that owner is a plain module. Relative level does not
+  restrict an unknown anchor to the source file's lexical ancestors.
+  Inventory membership, root order, module aliases and namespace topology are
+  captured afresh per operation, together with exact source bytes. Persisted
+  analysis stores symbolic obligations, never a stale expanded inventory. One
+  complete inventory satisfies all such obligations in that traversal. Files
+  included only as speculative owners are hashed without parsing or recursively
+  analyzing them; ordinary reached graph sources retain syntax/error validation
+  and checked dynamic manifests. Deferred bodies remain outside eager analysis.
+  Policy identity and graph schema separate this coverage from candidate-only
+  and semantic queries, including warm-cache use. Coverage cannot authorize
+  execution metadata, intrinsic status, or a guest host-Python fallback.
+  Development lowering fingerprints remain narrow when every anchor is known.
+  Unknown relative anchors conservatively widen invalidation to the complete
+  admitted local domain, including backend, guest stdlib and GPU Python bytes
+  under `molt`. This incurs fresh topology enumeration and content capture; no
+  speedup is implied. Installed semantic snapshots instead consume the existing
+  admitted whole compiler-generation identity, with a distinct frontend semantic
+  cache namespace, and avoid the development import graph. Verified generation
+  identity proves tooling inputs, never mutable runtime package metadata.
+  Namespace method identity transports possible `__setitem__`/`__delitem__`
+  alternatives even when globals lookup or a replaceable activation can return
+  another mapping. One argument-shape admission serves binding and source
+  transfer. Only exact receiver/callable proof authorizes execution mutation;
+  source projection keeps a possible publication with an unknown alternative.
+  Exact builtin sequence indexing and slicing share normal-result and protocol
+  facts across binding, expression and syntax-effect projections. Unknown index
+  or slice-component protocols remain callback-capable; dictionary key lookup
+  remains conservative. Retiring evaluated operands can run finalizers even when
+  the selected scalar is exact. Index evaluation expires captured mutable-content
+  facts before selection, and selecting a mutable child never grants fresh-owner
+  custody. These facts prevent inert literal indexing from revoking metadata
+  proof while preserving callback obligations for the full subscription path.
+  Source discovery records metadata scalar reads at their evaluation points.
+  An explicit dictionary keeps those captured field values through later
+  argument effects, including nested literal unpacking; a real `globals()`
+  mapping keeps live invocation-time contents. One dictionary transfer serves
+  strict values and source alternatives, and both source consumers use the same
+  captured-operand projector. A missing metadata name is not a captured absent
+  dictionary member and cannot invent a `__name__` fallback. A possible current-
+  globals identity contributes a candidate and an unknown operand alternative;
+  only an exact identity exhausts that operand. Dictionary keys consume canonical
+  expression-result facts, including clean bound strings. Unknown keys can
+  replace metadata and invalidate completeness in both strict and source views;
+  proven exact non-string keys cannot select a metadata member. Later explicit
+  fields restore only the fields they overwrite. None of these
+  source candidates relaxes exact source/path/AST/catalog execution custody.
+  Discovery never authorizes replacing runtime globals/package operands with
+  loader metadata. Helper forwarding retains the original import-call fact;
+  the helper invocation cannot certify different captured operands or a
+  deferred function's replaceable activation globals. Explicit None and other proven falsy scalar fromlists skip child
+  processing; they are not confused with unknown source-point facts.
+  Negative levels, missing packages/globals and other call-resolution errors
+  remain runtime operations under exact source/path/AST/catalog custody, so
+  their exceptions stay catchable. Canonical expression results retain exact
+  builtin unary numeric values, including through clean bindings and helper
+  arguments. Import levels distinguish bool/int values, known type errors and
+  unknown index callbacks; metadata retains known invalid values through current
+  and foreign globals. Both graph and strict local-import consumers use these
+  facts. Unknown, rebound and callback-dependent values stay unknown. Graph discovery records the custody need
+  without fabricating a successful import. Relative statements whose runtime
+  resolution raises no-parent or beyond-top ImportError use that same exact
+  custody gate and existing guest transaction. Strict scans still reject missing
+  or mismatched custody; other statement resolution errors remain build-fatal.
 - Build-time graph discovery separates module-init closure from future runtime
   behavior. Graph seeding does not grant full-depth scan authority: application,
   declared static, spawn, and native-support roots are full-scanned; profile core
@@ -246,9 +425,11 @@ effect projection does not carry a separate registry of pure callable names.
   inclusion as an executable possibility and exclusion only as proven deadness,
   never as a normal-path prediction.
 - Dynamic relative-import discovery retains lexical candidates separately from
-  semantic import edges. Only classified unknown package/spec/name anchors may
-  defer to runtime custody; unrelated resolution errors still fail closed, and
-  foreign globals or explicit package arguments never acquire lexical fallback
+  semantic import edges. Statement imports defer classified unknown
+  package/spec/name anchors and the no-parent/beyond-top errors under exact
+  custody; their other resolution errors still fail closed. Call-resolution
+  errors use the exact custody rule above. Foreign
+  globals or explicit package arguments never acquire lexical fallback
   semantics. Source requests carry the runtime-anchor requirement into live
   completion, precomputed scans, and graph merges. Strict persisted requests
   never carry runtime custody. Custody reaches
@@ -443,6 +624,15 @@ effect projection does not carry a separate registry of pure callable names.
   preserves existing package exports, converts an absent requested child into
   the final `IMPORT_FROM` `ImportError`, and propagates dependency import errors
   without broad suppression.
+- The shared import transaction evaluates `fromlist` truth once. A falsey
+  fromlist selects the ordinary top-level return without inspecting package
+  attributes. For a truthy fromlist, only observable `__path__` presence admits
+  package child preparation; falsey values still count as present, dynamic
+  lookup is honored, and non-`AttributeError` failures propagate. Ordinary
+  modules return without iterating or validating the fromlist or `__all__`.
+  Their `MODULE_IMPORT_STAR` operation owns indexed `__all__` reads, error
+  precedence, and partial destination writes. Package preparation retains its
+  distinct iterator protocol before that same indexed binding operation.
 - Source `from package import *` with a statically proven package `__all__`
   extends the build-time import scan with resolvable child modules named by that
   `__all__`, records those imports in persisted import-scan/module-analysis
@@ -452,7 +642,12 @@ effect projection does not carry a separate registry of pure callable names.
   runtime-visible: unresolved names are not added to the graph and the final
   star binding raises the normal CPython-shaped missing-attribute error.
 - Relative `builtins.__import__` package-context calculation is transaction
-  owned for the covered CPython 3.12 cases. Non-dict `globals` raises
+  owned for the covered CPython 3.12 cases. Omitted `globals` retains the internal
+  MISSING default and raises KeyError for absent `__name__` at relative levels;
+  explicit None is supplied and raises TypeError. The text signature still shows
+  `globals=None`, matching CPython's presentation of its NULL C default.
+  The C-API entry admits NULL through its native-object resolver; that boundary
+  remains separate from managed-handle transaction binding. Non-dict `globals` raises
   `TypeError`; non-`None` `__package__` must be a string; `__package__ is None`
   consults `__spec__.parent`, preserves missing-parent `AttributeError`, and
   validates parent type; the fallback requires string `__name__`, treats a
@@ -540,3 +735,151 @@ Import errors must include:
   compile-time graph discovery separate.
 - Remaining namespace-package edge-case policy.
 - Editable installs and dev-mode behaviors.
+
+
+### Selected value provenance
+
+The shared expression-result graph transports canonical Python value identity
+independently of normal-result shape. An unknown-shaped importer remains an
+importer when selected, unpacked, iterated, or returned by a supported builtin
+method. Joins retain alternatives; source facts, binding storage, publication,
+and result selection use the same identity vocabulary. Value exposure of the
+globals mapping travels with result graphs, including joins or publication
+that erase contents. Expression facts project identity and value exposure
+from that graph. Exposure from every retained display child is accumulated
+before uncertain unpacking erases the concrete contents.
+
+Namespace observation during evaluation is a separate source event. Capturing
+`globals` or an exact bound globals mutation method can observe the namespace
+without publishing the globals mapping as its result. The observation event
+remains on expression and statement facts, including merged execution paths;
+it is never stamped onto returned-value exposure. Storing a mapping or aggregate
+transports exposure; that alone does not prove a metadata mutation. Passing the
+value to foreign code can grant access to the caller's globals and must invalidate
+closed import-state custody. Invalidation keeps this possible exposure while
+removing exact value, shape, ownership, and lifetime proofs, including through
+binding taint, deferred captures, and subsequent iteration. The same result graph
+retains possible canonical identities of previously observed elements alongside
+the unknown alternative. This is candidate provenance, never an exact value or
+a dispatch/elision proof. Joining an unknown alternative cannot erase those
+candidates. A definite replacement uses the new value's own provenance.
+Rooted globals retirement is transported through immutable containers and
+publication; it does not protect mutable contents or create allocation ownership.
+
+Eager list/set comprehension results carry their element facts. Dictionary
+comprehensions carry iterated key facts and separately retain value exposure.
+Generator creation does not execute the body: its result graph carries only
+conservative yielded exposure, with unknown identity/shape and callback-capable
+iteration/release. It never captures creation-time body values as future yields.
+
+Every comprehension generator uses the shared completion-loop fixpoint: a
+rejected filter takes the current generator's backedge, and nested iterables
+execute inside the enclosing generator's body. Element, condition, call and
+iteration facts join all visits before truth or dependency pruning. Empty
+iterables skip targets, filters and payloads; generator bodies do not publish
+creation-time writes, exception observations or closure-history states.
+Strict and source import-state projections consume the same completed iteration
+and target effects in execution order, including iterator release.
+Locationless comprehension wrappers use their target-to-final-operand span in
+the canonical source-key authority. Nested and sibling clauses remain distinct
+after reparsing, so an outer clause cannot change an inner clause's emptiness,
+element, callback or release facts.
+
+Storing a namespace-exposing value selects the same strict state projection
+whether or not unrelated control flow is present. Storage itself leaves import
+metadata unchanged. Escape, member stores/deletes and in-place operations on an
+exposing value invalidate metadata through their canonical call/target effects;
+frontend relative-import lowering must retain a runtime transaction after such
+an operation instead of freezing the original package anchor.
+
+Value provenance does not prove ownership, callback freedom, or release safety.
+Borrowed method results and selected aliases do not create fresh allocation
+custody. Mutable contents expire at the existing object-write, callback, and
+operand-retirement boundaries while captured object identity remains intact.
+The exact globals-dictionary gate still separately requires activation and
+receiver-shape evidence; namespace provenance alone cannot admit dict methods.
+
+Truth and eager-dependency consumers use the provider's completed subscript
+result, never reconstruct it from the pre-index owner fact. Partial providers
+and syntax-only fallbacks expire mutable owner contents when index evaluation
+is not proven inert. The binding cache schema, persisted local graph schema,
+and product import-scan schema invalidate pre-provenance results together.
+
+
+Deferred execution provenance is part of the canonical expression-result graph.
+Direct invocation/resumption is separate from a value contained in an aggregate:
+creating a generator, capturing a globals alias in a function, or storing either
+does not execute its body. Source-owned execution candidates survive publication,
+joins, widening, selection and iteration without claiming an exact callable or
+value shape. Completed lexical-scope mutation effects are propagated once through
+a finite dependency worklist and sealed onto the existing expression, statement
+and iteration facts. Strict lowering, graph discovery and runtime-custody scans
+consume those facts; no second mutator-name or function-body syntax registry is
+permitted. Starred positional and keyword expansions use the shared argument
+schedule and evaluated argument provenance, including stored aggregate aliases.
+
+Canonical exact scalar kinds govern ordinary and augmented operator callbacks
+independently of compile-time values. Both use the same successful-result kind
+transfer, so repeated arithmetic and loop-carried scalar joins retain callback
+freedom. Type transfer never evaluates arithmetic speculatively and never removes
+runtime errors, overflow, allocation or evaluation. Addition folding is bounded
+before allocation to 4096 sequence elements or 4096 integer bits; exceeding the
+budget retains the exact kind and forgets only the constant. The shared result
+record carries a finite set of exact scalar alternatives when one kind is not
+known, such as integer powers with unknown exponent sign or mixed numeric joins.
+Unary and binary transfers preserve this proof across subsequent operations;
+an unknown or subclass alternative erases it. Callback-driven binding replacement
+still invalidates representation facts together with values.
+
+Both operator forms execute operand escape references only at a boundary that
+can invoke their protocols, including reachable contained values. Subclass,
+reflected and in-place dispatch retain their callback capability. The actual
+post-callback target storage governs retirement; namespace mutation is transported
+separately. Scalar arithmetic preserves a closed relative-import anchor, while a
+module-defined operator that changes metadata requires the same runtime
+transaction as a directly invoked deferred metadata writer.
+
+The operation's own effects select its deferred operands. Inherited child
+effects do not turn inert storage into execution and are never replayed as a
+second state transfer after the child completes. Member reads, subscriptions,
+lambda defaults and suspension wrappers obey the same operation-local boundary
+as calls and operators. A completed named assignment therefore remains clean
+until a subsequent operation can actually replace it. Hashing, comparison,
+membership, indexing, representation, mapping expansion, member stores/deletes,
+pattern matching and reference retirement retain possible contained values
+when their protocol can reach them. Explicit invocation and generator resumption
+remain distinct from ordinary object protocol dispatch. Store and release
+dependencies travel with the existing statement observations and are sealed by
+the same lexical worklist as expression and iteration dependencies.
+
+Conditional expressions join both possible callable results. Surviving source
+callable candidates do not prove complete provenance after callback rebinding;
+an incomplete module callable depends on the module's escaped summary. A
+current-module value exposes its namespace just as a globals mapping does.
+`setattr` can dismiss a metadata write only when its evaluated owner excludes
+the current module, or its literal attribute excludes metadata. Aggregate
+namespace exposure applies to function-body item stores and deletes too.
+
+Class namespace publication, inherited bases and metaclass arguments retain
+source execution candidates. Preparation, construction and descriptor creation
+consume them at their respective callback boundaries. Ordinary stored function
+descriptors carry an empty attribute-lookup hook set; reading a bound method
+does not execute its body. Custom attribute hooks and descriptor values remain
+separate lookup candidates. Unknown class preparation cannot seal constructor
+or member provenance. Skipping deferred-body analysis leaves those references
+unresolved and conservative, including references reachable through a class.
+
+Yield classification belongs to the compiler-analysis lexical authority. The
+dependency summary records it during the existing lexical walk and frontend
+consumers import the canonical helpers directly. Binding facts schema 54, local
+source graph schema 18 and product import scan schema 23 invalidate prior
+cached projections of these provenance and dispatch rules.
+
+Every completed metadata callback or escape summary uses one import-state
+projection. Semantic admission forgets the anchor; source discovery retains
+explicit candidates beside an unknown alternative. This applies to expression,
+statement, iteration, target-completion and argument-expansion summaries.
+Explicit opaque metadata assignment still replaces its former candidate.
+Unknown truth callbacks cannot establish an exact scalar loop input, and an
+unknown loop predicate cannot establish the first iteration's package anchor.
+Source candidates and backedge observations never authorize static imports.

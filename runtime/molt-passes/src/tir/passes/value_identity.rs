@@ -18,7 +18,7 @@ use crate::tir::values::ValueId;
 /// value-forwarding SimpleIR spelling. Every operand must name the same source
 /// value, so multi-operand stack-machine spellings such as `Copy(v, v)` remain
 /// transparent while opaque or aggregating Copy fallbacks fail closed.
-pub(crate) fn copy_value_source(op: &TirOp) -> Option<ValueId> {
+pub fn copy_value_source(op: &TirOp) -> Option<ValueId> {
     if op.opcode != OpCode::Copy || op.results.len() != 1 || op.operands.is_empty() {
         return None;
     }
@@ -38,6 +38,40 @@ pub(crate) fn copy_value_source(op: &TirOp) -> Option<ValueId> {
         .iter()
         .all(|&operand| operand == src)
         .then_some(src)
+}
+
+/// The source whose heap identity and ownership root a result preserves.
+/// This is not permission to erase an operation: runtime guards still read
+/// their expected tag, may reject it, and count mismatches when profiling is on.
+/// A mismatch returns the source unchanged and never proves its type. Their
+/// declared shape selects two reads; the result aliases only operand zero.
+pub fn no_heap_alias_source(op: &TirOp) -> Option<ValueId> {
+    // Pure copy identity is a subset, including repeated identical operands.
+    // Keep its one shape authority instead of narrowing existing copy facts.
+    if let Some(source) = copy_value_source(op) {
+        return Some(source);
+    }
+    use crate::tir::op_kinds_generated::{
+        AliasTransparentAliasRole, copy_kind_is_explicit_no_heap_move_table,
+        opcode_alias_transparent_alias_role_table, simpleir_op_shape,
+    };
+    if op.results.len() != 1 {
+        return None;
+    }
+    let arity = match opcode_alias_transparent_alias_role_table(op.opcode) {
+        AliasTransparentAliasRole::Copy => match op.attrs.get("_original_kind") {
+            None => 1,
+            Some(AttrValue::Str(kind)) if copy_kind_is_explicit_no_heap_move_table(kind) => {
+                simpleir_op_shape(kind).map_or(1, |shape| shape.operands)
+            }
+            _ => return None,
+        },
+        AliasTransparentAliasRole::TypeGuard if !op.attrs.contains_key("_original_kind") => 1,
+        _ => return None,
+    };
+    (op.operands.len() == arity)
+        .then(|| op.operands.first().copied())
+        .flatten()
 }
 
 /// Build a transitive copy-resolution map over value-forwarding Copy ops.

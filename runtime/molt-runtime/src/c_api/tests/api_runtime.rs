@@ -668,7 +668,7 @@ fn buffer_export_contract_writable_consumer_array_pin_and_source_drop() {
 fn buffer_export_contract_writable_consumer_rejects_invalid_and_unwinds_pins() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(py, {
-        use crate::object::buffer_exports::{ScopedWritableBuffer, BufferAccessError};
+        use crate::object::buffer_exports::{BufferAccessError, ScopedWritableBuffer};
         for (readonly, offset, shape, strides) in [
             (true, 0, vec![8], vec![1]),
             (false, 0, vec![4], vec![2]),

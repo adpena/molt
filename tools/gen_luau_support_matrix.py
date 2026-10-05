@@ -21,6 +21,15 @@ from molt.rust_source_scan import mask_rust_comments_and_strings
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from tools.op_kinds.runtime_requirements import (  # noqa: E402 - direct-script bootstrap above
+    integer_semantics_by_kind,
+    registered_runtime_kinds,
+    runtime_kind_requirement_masks,
+    target_runtime_requirement_masks,
+)
+
 DEFAULT_SOURCE = ROOT / "runtime" / "molt-backend-luau" / "src" / "luau"
 DEFAULT_OUTPUT = (
     ROOT / "docs" / "spec" / "areas" / "compiler" / "luau_support_matrix.generated.md"
@@ -44,64 +53,29 @@ def _kind_set(*keys: str) -> frozenset[str]:
     return frozenset(kind for key in keys for kind in _OP_KIND_TABLE.get(key, []))
 
 
-_RUNTIME_ROLE_BITS = {
-    row["constant"]: (row["table"], row["bit"])
-    for row in _OP_KIND_TABLE["simpleir_runtime_requirement_roles"]
-}
-_LUAU_PROFILE = next(
-    profile
-    for profile in _OP_KIND_TABLE["simpleir_target_runtime_profiles"]
-    if profile["target"] == "luau"
-)
-_LUAU_RUNTIME_BITS = sum(
-    1 << _RUNTIME_ROLE_BITS[constant][1] for constant in _LUAU_PROFILE["supported"]
-)
+_RUNTIME_MASKS = runtime_kind_requirement_masks(_OP_KIND_TABLE)
+_LUAU_RUNTIME_BITS = target_runtime_requirement_masks(_OP_KIND_TABLE)["luau"]
+_INTEGER_ROLES = integer_semantics_by_kind(_OP_KIND_TABLE)
+
+
+def _numeric_kinds(*roles: str) -> frozenset[str]:
+    return frozenset(kind for kind, role in _INTEGER_ROLES.items() if role in roles)
+
+
 _LUAU_RUNTIME_NOT_ADMITTED = frozenset(
-    kind
-    for table, bit in _RUNTIME_ROLE_BITS.values()
-    if not (_LUAU_RUNTIME_BITS & (1 << bit))
-    for kind in _OP_KIND_TABLE.get(table, [])
+    kind for kind, bits in _RUNTIME_MASKS.items() if bits & ~_LUAU_RUNTIME_BITS
 )
-
-
 _PRE_SOURCE_NOT_ADMITTED = (
-    _kind_set(
-        "simpleir_dynamic_divmod_semantics_kinds",
-        "simpleir_dynamic_power_semantics_kinds",
-        "simpleir_integer_only_semantics_kinds",
-        "simpleir_integer_producer_semantics_kinds",
-    )
+    _numeric_kinds("DynamicDivmod", "DynamicPower", "IntegerOnly", "IntegerProducer")
     | _LUAU_RUNTIME_NOT_ADMITTED
 )
-_PRE_SOURCE_LITERAL_LIMITED = _kind_set(
-    "simpleir_integer_literal_semantics_kinds",
-)
+_PRE_SOURCE_LITERAL_LIMITED = _numeric_kinds("IntegerLiteral")
 _PRE_SOURCE_INSTANCE_LIMITED = _kind_set("async_work_poll_marker_kinds")
 _PRE_SOURCE_ORDERED_MAPPING_LIMITED = _kind_set("simpleir_luau_ordered_mapping_kinds")
-_PRE_SOURCE_TYPE_LIMITED = _kind_set(
-    "simpleir_dynamic_add_semantics_kinds",
-    "simpleir_dynamic_numeric_semantics_kinds",
-    "simpleir_dynamic_true_div_semantics_kinds",
-    "simpleir_dynamic_unary_numeric_semantics_kinds",
+_PRE_SOURCE_TYPE_LIMITED = _numeric_kinds(
+    "DynamicAdd", "DynamicNumeric", "DynamicTrueDiv", "DynamicUnaryNumeric"
 )
-_REGISTERED_SIMPLEIR_KINDS = {
-    spelling
-    for row in _OP_KIND_TABLE.get("kind", [])
-    for spelling in (row["canonical"], *row.get("aliases", []))
-}
-_REGISTERED_SIMPLEIR_KINDS.update(
-    _kind_set(
-        *(row["table"] for row in _OP_KIND_TABLE["simpleir_runtime_requirement_roles"])
-    )
-)
-for _table in ("simpleir_control_kind", "frontend_effect_kind"):
-    _REGISTERED_SIMPLEIR_KINDS.update(
-        row["kind"] for row in _OP_KIND_TABLE.get(_table, [])
-    )
-_REGISTERED_SIMPLEIR_KINDS.update(_PRE_SOURCE_NOT_ADMITTED)
-_REGISTERED_SIMPLEIR_KINDS.update(_PRE_SOURCE_LITERAL_LIMITED)
-_REGISTERED_SIMPLEIR_KINDS.update(_PRE_SOURCE_TYPE_LIMITED)
-_REGISTERED_SIMPLEIR_KINDS.update(_kind_set("simpleir_runtime_neutral_semantics_kinds"))
+_REGISTERED_SIMPLEIR_KINDS = registered_runtime_kinds(_OP_KIND_TABLE)
 
 
 @dataclass(frozen=True)

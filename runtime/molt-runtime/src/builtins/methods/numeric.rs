@@ -9,6 +9,13 @@ crate::builtins::methods::native_method_table!(int_method_bits, publish_int_meth
     comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Int, {
 
 }, {
+        "__round__" => Some(builtin_func_bits_with_defaults_tuple(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).int, "__round__").with_text_signature(if runtime_python_at_least(_py, 3, 14) { "($self, ndigits=None, /)" } else { "($self, ndigits=<unrepresentable>, /)" }),
+            fn_addr!(crate::object::ops_arith::rounding::int_round_slot),
+            2,
+            &[if runtime_python_at_least(_py, 3, 14) { MoltObject::none().bits() } else { missing_bits(_py) }],
+        )),
         "__format__" => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).int, "__format__").with_text_signature("($self, format_spec, /)"),
@@ -140,6 +147,13 @@ crate::builtins::methods::native_method_table!(float_method_bits, publish_float_
     comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Float, {
 
 }, {
+        "__round__" => Some(builtin_func_bits_with_defaults_tuple(
+            _py,
+            NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).float, "__round__").with_text_signature("($self, ndigits=None, /)"),
+            fn_addr!(crate::object::ops_arith::rounding::float_round_slot),
+            2,
+            &[MoltObject::none().bits()],
+        )),
         "__add__" => Some(builtin_func_bits(
             _py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(_py).float, "__add__"),
             fn_addr!(crate::object::ops_arith::native_slots::float_add_slot), 2,

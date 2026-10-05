@@ -175,6 +175,7 @@ tests/differential/stdlib/bisect_edge_cases.py
 tests/differential/stdlib/bisect_edge_semantics.py
 tests/differential/stdlib/bisect_key_basic.py
 tests/differential/stdlib/bz2_basic.py
+tests/differential/stdlib/cached_runtime_class_mutability.py
 tests/differential/stdlib/cmath_basic.py
 tests/differential/stdlib/cmd_basic.py
 tests/differential/stdlib/code_basic.py
@@ -188,6 +189,7 @@ tests/differential/stdlib/collections_abc_async_buffer.py
 tests/differential/stdlib/collections_abc_basic.py
 tests/differential/stdlib/collections_abc_import.py
 tests/differential/stdlib/collections_basic.py
+tests/differential/stdlib/collections_count_elements_custody.py
 tests/differential/stdlib/collections_counter.py
 tests/differential/stdlib/collections_counter_basic.py
 tests/differential/stdlib/collections_counter_string_index.py
@@ -1089,6 +1091,7 @@ tests/differential/stdlib/graphlib_exhaustive_parity.py
 tests/differential/stdlib/graphlib_flow.py
 tests/differential/stdlib/graphlib_topological.py
 tests/differential/stdlib/gzip_basic.py
+tests/differential/stdlib/hash_target_width_contract.py
 tests/differential/stdlib/hashlib_optional_algorithms.py
 tests/differential/stdlib/heapq_basic.py
 tests/differential/stdlib/heapq_merge_basic.py
@@ -1834,6 +1837,7 @@ tests/differential/stdlib/sys_intern_getsizeof.py
 tests/differential/stdlib/sys_maxsize_byteorder.py
 tests/differential/stdlib/sys_metadata_intrinsics.py
 tests/differential/stdlib/sys_modules_main.py
+tests/differential/stdlib/sys_namespace_publication.py
 tests/differential/stdlib/sys_os_import_regression.py
 tests/differential/stdlib/sys_runtime_state.py
 tests/differential/stdlib/sys_setrecursionlimit.py

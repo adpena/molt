@@ -356,6 +356,13 @@ impl RustBackend {
     pub(super) fn emit_prelude_conditional(&mut self, func_body: &str) {
         let used = |name: &str| func_body.contains(name);
 
+        // Keep the exact shared implementation in a module: tuple constructors
+        // and decoder helpers must not occupy the user's function namespace.
+        self.output.push_str("mod __molt_text {\n");
+        self.output.push_str(molt_ir::PYTHON_STRING_SOURCE);
+        self.output
+            .push_str("\n}\ntype PythonString = __molt_text::PythonString;\n");
+
         // Always emit the MoltValue enum — it is the foundation of everything.
         // Func variant uses Arc<dyn Fn>, which can't derive Debug or PartialEq,
         // so we implement them manually below.
@@ -364,10 +371,11 @@ impl RustBackend {
             "pub enum MoltValue {\n",
             "    None,\n",
             "    Ellipsis,\n",
+            "    NotImplemented,\n",
             "    Bool(bool),\n",
             "    Int(i64),\n",
             "    Float(f64),\n",
-            "    Str(String),\n",
+            "    Str(PythonString),\n",
             "    List(Vec<MoltValue>),\n",
             "    Dict(Vec<(MoltValue, MoltValue)>),\n",
             "    Func(Arc<dyn Fn(&mut Vec<MoltValue>) -> MoltValue + Send + Sync>),\n",
@@ -377,6 +385,7 @@ impl RustBackend {
             "        match self {\n",
             "            MoltValue::None => write!(f, \"None\"),\n",
             "            MoltValue::Ellipsis => write!(f, \"Ellipsis\"),\n",
+            "            MoltValue::NotImplemented => write!(f, \"NotImplemented\"),\n",
             "            MoltValue::Bool(b) => write!(f, \"{b}\"),\n",
             "            MoltValue::Int(n) => write!(f, \"{n}\"),\n",
             "            MoltValue::Float(v) => write!(f, \"{v}\"),\n",
@@ -392,6 +401,7 @@ impl RustBackend {
             "        match (self, other) {\n",
             "            (MoltValue::None, MoltValue::None) => true,\n",
             "            (MoltValue::Ellipsis, MoltValue::Ellipsis) => true,\n",
+            "            (MoltValue::NotImplemented, MoltValue::NotImplemented) => true,\n",
             "            (MoltValue::Bool(a), MoltValue::Bool(b)) => a == b,\n",
             "            (MoltValue::Int(a), MoltValue::Int(b)) => a == b,\n",
             "            (MoltValue::Float(a), MoltValue::Float(b)) => a == b,\n",
@@ -419,9 +429,10 @@ impl RustBackend {
             "    match x {\n",
             "        MoltValue::None => false,\n",
             "        MoltValue::Ellipsis => true,\n",
+            "        MoltValue::NotImplemented => { if molt_runtime_target_at_least(3, 14) { panic!(\"TypeError: NotImplemented should not be used in a boolean context\") } true },\n",
             "        MoltValue::Bool(b) => *b,\n",
             "        MoltValue::Int(n) => *n != 0,\n",
-            "        MoltValue::Float(f) => *f != 0.0 && !f.is_nan(),\n",
+            "        MoltValue::Float(f) => *f != 0.0,\n",
             "        MoltValue::Str(s) => !s.is_empty(),\n",
             "        MoltValue::List(v) => !v.is_empty(),\n",
             "        MoltValue::Dict(d) => !d.is_empty(),\n",
@@ -437,7 +448,7 @@ impl RustBackend {
             "            f.trunc() as i64\n",
             "        }\n",
             "        MoltValue::Bool(b) => *b as i64,\n",
-            "        MoltValue::Str(s) => s.trim().parse::<i64>().unwrap_or_else(|_| panic!(\"ValueError: invalid literal for int(): {s}\")),\n",
+            "        MoltValue::Str(s) => s.to_utf8().ok().and_then(|text| text.trim().parse::<i64>().ok()).unwrap_or_else(|| panic!(\"ValueError: invalid literal for int(): {:?}\", s)),\n",
             "        _ => panic!(\"TypeError: int() argument must be a string or a number\"),\n",
             "    }\n",
             "}\n\n",
@@ -446,7 +457,7 @@ impl RustBackend {
             "        MoltValue::Float(f) => *f,\n",
             "        MoltValue::Int(n) => *n as f64,\n",
             "        MoltValue::Bool(b) => *b as i64 as f64,\n",
-            "        MoltValue::Str(s) => s.trim().parse::<f64>().unwrap_or_else(|_| panic!(\"ValueError: could not convert string to float: {s}\")),\n",
+            "        MoltValue::Str(s) => s.to_utf8().ok().and_then(|text| text.trim().parse::<f64>().ok()).unwrap_or_else(|| panic!(\"ValueError: could not convert string to float: {:?}\", s)),\n",
             "        _ => panic!(\"TypeError: float() argument must be a string or a number\"),\n",
             "    }\n",
             "}\n\n",
@@ -463,26 +474,27 @@ impl RustBackend {
         // molt_str — always emitted (Display impl references it).
         let needs_repr = used("molt_repr(");
         self.output.push_str(concat!(
-            "fn molt_str(x: &MoltValue) -> String {\n",
+            "fn molt_str(x: &MoltValue) -> PythonString {\n",
             "    match x {\n",
-            "        MoltValue::None => \"None\".to_string(),\n",
-            "        MoltValue::Ellipsis => \"Ellipsis\".to_string(),\n",
-            "        MoltValue::Bool(true) => \"True\".to_string(),\n",
-            "        MoltValue::Bool(false) => \"False\".to_string(),\n",
-            "        MoltValue::Int(n) => n.to_string(),\n",
-            "        MoltValue::Float(f) => format_float(*f),\n",
+            "        MoltValue::None => \"None\".into(),\n",
+            "        MoltValue::Ellipsis => \"Ellipsis\".into(),\n",
+            "        MoltValue::NotImplemented => \"NotImplemented\".into(),\n",
+            "        MoltValue::Bool(true) => \"True\".into(),\n",
+            "        MoltValue::Bool(false) => \"False\".into(),\n",
+            "        MoltValue::Int(n) => n.to_string().into(),\n",
+            "        MoltValue::Float(f) => format_float(*f).into(),\n",
             "        MoltValue::Str(s) => s.clone(),\n",
             "        MoltValue::List(v) => {\n",
             "            let parts: Vec<String> = v.iter().map(molt_repr_inner).collect();\n",
-            "            format!(\"[{}]\", parts.join(\", \"))\n",
+            "            format!(\"[{}]\", parts.join(\", \" )).into()\n",
             "        }\n",
             "        MoltValue::Dict(d) => {\n",
             "            let parts: Vec<String> = d.iter()\n",
             "                .map(|(k, v)| format!(\"{}: {}\", molt_repr_inner(k), molt_repr_inner(v)))\n",
             "                .collect();\n",
-            "            format!(\"{{{}}}\", parts.join(\", \"))\n",
+            "            format!(\"{{{}}}\", parts.join(\", \" )).into()\n",
             "        }\n",
-            "        MoltValue::Func(_) => \"<function>\".to_string(),\n",
+            "        MoltValue::Func(_) => \"<function>\".into(),\n",
             "    }\n",
             "}\n\n",
         ));
@@ -510,8 +522,8 @@ impl RustBackend {
         self.output.push_str(concat!(
             "fn molt_repr_inner(x: &MoltValue) -> String {\n",
             "    match x {\n",
-            "        MoltValue::Str(s) => format!(\"'{s}'\"),\n",
-            "        other => molt_str(other),\n",
+            "        MoltValue::Str(s) => s.repr(),\n",
+            "        other => molt_str(other).to_utf8().expect(\"non-string repr is scalar text\"),\n",
             "    }\n",
             "}\n\n",
         ));
@@ -519,7 +531,7 @@ impl RustBackend {
         if needs_repr {
             self.output.push_str(concat!(
                 "fn molt_repr(x: &MoltValue) -> MoltValue {\n",
-                "    MoltValue::Str(molt_repr_inner(x))\n",
+                "    MoltValue::Str(molt_repr_inner(x).into())\n",
                 "}\n\n",
             ));
         }
@@ -533,7 +545,7 @@ impl RustBackend {
         if used("molt_ascii_from_obj(") {
             self.output.push_str(concat!(
                 "fn molt_ascii_from_obj(x: &MoltValue) -> MoltValue {\n",
-                "    MoltValue::Str(molt_escape_non_ascii(&molt_repr_inner(x)))\n",
+                "    MoltValue::Str(molt_escape_non_ascii(&molt_repr_inner(x)).into())\n",
                 "}\n\n",
                 "fn molt_escape_non_ascii(text: &str) -> String {\n",
                 "    let mut out = String::with_capacity(text.len());\n",
@@ -565,7 +577,7 @@ impl RustBackend {
         if used("molt_print(") {
             self.output.push_str(concat!(
                 "fn molt_print(args: &[MoltValue]) {\n",
-                "    let parts: Vec<String> = args.iter().map(molt_str).collect();\n",
+                "    let parts: Vec<String> = args.iter().map(|value| molt_str(value).to_string()).collect();\n",
                 "    println!(\"{}\", parts.join(\" \"));\n",
                 "}\n\n",
             ));
@@ -576,7 +588,7 @@ impl RustBackend {
             self.output.push_str(concat!(
                 "fn molt_len(x: &MoltValue) -> MoltValue {\n",
                 "    let n = match x {\n",
-                "        MoltValue::Str(s) => s.chars().count() as i64,\n",
+                "        MoltValue::Str(s) => s.code_points().count() as i64,\n",
                 "        MoltValue::List(v) => v.len() as i64,\n",
                 "        MoltValue::Dict(d) => d.len() as i64,\n",
                 "        _ => panic!(\"TypeError: object has no len()\"),\n",
@@ -611,7 +623,7 @@ impl RustBackend {
                 "        (MoltValue::Float(x), MoltValue::Float(y)) => MoltValue::Float(x + y),\n",
                 "        (MoltValue::Int(x), MoltValue::Float(y)) => MoltValue::Float(*x as f64 + y),\n",
                 "        (MoltValue::Float(x), MoltValue::Int(y)) => MoltValue::Float(x + *y as f64),\n",
-                "        (MoltValue::Str(x), MoltValue::Str(y)) => MoltValue::Str(format!(\"{x}{y}\")),\n",
+                "        (MoltValue::Str(x), MoltValue::Str(y)) => MoltValue::Str(x.concat(y)),\n",
                 "        (MoltValue::List(x), MoltValue::List(y)) => {\n",
                 "            let mut v = x.clone(); v.extend_from_slice(y); MoltValue::List(v)\n",
                 "        }\n",
@@ -760,6 +772,7 @@ fn molt_numeric_kind(a: &MoltValue, b: &MoltValue, integer: NumericErrorContext,
                 "}\n",
                 "fn molt_numeric_cmp(a: &MoltValue, b: &MoltValue) -> std::cmp::Ordering {\n",
                 "    match (a, b) {\n",
+                "        (MoltValue::Str(x), MoltValue::Str(y)) => x.cmp(y),\n",
                 "        (MoltValue::Int(x), MoltValue::Int(y)) => x.cmp(y),\n",
                 "        _ => molt_float(a).partial_cmp(&molt_float(b)).unwrap_or(std::cmp::Ordering::Equal),\n",
                 "    }\n",
@@ -768,6 +781,7 @@ fn molt_numeric_kind(a: &MoltValue, b: &MoltValue, integer: NumericErrorContext,
                 "    match (a, b) {\n",
                 "        (MoltValue::None, MoltValue::None) => true,\n",
                 "        (MoltValue::Ellipsis, MoltValue::Ellipsis) => true,\n",
+                "        (MoltValue::NotImplemented, MoltValue::NotImplemented) => true,\n",
                 "        (MoltValue::Bool(x), MoltValue::Bool(y)) => x == y,\n",
                 "        (MoltValue::Str(x), MoltValue::Str(y)) => x == y,\n",
                 "        (MoltValue::List(x), MoltValue::List(y)) => x == y,\n",
@@ -799,13 +813,13 @@ fn molt_numeric_kind(a: &MoltValue, b: &MoltValue, integer: NumericErrorContext,
         }
         if used("molt_get_item(") || used("molt_ord_at(") {
             self.output.push_str(concat!(
-                "fn molt_checked_char(s: &str, idx: i64) -> char {\n",
+                "fn molt_checked_code_point(s: &PythonString, idx: i64) -> u32 {\n",
                 "    let value = if idx >= 0 {\n",
-                "        usize::try_from(idx).ok().and_then(|i| s.chars().nth(i))\n",
+                "        usize::try_from(idx).ok().and_then(|i| s.code_points().nth(i))\n",
                 "    } else {\n",
-                "        let len = s.chars().count();\n",
+                "        let len = s.code_points().count();\n",
                 "        let i = molt_checked_index(len, idx, \"string\");\n",
-                "        s.chars().nth(i)\n",
+                "        s.code_points().nth(i)\n",
                 "    };\n",
                 "    value.unwrap_or_else(|| panic!(\"IndexError: string index out of range\"))\n",
                 "}\n\n",
@@ -824,7 +838,7 @@ fn molt_numeric_kind(a: &MoltValue, b: &MoltValue, integer: NumericErrorContext,
                 "            .map(|(_, v)| v.clone()).unwrap_or_else(|| panic!(\"KeyError: {}\", molt_repr_inner(key))),\n",
                 "        MoltValue::Str(s) => {\n",
                 "            let idx = molt_int(key);\n",
-                "            MoltValue::Str(molt_checked_char(s, idx).to_string())\n",
+                "            MoltValue::Str(PythonString::from_code_point(molt_checked_code_point(s, idx)))\n",
                 "        }\n",
                 "        _ => panic!(\"TypeError: object is not subscriptable\"),\n",
                 "    }\n",
@@ -862,7 +876,7 @@ fn molt_numeric_kind(a: &MoltValue, b: &MoltValue, integer: NumericErrorContext,
         if used("molt_get_attr(") {
             self.output.push_str(concat!(
                 "fn molt_get_attr(obj: &MoltValue, attr: &str) -> MoltValue {\n",
-                "    molt_get_attr_name(obj, &MoltValue::Str(attr.to_string()))\n",
+                "    molt_get_attr_name(obj, &MoltValue::Str(attr.into()))\n",
                 "}\n\n",
             ));
         }
@@ -876,7 +890,7 @@ fn molt_numeric_kind(a: &MoltValue, b: &MoltValue, integer: NumericErrorContext,
                 "        if let Some((_, v)) = d.iter().find(|(k, _)| molt_eq(k, name)) {\n",
                 "            return v.clone();\n",
                 "        }\n",
-                "        let class_key = MoltValue::Str(\"__class__\".to_string());\n",
+                "        let class_key = MoltValue::Str(\"__class__\".into());\n",
                 "        if let Some((_, class_obj)) = d.iter().find(|(k, _)| molt_eq(k, &class_key)) {\n",
                 "            if let MoltValue::Dict(class_dict) = class_obj {\n",
                 "                if let Some((_, v)) = class_dict.iter().find(|(k, _)| molt_eq(k, name)) {\n",
@@ -927,7 +941,7 @@ fn molt_numeric_kind(a: &MoltValue, b: &MoltValue, integer: NumericErrorContext,
                 index
             } else {
                 class_dict.push((
-                    MoltValue::Str("__molt_field_offsets__".to_string()),
+                    MoltValue::Str("__molt_field_offsets__".into()),
                     MoltValue::Dict(vec![]),
                 ));
                 class_dict.len() - 1
@@ -982,7 +996,7 @@ fn molt_numeric_kind(a: &MoltValue, b: &MoltValue, integer: NumericErrorContext,
         *value = MoltValue::Int(layout_size as i64);
     } else {
         class_dict.push((
-            MoltValue::Str("__molt_layout_size__".to_string()),
+            MoltValue::Str("__molt_layout_size__".into()),
             MoltValue::Int(layout_size as i64),
         ));
     }
@@ -999,7 +1013,7 @@ fn molt_numeric_kind(a: &MoltValue, b: &MoltValue, integer: NumericErrorContext,
                 "        MoltValue::List(v) => v.iter().any(|x| molt_eq(x, elem)),\n",
                 "        MoltValue::Dict(d) => d.iter().any(|(k, _)| molt_eq(k, elem)),\n",
                 "        MoltValue::Str(s) => {\n",
-                "            if let MoltValue::Str(sub) = elem { s.contains(sub.as_str()) } else { panic!(\"TypeError: string containment requires string operand\") }\n",
+                "            if let MoltValue::Str(sub) = elem { s.contains(sub) } else { panic!(\"TypeError: string containment requires string operand\") }\n",
                 "        }\n",
                 "        _ => panic!(\"TypeError: object is not a container\"),\n",
                 "    }\n",
@@ -1115,7 +1129,7 @@ fn molt_numeric_kind(a: &MoltValue, b: &MoltValue, integer: NumericErrorContext,
                 "    match x {\n",
                 "        MoltValue::List(v) => v.clone(),\n",
                 "        MoltValue::Dict(d) => d.iter().map(|(k, _)| k.clone()).collect(),\n",
-                "        MoltValue::Str(s) => s.chars().map(|c| MoltValue::Str(c.to_string())).collect(),\n",
+                "        MoltValue::Str(s) => s.code_points().map(|c| MoltValue::Str(PythonString::from_code_point(c))).collect(),\n",
                 "        _ => panic!(\"TypeError: object is not iterable\"),\n",
                 "    }\n",
                 "}\n\n",
@@ -1156,6 +1170,7 @@ fn molt_numeric_kind(a: &MoltValue, b: &MoltValue, integer: NumericErrorContext,
     match seq {
         MoltValue::None => "NoneType",
         MoltValue::Ellipsis => "ellipsis",
+        MoltValue::NotImplemented => "NotImplementedType",
         MoltValue::Bool(_) => "bool",
         MoltValue::Int(_) => "int",
         MoltValue::Float(_) => "float",
@@ -1198,14 +1213,14 @@ fn molt_unpack_sequence(seq: &MoltValue, expected_count: usize) -> Vec<MoltValue
         }
         MoltValue::Str(value) => {
             // Python unpack only needs to distinguish fewer, exact, and more.
-            // Probe at most expected+1 Unicode scalar values so a huge mismatch
+            // Probe at most expected+1 Python code points so a huge mismatch
             // never allocates or scans the remainder of the string.
             let probe_limit = expected_count.saturating_add(1);
-            let mut chars = value.chars();
-            let mut items = Vec::with_capacity(expected_count.min(value.len()));
+            let mut chars = value.code_points();
+            let mut items = Vec::with_capacity(expected_count.min(value.as_surrogatepass_bytes().len()));
             while items.len() < probe_limit {
                 let Some(ch) = chars.next() else { break };
-                items.push(MoltValue::Str(ch.to_string()));
+                items.push(MoltValue::Str(PythonString::from_code_point(ch)));
             }
             let actual = items.len();
             if actual < expected_count {
@@ -1259,7 +1274,7 @@ fn molt_unpack_sequence(seq: &MoltValue, expected_count: usize) -> Vec<MoltValue
                 "fn molt_chr(x: &MoltValue) -> MoltValue {\n",
                 "    let n = molt_int(x);\n",
                 "    if !(0..=0x10ffff).contains(&n) { panic!(\"ValueError: chr() arg not in range(0x110000)\") }\n",
-                "    MoltValue::Str(char::from_u32(n as u32).map(|c| c.to_string()).unwrap_or_else(|| panic!(\"ValueError: chr() arg not in range(0x110000)\")))\n",
+                "    MoltValue::Str(PythonString::from_code_point(n as u32))\n",
                 "}\n\n",
             ));
         }
@@ -1267,7 +1282,7 @@ fn molt_unpack_sequence(seq: &MoltValue, expected_count: usize) -> Vec<MoltValue
             self.output.push_str(concat!(
                 "fn molt_ord(x: &MoltValue) -> MoltValue {\n",
                 "    if let MoltValue::Str(s) = x {\n",
-                "        let mut chars = s.chars();\n",
+                "        let mut chars = s.code_points();\n",
                 "        let ch = chars.next().unwrap_or_else(|| panic!(\"TypeError: ord() expected a character, but string of length 0 found\"));\n",
                 "        if chars.next().is_some() { panic!(\"TypeError: ord() expected a character, but string of length greater than 1 found\") }\n",
                 "        MoltValue::Int(ch as i64)\n",

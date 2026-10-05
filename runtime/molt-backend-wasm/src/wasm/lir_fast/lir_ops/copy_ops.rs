@@ -88,16 +88,37 @@ pub(super) fn emit_lir_identity_copy(ctx: &mut LirLowerCtx, op: &LirOp) {
 pub(super) fn emit_lir_copy_or_original_kind(ctx: &mut LirLowerCtx, op: &LirOp) {
     match original_kind(op) {
         Some("binding_alias") => emit_lir_binding_alias(ctx, op),
-        Some(kind)
-            if crate::tir::op_kinds_generated::copy_kind_is_explicit_no_heap_move_table(kind) =>
-        {
+        _ if crate::tir::passes::value_identity::copy_value_source(&op.tir_op).is_some() => {
             emit_lir_identity_copy(ctx, op)
         }
         Some(kind) if let Some(runtime) = lir_fixed_runtime_call(kind) => {
-            emit_lir_fixed_runtime_call(ctx, op, runtime)
+            if runtime.call == LirRuntimeCall::GuardType {
+                // Ownership transparency does not erase the validation effect.
+                // Discard its borrowed word, then forward the original carrier
+                // without inventing an independent owner for a guard alias.
+                let profile_only = ctx.guard_facts.is_profile_only(&op.tir_op);
+                if profile_only {
+                    let local = ctx.guard_profile_local.expect("guard profile flag");
+                    ctx.instructions.push(Instruction::LocalGet(local));
+                    ctx.instructions.push(Instruction::I64Eqz);
+                    ctx.instructions.push(Instruction::I32Eqz);
+                    ctx.instructions
+                        .push(Instruction::If(wasm_encoder::BlockType::Empty));
+                }
+                for &operand in &op.tir_op.operands {
+                    emit_get_boxed_for_repr(ctx, operand);
+                }
+                ctx.emit_runtime_call(runtime.call);
+                ctx.instructions.push(Instruction::Drop);
+                if profile_only {
+                    ctx.instructions.push(Instruction::End);
+                }
+                emit_lir_identity_copy(ctx, op);
+            } else {
+                emit_lir_fixed_runtime_call(ctx, op, runtime)
+            }
         }
-        Some(_) => emit_lir_unsupported_marker(ctx, op),
-        None => emit_lir_identity_copy(ctx, op),
+        _ => emit_lir_unsupported_marker(ctx, op),
     }
 }
 

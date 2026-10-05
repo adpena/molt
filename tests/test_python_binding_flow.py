@@ -16,10 +16,10 @@ from threading import Event
 import pytest
 
 from molt.compiler_analysis import python_binding_flow
-from molt.compiler_analysis.python_binding_facts import (
+from molt.compiler_analysis.python_binding_facts import PythonMember
+from molt.compiler_analysis.python_value_identity import (
     OTHER_IDENTITY,
     PythonIdentity,
-    PythonMember,
     identity_fact_is_exact,
     identity_fact_may_be,
 )
@@ -42,10 +42,52 @@ from molt.compiler_analysis.static_truth import (
 )
 
 
+def _has_unknown_shape(result: StaticExpressionResult) -> bool:
+    # Provenance is orthogonal to shape; preserve all prior shape/lifetime checks.
+    from dataclasses import replace
+
+    pending = [result]
+    while pending:
+        current = pending.pop()
+        if (
+            replace(
+                current,
+                identities=UNKNOWN_EXPRESSION_RESULT.identities,
+                exposes_module_globals=False,
+                element_result=None,
+            )
+            != UNKNOWN_EXPRESSION_RESULT
+        ):
+            return False
+        if current.element_result is not None:
+            pending.append(current.element_result)
+    return True
+
+
 def _last_call(source: str):
     index = analyze_python_source_bindings(source)
     assert index.calls
     return index.calls[-1]
+
+
+@pytest.mark.parametrize(
+    "method, arguments", [("__setitem__", "'key', None"), ("__delitem__", "'key'")]
+)
+def test_deferred_globals_method_preserves_possible_not_exact_identity(
+    method, arguments
+):
+    source = f"def mutate():\n    globals().{method}({arguments})\n"
+    index = analyze_python_source_bindings(source)
+    call_node = ast.parse(source).body[0].body[0].value
+    call = index.call_fact(call_node)
+    identity = (
+        PythonIdentity.GLOBALS_SETITEM
+        if method == "__setitem__"
+        else PythonIdentity.GLOBALS_DELITEM
+    )
+    assert call is not None and call.callee_may_be(identity)
+    assert not call.callee_is(identity)
+    assert call.effects & PRESERVES_IMPORT_STATE_FORBIDDEN_EFFECTS
 
 
 @pytest.mark.parametrize(
@@ -148,7 +190,7 @@ def test_frame_callbacks_expire_local_value_facts(target, boundary) -> None:
     fact = index.expression_fact(read)
     assert fact is not None
     assert fact.binding_invalidated is (target >= (3, 13))
-    assert (fact.result == UNKNOWN_EXPRESSION_RESULT) is (target >= (3, 13))
+    assert (_has_unknown_shape(fact.result)) is (target >= (3, 13))
 
 
 @pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
@@ -176,7 +218,7 @@ def test_frame_local_facts_survive_inert_operations_and_fresh_stores(
     )
     fact = index.expression_fact(ast.parse(source).body[0].body[-1].value)
     assert fact is not None and not fact.binding_invalidated
-    assert fact.result != UNKNOWN_EXPRESSION_RESULT
+    assert not _has_unknown_shape(fact.result)
 
 
 @pytest.mark.parametrize("target", [(3, 13), (3, 14)])
@@ -189,7 +231,7 @@ def test_frame_callback_store_cannot_hide_displaced_finalizer_reentry(target) ->
     )
     fact = index.expression_fact(ast.parse(source).body[0].body[-1].value)
     assert fact is not None and fact.binding_invalidated
-    assert fact.result == UNKNOWN_EXPRESSION_RESULT
+    assert _has_unknown_shape(fact.result)
 
 
 @pytest.mark.parametrize("target", ["Alias = A", "del Alias", "(Alias := A)"])
@@ -962,7 +1004,7 @@ def test_partial_namespace_binding_projects_builtin_fallback_on_normal_load(
     index = analyze_python_source_bindings(source)
     fact = index.expression_fact(assignment.value)
     assert fact is not None
-    assert index.expression_result(assignment.value) == UNKNOWN_EXPRESSION_RESULT
+    assert _has_unknown_shape(index.expression_result(assignment.value))
     if builtin_identity is None:
         assert fact.identities & OTHER_IDENTITY
         assert fact.identities & int(PythonIdentity.UNBOUND)
@@ -1031,7 +1073,7 @@ def test_partial_lexical_cell_absence_raises_without_builtin_fallback(
     if foreign_cell:
         # FunctionType can supply an arbitrary compatible closure cell; the
         # lexical slot still must not fall through to builtin lookup.
-        assert result == UNKNOWN_EXPRESSION_RESULT
+        assert _has_unknown_shape(result)
         assert fact.identities & OTHER_IDENTITY
     else:
         assert result.kind == "tuple"
@@ -1075,10 +1117,10 @@ def test_class_preparation_and_nested_activation_widen_captured_payload() -> Non
     assert not direct_result.release_may_call
     # Foreign __build_class__/metaclass preparation can supply a mapping whose
     # value takes precedence over the enclosing activation's closure cell.
-    assert inline_result == UNKNOWN_EXPRESSION_RESULT
+    assert _has_unknown_shape(inline_result)
     inline_fact = index.expression_fact(reads[1])
     assert inline_fact is not None and inline_fact.name_lookup == "class_lexical"
-    assert nested_result == UNKNOWN_EXPRESSION_RESULT
+    assert _has_unknown_shape(nested_result)
     nested_fact = index.expression_fact(reads[2])
     assert nested_fact is not None
     assert nested_fact.identities & OTHER_IDENTITY
@@ -1129,7 +1171,7 @@ def test_comprehension_activation_separates_first_iterator_from_captured_body(
     fact = index.expression_fact(comprehension.elt)
     assert fact is not None
     if isinstance(comprehension, ast.GeneratorExp):
-        assert body == UNKNOWN_EXPRESSION_RESULT
+        assert _has_unknown_shape(body)
         assert fact.identities & OTHER_IDENTITY
         assert fact.identities & int(PythonIdentity.UNBOUND)
     else:
@@ -1175,7 +1217,7 @@ def test_nonlocal_write_releases_foreign_cell_before_reading_its_new_value() -> 
     assert fact is not None
     assert fact.identities & OTHER_IDENTITY
     assert fact.binding_invalidated
-    assert result == UNKNOWN_EXPRESSION_RESULT
+    assert _has_unknown_shape(result)
 
     # STORE_DEREF publishes first; releasing the arbitrary old cell value can
     # overwrite it again. A strong write is not a callback-free lifetime proof.
@@ -1271,7 +1313,7 @@ def test_binding_result_join_keeps_bound_unknown_alternatives_widening(
 
     joined = pool.join(*branches)
     assert pool.static_value(joined, 0) is None
-    assert pool.result(joined, 0) == UNKNOWN_EXPRESSION_RESULT
+    assert _has_unknown_shape(pool.result(joined, 0))
 
 
 def test_callback_capable_method_keeps_binding_invalidated() -> None:
@@ -1285,7 +1327,7 @@ def test_callback_capable_method_keeps_binding_invalidated() -> None:
 
     assert fact is not None
     assert fact.binding_invalidated
-    assert fact.result == UNKNOWN_EXPRESSION_RESULT
+    assert _has_unknown_shape(fact.result)
 
 
 def test_append_retains_nested_argument_until_receiver_drop() -> None:
@@ -2905,3 +2947,1226 @@ def test_class_annotation_storage_owner_is_a_whole_body_binding_fact(
     assert {
         node.name for node in classes if index.class_annotation_namespace_required(node)
     } == owners
+
+
+@pytest.mark.parametrize(
+    "expression,expected",
+    [("-value", -1), ("+value", 1), ("~value", -2), ("-(-value)", 1)],
+)
+def test_numeric_unary_binding_retains_exact_value_without_callback_taint(
+    expression: str,
+    expected: int,
+) -> None:
+    source = f"value = 1\nresult = {expression}\ncopy = result\n"
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    for node in (tree.body[1].value, tree.body[2].value):
+        fact = index.expression_fact(node)
+        assert fact is not None
+        assert type(fact.static_value) is int and fact.static_value == expected
+        assert fact.result.value_known and fact.result.value == expected
+        assert not fact.effects & python_binding_flow.EXECUTES_ARBITRARY_PYTHON
+
+
+@pytest.mark.parametrize(
+    "prefix", ["value = 1\ncallback()\n", "value = Number(1)\n", "value = unknown\n"]
+)
+def test_numeric_unary_binding_does_not_resurrect_expired_or_overloaded_values(
+    prefix: str,
+) -> None:
+    source = prefix + "result = -value\n"
+    tree = ast.parse(source)
+    fact = analyze_python_source_bindings(source).expression_fact(tree.body[-1].value)
+    assert fact is not None and fact.static_value is None
+    assert not fact.result.value_known
+    assert fact.effects & python_binding_flow.EXECUTES_ARBITRARY_PYTHON
+
+
+@pytest.mark.parametrize(
+    "builtin,identity",
+    [
+        ("globals", PythonIdentity.CURRENT_GLOBALS),
+        ("locals", PythonIdentity.CURRENT_LOCALS),
+        ("vars", PythonIdentity.CURRENT_LOCALS),
+    ],
+)
+def test_deferred_namespace_builtin_retains_possible_but_not_exact_result(
+    builtin, identity
+):
+    source = f"def read():\n    return {builtin}()\n"
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    call = tree.body[0].body[0].value
+    fact = index.expression_fact(call)
+    assert fact is not None
+    assert fact.identities & int(identity)
+    assert fact.identities & OTHER_IDENTITY
+    assert fact.identities != int(identity)
+    assert fact.effects & python_binding_flow.EXECUTES_ARBITRARY_PYTHON
+
+
+@pytest.mark.parametrize("builtin", ["globals", "locals", "vars"])
+def test_module_namespace_builtin_keeps_exact_current_globals_result(builtin):
+    source = f"namespace = {builtin}()\n"
+    tree = ast.parse(source)
+    fact = analyze_python_source_bindings(source).expression_fact(tree.body[0].value)
+    assert fact is not None and fact.identities == int(PythonIdentity.CURRENT_GLOBALS)
+    assert fact.result.kind == "dict"
+
+
+def test_invalid_globals_call_does_not_publish_namespace_provenance():
+    source = "namespace = globals(1)\n"
+    tree = ast.parse(source)
+    fact = analyze_python_source_bindings(source).expression_fact(tree.body[0].value)
+    assert fact is not None
+    assert not fact.identities & int(PythonIdentity.CURRENT_GLOBALS)
+
+
+def test_cpython_function_globals_are_activation_owned_not_lexical_module_owned():
+    from types import FunctionType
+
+    def read_namespace():
+        return globals()
+
+    foreign = {"__package__": "foreign.pkg"}
+    rebound = FunctionType(read_namespace.__code__, foreign)
+    assert rebound() is foreign
+    assert rebound()["__package__"] == "foreign.pkg"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "owner['safe_alias'] = 1",
+        "del owner['safe_alias']",
+        "owner['safe_alias'] += 1",
+        "owner.__setitem__('safe_alias', 1)",
+        "put = owner.__setitem__; put('safe_alias', 1)",
+        "owner.__delitem__('safe_alias')",
+        "remove = owner.__delitem__; remove('safe_alias')",
+    ],
+)
+def test_exact_activation_namespace_requires_dict_receiver_for_mutation(mutation):
+    source = (
+        "def mutate():\n"
+        "    def local(): pass\n"
+        "    owner = local.__globals__\n"
+        f"    {mutation}\n"
+    )
+    tree = ast.parse(source)
+    body = tree.body[0].body
+    index = analyze_python_source_bindings(source)
+    receiver = index.expression_fact(body[1].value)
+    assert receiver is not None
+    assert receiver.identities == int(PythonIdentity.CURRENT_GLOBALS)
+    assert receiver.result.kind != "dict"
+    mutation_fact = index.statement_fact(body[-1])
+    assert mutation_fact is not None
+    assert mutation_fact.effects & python_binding_flow.EXECUTES_ARBITRARY_PYTHON
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in {
+            "__setitem__",
+            "__delitem__",
+        }:
+            fact = index.expression_fact(node)
+            identity = (
+                PythonIdentity.GLOBALS_SETITEM
+                if node.attr == "__setitem__"
+                else PythonIdentity.GLOBALS_DELITEM
+            )
+            # Namespace provenance retains the canonical method as a possible
+            # source-discovery alternative, never exact dict/callable proof.
+            assert fact is not None
+            assert fact.identities == (int(identity) | OTHER_IDENTITY)
+            assert fact.effects & python_binding_flow.INVOKES_DESCRIPTOR
+    for call in index.calls:
+        assert not call.callee_is(PythonIdentity.GLOBALS_SETITEM)
+        assert not call.callee_is(PythonIdentity.GLOBALS_DELITEM)
+        assert call.invocation_effects & python_binding_flow.EXECUTES_ARBITRARY_PYTHON
+        assert call.cleanup_effects & python_binding_flow.RUNS_FINALIZER
+        assert not call.callee_retention_safe
+
+
+@pytest.mark.parametrize(
+    "mutation,expected",
+    [
+        ("read_namespace()['item'] = 7", ("set", "item", 7)),
+        ("del read_namespace()['item']", ("del", "item")),
+        ("read_namespace()['item'] += 1", ("set", "item", 8)),
+        ("read_namespace().__setitem__('item', 7)", ("set", "item", 7)),
+        (
+            "put = read_namespace().__setitem__; put('item', 7)",
+            ("set", "item", 7),
+        ),
+        ("read_namespace().__delitem__('item')", ("del", "item")),
+        (
+            "remove = read_namespace().__delitem__; remove('item')",
+            ("del", "item"),
+        ),
+    ],
+)
+def test_cpython_captured_globals_callable_can_return_dict_subclass(mutation, expected):
+    from types import FunctionType
+
+    events = []
+
+    class Receiver(dict):
+        def __setitem__(self, key, value):
+            events.append(("set", key, value))
+
+        def __delitem__(self, key):
+            events.append(("del", key))
+
+    namespace = {}
+    exec("def mutate(read_namespace=globals):\n    " + mutation + "\n", namespace)
+    original = namespace["mutate"]
+    receiver = Receiver(item=7)
+    rebound = FunctionType(original.__code__, receiver, argdefs=original.__defaults__)
+    rebound()
+    assert rebound.__globals__ is receiver
+    assert original.__defaults__ == (globals,)
+    assert events == [expected]
+    assert dict.__getitem__(receiver, "item") == 7
+
+
+def test_cpython_globals_subclass_descriptor_retains_method_and_argument_callbacks():
+    from types import FunctionType
+
+    events = []
+
+    class Payload:
+        def __del__(self):
+            events.append("payload released")
+
+    class Method:
+        def __call__(self, key, value):
+            events.append("invoke")
+
+        def __del__(self):
+            events.append("method released")
+
+    class Receiver(dict):
+        @property
+        def __setitem__(self):
+            events.append("lookup")
+            return Method()
+
+    def mutate(read_namespace=globals, make_payload=Payload, record=events.append):
+        read_namespace().__setitem__("item", make_payload())
+        record("after")
+
+    receiver = Receiver()
+    rebound = FunctionType(mutate.__code__, receiver, argdefs=mutate.__defaults__)
+    rebound()
+    assert events[:2] == ["lookup", "invoke"]
+    assert events.index("payload released") < events.index("after")
+    assert events.index("method released") < events.index("after")
+    assert "item" not in receiver
+
+
+@pytest.mark.parametrize(
+    "source,stable",
+    [
+        ("owner = (lambda: None).__globals__\n", True),
+        ("class Local:\n    owner = (lambda: None).__globals__\n", True),
+        (
+            "class Outer:\n    class Inner:\n"
+            "        owner = (lambda: None).__globals__\n",
+            True,
+        ),
+        ("class Local[T]:\n    owner = (lambda: None).__globals__\n", True),
+        ("owners = [(lambda: None).__globals__ for item in (0,)]\n", True),
+        ("owners = ((lambda: None).__globals__ for item in (0,))\n", False),
+        ("def deferred():\n    return (lambda: None).__globals__\n", False),
+        (
+            "def deferred():\n    class Local:\n"
+            "        owner = (lambda: None).__globals__\n",
+            False,
+        ),
+        (
+            "def deferred():\n"
+            "    return [(lambda: None).__globals__ for item in (0,)]\n",
+            False,
+        ),
+        ("deferred = lambda: (lambda: None).__globals__\n", False),
+        ("type Deferred = (lambda: None).__globals__\n", False),
+    ],
+)
+def test_globals_dict_result_uses_activation_owner_across_eager_scopes(source, stable):
+    tree = ast.parse(source)
+    receiver = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node.attr == "__globals__"
+    )
+    index = analyze_python_source_bindings(source)
+    fact = index.expression_fact(receiver)
+    assert fact is not None
+    assert fact.identities == int(PythonIdentity.CURRENT_GLOBALS)
+    assert (fact.result.kind == "dict") is stable
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
+def test_annotation_globals_dict_result_obeys_eager_or_deferred_activation(target):
+    source = "def annotated(value: (lambda: None).__globals__): pass\n"
+    tree = ast.parse(source)
+    receiver = tree.body[0].args.args[0].annotation
+    index = analyze_python_source_bindings(
+        source, policy=PythonBindingPolicy(target_python=target)
+    )
+    fact = index.expression_fact(receiver)
+    assert fact is not None
+    assert fact.identities == int(PythonIdentity.CURRENT_GLOBALS)
+    assert (fact.result.kind == "dict") is (target < (3, 14))
+
+
+def test_cpython_class_local_mapping_does_not_replace_activation_globals_dict():
+    class ClassNamespace(dict):
+        pass
+
+    namespace = {"ClassNamespace": ClassNamespace}
+    exec(
+        "class Meta(type):\n"
+        "    @classmethod\n"
+        "    def __prepare__(cls, name, bases): return ClassNamespace()\n"
+        "class Local(metaclass=Meta):\n"
+        "    local_mapping = locals()\n"
+        "    global_mapping = globals()\n"
+        "eager_mappings = [globals() for item in (0,)]\n",
+        namespace,
+    )
+    local = namespace["Local"]
+    assert type(local.local_mapping) is ClassNamespace
+    assert type(local.global_mapping) is dict
+    assert local.global_mapping is namespace
+    assert namespace["eager_mappings"][0] is namespace
+
+
+def test_cpython_deferred_eager_scopes_inherit_functiontype_globals_subclass():
+    from types import FunctionType
+
+    class ActivationNamespace(dict):
+        pass
+
+    def outer(read_namespace=globals):
+        class Local:
+            namespace = read_namespace()
+
+        return Local.namespace, [read_namespace() for item in (0,)][0]
+
+    receiver = ActivationNamespace()
+    rebound = FunctionType(outer.__code__, receiver, argdefs=outer.__defaults__)
+    class_namespace, comprehension_namespace = rebound()
+    assert class_namespace is receiver
+    assert comprehension_namespace is receiver
+
+
+@pytest.mark.parametrize(
+    "name,identity",
+    [
+        ("globals", PythonIdentity.BUILTIN_GLOBALS),
+        ("locals", PythonIdentity.BUILTIN_LOCALS),
+        ("vars", PythonIdentity.BUILTIN_VARS),
+        ("setattr", PythonIdentity.BUILTIN_SETATTR),
+        ("eval", PythonIdentity.BUILTIN_EVAL),
+        ("exec", PythonIdentity.BUILTIN_EXEC),
+    ],
+)
+@pytest.mark.parametrize("acquisition", ["bare", "member", "from_import"])
+def test_builtin_acquisition_forms_share_identity_and_replacement_guard(
+    name, identity, acquisition
+):
+    acquire = (
+        f"captured = {name}\n"
+        if acquisition == "bare"
+        else f"captured = builtins.{name}\n"
+        if acquisition == "member"
+        else f"from builtins import {name} as imported\ncaptured = imported\n"
+    )
+    for replacement in ("", f"builtins.{name} = replacement\n"):
+        source = "import builtins\n" + replacement + acquire
+        tree = ast.parse(source)
+        fact = analyze_python_source_bindings(source).expression_fact(
+            tree.body[-1].value
+        )
+        assert fact is not None
+        if replacement:
+            assert not fact.identities & int(identity)
+        else:
+            assert fact.identities == int(identity)
+
+
+@pytest.mark.parametrize("name", ["globals", "locals", "vars"])
+@pytest.mark.parametrize("acquisition", ["member", "from_import"])
+def test_imported_namespace_builtins_preserve_eager_and_deferred_result_provenance(
+    name, acquisition
+):
+    acquire = (
+        "import builtins\n" + f"namespace = builtins.{name}\n"
+        if acquisition == "member"
+        else f"from builtins import {name} as namespace\n"
+    )
+    for deferred in (False, True):
+        body = acquire + "result = namespace()\n"
+        source = (
+            "def read():\n"
+            + "".join("    " + line + "\n" for line in body.splitlines())
+            if deferred
+            else body
+        )
+        tree = ast.parse(source)
+        statements = tree.body[0].body if deferred else tree.body
+        fact = analyze_python_source_bindings(source).expression_fact(
+            statements[-1].value
+        )
+        expected = (
+            PythonIdentity.CURRENT_LOCALS
+            if deferred and name != "globals"
+            else PythonIdentity.CURRENT_GLOBALS
+        )
+        assert fact is not None and fact.identities & int(expected)
+        if deferred:
+            assert fact.identities & OTHER_IDENTITY
+            assert fact.effects & python_binding_flow.EXECUTES_ARBITRARY_PYTHON
+            assert fact.result.kind != "dict"
+        else:
+            assert fact.identities == int(expected)
+            assert fact.result.kind == "dict"
+
+
+@pytest.mark.parametrize(
+    "module,member,identity",
+    [
+        ("inspect", "currentframe", PythonIdentity.INSPECT_CURRENTFRAME),
+        ("importlib", "import_module", PythonIdentity.IMPORTLIB_IMPORT_MODULE),
+        ("importlib.util", "find_spec", PythonIdentity.IMPORTLIB_FIND_SPEC),
+        ("importlib.machinery", "ModuleSpec", PythonIdentity.MODULE_SPEC_CLASS),
+        ("typing", "TYPE_CHECKING", PythonIdentity.STATIC_FALSE),
+        ("builtins", "globals", PythonIdentity.BUILTIN_GLOBALS),
+    ],
+)
+@pytest.mark.parametrize("boundary", ["callback()", "owner.MEMBER = replacement"])
+def test_from_import_member_acquisition_observes_callback_and_replacement_guards(
+    module, member, identity, boundary
+):
+    source = (
+        f"import {module} as owner\n"
+        + boundary.replace("MEMBER", member)
+        + f"\nfrom {module} import {member} as acquired\nvalue = acquired\n"
+    )
+    tree = ast.parse(source)
+    fact = analyze_python_source_bindings(source).expression_fact(tree.body[-1].value)
+    assert fact is not None and fact.identities & OTHER_IDENTITY
+    if boundary == "callback()":
+        assert fact.identities & int(identity)
+    else:
+        assert not fact.identities & int(identity)
+
+
+@pytest.mark.parametrize(
+    "acquire,callee",
+    [
+        ("import inspect", "inspect.currentframe"),
+        ("from inspect import currentframe as capture", "capture"),
+    ],
+)
+def test_possible_currentframe_transports_globals_without_callback_elision(
+    acquire, callee
+):
+    source = f"def read():\n    {acquire}\n    return {callee}().f_globals\n"
+    tree = ast.parse(source)
+    expression = tree.body[0].body[-1].value
+    index = analyze_python_source_bindings(source)
+    frame = index.expression_fact(expression.value)
+    namespace = index.expression_fact(expression)
+    assert frame is not None
+    assert frame.identities & int(PythonIdentity.CURRENT_FRAME)
+    assert frame.identities & OTHER_IDENTITY
+    assert frame.effects & python_binding_flow.EXECUTES_ARBITRARY_PYTHON
+    assert namespace is not None
+    assert namespace.identities & int(PythonIdentity.CURRENT_GLOBALS)
+    assert namespace.identities & OTHER_IDENTITY
+    assert namespace.result.kind != "dict"
+    call = index.call_fact(expression.value)
+    assert call is not None and not call.callee_retention_safe
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import inspect\nvalue = inspect.currentframe(1).f_globals\n",
+        "import inspect\nvalue = inspect.currentframe(unexpected=1).f_globals\n",
+        "import inspect\nvalue = inspect.currentframe().__globals__\n",
+        "value = (lambda: None).f_globals\n",
+    ],
+)
+def test_namespace_provenance_requires_valid_frame_call_and_matching_member(source):
+    tree = ast.parse(source)
+    fact = analyze_python_source_bindings(source).expression_fact(tree.body[-1].value)
+    assert fact is not None
+    assert not fact.identities & int(PythonIdentity.CURRENT_GLOBALS)
+
+
+@pytest.mark.parametrize(
+    "module_name,member", [("builtins", "globals"), ("inspect", "currentframe")]
+)
+def test_cpython_import_callback_can_replace_member_of_canonical_module(
+    module_name, member
+):
+    import builtins
+    import inspect
+
+    module = builtins if module_name == "builtins" else inspect
+    original_member = getattr(module, member)
+    original_import = builtins.__import__
+    marker = object()
+    returned_modules = []
+
+    def import_with_mutation(name, globals=None, locals=None, fromlist=(), level=0):
+        imported = original_import(name, globals, locals, fromlist, level)
+        if name == module_name:
+            module.__dict__[member] = lambda: marker
+            returned_modules.append(imported)
+        return imported
+
+    namespace = {
+        "__builtins__": dict(builtins.__dict__, __import__=import_with_mutation)
+    }
+    try:
+        exec(
+            f"from {module_name} import {member} as capture\nvalue = capture()\n",
+            namespace,
+        )
+    finally:
+        module.__dict__[member] = original_member
+    assert returned_modules == [module]
+    assert namespace["value"] is marker
+
+
+@pytest.mark.parametrize("branch_count", [2, 4])
+@pytest.mark.parametrize("taint_before_domain", [False, True])
+def test_metadata_storage_preserves_deleted_slot_presence_across_joins(
+    branch_count: int, taint_before_domain: bool
+) -> None:
+    pool = python_binding_flow._StatePool()
+    deleted = pool.set_binding(0, 0, int(PythonIdentity.UNBOUND))
+    if taint_before_domain:
+        deleted = pool.taint_slots(deleted, 1)
+    branches = [deleted, 0]
+    for slot in range(1, branch_count - 1):
+        branches.append(pool.set_binding(0, slot, int(PythonIdentity.INERT_VALUE)))
+    joined = pool.join(*branches)
+    pool.set_taint_domain(1)
+    assert not pool._binding_resolution(0, 0).present
+    for state in (deleted, joined):
+        resolution = pool._binding_resolution(state, 0)
+        assert resolution.present
+        assert resolution.public().present
+        assert resolution.clean is not taint_before_domain
+
+
+@pytest.mark.parametrize("prefix,pristine", [("", True), ("del __package__\n", False)])
+def test_metadata_name_and_invocation_share_loader_pristine_proof(prefix, pristine):
+    source = prefix + "__import__('child', {'__package__': __package__}, level=1)\n"
+    facts = analyze_python_source_bindings(source)
+    tree = ast.parse(source)
+    call = tree.body[-1].value
+    name = next(
+        node
+        for node in ast.walk(call)
+        if isinstance(node, ast.Name) and node.id == "__package__"
+    )
+    read = facts.expression_fact(name)
+    invocation = facts.call_fact(call)
+    assert read is not None and invocation is not None
+    assert read.module_metadata.admits_loader_borrow("__package__") is pristine
+    assert (
+        invocation.module_metadata_at_invocation.admits_loader_borrow("__package__")
+        is pristine
+    )
+
+
+def test_import_argument_deletion_keeps_read_pristine_but_invalidates_borrow():
+    source = "__import__('child', {'__package__': __package__}, globals().__delitem__('__package__'), [], 1)"
+    facts = analyze_python_source_bindings(source)
+    call = ast.parse(source).body[0].value
+    name = call.args[1].values[0]
+    read = facts.expression_fact(name)
+    invocation = facts.call_fact(call)
+    assert read is not None and invocation is not None
+    assert read.module_metadata.admits_loader_borrow("__package__")
+    assert not invocation.module_metadata_at_invocation.admits_loader_borrow(
+        "__package__"
+    )
+
+
+@pytest.mark.parametrize(
+    "prefix,admitted",
+    [("", True), ("items.attribute\n", False), ("from . import sibling\n", False)],
+)
+def test_relative_statement_and_current_globals_call_share_entry_custody(
+    prefix, admitted
+):
+    statement_source = prefix + "from . import child\n"
+    call_source = prefix + "__import__('child', globals(), level=1)\n"
+    statement = ast.parse(statement_source).body[-1]
+    call = ast.parse(call_source).body[-1].value
+    statement_fact = analyze_python_source_bindings(statement_source).statement_fact(
+        statement
+    )
+    call_fact = analyze_python_source_bindings(call_source).call_fact(call)
+    assert statement_fact is not None and call_fact is not None
+    assert statement_fact.module_metadata_at_entry.admits_current_namespace is admitted
+    assert call_fact.module_metadata_at_invocation.admits_current_namespace is admitted
+
+
+def test_metadata_proof_is_not_computed_for_unrelated_calls_or_statements():
+    from molt.compiler_analysis.python_binding_facts import NO_MODULE_METADATA_PROOF
+
+    facts = analyze_python_source_bindings("value = len((1, 2))\n")
+    assert all(f.module_metadata is NO_MODULE_METADATA_PROOF for f in facts.expressions)
+    assert all(
+        f.module_metadata_at_invocation is NO_MODULE_METADATA_PROOF for f in facts.calls
+    )
+    assert all(
+        f.module_metadata_at_entry is NO_MODULE_METADATA_PROOF for f in facts.statements
+    )
+
+
+def test_explicit_unbound_storage_is_not_an_absent_state_or_history_noop():
+    pool = python_binding_flow._StatePool()
+    deleted = pool.set_binding(0, 0, int(PythonIdentity.UNBOUND))
+    assert deleted != 0
+    assert pool.binding(deleted, 0) == pool.binding(0, 0)
+    assert not pool.equivalent(0, deleted)
+    assert pool.changed_slots_between(0, deleted) == (0,)
+    assert pool.set_binding(deleted, 0, int(PythonIdentity.UNBOUND)) == deleted
+
+
+@pytest.mark.parametrize("discovery_first", [False, True])
+@pytest.mark.parametrize(
+    "source, expected_transfers",
+    [
+        ("value = 1\nfrom . import child\n", [True]),
+        ("import os\n__package__ = 'pkg.alt'\nfrom . import child\n", [False, True]),
+    ],
+)
+def test_source_discovery_reuses_single_flight_strict_context_projection(
+    discovery_first: bool,
+    source: str,
+    expected_transfers: list[bool],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt.compiler_analysis import python_imports
+
+    monkeypatch.setattr(
+        python_binding_flow, "_CORE_CACHE", python_binding_flow._BindingCache()
+    )
+    original = python_imports._analyze_module_import_flow_uncached
+    transfers = []
+
+    def transfer(*args, **kwargs):
+        transfers.append(kwargs.get("source_discovery", False))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        python_imports, "_analyze_module_import_flow_uncached", transfer
+    )
+    strict_policy = PythonBindingPolicy(module_name="pkg.entry")
+    source_policy = replace(strict_policy, include_import_discovery=True)
+    policies = (
+        (source_policy, strict_policy)
+        if discovery_first
+        else (strict_policy, source_policy)
+    )
+    for policy in policies:
+        first = analyze_python_source_bindings(source, policy=policy)
+        assert first is analyze_python_source_bindings(source, policy=policy)
+    strict = analyze_python_source_bindings(source, policy=strict_policy)
+    discovery = analyze_python_source_bindings(source, policy=source_policy)
+    assert strict.expressions is discovery.expressions
+    assert strict.module_import_flow.states_by_node == (
+        discovery.module_import_flow.states_by_node
+    )
+    assert transfers == expected_transfers
+    assert python_binding_flow.python_binding_core_computations() == 1
+
+
+@pytest.mark.parametrize(
+    "select",
+    [
+        "load = (__import__,)[0]",
+        "box = (__import__,)\nload = box[0]",
+        "(load,) = (__import__,)",
+        "(load,) = (*(__import__,),)",
+        "*loads, = (__import__,)\nload = loads[0]",
+        "head, *loads = (None, __import__)\nload = loads[0]",
+        "load = [__import__].pop()",
+        "load = list((__import__,))[0]",
+        "(load,) = set((__import__,))",
+        "(load,) = tuple(frozenset((__import__,)))",
+        "load = {}.get('absent', __import__)",
+        "load = {}.pop('absent', __import__)",
+        "load = {}.setdefault('absent', __import__)",
+        "for load in (__import__,):\n    pass",
+    ],
+)
+def test_selected_importer_identity_matches_cpython_object(select: str) -> None:
+    import builtins
+
+    source = select + "\nloaded = load('math')\n"
+    namespace = {}
+    exec(compile(source, "<selected-importer-oracle>", "exec"), namespace)
+    assert namespace["load"] is builtins.__import__
+    assert namespace["loaded"].__name__ == "math"
+    index = analyze_python_source_bindings(source)
+    call = ast.parse(source).body[-1].value
+    fact = index.call_fact(call)
+    assert fact is not None
+    assert fact.callee_may_be(PythonIdentity.BUILTINS_IMPORT)
+    assert "dunder_import" in fact.possible_import_call_kinds()
+    callee = index.expression_fact(call.func)
+    assert callee is not None and callee.result.identities == callee.identities
+
+
+@pytest.mark.parametrize("method", ["get", "pop", "setdefault"])
+def test_unknown_dictionary_default_retains_importer_alternative(method: str) -> None:
+    source = f"mapping = {{'present': None}}\nload = mapping.{method}('absent', __import__)\nloaded = load('math')\n"
+    namespace = {}
+    exec(compile(source, "<default-selection-oracle>", "exec"), namespace)
+    assert namespace["loaded"].__name__ == "math"
+    fact = analyze_python_source_bindings(source).calls[-1]
+    assert fact.callee_may_be(PythonIdentity.BUILTINS_IMPORT)
+    assert not fact.callee_is(PythonIdentity.BUILTINS_IMPORT)
+
+
+@pytest.mark.parametrize(
+    "display", ["(globals(),)", "[globals()]", "{'namespace': globals()}"]
+)
+def test_stored_aggregate_transports_namespace_exposure(display: str) -> None:
+    source = f"box = {display}\nalias = box\nconsume(alias)\n"
+    namespace = {"consume": lambda value: None}
+    exec(compile(source, "<namespace-publication-oracle>", "exec"), namespace)
+    observed = namespace["alias"]
+    assert (
+        observed["namespace"] if isinstance(observed, dict) else observed[0]
+    ) is namespace
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    argument = index.expression_fact(tree.body[-1].value.args[0])
+    assert argument is not None and argument.exposes_module_globals
+    assert argument.result.exposes_module_globals
+
+
+def test_selected_globals_identity_does_not_become_ordinary_dict_identity() -> None:
+    source = "selected = (globals(),)[0]\n"
+    namespace = {}
+    exec(source, namespace)
+    assert namespace["selected"] is namespace
+    fact = analyze_python_source_bindings(source).expression_fact(
+        ast.parse(source).body[0].value
+    )
+    assert fact is not None and identity_fact_is_exact(
+        fact.identities, PythonIdentity.CURRENT_GLOBALS
+    )
+    assert fact.result.kind == "dict" and fact.exposes_module_globals
+    ordinary = "selected = ({},)[0]\n"
+    fact = analyze_python_source_bindings(ordinary).expression_fact(
+        ast.parse(ordinary).body[0].value
+    )
+    assert fact is not None and not fact.identities & int(
+        PythonIdentity.CURRENT_GLOBALS
+    )
+
+
+def test_selected_mutable_result_expires_contents_after_sibling_retirement() -> None:
+    source = (
+        "inner = [__import__]\n"
+        "class Retired:\n"
+        "    def __del__(self):\n"
+        "        inner[0] = lambda name: 'replacement'\n"
+        "selected = (inner, Retired())[0]\n"
+        "load = selected[0]\n"
+        "loaded = load('math')\n"
+    )
+    namespace = {}
+    exec(compile(source, "<selection-retirement-oracle>", "exec"), namespace)
+    assert namespace["loaded"] == "replacement"
+    index = analyze_python_source_bindings(source)
+    selected = index.expression_fact(ast.parse(source).body[2].value)
+    assert selected is not None and selected.result.items is None
+    possible = selected.result.element_result
+    assert possible is not None and _has_unknown_shape(possible)
+    assert possible.identities & OTHER_IDENTITY
+    assert possible.release_may_call and not possible.fresh_container
+    assert not index.calls[-1].callee_is(PythonIdentity.BUILTINS_IMPORT)
+
+
+def test_selected_importlib_callable_survives_module_binding_replacement() -> None:
+    source = (
+        "import importlib\n"
+        "load = (importlib.import_module,)[0]\n"
+        "importlib = None\n"
+        "loaded = load('math')\n"
+    )
+    namespace = {}
+    exec(compile(source, "<captured-importlib-oracle>", "exec"), namespace)
+    assert namespace["loaded"].__name__ == "math"
+    fact = analyze_python_source_bindings(source).calls[-1]
+    assert fact.callee_may_be(PythonIdentity.IMPORTLIB_IMPORT_MODULE)
+    assert "import_module" in fact.possible_import_call_kinds()
+
+
+def test_selected_deferred_globals_keeps_foreign_dict_protocol() -> None:
+    import builtins
+    from types import FunctionType
+
+    source = "def mutate():\n    (globals(),)[0].__setitem__('key', None)\n"
+    namespace = {}
+    exec(compile(source, "<selected-foreign-globals-oracle>", "exec"), namespace)
+    events = []
+
+    class ForeignGlobals(dict):
+        def __setitem__(self, key, value):
+            events.append(key)
+            super().__setitem__(key, value)
+
+    foreign = ForeignGlobals(__builtins__=builtins.__dict__)
+    FunctionType(namespace["mutate"].__code__, foreign)()
+    assert events == ["key"]
+    node = ast.parse(source).body[0].body[0].value
+    index = analyze_python_source_bindings(source)
+    receiver = index.expression_fact(node.func.value)
+    call = index.call_fact(node)
+    assert receiver is not None and receiver.identities & int(
+        PythonIdentity.CURRENT_GLOBALS
+    )
+    assert receiver.result.kind != "dict"
+    assert call is not None and call.callee_may_be(PythonIdentity.GLOBALS_SETITEM)
+    assert not call.callee_is(PythonIdentity.GLOBALS_SETITEM)
+    assert call.effects & PRESERVES_IMPORT_STATE_FORBIDDEN_EFFECTS
+
+
+@pytest.mark.parametrize(
+    ("expression", "exposes_globals"),
+    [
+        ("globals", False),
+        ("globals().__setitem__", False),
+        ("globals().__delitem__", False),
+        ("(globals,)", False),
+        ("[globals]", False),
+        ("{'callable': globals}", False),
+        ("(globals(), 7)[1]", False),
+        ("globals()", True),
+        ("(globals(),)", True),
+        ("[globals(), *unknown]", True),
+        ("(*unknown, globals())", True),
+        ("{'namespace': globals(), **unknown}", True),
+    ],
+)
+def test_namespace_evaluation_event_is_distinct_from_result_exposure(
+    expression: str, exposes_globals: bool
+) -> None:
+    source = f"alias = {expression}\n"
+    namespace = {"unknown": {}, "__package__": "pkg"}
+    exec(compile(source, "<namespace-event-oracle>", "exec"), namespace)
+    assert namespace["__package__"] == "pkg"
+    alias = namespace["alias"]
+    contents = alias.values() if type(alias) is dict else alias
+    contains_globals = alias is namespace or (
+        type(alias) in {tuple, list, dict}
+        and any(value is namespace for value in contents)
+    )
+    assert contains_globals is exposes_globals
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    fact = index.expression_fact(tree.body[0].value)
+    assert fact is not None and fact.module_namespace_observable
+    assert index.module_namespace_may_be_observed(tree.body[0])
+    assert fact.exposes_module_globals is exposes_globals
+    assert fact.result.exposes_module_globals is exposes_globals
+
+
+def test_generator_value_exposure_is_deferred_without_yield_value_guarantees() -> None:
+    source = "values = (globals() for _ in (0,))\nalias = values\nconsume(alias)\n"
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    expression = tree.body[0].value
+    generator = index.expression_fact(expression)
+    payload = index.expression_fact(expression.elt)
+    argument = index.expression_fact(tree.body[-1].value.args[0])
+    assert generator is not None and payload is not None and argument is not None
+    assert not generator.module_namespace_observable
+    assert payload.module_namespace_observable
+    assert generator.exposes_module_globals and argument.exposes_module_globals
+    yielded = generator.result.element_result
+    assert yielded is not None and yielded.exposes_module_globals
+    assert _has_unknown_shape(yielded) and yielded.identities == OTHER_IDENTITY
+    assert generator.result.kind == "unknown" and generator.result.release_may_call
+
+
+def test_deferred_generator_does_not_capture_stale_importer_identity() -> None:
+    source = (
+        "load = __import__\n"
+        "values = (load for _ in (0,))\n"
+        "load = lambda name: 'replacement'\n"
+        "for selected in values:\n"
+        "    loaded = selected('math')\n"
+    )
+    namespace = {}
+    exec(compile(source, "<deferred-yield-oracle>", "exec"), namespace)
+    assert namespace["loaded"] == "replacement"
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    iteration = index.iteration_fact(tree.body[-1])
+    assert iteration is not None
+    yielded = iteration.element_result
+    assert _has_unknown_shape(yielded)
+    assert yielded.identities == OTHER_IDENTITY
+    call = index.call_fact(tree.body[-1].body[0].value)
+    assert call is not None and not call.callee_is(PythonIdentity.BUILTINS_IMPORT)
+
+
+@pytest.mark.parametrize("iteration", [False, True])
+def test_unknown_binding_and_iteration_keep_namespace_exposure_only(
+    iteration: bool,
+) -> None:
+    tail = (
+        "for value in values:\n    consume(value)\n"
+        if iteration
+        else "consume(values)\n"
+    )
+    source = "values = (globals(),)\ncallback()\n" + tail
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    call = tree.body[-1].body[0].value if iteration else tree.body[-1].value
+    argument = index.expression_fact(call.args[0])
+    assert argument is not None and argument.exposes_module_globals
+    assert _has_unknown_shape(argument.result)
+    assert argument.result.release_may_call
+    assert not identity_fact_is_exact(
+        argument.identities, PythonIdentity.CURRENT_GLOBALS
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "box = ()\ndef send():\n    consume(box)\nbox = (globals(),)\nsend()\n",
+        "def outer():\n    box = (globals(),)\n    def send():\n        consume(box)\n"
+        "    return send\nsend = outer()\nsend()\n",
+    ],
+)
+def test_deferred_capture_retains_namespace_exposure_without_value_proof(
+    source: str,
+) -> None:
+    def consume(box):
+        box[0]["__package__"] = "changed.pkg"
+
+    namespace = {"__package__": "pkg", "consume": consume}
+    exec(compile(source, "<deferred-exposure-oracle>", "exec"), namespace)
+    assert namespace["__package__"] == "changed.pkg"
+    tree = ast.parse(source)
+    call = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "consume"
+    )
+    index = analyze_python_source_bindings(source)
+    argument = index.expression_fact(call.args[0])
+    assert argument is not None and argument.exposes_module_globals
+    assert _has_unknown_shape(argument.result) and argument.result.release_may_call
+
+
+@pytest.mark.parametrize(
+    "generators",
+    [
+        "for _ in (0, 1)",
+        "for _ in (0, 1) for inner in (0,)",
+        "for _ in (0,) for inner in (0, 1)",
+    ],
+)
+def test_comprehension_backedges_join_values_and_importer_identity(
+    generators: str,
+) -> None:
+    import builtins
+
+    source = (
+        "y = 0\n"
+        f"values = [(y, (y := 1))[0] {generators}]\n"
+        "load = None\n"
+        f"calls = [(load, (load := __import__))[0] {generators}]\n"
+        "loaded = calls[1]('math')\n"
+    )
+    namespace = {}
+    exec(compile(source, "<comprehension-backedge-oracle>", "exec"), namespace)
+    assert namespace["values"] == [0, 1]
+    assert namespace["calls"] == [None, builtins.__import__]
+    assert namespace["loaded"].sqrt(81) == 9.0
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    values = index.expression_result(tree.body[1].value)
+    assert values.element_result is not None
+    assert values.element_result.truth is None
+    assert not values.element_result.value_known
+    call = index.call_fact(tree.body[-1].value)
+    assert call is not None and call.callee_may_be(PythonIdentity.BUILTINS_IMPORT)
+    assert "dunder_import" in call.possible_import_call_kinds()
+
+
+@pytest.mark.parametrize(
+    ("comprehension", "expected", "after"),
+    [
+        ("[(y := 1) for _ in ()]", [], 0),
+        ("[(y := 1) for _ in (0, 1) if False]", [], 0),
+        ("[(y := 1) for _ in (0, 1) for inner in ()]", [], 0),
+        ("[y for _ in (0, 1) if (y, (y := 1))[0]]", [1], 1),
+        ("[(y := 1) for _ in (0,) for inner in (0, 1) if False]", [], 0),
+    ],
+)
+def test_comprehension_zero_paths_and_filter_backedges(
+    comprehension: str, expected: list[int], after: int
+) -> None:
+    source = f"y = 0\nvalues = {comprehension}\nafter = y\n"
+    namespace = {}
+    exec(compile(source, "<comprehension-control-oracle>", "exec"), namespace)
+    assert namespace["values"] == expected and namespace["after"] == after
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    fact = index.expression_result(tree.body[-1].value)
+    if after == 0:
+        assert fact.value_known and fact.value == 0
+    else:
+        # A may-execute iteration may conservatively retain the zero path, but
+        # it cannot claim the rejected first filter is false on every visit.
+        condition = tree.body[1].value.generators[0].ifs[0]
+        assert index.expression_result(condition).truth is None
+
+
+def test_generator_body_writes_do_not_enter_creation_state() -> None:
+    source = "y = 0\nvalues = ((y := 1) for _ in (0, 1))\nafter = y\n"
+    namespace = {}
+    exec(compile(source, "<deferred-comprehension-oracle>", "exec"), namespace)
+    assert namespace["after"] == 0
+    assert list(namespace["values"]) == [1, 1]
+    assert namespace["y"] == 1
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    fact = index.expression_result(tree.body[-1].value)
+    assert fact.value_known and fact.value == 0
+
+
+def test_comprehension_clause_facts_remain_distinct_after_reparse() -> None:
+    from molt.compiler_analysis.python_binding_facts import PythonNodeKey
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    source = (
+        "seen = []\n"
+        "first = [seen.append('dead') for a in (0,) for b in ()]\n"
+        "second = [c for c in (1,)]\n"
+    )
+    namespace = {}
+    exec(compile(source, "<distinct-comprehension-clauses>", "exec"), namespace)
+    assert namespace["seen"] == [] and namespace["second"] == [1]
+    parsed = ast.parse(source)
+    reparsed = ast.parse(source)
+    clauses = [node for node in ast.walk(parsed) if isinstance(node, ast.comprehension)]
+    reparsed_clauses = [
+        node for node in ast.walk(reparsed) if isinstance(node, ast.comprehension)
+    ]
+    keys = [python_node_source_key(node) for node in clauses]
+    assert len(set(keys)) == len(clauses)
+    assert keys == [python_node_source_key(node) for node in reparsed_clauses]
+    index = analyze_python_source_bindings(source)
+    by_target = {
+        node.target.id: index.iteration_fact(node) for node in reparsed_clauses
+    }
+    assert by_target["a"] is not None and not by_target["a"].empty
+    assert by_target["b"] is not None and by_target["b"].empty
+    assert by_target["c"] is not None and not by_target["c"].empty
+    for node in clauses:
+        assert PythonNodeKey.from_node(node) != PythonNodeKey.from_node(node.target)
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        "load = box[0]\n",
+        "load, = box\n",
+        "for load in box:\n    pass\n",
+    ],
+)
+def test_callback_retains_possible_importer_without_exact_call_proof(
+    selection: str,
+) -> None:
+    source = f"box = [__import__]\ncallback()\n{selection}loaded = load('math')\n"
+    namespace = {"callback": lambda: None}
+    exec(compile(source, "<possible-importer-retention>", "exec"), namespace)
+    assert namespace["loaded"].sqrt(81) == 9.0
+    index = analyze_python_source_bindings(source)
+    call = index.call_fact(ast.parse(source).body[-1].value)
+    assert call is not None and call.callee_may_be(PythonIdentity.BUILTINS_IMPORT)
+    assert not call.callee_is(PythonIdentity.BUILTINS_IMPORT)
+    assert not call.callee_elision_safe
+    if selection.startswith("load,"):
+        from molt.compiler_analysis.python_effects_generated import (
+            INVOKES_ITERATION_CALLBACK,
+        )
+
+        assignment = ast.parse(source).body[2]
+        fact = index.statement_fact(assignment)
+        assert fact is not None and fact.effects & INVOKES_ITERATION_CALLBACK
+
+
+def test_deferred_result_provenance_survives_publication_join_and_widening():
+    from molt.compiler_analysis.static_truth import (
+        DeferredExecution,
+        ExpressionSequenceItem,
+        StaticExpressionResult,
+        UNKNOWN_EXPRESSION_RESULT,
+        expression_result_for_publication,
+        expression_result_without_value_facts,
+        iterable_element_result,
+        join_static_expression_results,
+        static_subscription_shape,
+    )
+
+    reference = DeferredExecution((1, 0, 1, 20, "GeneratorExp"), "resume")
+    deferred = StaticExpressionResult(deferred=frozenset({reference}))
+    stored = StaticExpressionResult(
+        kind="tuple", items=(ExpressionSequenceItem(deferred),)
+    )
+    published = expression_result_for_publication(stored)
+    assert not published.deferred
+    assert reference in published.exposed_deferred
+    element = iterable_element_result(published)
+    assert element is not None and reference in element.deferred
+    widened = expression_result_without_value_facts(published)
+    selected = static_subscription_shape(widened, UNKNOWN_EXPRESSION_RESULT).result
+    assert reference in selected.deferred
+    joined = join_static_expression_results((selected, UNKNOWN_EXPRESSION_RESULT))
+    assert reference in joined.deferred
+    assert joined != UNKNOWN_EXPRESSION_RESULT
+    assert len({joined, UNKNOWN_EXPRESSION_RESULT}) == 2
+
+
+def test_conditional_callable_join_and_hook_facts_use_result_algebra():
+    from molt.compiler_analysis.static_truth import (
+        DeferredExecution,
+        expression_result_without_value_facts,
+        join_static_expression_results,
+        static_expression_result,
+    )
+
+    first = DeferredExecution((1, 0, 2, 4, "FunctionDef"), "call")
+    second = DeferredExecution((4, 0, 5, 4, "FunctionDef"), "call")
+    candidates = {
+        "a": StaticExpressionResult(
+            deferred=frozenset({first}),
+            deferred_complete=True,
+            attribute_hooks=frozenset(),
+        ),
+        "b": StaticExpressionResult(
+            deferred=frozenset({second}),
+            deferred_complete=True,
+            attribute_hooks=frozenset(),
+        ),
+    }
+    expression = ast.parse("a if condition else b", mode="eval").body
+    result = static_expression_result(
+        expression,
+        fact_result=lambda node: (
+            candidates.get(node.id) if isinstance(node, ast.Name) else None
+        ),
+    )
+    assert result.deferred == frozenset({first, second})
+    assert result.deferred_complete and result.attribute_hooks == frozenset()
+    widened = expression_result_without_value_facts(result)
+    assert widened.deferred == result.deferred
+    assert not widened.deferred_complete and widened.attribute_hooks is None
+    joined = join_static_expression_results((result, UNKNOWN_EXPRESSION_RESULT))
+    assert joined.deferred == result.deferred and not joined.deferred_complete
+    assert joined.attribute_hooks is None
+    assert StaticExpressionResult(
+        identities=int(PythonIdentity.CURRENT_MODULE)
+    ).exposes_module_globals
+
+
+@pytest.mark.parametrize(
+    ("method", "operation"),
+    [
+        (
+            "__hash__(self):\n        namespace['__package__'] = 'other'\n        return 0",
+            "{Change()}",
+        ),
+        (
+            "__getattr__(self, name):\n        namespace['__package__'] = 'other'\n        return 1",
+            "Change().missing",
+        ),
+        ("__del__(self):\n        namespace['__package__'] = 'other'", "Change()"),
+        (
+            "__setitem__(self, key, value):\n        namespace['__package__'] = 'other'",
+            "target[0] = 1",
+        ),
+        (
+            "__delitem__(self, key):\n        namespace['__package__'] = 'other'",
+            "del target[0]",
+        ),
+    ],
+)
+def test_implicit_operation_fact_carries_its_executed_values(method, operation):
+    from molt.compiler_analysis.python_effects_generated import WRITES_MODULE_METADATA
+
+    source = (
+        "namespace = globals()\nclass Change:\n    def "
+        + method
+        + "\ntarget = Change()\n__package__ = 'pkg'\n"
+        + operation
+        + "\n"
+    )
+    tree = ast.parse(source)
+    index = analyze_python_source_bindings(source)
+    node = tree.body[-1]
+    fact = index.statement_fact(node)
+    effects = fact.module_metadata_effects if fact is not None else 0
+    if isinstance(node, ast.Expr):
+        expression = index.expression_fact(node.value)
+        assert expression is not None
+        effects |= expression.module_metadata_effects
+    assert effects & WRITES_MODULE_METADATA
+
+
+@pytest.mark.parametrize("analyze_bodies", [False, True])
+def test_unanalyzed_class_methods_keep_unknown_escaped_execution(analyze_bodies):
+    from molt.compiler_analysis.python_effects_generated import WRITES_MODULE_METADATA
+
+    source = (
+        "class Stored:\n    def apply(self): pass\nvalue = Stored()\nvalue.apply()\n"
+    )
+    index = python_binding_flow.analyze_python_binding_facts(
+        ast.parse(source),
+        source_digest=python_source_digest(source),
+        policy=PythonBindingFlowPolicy(analyze_deferred_bodies=analyze_bodies),
+    )
+    fact = index.expression_fact(ast.parse(source).body[-1].value)
+    assert fact is not None
+    assert bool(fact.module_metadata_effects & WRITES_MODULE_METADATA) is (
+        not analyze_bodies
+    )
+
+
+def test_deferred_kind_uses_cached_lexical_body_summary():
+    source = "def outer():\n    def nested():\n        yield 1\n    return nested\n"
+    definition = ast.parse(source).body[0]
+    authority = PythonDependencyAuthority(
+        eager_annotations=True, future_annotations=False
+    )
+    summary = authority.summary(definition)
+    assert not summary.contains_yield
+    assert authority.summary(definition.body[0]).contains_yield
+    visits = authority.node_visits
+    for _ in range(50):
+        assert authority.summary(definition) is summary
+    assert authority.node_visits == visits

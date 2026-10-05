@@ -931,7 +931,15 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
                     Terminator::Branch { target, args } => {
                         emit_block_arg_stores(*target, args, &block_param_vars, &mut out);
                     }
-                    Terminator::Unreachable => {}
+                    Terminator::Unreachable => emit_terminator(
+                        arm,
+                        &block_param_vars,
+                        &block_label_id,
+                        &trampoline_label_id,
+                        &if_inlined_blocks,
+                        &mut out,
+                        &func.loop_break_kinds,
+                    ),
                     _ => unreachable!("non-simple terminator in structured if arm"),
                 }
             }

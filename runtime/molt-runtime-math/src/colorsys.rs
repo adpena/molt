@@ -37,9 +37,7 @@ fn coerce_real_f64(_py: &PyToken, val_bits: u64) -> Option<f64> {
     if let Some(ptr) = maybe_ptr_from_bits(val_bits) {
         {
             let float_name_bits = intern_static_name(_py, b"__float__");
-            if let Some(call_bits) =
-                unsafe { lookup_special_method(_py, ptr, float_name_bits) }
-            {
+            if let Some(call_bits) = unsafe { lookup_special_method(_py, ptr, float_name_bits) } {
                 let res_bits = call_callable0(_py, call_bits);
                 dec_ref_bits(_py, call_bits);
                 if exception_pending(_py) {
@@ -61,9 +59,7 @@ fn coerce_real_f64(_py: &PyToken, val_bits: u64) -> Option<f64> {
                 return None;
             }
             let index_name_bits = intern_static_name(_py, b"__index__");
-            if let Some(call_bits) =
-                unsafe { lookup_special_method(_py, ptr, index_name_bits) }
-            {
+            if let Some(call_bits) = unsafe { lookup_special_method(_py, ptr, index_name_bits) } {
                 let res_bits = call_callable0(_py, call_bits);
                 dec_ref_bits(_py, call_bits);
                 if exception_pending(_py) {

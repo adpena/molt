@@ -10,8 +10,8 @@ from molt._wasm_abi_generated import WASM_NON_RUNTIME_CALLABLE_INTRINSICS
 from molt.file_publication import atomic_write_bytes
 from molt.cli import native_symbol_inspection
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
+from molt.cli.installed_runtime_contract import InstalledNativeAdmission
 from molt.cli.installed_runtime import (
-    InstalledNativeAdmission,
     InstalledRuntimeCell,
     installed_native_callable_projection,
     select_installed_native_runtime,
@@ -26,6 +26,7 @@ from molt.cli.native_link_manifest import (
     read_native_link_dependency_manifest,
 )
 from molt.toolchain_identity import (
+    StableRegularFileHandle,
     StableRegularFileIdentity,
     capture_stable_regular_file,
     verify_stable_regular_file_identity,
@@ -66,54 +67,53 @@ def _runtime_callable_symbols_file(
     its materialized input to native codegen.
     """
     try:
-        native_symbol_inspection._require_unchanged_symbol_artifact(
-            runtime_lib, identity
-        )
-        facts = native_symbol_inspection._native_archive_global_symbol_facts(
+        with native_symbol_inspection._native_symbol_facts_admission(
             runtime_lib,
+            archive=True,
             target_triple=target_triple,
             identity=identity,
             requirement=native_symbol_inspection.NativeSymbolRequirement(
                 function_prefix="molt_",
                 excluded_functions=WASM_NON_RUNTIME_CALLABLE_INTRINSICS,
             ),
-        )
-        symbols = tuple(
-            sorted(
-                name
-                for name in facts.defined_functions
-                if name.startswith("molt_")
-                and name not in WASM_NON_RUNTIME_CALLABLE_INTRINSICS
+        ) as (opened, identity, facts):
+            symbols = tuple(
+                sorted(
+                    name
+                    for name in facts.defined_functions
+                    if name.startswith("molt_")
+                    and name not in WASM_NON_RUNTIME_CALLABLE_INTRINSICS
+                )
             )
-        )
-        if not symbols:
-            return None, "runtime staticlib defines no molt_* callable symbols"
-        content = _runtime_callable_projection_content(symbols)
-        projection_digest = hashlib.sha256(content).hexdigest()
-        cache_path = runtime_lib.with_name(
-            _runtime_callable_projection_name(
-                runtime_lib.name,
-                archive_sha256=identity.sha256,
-                projection_sha256=projection_digest,
+            if not symbols:
+                return None, "runtime staticlib defines no molt_* callable symbols"
+            content = _runtime_callable_projection_content(symbols)
+            projection_digest = hashlib.sha256(content).hexdigest()
+            cache_path = runtime_lib.with_name(
+                _runtime_callable_projection_name(
+                    runtime_lib.name,
+                    archive_sha256=identity.sha256,
+                    projection_sha256=projection_digest,
+                )
             )
-        )
-        # Content-addressed projections are immutable generations. A concurrent
-        # creator may publish first; admit its bytes without replacing the file
-        # already bound by that operation. Corruption and read failures fail
-        # closed below rather than invalidating another operation's generation.
-        try:
-            atomic_write_bytes(cache_path, content, exclusive=True)
-        except FileExistsError:
-            pass
-        return (
-            _admit_runtime_callable_projection(
-                cache_path,
-                runtime_lib=runtime_lib,
-                archive_identity=identity,
-                expected_sha256=projection_digest,
-            ),
-            None,
-        )
+            # Content-addressed projections are immutable generations. A concurrent
+            # creator may publish first; admit its bytes without replacing the file
+            # already bound by that operation. Corruption and read failures fail
+            # closed below rather than invalidating another operation's generation.
+            try:
+                atomic_write_bytes(cache_path, content, exclusive=True)
+            except FileExistsError:
+                pass
+            return (
+                _admit_runtime_callable_projection(
+                    cache_path,
+                    runtime_lib=runtime_lib,
+                    archive_identity=identity,
+                    expected_sha256=projection_digest,
+                    _archive_opened=opened,
+                ),
+                None,
+            )
     except (OSError, ValueError) as exc:
         return None, f"runtime staticlib callable inspection failed: {exc}"
 
@@ -160,12 +160,16 @@ def _admit_runtime_callable_projection(
     archive_identity: StableRegularFileIdentity,
     expected_sha256: str,
     captured: tuple[StableRegularFileIdentity, bytes] | None = None,
+    _archive_opened: StableRegularFileHandle | None = None,
 ) -> RuntimeCallableProjection:
     """Admit one materialized projection by bytes, archive binding and location.
 
     The filename is a claim, never an authority: the captured bytes must have
     the expected digest and canonical encoding, and the name must address both
     those bytes and the exact archive generation beside which they are stored.
+    ``_archive_opened`` is an internal borrow from the active canonical native
+    symbol admission; that transaction already checked this digest and owns
+    the descriptor through this projection and its closing fences.
     """
     identity, content = (
         captured
@@ -202,9 +206,14 @@ def _admit_runtime_callable_projection(
     verify_stable_regular_file_identity(
         identity, label="native runtime callable projection"
     )
-    native_symbol_inspection._require_unchanged_symbol_artifact(
-        runtime_lib, archive_identity
-    )
+    if _archive_opened is None:
+        native_symbol_inspection._require_unchanged_symbol_artifact(
+            runtime_lib, archive_identity
+        )
+    elif _archive_opened.path != archive_identity.path or _archive_opened.stream.closed:
+        raise ValueError("callable projection lost its admitted archive handle")
+    # An owned caller already hashed this archive and retains the same context
+    # through materialization. Its closing fences run before the result escapes.
     return RuntimeCallableProjection(
         identity, _runtime_callable_symbols_digest(symbols)
     )

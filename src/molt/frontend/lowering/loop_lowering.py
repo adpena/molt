@@ -20,7 +20,7 @@ from __future__ import annotations
 import ast
 from typing import Callable
 
-from molt.compiler_analysis.python_binding_facts import UNBOUND_IDENTITY
+from molt.compiler_analysis.python_value_identity import UNBOUND_IDENTITY
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import LoopScope, MoltOp, MoltValue, ScratchCell
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
@@ -44,12 +44,9 @@ class LoopLoweringMixin(GeneratorMixinBase):
     def _iterable_is_indexable(self, iterable: MoltValue | None) -> bool:
         if iterable is None:
             return False
-        return iterable.type_hint in {
-            "list",
-            "tuple",
-            "range",
-            "memoryview",
-        }
+        # Memoryview iteration has rank/format admission even when empty.
+        # Its runtime iterator also owns release and exhaustion ordering.
+        return iterable.type_hint in {"list", "tuple", "range"}
 
     def _iterable_is_indexable_for_loop(self, iterable: MoltValue | None) -> bool:
         if iterable is None:

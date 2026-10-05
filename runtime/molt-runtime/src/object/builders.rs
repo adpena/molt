@@ -1800,7 +1800,10 @@ pub(crate) fn alloc_class_obj_with_namespace(
                 ClassReferenceSlot::Name | ClassReferenceSlot::Qualname => name_bits,
                 ClassReferenceSlot::Dictionary => dict_bits,
                 ClassReferenceSlot::Bases | ClassReferenceSlot::Mro => MoltObject::none().bits(),
-                ClassReferenceSlot::SlotDeclaration | ClassReferenceSlot::FieldLayout => 0,
+                ClassReferenceSlot::SlotDeclaration
+                | ClassReferenceSlot::FieldLayout
+                | ClassReferenceSlot::InstanceDictionary
+                | ClassReferenceSlot::CreationDoc => 0,
             };
             slot.initialize_owned(ptr, bits);
         }
@@ -2355,117 +2358,185 @@ pub(crate) fn alloc_bytearray_with_len(_py: &PyToken<'_>, len: usize) -> *mut u8
     ptr
 }
 
-pub(crate) fn alloc_memoryview_from_storage(
-    _py: &PyToken<'_>,
-    mut storage: crate::object::memoryview::TypedStridedStorage,
-) -> *mut u8 {
-    if storage.format_bits == 0
-        || (storage.base_bits == 0 && storage.data.is_null() && storage.span_len != 0)
-    {
-        return std::ptr::null_mut();
-    }
-    // Descriptor edges must survive allocation-triggered release of the source
-    // view as well as the backing bytes. Transfer only distinct owned edges.
-    inc_ref_bits(_py, storage.base_bits);
-    let mut base_guard = PtrDropGuard::new(
-        obj_from_bits(storage.base_bits)
-            .as_ptr()
-            .unwrap_or(std::ptr::null_mut()),
-    );
-    inc_ref_bits(_py, storage.format_bits);
-    let mut format_guard = PtrDropGuard::new(
-        obj_from_bits(storage.format_bits)
-            .as_ptr()
-            .unwrap_or(std::ptr::null_mut()),
-    );
-    // Acquire before any object allocation/finalizer reentry, not after the
-    // descriptor has already borrowed potentially resizable backing storage.
-    let owner = match super::buffer_exports::ScopedBufferExport::new(_py, storage.owner_bits) {
-        Ok(owner) => owner,
-        Err(()) => return std::ptr::null_mut(),
-    };
-    let data = unsafe {
-        if !storage.data.is_null() {
-            storage.data
-        } else if storage.base_bits == 0 && storage.span_len == 0 {
-            std::ptr::NonNull::<u8>::dangling().as_ptr()
-        } else {
-            let base = obj_from_bits(storage.base_bits);
-            let Some(base_ptr) = base.as_ptr() else {
-                return std::ptr::null_mut();
-            };
-            let Some(base_slice) = bytes_like_slice_raw(base_ptr) else {
-                return std::ptr::null_mut();
-            };
-            if !storage.fits_in_base_len(base_slice.len()) {
-                return std::ptr::null_mut();
-            }
-            if storage.offset < 0 {
-                return std::ptr::null_mut();
-            }
-            base_slice.as_ptr().add(storage.offset as usize).cast_mut()
-        }
-    };
-    if !storage.data.is_null() && storage.base_bits != 0 {
-        let base = obj_from_bits(storage.base_bits);
-        if let Some(base_ptr) = base.as_ptr()
-            && let Some(base_slice) = unsafe { bytes_like_slice_raw(base_ptr) }
-            && !storage.fits_in_base_len(base_slice.len())
+/// Own the descriptor edges and counted export before callbacks or allocation.
+/// Geometry may change while pinned; ownership can only transfer into a view.
+pub(crate) struct PinnedMemoryViewStorage<'a, 'py> {
+    py: &'a PyToken<'py>,
+    storage: crate::object::memoryview::TypedStridedStorage,
+    base_guard: PtrDropGuard,
+    format_guard: PtrDropGuard,
+    owner: Option<super::buffer_exports::ScopedBufferExport<'a, 'py>>,
+}
+
+impl<'a, 'py> PinnedMemoryViewStorage<'a, 'py> {
+    pub(crate) fn new(
+        py: &'a PyToken<'py>,
+        storage: crate::object::memoryview::TypedStridedStorage,
+    ) -> Result<Self, ()> {
+        if storage.format_bits == 0
+            || (storage.base_bits == 0 && storage.data.is_null() && storage.span_len != 0)
         {
-            return std::ptr::null_mut();
+            memoryview_construction_failure(py, "BufferError", "invalid memoryview storage");
+            return Err(());
+        }
+        inc_ref_bits(py, storage.base_bits);
+        let base_guard = PtrDropGuard::preserving(
+            obj_from_bits(storage.base_bits)
+                .as_ptr()
+                .unwrap_or(std::ptr::null_mut()),
+        );
+        inc_ref_bits(py, storage.format_bits);
+        let format_guard = PtrDropGuard::preserving(
+            obj_from_bits(storage.format_bits)
+                .as_ptr()
+                .unwrap_or(std::ptr::null_mut()),
+        );
+        let owner = super::buffer_exports::ScopedBufferExport::new(py, storage.owner_bits)?;
+        Ok(Self {
+            py,
+            storage,
+            base_guard,
+            format_guard,
+            owner: Some(owner),
+        })
+    }
+
+    pub(crate) fn storage(&self) -> &crate::object::memoryview::TypedStridedStorage {
+        &self.storage
+    }
+
+    /// Derive geometry through the shared checked storage authority.
+    pub(crate) fn slice_first_axis(
+        &mut self,
+        start: isize,
+        stop: isize,
+        step: isize,
+    ) -> Option<()> {
+        self.storage.slice_first_axis(self.py, start, stop, step)
+    }
+
+    pub(crate) fn allocate(mut self) -> *mut u8 {
+        let py = self.py;
+        let storage = &mut self.storage;
+        let invalid =
+            || memoryview_construction_failure(py, "BufferError", "invalid memoryview storage");
+        let no_memory =
+            || memoryview_construction_failure(py, "MemoryError", "cannot allocate memoryview");
+        let data = unsafe {
+            if !storage.data.is_null() {
+                storage.data
+            } else if storage.base_bits == 0 && storage.span_len == 0 {
+                std::ptr::NonNull::<u8>::dangling().as_ptr()
+            } else {
+                let Some(base_ptr) = obj_from_bits(storage.base_bits).as_ptr() else {
+                    return invalid();
+                };
+                let Some(base_slice) = bytes_like_slice_raw(base_ptr) else {
+                    return invalid();
+                };
+                if !storage.fits_in_base_len(base_slice.len()) || storage.offset < 0 {
+                    return invalid();
+                }
+                base_slice.as_ptr().add(storage.offset as usize).cast_mut()
+            }
+        };
+        if !storage.data.is_null() && storage.base_bits != 0 {
+            let base = obj_from_bits(storage.base_bits);
+            if let Some(base_ptr) = base.as_ptr()
+                && let Some(base_slice) = unsafe { bytes_like_slice_raw(base_ptr) }
+                && !storage.fits_in_base_len(base_slice.len())
+            {
+                return invalid();
+            }
+        }
+        let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<MemoryView>();
+        let ptr = alloc_object(py, total, TYPE_ID_MEMORYVIEW);
+        if ptr.is_null() {
+            return no_memory();
+        }
+        unsafe {
+            let Some(shape_ptr) = crate::object::backing::tracked_vec_box_from_slice(
+                storage.shape.as_slice(),
+                storage.shape.len(),
+            ) else {
+                dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
+                return no_memory();
+            };
+            let Some(strides_ptr) = crate::object::backing::tracked_vec_box_from_slice(
+                storage.strides.as_slice(),
+                storage.strides.len(),
+            ) else {
+                drop(crate::object::backing::tracked_vec_box_from_raw(shape_ptr));
+                dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
+                return no_memory();
+            };
+            let mv_ptr = memoryview_ptr(ptr);
+            (*mv_ptr).owner_bits = 0;
+            (*mv_ptr).base_bits = 0;
+            (*mv_ptr).data = data;
+            (*mv_ptr).offset = storage.offset;
+            (*mv_ptr).len = storage.memoryview_len_field();
+            (*mv_ptr).itemsize = storage.itemsize;
+            (*mv_ptr).stride = storage.memoryview_stride_field();
+            (*mv_ptr).readonly = if storage.readonly { 1 } else { 0 };
+            (*mv_ptr).ndim = storage.shape.len() as u8;
+            (*mv_ptr).released = 0;
+            (*mv_ptr).restricted = 0;
+            (*mv_ptr)._pad = [0; 4];
+            (*mv_ptr).format_bits = storage.format_bits;
+            (*mv_ptr).shape_ptr = shape_ptr;
+            (*mv_ptr).strides_ptr = strides_ptr;
+            (*mv_ptr).exports = super::buffer_exports::BufferExports::new();
+            (*mv_ptr).native_lease = storage.native_lease.take();
+        }
+        self.format_guard.release();
+        // Transfer the single pre-acquired export only after initialization.
+        let owner = self
+            .owner
+            .take()
+            .expect("pinned memoryview owner")
+            .into_owner();
+        unsafe {
+            (*memoryview_ptr(ptr)).owner_bits = owner;
+            (*memoryview_ptr(ptr)).base_bits = storage.base_bits;
+        }
+        self.base_guard.release();
+        if storage.base_bits != 0 && storage.base_bits == owner {
+            // The initialized view now owns the same object through its export.
+            // Dropping this redundant strong edge cannot run a finalizer.
+            dec_ref_bits(py, storage.base_bits);
+        }
+        ptr
+    }
+}
+
+impl Drop for PinnedMemoryViewStorage<'_, '_> {
+    fn drop(&mut self) {
+        // Native leases and pointer guards already preserve pending errors.
+        // The counted owner needs the same rule when a callback aborted slicing.
+        if let Some(owner) = self.owner.take()
+            && owner.owner_bits() != 0
+        {
+            molt_cpython_abi::api::errors::with_preserved_error(|| drop(owner));
         }
     }
-    let total = std::mem::size_of::<MoltHeader>() + std::mem::size_of::<MemoryView>();
-    let ptr = alloc_object(_py, total, TYPE_ID_MEMORYVIEW);
-    if ptr.is_null() {
-        return ptr;
+}
+
+fn memoryview_construction_failure(py: &PyToken<'_>, kind: &str, message: &str) -> *mut u8 {
+    if !crate::exception_pending(py) {
+        let _ = crate::raise_exception::<u64>(py, kind, message);
     }
-    unsafe {
-        let Some(shape_ptr) = crate::object::backing::tracked_vec_box_from_slice(
-            storage.shape.as_slice(),
-            storage.shape.len(),
-        ) else {
-            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-            return std::ptr::null_mut();
-        };
-        let Some(strides_ptr) = crate::object::backing::tracked_vec_box_from_slice(
-            storage.strides.as_slice(),
-            storage.strides.len(),
-        ) else {
-            drop(crate::object::backing::tracked_vec_box_from_raw(shape_ptr));
-            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-            return std::ptr::null_mut();
-        };
-        let mv_ptr = memoryview_ptr(ptr);
-        (*mv_ptr).owner_bits = 0;
-        (*mv_ptr).base_bits = 0;
-        (*mv_ptr).data = data;
-        (*mv_ptr).offset = storage.offset;
-        (*mv_ptr).len = storage.memoryview_len_field();
-        (*mv_ptr).itemsize = storage.itemsize;
-        (*mv_ptr).stride = storage.memoryview_stride_field();
-        (*mv_ptr).readonly = if storage.readonly { 1 } else { 0 };
-        (*mv_ptr).ndim = storage.shape.len() as u8;
-        (*mv_ptr).released = 0;
-        (*mv_ptr)._pad = [0; 5];
-        (*mv_ptr).format_bits = storage.format_bits;
-        (*mv_ptr).shape_ptr = shape_ptr;
-        (*mv_ptr).strides_ptr = strides_ptr;
-        (*mv_ptr).exports = super::buffer_exports::BufferExports::new();
-        (*mv_ptr).native_lease = storage.native_lease.take();
+    std::ptr::null_mut()
+}
+
+pub(crate) fn alloc_memoryview_from_storage(
+    py: &PyToken<'_>,
+    storage: crate::object::memoryview::TypedStridedStorage,
+) -> *mut u8 {
+    match PinnedMemoryViewStorage::new(py, storage) {
+        Ok(pinned) => pinned.allocate(),
+        Err(()) => std::ptr::null_mut(),
     }
-    format_guard.release();
-    // Transfer the already-counted lease only after initialization succeeded.
-    // Every earlier return drops the scoped guard exactly once.
-    let owner = owner.into_owner();
-    if storage.base_bits != 0 && storage.base_bits != owner {
-        base_guard.release();
-    }
-    unsafe {
-        (*memoryview_ptr(ptr)).owner_bits = owner;
-        (*memoryview_ptr(ptr)).base_bits = storage.base_bits;
-    }
-    ptr
 }
 
 #[cfg(test)]
@@ -3141,7 +3212,11 @@ mod tests {
                 crate::inc_ref_bits(py, bits);
                 let count = || unsafe { (*crate::header_from_obj_ptr(ptr)).ref_count_snapshot() };
                 let guard = make_guard(ptr);
-                assert_eq!(count(), 2, "constructing an owner must not retire its reference");
+                assert_eq!(
+                    count(),
+                    2,
+                    "constructing an owner must not retire its reference"
+                );
                 drop(guard);
                 assert_eq!(count(), 1, "scope exit must retire exactly one reference");
                 crate::inc_ref_bits(py, bits);

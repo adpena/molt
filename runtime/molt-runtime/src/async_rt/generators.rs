@@ -9,8 +9,8 @@ use super::generators_async::molt_future_new;
 use crate::object::accessors::resolve_obj_ptr;
 use crate::object::{
     HEADER_FLAG_COROUTINE, ObjectAuxPreselection, object_init_poll_fn_unpublished,
-    object_init_shape_unpublished, object_init_state_unpublished, object_shape_for_poll_fn,
-    object_state,
+    object_init_shape_unpublished, object_init_state_unpublished, object_state,
+    task_shape_for_poll_fn,
 };
 use crate::{
     ACTIVE_EXCEPTION_STACK, ASYNCGEN_CONTROL_SIZE, ASYNCGEN_FINALIZER_OFFSET,
@@ -285,7 +285,7 @@ fn task_new_with_context(
         // any backend publishes captures into the payload.
         crate::object::object_mark_has_ptrs(_py, ptr);
         if !object_init_poll_fn_unpublished(ptr, poll_fn_addr)
-            || !object_init_shape_unpublished(ptr, object_shape_for_poll_fn(poll_fn_addr))
+            || !object_init_shape_unpublished(ptr, task_shape_for_poll_fn(poll_fn_addr))
             || !object_init_state_unpublished(ptr, 0)
             || !crate::object::aux_header::object_init_frame_context_unpublished(
                 _py, ptr, context[0], context[1], context[2],
@@ -345,6 +345,17 @@ pub(crate) fn is_native_coroutine_bits(bits: u64) -> bool {
     })
 }
 
+/// Internal poll future adapter admission is a physical runtime invariant.
+/// A generator's poll function never grants the __await__ protocol.
+pub(crate) fn is_native_poll_future_bits(bits: u64) -> bool {
+    maybe_ptr_from_bits(bits).is_some_and(|ptr| unsafe {
+        object_type_id(ptr) == TYPE_ID_OBJECT
+            && ((*header_from_obj_ptr(ptr)).load_metadata_flags() & HEADER_FLAG_COROUTINE) == 0
+            && crate::object_class_bits(ptr) == 0
+            && crate::object::object_poll_fn(ptr) != 0
+    })
+}
+
 /// types.coroutine publishes its protocol flag on the captured code object.
 /// Reading gi_code on an arbitrary object admits spoofed attributes and hooks.
 pub(crate) fn is_iterable_coroutine_bits(bits: u64) -> bool {
@@ -369,11 +380,10 @@ pub(crate) fn is_native_python_awaitable_bits(bits: u64) -> bool {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_is_native_awaitable(val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(ptr) = maybe_ptr_from_bits(val_bits) else {
-            return MoltObject::from_bool(false).bits();
-        };
-        let has_poll = crate::object::object_poll_fn(ptr) != 0;
-        MoltObject::from_bool(has_poll).bits()
+        MoltObject::from_bool(
+            is_native_python_awaitable_bits(val_bits) || is_native_poll_future_bits(val_bits),
+        )
+        .bits()
     })
 }
 

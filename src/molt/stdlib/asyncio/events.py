@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 import contextvars
+from _compatibility_errors import (
+    abstract_add_signal_handler_error as _abstract_add_signal_handler_error,
+    abstract_remove_signal_handler_error as _abstract_remove_signal_handler_error,
+    windows_add_signal_handler_error as _windows_add_signal_handler_error,
+    windows_remove_signal_handler_error as _windows_remove_signal_handler_error,
+)
 import errno as _errno
 import os
 import signal
@@ -14,7 +20,6 @@ import weakref as _weakref
 from typing import TYPE_CHECKING, Any, Callable, cast as _cast
 
 from _intrinsics import require_intrinsic as _require_intrinsic
-from ._debug import _debug_write
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
 
 import asyncio as _asyncio
@@ -184,6 +189,26 @@ class TimerHandle(Handle):
         if timer_id is not None:
             self._loop._cancel_rust_timer(timer_id)
 
+def _write_exception_message(message: str) -> None:
+    err = getattr(sys, "stderr", None)
+    if err is None or not hasattr(err, "write"):
+        err = getattr(sys, "__stderr__", None)
+    if err is not None and hasattr(err, "write"):
+        err.write(f"{message}\n")
+        flush_fn = getattr(err, "flush", None)
+        if callable(flush_fn):
+            flush_fn()
+        return None
+    out = getattr(sys, "stdout", None)
+    if out is not None and hasattr(out, "write"):
+        out.write(f"{message}\n")
+        flush_fn = getattr(out, "flush", None)
+        if callable(flush_fn):
+            flush_fn()
+        return None
+    print(message)
+
+
 class AbstractEventLoop:
     def run_forever(self) -> None:
         raise RuntimeError("abstract asyncio event loop API")
@@ -281,10 +306,10 @@ class AbstractEventLoop:
     def add_signal_handler(
         self, sig: int, callback: Callable[..., Any], /, *args: Any
     ) -> None:
-        raise RuntimeError("abstract asyncio event loop API")
+        raise _abstract_add_signal_handler_error()
 
     def remove_signal_handler(self, sig: int) -> bool:
-        raise RuntimeError("abstract asyncio event loop API")
+        raise _abstract_remove_signal_handler_error()
 
     def add_reader(self, fd: int, callback: Callable[..., Any], /, *args: Any) -> None:
         raise RuntimeError("abstract asyncio event loop API")
@@ -548,7 +573,7 @@ class _EventLoop(AbstractEventLoop):
     def default_exception_handler(self, context: dict[str, Any]) -> None:
         message = context.get("message", "Unhandled exception in event loop")
         exc = context.get("exception")
-        _debug_write(message if exc is None else f"{message}: {exc}")
+        _write_exception_message(message if exc is None else f"{message}: {exc}")
 
     def call_exception_handler(self, context: dict[str, Any]) -> None:
         handler = self.get_exception_handler()
@@ -574,7 +599,7 @@ class _EventLoop(AbstractEventLoop):
             except (SystemExit, KeyboardInterrupt):
                 raise
             except BaseException as error:
-                _debug_write(f"Exception in default exception handler: {error}")
+                _write_exception_message(f"Exception in default exception handler: {error}")
 
     def set_debug(self, enabled: bool) -> None:
         _require_asyncio_intrinsic(molt_event_loop_set_debug, "event_loop_set_debug")(
@@ -948,7 +973,7 @@ class _EventLoop(AbstractEventLoop):
         context, and each delivery schedules it on this loop.
         """
         if _IS_WINDOWS:
-            raise NotImplementedError
+            raise _windows_add_signal_handler_error()
         if _sys.platform in ("emscripten", "wasi"):
             raise NotImplementedError(
                 "signal handlers are not supported on this platform"
@@ -983,7 +1008,7 @@ class _EventLoop(AbstractEventLoop):
         every other signal to ``SIG_DFL``.
         """
         if _IS_WINDOWS:
-            raise NotImplementedError
+            raise _windows_remove_signal_handler_error()
         if _sys.platform in ("emscripten", "wasi"):
             raise NotImplementedError(
                 "signal handlers are not supported on this platform"

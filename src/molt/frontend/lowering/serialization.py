@@ -22,6 +22,7 @@ from molt.frontend.lowering.serialization_collection_ops import (
     SerializationCollectionOpsMixin,
 )
 from molt.frontend.lowering.serialization_context import SerializationContext
+from molt.frontend.lowering.op_kinds_generated import validate_serialized_kind
 from molt.frontend.lowering.serialization_exception_ops import (
     SerializationExceptionOpsMixin,
 )
@@ -281,11 +282,6 @@ class SerializationMixin(
                     candidates[root].unsafe = True
                     for other_root in used_roots - {root}:
                         candidates[other_root].unsafe = True
-            elif kind == "guard_tag" and len(args) >= 1 and arg_roots[0] is not None:
-                root = arg_roots[0]
-                candidates[root].alias_op_indexes.add(op_index)
-                for other_root in used_roots - {root}:
-                    candidates[other_root].unsafe = True
             else:
                 for root in used_roots:
                     candidates[root].unsafe = True
@@ -581,6 +577,8 @@ class SerializationMixin(
 
         json_ops = self._scalarize_string_split_fields_json(json_ops)
         json_ops = self._fuse_string_split_field_consumers_json(json_ops)
+        for entry in json_ops:
+            validate_serialized_kind(entry["kind"])
         return json_ops
 
     def _finalize_code_ids(self) -> None:

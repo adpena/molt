@@ -1365,8 +1365,8 @@ def classify(
         return "TransparentAlias"
     if kind in no_heap_move:
         return "TransparentAlias"
-    # The classifier's `_ =>` default. Every kind reaching here is treated as a
-    # transparent alias of operand 0 by `classify_copy_kind`.
+    # The classifier's `_ =>` default establishes non-owning custody only.
+    # Source identity requires the separate shared no_heap_alias_source fact.
     return "TransparentAlias"
 
 

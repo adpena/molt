@@ -20,17 +20,16 @@ use crate::builtins::exceptions::molt_exception_last_pending;
 use crate::builtins::io::{molt_sys_stderr, molt_sys_stdin, molt_sys_stdout};
 use crate::{
     HashContext, TYPE_ID_DICT, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_SET, TYPE_ID_STRING,
-    TYPE_ID_TUPLE, alloc_dict_with_pairs, alloc_list, alloc_module_obj, alloc_string, alloc_tuple,
-    call_callable0, call_callable1, call_callable2, class_mro_vec, class_name_for_error,
-    clear_exception, dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_order,
-    dict_set_in_place, exception_pending, format_obj_str, frame_stack_active_globals_bits,
-    has_capability, inc_ref_bits, init_atomic_bits, intern_static_name, is_missing_bits, is_truthy,
-    missing_bits, module_dict_bits, module_name_bits, molt_call_bind, molt_callargs_expand_kwstar,
+    alloc_dict_with_pairs, alloc_list, alloc_module_obj, alloc_string, alloc_tuple, call_callable0,
+    call_callable1, call_callable2, class_mro_vec, clear_exception, dec_ref_bits,
+    dict_del_in_place, dict_get_in_place, dict_order, dict_set_in_place, exception_pending,
+    format_obj_str, frame_stack_active_globals_bits, has_capability, inc_ref_bits,
+    init_atomic_bits, intern_static_name, is_missing_bits, is_truthy, missing_bits,
+    module_dict_bits, module_name_bits, molt_call_bind, molt_callargs_expand_kwstar,
     molt_callargs_expand_star, molt_callargs_new, molt_callargs_push_pos, molt_exception_kind,
-    molt_exception_last, molt_getattr_builtin, molt_int_from_obj, molt_is_callable, molt_iter,
-    molt_iter_next, obj_from_bits, object_type_id, ptr_from_bits, raise_exception, runtime_state,
-    set_add_in_place, string_bytes, string_len, string_obj_to_owned, to_i64, type_name,
-    type_of_bits,
+    molt_exception_last, molt_getattr_builtin, molt_int_from_obj, molt_is_callable, obj_from_bits,
+    object_type_id, ptr_from_bits, raise_exception, runtime_state, set_add_in_place, string_bytes,
+    string_len, string_obj_to_owned, to_i64, type_name, type_of_bits,
 };
 
 mod execution;
@@ -3228,9 +3227,7 @@ pub extern "C" fn molt_module_set_attr(module_bits: u64, attr_bits: u64, val_bit
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_import_star(src_bits: u64, dst_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        import_star::import_star(_py, src_bits, dst_bits)
-    })
+    crate::with_gil_entry_nopanic!(_py, { import_star::import_star(_py, src_bits, dst_bits) })
 }
 
 #[cfg(test)]

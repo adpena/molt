@@ -145,7 +145,7 @@ fn class_assignment_respects_data_descriptor_in_public_and_explicit_setters() {
         assert_eq!(unsafe { object_class_bits(object_ptr) }, first);
         crate::molt_exception_clear();
 
-        assert_eq!(molt_object_setattr(object, class_name, second), none);
+        assert_eq!(crate::molt_object_setattr(object, class_name, second), none);
         assert!(exception_pending(_py));
         assert_eq!(unsafe { object_class_bits(object_ptr) }, first);
         crate::molt_exception_clear();

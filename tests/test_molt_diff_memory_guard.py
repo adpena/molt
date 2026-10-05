@@ -42,7 +42,7 @@ def test_run_subprocess_keeps_infrastructure_outcome_without_inventing_rss_trip(
         child_returncode=child_returncode,
         infrastructure_failure=failure,
     )
-    monkeypatch.setattr(module, "_memory_guard_trip_message", lambda: None)
+    monkeypatch.setattr(module, "_memory_guard_trip_outcome", lambda: None)
     monkeypatch.setattr(module, "_diff_root", lambda: tmp_path)
     monkeypatch.setattr(module, "_diff_memory_guard_limits", lambda *_: None)
     monkeypatch.setattr(
@@ -55,7 +55,8 @@ def test_run_subprocess_keeps_infrastructure_outcome_without_inventing_rss_trip(
     events = []
     monkeypatch.setattr(module, "_record_memory_guard_event", events.append)
     result = module._run_subprocess(["fixture"], env={}, timeout=5)
-    assert result is guarded
+    assert isinstance(result, module.compat_backends.BackendResult)
+    assert result.diagnostic_stderr == guarded.child_stderr
     assert result.child_returncode == child_returncode
     assert result.infrastructure_failure is failure
     assert result.stdout == "partial" and result.stderr == "custody incomplete"
@@ -181,7 +182,7 @@ def test_shared_sentinel_kills_cumulative_parallel_trees(
             matched=True,
             samples=(
                 module.memory_guard.ProcessSample(
-                    200, 1, 36 * 1024, "molt.cli build a", pgid=200
+                    200, 1, 36 * 1024, "molt.cli build a", pgid=200, started_at_ns=1000
                 ),
             ),
         ),
@@ -190,7 +191,7 @@ def test_shared_sentinel_kills_cumulative_parallel_trees(
             matched=True,
             samples=(
                 module.memory_guard.ProcessSample(
-                    300, 1, 36 * 1024, "molt.cli build b", pgid=300
+                    300, 1, 36 * 1024, "molt.cli build b", pgid=300, started_at_ns=2000
                 ),
             ),
         ),
@@ -229,7 +230,10 @@ def test_shared_sentinel_kills_cumulative_parallel_trees(
     sentinel.scan_once()
 
     assert terminated == [200, 300]
-    assert module._memory_guard_trip_message() is not None
+    assert module._memory_guard_trip_outcome() is not None
+    evidence = module.harness_outcomes.read_suite_trip(module.os.environ)
+    assert evidence is not None and evidence.infrastructure_failure is None
+    assert {trip.victim_pgid for trip in evidence.trips} == {200, 300}
 
 
 def test_memory_guard_clamps_parallel_jobs(tmp_path: Path, monkeypatch) -> None:
@@ -584,3 +588,464 @@ def test_run_subprocess_preserves_signal_diagnostic(
 
     assert module.memory_guard.exit_signal_payload(result.returncode) is not None
     assert "memory_guard: command exited with SIGKILL" in result.stderr
+
+
+@pytest.mark.parametrize("identified", [False, True])
+def test_suite_trip_partial_births_preserve_identified_victims(
+    monkeypatch, tmp_path, identified
+):
+    import json
+
+    module = _load_diff_module()
+    marker = tmp_path / "trip.json"
+    entry = _suite_trip_entry()
+    samples = entry["shared_sentinel_event"]["violation"]["process_samples"]
+    samples[:] = ([{"pid": 11, "started_at_ns": 1000}] if identified else []) + [
+        {"pid": 12, "started_at_ns": None},
+        {"pid": 13},
+        {"pid": True, "started_at_ns": 3000},
+        {"pid": 14, "started_at_ns": False},
+        None,
+    ]
+    marker.write_text(json.dumps({"event": "guard_tripped", "trips": [entry]}))
+    evidence = module.harness_outcomes.read_suite_trip({}, path=marker)
+    assert evidence is not None
+    if not identified:
+        assert evidence.infrastructure_failure.phase == "rss_trip_evidence"
+        assert "omitted 5 samples" in evidence.message
+        return
+    assert evidence.infrastructure_failure is None
+    assert evidence.trips[0].process_identities == ((11, 1000),)
+    assert evidence.trips[0].unidentified_samples == 5
+    assert "omitted 5 unidentified victim samples" in evidence.message
+    module.harness_outcomes.publish_suite_trip(marker, entry)
+    result = module.compat_backends.suite_trip_outcome(evidence)
+    assert result.rss_limit_exceeded and result.returncode == 137
+    assert "omitted 5 unidentified victim samples" in result.stderr
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("protocol_death", [False, True])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "server",
+        "descendant",
+        "old_trip",
+        "old_descendant",
+        "reused",
+        "unknown_birth",
+        "unrelated",
+        "timeout",
+        "success",
+        "malformed",
+    ],
+)
+def test_batch_suite_trip_uses_request_custody_before_retry_or_fallback(
+    monkeypatch, tmp_path, strict, protocol_death, case
+):
+    from tools.batch_compile_client import (
+        BatchCompileRequestCustody,
+        BatchCompileResponse,
+    )
+
+    module = _load_diff_module()
+    marker = tmp_path / "trip.json"
+    monkeypatch.setattr(module, "_diff_memory_guard_trip_file", lambda: marker)
+    requests = []
+    shutdown = []
+    child = module.memory_guard.GuardedChildProcess(
+        11,
+        11,
+        11,
+        ("batch",),
+        "fixture",
+        None if case == "unknown_birth" else 1000,
+    )
+    descendant = case in {"descendant", "old_descendant"}
+    victim = 22 if descendant or case == "unrelated" else 11
+    born = 2000 if victim == 22 else 1001 if case == "reused" else 1000
+    entry = _suite_trip_entry(victim, born)
+    event = entry["shared_sentinel_event"]
+    event["observed_at_ns"] = 90 if case == "old_trip" else 120
+    if descendant:
+        event["custody_ancestry"] = [
+            {
+                "pid": victim,
+                "started_at_ns": born,
+                "admitted_at_ns": 90 if case == "old_descendant" else 110,
+                "ancestors": [{"pid": 11, "started_at_ns": 1000}],
+            }
+        ]
+
+    class Client:
+        def request(self, op, *, params, timeout):
+            requests.append(op)
+            if case == "malformed":
+                marker.write_text("invalid JSON")
+            else:
+                module.harness_outcomes.publish_suite_trip(marker, entry)
+            if case == "timeout":
+                raise TimeoutError("request deadline")
+            rc = 0 if case == "success" else 1
+            custody = BatchCompileRequestCustody(child, 100, rc)
+            if protocol_death and case != "success":
+                error = RuntimeError("response pipe closed")
+                error.batch_request_custody = custody
+                raise error
+            return BatchCompileResponse(
+                {
+                    "id": 1,
+                    "ok": rc == 0,
+                    "returncode": rc,
+                    "stdout": "compiler stdout",
+                    "stderr": "compiler stderr",
+                },
+                custody,
+            )
+
+    monkeypatch.setattr(
+        module, "_batch_compile_server_client", lambda *a, **k: (Client(), None)
+    )
+    monkeypatch.setattr(
+        module, "_shutdown_batch_compile_server", lambda **k: shutdown.append(True)
+    )
+    monkeypatch.setattr(
+        module, "_batch_compile_server_mark_disabled", lambda reason: None
+    )
+    monkeypatch.setattr(module, "_batch_compile_server_reset_disabled", lambda: None)
+    result = module._run_batch_compile_build(
+        env={},
+        file_path="fixture.py",
+        output_root=tmp_path,
+        output_binary=tmp_path / "fixture",
+        build_profile="dev",
+        target_python=None,
+        no_cache=False,
+        rebuild=False,
+        request_timeout=2.0,
+        strict_mode=strict,
+    )
+    matched = case in {"server", "descendant"}
+    assert result.rss_limit_exceeded is matched
+    assert result.returncode == (
+        137
+        if matched
+        else 124
+        if case == "timeout"
+        else 0
+        if case == "success"
+        else module.memory_guard.INFRASTRUCTURE_RETURN_CODE
+        if case == "malformed" and protocol_death
+        else 127
+        if protocol_death
+        else 1
+    )
+    assert requests == ["build"]
+    if case != "success":
+        assert result.build_failed
+    assert result.timed_out is (case == "timeout")
+    # Uncertain batch ownership must not erase the failing suite verdict.
+    suite = module._memory_guard_trip_outcome()
+    assert suite is not None and suite.returncode != 0
+    assert suite.rss_limit_exceeded is (case != "malformed")
+
+
+def test_batch_admission_preserves_prior_suite_trip_without_launch(
+    monkeypatch, tmp_path
+):
+    module = _load_diff_module()
+    marker = tmp_path / "trip.json"
+    module.harness_outcomes.publish_suite_trip(marker, _suite_trip_entry())
+    monkeypatch.setattr(module, "_diff_memory_guard_trip_file", lambda: marker)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("suite trip must stop a new batch request")
+
+    monkeypatch.setattr(module, "_batch_compile_server_client", forbidden)
+    result = module._run_batch_compile_build(
+        env={},
+        file_path="fixture.py",
+        output_root=tmp_path,
+        output_binary=tmp_path / "fixture",
+        build_profile="dev",
+        target_python=None,
+        no_cache=False,
+        rebuild=False,
+        request_timeout=2.0,
+        strict_mode=True,
+    )
+    assert result.rss_limit_exceeded and result.build_failed
+    assert result.child_returncode is None
+
+
+def test_sentinel_publishes_live_request_ancestry_before_termination(
+    monkeypatch, tmp_path
+):
+    module = _load_diff_module()
+    guard = module.harness_memory_guard
+    sample = module.memory_guard.ProcessSample
+    samples = {
+        100: sample(100, 1, 1, "suite", pgid=100, started_at_ns=900),
+        11: sample(11, 100, 1, "batch", pgid=11, started_at_ns=1000),
+        22: sample(22, 11, 5 * 1024 * 1024, "compiler", pgid=22, started_at_ns=2000),
+    }
+    victim = samples[22]
+    marker = tmp_path / "trip.json"
+    monkeypatch.delenv("MOLT_BACKEND_DAEMON_SUITE_LEASE", raising=False)
+    monkeypatch.setattr(module.memory_guard, "sample_processes", lambda: samples)
+    monkeypatch.setattr(guard.time, "monotonic_ns", lambda: 110)
+    monkeypatch.setattr(guard, "_claim_terminated_pgid", lambda pgid: True)
+    monkeypatch.setattr(
+        guard.process_sentinel,
+        "process_groups",
+        lambda *a, **k: [guard.process_sentinel.ProcessGroup(22, (victim,), True)],
+    )
+
+    def publish(_violation, _resolved, payload):
+        entry = _suite_trip_entry(22, 2000)
+        entry["shared_sentinel_event"] = dict(payload)
+        module.harness_outcomes.publish_suite_trip(marker, entry)
+
+    def terminate(*args, **kwargs):
+        assert marker.exists()
+        samples.clear()
+
+    monkeypatch.setattr(guard.process_sentinel, "terminate_group", terminate)
+    sentinel = guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="request_fixture",
+        limits=guard.HarnessMemoryLimits(
+            enabled=True,
+            max_process_rss_gb=10,
+            max_total_rss_gb=10,
+            max_global_rss_gb=4,
+            poll_interval=0.01,
+        ),
+        drain_on_exit=False,
+        on_violation=publish,
+    )
+    sentinel._tree_tracker = module.memory_guard.ProcessTreeTracker(100)
+    monkeypatch.setattr(
+        sentinel, "_record_skipped_protected_groups", lambda samples: None
+    )
+    sentinel.scan_once()
+    assert not samples
+    evidence = module.harness_outcomes.read_suite_trip({}, path=marker)
+    assert evidence.infrastructure_failure is None
+    child = module.memory_guard.GuardedChildProcess(
+        11, 11, 11, ("batch",), "fixture", 1000
+    )
+    assert evidence.trips[0].matches(child, (), request_started_at_ns=100)
+    assert not evidence.trips[0].matches(child, (), request_started_at_ns=120)
+
+
+def _suite_trip_entry(pid=11, born=1000):
+    return {
+        "event": "guard_tripped",
+        "message": "observed RSS trip",
+        "violation": {"rss_kb": 4096, "scope": "process_tree"},
+        "shared_sentinel_event": {
+            "event": "repo_process_guard_tripped",
+            "victim_pgid": pid,
+            "violation": {
+                "pgid": pid,
+                "process_samples": [{"pid": pid, "started_at_ns": born}],
+            },
+            "termination": {"rss_triggered": True, "attempted": True},
+        },
+    }
+
+
+@pytest.mark.parametrize("valid", [False, True])
+def test_suite_trip_requires_recorded_rss_and_identity_evidence(
+    tmp_path, monkeypatch, valid
+):
+    import json
+
+    module = _load_diff_module()
+    marker = tmp_path / "trip.json"
+    monkeypatch.setattr(module, "_diff_memory_guard_trip_file", lambda: marker)
+    assert module._memory_guard_trip_outcome() is None
+    payload = (
+        {"event": "guard_tripped", "trips": [_suite_trip_entry()]}
+        if valid
+        else {"event": "guard_tripped", "violation": None}
+    )
+    marker.write_text(json.dumps(payload))
+    result = module._memory_guard_trip_outcome()
+    assert result is not None
+    assert result.rss_limit_exceeded is valid
+    assert (result.infrastructure_failure is None) is valid
+    assert result.resource_failure == ("rss_limit_exceeded" if valid else None)
+    assert module._memory_guard_trip_outcome() is not None
+
+
+@pytest.mark.parametrize("failure_kind", ["callback", "publication"])
+def test_sentinel_failure_reaches_parent_without_trip_file(
+    tmp_path, monkeypatch, failure_kind
+):
+    from molt import file_publication
+
+    module = _load_diff_module()
+    marker = tmp_path / "trip.json"
+    monkeypatch.setattr(module, "_diff_memory_guard_trip_file", lambda: marker)
+
+    def fail_callback(*args):
+        if failure_kind == "publication":
+            module._mark_memory_guard_tripped(_suite_trip_entry())
+        raise OSError("callback fixture failed")
+
+    if failure_kind == "publication":
+
+        def fail_replace(*args):
+            raise OSError("atomic marker publication failed")
+
+        monkeypatch.setattr(file_publication, "durable_replace", fail_replace)
+    sentinel = module.harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="fixture",
+        drain_on_exit=False,
+        limits=module._diff_memory_guard_limits(),
+        on_violation=fail_callback,
+    )
+    sentinel.tripped = True
+    sentinel._notify_violation(None, None, {})
+    result = module._memory_guard_trip_outcome(sentinel)
+    assert not marker.exists()
+    assert result.infrastructure_failure.phase == "rss_trip_evidence"
+    assert result.resource_failure is None
+    assert failure_kind in result.stderr
+
+
+@pytest.mark.parametrize("publication_failed", [False, True])
+def test_sentinel_retains_primary_and_stage_cleanup_failure(
+    tmp_path, monkeypatch, publication_failed
+):
+    from molt import file_publication
+
+    module = _load_diff_module()
+    marker = tmp_path / "trip.json"
+    stage = tmp_path / ".molt-fixture.tmp"
+    monkeypatch.setattr(module, "_diff_memory_guard_trip_file", lambda: marker)
+    monkeypatch.setattr(file_publication, "staged_file_path", lambda destination: stage)
+    original_unlink = Path.unlink
+
+    def publish(staged, destination):
+        if publication_failed:
+            raise OSError("primary marker publication failed")
+        destination.write_bytes(staged.read_bytes())
+
+    def fail_cleanup(path, *args, **kwargs):
+        if path == stage:
+            raise PermissionError("marker stage cleanup denied")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(file_publication, "durable_replace", publish)
+    monkeypatch.setattr(Path, "unlink", fail_cleanup)
+    sentinel = module.harness_memory_guard.repo_process_sentinel(
+        repo_root=tmp_path,
+        artifact_root=tmp_path,
+        label="fixture",
+        drain_on_exit=False,
+        limits=module._diff_memory_guard_limits(),
+        on_violation=lambda *args: module._mark_memory_guard_tripped(
+            _suite_trip_entry()
+        ),
+    )
+    sentinel.tripped = True
+    sentinel._notify_violation(None, None, {})
+    result = module._memory_guard_trip_outcome(sentinel)
+    assert marker.exists() is not publication_failed
+    assert stage.exists()
+    assert result.infrastructure_failure.phase == "rss_trip_evidence"
+    assert result.resource_failure is None
+    details = result.infrastructure_failure.details
+    assert any("marker stage cleanup denied" in detail for detail in details)
+    assert "marker stage cleanup denied" in result.stderr
+    if publication_failed:
+        assert "primary marker publication failed" in details[0]
+        assert any(str(stage) in detail for detail in details[1:])
+        assert "primary marker publication failed" in result.stderr
+
+
+@pytest.mark.parametrize("phase", ["build", "run"])
+@pytest.mark.parametrize("source", ["guard", "metrics", "batch"])
+def test_native_resource_evidence_survives_build_and_run(
+    tmp_path, monkeypatch, phase, source
+):
+    module = _load_diff_module()
+    layout = SimpleNamespace(
+        repo_root=tmp_path,
+        cargo_target_root=tmp_path / "target",
+        diff_root=tmp_path / "diff",
+        cache_root=tmp_path / "cache",
+    )
+    monkeypatch.setattr(module, "_apply_memory_limit", lambda: None)
+    monkeypatch.setattr(module, "_diff_artifact_layout", lambda **k: layout)
+    monkeypatch.setattr(module, "_diff_measure_rss", lambda: source == "metrics")
+    monkeypatch.setattr(module, "_diff_fail_rss_kb", lambda: 1024)
+    monkeypatch.setattr(
+        module, "_diff_batch_compile_server_enabled", lambda: source == "batch"
+    )
+    monkeypatch.setattr(module, "_diff_batch_compile_server_strict", lambda: False)
+    monkeypatch.setattr(module, "_resolve_molt_cli_python", lambda: "fixture-python")
+    monkeypatch.setattr(module, "_dyld_preflight_error", lambda _: None)
+    monkeypatch.setattr(module, "_record_rss_metrics", lambda *a, **k: None)
+    monkeypatch.setattr(
+        module,
+        "_parse_time_metrics",
+        lambda path: {
+            "max_rss": 2048 if path.name == phase + ".time" else 1,
+        },
+    )
+
+    def result(active_phase):
+        exhausted = active_phase == phase
+        return module.harness_memory_guard.GuardedCompletedProcess(
+            ["fixture"],
+            125 if exhausted and source != "metrics" else 0,
+            "partial stdout",
+            "child diagnostic",
+            elapsed_s=0.1,
+            child_returncode=-9 if exhausted and source != "metrics" else 0,
+            violation=module.memory_guard.RssViolation(7, 2048, "fixture")
+            if exhausted and source != "metrics"
+            else None,
+        )
+
+    monkeypatch.setattr(
+        module,
+        "_run_batch_compile_build",
+        lambda **k: module.compat_backends.BackendResult.from_process(result("build")),
+    )
+    monkeypatch.setattr(
+        module,
+        "_run_with_optional_time",
+        lambda command, **k: result("build" if "molt.cli" in command else "run"),
+    )
+    context = module.compat_backends.BackendExecutionContext(
+        target_python=module.TargetPythonVersion(3, 12, 0),
+        build_profile="dev",
+        capabilities="",
+        environment={},
+    )
+    actual = module._run_molt_owned(
+        "fixture.py",
+        build_only=False,
+        build_profile="dev",
+        daemon_enabled=False,
+        no_cache=False,
+        rebuild=False,
+        extra_env=None,
+        execution_context=context,
+        output_root=tmp_path,
+        environment={},
+    )
+    assert actual.rss_limit_exceeded and actual.resource_failure == "rss_limit_exceeded"
+    assert actual.build_failed is (phase == "build")
+    assert actual.diagnostic_stderr == "child diagnostic"
+    assert actual.child_returncode == (0 if source == "metrics" else -9)
+    assert "partial stdout" in (actual.stderr if phase == "build" else actual.stdout)

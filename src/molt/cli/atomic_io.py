@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 import zipfile
 
-from molt import artifact_publication, file_publication
+from molt import file_publication
 from molt.toolchain_identity import StableRegularFileIdentity
 
 
@@ -99,6 +99,8 @@ def _staged_copy_file(
     observed: StableRegularFileIdentity | None = None,
 ) -> Iterator[Path]:
     """Own the final byte/mode copy until its caller publishes or abandons it."""
+    from molt import artifact_publication
+
     with artifact_publication.staged_copy_file(
         src,
         dst,

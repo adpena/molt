@@ -35,7 +35,7 @@ fn dynamic_class_attr_set(_py: &PyToken<'_>, obj_bits: u64, name: &str, value_bi
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name.as_bytes()) else {
         return false;
     };
-    let _ = molt_object_setattr(obj_bits, name_bits, value_bits);
+    let _ = molt_set_attr_name(obj_bits, name_bits, value_bits);
     dec_ref_bits(_py, name_bits);
     !exception_pending(_py)
 }

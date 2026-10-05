@@ -122,6 +122,41 @@ pub(crate) unsafe extern "C" fn object_dealloc(object: *mut PyObject) {
     });
 }
 
+/// The default heap boundary owns instance finalization and the instance's
+/// heap-class edge. Both FromSpec and managed projections use this before
+/// inheritance, so no facade can terminate the wrapper walk with a NULL slot.
+pub(super) unsafe fn prepare_heap_defaults(tp: *mut PyTypeObject, managed: bool) {
+    unsafe {
+        if (*tp).tp_flags & Py_TPFLAGS_HEAPTYPE == 0 {
+            return;
+        }
+        if (*tp).tp_dealloc.is_none() {
+            (*tp).tp_dealloc = Some(subtype_dealloc);
+        }
+        let base = (*tp).tp_base;
+        if managed {
+            // Python class construction owns this allocation strategy; a
+            // foreign base's allocator must not bypass the heap boundary.
+            (*tp).tp_alloc = Some(super::PyType_GenericAlloc);
+            (*tp).tp_free = Some(memory::PyObject_GC_Del);
+        }
+        // Python-created heap classes are GC types even over object: an
+        // instance and one of its classes can form a cycle (type_new_alloc).
+        if managed
+            || (*tp).tp_flags & Py_TPFLAGS_HAVE_GC != 0
+            || (!base.is_null() && (*base).tp_flags & Py_TPFLAGS_HAVE_GC != 0)
+        {
+            (*tp).tp_flags |= Py_TPFLAGS_HAVE_GC;
+            if (*tp).tp_traverse.is_none() {
+                (*tp).tp_traverse = Some(subtype_traverse);
+            }
+            if (*tp).tp_clear.is_none() {
+                (*tp).tp_clear = Some(subtype_clear);
+            }
+        }
+    }
+}
+
 type Dealloc = unsafe extern "C" fn(*mut PyObject);
 type Traverse =
     unsafe extern "C" fn(*mut PyObject, *mut c_void, *mut c_void) -> std::os::raw::c_int;

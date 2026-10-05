@@ -18,3 +18,7 @@ pub use molt_ir::{
     MOLT_CLOSURE_PARAM_NAME, debug_artifacts, ir, ir_schema, json_boundary, process_diagnostics,
     repr, runtime_callable_symbols, stdlib_module_symbols,
 };
+
+#[cfg(test)]
+#[path = "../tests/fixture_support/mod.rs"]
+mod fixture_support;

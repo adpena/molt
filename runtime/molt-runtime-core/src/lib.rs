@@ -408,6 +408,10 @@ pub mod ffi {
     //! in the parent module for the most common operations.
 
     unsafe extern "C" {
+        /// Canonical owned iteration transport. Writes an owned value and
+        /// returns false for an item, true for exhaustion, or None on error.
+        pub fn molt_iter_next_unboxed(iter_bits: u64, value_out_bits: u64) -> u64;
+
         // -- Object allocation (c_api.rs) ------------------------------------
 
         /// Allocate a new string object from raw UTF-8 bytes.
@@ -459,6 +463,9 @@ pub mod ffi {
 
         /// Decrement the reference count for a NaN-boxed object.
         pub fn molt_dec_ref_obj(bits: u64);
+
+        /// Release a temporary without replacing either pending-error channel.
+        pub fn __molt_runtime_release_owned_value(bits: u64);
 
         /// Batched inc-ref: adds `count` to the refcount in one atomic op.
         /// Returns `bits` unchanged (for chaining).
@@ -703,6 +710,88 @@ pub fn rt_inc_ref(bits: u64) {
 #[inline]
 pub fn rt_dec_ref(bits: u64) {
     unsafe { ffi::molt_dec_ref_obj(bits) }
+}
+
+/// One runtime value owned under the caller's GIL custody. Immediate values,
+/// including positive zero (raw bits zero), follow the same ownership contract.
+#[repr(transparent)]
+pub struct OwnedRuntimeValue<'py> {
+    bits: u64,
+    _py: std::marker::PhantomData<&'py PyToken>,
+}
+
+impl<'py> OwnedRuntimeValue<'py> {
+    /// Adopt exactly one owned reference returned by a runtime operation.
+    ///
+    /// # Safety
+    /// `bits` must be a live value whose reference is transferred to this guard.
+    pub unsafe fn from_owned_bits(_py: &'py PyToken, bits: u64) -> Self {
+        Self {
+            bits,
+            _py: std::marker::PhantomData,
+        }
+    }
+
+    pub fn retain(_py: &'py PyToken, bits: u64) -> Self {
+        rt_inc_ref(bits);
+        Self {
+            bits,
+            _py: std::marker::PhantomData,
+        }
+    }
+
+    pub fn bits(&self) -> u64 {
+        self.bits
+    }
+
+    /// Borrow handles without allocating a second collection. The transparent
+    /// representation has only the u64 payload; the token remains a lifetime
+    /// and !Send/!Sync proof, including for empty collections.
+    pub fn as_bits_slice(values: &[Self]) -> &[u64] {
+        unsafe { std::slice::from_raw_parts(values.as_ptr().cast(), values.len()) }
+    }
+
+    /// Transfer this reference to a result, field, or another owner.
+    pub fn into_bits(self) -> u64 {
+        let bits = self.bits;
+        std::mem::forget(self);
+        bits
+    }
+}
+
+impl Drop for OwnedRuntimeValue<'_> {
+    fn drop(&mut self) {
+        unsafe { ffi::__molt_runtime_release_owned_value(self.bits) };
+    }
+}
+
+/// The common owned projection of the runtime's unboxed iterator protocol.
+/// Pending errors never advance input; values, exhaustion payloads and error
+/// results are released or transferred exactly once. The caller owns the
+/// iterator for its entire operation, including across multiple advances and
+/// reentrant retirement of an iterator field. Advancing adds no iterator owner.
+pub fn iter_next_owned<'py>(
+    py: &'py PyToken,
+    iterator: &OwnedRuntimeValue<'_>,
+) -> Result<Option<OwnedRuntimeValue<'py>>, ()> {
+    if rt_exception_pending() {
+        return Err(());
+    }
+    let mut bits = MoltObject::none().bits();
+    let done =
+        unsafe { ffi::molt_iter_next_unboxed(iterator.bits(), (&raw mut bits) as usize as u64) };
+    let value = unsafe { OwnedRuntimeValue::from_owned_bits(py, bits) };
+    if rt_exception_pending() {
+        return Err(());
+    }
+    match obj_from_bits(done).as_bool() {
+        Some(false) => Ok(Some(value)),
+        Some(true) => Ok(None),
+        None => {
+            rt_raise_str("SystemError", "invalid iterator completion result");
+            Err(())
+        }
+    }
 }
 
 /// Check whether an exception is currently pending.
@@ -990,10 +1079,10 @@ pub mod prelude {
     pub use crate::with_gil_entry_body;
     pub use crate::{
         CoreGilGuard, CoreGilToken, GilReleaseGuard, MoltObject, OwnedBridgeHandleSnapshot,
-        PyToken, bits_from_ptr, bridge_owned_handle_snapshot, bridge_owned_u8_buffer,
-        bridge_owned_u8_to_string_lossy, bridge_owned_u8_to_vec, bridge_owned_u64_buffer,
-        bridge_owned_u64_to_vec, obj_from_bits, opaque_handle_bits, opaque_handle_ptr_from_bits,
-        ptr_from_bits,
+        OwnedRuntimeValue, PyToken, bits_from_ptr, bridge_owned_handle_snapshot,
+        bridge_owned_u8_buffer, bridge_owned_u8_to_string_lossy, bridge_owned_u8_to_vec,
+        bridge_owned_u64_buffer, bridge_owned_u64_to_vec, iter_next_owned, obj_from_bits,
+        opaque_handle_bits, opaque_handle_ptr_from_bits, ptr_from_bits,
     };
 
     // Safe runtime wrappers

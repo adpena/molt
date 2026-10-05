@@ -15,10 +15,19 @@ use std::ptr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 mod descriptors;
+pub use descriptors::documentation_bytes;
 mod hierarchy;
 mod inheritance;
 mod method_descriptors;
 mod native_lifecycle;
+mod native_slot_dispatch;
+mod object_construction;
+mod protocol_storage;
+pub(crate) use object_construction::{
+    object_init, object_new, object_repr, object_richcompare, object_str,
+};
+pub(crate) use protocol_storage::{TypeProtocolTables, process_runtime_protocols};
+pub(crate) mod native_slot_mutation;
 mod root_metadata;
 pub use root_metadata::{TypeAttributeField, native_type_attribute_get, native_type_attribute_set};
 mod slot_wrappers;
@@ -31,9 +40,11 @@ pub use method_descriptors::{
 pub(crate) use native_lifecycle::{
     NativeDeallocation, gc_uses_managed_storage, object_dealloc, type_dealloc,
 };
+pub(crate) use root_metadata::type_setattro;
 use slot_wrappers::SLOT_WRAPPER_DEFS;
 pub(crate) use slot_wrappers::completes_call_operands as slot_wrapper_completes_call_operands;
 pub use slot_wrappers::{PyDescr_NewWrapper, PyWrapper_New};
+pub(crate) use slot_wrappers::{setter_admitted, setter_type_admitted};
 
 /// Build a real Init wrapper for a runtime integration witness. Runtime-bound
 /// builtin namespaces contain managed semantic descriptors, so reading their
@@ -60,6 +71,34 @@ pub unsafe fn init_slot_wrapper_for_test(
             owner,
             (&raw const definition.base).cast_mut(),
             initializer as *const () as *mut c_void,
+        )
+    }
+}
+
+/// Exercise the production explicit attribute wrapper against managed Type
+/// views. Their runtime namespaces are not physical PyWrapperDescrObjects.
+#[cfg(feature = "runtime-test-support")]
+pub unsafe fn attribute_slot_wrapper_for_test<const DELETE: bool>(
+    owner: *mut PyTypeObject,
+    setter: unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> c_int,
+) -> *mut PyObject {
+    let name = if DELETE {
+        c"__delattr__"
+    } else {
+        c"__setattr__"
+    };
+    let definition = SLOT_WRAPPER_DEFS
+        .iter()
+        .find(|definition| {
+            matches!(definition.slot, SlotWrapper::Direct(DirectSlot::SetAttr))
+                && unsafe { std::ffi::CStr::from_ptr(definition.base.name) } == name
+        })
+        .expect("native attribute mutation has canonical slot declarations");
+    unsafe {
+        PyDescr_NewWrapper(
+            owner,
+            (&raw const definition.base).cast_mut(),
+            setter as *const () as *mut c_void,
         )
     }
 }
@@ -561,6 +600,16 @@ pub unsafe extern "C" fn molt_cpython_abi_type_canonicalize(
 /// need basic tp_base resolution.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
+    unsafe { ready_type(&GLOBAL_BRIDGE, tp) }
+}
+
+/// The bridge that owns a projection also owns its readiness exposure. Native
+/// callers enter through the process bridge; recursive publication supplies
+/// its exact owner, including isolated bridge transactions.
+pub(crate) unsafe fn ready_type(
+    bridge: &crate::bridge::ObjectBridge,
+    tp: *mut PyTypeObject,
+) -> c_int {
     // Unconditional entry trace (before the null check) so *every* call site is
     // visible, including a null/unresolved `tp`. This distinguishes "the caller
     // was never reached" from "the caller passed a bad pointer": if a static
@@ -606,6 +655,18 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
         return unsafe { reject_type_readiness(c"recursive PyType_Ready on an initializing type") };
     }
 
+    if unsafe { (*tp).tp_flags } & Py_TPFLAGS_READY == 0
+        && !bridge.managed_type_population_complete(tp)
+    {
+        return unsafe { reject_type_readiness(c"managed type metadata is still being published") };
+    }
+    let Some(_type_owner) =
+        (unsafe { crate::api::refcount::OwnedPyObject::try_from_borrowed(tp.cast()) })
+    else {
+        return -1;
+    };
+    let binding = bridge.molt_handle_for_pyobj(tp.cast());
+
     // Bootstrap native shells carry initialized C slots before their runtime
     // roots exist. Projecting roots is not completion of native readiness.
     // Clear that bootstrap marker before fallible projection so a retry cannot
@@ -622,20 +683,33 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
         }
     }
 
+    // A managed projection has already staged its graph before entering this
+    // pipeline. Guard even its exposure callbacks against recursive readiness.
+    let early_readying = if !completed && bridge.type_uses_runtime_slots(tp) {
+        unsafe {
+            (*tp).tp_flags |= crate::abi_types::Py_TPFLAGS_READYING;
+        }
+        Some(TypeReadyingGuard(tp))
+    } else {
+        None
+    };
+
     // Crossing a runtime-bound type through PyType_Ready exposes its real
     // namespace, including native method declarations, before any READY exit.
-    let runtime_projection = match unsafe { GLOBAL_BRIDGE.expose_runtime_type_dictionary(tp) } {
+    let runtime_projection = match unsafe { bridge.expose_runtime_type_dictionary(tp) } {
         Ok(projection) => projection,
         Err(()) => return -1,
     };
-    if runtime_projection == Some(crate::bridge::RuntimeTypeProjection::Managed)
-        || (runtime_projection.is_some()
-            && (tp == &raw mut crate::abi_types::PyBaseObject_Type
-                || tp == &raw mut crate::abi_types::PyType_Type))
+    if bridge.molt_handle_for_pyobj(tp.cast()) != binding {
+        return unsafe { reject_type_readiness(c"type binding changed during namespace exposure") };
+    }
+    let managed = runtime_projection == Some(crate::bridge::RuntimeTypeProjection::RuntimeSlots);
+    if runtime_projection.is_some()
+        && (tp == &raw mut crate::abi_types::PyBaseObject_Type
+            || tp == &raw mut crate::abi_types::PyType_Type)
     {
-        // Managed classes are sealed by the runtime. Their canonical namespace,
-        // bases and MRO have just been projected; native declaration admission
-        // must not rebuild or overwrite that semantic graph.
+        // These bootstrap shells already own initialized physical slots. Their
+        // mutually recursive runtime roots must not trigger native declarations.
         unsafe {
             register_type_subclasses(tp);
             install_metatype_getattro(tp);
@@ -667,7 +741,7 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
         (*tp).tp_flags &= !Py_TPFLAGS_READY;
         (*tp).tp_flags |= crate::abi_types::Py_TPFLAGS_READYING;
     }
-    let _readying = TypeReadyingGuard(tp);
+    let _readying = early_readying.unwrap_or_else(|| TypeReadyingGuard(tp));
 
     unsafe {
         if (*tp).tp_dict.is_null() {
@@ -678,23 +752,38 @@ pub unsafe extern "C" fn PyType_Ready(tp: *mut PyTypeObject) -> c_int {
             (*tp).tp_dict = dict;
         }
         // Metadata is complete before constructing any callback-bearing object.
-        if hierarchy::prepare(tp, runtime_projection.is_some()) < 0 {
+        if hierarchy::prepare(bridge, tp, runtime_projection.is_some()) < 0 {
             return -1;
         }
+        native_lifecycle::prepare_heap_defaults(tp, managed);
         inheritance::prepare_layout(tp);
-        inheritance::prepare_new(tp);
+        let declares_new = (*tp).tp_new.is_some()
+            && (runtime_projection.is_none()
+                || (*tp).tp_base.is_null()
+                || (*tp).tp_new.map(|f| f as *const ())
+                    != (*(*tp).tp_base).tp_new.map(|f| f as *const ()));
+        inheritance::prepare_new(tp, managed);
         // Only this type's declarations introduce entries in its namespace.
         // METH_COEXIST can replace an operator wrapper; ordinary methods cannot.
-        if add_operators_to_dict(tp) < 0
-            || add_methods_to_dict(tp) < 0
-            || add_members_to_dict(tp) < 0
-            || add_getset_to_dict(tp) < 0
-            || root_metadata::add_type_documentation(tp) < 0
+        if !managed
+            && ((declares_new && object_construction::add_new_wrapper(tp) < 0)
+                || add_operators_to_dict(tp) < 0
+                || add_methods_to_dict(tp) < 0
+                || add_members_to_dict(tp) < 0
+                || add_getset_to_dict(tp) < 0
+                || root_metadata::add_type_documentation(tp) < 0)
         {
             return -1;
         }
-        if inheritance::finish(tp) < 0 {
+        // Runtime classes keep their sealed graph and namespace. Physical
+        // inheritance cannot synthesize __hash__ into that semantic authority.
+        if inheritance::finish(tp, !managed) < 0
+            || (managed && native_slot_mutation::initialize(bridge, tp) < 0)
+        {
             return -1;
+        }
+        if bridge.molt_handle_for_pyobj(tp.cast()) != binding {
+            return reject_type_readiness(c"type binding changed during readiness");
         }
         register_type_subclasses(tp);
         (*tp).tp_flags |= Py_TPFLAGS_READY;
@@ -777,7 +866,7 @@ unsafe fn add_methods_to_dict(tp: *mut PyTypeObject) -> c_int {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum SlotWrapper {
     Direct(DirectSlot),
     Number(NumberSlot),
@@ -787,7 +876,7 @@ enum SlotWrapper {
     Buffer(BufferSlot),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum DirectSlot {
     Alloc,
     Base,
@@ -820,7 +909,7 @@ enum DirectSlot {
     Finalize,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum NumberSlot {
     Divmod,
     Add,
@@ -859,7 +948,7 @@ enum NumberSlot {
     InPlaceMatrixMultiply,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum SequenceSlot {
     Length,
     Concat,
@@ -871,14 +960,14 @@ enum SequenceSlot {
     InPlaceRepeat,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum MappingSlot {
     Length,
     Subscript,
     AssSubscript,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum AsyncSlot {
     Await,
     Iter,
@@ -886,7 +975,7 @@ enum AsyncSlot {
     Send,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum BufferSlot {
     Get,
     Release,
@@ -1081,6 +1170,37 @@ unsafe fn slot_wrapper_ptr(tp: *mut PyTypeObject, slot: SlotWrapper) -> *mut c_v
     }
 }
 
+pub(crate) type BfGetBuffer =
+    unsafe extern "C" fn(*mut PyObject, *mut crate::abi_types::Py_buffer, c_int) -> c_int;
+pub(crate) type BfReleaseBuffer =
+    unsafe extern "C" fn(*mut PyObject, *mut crate::abi_types::Py_buffer);
+
+/// Buffer callbacks share the physical slot authority used by PyType_GetSlot.
+/// Callers pin the object/type; no table borrow crosses a callback.
+pub(crate) unsafe fn type_bf_getbuffer(tp: *mut PyTypeObject) -> Option<BfGetBuffer> {
+    if tp.is_null() {
+        return None;
+    }
+    let raw = unsafe { slot_wrapper_ptr(tp, SlotWrapper::Buffer(BufferSlot::Get)) };
+    if raw.is_null() {
+        None
+    } else {
+        Some(unsafe { std::mem::transmute::<*mut c_void, BfGetBuffer>(raw) })
+    }
+}
+
+pub(crate) unsafe fn type_bf_releasebuffer(tp: *mut PyTypeObject) -> Option<BfReleaseBuffer> {
+    if tp.is_null() {
+        return None;
+    }
+    let raw = unsafe { slot_wrapper_ptr(tp, SlotWrapper::Buffer(BufferSlot::Release)) };
+    if raw.is_null() {
+        None
+    } else {
+        Some(unsafe { std::mem::transmute::<*mut c_void, BfReleaseBuffer>(raw) })
+    }
+}
+
 fn stable_slot_wrapper(slot: c_int) -> Option<SlotWrapper> {
     use AsyncSlot as A;
     use BufferSlot as B;
@@ -1194,6 +1314,11 @@ unsafe fn add_operators_to_dict(tp: *mut PyTypeObject) -> c_int {
     unsafe {
         let dict = (*tp).tp_dict;
         for def in SLOT_WRAPPER_DEFS {
+            // Mutation-only declarations (__getattr__/__new__) have their own
+            // Python publication protocols and no physical wrapper adapter.
+            if def.base.wrapper.is_none() {
+                continue;
+            }
             // Builtin exception rendering declarations come from the shared
             // schema. PyType_Ready has already inherited C slots, but an
             // inherited slot does not introduce a descriptor in this dict.
@@ -1210,7 +1335,7 @@ unsafe fn add_operators_to_dict(tp: *mut PyTypeObject) -> c_int {
                 }
             }
             let wrapped = slot_wrapper_ptr(tp, def.slot);
-            if wrapped.is_null() {
+            if wrapped.is_null() || wrapped == def.base.function {
                 continue;
             }
             let name = def.base.name;
@@ -2187,20 +2312,7 @@ unsafe fn type_from_spec_impl(
         if apply_spec_slots(tp, (*spec).slots) < 0 {
             return ptr::null_mut();
         }
-        // Heap-subtype lifecycle wraps both builtin and foreign bases. Direct
-        // inheritance loses finalizers, member owners and the heap-class edge.
-        if (*tp).tp_dealloc.is_none() {
-            (*tp).tp_dealloc = Some(native_lifecycle::subtype_dealloc);
-        }
-        if ((*tp).tp_flags | (*base).tp_flags) & Py_TPFLAGS_HAVE_GC != 0 {
-            (*tp).tp_flags |= Py_TPFLAGS_HAVE_GC;
-            if (*tp).tp_traverse.is_none() {
-                (*tp).tp_traverse = Some(native_lifecycle::subtype_traverse);
-            }
-            if (*tp).tp_clear.is_none() {
-                (*tp).tp_clear = Some(native_lifecycle::subtype_clear);
-            }
-        }
+        native_lifecycle::prepare_heap_defaults(tp, false);
         if !(*tp).tp_base.is_null() && validate_base_layout(tp, (*tp).tp_base) < 0 {
             return ptr::null_mut();
         }
@@ -2208,12 +2320,6 @@ unsafe fn type_from_spec_impl(
         // (3) Instantiation defaults where the spec left them unset.
         if (*tp).tp_alloc.is_none() {
             (*tp).tp_alloc = Some(PyType_GenericAlloc);
-        }
-        if (*tp).tp_new.is_none()
-            && (*base).tp_new.is_none()
-            && base == &raw mut crate::abi_types::PyBaseObject_Type
-        {
-            (*tp).tp_new = Some(PyType_GenericNew);
         }
 
         // (4) Comprehensive readiness pipeline (base default, slot inherit, dict,
@@ -2711,15 +2817,22 @@ pub unsafe extern "C" fn PyUnstable_Type_AssignVersionTag(tp: *mut PyTypeObject)
 /// Lookup a single physical/runtime namespace while preserving the caller's
 /// C3 traversal order. The bridge returns the original descriptor, borrowed.
 unsafe fn type_namespace_lookup(tp: *mut PyTypeObject, name: *mut PyObject) -> *mut PyObject {
+    unsafe { type_namespace_lookup_with_bridge(&GLOBAL_BRIDGE, tp, name) }
+}
+
+unsafe fn type_namespace_lookup_with_bridge(
+    bridge: &crate::bridge::ObjectBridge,
+    tp: *mut PyTypeObject,
+    name: *mut PyObject,
+) -> *mut PyObject {
     unsafe {
-        if let Some(class) = GLOBAL_BRIDGE.observed_handle_for_pyobj(tp.cast()) {
+        if let Some(class) = bridge.observed_handle_for_pyobj(tp.cast()) {
             let hooks = crate::hooks::hooks_or_stubs();
             if (hooks.classify_heap)(class.bits()) == crate::abi_types::MoltTypeTag::Type as u8 {
                 let Some(name) = crate::bridge::RuntimeValue::acquire(name) else {
                     return ptr::null_mut();
                 };
-                return GLOBAL_BRIDGE.borrowed_result_to_borrowed_pyobj((hooks
-                    .type_lookup_borrowed)(
+                return bridge.borrowed_result_to_borrowed_pyobj((hooks.type_lookup_borrowed)(
                     class.bits(),
                     name.bits(),
                     0,
@@ -2732,7 +2845,7 @@ unsafe fn type_namespace_lookup(tp: *mut PyTypeObject, name: *mut PyObject) -> *
         // readiness transaction.
         if ((*tp).tp_dict.is_null() || (*tp).tp_flags & Py_TPFLAGS_READY == 0)
             && (*tp).tp_flags & crate::abi_types::Py_TPFLAGS_READYING == 0
-            && PyType_Ready(tp) < 0
+            && ready_type(bridge, tp) < 0
         {
             return ptr::null_mut();
         }
@@ -3826,12 +3939,7 @@ pub unsafe extern "C" fn PyObject_Repr(op: *mut PyObject) -> *mut PyObject {
         unsafe { crate::api::memory::Py_LeaveRecursiveCall() };
         return unsafe { check_stringifier_result(res, "__repr__") };
     }
-    let name = unsafe { object_type_name(op) };
-    let rendered = format!("<{name} object at {op:p}>");
-    match std::ffi::CString::new(rendered) {
-        Ok(c) => unsafe { crate::api::strings::PyUnicode_FromString(c.as_ptr()) },
-        Err(_) => ptr::null_mut(),
-    }
+    unsafe { object_repr(op) }
 }
 
 #[unsafe(no_mangle)]
@@ -4439,7 +4547,8 @@ unsafe fn do_richcompare(v: *mut PyObject, w: *mut PyObject, op: c_int) -> *mut 
         unsafe { crate::api::refcount::Py_DECREF(res) };
     }
     // w's slot (unless already tried as the reflected op above).
-    if !checked_reverse && let Some(res) = unsafe { try_slot_richcompare(tw, w, v, swapped_op(op)) } {
+    if !checked_reverse && let Some(res) = unsafe { try_slot_richcompare(tw, w, v, swapped_op(op)) }
+    {
         if res.is_null() {
             return ptr::null_mut();
         }

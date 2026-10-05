@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import contextmanager
 from typing import Sequence
 
 from molt.cli.native_symbol_inspection import (
@@ -13,13 +14,36 @@ from molt.cli.native_symbol_inspection import (
 from molt.cli.static_archive_identity import StaticArchiveMemberIdentity
 
 from molt.cli.native_link_manifest import write_native_link_dependency_manifest
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.native_link_plan import _host_target_triple
 from tests.runtime_build_identity_helper import native_runtime_staticlib_identity
 from tests.native_artifact_fixtures import (
     NativeSymbolFixture,
     native_relocatable_object,
 )
+
+
+def stub_native_symbol_admission(monkeypatch, read_facts) -> None:
+    """Synthetic symbol tables for projection tests, retaining real file custody.
+
+    These tests prove the callable projection protocol. Native symbol/cache
+    admission has its own suite; this fixture makes no nm or execution claim.
+    """
+    from molt.cli import native_symbol_inspection as symbols
+
+    @contextmanager
+    def admit(path, *, archive, identity, target_triple, requirement):
+        assert archive
+        with symbols._open_native_symbol_artifact(path, identity) as (opened, current):
+            facts = read_facts(
+                path,
+                identity=current,
+                target_triple=target_triple,
+                requirement=requirement,
+            )
+            yield opened, current, facts
+
+    monkeypatch.setattr(symbols, "_native_symbol_facts_admission", admit)
 
 
 RUNTIME_BUILD_IDENTITY = native_runtime_staticlib_identity(

@@ -164,7 +164,7 @@ def _tree(root: Path, context: files.PythonFileCaptureContext):
     return tree, pool
 
 
-@pytest.mark.parametrize("change", ["membership", "same-size-restored-mtime"])
+@pytest.mark.parametrize("change", ["membership", "changed-size-restored-mtime"])
 def test_runtime_session_rechecks_live_context_and_revokes_after_failure(
     tmp_path, monkeypatch, change
 ):
@@ -187,7 +187,7 @@ def test_runtime_session_rechecks_live_context_and_revokes_after_failure(
         if change == "membership":
             (root / "new.py").write_bytes(b"addition")
         else:
-            member.write_bytes(b"after!")
+            member.write_bytes(b"after-with-changed-size")
             os.utime(member, ns=(original.st_atime_ns, original.st_mtime_ns))
         yield "verify\n"
 
@@ -705,19 +705,19 @@ def test_directory_symlink_receipt_rejects_malformed_topology(tmp_path, fault):
         )
 
 
-def test_file_capture_rejects_same_size_mtime_restore(tmp_path):
+def test_file_capture_rejects_changed_size_with_restored_mtime(tmp_path):
     path = tmp_path / "a.py"
     path.write_bytes(b"before")
     context = files.PythonFileCaptureContext()
     before = path.stat()
     context.bind(path, before, label="fixture")
-    path.write_bytes(b"after!")
+    path.write_bytes(b"after-with-changed-size")
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
     with pytest.raises(ValueError, match="changed"):
         context.bind(path, path.stat(), label="fixture")
 
 
-def test_file_capture_rejects_same_size_mtime_restore_between_batches(
+def test_file_capture_rejects_changed_size_between_batches(
     tmp_path,
 ):
     path = tmp_path / "a.py"
@@ -725,7 +725,7 @@ def test_file_capture_rejects_same_size_mtime_restore_between_batches(
     context = files.PythonFileCaptureContext()
     before = path.stat()
     context.bind_many([(path, before)], label="fixture")
-    path.write_bytes(b"after!")
+    path.write_bytes(b"after-with-changed-size")
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
 
     with pytest.raises(ValueError, match="changed"):
@@ -733,7 +733,7 @@ def test_file_capture_rejects_same_size_mtime_restore_between_batches(
 
 
 @pytest.mark.parametrize("change", ["rewrite", "replace"])
-def test_batch_final_fence_rejects_earlier_file_restored_mtime_change(
+def test_batch_final_fence_rejects_earlier_file_metadata_change(
     tmp_path, monkeypatch, change
 ):
     path = tmp_path / "a.py"
@@ -742,7 +742,7 @@ def test_batch_final_fence_rejects_earlier_file_restored_mtime_change(
 
     def mutate():
         if change == "rewrite":
-            path.write_bytes(b"after!")
+            path.write_bytes(b"after-with-changed-size")
         else:
             replacement = tmp_path / "replacement.py"
             replacement.write_bytes(b"after!")
@@ -792,7 +792,7 @@ def test_batch_bind_uses_one_open_per_fresh_file_and_keeps_the_final_fence(
     assert sorted(opened) == ["a.py", "a.py", "b.py"]
     context.verify()
     assert sorted(opened) == ["a.py", "a.py", "a.py", "b.py", "b.py"]
-    paths[1].write_bytes(b"B.py")
+    paths[1].write_bytes(b"changed-size.py")
     os.utime(paths[1], ns=(rows[1][1].st_atime_ns, rows[1][1].st_mtime_ns))
     with pytest.raises(ValueError, match="changed"):
         context.verify()

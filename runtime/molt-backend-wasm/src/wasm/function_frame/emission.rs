@@ -12,6 +12,22 @@ use std::fmt::Write as _;
 use wasm_encoder::{BlockType, Catch, Function, Instruction, RefType, ValType};
 
 impl WasmFunctionFrame {
+    pub(in crate::wasm) fn emit_guard_profile_flag(
+        &self,
+        func: &mut Function,
+        reloc_enabled: bool,
+        import_ids: &TrackedImportIds,
+    ) {
+        if let Some(local) = self.guard_profile_local {
+            emit_call(
+                func,
+                reloc_enabled,
+                import_ids[WasmRuntimeImport::ProfileEnabled],
+            );
+            func.instruction(&Instruction::LocalSet(local));
+        }
+    }
+
     pub(in crate::wasm) fn emit_debug_local_map(&self, func_ir: &FunctionIR, func_index: u32) {
         let Some(filter) = std::env::var("MOLT_DEBUG_WASM_LOCALS_FUNC").ok() else {
             return;
@@ -210,7 +226,11 @@ impl WasmFunctionFrame {
         reloc_enabled: bool,
     ) {
         func.instruction(&Instruction::I64Const(homes.slots));
-        emit_call(func, reloc_enabled, import_ids[WasmRuntimeImport::FrameHomes]);
+        emit_call(
+            func,
+            reloc_enabled,
+            import_ids[WasmRuntimeImport::FrameHomes],
+        );
         func.instruction(&Instruction::I32WrapI64);
         func.instruction(&Instruction::LocalSet(homes.local));
     }
@@ -269,7 +289,11 @@ impl WasmFunctionFrame {
         func.instruction(&Instruction::I64Store(bits_arg));
         func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
         func.instruction(&Instruction::LocalGet(homes.displaced));
-        emit_call(func, reloc_enabled, import_ids[WasmRuntimeImport::DecRefObj]);
+        emit_call(
+            func,
+            reloc_enabled,
+            import_ids[WasmRuntimeImport::DecRefObj],
+        );
         func.instruction(&Instruction::End);
     }
 
@@ -340,7 +364,11 @@ impl WasmFunctionFrame {
         func.instruction(&Instruction::I64Load(bits_arg));
         func.instruction(&Instruction::Else);
         self.emit_frame_home_address(func, slot);
-        emit_call(func, reloc_enabled, import_ids[WasmRuntimeImport::FrameHomeLoad]);
+        emit_call(
+            func,
+            reloc_enabled,
+            import_ids[WasmRuntimeImport::FrameHomeLoad],
+        );
         func.instruction(&Instruction::End);
     }
 
@@ -349,7 +377,9 @@ impl WasmFunctionFrame {
         let homes = self.frame_homes();
         func.instruction(&Instruction::LocalGet(homes.local));
         func.instruction(&Instruction::I64ExtendI32U);
-        func.instruction(&Instruction::I64Const(slot * molt_codegen_abi::FRAME_HOME_BYTES));
+        func.instruction(&Instruction::I64Const(
+            slot * molt_codegen_abi::FRAME_HOME_BYTES,
+        ));
         func.instruction(&Instruction::I64Add);
     }
 

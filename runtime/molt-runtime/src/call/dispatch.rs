@@ -1,15 +1,12 @@
 use crate::call::ExceptionBaselineGuard;
 use crate::call::type_policy::{InitArgPolicy, resolved_constructor_init_policy};
-use crate::call::{
-    CallAttrLookup, StaticmethodCallTarget, require_call_attr, resolve_staticmethod_call_target,
-};
+use crate::call::{StaticmethodCallTarget, require_call_attr, resolve_staticmethod_call_target};
 use crate::{
     MoltObject, PtrDropGuard, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_FUNCTION,
-    TYPE_ID_GENERIC_ALIAS, TYPE_ID_TYPE, bound_method_func_bits, call_builtin_type_if_needed,
-    call_function_obj_vec, class_attr_lookup_raw_mro, class_name_for_error, dec_ref_bits,
-    exception_pending, function_arity_usize, generic_alias_origin_bits, intern_static_name,
-    lookup_call_attr, molt_call_bind, obj_from_bits, object_type_id, ptr_from_bits,
-    raise_exception, raise_not_callable, runtime_state,
+    TYPE_ID_GENERIC_ALIAS, TYPE_ID_TYPE, call_builtin_type_if_needed, call_function_obj_vec,
+    class_attr_lookup_raw_mro, class_name_for_error, dec_ref_bits, exception_pending,
+    generic_alias_origin_bits, intern_static_name, molt_call_bind, obj_from_bits, object_type_id,
+    ptr_from_bits, raise_exception, raise_not_callable, runtime_state,
 };
 
 #[inline]
@@ -175,42 +172,6 @@ pub(crate) unsafe fn call_callable1(_py: &PyToken<'_>, call_bits: u64, arg0_bits
                 with_owned_callable(_py, call_attr_bits, |bits| {
                     call_callable1(_py, bits, arg0_bits)
                 })
-            }
-        }
-    }
-}
-
-pub(crate) unsafe fn callable_arity(_py: &PyToken<'_>, call_bits: u64) -> Option<usize> {
-    unsafe {
-        let call_obj = obj_from_bits(call_bits);
-        let call_ptr = call_obj.as_ptr()?;
-        match resolve_staticmethod_call_target(_py, call_bits) {
-            StaticmethodCallTarget::Owned(target) => {
-                return callable_arity(_py, target.bits());
-            }
-            StaticmethodCallTarget::Raised => return None,
-            StaticmethodCallTarget::NotStaticmethod => {}
-        }
-        match object_type_id(call_ptr) {
-            TYPE_ID_FUNCTION => function_arity_usize(call_ptr),
-            TYPE_ID_BOUND_METHOD => {
-                let func_bits = bound_method_func_bits(call_ptr);
-                let func_obj = obj_from_bits(func_bits);
-                let func_ptr = func_obj.as_ptr()?;
-                if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-                    return None;
-                }
-                function_arity_usize(func_ptr)
-            }
-            TYPE_ID_GENERIC_ALIAS => {
-                let origin_bits = generic_alias_origin_bits(call_ptr);
-                callable_arity(_py, origin_bits)
-            }
-            _ => {
-                let CallAttrLookup::Found(call_attr_bits) = lookup_call_attr(_py, call_ptr) else {
-                    return None;
-                };
-                with_owned_callable(_py, call_attr_bits, |bits| callable_arity(_py, bits))
             }
         }
     }

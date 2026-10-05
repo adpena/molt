@@ -5,6 +5,7 @@ mod core;
 mod exceptions;
 mod numeric_async;
 mod repr_collections;
+mod singleton_values;
 
 /// Executable proofs use the same PATH-selected image captured by the proof
 /// plan. Compiler-only tests never discover or launch optional home tools.

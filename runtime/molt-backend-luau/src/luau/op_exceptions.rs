@@ -19,8 +19,7 @@ impl LuauBackend {
             | "exception_active"
             | "exception_current"
             | "exception_pending"
-            | "exception_set_value"
-            | "exception_set_cause" => {
+            | "exception_set_value" => {
                 let args = op
                     .args
                     .as_deref()

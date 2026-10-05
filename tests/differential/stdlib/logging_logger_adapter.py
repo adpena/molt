@@ -2,6 +2,7 @@
 
 import io
 import logging
+import weakref
 
 
 stream = io.StringIO()
@@ -19,3 +20,6 @@ adapter.info("hello")
 handler.flush()
 
 print(stream.getvalue().strip())
+
+logger.extension_marker = "inherited-dict"
+print(logger.__dict__["extension_marker"], weakref.ref(logger)() is logger)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import sys
 
 import pytest
 
@@ -97,14 +98,21 @@ def test_invoke_ffi_native_callable_metadata_lowers_to_schema_fields() -> None:
     }
 
 
-def test_guard_tag_lowers_to_guard_tag_lane() -> None:
+@pytest.mark.parametrize("kind", ["GUARD_TAG", "GUARD_TYPE"])
+@pytest.mark.parametrize("result", ["none", "checked"])
+def test_runtime_guard_preserves_value_and_expected_tag_operands(
+    kind: str, result: str
+) -> None:
     op = MoltOp(
-        kind="GUARD_TAG",
+        kind=kind,
         args=[MoltValue("value"), MoltValue("tag")],
-        result=MoltValue("none"),
+        result=MoltValue(result),
     )
     lowered = _map_single(op)
-    assert lowered == {"kind": "guard_tag", "args": ["value", "tag"]}
+    expected = {"kind": kind.lower(), "args": ["value", "tag"]}
+    if result != "none":
+        expected["out"] = result
+    assert lowered == expected
 
 
 def test_guard_dict_shape_lowers_to_guard_dict_shape_lane() -> None:
@@ -235,20 +243,30 @@ def test_ordinary_expression_reads_do_not_acquire_blanket_owners() -> None:
 
 
 def test_assignment_expression_result_has_an_independent_owner() -> None:
-    ops = _raw_ops("def f(make):\n    return ((value := make()), (value := make()))\n")
+    ops = _raw_function_ops(
+        "def f(make):\n    return ((value := make()), (value := make()))\n"
+    )
     captures = [op for op in ops if op.kind == "BINDING_ALIAS"]
     assert len(captures) == 2
     returned = next(op for op in ops if op.kind == "ret" and op.args)
     aggregate = next(op for op in ops if op.result.name == returned.args[0].name)
     assert aggregate.kind == "TUPLE_NEW"
     assert [arg.name for arg in aggregate.args] == [op.result.name for op in captures]
-    assert ops.index(captures[0]) < next(
-        i
-        for i, op in enumerate(ops)
-        if op.kind == "STORE_VAR"
-        and op.metadata.get("var") == "value"
-        and op.args[0].name == captures[0].args[0].name
-    )
+    stores = []
+    for capture in captures:
+        publications = [
+            op
+            for op in ops
+            if op.kind == "FRAME_HOME_STORE" and op.args[0].name == capture.args[0].name
+        ]
+        assert len(publications) == 1
+        store = publications[0]
+        assert ops.index(capture) < ops.index(store) < ops.index(aggregate)
+        assert store.result.borrows_binding
+        assert store.result.name not in {arg.name for arg in aggregate.args}
+        stores.append(store)
+    assert stores[0].metadata["slot"] == stores[1].metadata["slot"]
+    assert ops.index(stores[0]) < ops.index(captures[1])
 
 
 def test_lambda_return_captures_a_borrowed_parameter() -> None:
@@ -314,6 +332,22 @@ def _raw_ops(source: str, **kwargs: object) -> list[MoltOp]:
     return [op for data in gen.funcs_map.values() for op in data["ops"]]
 
 
+def _raw_function_ops(source: str, **kwargs: object) -> list[MoltOp]:
+    gen = SimpleTIRGenerator(module_name="__main__", **kwargs)
+    gen.visit(ast.parse(source))
+    return gen.funcs_map["__main____f"]["ops"]
+
+
+def _raw_attribute_loads(ops: list[MoltOp], name: str) -> list[MoltOp]:
+    constants = {op.result.name: op.args[0] for op in ops if op.kind == "CONST_STR"}
+    return [
+        op
+        for op in ops
+        if (op.kind == "GETATTR_GENERIC_OBJ" and op.args[1] == name)
+        or (op.kind == "MODULE_GET_ATTR" and constants.get(op.args[1].name) == name)
+    ]
+
+
 def _lowered_kinds(source: str, **kwargs: object) -> set[str]:
     ir = compile_to_tir(source, **kwargs)
     return {op["kind"] for fn in ir["functions"] for op in fn["ops"]}
@@ -326,24 +360,47 @@ def _lowered_ops(source: str, **kwargs: object) -> list[dict]:
     return [op for fn in ir["functions"] for op in fn["ops"]]
 
 
-def test_dead_static_module_branch_names_do_not_enter_code_metadata() -> None:
-    ops = _raw_ops(
+def test_dead_static_module_branch_preserves_names_without_executing_import() -> None:
+    source = (
         "from __future__ import annotations\n"
         "if False:\n"
         "    from typing import Callable\n"
         "    molt_msgpack_parse_scalar_obj: Callable[[object], object]\n"
-        "print('live')\n",
-        module_name="dead_module_metadata_probe",
+        "print('live')\n"
     )
-    const_strings = {
-        op.args[0]
+    ops = _raw_ops(
+        source,
+        module_name="dead_module_metadata_probe",
+        target_python=sys.version_info[:2],
+    )
+    constants = {op.result.name: op.args[0] for op in ops if op.kind == "CONST_STR"}
+    producers = {op.result.name: op for op in ops}
+    code = next(
+        op
         for op in ops
-        if op.kind == "CONST_STR" and op.args and isinstance(op.args[0], str)
-    }
-
-    assert "live" in const_strings
-    assert "molt_msgpack_parse_scalar_obj" not in const_strings
-    assert "Callable" not in const_strings
+        if op.kind == "CODE_NEW" and constants.get(op.args[1].name) == "<module>"
+    )
+    names_tuple = producers[code.args[5].name]
+    assert names_tuple.kind == "TUPLE_NEW"
+    names = tuple(constants[arg.name] for arg in names_tuple.args)
+    # co_names follows compiler visitation, before dead-code removal. Use an
+    # independent CPython oracle rather than the frontend's own collector.
+    reference = compile(source, "<dead-module-metadata>", "exec", dont_inherit=True)
+    assert names == reference.co_names
+    assert "Callable" in names
+    assert "molt_msgpack_parse_scalar_obj" not in constants.values()
+    assert "live" in constants.values()
+    for dead_name in ("typing", "Callable"):
+        values = {value for value, name in constants.items() if name == dead_name}
+        assert values
+        consumers = [
+            op
+            for op in ops
+            if any(isinstance(arg, MoltValue) and arg.name in values for arg in op.args)
+        ]
+        assert consumers == [names_tuple], (
+            "dead imports may occur only in code metadata"
+        )
 
 
 def test_raw_guard_tag_emitted_for_type_hints() -> None:
@@ -353,24 +410,63 @@ def test_raw_guard_tag_emitted_for_type_hints() -> None:
     assert "GUARD_TAG" in kinds
 
 
-def test_raw_guard_dict_shape_emitted_for_dict_increment() -> None:
-    kinds = _raw_kinds('d = {}\nd["k"] = d.get("k", 0) + 1\n', fallback_policy="bridge")
-    assert "GUARD_DICT_SHAPE" in kinds
-
-
-def test_raw_guard_dict_shape_uses_runtime_dict_layout_version() -> None:
-    ops = _raw_ops('d = {}\nd["k"] = d.get("k", 0) + 1\n', fallback_policy="bridge")
-    guard = next(op for op in ops if op.kind == "GUARD_DICT_SHAPE")
-    dict_type_value = guard.args[1]
-    version_value = guard.args[2]
-    assert isinstance(dict_type_value, MoltValue)
-    assert isinstance(version_value, MoltValue)
-    version_op = next(
-        op
-        for op in ops
-        if op.kind == "CLASS_VERSION" and op.result.name == version_value.name
+def test_raw_dict_increment_uses_runtime_admission_for_bound_operands() -> None:
+    ops = _raw_function_ops(
+        "def f(d, key, step):\n    d[key] = d.get(key, 0) + step\n",
+        fallback_policy="bridge",
     )
-    assert version_op.args == [dict_type_value]
+    increments = [op for op in ops if op.kind == "DICT_STR_INT_INC"]
+    assert len(increments) == 1
+    increment = increments[0]
+    assert len(increment.args) == 3
+    assert all(isinstance(arg, MoltValue) for arg in increment.args)
+    assert increment.result.type_hint == "bool"
+    assert not any(op.kind == "GUARD_DICT_SHAPE" for op in ops)
+
+
+def test_raw_dict_increment_decline_runs_the_original_statement() -> None:
+    ops = _raw_function_ops(
+        "def f(d, key, step):\n    d[key] = d.get(key, 0) + step\n",
+        fallback_policy="bridge",
+    )
+    increment = next(op for op in ops if op.kind == "DICT_STR_INT_INC")
+    declined = next(
+        op for op in ops if op.kind == "NOT" and op.args == [increment.result]
+    )
+    branch = next(op for op in ops if op.kind == "IF" and op.args == [declined.result])
+    start = ops.index(branch)
+    depth = 1
+    for end in range(start + 1, len(ops)):
+        depth += (ops[end].kind == "IF") - (ops[end].kind == "END_IF")
+        if depth == 0:
+            break
+    assert depth == 0
+    fallback = ops[start + 1 : end]
+    gets = _raw_attribute_loads(fallback, "get")
+    assert len(gets) == 1
+    call = next(
+        op
+        for op in fallback
+        if op.kind == "CALL_FUNC" and op.args[0].name == gets[0].result.name
+    )
+    addition = next(
+        op
+        for op in fallback
+        if op.kind == "ADD" and op.args[0].name == call.result.name
+    )
+    store = next(
+        op
+        for op in fallback
+        if op.kind == "STORE_INDEX" and op.args[2].name == addition.result.name
+    )
+    assert ops.index(increment) < ops.index(declined) < start
+    assert (
+        fallback.index(gets[0])
+        < fallback.index(call)
+        < fallback.index(addition)
+        < fallback.index(store)
+    )
+    assert not any(op.kind == "DICT_STR_INT_INC" for op in fallback)
 
 
 @pytest.mark.parametrize(
@@ -404,7 +500,7 @@ def test_lowered_dynamic_noncallable_attr_uses_runtime_callable_check() -> None:
     assert "call_func" in kinds
 
 
-def test_lowered_guard_dict_shape_lane_is_used_for_dict_increment() -> None:
+def test_lowered_explicit_dict_shape_guard_preserves_version_operand() -> None:
     lowered = _map_single(
         MoltOp(
             kind="GUARD_DICT_SHAPE",
@@ -428,31 +524,87 @@ def test_lowered_guard_tag_lane_is_used_for_type_hint_checking() -> None:
     assert "guard_tag" in kinds
 
 
-def test_raw_invoke_ffi_emitted_for_non_allowlisted_direct_module_call() -> None:
-    kinds = _raw_kinds(
+def test_raw_module_call_uses_the_captured_callable_object() -> None:
+    ops = _raw_function_ops(
         "def f():\n    import os\n    return os.getcwd()\n", fallback_policy="bridge"
     )
-    assert "INVOKE_FFI" in kinds
+    loads = _raw_attribute_loads(ops, "getcwd")
+    assert len(loads) == 1
+    calls = [
+        op
+        for op in ops
+        if op.kind == "CALL_FUNC" and op.args[0].name == loads[0].result.name
+    ]
+    assert len(calls) == 1
+    assert calls[0].args == [loads[0].result]
+    assert ops.index(loads[0]) < ops.index(calls[0])
+    assert not any(op.kind == "INVOKE_FFI" for op in ops)
 
 
-def test_lowered_invoke_ffi_lane_is_used_for_non_allowlisted_direct_module_call() -> (
-    None
-):
-    kinds = _lowered_kinds(
+def test_lowered_module_call_preserves_the_captured_callable_operand() -> None:
+    ir = compile_to_tir(
         "def f():\n    import os\n    return os.getcwd()\n", fallback_policy="bridge"
     )
-    assert "invoke_ffi" in kinds
+    ops = [op for fn in ir["functions"] for op in fn["ops"]]
+    constants = _const_str_map(ops)
+    loads = [
+        op
+        for op in ops
+        if (op["kind"] == "get_attr_generic_obj" and op.get("s_value") == "getcwd")
+        or (
+            op["kind"] == "module_get_attr" and constants.get(op["args"][1]) == "getcwd"
+        )
+    ]
+    assert len(loads) == 1
+    calls = [
+        op
+        for op in ops
+        if op["kind"] == "call_func" and op["args"] == [loads[0]["out"]]
+    ]
+    assert len(calls) == 1
+    assert ops.index(loads[0]) < ops.index(calls[0])
+    assert not any(op["kind"] == "invoke_ffi" for op in ops)
 
 
-def test_invoke_ffi_bridge_lane_marker_is_emitted_for_non_allowlisted_module_call() -> (
-    None
-):
-    ops = _lowered_ops(
-        "def f():\n    import os\n    return os.getcwd()\n", fallback_policy="bridge"
+@pytest.mark.parametrize("keyword", [False, True])
+def test_module_call_captures_before_argument_effects_and_preserves_binding(
+    keyword: bool,
+) -> None:
+    arguments = "path=effect()" if keyword else "effect()"
+    ops = _raw_function_ops(
+        f"def f(effect):\n    import os\n    return os.getcwd({arguments})\n",
+        fallback_policy="bridge",
     )
-    invoke_ops = [op for op in ops if op["kind"] == "invoke_ffi"]
-    assert invoke_ops
-    assert any(op.get("s_value") == "bridge" for op in invoke_ops)
+    loads = _raw_attribute_loads(ops, "getcwd")
+    assert len(loads) == 1
+    expected = "CALL_INDIRECT" if keyword else "CALL_FUNC"
+    calls = [
+        op
+        for op in ops
+        if op.kind == expected and op.args[0].name == loads[0].result.name
+    ]
+    assert len(calls) == 1
+    call = calls[0]
+    effects = [
+        op
+        for op in ops[ops.index(loads[0]) + 1 : ops.index(call)]
+        if op.kind == "CALL_FUNC" and len(op.args) == 1
+    ]
+    assert len(effects) == 1
+    if keyword:
+        pushes = [
+            op
+            for op in ops
+            if op.kind == "CALLARGS_PUSH_KW" and op.args[0].name == call.args[1].name
+        ]
+        assert len(pushes) == 1
+        assert pushes[0].args[2].name == effects[0].result.name
+        key = next(op for op in ops if op.result.name == pushes[0].args[1].name)
+        assert key.kind == "CONST_STR" and key.args == ["path"]
+        assert ops.index(effects[0]) < ops.index(pushes[0]) < ops.index(call)
+    else:
+        assert call.args[1].name == effects[0].result.name
+    assert not any(op.kind == "INVOKE_FFI" for op in ops)
 
 
 def test_native_callable_export_calls_the_live_callable_object() -> None:
@@ -1092,3 +1244,32 @@ def test_static_false_member_retains_walrus_owner_store():
         and consts.get((op.get("args") or [None, None])[1]) == "owner_alias"
         for op in ops
     )
+
+
+def test_frontend_semantic_token_cannot_escape_after_serializer_rewrites(monkeypatch):
+    import pytest
+
+    generator = SimpleTIRGenerator()
+    monkeypatch.setattr(
+        generator,
+        "_fuse_string_split_field_consumers_json",
+        lambda ops: [{"kind": "CONST_NOT_IMPLEMENTED", "out": "sentinel"}],
+    )
+    with pytest.raises(ValueError, match="escaped serialization"):
+        generator.map_ops_to_json([], run_midend=False)
+
+
+@pytest.mark.parametrize("kind", ["guard_tag", "guard_type"])
+@pytest.mark.parametrize("tag", [1, 8])
+def test_split_scalarization_never_discards_an_undischarged_runtime_guard(
+    kind: str, tag: int
+) -> None:
+    ops = [
+        {"kind": "const_str", "out": "sep", "s_value": ","},
+        {"kind": "const", "out": "index", "value": 0},
+        {"kind": "const", "out": "tag", "value": tag},
+        {"kind": "string_split", "args": ["text", "sep"], "out": "fields"},
+        {"kind": kind, "args": ["fields", "tag"]},
+        {"kind": "index", "args": ["fields", "index"], "out": "field"},
+    ]
+    assert SimpleTIRGenerator._scalarize_string_split_fields_json(ops) == ops

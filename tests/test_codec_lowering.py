@@ -389,8 +389,35 @@ async def main():
     assert definitions[argument_values[0]]["kind"] == "const"
     assert definitions[argument_values[0]]["value"] == 0
     assert definitions[argument_values[1]]["kind"] == "const_none"
+    helpers = {
+        op["out"]
+        for op in function_ops
+        if op["kind"] == "builtin_func" and op.get("s_value") == "molt_get_awaitable"
+    }
+    acquisitions = [
+        op
+        for op in function_ops
+        if op["kind"] == "call_func"
+        and op["args"][0] in helpers
+        and op["args"][1:] == [call["out"]]
+    ]
+    assert len(acquisitions) == 1
+    stores = [
+        op
+        for op in function_ops
+        if op["kind"] == "closure_store" and op["args"][-1] == acquisitions[0]["out"]
+    ]
+    assert len(stores) == 1
+    store = stores[0]
+    resumes = {
+        op["out"]
+        for op in function_ops
+        if op["kind"] == "closure_load"
+        and op["args"] == store["args"][:1]
+        and op["value"] == store["value"]
+    }
     assert any(
-        op["kind"] == "is_native_awaitable" and call["out"] in op.get("args", [])
+        op["kind"] == "state_transition" and op["args"][0] in resumes
         for op in function_ops
     )
 

@@ -518,7 +518,8 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
                             .unwrap_or_else(|| "<unknown>".to_string());
                     }
                     let kind = if crate::exception_pending(_py) {
-                        let exc_bits = crate::exception_last_bits_noinc(_py).unwrap_or_else(|| crate::MoltObject::none().bits());
+                        let exc_bits = crate::exception_last_bits_noinc(_py)
+                            .unwrap_or_else(|| crate::MoltObject::none().bits());
                         if let Some(exc_ptr) = crate::maybe_ptr_from_bits(exc_bits) {
                             crate::builtins::exceptions::exception_diagnostic_name(exc_ptr)
                         } else {

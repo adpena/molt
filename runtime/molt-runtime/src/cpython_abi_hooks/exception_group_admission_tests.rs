@@ -230,55 +230,57 @@ fn native_group_allocation_consumes_runtime_admission() {
     assert!(register_cpython_hooks());
     // The native caller owns one execution boundary across construction and
     // observation of its error, as a C extension does while holding the GIL.
-    crate::with_gil_entry_nopanic!(_py, { unsafe {
-        let text = strings::PyUnicode_FromString(c"native".as_ptr());
-        assert!(!text.is_null());
-        let value = object::PyObject_CallOneArg((&raw mut PyExc_ValueError).cast(), text);
-        assert!(!value.is_null());
-        let children = sequences::PyTuple_New(1);
-        assert!(!children.is_null());
-        assert_eq!(sequences::PyTuple_SetItem(children, 0, value), 0);
-        let args = pair(text, children);
+    crate::with_gil_entry_nopanic!(_py, {
+        unsafe {
+            let text = strings::PyUnicode_FromString(c"native".as_ptr());
+            assert!(!text.is_null());
+            let value = object::PyObject_CallOneArg((&raw mut PyExc_ValueError).cast(), text);
+            assert!(!value.is_null());
+            let children = sequences::PyTuple_New(1);
+            assert!(!children.is_null());
+            assert_eq!(sequences::PyTuple_SetItem(children, 0, value), 0);
+            let args = pair(text, children);
 
-        let group = errors::molt_native_exception_new(
-            &raw mut PyExc_BaseExceptionGroup,
-            args,
-            ptr::null_mut(),
-        );
-        assert!(!group.is_null());
-        assert!(errors::PyErr_Occurred().is_null());
-        assert_eq!(
-            CStr::from_ptr((*(*group).ob_type).tp_name),
-            c"ExceptionGroup",
-            "exact BaseExceptionGroup narrows for Exception items"
-        );
-        let field = molt_cpython_abi::abi_types::exception_typed_object_slot(
-            group.cast::<PyBaseExceptionObject>(),
-            molt_obj_model::ExceptionLayoutKind::Group,
-            molt_obj_model::ExceptionTypedField::GroupExceptions,
-        )
-        .expect("group exceptions slot");
-        assert_eq!(*field, children, "the exact tuple is the exceptions field");
-        refcount::Py_DECREF(group);
+            let group = errors::molt_native_exception_new(
+                &raw mut PyExc_BaseExceptionGroup,
+                args,
+                ptr::null_mut(),
+            );
+            assert!(!group.is_null());
+            assert!(errors::PyErr_Occurred().is_null());
+            assert_eq!(
+                CStr::from_ptr((*(*group).ob_type).tp_name),
+                c"ExceptionGroup",
+                "exact BaseExceptionGroup narrows for Exception items"
+            );
+            let field = molt_cpython_abi::abi_types::exception_typed_object_slot(
+                group.cast::<PyBaseExceptionObject>(),
+                molt_obj_model::ExceptionLayoutKind::Group,
+                molt_obj_model::ExceptionTypedField::GroupExceptions,
+            )
+            .expect("group exceptions slot");
+            assert_eq!(*field, children, "the exact tuple is the exceptions field");
+            refcount::Py_DECREF(group);
 
-        // Item identity is the real native/managed type, with CPython's text.
-        let bad_children = pair(value, text);
-        let bad_args = pair(text, bad_children);
-        let rejected = errors::molt_native_exception_new(
-            &raw mut PyExc_BaseExceptionGroup,
-            bad_args,
-            ptr::null_mut(),
-        );
-        assert!(rejected.is_null());
-        assert_eq!(
-            take_c_error(&raw mut PyExc_ValueError),
-            "Item 1 of second argument (exceptions) is not an exception"
-        );
+            // Item identity is the real native/managed type, with CPython's text.
+            let bad_children = pair(value, text);
+            let bad_args = pair(text, bad_children);
+            let rejected = errors::molt_native_exception_new(
+                &raw mut PyExc_BaseExceptionGroup,
+                bad_args,
+                ptr::null_mut(),
+            );
+            assert!(rejected.is_null());
+            assert_eq!(
+                take_c_error(&raw mut PyExc_ValueError),
+                "Item 1 of second argument (exceptions) is not an exception"
+            );
 
-        for object in [bad_args, bad_children, args, children, text] {
-            refcount::Py_DECREF(object);
+            for object in [bad_args, bad_children, args, children, text] {
+                refcount::Py_DECREF(object);
+            }
         }
-    } });
+    });
 }
 
 extern "C" fn derive_native_group(children: u64) -> u64 {

@@ -650,31 +650,6 @@ pub(crate) fn round_half_even(val: f64) -> f64 {
     if floor_int & 1 == 0 { floor } else { ceil }
 }
 
-pub(crate) fn round_float_ndigits(val: f64, ndigits: i64) -> f64 {
-    if !val.is_finite() {
-        return val;
-    }
-    if ndigits == 0 {
-        return round_half_even(val);
-    }
-    if ndigits > 0 {
-        if ndigits > 308 {
-            return val;
-        }
-        let formatted = format!("{:.*}", ndigits as usize, val);
-        return formatted.parse::<f64>().unwrap_or(val);
-    }
-    let factor = 10f64.powi((-ndigits) as i32);
-    if !factor.is_finite() {
-        return if val.is_sign_negative() { -0.0 } else { 0.0 };
-    }
-    if factor == 0.0 {
-        return val;
-    }
-    let scaled = val / factor;
-    round_half_even(scaled) * factor
-}
-
 /// Borrow a validated integer carrier from direct or sealed tagged Int storage.
 /// At most one intrinsic word is read: nested objects and every float carrier
 /// are rejected. The caller keeps the original owner alive while using these

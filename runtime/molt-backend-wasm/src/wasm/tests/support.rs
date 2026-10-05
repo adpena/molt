@@ -80,7 +80,12 @@ pub(super) fn wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(
         wasm_profile: WasmProfile::Auto,
         ..WasmCompileOptions::default()
     })
-    .emit_wasm_module(ir, BTreeMap::new(), trampoline_analysis)
+    .emit_wasm_module(
+        &ir,
+        BTreeMap::new(),
+        trampoline_analysis,
+        crate::wasm_plan::WasmStageAudit::from_environment(),
+    )
 }
 
 /// Activation fixtures exercise the shared terminal ownership boundary before

@@ -119,6 +119,9 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
             memory_guard.CargoIncrementalQuarantine | None
         ) = None,
         child_process: memory_guard.GuardedChildProcess | None = None,
+        owned_process_identities: Sequence[
+            tuple[int, memory_guard.ProcessIdentity]
+        ] = (),
         termination_reports: Sequence[memory_guard.GuardTerminationReport] = (),
         guard_signal: int | None = None,
         peak_job_commit_bytes: int | None = None,
@@ -126,6 +129,7 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
         temporary_artifacts: Mapping[str, object] | None = None,
         child_returncode: int | None = None,
         infrastructure_failure: memory_guard.GuardInfrastructureFailure | None = None,
+        child_stderr: Output | None = None,
     ) -> None:
         super().__init__(
             args=list(args), returncode=returncode, stdout=stdout, stderr=stderr
@@ -141,6 +145,7 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
         self.orphaned_process_groups = tuple(orphaned_process_groups)
         self.cargo_incremental_quarantine = cargo_incremental_quarantine
         self.child_process = child_process
+        self.owned_process_identities = tuple(owned_process_identities)
         self.termination_reports = tuple(termination_reports)
         self.guard_signal = guard_signal
         self.peak_job_commit_bytes = peak_job_commit_bytes
@@ -148,6 +153,8 @@ class GuardedCompletedProcess[Output: str | bytes](subprocess.CompletedProcess[O
         self.temporary_artifacts = temporary_artifacts
         self.child_returncode = child_returncode
         self.infrastructure_failure = infrastructure_failure
+        # Child diagnostics and guard/reproduction context have different authority.
+        self.child_stderr = stderr if child_stderr is None else child_stderr
 
 
 def _claim_terminated_pgid(pgid: int) -> bool:
@@ -901,6 +908,7 @@ def _append_guarded_command_profile(
         memory_guard.CargoIncrementalQuarantine | None
     ) = None,
     child_process: memory_guard.GuardedChildProcess | None = None,
+    owned_process_identities: Sequence[tuple[int, memory_guard.ProcessIdentity]] = (),
     termination_reports: Sequence[memory_guard.GuardTerminationReport] = (),
     guard_signal: int | None = None,
     peak_job_commit_bytes: int | None = None,
@@ -970,6 +978,9 @@ def _append_guarded_command_profile(
         ),
         "orphaned_process_groups": list(orphaned_process_groups),
         "child_process": memory_guard.guarded_child_process_payload(child_process),
+        "owned_process_identities": memory_guard.process_identities_payload(
+            owned_process_identities
+        ),
         "termination_reports": memory_guard.termination_reports_payload(
             termination_reports
         ),
@@ -1451,6 +1462,7 @@ def guarded_completed_process(
         peak_total=guarded.peak_total,
         cargo_incremental_quarantine=guarded.cargo_incremental_quarantine,
         child_process=guarded.child_process,
+        owned_process_identities=guarded.owned_process_identities,
         termination_reports=guarded.termination_reports,
         guard_signal=guarded.guard_signal,
         peak_job_commit_bytes=guarded.peak_job_commit_bytes,
@@ -1478,6 +1490,7 @@ def guarded_completed_process(
         orphaned_process_groups=guarded.orphaned_process_groups,
         cargo_incremental_quarantine=guarded.cargo_incremental_quarantine,
         child_process=guarded.child_process,
+        owned_process_identities=guarded.owned_process_identities,
         termination_reports=guarded.termination_reports,
         guard_signal=guarded.guard_signal,
         peak_job_commit_bytes=guarded.peak_job_commit_bytes,
@@ -1485,6 +1498,7 @@ def guarded_completed_process(
         temporary_artifacts=guarded.temporary_artifacts,
         child_returncode=guarded.child_returncode,
         infrastructure_failure=guarded.infrastructure_failure,
+        child_stderr=guarded.stderr or ("" if text else b""),
     )
 
 
@@ -1702,6 +1716,7 @@ def guarded_completed_process_to_tempfiles(
         peak_total=guarded.peak_total,
         cargo_incremental_quarantine=guarded.cargo_incremental_quarantine,
         child_process=guarded.child_process,
+        owned_process_identities=guarded.owned_process_identities,
         termination_reports=guarded.termination_reports,
         guard_signal=guarded.guard_signal,
         peak_job_commit_bytes=guarded.peak_job_commit_bytes,
@@ -1728,6 +1743,7 @@ def guarded_completed_process_to_tempfiles(
         orphaned_process_groups=guarded.orphaned_process_groups,
         cargo_incremental_quarantine=guarded.cargo_incremental_quarantine,
         child_process=guarded.child_process,
+        owned_process_identities=guarded.owned_process_identities,
         termination_reports=guarded.termination_reports,
         guard_signal=guarded.guard_signal,
         peak_job_commit_bytes=guarded.peak_job_commit_bytes,
@@ -1735,6 +1751,7 @@ def guarded_completed_process_to_tempfiles(
         temporary_artifacts=guarded.temporary_artifacts,
         child_returncode=guarded.child_returncode,
         infrastructure_failure=guarded.infrastructure_failure,
+        child_stderr=_guard_output_bytes(guarded.stderr),
     )
 
 
@@ -1846,11 +1863,16 @@ class RepoProcessMemorySentinel:
         self._daemon_suite_lease = None
         self._daemon_suite_lease_previous = None
         self._tree_tracker = memory_guard.ProcessTreeTracker(os.getpid())
+        self._sample_observed_at_ns: int | None = None
+        self._suite_adopted_pids: set[int] = set()
         self._baseline_pgids: set[int] = set()
         self._observed_process_identities: dict[int, memory_guard.ProcessIdentity] = {}
         self._terminated_pgids: set[int] = set()
         self._protected_pgids_recorded: set[int] = set()
         self.tripped = False
+        self.infrastructure_failure: memory_guard.GuardInfrastructureFailure | None = (
+            None
+        )
         self._started_monotonic = time.monotonic()
         self._started_at = _utc_timestamp()
         self.events_path = artifact_root / "memory_guard" / f"{label}_sentinel.jsonl"
@@ -1951,10 +1973,13 @@ class RepoProcessMemorySentinel:
         self,
         samples: Mapping[int, memory_guard.ProcessSample],
     ) -> set[int]:
+        self._suite_adopted_pids = set()
         if not self._scope_to_current_tree:
             return set()
         if os.name != "posix" or not os.environ.get("MOLT_BACKEND_DAEMON_SUITE_LEASE"):
-            self._tree_tracker.update(samples)
+            self._tree_tracker.update(
+                samples, observed_at_ns=self._sample_observed_at_ns
+            )
             return {
                 pid
                 for pid in (self._tree_tracker.known_pids or set())
@@ -1982,6 +2007,7 @@ class RepoProcessMemorySentinel:
         adopted_pids = {
             pid for _lease, _identity, members in adopted for pid in members
         }
+        self._suite_adopted_pids = adopted_pids
         if self._daemon_suite_lease is not None:
             # The receiving suite explicitly observes adopted births even after
             # the short command that spawned the daemon has been reaped.
@@ -1992,7 +2018,11 @@ class RepoProcessMemorySentinel:
                 self._tree_tracker.known_identities[pid] = (
                     memory_guard.process_identity(samples[pid])
                 )
-        self._tree_tracker.update(samples)
+        self._tree_tracker.update(samples, observed_at_ns=self._sample_observed_at_ns)
+        self._tree_tracker.cut_ancestry_at(
+            {pid: memory_guard.process_identity(samples[pid]) for pid in adopted_pids},
+            observed_at_ns=self._sample_observed_at_ns or time.monotonic_ns(),
+        )
         known_pids = set(self._tree_tracker.known_pids or set())
         if self._daemon_suite_lease is None:
             known_pids.difference_update(adopted_pids)
@@ -2078,6 +2108,19 @@ class RepoProcessMemorySentinel:
                 }
             )
 
+    def _retain_trip_failure(
+        self, message: str, *, error: BaseException | None = None
+    ) -> None:
+        previous = self.infrastructure_failure
+        self.infrastructure_failure = memory_guard.GuardInfrastructureFailure(
+            phase="rss_trip_evidence",
+            details=(
+                *(previous.details if previous is not None else ()),
+                message,
+                *getattr(error, "__notes__", ()),
+            ),
+        )
+
     def _notify_violation(
         self,
         violation: process_sentinel.SentinelViolation,
@@ -2089,19 +2132,24 @@ class RepoProcessMemorySentinel:
         try:
             self._on_violation(violation, limits, payload)
         except Exception as exc:  # noqa: BLE001
-            self._record(
-                {
-                    "event": "repo_process_guard_callback_error",
-                    "callback": "on_violation",
-                    "error": str(exc),
-                }
+            self._retain_trip_failure(
+                f"suite RSS trip callback/publication failed: {exc}", error=exc
             )
+            with contextlib.suppress(Exception):
+                self._record(
+                    {
+                        "event": "repo_process_guard_callback_error",
+                        "callback": "on_violation",
+                        "error": str(exc),
+                    }
+                )
 
     def _current_groups(
         self,
         *,
         update_observed: bool = True,
     ) -> list[process_sentinel.ProcessGroup]:
+        self._sample_observed_at_ns = time.monotonic_ns()
         samples = memory_guard.sample_processes()
         self._record_skipped_protected_groups(samples)
         owned_pids = self._owned_pids_from_samples(samples)
@@ -2213,6 +2261,11 @@ class RepoProcessMemorySentinel:
                     )
                 payload = {
                     "event": "repo_process_guard_tripped",
+                    "observed_at_ns": self._sample_observed_at_ns,
+                    "custody_ancestry": self._tree_tracker.custody_ancestry_payload(
+                        {sample.pid: sample for sample in violation.samples},
+                        excluded_roots=self._suite_adopted_pids,
+                    ),
                     "violation": process_sentinel.violation_payload(violation),
                     "limits": memory_guard.memory_limits_payload(current_limits),
                     "guard_started_at": self._started_at,
@@ -2242,7 +2295,12 @@ class RepoProcessMemorySentinel:
                 }
                 if claimed:
                     payload["killed_at"] = observed_at
-                self._record(payload)
+                try:
+                    self._record(payload)
+                except Exception as exc:  # noqa: BLE001
+                    self._retain_trip_failure(
+                        f"suite RSS event publication failed: {exc}", error=exc
+                    )
                 self._notify_violation(violation, current_limits, payload)
                 if not claimed:
                     continue
@@ -2255,12 +2313,17 @@ class RepoProcessMemorySentinel:
                 )
                 self._terminated_pgids.add(violation.pgid)
         except Exception as exc:  # noqa: BLE001
-            self._record(
-                {
-                    "event": "repo_process_guard_error",
-                    "error": str(exc),
-                }
-            )
+            if self.tripped:
+                self._retain_trip_failure(
+                    f"suite RSS trip handling failed: {exc}", error=exc
+                )
+            with contextlib.suppress(Exception):
+                self._record(
+                    {
+                        "event": "repo_process_guard_error",
+                        "error": str(exc),
+                    }
+                )
 
     def _new_groups(self) -> list[process_sentinel.ProcessGroup]:
         return [

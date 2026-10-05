@@ -32,6 +32,8 @@ from tools.proof_queue_pkg import (
     command_admission,
     command_identity,
     custody_cas,
+    cargo_output_layout,
+    supervisor_generation,
     execution_custody,
     execution_environment,
     execution_receipt_details,
@@ -255,6 +257,23 @@ def publish_receipt_custody(
         "verification_identity_sha256": verification["identity_sha256"],
         "identical": True,
     }
+    provision_target = cargo_output_layout.CargoOutputLayout.create(
+        result_root=directory
+    ).supervisor_target
+    generation_inputs = {"profile": "release", "synthetic_fixture": True}
+    generation = {
+        "schema": custody_cas.ARTIFACT_SCHEMA,
+        "kind": supervisor_generation.GENERATION_SCHEMA,
+        "inputs": generation_inputs,
+        "input_sha256": canonical_json_sha256(generation_inputs),
+        "build_target_dir": str(provision_target),
+        "binary": {
+            "sha256": binary_artifact["sha256"],
+            "size_bytes": binary_artifact["size_bytes"],
+            "name": binary.name,
+        },
+        "freshness_authority": "cargo-build-locked",
+    }
     supervisor = {
         "schema": "molt.proof-process-supervision.v1",
         "binary": command_identity._file_identity(binary),
@@ -265,6 +284,15 @@ def publish_receipt_custody(
         "event_artifact": event_artifact,
         "supervisor_returncode": 0,
         "required_environment": dict(required_environment or {}),
+        "provision_telemetry": {
+            "schema": supervisor_generation.PROVISION_SCHEMA,
+            "build_target_dir": str(provision_target),
+            "build_output_sha256": binary_artifact["sha256"],
+            "build_output_size_bytes": binary_artifact["size_bytes"],
+            "generation_artifact": custody_cas.put_json(
+                directory / "custody-cas", generation
+            ).as_dict(),
+        },
     }
     return summaries, toolchain_custody, {"capture": capture, "supervisor": supervisor}
 

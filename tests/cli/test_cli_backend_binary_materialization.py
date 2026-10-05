@@ -3,7 +3,7 @@ from __future__ import annotations
 from tests.compiler_identity_helper import (
     compiler_build_admission,
     stub_compiler_admission,
-    write_compiler_lock,
+    write_compiler_source,
 )
 
 import os
@@ -55,6 +55,7 @@ def test_target_switch_preserves_admitted_native_and_wasm_compilers(
     monkeypatch: pytest.MonkeyPatch,
     disable_rebuild_after_publication: bool,
 ) -> None:
+    write_compiler_source(tmp_path)
     stub_compiler_admission(monkeypatch)
     monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
     monkeypatch.delenv("MOLT_SKIP_RUNTIME_REBUILD", raising=False)
@@ -121,6 +122,7 @@ def test_target_switch_preserves_admitted_native_and_wasm_compilers(
 def test_rebuild_disabled_still_admits_backend_identity_and_features(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
 ) -> None:
+    write_compiler_source(tmp_path)
     stub_compiler_admission(monkeypatch)
     monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
     monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
@@ -219,7 +221,7 @@ def test_backend_compiler_cache_fingerprint_covers_backend_fingerprint_fields() 
 def test_backend_refresh_distinguishes_source_metadata_from_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
 ) -> None:
-    write_compiler_lock(tmp_path)
+    write_compiler_source(tmp_path)
     stub_compiler_admission(monkeypatch)
     from molt.cli import runtime_fingerprints
 
@@ -285,6 +287,7 @@ def test_ensure_backend_binary_refreshes_feature_tagged_alias_only_from_admitted
     monkeypatch: pytest.MonkeyPatch,
     mutation: str,
 ) -> None:
+    write_compiler_source(tmp_path)
     stub_compiler_admission(monkeypatch)
     exe_suffix = ".exe" if os.name == "nt" else ""
     target_dir = tmp_path / "target" / "dev-fast"
@@ -370,6 +373,7 @@ def test_ensure_backend_binary_reuses_exact_probe_validation_token(
     monkeypatch: pytest.MonkeyPatch,
     mutation: str,
 ) -> None:
+    write_compiler_source(tmp_path)
     stub_compiler_admission(monkeypatch)
     exe_suffix = ".exe" if os.name == "nt" else ""
     backend_bin = tmp_path / "target" / "dev-fast" / f"molt-backend{exe_suffix}"
@@ -480,6 +484,7 @@ def test_ensure_backend_binary_returns_cargo_failure_detail(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    write_compiler_source(tmp_path)
     stub_compiler_admission(monkeypatch)
     backend_bin = tmp_path / "target" / "release-fast" / "molt-backend"
     fingerprint = _fingerprint()
@@ -518,13 +523,15 @@ def test_ensure_backend_binary_returns_cargo_failure_detail(
     assert not result
     assert result.phase == "backend_cargo_build"
     assert result.returncode == 101
-    assert result.command[:4] == (
+    assert result.command[:7] == (
         "cargo",
         "build",
+        "--locked",
         "--package",
         "molt-backend",
+        "--bin",
+        "molt-backend",
     )
-    assert result.command[4:6] == ("--bin", "molt-backend")
     assert "Backend cargo build failed (exit 101)" in result.message
     assert "duplicate symbol: PyMemoryView_FromMemory" in result.message
 
@@ -533,6 +540,7 @@ def test_ensure_backend_binary_returns_cargo_failure_detail(
 def test_backend_probe_cannot_publish_receipt_for_binary_changed_during_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replace: bool
 ) -> None:
+    write_compiler_source(tmp_path)
     stub_compiler_admission(monkeypatch)
     name = "molt-backend.exe" if os.name == "nt" else "molt-backend"
     backend_bin = tmp_path / "target" / "dev-fast" / name
@@ -599,6 +607,7 @@ def test_backend_probe_cannot_publish_receipt_for_binary_changed_during_probe(
 def test_backend_probe_publication_failure_is_typed_without_rebuild(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    write_compiler_source(tmp_path)
     stub_compiler_admission(monkeypatch)
     name = "molt-backend.exe" if os.name == "nt" else "molt-backend"
     backend_bin = tmp_path / "target" / "dev-fast" / name
@@ -651,6 +660,7 @@ def test_backend_build_publishes_provenance_only_after_successful_probe(
     receipt: str,
     probe_outcome: str,
 ) -> None:
+    write_compiler_source(tmp_path)
     stub_compiler_admission(monkeypatch)
     suffix = ".exe" if os.name == "nt" else ""
     cargo_output = tmp_path / "target" / "dev-fast" / f"molt-backend{suffix}"
@@ -748,6 +758,7 @@ def test_backend_build_publishes_provenance_only_after_successful_probe(
 def test_backend_alias_replacement_during_publication_cannot_acquire_provenance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, admitted_source: bool
 ) -> None:
+    write_compiler_source(tmp_path)
     stub_compiler_admission(monkeypatch)
     suffix = ".exe" if os.name == "nt" else ""
     cargo_output = tmp_path / "target" / "dev-fast" / f"molt-backend{suffix}"

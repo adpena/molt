@@ -218,5 +218,5 @@ pub const DROP_INSERTED_ATTR: &str = "drop_inserted";
 /// until shared DropInsertion covers their complete lifetime graph.
 pub const EXCEPTION_REGION_DROPS_INSERTED_ATTR: &str = "exception_region_drops_inserted";
 
-pub use self::runner::run;
 pub(crate) use self::runner::frame_clear;
+pub use self::runner::run;

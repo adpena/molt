@@ -75,11 +75,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 2,
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::AbcAbstractmethodCheck,
-        name: "abc_abstractmethod_check",
-        type_idx: 2,
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::ArrayNew,
         name: "array_new",
         type_idx: 2,
@@ -360,6 +355,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 3,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::ExceptionPrepareRaise,
+        name: "exception_prepare_raise",
+        type_idx: 3,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionTracePrepend,
         name: "exception_trace_prepend",
         type_idx: 2,
@@ -473,11 +473,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::ExceptionPush,
         name: "exception_push",
         type_idx: 0,
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::ExceptionSetCause,
-        name: "exception_set_cause",
-        type_idx: 3,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionSetLast,
@@ -1043,6 +1038,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         import: WasmRuntimeImport::GuardLayout,
         name: "guard_layout",
         type_idx: 5,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::ProfileEnabled,
+        name: "profile_enabled",
+        type_idx: 0,
     },
     RuntimeImportSpec {
         import: WasmRuntimeImport::GuardType,
@@ -4957,6 +4957,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
     RuntimeImportSpec {
         import: WasmRuntimeImport::ImportlibModuleSpecParent,
         name: "importlib_module_spec_parent",
+        type_idx: 2,
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::CompatibilityError,
+        name: "compatibility_error",
         type_idx: 2,
     },
     RuntimeImportSpec {
@@ -14983,8 +14988,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_abc_reset_caches" => Some(WasmRuntimeImport::AbcResetCaches),
         "abc_update_abstractmethods" => Some(WasmRuntimeImport::AbcUpdateAbstractmethods),
         "molt_abc_update_abstractmethods" => Some(WasmRuntimeImport::AbcUpdateAbstractmethods),
-        "abc_abstractmethod_check" => Some(WasmRuntimeImport::AbcAbstractmethodCheck),
-        "molt_abc_abstractmethod_check" => Some(WasmRuntimeImport::AbcAbstractmethodCheck),
         "array_new" => Some(WasmRuntimeImport::ArrayNew),
         "molt_array_new" => Some(WasmRuntimeImport::ArrayNew),
         "array_from_list" => Some(WasmRuntimeImport::ArrayFromList),
@@ -15097,6 +15100,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_locals_builtin" => Some(WasmRuntimeImport::LocalsBuiltin),
         "frame_cell_publish" => Some(WasmRuntimeImport::FrameCellPublish),
         "molt_frame_cell_publish" => Some(WasmRuntimeImport::FrameCellPublish),
+        "exception_prepare_raise" => Some(WasmRuntimeImport::ExceptionPrepareRaise),
+        "molt_exception_prepare_raise" => Some(WasmRuntimeImport::ExceptionPrepareRaise),
         "exception_trace_prepend" => Some(WasmRuntimeImport::ExceptionTracePrepend),
         "molt_exception_trace_prepend" => Some(WasmRuntimeImport::ExceptionTracePrepend),
         "exception_active" => Some(WasmRuntimeImport::ExceptionActive),
@@ -15151,8 +15156,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_exception_pop" => Some(WasmRuntimeImport::ExceptionPop),
         "exception_push" => Some(WasmRuntimeImport::ExceptionPush),
         "molt_exception_push" => Some(WasmRuntimeImport::ExceptionPush),
-        "exception_set_cause" => Some(WasmRuntimeImport::ExceptionSetCause),
-        "molt_exception_set_cause" => Some(WasmRuntimeImport::ExceptionSetCause),
         "exception_set_last" => Some(WasmRuntimeImport::ExceptionSetLast),
         "molt_exception_set_last" => Some(WasmRuntimeImport::ExceptionSetLast),
         "exception_set_value" => Some(WasmRuntimeImport::ExceptionSetValue),
@@ -15379,6 +15382,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_fast_str_strip" => Some(WasmRuntimeImport::FastStrStrip),
         "guard_layout" => Some(WasmRuntimeImport::GuardLayout),
         "molt_guard_layout" => Some(WasmRuntimeImport::GuardLayout),
+        "profile_enabled" => Some(WasmRuntimeImport::ProfileEnabled),
+        "molt_profile_enabled" => Some(WasmRuntimeImport::ProfileEnabled),
         "guard_type" => Some(WasmRuntimeImport::GuardType),
         "molt_guard_type" => Some(WasmRuntimeImport::GuardType),
         "guarded_field_get" => Some(WasmRuntimeImport::GuardedFieldGet),
@@ -17195,6 +17200,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_importlib_module_spec_repr" => Some(WasmRuntimeImport::ImportlibModuleSpecRepr),
         "importlib_module_spec_parent" => Some(WasmRuntimeImport::ImportlibModuleSpecParent),
         "molt_importlib_module_spec_parent" => Some(WasmRuntimeImport::ImportlibModuleSpecParent),
+        "compatibility_error" => Some(WasmRuntimeImport::CompatibilityError),
+        "molt_compatibility_error" => Some(WasmRuntimeImport::CompatibilityError),
         "tk_available" => Some(WasmRuntimeImport::TkAvailable),
         "molt_tk_available" => Some(WasmRuntimeImport::TkAvailable),
         "tk_app_new" => Some(WasmRuntimeImport::TkAppNew),

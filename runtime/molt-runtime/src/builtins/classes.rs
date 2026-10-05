@@ -675,11 +675,80 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
                 ClassDeclaration::NativeSlotLayout,
             );
         }
-        for bits in [str, bytes, bytearray, list, tuple, range, memoryview] {
-            class_declare(
-                obj_from_bits(bits).as_ptr().unwrap(),
-                ClassDeclaration::NativeSequenceItem,
-            );
+        // CPython's native type initializers distinguish all sequence and
+        // mapping slots even when they publish the same Python method name.
+        // Declare on construction handles, never names or payload shapes.
+        use molt_cpython_abi::hooks::NativeProtocolSlot as P;
+        for (kinds, protocols) in [
+            (
+                &[str, bytes, tuple][..],
+                &[
+                    P::SequenceLength,
+                    P::SequenceConcat,
+                    P::SequenceRepeat,
+                    P::SequenceItem,
+                    P::SequenceContains,
+                    P::MappingLength,
+                    P::MappingSubscript,
+                ][..],
+            ),
+            (
+                &[bytearray, list][..],
+                &[
+                    P::SequenceLength,
+                    P::SequenceConcat,
+                    P::SequenceRepeat,
+                    P::SequenceItem,
+                    P::SequenceAssignItem,
+                    P::SequenceContains,
+                    P::SequenceInPlaceConcat,
+                    P::SequenceInPlaceRepeat,
+                    P::MappingLength,
+                    P::MappingSubscript,
+                    P::MappingAssignSubscript,
+                ][..],
+            ),
+            (
+                &[range][..],
+                &[
+                    P::SequenceLength,
+                    P::SequenceItem,
+                    P::SequenceContains,
+                    P::MappingLength,
+                    P::MappingSubscript,
+                ][..],
+            ),
+            (
+                &[memoryview][..],
+                &[
+                    P::SequenceLength,
+                    P::SequenceItem,
+                    P::MappingLength,
+                    P::MappingSubscript,
+                    P::MappingAssignSubscript,
+                ][..],
+            ),
+            (
+                &[dict][..],
+                &[
+                    P::SequenceContains,
+                    P::MappingLength,
+                    P::MappingSubscript,
+                    P::MappingAssignSubscript,
+                ][..],
+            ),
+            (
+                &[set, frozenset, dict_keys, dict_items][..],
+                &[P::SequenceLength, P::SequenceContains][..],
+            ),
+            (&[dict_values][..], &[P::SequenceLength][..]),
+        ] {
+            for &bits in kinds {
+                crate::object::class_storage::class_declare_native_protocols(
+                    obj_from_bits(bits).as_ptr().unwrap(),
+                    protocols,
+                );
+            }
         }
         for bits in [
             type_obj,

@@ -1,11 +1,11 @@
-from .contracts import (
+from molt.debug.contracts import (
     DebugCapabilityRecord,
     DebugFailureClass,
     DebugStatus,
     DebugSubcommand,
     normalize_debug_payload,
 )
-from .manifest import (
+from molt.debug.manifest import (
     DebugPaths,
     allocate_debug_paths,
     canonical_debug_root,
@@ -14,7 +14,7 @@ from .manifest import (
     render_debug_text_summary,
     write_debug_manifest,
 )
-from .trace import TraceConfig, normalize_trace_families
+from molt.debug.trace import TraceConfig, normalize_trace_families
 
 __all__ = [
     "DebugCapabilityRecord",

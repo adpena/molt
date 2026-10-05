@@ -1021,15 +1021,16 @@ mod tests {
 
     #[test]
     fn receiver_admission_preserves_pending_channels_and_projection_failures() {
-        use crate::builtins::exceptions::alloc_exception;
+        use crate::builtins::exceptions::{alloc_exception, pending_exception_class};
         use crate::builtins::functions::native_callable::{
-            configure_native_callable, native_descriptor_receiver,
+            NativeDescriptorContext, configure_native_callable, native_descriptor_receiver,
         };
         use crate::builtins::methods::object_method_bits;
         use crate::object::class_layout::{is_real_instance, is_real_subtype, try_is_real_subtype};
         use molt_cpython_abi::abi_types::*;
         use molt_cpython_abi::api::errors;
         use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+        use molt_cpython_abi::hooks::PendingExceptionClass;
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         crate::with_gil_entry_nopanic!(py, {
@@ -1087,9 +1088,49 @@ mod tests {
                     .molt_value_for_pyobj((&raw mut class).cast())
                     .unwrap();
                 let bits = GLOBAL_BRIDGE.molt_value_for_pyobj(&raw mut value).unwrap();
+
+                // CPython's PyErr_Occurred and ExceptionMatches observe the
+                // pending class without fetching the raised instance. Verify
+                // that both public queries leave the runtime channel exact.
+                let observe_class = |expected| {
+                    let runtime_class = pending_exception_class(py);
+                    let runtime_value = crate::exception_last_bits_noinc(py);
+                    assert_eq!(errors::PyErr_Occurred(), expected);
+                    assert_eq!(errors::PyErr_ExceptionMatches(expected), 1);
+                    assert_eq!(errors::PyErr_Occurred(), expected);
+                    assert_eq!(pending_exception_class(py), runtime_class);
+                    assert_eq!(crate::exception_last_bits_noinc(py), runtime_value);
+                };
+
+                // Cold projection validates the class seal before its name.
+                // A hook-origin failure is runtime-pending, with no C triple;
+                // reading only take_current_error would mistake it for loss.
+                assert_eq!(try_is_real_subtype(py, class_bits, owner), Err(()));
+                let system_error =
+                    crate::builtins::exceptions::exception_type_bits_from_name(py, "SystemError");
+                assert_eq!(
+                    pending_exception_class(py),
+                    PendingExceptionClass::Class(system_error)
+                );
+                assert!(crate::exception_last_bits_noinc(py).is_some());
+                assert!(errors::take_current_error().is_none());
+                observe_class((&raw mut PyExc_SystemError).cast());
+                assert_eq!(
+                    crate::builtins::exceptions::pending_exception_diagnostic(py),
+                    Some((
+                        "SystemError".into(),
+                        "runtime type creation documentation is not sealed".into()
+                    )),
+                );
+                errors::PyErr_Clear();
+                assert!(!exception_pending(py));
+                crate::molt_class_set_base(owner, builtins.object);
+                crate::object::class_finish_definition(py, owner_ptr).unwrap();
+                assert!(!GLOBAL_BRIDGE.type_has_projection(owner));
+
                 // A malformed cold type projection must remain distinguishable
                 // from an ordinary unrelated receiver. Bypass the public name
-                // setter only to exercise this defensive bridge failure.
+                // setter on a sealed class to reach the intended name failure.
                 crate::object::class_storage::ClassReferenceSlot::Name
                     .replace_borrowed(py, owner_ptr, none);
                 assert!(!is_real_subtype(py, class_bits, owner));
@@ -1111,6 +1152,7 @@ mod tests {
                 ))
                 .bits();
                 crate::record_exception(py, obj_from_bits(runtime_error).as_ptr().unwrap());
+                let runtime_class = pending_exception_class(py);
                 assert!(is_real_subtype(py, class_bits, builtins.object));
                 assert!(is_real_instance(py, bits, builtins.object));
                 assert!(!is_real_subtype(py, class_bits, owner));
@@ -1118,16 +1160,18 @@ mod tests {
                 assert!(validate_receiver(py, valid_ptr, bits));
                 assert!(matches!(native_descriptor_receiver(
                     py, obj_from_bits(callable).as_ptr().unwrap(),
-                    NativeCallableKind::WrapperDescriptor, None, Some(bits),
+                    NativeCallableKind::WrapperDescriptor, NativeDescriptorContext::Binding, None, Some(bits),
                 ), Ok(Some(receiver)) if receiver.bits() == bits));
                 assert!(
                     matches!(native_descriptor_receiver(
                     py, obj_from_bits(callable).as_ptr().unwrap(),
-                    NativeCallableKind::WrapperDescriptor, None, Some(none),
+                    NativeCallableKind::WrapperDescriptor, NativeDescriptorContext::Binding, None, Some(none),
                 ), Ok(Some(receiver)) if receiver.bits() == none),
                     "an explicit Python None receiver is not absent"
                 );
                 assert_eq!(crate::exception_last_bits_noinc(py), Some(runtime_error));
+                assert_eq!(pending_exception_class(py), runtime_class);
+                observe_class((&raw mut PyExc_KeyError).cast());
                 let c_error = errors::take_current_error().expect("C error survived admission");
                 assert_eq!(c_error.value, c_identity);
                 assert_eq!(c_error.exc_type, (&raw mut PyExc_KeyError).cast());
@@ -1136,35 +1180,66 @@ mod tests {
                 dec_ref_bits(py, runtime_error);
 
                 assert_eq!(try_is_real_subtype(py, class_bits, owner), Err(()));
+                assert_eq!(pending_exception_class(py), PendingExceptionClass::None);
+                observe_class((&raw mut PyExc_SystemError).cast());
                 let projection = errors::take_current_error().expect("projection failure retained");
                 assert_eq!(projection.exc_type, (&raw mut PyExc_SystemError).cast());
+                assert!(!projection.value.is_null());
                 drop(projection);
-                for callable_admission in [true, false] {
-                    if callable_admission {
-                        assert!(
-                            native_descriptor_receiver(
-                                py,
-                                function,
-                                NativeCallableKind::MethodDescriptor,
-                                None,
-                                Some(bits),
-                            )
-                            .is_err()
+                for emergency in [false, true] {
+                    for callable_admission in [true, false] {
+                        if emergency {
+                            // The allocation-free error is a real raised class
+                            // without a heap value or a C triple. Failed
+                            // projection/propagation must preserve it exactly.
+                            crate::record_memory_error_without_allocation(py);
+                            assert_eq!(
+                                pending_exception_class(py),
+                                PendingExceptionClass::EmergencyMemoryError
+                            );
+                            assert!(crate::exception_last_bits_noinc(py).is_none());
+                        }
+                        if callable_admission {
+                            assert!(
+                                native_descriptor_receiver(
+                                    py,
+                                    function,
+                                    NativeCallableKind::MethodDescriptor,
+                                    NativeDescriptorContext::Binding,
+                                    None,
+                                    Some(bits),
+                                )
+                                .is_err()
+                            );
+                        } else {
+                            assert!(!validate_receiver(py, invalid_ptr, bits));
+                        }
+                        assert_eq!(
+                            pending_exception_class(py),
+                            if emergency {
+                                PendingExceptionClass::EmergencyMemoryError
+                            } else {
+                                // A foreign projection failure retains its native
+                                // exception identity in the runtime pending slot.
+                                PendingExceptionClass::NativeClass(&raw mut PyExc_SystemError)
+                            },
+                            "projection failure must retain its class, not become a receiver TypeError"
                         );
-                    } else {
-                        assert!(!validate_receiver(py, invalid_ptr, bits));
+                        observe_class(if emergency {
+                            (&raw mut PyExc_MemoryError).cast()
+                        } else {
+                            (&raw mut PyExc_SystemError).cast()
+                        });
+                        assert!(
+                            errors::take_current_error().is_none(),
+                            "admission leaves the failure in the runtime channel"
+                        );
+                        assert_eq!(crate::exception_last_bits_noinc(py).is_none(), emergency);
+                        errors::PyErr_Clear();
+                        assert!(!exception_pending(py));
+                        assert_eq!(pending_exception_class(py), PendingExceptionClass::None);
+                        assert!(errors::PyErr_Occurred().is_null());
                     }
-                    let pending = crate::exception_last_bits_noinc(py).expect("admission failure");
-                    assert!(
-                        crate::builtins::exceptions::exception_matches_builtin_name(
-                            py,
-                            pending,
-                            "SystemError",
-                        ),
-                        "a projection failure must not become a receiver TypeError"
-                    );
-                    crate::clear_exception(py);
-                    assert!(errors::PyErr_Occurred().is_null());
                 }
                 crate::object::class_storage::ClassReferenceSlot::Name
                     .replace_borrowed(py, owner_ptr, owner_name);

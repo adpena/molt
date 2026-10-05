@@ -74,18 +74,8 @@ pub(crate) unsafe fn alloc_instance_for_default_object_new(
     _py: &PyToken<'_>,
     class_ptr: *mut u8,
 ) -> u64 {
-    unsafe {
-        let class_bits = MoltObject::from_ptr(class_ptr).bits();
-        if let Some(inst_bits) =
-            crate::object::builders::alloc_dataclass_for_class_ptr(_py, class_ptr, class_bits)
-        {
-            return inst_bits;
-        }
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        crate::molt_object_new_bound(class_bits)
-    }
+    // Every default object allocation, including dataclasses, shares admission.
+    crate::molt_object_new_bound(MoltObject::from_ptr(class_ptr).bits())
 }
 
 /// Consume and validate an owned `__init__` result.
@@ -247,13 +237,13 @@ unsafe fn initialize_builtin_exception_from_positional(
     }
     let args_bits = MoltObject::from_ptr(args_ptr).bits();
     if unsafe {
-        callable_matches_runtime_symbol(Some(init_bits), fn_addr!(molt_exception_init))
-            || callable_matches_runtime_symbol(Some(init_bits), fn_addr!(molt_exception_init_owned))
+        callable_matches_runtime_symbol(Some(init_bits), fn_key!(molt_exception_init))
+            || callable_matches_runtime_symbol(Some(init_bits), fn_key!(molt_exception_init_owned))
     } {
         let _ = molt_exception_init(inst_bits, args_bits);
     } else {
         debug_assert!(unsafe {
-            callable_matches_runtime_symbol(Some(init_bits), fn_addr!(molt_exceptiongroup_init))
+            callable_matches_runtime_symbol(Some(init_bits), fn_key!(molt_exceptiongroup_init))
         });
         let _ = molt_exceptiongroup_init(inst_bits, args_bits);
     }
@@ -290,7 +280,7 @@ pub(crate) unsafe fn construct_exception_from_args(
             class_attr_lookup_raw_mro(_py, class_ptr, new_name_bits)
         {
             let default_new =
-                callable_matches_runtime_symbol(Some(new_bits), fn_addr!(molt_exception_new_bound));
+                callable_matches_runtime_symbol(Some(new_bits), fn_key!(molt_exception_new_bound));
             let result = if default_new {
                 let args_ptr = alloc_tuple(_py, pos);
                 if args_ptr.is_null() {
@@ -347,14 +337,14 @@ pub(crate) unsafe fn construct_exception_from_args(
             return inst_bits;
         };
         let tuple_init =
-            callable_matches_runtime_symbol(Some(init_bits), fn_addr!(molt_exception_init))
+            callable_matches_runtime_symbol(Some(init_bits), fn_key!(molt_exception_init))
                 || callable_matches_runtime_symbol(
                     Some(init_bits),
-                    fn_addr!(molt_exception_init_owned),
+                    fn_key!(molt_exception_init_owned),
                 )
                 || callable_matches_runtime_symbol(
                     Some(init_bits),
-                    fn_addr!(molt_exceptiongroup_init),
+                    fn_key!(molt_exceptiongroup_init),
                 );
         if tuple_init && initialized_by_default_new {
             let failed =
@@ -424,19 +414,6 @@ pub(crate) unsafe fn call_class_init_with_args(
         }
         if class_bits == builtins.function {
             return crate::builtins::functions::function_type_new_from_args(_py, args);
-        }
-        let abstract_name_bits = intern_static_name(
-            _py,
-            &runtime_state(_py).interned.abstractmethods_name,
-            b"__abstractmethods__",
-        );
-        if let Some(abstract_bits) = class_attr_lookup_raw_mro(_py, class_ptr, abstract_name_bits)
-            && !obj_from_bits(abstract_bits).is_none()
-            && is_truthy(_py, obj_from_bits(abstract_bits))
-        {
-            let class_name = class_name_for_error(class_bits);
-            let msg = format!("Can't instantiate abstract class {class_name}");
-            return raise_exception::<_>(_py, "TypeError", &msg);
         }
         if issubclass_bits(class_bits, builtins.base_exception) {
             return construct_exception_from_args(_py, class_ptr, args, &[], &[]);

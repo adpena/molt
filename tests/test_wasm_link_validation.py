@@ -1224,21 +1224,23 @@ def test_stable_snapshot_streams_source_through_one_read_handle(
     payload = bytes(range(251)) * 16_777
     source.write_bytes(payload)
     source_open_count = 0
-    real_open = identity_authority.os.open
+    real_open = identity_authority.open_stable_read_descriptor
     real_read_bytes = Path.read_bytes
 
-    def counting_open(path, flags, *args):  # type: ignore[no-untyped-def]
+    def counting_open(path):  # type: ignore[no-untyped-def]
         nonlocal source_open_count
         if Path(path) == source:
             source_open_count += 1
-        return real_open(path, flags, *args)
+        return real_open(path)
 
     def reject_path_read_bytes(path: Path) -> bytes:
         if path in {source, snapshot}:
             raise AssertionError("stable snapshot must use its single open handle")
         return real_read_bytes(path)
 
-    monkeypatch.setattr(identity_authority.os, "open", counting_open)
+    monkeypatch.setattr(
+        identity_authority, "open_stable_read_descriptor", counting_open
+    )
     monkeypatch.setattr(Path, "read_bytes", reject_path_read_bytes)
     monkeypatch.setattr(identity_authority, "_STABLE_SNAPSHOT_CHUNK_BYTES", 64 * 1024)
 
@@ -10821,9 +10823,25 @@ def test_wasm_archive_projection_preserves_duplicate_member_order_and_source_cus
     ]
     iterator = wasm_archive.iter_wasm_archive_members(archive)
     assert next(iterator).data == first
-    archive.write_bytes(_build_wasm_archive(("same.o", second), ("same.o", first)))
-    with pytest.raises(ValueError, match="changed|stable"):
-        tuple(iterator)
+    updated = _build_wasm_archive(("same.o", second), ("same.o", first))
+    try:
+        if os.name == "nt":
+            # A suspended iterator owns a reader that excludes Windows writes.
+            with pytest.raises(PermissionError):
+                archive.write_bytes(updated)
+            assert next(iterator).data == second
+        else:
+            archive.write_bytes(updated)
+            with pytest.raises(ValueError, match="changed|stable"):
+                tuple(iterator)
+    finally:
+        iterator.close()
+    # Closing the iterator releases custody and admits the new ordered bytes.
+    archive.write_bytes(updated)
+    assert [
+        (member.name, member.data)
+        for member in wasm_archive.iter_wasm_archive_members(archive)
+    ] == [("same.o", second), ("same.o", first)]
 
 
 def test_lazy_archive_compiler_rt_candidates_do_not_require_an_unused_provider(

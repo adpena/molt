@@ -138,6 +138,62 @@ their owning generator. Generators that intentionally format Python text pass
 `--no-force-exclude` to Ruff for their output path; routine hooks do not rewrite
 or reinterpret that generated authority.
 
+## Direct file read custody
+
+`molt.toolchain_identity.open_stable_regular_file` owns direct-file admission,
+reading and closing checks through the native descriptor authority in
+`molt.file_hashing`. Windows admits concurrent readers but excludes writers and
+deletion for the descriptor's lifetime. Existing writers prevent admission;
+write or delete conflicts fail the transaction. POSIX retains no-follow opening
+and before/after path, handle and content-change metadata checks.
+
+Runtime tree capture enumerates names, then each bounded worker admits, hashes
+and closes one file. Size and digest come from that same owned read. There is no
+detached metadata pass or second content hash, and live descriptors are bounded
+by the existing worker limit. Name enumeration is not an atomic filesystem
+snapshot: byte observation starts when each file is admitted.
+
+Content digests identify bytes. Detached `StableRegularFileVersion` values and
+their later verification compare metadata observations; equal values do not
+prove continuous nonmutation while the handle was closed. Windows can assign
+identical ChangeTime values to distinct writes, including same-size writes with
+restored mtime. Retaining an observed token does not extend an owned read's
+write exclusion beyond its context.
+
+`read_stable_regular_file` is the content-admission boundary for a previously
+captured digest: it hashes the returned bytes inside the same owned read and
+rejects a mismatch, including equal-metadata substitutions. This adds one
+in-memory SHA-256 and no second read or descriptor. Callers that need both a new
+identity and its bytes use `capture_stable_regular_file` in one read. Metadata
+polling remains distinct; it does not perform implicit whole-tree rehashes.
+Executable digest and native header capture share one owned descriptor; it is
+closed before a version subprocess runs. The later version-probe fences remain
+metadata observations and do not claim continuous execution identity.
+
+Mapped WASM symbol parsing and observed artifact copies compare the digest of
+their actual mapped buffer or copied stream through the same content check.
+Runtime generation staging also checks supplied identities while copying.
+Native custody hashes and parses an archive under one owned handle; warm
+archive admission hashes current bytes before reusing parsed member semantics,
+and extracted members are rehashed before reuse. A supplied digest never
+authorizes different bytes merely because metadata matches.
+
+WASM fact, linking-symbol and structural caches reuse parsing or validation
+results only after current member content matches. Cold structural validation
+retains the owned handle through the external validator. Final binding checks
+hash both members and the pinned receipt. These content-admission boundaries
+explicitly request hashing; ordinary version and tree-generation polling still
+compare metadata only and retain the detached-token limits above.
+
+Managed LLVM SDK verification retains a separate explicit policy:
+`content_policy="full"` hashes the content manifest; `"cached"` hashes after
+recorded path/size/mtime/ChangeTime drift or unavailable Windows ChangeTime.
+The cached policy can miss equal-metadata substitutions and therefore is not
+fresh byte attestation. Detached executable/version fences likewise do not
+prove which bytes a later subprocess loaded. These limits are distinct from
+the owned content-read boundary above and must remain explicit in acceptance
+or execution-identity claims.
+
 ## Python runtime identity
 
 Editable PEP 610 file locations admit only empty or case-insensitive localhost
@@ -271,9 +327,10 @@ admission; subsequent operations recapture live inputs. A clean Git HEAD is
 never cached across operations. After Cargo, fresh source and lock identity plus
 configuration/tool/resource custody must match before alias materialization,
 feature-probe receipts or artifact receipts can publish. Actual Cargo rebuilds
-also retain a live source/lock generation fence: no-follow file identities,
-directory membership and change times reject edits restored to the original
-bytes and mtime while Cargo could have consumed an intermediate generation.
+also retain a source/lock generation fence: no-follow file observations,
+directory membership and change times reject observed generation changes.
+This includes restored bytes and mtime when the filesystem exposes a new change
+time; metadata equality alone does not prove continuous nonmutation.
 That live fence is not a portable semantic key or receipt, and warm receipt hits
 do not capture it. Identity rejection is a structured build/run/deploy failure.
 
@@ -310,9 +367,11 @@ selects exactly one cell, admits bundle bytes through the canonical native-link
 and WASM-generation receipts, requires their `RuntimeBuildIdentity` to agree
 with the key, and retains one content-addressed generation under
 `MOLT_HOME/installed-runtime`. Each build operation admits that generation once;
-code generation and final link reuse the admission through stable-file mutation
-fences (handle identity and change time, never mtime alone), re-derive only the
-cell selection, and fail rather than re-admit or reselect when either changed.
+code generation and final link compare stable-file metadata observations and
+re-derive the cell selection, failing on an observed generation or selection
+change. These detached comparisons have the limits described under direct file
+read custody above; they do not establish continuous nonmutation. Byte readers
+that consume a captured digest validate it against the actual returned bytes.
 Native code generation admits the cell's callable projection (signed bytes,
 canonical encoding, named for the retained archive's digest) and never runs a
 symbol reader.
@@ -467,13 +526,16 @@ WASM publication, and standalone WASM CPython-ABI publication use the same
 the CLI build output scope closes the admission on success and every failure.
 Installed runtime cells continue to bypass build-Python capture.
 
-Each boundary independently reselects the interpreter and verifies its exact
-executable generation and native-loader environment. The selected interpreter
-retains `PythonFileCaptureContext`; reuse checks file generations with no-follow
-handles and ChangeTime, complete directory membership, import-root selection
+Each boundary independently reselects the interpreter and checks its captured
+executable metadata and native-loader environment. The selected interpreter
+retains `PythonFileCaptureContext`; reuse compares no-follow metadata
+observations, complete directory membership, import-root selection
 including absent archives and startup selection files (`pyvenv.cfg`, `._pth`,
 and `pybuilddir.txt`), and the original loaded-native-image census. A
-failed verification or exited/closed session revokes admission. A retained JSON
+failed verification or exited/closed session revokes admission. These metadata
+comparisons have the detached-token limits described above. Reads from captured
+file nodes independently validate their bytes against the node's digest.
+A retained JSON
 receipt is never sufficient to admit the next boundary.
 
 The existing guarded interactive command owner holds the capture process and

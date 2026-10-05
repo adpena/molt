@@ -1185,10 +1185,10 @@ def prepared_named_lane_command(lane_id: str, executable: Path) -> list[str]:
 
 
 def _locked_python_environment_root(executable: str) -> Path:
-    from molt.cli.source_build_environment import (
+    from molt.cli.source_build_environment_schema import (
         SOURCE_BUILD_ENVIRONMENT_MANIFEST,
-        _source_build_custody_root,
     )
+    from molt.cli.source_build_environment import _source_build_custody_root
     from molt.dx import _reject_onedrive
 
     selected = Path(executable)
@@ -1222,7 +1222,11 @@ def _typed_python_command_family(
 ) -> dict[str, object] | None:
     """Admit prepared payloads through their existing plan/CLI authorities."""
     if python.get("kind") == "direct" and invocation.mode == "script":
-        for lane in proof_plan.ProofPlan.load().named_lanes:
+        plan = _proof_command_registry()["plan"]
+        assert isinstance(plan, proof_plan.ProofPlan)
+        matches: list[tuple[proof_plan.NamedLane, PythonInvocation]] = []
+        registered_entrypoint = False
+        for lane in plan.named_lanes:
             if _command_entrypoint(lane.argv) != (
                 "python-script",
                 _normalized_entrypoint_target(str(invocation.target)),
@@ -1233,10 +1237,20 @@ def _typed_python_command_family(
                 str(registered.target)
             ) != _normalized_entrypoint_target(str(invocation.target)):
                 continue
-            if invocation.arguments != registered.arguments:
-                raise ValueError(
-                    "named-lane argv must match its registered command exactly"
-                )
+            registered_entrypoint = True
+            if invocation.arguments == registered.arguments:
+                matches.append((lane, registered))
+        if registered_entrypoint and not matches:
+            raise ValueError(
+                "named-lane argv must match its registered command exactly"
+            )
+        if len(matches) > 1:
+            raise ValueError(
+                "prepared named-lane payload has ambiguous registered authorities: "
+                + ", ".join(lane.id for lane, _registered in matches)
+            )
+        if matches:
+            lane, registered = matches[0]
             if (
                 invocation.interpreter_options != ("-P",)
                 or registered.interpreter_options

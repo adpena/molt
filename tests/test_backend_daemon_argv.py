@@ -230,7 +230,6 @@ def test_daemon_spawn_and_reuse_reject_command_scratch_dependencies(
         socket,
         cargo_profile="dev",
         project_root=project,
-        target_triple=None,
         config_digest="a" * 64,
         startup_timeout=1.0,
         json_output=True,

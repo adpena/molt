@@ -26,6 +26,21 @@ reexports keep the stricter `intrinsic-support` rule: every resolved owner must
 already have backing. These relationships classify source support; they do not
 attest API parity or target execution.
 
+Runtime publication and Python protocol adapters are distinct authorities.
+For example, runtime initialization publishes native `sys` streams, but event
+loop exception reporting must use the current replaceable Python streams and
+their `write`/`flush` methods. That adapter lives with its sole intrinsic-backed
+owner, `asyncio.events`; the retired private `asyncio._debug` module has no
+independent provider or compatibility stub. A module import, builtin spelling,
+runtime catalog entry or method protocol alone does not grant intrinsic backing.
+
+Tk callable acquisition has one owner in `tkinter._support`. It returns the
+actual `_tkinter` callable and rejects absent or non-callable providers, preserving
+the wrapper's `TkappType`/raw-handle conversion. Widget bindings live in
+`tkinter.widgets`; parent-only aliases are removed. Both consumers explicitly
+import that shared provider. Source discovery does not establish this relationship,
+and unrelated unresolved relative operands retain their runtime custody obligations.
+
 ## Coverage Baseline
 Top-level + submodule name coverage is enforced against the CPython
 3.12/3.13/3.14 union baseline:

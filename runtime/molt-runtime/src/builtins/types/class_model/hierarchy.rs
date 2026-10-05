@@ -231,6 +231,17 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
 
         unsafe {
             use crate::object::class_storage::ClassReferenceSlot;
+            let bases_name =
+                intern_static_name(_py, &runtime_state(_py).interned.bases_name, b"__bases__");
+            let mro_name =
+                intern_static_name(_py, &runtime_state(_py).interned.mro_name, b"__mro__");
+            let Some(mut publication) =
+                crate::builtins::attributes::TypeMutation::prepare(_py, class_ptr, bases_name)
+            else {
+                dec_ref_bits(_py, mro_bits);
+                return MoltObject::none().bits();
+            };
+            let mut retired = Vec::with_capacity(2);
             // Adopt both new edges before releasing either old one. Keep the
             // displaced owners through namespace and layout publication too:
             // replacing the dictionary projections may otherwise trigger a
@@ -244,12 +255,12 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
             if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
                 && object_type_id(dict_ptr) == TYPE_ID_DICT
             {
-                let bases_name =
-                    intern_static_name(_py, &runtime_state(_py).interned.bases_name, b"__bases__");
-                let mro_name =
-                    intern_static_name(_py, &runtime_state(_py).interned.mro_name, b"__mro__");
-                dict_set_in_place(_py, dict_ptr, bases_name, bases_bits);
-                dict_set_in_place(_py, dict_ptr, mro_name, mro_bits);
+                for (name, value) in [(bases_name, bases_bits), (mro_name, mro_bits)] {
+                    match crate::object::ops::dict_set_deferred(_py, dict_ptr, name, value) {
+                        Ok(previous) => retired.push(previous),
+                        Err(()) => break,
+                    }
+                }
             }
             if bases_updated || mro_updated {
                 let published = crate::object::class_inherit_instance_type_id(
@@ -276,10 +287,21 @@ pub extern "C" fn molt_class_set_base(class_bits: u64, base_bits: u64) -> u64 {
                     exception_layout_published,
                     "validated exception-layout publication must succeed"
                 );
-                class_bump_layout_version(class_ptr);
             }
-            dec_ref_bits(_py, old_bases);
-            dec_ref_bits(_py, old_mro);
+            // Even a failed later projection write must invalidate a committed
+            // hierarchy before the first displaced owner can reenter Python.
+            if exception_pending(_py) {
+                molt_cpython_abi::api::errors::with_preserved_error(|| {
+                    publication.publish();
+                });
+            } else {
+                publication.publish();
+            }
+            molt_cpython_abi::api::errors::with_preserved_error(|| {
+                drop(retired);
+                dec_ref_bits(_py, old_bases);
+                dec_ref_bits(_py, old_mro);
+            });
         }
         MoltObject::none().bits()
     })

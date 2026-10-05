@@ -67,6 +67,8 @@ from molt.cli.runtime_wasm_generation import (
 )
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
+    mock_wasm_optimizer_cache_fact,
+    mock_wasm_optimizer_publications,
     runtime_wasm_link_inputs,
     bind_runtime_wasm_specs as _bind_specs,
     runtime_build_identity as make_runtime_build_identity,
@@ -641,7 +643,7 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         root,
         tmp_path / "final_reloc.wasm",
         reloc=True,
-        **{**common, "required_exports": {"add", "abc_abstractmethod_check"}},
+        **{**common, "required_exports": {"add", "typing_get_origin"}},
     )
     early_shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
@@ -653,7 +655,7 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         root,
         tmp_path / "final_shared.wasm",
         reloc=False,
-        **{**common, "required_exports": {"add", "abc_abstractmethod_check"}},
+        **{**common, "required_exports": {"add", "typing_get_origin"}},
     )
     _, early = _bind_specs(
         early_shared, early, root=root, family_seed="early", compile_seed="same-compile"
@@ -728,12 +730,12 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
         json_output=True,
         cargo_timeout=1.0,
         project_root=root,
-        required_exports={"add", "abc_abstractmethod_check"},
+        required_exports={"add", "typing_get_origin"},
         resolved_modules=None,
         spec=final,
     )
     assert linked and linked[0][0] == staticlib
-    assert "--export-if-defined=molt_abc_abstractmethod_check" in linked[0][1]
+    assert "--export-if-defined=molt_typing_get_origin" in linked[0][1]
 
 
 def test_relocation_root_feature_closure_reports_one_cargo_compile(
@@ -1457,6 +1459,7 @@ def _prepare_host_precompile_routing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     *,
+    fixture_root: RuntimeFixtureRoot,
     outcome: str,
     verify_reuse: bool = False,
 ) -> tuple[_PreparedNonNativeResult | None, int | None, list[str], Path]:
@@ -1496,6 +1499,11 @@ def _prepare_host_precompile_routing(
     events: list[str] = []
     host_binary = tmp_path / "molt-wasm-host"
     host_binary.write_bytes(b"fixture host identity")
+    # The mocked link child still receives real content-admitted scanner bytes.
+    # This native-image fixture proves custody, not scanner execution behavior.
+    scanner = fixture_root.native_executable("molt-wasm-facts")
+    optimizer_fact = mock_wasm_optimizer_cache_fact(fixture_root)
+    monkeypatch.setattr(nno, "wasm_optimizer_cache_fact", lambda: optimizer_fact)
 
     def ensure_pair(required_exports=None) -> bool:  # noqa: ANN001
         assert required_exports == {"anchor"}
@@ -1519,12 +1527,37 @@ def _prepare_host_precompile_routing(
 
     def run_child(command, **kwargs):  # type: ignore[no-untyped-def]
         if "--output" in command:
+            assert command[command.index("--wasm-facts-scanner") + 1] == str(scanner)
+            expected_inputs = [
+                (Path(command[index + 1]), command[index + 2])
+                for index, argument in enumerate(command)
+                if argument == "--expected-input"
+            ]
+            assert scanner.resolve() in {path for path, _digest in expected_inputs}
+            for path, digest in expected_inputs:
+                assert digest == hashlib.sha256(path.read_bytes()).hexdigest()
             events.append("link")
             private = Path(command[command.index("--output") + 1])
             assert private != linked_output
-            stage = artifact_publication.staged_output_path(private)
-            stage.write_bytes(output.read_bytes())
-            nno.link_fingerprints.publish_link_outputs({"linked": (stage, private)})
+            payloads = {"linked": (private, output.read_bytes())}
+            payloads.update(
+                mock_wasm_optimizer_publications(command, payloads, optimizer_fact)
+            )
+            candidates = {}
+            for role, (final, payload) in payloads.items():
+                stage = artifact_publication.staged_output_path(final)
+                stage.write_bytes(payload)
+                candidates[role] = (stage, final)
+            # Outer deployment owns its receipt; direct tool invocations can
+            # additionally request one. Match the child's optional protocol.
+            request = (
+                nno.link_fingerprints.FinalLinkReceiptRequest.read(
+                    Path(command[command.index("--link-receipt-request") + 1])
+                )
+                if "--link-receipt-request" in command
+                else None
+            )
+            nno.link_fingerprints.publish_link_outputs(candidates, receipt=request)
             return subprocess.CompletedProcess(command, 0, "", "")
         assert command[:2] == [str(host_binary), "--precompile"]
         private_manifest = Path(command[2])
@@ -1603,7 +1636,7 @@ def _prepare_host_precompile_routing(
         runtime_cargo_profile="release",
         molt_root=tmp_path,
         precompile=True,
-        wasm_facts_scanner=tmp_path / "molt-wasm-facts",
+        wasm_facts_scanner=scanner,
         app_export_contract_path=_empty_app_export_contract(tmp_path),
     )
     prepared, error = nno._prepare_non_native_build_result(**build_kwargs)
@@ -1634,10 +1667,12 @@ def _prepare_host_precompile_routing(
 
 
 def test_precompile_build_routes_linked_manifest_to_host_and_consumes_receipt(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    runtime_fixture_root: RuntimeFixtureRoot,
 ) -> None:
     prepared, error, events, native_path = _prepare_host_precompile_routing(
-        monkeypatch, tmp_path, outcome="success"
+        monkeypatch, tmp_path, fixture_root=runtime_fixture_root, outcome="success"
     )
     assert error is None
     assert prepared is not None
@@ -1657,10 +1692,16 @@ def test_precompile_build_routes_linked_manifest_to_host_and_consumes_receipt(
 
 
 def test_precompile_deployment_cache_covers_host_outputs_without_rewriting(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    runtime_fixture_root: RuntimeFixtureRoot,
 ) -> None:
     _prepare_host_precompile_routing(
-        monkeypatch, tmp_path, outcome="success", verify_reuse=True
+        monkeypatch,
+        tmp_path,
+        fixture_root=runtime_fixture_root,
+        outcome="success",
+        verify_reuse=True,
     )
 
 
@@ -1688,13 +1729,14 @@ def test_precompile_deployment_cache_covers_host_outputs_without_rewriting(
 def test_precompile_build_failures_reach_exact_routing_boundary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    runtime_fixture_root: RuntimeFixtureRoot,
     capsys: pytest.CaptureFixture[str],
     outcome: str,
     diagnostic: str,
     tail: list[str],
 ) -> None:
     prepared, error, events, native_path = _prepare_host_precompile_routing(
-        monkeypatch, tmp_path, outcome=outcome
+        monkeypatch, tmp_path, fixture_root=runtime_fixture_root, outcome=outcome
     )
     assert prepared is None and error == 2
     expected = ["ensure-pair"]
@@ -1809,7 +1851,7 @@ def test_generation_admission_and_diagnostic_share_typed_linking_obligations(
     assert ctx.generation_rejection_details() == report.details()
 
 
-def test_split_layout_ignores_reloc_sections_and_source_binding_reuses_facts(
+def test_split_layout_ignores_reloc_sections_and_source_binding_reuses_parsing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from molt import toolchain_identity
@@ -1856,11 +1898,6 @@ def test_split_layout_ignores_reloc_sections_and_source_binding_reuses_facts(
             "final admission reopened mutable selection"
         ),
     )
-    monkeypatch.setattr(
-        runtime_wasm_generation,
-        "stable_regular_file_identity",
-        lambda *args, **kwargs: pytest.fail("binding rehashed an admitted member"),
-    )
     repinned = runtime_wasm_generation.bind_runtime_wasm_codegen(
         ctx.accepted_generation, {"add"}
     )
@@ -1875,6 +1912,47 @@ def test_split_layout_ignores_reloc_sections_and_source_binding_reuses_facts(
     assert reads == [generation.shared, generation.reloc]
     assert structural == [generation.shared, generation.reloc]
     assert linking == [{"molt_add": "function"}]
+
+
+@pytest.mark.parametrize("consumer", ["facts", "linking", "structure"])
+def test_runtime_fact_caches_reject_changed_content_with_matching_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, consumer: str
+) -> None:
+    from dataclasses import replace
+    from molt import toolchain_identity
+    from molt.cli import runtime_wasm_validation
+
+    _ctx, generation = _observed_pair_fixture(tmp_path)
+    monkeypatch.setattr(
+        runtime_wasm_validation, "_validate_wasm_structural", lambda path: None
+    )
+    if consumer == "facts":
+        consume = generation.facts
+        field = "shared_member_identity"
+    elif consumer == "linking":
+
+        def consume():
+            return generation.linking_names({"molt_add": "function"})
+
+        field = "reloc_member_identity"
+    else:
+        consume = generation.validate_structure
+        field = "shared_member_identity"
+    consume()
+    old = getattr(generation, field)
+    before = old.path.stat()
+    data = bytearray(old.path.read_bytes())
+    data[-1] ^= 1
+    old.path.write_bytes(data)
+    os.utime(old.path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    current = toolchain_identity.stable_regular_file_identity(
+        old.path, label="current metadata fixture"
+    )
+    # Keep the old digest and cached facts while modeling a permitted equal
+    # metadata observation. Rejection must come from the actual bytes.
+    object.__setattr__(generation, field, replace(current, sha256=old.sha256))
+    with pytest.raises(ValueError, match="content changed"):
+        consume()
 
 
 def test_generation_diagnostic_preserves_failed_observation(

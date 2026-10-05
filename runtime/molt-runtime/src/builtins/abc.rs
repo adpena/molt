@@ -1534,36 +1534,6 @@ pub extern "C" fn molt_protocol_register(proto_bits: u64, subclass_bits: u64) ->
     })
 }
 
-/// `molt_abc_abstractmethod_check(cls) -> bool`
-///
-/// Returns True if `cls` has any unimplemented abstract methods (i.e. its
-/// `__abstractmethods__` frozenset is non-empty).  Used at class-creation
-/// time to determine if instantiation should be blocked.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_abc_abstractmethod_check(cls_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let abs_bits = get_attr_default(
-            _py,
-            cls_bits,
-            b"__abstractmethods__",
-            MoltObject::none().bits(),
-        );
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if obj_from_bits(abs_bits).is_none() {
-            return MoltObject::from_bool(false).bits();
-        }
-        // Check if the frozenset is non-empty by trying to get its length
-        let len_bits = crate::molt_len(abs_bits);
-        if exception_pending(_py) {
-            return MoltObject::from_bool(false).bits();
-        }
-        let len_val = crate::to_i64(obj_from_bits(len_bits)).unwrap_or(0);
-        MoltObject::from_bool(len_val > 0).bits()
-    })
-}
-
 // ---------------------------------------------------------------------------
 // typing helpers – lowered so the compiler can elide call frames
 // ---------------------------------------------------------------------------

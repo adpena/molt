@@ -582,7 +582,7 @@ pub extern "C" fn molt_typing_type_param(typevar_ctor_bits: u64, name_bits: u64)
         let Some(flag_name_bits) = attr_name_bits_from_bytes(_py, b"_pep695") else {
             return MoltObject::none().bits();
         };
-        let _ = molt_object_setattr(
+        let _ = molt_set_attr_name(
             typevar_bits,
             flag_name_bits,
             MoltObject::from_bool(true).bits(),

@@ -99,10 +99,7 @@ impl Replacements {
     /// one per result, each of a value equal to that result. Only a result that
     /// held a reference of its own is kept.
     pub(crate) fn record(&mut self, replaced: &TirOp) {
-        let bound = matches!(
-            replaced.attrs.get(BOUND_LOCAL),
-            Some(AttrValue::Bool(true))
-        );
+        let bound = matches!(replaced.attrs.get(BOUND_LOCAL), Some(AttrValue::Bool(true)));
         for &result in &replaced.results {
             if OwnershipRootFacts::result_holds_own_reference(replaced, result, &self.aliases) {
                 self.owners.insert(result, bound);

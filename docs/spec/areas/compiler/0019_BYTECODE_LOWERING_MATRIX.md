@@ -89,7 +89,7 @@
 ### 2.8 Exceptions & Context
 | Opcode | Semantics | Status | Tier | Notes |
 | --- | --- | --- | --- | --- |
-| `RAISE_VARARGS` | raise | Supported | T0 | `Raise(exc)`. |
+| `RAISE_VARARGS` | raise | Supported | T0 | Evaluate exc/cause, shared owned-instance admission, then `Raise(exc)`. |
 | `RERAISE` | raise (re) | Supported | T0 | Exception stack handling. |
 | `PUSH_EXC_INFO` | except ... | Supported | T1 | Exception stack handling. |
 | `POP_EXCEPT` | Exit except | Supported | T1 | Cleanup. |

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import sys
 from dataclasses import dataclass
@@ -14,11 +15,11 @@ from molt.cli.runtime_artifact_selection import (
     RUNTIME_WASM_COMBINED_ARTIFACTS,
     RuntimeArtifactSelection,
 )
-from molt.cli.runtime_build_identity import (
+from molt.cli.runtime_build_identity import _resolve_runtime_build_family_identities
+from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
     RuntimeBuildMemberPlan,
     RuntimeToolchainContentManifest,
-    _resolve_runtime_build_family_identities,
     runtime_build_fingerprint,
 )
 from molt.exact_json import canonical_json_sha256
@@ -85,6 +86,73 @@ class RuntimeFixtureRoot:
             path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(Path(sys.executable).resolve(strict=True), path)
         return path
+
+
+def mock_wasm_optimizer_cache_fact(root: RuntimeFixtureRoot) -> dict[str, str]:
+    """Synthetic child protocol identity, never optimizer execution evidence."""
+    image = root.native_executable("mock-tools/wasm-opt")
+    return {
+        "tool": "wasm-opt",
+        "sha256": hashlib.sha256(image.read_bytes()).hexdigest(),
+        "binaryen_version": "wasm-opt version 130 (version_130)",
+    }
+
+
+def mock_wasm_optimizer_publications(
+    command: Sequence[str],
+    artifacts: Mapping[str, tuple[Path, bytes]],
+    cache_fact: Mapping[str, str],
+) -> dict[str, tuple[Path, bytes]]:
+    """Complete mocked-child sidecars with independently bound output bytes.
+
+    No optimizer runs. These are synthetic protocol fixtures for outer routing,
+    custody and publication tests; actual optimizer execution has its own tests.
+    Preserve production validation and default optimization, rather than hiding
+    a missing child output by disabling optimization in routing tests.
+    """
+    from molt.wasm_optimization import wasm_link_policy
+    from molt.wasm_optimizer_identity import (
+        build_wasm_optimizer_attestation,
+        encode_wasm_optimizer_attestation,
+        wasm_optimizer_attestation_path,
+    )
+
+    if "--optimize" not in command:
+        return {}
+    level = command[command.index("--optimize-level") + 1]
+    preserve_debug = "--preserve-debug-sections" in command
+    policy = wasm_link_policy(level, preserve_debug=preserve_debug)
+    outputs = {}
+    for artifact_role, sidecar_role in (
+        ("linked", "optimizer"),
+        ("app", "app_optimizer"),
+    ):
+        if artifact_role not in artifacts:
+            continue
+        path, content = artifacts[artifact_role]
+        digest = hashlib.sha256(content).hexdigest()
+        payload = build_wasm_optimizer_attestation(
+            {
+                "ok": True,
+                "wasm_opt_sha256": cache_fact["sha256"],
+                "binaryen_version": cache_fact["binaryen_version"],
+                "optimization_level": policy.level,
+                "optimization_converge": policy.converge,
+                "optimization_apply_level": policy.apply_level,
+                "optimization_preserve_debug": preserve_debug,
+                "optimization_extra_passes": list(policy.extra_passes),
+                "pipeline": list(policy.pipeline),
+                "optimizer_input_sha256": digest,
+                "optimizer_output_sha256": digest,
+            },
+            published_output=content,
+        )
+        assert payload["published_output_sha256"] == digest
+        outputs[sidecar_role] = (
+            wasm_optimizer_attestation_path(path),
+            encode_wasm_optimizer_attestation(payload).encode("utf-8"),
+        )
+    return outputs
 
 
 def _fixture_path(root: RuntimeFixtureRoot) -> Path:

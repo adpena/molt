@@ -289,7 +289,9 @@ pub extern "C" fn molt_operator_itemgetter(items_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_itemgetter_type() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { itemgetter_class(_py) })
+    crate::with_gil_entry_nopanic!(_py, {
+        crate::state::cache::retain_cached_result(_py, itemgetter_class(_py))
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -356,7 +358,9 @@ pub extern "C" fn molt_operator_attrgetter(attrs_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_attrgetter_type() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { attrgetter_class(_py) })
+    crate::with_gil_entry_nopanic!(_py, {
+        crate::state::cache::retain_cached_result(_py, attrgetter_class(_py))
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -400,7 +404,9 @@ pub extern "C" fn molt_operator_methodcaller(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_operator_methodcaller_type() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { methodcaller_class(_py) })
+    crate::with_gil_entry_nopanic!(_py, {
+        crate::state::cache::retain_cached_result(_py, methodcaller_class(_py))
+    })
 }
 
 #[unsafe(no_mangle)]

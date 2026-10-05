@@ -270,6 +270,17 @@ impl SequenceComparison {
     }
 
     pub(crate) fn invoke(self, py: &PyToken<'_>, left: u64, right: u64, op: RichCompareOp) -> u64 {
+        if matches!(self, Self::Tuple)
+            && (crate::object::tuple_storage::native_tuple(left).is_some()
+                || crate::object::tuple_storage::native_tuple(right).is_some())
+        {
+            let Some(tuple) =
+                crate::object::tuple_storage::TupleStorage::admit(py, left, op.method_name())
+            else {
+                return MoltObject::none().bits();
+            };
+            return tuple.compare(right, op);
+        }
         let Some(lhs) = self.storage(left) else {
             let expected = match self {
                 Self::List => "list",

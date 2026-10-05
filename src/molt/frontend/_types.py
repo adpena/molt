@@ -829,7 +829,7 @@ BUILTIN_FUNC_SPECS: dict[str, BuiltinFuncSpec] = {
         "molt_importlib_import_transaction",
         (),
         (
-            ast.Constant(None),
+            _MOLT_MISSING,
             ast.Constant(None),
             ast.Tuple(elts=[], ctx=ast.Load()),
             ast.Constant(0),

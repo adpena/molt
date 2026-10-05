@@ -9,7 +9,9 @@ fn sccp_preserves_surrogate_literal_payload_without_rust_string_replacement() {
     let bytes = vec![0xed, 0xa0, 0x80, 0];
     let mut literal = make_const_str(0, "");
     literal.attrs.remove("s_value");
-    literal.attrs.insert("bytes".into(), AttrValue::Bytes(bytes.clone()));
+    literal
+        .attrs
+        .insert("bytes".into(), AttrValue::Bytes(bytes.clone()));
     let (ops, _) = run_sccp_on_ops(vec![literal], 1);
     assert_eq!(ops[0].opcode, OpCode::ConstStr);
     assert_eq!(ops[0].attrs.get("bytes"), Some(&AttrValue::Bytes(bytes)));
@@ -1045,9 +1047,33 @@ fn builtin_dispatch_view_separates_name_and_arguments_and_rejects_conflicts() {
     ] {
         let mut call = make_call_builtin(1, "len", vec![0]);
         call.attrs.insert(key.into(), value);
-        let (after, _) = run_sccp_on_ops(vec![make_const_str(0, "abc"), call.clone()], 2);
+        // These are deliberately malformed local-analysis inputs, not
+        // admitted pipeline fixtures. Prove rejection at the real boundary
+        // separately, then retain SCCP's independent no-fold obligation.
+        let mut rejected = TirFunction::new(
+            "rejected_builtin".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
+        rejected.next_value = 2;
+        let entry = rejected.blocks.get_mut(&rejected.entry_block).unwrap();
+        entry.ops = vec![make_const_str(0, "abc"), call.clone()];
+        entry.terminator = Terminator::Return { values: vec![] };
+        let errors = crate::tir::verify::verify_function(&rejected)
+            .expect_err("conflicting builtin metadata must fail before the pipeline");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.contains("CallBuiltin op has no callee")),
+            "{key}: {errors:?}"
+        );
+        run(&mut rejected);
+        let after = &rejected.blocks[&rejected.entry_block].ops;
         assert_eq!(after[1].opcode, call.opcode, "{key}");
         assert_eq!(after[1].attrs, call.attrs);
+        assert_eq!(after[1].operands, call.operands);
+        assert_eq!(after[1].results, call.results);
     }
 }
 

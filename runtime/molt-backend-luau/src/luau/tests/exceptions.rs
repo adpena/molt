@@ -697,6 +697,37 @@ fn structured_return_keeps_explicit_exception_cleanup() {
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
 fn checked_exception_flow_executes_nested_edges_calls_cleanup_and_coroutine_custody() {
     let mut ir = path_local_exception_fixture();
+    // The raw oracle below probes these otherwise provider-private entrypoints.
+    // Declare its dependencies as ordinary guest references so runtime closure
+    // selection does not rely on incidental visibility of an entire provider.
+    ir.functions.push(FunctionIR {
+        name: "exception_oracle_dependencies".into(),
+        return_abi: molt_ir::FunctionReturnAbi::Void,
+        ops: [
+            "molt_exception_stack_depth",
+            "molt_exception_active",
+            "molt_exception_current",
+            "molt_coroutine_execution_wrap",
+            "molt_frame_owned_context",
+            "molt_exception_prepare_raise",
+        ]
+        .into_iter()
+        .map(|name| OpIR {
+            kind: "call_internal".into(),
+            s_value: Some(name.into()),
+            args: Some(Vec::new()),
+            ..OpIR::default()
+        })
+        .chain([
+            exception_op("const_missing", &[], Some("omitted_cause"), None),
+            OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            },
+        ])
+        .collect(),
+        ..FunctionIR::default()
+    });
     ir.functions.extend([
         FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -776,6 +807,21 @@ fn checked_exception_flow_executes_nested_edges_calls_cleanup_and_coroutine_cust
 local outer = {__type="ValueError", __msg="outer"}
 local inner = {__type="TypeError", __msg="inner"}
 local replacement = {__type="RuntimeError", __msg="cleanup"}
+local admission_instance = {__type="TypeError", __msg="admission"}
+assert(molt_exception_prepare_raise(admission_instance, molt_missing_sentinel) == admission_instance)
+assert(rawget(admission_instance, "__suppress_context__") == nil)
+local admitted = molt_exception_prepare_raise(admission_instance, outer)
+assert(admitted == admission_instance and admitted.__cause__ == outer and admitted.__suppress_context__ == true)
+assert(molt_exception_prepare_raise(admitted, nil) == admitted and admitted.__cause__ == nil)
+local invalid_cause_ok, invalid_cause = pcall(function() return molt_exception_prepare_raise(admitted, 1) end)
+assert(not invalid_cause_ok and invalid_cause.__type == "TypeError")
+assert(invalid_cause.__msg == "exception causes must derive from BaseException")
+local class_calls = 0
+local exception_class = setmetatable({__molt_is_type=true, __molt_builtin_type_tag=103}, {__call=function()
+    class_calls += 1
+    return {__type="Exception", __msg="constructed"}
+end})
+assert(molt_exception_prepare_raise(exception_class, nil).__type == "Exception" and class_calls == 1)
 local baseline = molt_exception_stack_enter()
 molt_exception_push()
 molt_exception_context_set(outer)

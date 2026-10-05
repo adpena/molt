@@ -25,16 +25,8 @@ const PY_LT: c_int = 0;
 const PY_EQ: c_int = 2;
 const PY_NE: c_int = 3;
 
-/// dict store: handle -> insertion-ordered (key_bits, val_bits) entries.
-type DictStore = HashMap<u64, Vec<(u64, u64)>>;
-
 static LISTS: Mutex<Option<HashMap<u64, Vec<u64>>>> = Mutex::new(None);
-static DICTS: Mutex<Option<DictStore>> = Mutex::new(None);
 static COMPARISONS: Mutex<Vec<(i32, u64, u64)>> = Mutex::new(Vec::new());
-
-fn fresh_handle() -> u64 {
-    support::fake_runtime::fresh_handle()
-}
 
 // This fixture admits only inline integer elements. Runtime tests own Python
 // equality/reentrancy semantics; this hook records the ABI's canonical dispatch
@@ -73,10 +65,26 @@ unsafe extern "C" fn fx_richcompare(
             _ => panic!("bad comparison ordinal"),
         }
     } else {
-        let dicts = DICTS.lock().unwrap();
-        let dicts = dicts.as_ref().unwrap();
-        let left = dicts.get(&left).expect("admitted left dictionary");
-        let right = dicts.get(&right).expect("admitted right dictionary");
+        let entries = |dict| {
+            assert_eq!(
+                unsafe { support::fake_runtime::classify_heap(dict) },
+                MoltTypeTag::Dict as u8
+            );
+            (0..unsafe { support::fake_runtime::dict_len(dict) })
+                .map(|index| {
+                    let (mut key, mut value) = (0, 0);
+                    assert_eq!(
+                        unsafe {
+                            support::fake_runtime::dict_entry(dict, index, &mut key, &mut value)
+                        },
+                        1
+                    );
+                    (key, value)
+                })
+                .collect::<Vec<_>>()
+        };
+        let left = entries(left);
+        let right = entries(right);
         let equal = left.len() == right.len() && left.iter().all(|entry| right.contains(entry));
         match op {
             PY_EQ => equal,
@@ -88,8 +96,19 @@ unsafe extern "C" fn fx_richcompare(
 }
 
 // ── fake list runtime ──────────────────────────────────────────────────────
+fn retire_list(bits: u64) {
+    assert!(
+        LISTS
+            .lock()
+            .unwrap()
+            .get_or_insert_default()
+            .remove(&bits)
+            .is_some()
+    );
+}
 unsafe extern "C" fn fx_alloc_list() -> u64 {
-    let bits = fresh_handle();
+    let bits = support::fake_runtime::fresh_handle();
+    support::fake_runtime::observe_retirement(bits, retire_list);
     LISTS
         .lock()
         .unwrap()
@@ -132,95 +151,6 @@ unsafe extern "C" fn fx_list_item(
     }
 }
 
-// ── fake dict runtime (insertion-ordered assoc list; int keys hash by bits) ──
-unsafe extern "C" fn fx_alloc_dict() -> u64 {
-    let bits = fresh_handle();
-    DICTS
-        .lock()
-        .unwrap()
-        .get_or_insert_default()
-        .insert(bits, Vec::new());
-    bits
-}
-unsafe extern "C" fn fx_dict_set(d: u64, k: u64, v: u64) -> i32 {
-    if let Some(entries) = DICTS.lock().unwrap().get_or_insert_default().get_mut(&d) {
-        if let Some(slot) = entries.iter_mut().find(|(ek, _)| *ek == k) {
-            slot.1 = v;
-        } else {
-            entries.push((k, v));
-        }
-    }
-    0
-}
-unsafe extern "C" fn resolve_fixture_dict(
-    bits: u64,
-    _: u8,
-) -> molt_cpython_abi::hooks::BorrowedHandleResult {
-    if DICTS
-        .lock()
-        .unwrap()
-        .get_or_insert_default()
-        .contains_key(&bits)
-    {
-        molt_cpython_abi::hooks::BorrowedHandleResult::ok(bits)
-    } else {
-        molt_cpython_abi::hooks::BorrowedHandleResult::missing()
-    }
-}
-
-unsafe extern "C" fn fx_dict_get(
-    d: u64,
-    k: u64,
-    _: molt_cpython_abi::hooks::DictHashSource,
-    _: i64,
-) -> molt_cpython_abi::hooks::BorrowedHandleResult {
-    match DICTS
-        .lock()
-        .unwrap()
-        .get_or_insert_default()
-        .get(&d)
-        .and_then(|e| e.iter().find(|(ek, _)| *ek == k).map(|(_, v)| *v))
-    {
-        Some(value) => molt_cpython_abi::hooks::BorrowedHandleResult::ok(value),
-        None => molt_cpython_abi::hooks::BorrowedHandleResult::missing(),
-    }
-}
-unsafe extern "C" fn fx_dict_len(bits: u64) -> usize {
-    DICTS
-        .lock()
-        .unwrap()
-        .get_or_insert_default()
-        .get(&bits)
-        .map_or(0, |e| e.len())
-}
-unsafe extern "C" fn fx_dict_entry(
-    d: u64,
-    index: usize,
-    out_key: *mut u64,
-    out_val: *mut u64,
-) -> c_int {
-    match DICTS
-        .lock()
-        .unwrap()
-        .get_or_insert_default()
-        .get(&d)
-        .and_then(|e| e.get(index).copied())
-    {
-        Some((k, v)) => {
-            unsafe {
-                if !out_key.is_null() {
-                    *out_key = k;
-                }
-                if !out_val.is_null() {
-                    *out_val = v;
-                }
-            }
-            1
-        }
-        None => 0,
-    }
-}
-
 unsafe extern "C" fn fx_classify_heap(bits: u64) -> u8 {
     if LISTS
         .lock()
@@ -229,14 +159,6 @@ unsafe extern "C" fn fx_classify_heap(bits: u64) -> u8 {
         .contains_key(&bits)
     {
         return MoltTypeTag::List as u8;
-    }
-    if DICTS
-        .lock()
-        .unwrap()
-        .get_or_insert_default()
-        .contains_key(&bits)
-    {
-        return MoltTypeTag::Dict as u8;
     }
     unsafe { support::fake_runtime::classify_heap(bits) }
 }
@@ -249,12 +171,6 @@ fn install() {
     hooks.list_append = fx_list_append;
     hooks.list_len = fx_list_len;
     hooks.list_item = fx_list_item;
-    hooks.alloc_dict = fx_alloc_dict;
-    hooks.dict_set = fx_dict_set;
-    hooks.dict_resolve = resolve_fixture_dict;
-    hooks.dict_get = fx_dict_get;
-    hooks.dict_len = fx_dict_len;
-    hooks.dict_entry = fx_dict_entry;
     hooks.classify_heap = fx_classify_heap;
     support::prepare_abi_test_thread(hooks);
 }
@@ -280,9 +196,21 @@ fn mk_list(items: &[i64]) -> *mut PyObject {
     register(lb)
 }
 fn mk_dict(pairs: &[(i64, i64)]) -> *mut PyObject {
-    let db = unsafe { fx_alloc_dict() };
+    let db = unsafe { support::fake_runtime::alloc_dict() };
     for &(k, v) in pairs {
-        unsafe { fx_dict_set(db, int_bits(k), int_bits(v)) };
+        assert_eq!(
+            unsafe {
+                support::fake_runtime::dict_mutate(
+                    db,
+                    int_bits(k),
+                    int_bits(v),
+                    0,
+                    None,
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
     }
     register(db)
 }

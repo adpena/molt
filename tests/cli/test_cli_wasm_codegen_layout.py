@@ -161,7 +161,6 @@ def _compile(
         runtime_state=_RuntimeArtifactState(runtime_wasm_codegen_binding=binding),
         cargo_timeout=1.0,
         molt_root=root,
-        target_triple=None,
         backend_cargo_profile="dev-fast",
         backend_timeout=1.0,
         backend_daemon_config_digest=None,

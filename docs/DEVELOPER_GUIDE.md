@@ -386,6 +386,16 @@ Key controls:
   one-shot compile that duplicates backend memory.
 - Cacheable daemon compiles use a probe-first request path: full IR is only encoded and sent after a daemon-declared cache miss.
 - Native runtime verification/build starts asynchronously after cache/setup and is joined at the native link boundary; `emit=obj` intentionally skips that overlap because it never links a binary.
+- Shared admission values belong to `molt.cli.installed_runtime_contract`; the
+  installed-runtime producer owns selection and retention. Import schema values
+  directly from `runtime_identity_schema`. Lowering source discovery follows
+  unproven conditional imports conservatively, including type-only declarations.
+  Declaration and validation consumers import their owning contract or schema;
+  any remaining producer dependencies stay in that conservative scope. Source-build
+  validation belongs to `source_build_environment_schema`; provisioning belongs
+  to `source_build_environment`. Atomic text/JSON writes depend only on file
+  publication; staged artifact copying loads
+  its transactional producer when the copy is requested.
 - Native binary builds transport compiler output and shared stdlib batches as
   deterministic static archives, with explicit archive identity through daemon
   requests, caches, and final-link inputs. The final linker includes every member
@@ -669,7 +679,11 @@ uv run --python 3.12 python3 tools/diff_coverage.py
 # Writes tests/differential/COVERAGE_REPORT.md
 ```
 
-### Type/stdlib TODO sync check
+### Type/stdlib gap authority check
+
+The canonical type and stdlib matrices own complete gap records. This check
+requires the root roadmap to link to both matrices and rejects malformed records
+or stale roadmap duplicates; it does not require a second copy of each gap.
 ```bash
 uv run --python 3.12 python3 tools/check_type_coverage_todos.py
 ```

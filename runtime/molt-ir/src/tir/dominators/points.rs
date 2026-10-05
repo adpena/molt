@@ -12,12 +12,47 @@
 use std::collections::HashMap;
 
 use super::{
-    IndexedDominance, exception_edge_binds_handler_arguments, exception_label_to_block,
+    IndexedDominance, exception_edge_binds_handler_arguments, exception_labels_to_blocks,
     is_exception_transfer_edge,
 };
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
-use crate::tir::ops::AttrValue;
+use crate::tir::ops::{AttrValue, TirOp};
+use crate::tir::values::ValueId;
+
+/// Borrow the SSA topology shared by TIR and backend-facing LIR. Operations,
+/// types and terminators are never cloned or fabricated for analysis.
+pub trait ProgramPointGraph {
+    fn entry_block(&self) -> BlockId;
+    fn label_id_map(&self) -> &HashMap<u32, i64>;
+    fn block_ids(&self) -> impl Iterator<Item = BlockId>;
+    fn block_argument_ids(&self, block: BlockId) -> impl Iterator<Item = ValueId>;
+    fn operations(&self, block: BlockId) -> impl Iterator<Item = &TirOp>;
+    fn for_each_successor(&self, block: BlockId, visit: impl FnMut(BlockId));
+}
+
+impl ProgramPointGraph for TirFunction {
+    fn entry_block(&self) -> BlockId {
+        self.entry_block
+    }
+    fn label_id_map(&self) -> &HashMap<u32, i64> {
+        &self.label_id_map
+    }
+    fn block_ids(&self) -> impl Iterator<Item = BlockId> {
+        self.blocks.keys().copied()
+    }
+    fn block_argument_ids(&self, block: BlockId) -> impl Iterator<Item = ValueId> {
+        self.blocks[&block].args.iter().map(|arg| arg.id)
+    }
+    fn operations(&self, block: BlockId) -> impl Iterator<Item = &TirOp> {
+        self.blocks[&block].ops.iter()
+    }
+    fn for_each_successor(&self, block: BlockId, mut visit: impl FnMut(BlockId)) {
+        self.blocks[&block]
+            .terminator
+            .for_each_edge(|target, _| visit(target));
+    }
+}
 
 pub struct ProgramPointDominance {
     // (first operation position in segment, dense graph node)
@@ -39,12 +74,17 @@ impl ProgramPointDominance {
         Self::compute_with_edges(func, exception_edge_binds_handler_arguments)
     }
 
+    /// Executable dominance over a borrowed backend-facing graph.
+    pub fn compute_executable_graph(func: &impl ProgramPointGraph) -> Self {
+        Self::compute_with_edges(func, exception_edge_binds_handler_arguments)
+    }
+
     fn compute_with_edges(
-        func: &TirFunction,
+        func: &impl ProgramPointGraph,
         transfers: fn(crate::tir::ops::OpCode) -> bool,
     ) -> Self {
-        let labels = exception_label_to_block(func);
-        let mut blocks: Vec<_> = func.blocks.keys().copied().collect();
+        let labels = exception_labels_to_blocks(func.label_id_map());
+        let mut blocks: Vec<_> = func.block_ids().collect();
         blocks.sort_unstable();
         let mut segments = HashMap::with_capacity(blocks.len());
         let mut successors = Vec::<Vec<usize>>::new();
@@ -52,7 +92,7 @@ impl ProgramPointDominance {
         for &bid in &blocks {
             let mut points = vec![(0, successors.len())];
             successors.push(Vec::new());
-            for (index, op) in func.blocks[&bid].ops.iter().enumerate() {
+            for (index, op) in func.operations(bid).enumerate() {
                 if transfers(op.opcode)
                     && let Some(AttrValue::Int(label)) = op.attrs.get("value")
                     && let Some(&target) = labels.get(label)
@@ -74,14 +114,14 @@ impl ProgramPointDominance {
         }
         for &bid in &blocks {
             let from = segments[&bid].last().unwrap().1;
-            for target in func.blocks[&bid].terminator.successors() {
+            func.for_each_successor(bid, |target| {
                 if let Some(points) = segments.get(&target) {
                     successors[from].push(points[0].1);
                 }
-            }
+            });
         }
         let entry = segments
-            .get(&func.entry_block)
+            .get(&func.entry_block())
             .map_or(successors.len(), |points| points[0].1);
         Self {
             segments,
@@ -128,6 +168,7 @@ impl ProgramPointDominance {
 mod tests {
     use super::*;
     use crate::tir::blocks::{Terminator, TirBlock};
+    use crate::tir::dominators::exception_label_to_block;
     use crate::tir::ops::{Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
 

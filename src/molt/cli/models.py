@@ -35,10 +35,10 @@ if TYPE_CHECKING:
     from molt.cli.backend_artifact_contract import BackendArtifactContract
     from molt.capability_manifest import ResolvedRuntimePolicy
     from molt.cli.runtime_build_python import BuildPythonAdmission
-    from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+    from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
     from molt.cli.runtime_wasm_generation import RuntimeWasmCodegenBinding
     from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
-    from molt.cli.installed_runtime import InstalledNativeAdmission
+    from molt.cli.installed_runtime_contract import InstalledNativeAdmission
     from molt.cli.module_graph import ModuleSyntaxErrorInfo
     from molt.cli.module_resolution import _ModuleResolutionCache
     from molt.cli.module_source import _ModuleSourceCatalog, PythonSourceSnapshot
@@ -199,6 +199,8 @@ class _ImportScanRequests(NamedTuple):
     star_modules: tuple[str, ...] = ()
     dynamic_relative_import_candidates: tuple[str, ...] = ()
     requires_runtime_package_anchor: bool = False
+    # Keep call-star discovery distinct even when its base is also imported.
+    dynamic_star_modules: tuple[str, ...] = ()
 
 
 class _CompleteImportScan(NamedTuple):
@@ -214,6 +216,8 @@ class _ImportDiscoveryProjection(NamedTuple):
     imports: tuple[str, ...]
     dynamic_relative_import_candidates: tuple[str, ...] = ()
     requires_runtime_package_anchor: bool = False
+    star_modules: tuple[str, ...] = ()
+    dynamic_star_modules: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

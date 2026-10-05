@@ -24,11 +24,12 @@ def _imports(source: str, *, module: str = "pkg.consumer") -> set[str]:
 
 
 def test_import_statements_share_relative_and_fromlist_projection() -> None:
+    # Each branch reads the initial namespace; executing one relative import
+    # would taint the next statement and require runtime source custody.
     imports = _imports(
-        "import alpha.beta as ab\n"
-        "from . import sibling as renamed\n"
-        "from ..parent import child as renamed_child\n"
-        "from alpha import *\n",
+        "if flag is None:\n    from . import sibling as renamed\n"
+        "else:\n    from ..parent import child as renamed_child\n"
+        "import alpha.beta as ab\nfrom alpha import *\n",
         module="pkg.sub.consumer",
     )
 
@@ -85,14 +86,118 @@ def test_import_module_aliases_share_explicit_package_resolution(source: str) ->
     assert ".child" not in imports
 
 
-def test_helper_wrapper_keeps_complete_import_request_payload() -> None:
+_DEFERRED_GLOBALS_FORMS = (
+    ("", "globals()"),
+    ("    def anchor(): pass\n", "anchor.__globals__"),
+    ("    import inspect\n", "inspect.currentframe().f_globals"),
+    ("    from builtins import globals as current_globals\n", "current_globals()"),
+    (
+        "    def anchor(): pass\n    namespace = anchor.__globals__\n",
+        "namespace",
+    ),
+    ("", "{'__package__': __package__}"),
+    ("", "{'__name__': __name__}"),
+)
+
+
+@pytest.mark.parametrize("setup,namespace", _DEFERRED_GLOBALS_FORMS)
+def test_helper_wrapper_keeps_complete_import_request_payload(setup, namespace) -> None:
+    from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
+
+    source = (
+        "from builtins import __import__ as runtime_import\n"
+        "def load(name, children, level):\n"
+        + setup
+        + f"    return runtime_import(name, {namespace}, locals(), children, level)\n"
+        "load('sibling', ('leaf',), 1)\n"
+    )
+    projection = module_import_scanner._collect_imports_for_graph(
+        ast.parse(source), "pkg.consumer"
+    )
+    # Deferred functions can run with replaced activation globals. Preserve the
+    # complete payload as discovery edges without asserting an exact namespace.
+    assert "pkg.sibling" in projection.dynamic_relative_import_candidates
+    assert "pkg.sibling.leaf" in projection.dynamic_relative_import_candidates
+    assert "sibling" not in projection.dynamic_relative_import_candidates
+    assert "pkg.sibling" not in projection.imports
+    assert projection.requires_runtime_package_anchor
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+        _imports(source)
+
+
+@pytest.mark.parametrize("setup,namespace", _DEFERRED_GLOBALS_FORMS)
+def test_cpython_helper_globals_spellings_resolve_foreign_activation_package(
+    setup, namespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+    from types import FunctionType, ModuleType
+
+    package = ModuleType("foreign_activation")
+    package.__path__ = []
+    sibling = ModuleType("foreign_activation.sibling")
+    sibling.__path__ = []
+    leaf = ModuleType("foreign_activation.sibling.leaf")
+    package.sibling = sibling
+    sibling.leaf = leaf
+    for module in (package, sibling, leaf):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+    definitions = {}
+    exec(
+        "from builtins import __import__ as runtime_import\n"
+        "def load(name, children, level):\n"
+        + setup
+        + f"    return runtime_import(name, {namespace}, locals(), children, level)\n",
+        definitions,
+    )
+    foreign = {
+        "__package__": "foreign_activation",
+        "__name__": "foreign_activation.consumer",
+        "runtime_import": __import__,
+    }
+    rebound = FunctionType(definitions["load"].__code__, foreign)
+    assert rebound("sibling", ("leaf",), 1) is sibling
+    assert sibling.leaf is leaf
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def anchor(): pass\n"
+        "__import__('sibling', anchor.__globals__, None, ('leaf',), 1)\n",
+        "import inspect\n"
+        "__import__('sibling', inspect.currentframe().f_globals, None, ('leaf',), 1)\n",
+        "from builtins import globals as current_globals\n"
+        "__import__('sibling', current_globals(), None, ('leaf',), 1)\n",
+    ],
+)
+def test_module_globals_spellings_preserve_strict_package_authority(source) -> None:
+    imports = _imports(source)
+    assert {"pkg.sibling", "pkg.sibling.leaf"} <= imports
+
+
+def test_deferred_relative_statement_keeps_lexical_dependency_discovery() -> None:
+    from molt.compiler_analysis.python_imports import UnresolvedStaticImportError
+
+    source = "def load():\n    from .sibling import leaf\n"
+    projection = module_import_scanner._collect_imports_for_graph(
+        ast.parse(source), "pkg.consumer"
+    )
+    assert {"pkg.sibling", "pkg.sibling.leaf"} <= set(
+        projection.dynamic_relative_import_candidates
+    )
+    assert not projection.imports
+    assert projection.requires_runtime_package_anchor
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+        _imports(source)
+
+
+def test_helper_wrapper_known_foreign_globals_keeps_strict_payload() -> None:
     imports = _imports(
         "from builtins import __import__ as runtime_import\n"
         "def load(name, children, level):\n"
-        "    return runtime_import(name, globals(), locals(), children, level)\n"
+        "    return runtime_import(name, {'__package__': 'pkg'}, locals(), children, level)\n"
         "load('sibling', ('leaf',), 1)\n"
     )
-
     assert "pkg.sibling" in imports
     assert "pkg.sibling.leaf" in imports
     assert "sibling" not in imports
@@ -181,3 +286,15 @@ def test_module_graph_consumes_relative_fromlist_request_projection(
 
     assert graph["pkg.child.leaf"] == leaf
     assert {"pkg.child", "pkg.child.leaf"} <= explicit_imports
+
+
+def test_helper_forwarding_keeps_eager_default_import_call_identity():
+    source = (
+        "def load(value=__import__('child', {'__package__': __package__}, level=1)):\n"
+        "    return value\n"
+        "__package__ = 'other'\n"
+        "load()\n"
+    )
+    imports = _imports(source)
+    assert "pkg.child" in imports
+    assert "other.child" not in imports

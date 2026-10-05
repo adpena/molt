@@ -67,9 +67,8 @@ use std::collections::{HashMap, HashSet};
 use crate::tir::analysis::{Analysis, AnalysisId};
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
-    AliasMemoryRegionClass, AliasSlotObservation, AliasTransparentAliasRole,
-    opcode_alias_memory_region_table, opcode_alias_slot_observation_table,
-    opcode_alias_transparent_alias_role_table, opcode_is_escape_alloc_site_table,
+    AliasMemoryRegionClass, AliasSlotObservation, opcode_alias_memory_region_table,
+    opcode_alias_slot_observation_table, opcode_is_escape_alloc_site_table,
 };
 use crate::tir::ops::TirOp;
 use crate::tir::values::ValueId;
@@ -91,7 +90,7 @@ pub(crate) use copy_kind::{
     CopyLowering, classify_copy_kind, copy_kind_is_exception_creation_ref,
     copy_kind_is_explicit_no_heap_move, copy_kind_mints_owned_value, copy_kind_raw_carrier_type,
 };
-use copy_kind::{copy_is_known_local_alias, copy_kind_is_memory_inert, copy_original_kind};
+use copy_kind::{copy_kind_is_memory_inert, copy_original_kind};
 
 // ===========================================================================
 // AliasUnionFind — transparent-copy alias roots
@@ -155,37 +154,9 @@ impl AliasUnionFind {
     }
 }
 
-/// The transparent-alias root an op contributes, if any. A no-op `TypeGuard` and
-/// a pure-move `Copy` both forward their single operand's root. Mirrors
-/// `dead_store_elim`'s former `transparent_alias_root`.
+/// Preserve the guarded object's root without unioning the expected-tag read.
 fn transparent_alias_root(op: &TirOp, aliases: &AliasUnionFind) -> Option<ValueId> {
-    if op.results.is_empty() {
-        return None;
-    }
-    match opcode_alias_transparent_alias_role_table(op.opcode) {
-        AliasTransparentAliasRole::TypeGuard => {
-            if op.attrs.contains_key("_original_kind") || op.operands.len() != 1 {
-                return None;
-            }
-            Some(aliases.root(op.operands[0]))
-        }
-        AliasTransparentAliasRole::Copy => {
-            if !copy_is_known_local_alias(op) || op.operands.is_empty() {
-                return None;
-            }
-            let root = aliases.root(op.operands[0]);
-            if op
-                .operands
-                .iter()
-                .all(|operand| aliases.root(*operand) == root)
-            {
-                Some(root)
-            } else {
-                None
-            }
-        }
-        AliasTransparentAliasRole::NotTransparentAlias => None,
-    }
+    super::value_identity::no_heap_alias_source(op).map(|source| aliases.root(source))
 }
 
 fn aliasing_op_may_observe_slot(
@@ -427,18 +398,15 @@ impl AliasAnalysisResult {
             )
     }
 
-    /// True if `op` is a **transparent-alias producer**: a no-op `TypeGuard` or a
-    /// pure-move `Copy` whose result names the *same* heap object as its operand
-    /// (object identity flows through it unchanged). This is exactly the op set
-    /// [`record_transparent_aliases`] unions into one root, so callers that have
-    /// already routed values through [`root`](Self::root) can recognize such an op
-    /// as object-identity plumbing rather than a fresh use.
+    /// True if the shared `no_heap_alias_source` fact proves that the result
+    /// names the same heap object as its source. This is exactly the operation
+    /// set [`record_transparent_aliases`] unions into one root, so callers that
+    /// already route values through [`root`](Self::root) can preserve identity.
     ///
-    /// The opaque `_original_kind` passthrough carriers (container constructors,
-    /// unmapped SimpleIR ops) are NOT transparent — their result is a distinct
-    /// value — and return `false`. This is the single source of truth for "is
-    /// this Copy/TypeGuard a pure identity move?"; SROA consumes it so it never
-    /// re-implements the contract.
+    /// Runtime guards retain their checks and exceptions; alias identity grants
+    /// no permission to erase effects. Unknown non-owning passthrough carriers
+    /// do not prove source identity and return `false`. SROA consumes this fact
+    /// rather than reconstructing the alias contract.
     #[inline]
     pub fn is_transparent_alias_op(&self, op: &TirOp) -> bool {
         transparent_alias_root(op, &self.aliases).is_some()

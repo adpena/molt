@@ -171,6 +171,8 @@ fn mixed_exit_releases_local_only_where_its_entry_defines_it() {
     let mut func = function("mixed_exit_local");
     let local = func.fresh_value();
     let flag = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let flag_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let exception = func.fresh_value();
     for value in [local, exception] {
         func.value_types.insert(value, TirType::DynBox);
@@ -188,7 +190,7 @@ fn mixed_exit_releases_local_only_where_its_entry_defines_it() {
             finalizer_object(local),
             original_copy_with_operands("store_var", vec![local], vec![]),
             check(2),
-            op(OpCode::ConstBool, vec![], vec![flag]),
+            op(OpCode::Copy, vec![flag_input], vec![flag]),
         ];
         block.terminator = Terminator::CondBranch {
             cond: flag,
@@ -209,10 +211,8 @@ fn mixed_exit_releases_local_only_where_its_entry_defines_it() {
             exit,
         ),
     );
-    func.blocks.insert(
-        returning,
-        returning_block(returning, vec![op(OpCode::WarnStderr, vec![], vec![])]),
-    );
+    func.blocks
+        .insert(returning, returning_block(returning, vec![marker()]));
     func.blocks.insert(exit, returning_block(exit, vec![]));
 
     run(&mut func, &mut AnalysisManager::new());
@@ -251,6 +251,8 @@ fn mixed_handler_releases_explicit_local_only_where_its_entry_defines_it() {
     let mut func = function("mixed_handler_local");
     let local = func.fresh_value();
     let flag = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let flag_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let exception = func.fresh_value();
     for value in [local, exception] {
         func.value_types.insert(value, TirType::DynBox);
@@ -270,7 +272,7 @@ fn mixed_handler_releases_explicit_local_only_where_its_entry_defines_it() {
             finalizer_object(local),
             original_copy_with_operands("store_var", vec![local], vec![]),
             check(90),
-            op(OpCode::ConstBool, vec![], vec![flag]),
+            op(OpCode::Copy, vec![flag_input], vec![flag]),
         ];
         block.terminator = Terminator::CondBranch {
             cond: flag,
@@ -295,16 +297,11 @@ fn mixed_handler_releases_explicit_local_only_where_its_entry_defines_it() {
         returning,
         returning_block(
             returning,
-            vec![
-                op(OpCode::WarnStderr, vec![], vec![]),
-                op(OpCode::DelBoundary, vec![local], vec![]),
-            ],
+            vec![marker(), op(OpCode::DelBoundary, vec![local], vec![])],
         ),
     );
-    func.blocks.insert(
-        handler,
-        branching_block(handler, vec![op(OpCode::WarnStderr, vec![], vec![])], exit),
-    );
+    func.blocks
+        .insert(handler, branching_block(handler, vec![marker()], exit));
     func.blocks.insert(exit, returning_block(exit, vec![]));
 
     run(&mut func, &mut AnalysisManager::new());
@@ -402,9 +399,9 @@ fn loop_body_exception_releases_the_initialized_iterator_value() {
     func.blocks.insert(exit, returning_block(exit, vec![]));
     let (header, body, _, iterator, value) = loop_with_body(&mut func, |binding, _| {
         vec![
-            op(OpCode::Call, vec![], vec![]),
+            named_call("fixture_external_call", vec![], vec![]),
             check(2),
-            op(OpCode::Call, vec![binding], vec![]),
+            named_call("fixture_external_call", vec![binding], vec![]),
         ]
     });
 
@@ -448,12 +445,14 @@ fn loop_body_exception_releases_the_initialized_iterator_value() {
 fn loop_body_branch_releases_the_iterator_value_where_it_dies() {
     let mut func = function("loop_body_branch");
     let flag = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let flag_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     func.value_types.insert(flag, TirType::Bool);
     let used = func.fresh_block();
     let skipped = func.fresh_block();
     let latch = func.fresh_block();
     let (header, body, finished, _, value) = loop_with_body(&mut func, |_, _| {
-        vec![op(OpCode::ConstBool, vec![], vec![flag])]
+        vec![op(OpCode::Copy, vec![flag_input], vec![flag])]
     });
     let binding = match func.blocks[&body].ops[0].results.as_slice() {
         [binding] => *binding,
@@ -468,7 +467,11 @@ fn loop_body_branch_releases_the_iterator_value_where_it_dies() {
     };
     func.blocks.insert(
         used,
-        branching_block(used, vec![op(OpCode::Call, vec![binding], vec![])], latch),
+        branching_block(
+            used,
+            vec![named_call("fixture_external_call", vec![binding], vec![])],
+            latch,
+        ),
     );
     func.blocks
         .insert(skipped, branching_block(skipped, vec![], latch));
@@ -510,9 +513,9 @@ fn landing_label_is_fresh_across_region_labels() {
         let block = func.blocks.get_mut(&entry).unwrap();
         block.ops = vec![
             try_start(78),
-            op(OpCode::Call, vec![], vec![owner]),
+            named_call("fixture_external_call", vec![], vec![owner]),
             check(77),
-            op(OpCode::Call, vec![owner], vec![]),
+            named_call("fixture_external_call", vec![owner], vec![]),
         ];
         block.terminator = Terminator::Return { values: vec![] };
     }

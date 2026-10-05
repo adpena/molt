@@ -142,10 +142,7 @@ fn counter_poll() -> TirFunction {
     let one = const_int(&mut f, 1);
     let i2 = f.fresh_value();
     f.value_types.insert(i2, TirType::DynBox);
-    let mut pair_op = op(OpCode::Copy, vec![x, falsev], vec![pair]);
-    pair_op
-        .attrs
-        .insert("_original_kind".into(), AttrValue::Str("tuple_new".into()));
+    let pair_op = op(OpCode::BuildTuple, vec![x, falsev], vec![pair]);
     f.blocks.insert(
         body,
         TirBlock {
@@ -183,9 +180,7 @@ fn counter_poll() -> TirFunction {
     f.value_types.insert(true_v, TirType::Bool);
     let donepair = f.fresh_value();
     f.value_types.insert(donepair, TirType::DynBox);
-    let mut dp = op(OpCode::Copy, vec![none_v, true_v], vec![donepair]);
-    dp.attrs
-        .insert("_original_kind".into(), AttrValue::Str("tuple_new".into()));
+    let dp = op(OpCode::BuildTuple, vec![none_v, true_v], vec![donepair]);
     f.blocks.insert(
         exhausted,
         TirBlock {
@@ -376,12 +371,70 @@ fn consumer() -> TirFunction {
     f
 }
 
+/// A poll with no Python callback sites: fresh tuples, a yield, and a done
+/// return. The looping variant requires a latch observation but omits it, so
+/// preparation admission can be tested without an unrelated recursion refusal.
+fn constant_poll(looping: bool) -> TirFunction {
+    let mut f = TirFunction::new(
+        "constant_poll".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let entry = f.entry_block;
+    let body = if looping { f.fresh_block() } else { entry };
+    let none = f.fresh_value();
+    let pending = f.fresh_value();
+    let pair = f.fresh_value();
+    let done = f.fresh_value();
+    let done_pair = f.fresh_value();
+    let boolean = |value: bool, result: ValueId| {
+        let mut operation = op(OpCode::ConstBool, vec![], vec![result]);
+        operation
+            .attrs
+            .insert("value".into(), AttrValue::Bool(value));
+        operation
+    };
+    let ops = vec![
+        op(OpCode::ConstNone, vec![], vec![none]),
+        boolean(false, pending),
+        op(OpCode::BuildTuple, vec![none, pending], vec![pair]),
+        op_v(OpCode::StateYield, vec![pair], vec![], 5),
+        boolean(true, done),
+        op(OpCode::BuildTuple, vec![none, done], vec![done_pair]),
+    ];
+    if looping {
+        f.blocks.get_mut(&entry).unwrap().terminator = Terminator::Branch {
+            target: body,
+            args: vec![],
+        };
+        f.blocks.insert(
+            body,
+            TirBlock {
+                id: body,
+                args: vec![],
+                ops,
+                terminator: Terminator::Branch {
+                    target: body,
+                    args: vec![],
+                },
+            },
+        );
+    } else {
+        let block = f.blocks.get_mut(&entry).unwrap();
+        block.ops = ops;
+        block.terminator = Terminator::Return {
+            values: vec![done_pair],
+        };
+    }
+    crate::tir::type_refine::refine_types(&mut f);
+    crate::tir::verify::verify_function(&f).expect("constant poll must be valid TIR");
+    f
+}
+
 #[test]
 fn fusion_rejects_unmaterialized_poll_before_mutating_the_module() {
-    let mut unprepared_poll = counter_poll();
-    for block in unprepared_poll.blocks.values_mut() {
-        block.ops.retain(|op| !op.is_async_work_poll());
-    }
+    let unprepared_poll = constant_poll(true);
     let mut module = TirModule {
         name: "m".into(),
         functions: vec![unprepared_poll, consumer()],
@@ -392,12 +445,22 @@ fn fusion_rejects_unmaterialized_poll_before_mutating_the_module() {
         .map(crate::tir::printer::print_function)
         .collect();
     let cg = CallGraph::build(&module);
+    assert!(is_poll_fusable(&module.functions[0], &cg));
+    assert!(!super::super::async_work_poll::is_materialized(
+        &module.functions[0]
+    ));
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         run_generator_fusion(&mut module, &cg, &TargetInfo::native_release_fast())
     }));
+    let panic = result.expect_err("unmaterialized target input must fail closed");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .expect("preparation gate must report its original diagnostic");
     assert!(
-        result.is_err(),
-        "unmaterialized target input must fail closed"
+        message.contains("generator fusion requires post-pipeline async-work observations in poll"),
+        "{message}"
     );
     let after: Vec<_> = module
         .functions
@@ -519,7 +582,12 @@ fn fusion_retires_latch_role_without_erasing_synchronous_exception_transfer() {
                 let ops = &mut caller.blocks.get_mut(&body).unwrap().ops;
                 let zero = ops[0].results[0];
                 ops[2].opcode = opcode;
-                if opcode != OpCode::Call {
+                if opcode == OpCode::Call {
+                    ops[2].attrs.insert(
+                        "s_value".into(),
+                        AttrValue::Str("fixture_external_call".into()),
+                    );
+                } else {
                     ops[2].operands.push(zero);
                 }
                 let observation = ops.last_mut().unwrap();
@@ -577,20 +645,79 @@ fn fusion_retires_latch_role_without_erasing_synchronous_exception_transfer() {
 }
 
 #[test]
-fn single_yield_in_loop_recognized_and_spliced() {
+fn callback_poll_is_refused_by_module_driver_without_mutation() {
     let mut module = TirModule {
         name: "m".into(),
         functions: vec![counter_poll(), consumer()],
     };
-    let cg = CallGraph::build(&module);
-    let tti = TargetInfo::native_release_fast();
-    let stats = run_generator_fusion(&mut module, &cg, &tti);
-    // Dump the consumer for inspection.
-    let cons = module
+    let before: Vec<_> = module
         .functions
         .iter()
-        .find(|f| f.name == "consumer")
-        .unwrap();
+        .map(canonical_function_bytes)
+        .collect();
+    let cg = CallGraph::build(&module);
+    assert!(cg.has_opaque_call("counter_poll"));
+    assert!(!is_poll_fusable(&module.functions[0], &cg));
+    let stats = run_generator_fusion(&mut module, &cg, &TargetInfo::native_release_fast());
+    assert_eq!(stats, FusionStats::default());
+    assert_eq!(
+        module
+            .functions
+            .iter()
+            .map(canonical_function_bytes)
+            .collect::<Vec<_>>(),
+        before
+    );
+}
+
+#[test]
+fn callback_free_poll_is_fused_by_module_driver() {
+    let mut caller = consumer();
+    for operation in caller.blocks.values_mut().flat_map(|block| &mut block.ops) {
+        if operation.opcode == OpCode::AllocTask {
+            operation
+                .attrs
+                .insert("s_value".into(), AttrValue::Str("constant_poll".into()));
+        }
+    }
+    let mut module = TirModule {
+        name: "m".into(),
+        functions: vec![constant_poll(false), caller],
+    };
+    let cg = CallGraph::build(&module);
+    assert!(!cg.has_opaque_call("constant_poll"));
+    assert!(is_poll_fusable(&module.functions[0], &cg));
+    assert!(super::super::async_work_poll::is_materialized(
+        &module.functions[0]
+    ));
+    let stats = run_generator_fusion(&mut module, &cg, &TargetInfo::native_release_fast());
+    assert_eq!(stats.frames_elided, 1);
+    assert_eq!(stats.yield_sites_spliced, 1);
+    assert_eq!(stats.changed_functions, vec!["consumer".to_string()]);
+    let caller = &module.functions[1];
+    assert!(
+        !caller
+            .blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .any(|operation| matches!(
+                operation.opcode,
+                OpCode::AllocTask | OpCode::StateYield | OpCode::IterNext
+            ))
+    );
+    crate::tir::verify::verify_function(caller).expect("module-driver fused caller must verify");
+}
+
+#[test]
+fn single_yield_in_loop_recognized_and_spliced() {
+    // The structural splice preserves the latch and ownership. Module-level
+    // eligibility separately refuses this callback-bearing poll above.
+    let poll = counter_poll();
+    let mut caller = consumer();
+    let candidate = only_candidate(&poll, &caller);
+    let mut stats = FusionStats::default();
+    assert!(apply_fusion(&mut caller, &poll, &candidate, &mut stats));
+    let cons = &caller;
     eprintln!(
         "=== fused consumer ===\n{}",
         crate::tir::printer::print_function(cons)
@@ -743,12 +870,8 @@ fn echo_poll() -> TirFunction {
     f.value_types.insert(true_v, TirType::Bool);
     let done_pair = f.fresh_value();
     f.value_types.insert(done_pair, TirType::DynBox);
-    let tuple = |operands: Vec<ValueId>, result: ValueId| {
-        let mut o = op(OpCode::Copy, operands, vec![result]);
-        o.attrs
-            .insert("_original_kind".into(), AttrValue::Str("tuple_new".into()));
-        o
-    };
+    let tuple =
+        |operands: Vec<ValueId>, result: ValueId| op(OpCode::BuildTuple, operands, vec![result]);
     let boolean = |value: bool, result: ValueId| {
         let mut o = op(OpCode::ConstBool, vec![], vec![result]);
         o.attrs.insert("value".into(), AttrValue::Bool(value));
@@ -825,9 +948,7 @@ fn fused_element_is_owned_once_by_its_index() {
     let pair = block
         .ops
         .iter_mut()
-        .find(|operation| {
-            operation.attrs.get("_original_kind") == Some(&AttrValue::Str("tuple_new".into()))
-        })
+        .find(|operation| operation.opcode == OpCode::BuildTuple)
         .expect("the yield builds its pair");
     pair.operands[0] = text;
     let mut string = op(OpCode::ConstStr, vec![], vec![text]);
@@ -848,7 +969,10 @@ fn fused_element_is_owned_once_by_its_index() {
             .any(|operation| matches!(operation.opcode, OpCode::IncRef | OpCode::DecRef)),
         "fusion places no reference operation"
     );
-    assert_eq!(definition(&caller, candidate.elem_val).opcode, OpCode::Index);
+    assert_eq!(
+        definition(&caller, candidate.elem_val).opcode,
+        OpCode::Index
+    );
 
     crate::tir::passes::drop_insertion::run(
         &mut caller,
@@ -865,7 +989,10 @@ fn fused_element_is_owned_once_by_its_index() {
             .count()
     };
     assert_eq!(
-        (naming_element(OpCode::IncRef), naming_element(OpCode::DecRef)),
+        (
+            naming_element(OpCode::IncRef),
+            naming_element(OpCode::DecRef)
+        ),
         (0, 1),
         "the element's one reference, released once"
     );
@@ -893,7 +1020,11 @@ fn promoted_read_after_a_store_sees_the_stored_value() {
     let read = yielded_read(&caller, &candidate);
     assert_eq!(read.opcode, OpCode::Copy, "{read:?}");
     let stored = definition(&caller, read.operands[0]);
-    assert_eq!(stored.opcode, OpCode::Copy, "the store's frame reference: {stored:?}");
+    assert_eq!(
+        stored.opcode,
+        OpCode::Copy,
+        "the store's frame reference: {stored:?}"
+    );
     assert_eq!(
         definition(&caller, stored.operands[0]).opcode,
         OpCode::Add,
@@ -976,7 +1107,12 @@ fn conditionally_stored_slot_joins_at_a_block_argument() {
     let joined = caller
         .blocks
         .values()
-        .find(|block| block.ops.iter().any(|operation| operation.results == read.results))
+        .find(|block| {
+            block
+                .ops
+                .iter()
+                .any(|operation| operation.results == read.results)
+        })
         .expect("the read has a block");
     assert_eq!(
         joined.args.iter().map(|arg| arg.id).collect::<Vec<_>>(),
@@ -1021,7 +1157,10 @@ fn straight_line_parameter_slot_keeps_the_frame_reference() {
         "the consumer body runs"
     );
     let read = yielded_read(&caller, &candidate);
-    assert!(is_owned_alias(read), "the read keeps the load's reference: {read:?}");
+    assert!(
+        is_owned_alias(read),
+        "the read keeps the load's reference: {read:?}"
+    );
     let slot = definition(&caller, read.operands[0]);
     assert!(
         is_owned_alias(slot) && slot.operands == [text],

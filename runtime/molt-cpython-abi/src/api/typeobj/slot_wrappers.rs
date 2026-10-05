@@ -13,6 +13,103 @@ use std::ptr;
 
 mod adapters;
 
+/// CPython's explicit __setattr__/__delattr__ receiver check (typeobject.c
+/// hackcheck). This is shared by physical wrappers and Python's explicit
+/// object/type defaults across the bridge. C PyObject_GenericSetAttr is unchecked.
+///
+/// Runtime-slot type views and declared process shells do not define a C
+/// setter and are skipped like CPython's slot_tp_setattro. Native builtin and
+/// foreign types retain their actual C tp_setattro (including NULL), even when
+/// their namespace is bound to a runtime class.
+pub(crate) unsafe fn setter_admitted(
+    receiver: *mut PyObject,
+    wrapped: *mut c_void,
+    delete: bool,
+) -> bool {
+    unsafe {
+        let ty = crate::bridge::semantic_type(receiver);
+        if ty.is_null() {
+            return false;
+        }
+        setter_type_admitted(ty, wrapped, delete)
+    }
+}
+
+/// Admission depends only on the receiver's actual type and C MRO. Runtime
+/// callers with a foreign lineage project this type, never the receiver value.
+pub(crate) unsafe fn setter_type_admitted(
+    ty: *mut PyTypeObject,
+    wrapped: *mut c_void,
+    delete: bool,
+) -> bool {
+    unsafe {
+        if ty.is_null() {
+            return false;
+        }
+        let _type_owner = refcount::OwnedPyObject::from_borrowed(ty.cast());
+        let mro = (*ty).tp_mro;
+        // CPython deliberately permits a call when no MRO is available. A
+        // present MRO with a NULL setter is a different case and is checked.
+        if mro.is_null() {
+            return true;
+        }
+        let _mro_owner = refcount::OwnedPyObject::from_borrowed(mro);
+        let current = (*ty).tp_setattro.map(|f| f as *const () as *mut c_void);
+        let is_python_dispatch = |class: *mut PyTypeObject| {
+            crate::bridge::GLOBAL_BRIDGE.type_uses_runtime_slots(class)
+                || (*class).tp_setattro.map(|f| f as *const () as *mut c_void)
+                    == Some(super::native_slot_dispatch::dispatcher(
+                        SlotWrapper::Direct(DirectSlot::SetAttr),
+                    ))
+        };
+        let current_is_python = is_python_dispatch(ty);
+        let mut defining = ty;
+        let count = sequences::PyTuple_Size(mro);
+        if count < 0 {
+            return false;
+        }
+        for index in (0..count).rev() {
+            let base = sequences::PyTuple_GetItem(mro, index).cast::<PyTypeObject>();
+            if base.is_null() {
+                return false;
+            }
+            if is_python_dispatch(base) {
+                continue;
+            }
+            if !current_is_python
+                && (*base).tp_setattro.map(|f| f as *const () as *mut c_void) == current
+            {
+                defining = base;
+                break;
+            }
+        }
+        while !defining.is_null() {
+            if is_python_dispatch(defining) {
+                defining = (*defining).tp_base;
+                continue;
+            }
+            if (*defining)
+                .tp_setattro
+                .map(|f| f as *const () as *mut c_void)
+                == Some(wrapped)
+            {
+                return true;
+            }
+            let operation = if delete { "__delattr__" } else { "__setattr__" };
+            type_error(&format!(
+                "can't apply this {operation} to {} object",
+                if (*ty).tp_name.is_null() {
+                    "object".into()
+                } else {
+                    std::ffi::CStr::from_ptr((*ty).tp_name).to_string_lossy()
+                },
+            ));
+            return false;
+        }
+        true
+    }
+}
+
 pub(super) struct SlotWrapperDef {
     pub(super) slot: SlotWrapper,
     pub(super) base: PyWrapperBase,
@@ -25,9 +122,8 @@ macro_rules! definition {
             base: PyWrapperBase {
                 name: concat!($name, "\0").as_ptr().cast(),
                 offset: $offset as c_int,
-                // Runtime-defined Python slot updates use the semantic hook lane;
-                // this physical declaration supplies the native invocation adapter.
-                function: ptr::null_mut(),
+                // Declaration and mutation publication share one typed slot.
+                function: super::native_slot_dispatch::dispatcher($slot),
                 wrapper: Some($adapter),
                 doc: concat!($name, $signature, "\n--\n\n", $doc, "\0")
                     .as_ptr()
@@ -176,6 +272,32 @@ pub(super) static SLOT_WRAPPER_DEFS: &[SlotWrapperDef] = &[
         "($self, name, /)",
         "Return getattr(self, name)."
     ),
+    SlotWrapperDef {
+        slot: SlotWrapper::Direct(DirectSlot::GetAttr),
+        base: PyWrapperBase {
+            name: c"__getattr__".as_ptr(),
+            offset: std::mem::offset_of!(PyTypeObject, tp_getattro) as c_int,
+            function: super::native_slot_dispatch::dispatcher(SlotWrapper::Direct(
+                DirectSlot::GetAttr,
+            )),
+            wrapper: None,
+            doc: ptr::null(),
+            flags: 0,
+            name_strobj: ptr::null_mut(),
+        },
+    },
+    SlotWrapperDef {
+        slot: SlotWrapper::Direct(DirectSlot::New),
+        base: PyWrapperBase {
+            name: c"__new__".as_ptr(),
+            offset: std::mem::offset_of!(PyTypeObject, tp_new) as c_int,
+            function: super::native_slot_dispatch::dispatcher(SlotWrapper::Direct(DirectSlot::New)),
+            wrapper: None,
+            doc: ptr::null(),
+            flags: 0,
+            name_strobj: ptr::null_mut(),
+        },
+    },
     direct!(
         "__setattr__",
         SetAttr,

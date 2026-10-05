@@ -7,7 +7,9 @@
 use super::throw_protocol::{
     call_throw_method, normalize_throw_argument, parse_throw_call, raise_throw_argument,
 };
-use crate::async_rt::generators::{is_iterable_coroutine_bits, is_native_coroutine_bits};
+use crate::async_rt::generators::{
+    is_iterable_coroutine_bits, is_native_coroutine_bits, is_native_poll_future_bits,
+};
 use crate::object::iterable::{SpecialIterationKind, SpecialIterationStep, special_iteration_step};
 use crate::*;
 use std::cell::RefCell;
@@ -215,13 +217,6 @@ pub(crate) fn python_awaited_bits(py: &PyToken<'_>, bits: u64) -> u64 {
     value
 }
 
-fn is_internal_future_bits(bits: u64) -> bool {
-    maybe_ptr_from_bits(bits).is_some_and(|ptr| unsafe {
-        object_type_id(ptr) == TYPE_ID_OBJECT && crate::object::object_poll_fn(ptr) != 0
-    }) && !is_native_coroutine_bits(bits)
-        && !is_coroutine_wrapper_bits(bits)
-}
-
 fn iterator_poll_adapter(py: &PyToken<'_>, iterator: u64) -> u64 {
     let future = crate::molt_future_new(
         crate::async_rt::poll::await_iterator_poll_fn_addr(),
@@ -238,7 +233,7 @@ fn iterator_poll_adapter(py: &PyToken<'_>, iterator: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_get_awaitable(bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        if is_native_coroutine_bits(bits) || is_internal_future_bits(bits) {
+        if is_native_coroutine_bits(bits) || is_native_poll_future_bits(bits) {
             inc_ref_bits(py, bits);
             return bits;
         }
@@ -267,7 +262,7 @@ pub extern "C" fn molt_get_awaitable(bits: u64) -> u64 {
             dec_ref_bits(py, iterator);
             return raise_exception::<_>(py, "TypeError", "__await__() returned a coroutine");
         }
-        if is_coroutine_wrapper_bits(iterator) || is_internal_future_bits(iterator) {
+        if is_coroutine_wrapper_bits(iterator) || is_native_poll_future_bits(iterator) {
             return iterator;
         }
         let valid = unsafe { crate::builtins::attr::is_iterator_bits(py, iterator) };
@@ -294,7 +289,7 @@ pub extern "C" fn molt_get_awaitable(bits: u64) -> u64 {
 pub extern "C" fn molt_awaitable_await(bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         if !is_native_coroutine_bits(bits) {
-            if is_internal_future_bits(bits) {
+            if is_native_poll_future_bits(bits) {
                 inc_ref_bits(py, bits);
                 return bits;
             }
@@ -816,7 +811,7 @@ fn iterator_resume(
 }
 
 fn scheduled_yield(py: &PyToken<'_>, value: u64) -> u64 {
-    if is_internal_future_bits(value) {
+    if is_native_poll_future_bits(value) {
         inc_ref_bits(py, value);
         return value;
     }
@@ -845,7 +840,7 @@ fn scheduled_yield(py: &PyToken<'_>, value: u64) -> u64 {
         dec_ref_bits(py, name);
         return raise_exception::<_>(py, "RuntimeError", "yield was used instead of yield from");
     }
-    crate::molt_setattr_builtin(value, name, MoltObject::from_bool(false).bits());
+    crate::molt_set_attr_name(value, name, MoltObject::from_bool(false).bits());
     dec_ref_bits(py, name);
     if exception_pending(py) {
         return MoltObject::none().bits();
@@ -1019,8 +1014,174 @@ pub unsafe extern "C" fn molt_await_iterator_poll(raw: u64) -> i64 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn scheduled_foreign_future_reset_invokes_native_setter_once() {
+        use molt_cpython_abi::abi_types::{
+            Py_TPFLAGS_READY, PyBaseObject_Type, PyObject, PyType_Type, PyTypeObject,
+        };
+        use molt_cpython_abi::api::{errors, mapping, object, refcount, sequences, strings};
+        use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+        #[repr(C)]
+        struct Future {
+            object: PyObject,
+            resets: usize,
+        }
+        unsafe extern "C" fn reset(
+            receiver: *mut PyObject,
+            name: *mut PyObject,
+            value: *mut PyObject,
+        ) -> std::os::raw::c_int {
+            unsafe {
+                let future = &mut *receiver.cast::<Future>();
+                future.resets += 1;
+                assert_eq!(
+                    std::ffi::CStr::from_ptr(strings::PyUnicode_AsUTF8(name)).to_bytes(),
+                    b"_asyncio_future_blocking"
+                );
+                assert_eq!(object::PyObject_IsTrue(value), 0);
+                errors::PyErr_SetString(
+                    (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast(),
+                    c"future reset rejected".as_ptr(),
+                );
+            }
+            -1
+        }
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let mut class: PyTypeObject = std::mem::zeroed();
+                class.ob_base.ob_base.ob_refcnt = 1;
+                class.ob_base.ob_base.ob_type = &raw mut PyType_Type;
+                class.tp_name = c"ForeignFutureMutation".as_ptr();
+                class.tp_base = &raw mut PyBaseObject_Type;
+                class.tp_flags = Py_TPFLAGS_READY;
+                class.tp_getattro = Some(object::PyObject_GenericGetAttr);
+                class.tp_setattro = Some(reset);
+                class.tp_dict = mapping::PyDict_New();
+                class.tp_mro = sequences::PyTuple_New(2);
+                for (index, base) in [(&raw mut class).cast(), (&raw mut PyBaseObject_Type).cast()]
+                    .into_iter()
+                    .enumerate()
+                {
+                    refcount::Py_INCREF(base);
+                    assert_eq!(
+                        sequences::PyTuple_SetItem(class.tp_mro, index as isize, base),
+                        0
+                    );
+                }
+                let truth =
+                    GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(MoltObject::from_bool(true).bits());
+                assert_eq!(
+                    mapping::PyDict_SetItemString(
+                        class.tp_dict,
+                        c"_asyncio_future_blocking".as_ptr(),
+                        truth
+                    ),
+                    0
+                );
+                refcount::Py_DECREF(truth);
+                let mut future = Future {
+                    object: PyObject {
+                        ob_refcnt: 1,
+                        ob_type: &raw mut class,
+                    },
+                    resets: 0,
+                };
+                let bits = GLOBAL_BRIDGE
+                    .molt_value_for_pyobj(&raw mut future.object)
+                    .unwrap();
+                let result = scheduled_yield(py, bits);
+                dec_ref_bits(py, result);
+                assert_eq!(future.resets, 1);
+                let raised = errors::PyErr_GetRaisedException();
+                assert!(!raised.is_null());
+                assert_ne!(
+                    errors::PyErr_GivenExceptionMatches(
+                        raised,
+                        (&raw mut molt_cpython_abi::abi_types::PyExc_ValueError).cast()
+                    ),
+                    0
+                );
+                let message = molt_cpython_abi::api::typeobj::PyObject_Str(raised);
+                assert_eq!(
+                    std::ffi::CStr::from_ptr(strings::PyUnicode_AsUTF8(message)).to_bytes(),
+                    b"future reset rejected"
+                );
+                refcount::Py_DECREF(message);
+                refcount::Py_DECREF(raised);
+                dec_ref_bits(py, bits);
+                let mro = std::mem::replace(&mut class.tp_mro, std::ptr::null_mut());
+                refcount::Py_DECREF(mro);
+                refcount::Py_DECREF(class.tp_dict);
+                assert_eq!(future.object.ob_refcnt, 1);
+                assert_eq!(class.ob_base.ob_base.ob_refcnt, 1);
+                assert!(!exception_pending(py));
+            }
+        });
+    }
+
     fn refcount(bits: u64) -> u64 {
         unsafe { (*header_from_obj_ptr(ptr_from_bits(bits))).ref_count_snapshot() as u64 }
+    }
+
+    #[test]
+    fn native_awaitability_separates_poll_owners_from_python_iterators() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let poll = crate::provenance::abi::expose_function_address(immediate_poll as *const ());
+            let coroutine = crate::molt_task_new(poll, 0, crate::TASK_KIND_COROUTINE);
+            let future = crate::molt_future_new(poll, 0);
+            let generator = crate::molt_task_new(
+                poll,
+                crate::GEN_CONTROL_SIZE as u64,
+                crate::TASK_KIND_GENERATOR,
+            );
+            let async_generator = crate::molt_asyncgen_new(generator);
+            let wrapper = molt_awaitable_await(coroutine);
+            let list = MoltObject::from_ptr(crate::alloc_list(py, &[])).bits();
+            assert!(!exception_pending(py));
+            // CPython's coroutine wrapper is an iterator, not an awaitable;
+            // an ordinary generator's poll address does not admit await either.
+            for (receiver, admitted) in [
+                (coroutine, true),
+                (future, true),
+                (generator, false),
+                (async_generator, false),
+                (wrapper, false),
+                (list, false),
+                (MoltObject::from_int(3).bits(), false),
+            ] {
+                assert_eq!(
+                    crate::molt_is_native_awaitable(receiver),
+                    MoltObject::from_bool(admitted).bits()
+                );
+                let acquired = molt_get_awaitable(receiver);
+                if admitted {
+                    assert_eq!(acquired, receiver);
+                    assert!(!exception_pending(py));
+                } else {
+                    let error = crate::molt_exception_last();
+                    assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                        py,
+                        error,
+                        "TypeError"
+                    ));
+                    crate::clear_exception(py);
+                    dec_ref_bits(py, error);
+                }
+                dec_ref_bits(py, acquired);
+            }
+            let adapted = molt_awaitable_await(future);
+            assert_eq!(adapted, future);
+            assert!(!exception_pending(py));
+            dec_ref_bits(py, adapted);
+            let closed = molt_coroutine_close_method(coroutine);
+            dec_ref_bits(py, closed);
+            assert!(!exception_pending(py));
+            for value in [list, wrapper, async_generator, generator, future, coroutine] {
+                dec_ref_bits(py, value);
+            }
+        });
     }
 
     #[test]

@@ -96,9 +96,9 @@ pub(crate) fn compute_value_range_with_loop_forest(
     // are still pure value moves). The IV reaches a hot-loop field store through
     // exactly these tagged copies (`store_val = Copy(Copy(Copy(iv)))`); resolving
     // them is what lets a fact recorded on the canonical IV be found when a
-    // consumer queries the stored value. This mirrors the alias oracle's
-    // `copy_is_known_local_alias` value-forwarding kinds — the single source of
-    // truth for "this Copy holds the same value as its operand".
+    // consumer queries the stored value. The shared `copy_value_source` proves
+    // pure value forwarding; the broader `no_heap_alias_source` ownership fact
+    // alone does not erase a runtime guard's validation effect.
     for block in func.blocks.values() {
         for op in &block.ops {
             if let Some(src) = copy_value_source(op) {

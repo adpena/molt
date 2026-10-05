@@ -10,6 +10,7 @@ pub(crate) mod callable;
 pub(crate) mod classes;
 pub(crate) mod codecs;
 pub(crate) mod codecs_ext;
+pub(crate) mod compatibility_error;
 #[cfg(feature = "stdlib_compression")]
 pub(crate) mod compression_bridge;
 pub(crate) mod concurrent;

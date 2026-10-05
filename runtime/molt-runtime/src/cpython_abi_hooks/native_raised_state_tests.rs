@@ -47,10 +47,15 @@ unsafe fn native_exception<'a, 'py>(
         let args = OwnedPyObject::from_owned(sequences::PyTuple_New(1));
         let text = OwnedPyObject::from_owned(strings::PyUnicode_FromString(message.as_ptr()));
         assert!(!args.as_ptr().is_null() && !text.as_ptr().is_null());
-        assert_eq!(sequences::PyTuple_SetItem(args.as_ptr(), 0, text.into_ptr()), 0);
-        let native = OwnedPyObject::from_owned(
-            errors::molt_native_exception_new(class, args.as_ptr(), ptr::null_mut()),
+        assert_eq!(
+            sequences::PyTuple_SetItem(args.as_ptr(), 0, text.into_ptr()),
+            0
         );
+        let native = OwnedPyObject::from_owned(errors::molt_native_exception_new(
+            class,
+            args.as_ptr(),
+            ptr::null_mut(),
+        ));
         drop(args);
         assert!(!native.as_ptr().is_null());
         let value = ExceptionValue::adopt(
@@ -61,7 +66,10 @@ unsafe fn native_exception<'a, 'py>(
             crate::object_type_id(crate::obj_from_bits(value.bits()).as_ptr().unwrap()),
             crate::TYPE_ID_FOREIGN
         );
-        assert_eq!(GLOBAL_BRIDGE.handle_to_borrowed_pyobj(value.bits()), native.as_ptr());
+        assert_eq!(
+            GLOBAL_BRIDGE.handle_to_borrowed_pyobj(value.bits()),
+            native.as_ptr()
+        );
         drop(native);
         value
     }
@@ -369,10 +377,8 @@ unsafe fn context_traceback(py: &PyToken<'_>) -> OwnedPyObject {
             py,
             MoltObject::from_ptr(crate::alloc_string(py, b"native_context_exit")).bits(),
         );
-        let empty = ExceptionValue::adopt(
-            py,
-            MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits(),
-        );
+        let empty =
+            ExceptionValue::adopt(py, MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits());
         let code = crate::alloc_code_obj(
             py,
             filename.bits(),
@@ -401,11 +407,13 @@ unsafe fn context_traceback(py: &PyToken<'_>) -> OwnedPyObject {
             crate::builtins::frames::traceback_payload_to_traceback_bits(py, payload.bits()),
         );
         assert!(!MoltObject::from_bits(traceback.bits()).is_none());
-        let traceback = OwnedPyObject::from_owned(
-            GLOBAL_BRIDGE.owned_handle_to_pyobj(traceback.into_bits()),
-        );
+        let traceback =
+            OwnedPyObject::from_owned(GLOBAL_BRIDGE.owned_handle_to_pyobj(traceback.into_bits()));
         assert!(!traceback.as_ptr().is_null());
-        assert_eq!(object::Py_TYPE(traceback.as_ptr()), &raw mut PyTraceBack_Type);
+        assert_eq!(
+            object::Py_TYPE(traceback.as_ptr()),
+            &raw mut PyTraceBack_Type
+        );
         traceback
     }
 }
@@ -444,16 +452,15 @@ fn native_context_exit_owns_actual_exception_class_and_mutated_traceback() {
         let mut cm_type = NativeType::subtype(&raw mut PyBaseObject_Type, c"NativeConsumerContext");
         cm_type.tp_methods = methods.as_mut_ptr();
         assert_eq!(cm_type.ready(), 0);
-        assert!(cm_type.tp_dealloc.is_some(), "object subtype inherits its production deallocator");
+        assert!(
+            cm_type.tp_dealloc.is_some(),
+            "object subtype inherits its production deallocator"
+        );
         {
-            let cm = OwnedPyObject::from_owned(
-                typeobj::PyType_GenericAlloc(&raw mut *cm_type, 0),
-            );
+            let cm = OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(&raw mut *cm_type, 0));
             assert!(!cm.as_ptr().is_null());
-            let cm_bits = ExceptionValue::adopt(
-                py,
-                GLOBAL_BRIDGE.molt_value_for_pyobj(cm.as_ptr()).unwrap(),
-            );
+            let cm_bits =
+                ExceptionValue::adopt(py, GLOBAL_BRIDGE.molt_value_for_pyobj(cm.as_ptr()).unwrap());
             drop(cm);
             let entered = ExceptionValue::adopt(py, crate::molt_context_enter(cm_bits.bits()));
             assert!(!crate::exception_pending(py));

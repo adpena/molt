@@ -18,11 +18,11 @@ use molt_runtime_core::prelude::*;
 
 use crate::bridge::{
     ExceptionSentinel, alloc_dict_with_pairs, alloc_list, alloc_string, alloc_tuple,
-    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, call_callable0, dec_ref_bits,
-    dict_del_in_place, dict_get_in_place, dict_like_bits_from_ptr, dict_order_clone,
-    dict_set_in_place, exception_pending, inc_ref_bits,
-    index_i64_with_overflow, is_truthy, compare_eq, object_type_id, raise_exception,
-    raise_key_error_with_key, seq_snapshot, string_obj_to_owned, to_i64, type_name,
+    attr_lookup_ptr_allow_missing, attr_name_bits_from_bytes, call_callable0, compare_eq,
+    dec_ref_bits, dict_del_in_place, dict_get_in_place, dict_like_bits_from_ptr, dict_order_clone,
+    dict_set_in_place, exception_pending, inc_ref_bits, index_i64_with_overflow, is_truthy,
+    object_type_id, raise_exception, raise_key_error_with_key, seq_snapshot, string_obj_to_owned,
+    to_i64, type_name,
 };
 
 use std::collections::{HashMap, VecDeque};
@@ -1129,12 +1129,21 @@ fn retained_deque_snapshot_with_version(_py: &CoreGilToken, id: i64) -> (Vec<u64
 /// replacement keeps the structural version but must be observed at the next
 /// position, so each item is retained from current storage independently.
 fn deque_comparison_start(id: i64) -> (usize, u64) {
-    collections_state().deque_registry.lock().unwrap().get(&id)
-        .map(|state| (state.data.len(), state.mutation_version)).unwrap_or_default()
+    collections_state()
+        .deque_registry
+        .lock()
+        .unwrap()
+        .get(&id)
+        .map(|state| (state.data.len(), state.mutation_version))
+        .unwrap_or_default()
 }
 
 fn deque_comparison_item(py: &CoreGilToken, id: i64, index: usize) -> Option<u64> {
-    collections_state().deque_registry.lock().unwrap().get(&id)
+    collections_state()
+        .deque_registry
+        .lock()
+        .unwrap()
+        .get(&id)
         .and_then(|state| state.data.get(index).copied())
         .map(|bits| retain_handle_value(py, bits))
 }

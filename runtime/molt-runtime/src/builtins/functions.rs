@@ -84,7 +84,7 @@ fn enum_set_attr(
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
         return false;
     };
-    let _ = crate::molt_object_setattr(target_bits, name_bits, value_bits);
+    let _ = crate::molt_set_attr_name(target_bits, name_bits, value_bits);
     !exception_pending(_py)
 }
 

@@ -89,10 +89,13 @@ pub fn collect_app_callable_requirements(functions: &[FunctionIR]) -> AppCallabl
                 // a provider's own publication exposes only its declarations.
                 // These remain optional profile candidates on every backend.
                 requirements.builtin_namespace_trampolines.extend(
-                    PYTHON_BUILTIN_CALLABLES.iter()
-                        .filter(|spec| name.is_none()
-                            || name == Some("builtins")
-                            || name == Some(spec.python_module))
+                    PYTHON_BUILTIN_CALLABLES
+                        .iter()
+                        .filter(|spec| {
+                            name.is_none()
+                                || name == Some("builtins")
+                                || name == Some(spec.python_module)
+                        })
                         .map(|spec| (spec.runtime_name.to_owned(), spec.arity)),
                 );
             }

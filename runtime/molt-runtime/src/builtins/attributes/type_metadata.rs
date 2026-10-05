@@ -3,50 +3,6 @@
 use molt_cpython_abi::abi_types::PyObject;
 use molt_cpython_abi::api::refcount::OwnedPyObject;
 
-// Name and qualname fields commit before displaced values may run finalizers.
-// Annotation ownership lives entirely in the namespace transaction below.
-struct MetadataRetirement<'a, 'gil> {
-    py: &'a PyToken<'gil>,
-    class: *mut u8,
-    retained: [u64; 1],
-}
-impl<'a, 'gil> MetadataRetirement<'a, 'gil> {
-    unsafe fn new(py: &'a PyToken<'gil>, class: *mut u8, field: Field) -> Self {
-        unsafe {
-            let mut retained = [0; 1];
-            match field {
-                Field::Name => retained[0] = class_name_bits(class),
-                Field::QualName => retained[0] = class_qualname_bits(class),
-                _ => {}
-            }
-            for value in retained {
-                if value != 0 {
-                    inc_ref_bits(py, value);
-                }
-            }
-            Self {
-                py,
-                class,
-                retained,
-            }
-        }
-    }
-}
-impl Drop for MetadataRetirement<'_, '_> {
-    fn drop(&mut self) {
-        unsafe {
-            class_bump_layout_version(self.class);
-        }
-        molt_cpython_abi::api::errors::with_preserved_error(|| {
-            for value in self.retained {
-                if value != 0 {
-                    dec_ref_bits(self.py, value);
-                }
-            }
-        });
-    }
-}
-
 pub(crate) unsafe fn read(py: &PyToken<'_>, receiver: u64, field: Field) -> u64 {
     unsafe {
         if let Some(ptr) = obj_from_bits(receiver).as_ptr()
@@ -114,6 +70,9 @@ pub(crate) unsafe fn read(py: &PyToken<'_>, receiver: u64, field: Field) -> u64 
                     None if exception_pending(py) => MoltObject::none().bits(),
                     None => raise_exception::<_>(py, "AttributeError", field.name()),
                 };
+            }
+            Field::Doc | Field::TextSignature | Field::AbstractMethods => {
+                return read_namespace_metadata(py, class, field);
             }
             Field::Class => unreachable!("class field handled without heap admission"),
         };
@@ -191,6 +150,9 @@ pub(crate) unsafe fn publish(py: &PyToken<'_>) -> bool {
                     Field::Bases,
                     Field::Mro,
                     Field::Dictionary,
+                    Field::Doc,
+                    Field::TextSignature,
+                    Field::AbstractMethods,
                     Field::Annotations,
                 ][..],
             ),
@@ -232,6 +194,140 @@ pub(crate) unsafe fn publish(py: &PyToken<'_>) -> bool {
 use super::*;
 use molt_cpython_abi::api::typeobj::TypeAttributeField as Field;
 
+// Public doc and abstract methods read only the receiver's namespace. A heap
+// signature reads the private creation doc, interpreted with the current name.
+unsafe fn read_namespace_metadata(py: &PyToken<'_>, class: *mut u8, field: Field) -> u64 {
+    unsafe {
+        let bits = MoltObject::from_ptr(class).bits();
+        if bits == builtin_classes(py).type_obj {
+            // The root's own namespace contains these descriptors. It has no
+            // internal documentation/signature declaration to expose.
+            return if field == Field::AbstractMethods {
+                raise_exception::<_>(py, "AttributeError", field.name())
+            } else {
+                MoltObject::none().bits()
+            };
+        }
+        if field == Field::TextSignature && crate::object::class_storage::class_is_heap_type(class)
+        {
+            use crate::object::class_storage::ClassReferenceSlot;
+            let doc = ClassReferenceSlot::CreationDoc.load(class);
+            let Some(doc) = obj_from_bits(doc).as_ptr() else {
+                return MoltObject::none().bits();
+            };
+            let name = obj_from_bits(class_name_bits(class))
+                .as_ptr()
+                .expect("class name");
+            let name = std::slice::from_raw_parts(string_bytes(name), string_len(name));
+            let doc = std::slice::from_raw_parts(string_bytes(doc), string_len(doc));
+            let Some(signature) =
+                molt_cpython_abi::api::typeobj::documentation_bytes(name, doc, true)
+            else {
+                return MoltObject::none().bits();
+            };
+            let result = alloc_string(py, signature);
+            return if result.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(result).bits()
+            };
+        }
+        let value = annotation_entry(py, class, field.name().as_bytes());
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        match value {
+            Some(value) if field == Field::Doc => {
+                crate::builtins::attr::descriptor_bind(py, value, Some(bits), None)
+                    .unwrap_or_else(|| MoltObject::none().bits())
+            }
+            Some(value) => {
+                inc_ref_bits(py, value);
+                value
+            }
+            None if field == Field::AbstractMethods => {
+                raise_exception::<_>(py, "AttributeError", field.name())
+            }
+            None => MoltObject::none().bits(),
+        }
+    }
+}
+
+/// Preserve descriptor-owned CPython ordering. Doc invalidates before store;
+/// abstract methods release the old namespace value, invalidate, then latch the
+/// flag. Truth conversion still runs exactly once before dictionary mutation.
+unsafe fn write_namespace_metadata(
+    py: &PyToken<'_>,
+    class: *mut u8,
+    field: Field,
+    value: Option<u64>,
+) -> u64 {
+    unsafe {
+        if field == Field::Doc && value.is_none() {
+            return raise_exception::<_>(
+                py,
+                "TypeError",
+                &format!(
+                    "cannot delete '__doc__' attribute of immutable type '{}'",
+                    class_name_for_error(MoltObject::from_ptr(class).bits())
+                ),
+            );
+        }
+        let abstract_type = if field == Field::AbstractMethods {
+            value.is_some_and(|value| is_truthy(py, obj_from_bits(value)))
+        } else {
+            false
+        };
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        let Some(name) = attr_name_bits_from_bytes(py, field.name().as_bytes()) else {
+            return MoltObject::none().bits();
+        };
+        let _name =
+            crate::PtrDropGuard::preserving(obj_from_bits(name).as_ptr().expect("metadata name"));
+        let Some(mut publication) = super::TypeMutation::prepare(py, class, name) else {
+            return MoltObject::none().bits();
+        };
+        if field == Field::Doc && !publication.invalidate_native() {
+            return MoltObject::none().bits();
+        }
+        let dictionary = obj_from_bits(class_dict_bits(class)).as_ptr().unwrap();
+        let retired = match value {
+            Some(value) => crate::object::ops::dict_set_deferred(py, dictionary, name, value).ok(),
+            None => crate::object::ops::dict_del_deferred(py, dictionary, name),
+        };
+        if let Some(retired) = retired {
+            // The dictionary is committed before releasing its old owner. Do
+            // not move release across the descriptor's observable C invalidation.
+            class_bump_layout_version(class);
+            molt_cpython_abi::api::errors::with_preserved_error(|| drop(retired));
+            if field == Field::AbstractMethods {
+                publication.publish();
+                if exception_pending(py) {
+                    // The dictionary and runtime flag remain committed even if
+                    // an existing C view is in failed/recursive publication.
+                    // Preserve the first publication failure during flag update.
+                    molt_cpython_abi::api::errors::with_preserved_error(|| {
+                        let _ =
+                            crate::object::class_storage::class_set_abstract(class, abstract_type);
+                    });
+                } else if crate::object::class_storage::class_set_abstract(class, abstract_type)
+                    .is_err()
+                {
+                    crate::cpython_abi_hooks::propagate_native_failure(
+                        py,
+                        "abstract type flag publication",
+                    );
+                }
+            }
+        } else if !exception_pending(py) {
+            raise_exception::<()>(py, "AttributeError", field.name());
+        }
+        MoltObject::none().bits()
+    }
+}
+
 // Class annotations have exactly one storage owner: the class namespace.
 // Python 3.14 separates explicit values from generated evaluators/lazy caches.
 unsafe fn annotation_entry(py: &PyToken<'_>, class: *mut u8, key: &[u8]) -> Option<u64> {
@@ -241,8 +337,9 @@ unsafe fn annotation_entry(py: &PyToken<'_>, class: *mut u8, key: &[u8]) -> Opti
     }
 }
 
-/// Commit the complete annotation mutation before releasing displaced values.
-/// Incoming aliases remain live through every update, including partial errors.
+/// Commit annotations before releasing displaced values, then invalidate C
+/// metadata as the descriptor does. Incoming aliases remain live through every
+/// update, including partial errors; retirement is not delayed across watchers.
 unsafe fn update_annotations_namespace(
     py: &PyToken<'_>,
     class: *mut u8,
@@ -252,10 +349,12 @@ unsafe fn update_annotations_namespace(
         let dictionary = obj_from_bits(class_dict_bits(class)).as_ptr().unwrap();
         let mut names = Vec::with_capacity(updates.len());
         let mut retired = Vec::with_capacity(updates.len());
+        let mut publication = None;
         let result = (|| {
             for (name, _) in updates {
                 names.push(attr_name_bits_from_bytes(py, name)?);
             }
+            publication = Some(super::TypeMutation::prepare(py, class, *names.first()?)?);
             for ((_, value), name) in updates.iter().zip(names.iter().copied()) {
                 if let Some(value) = value {
                     retired.push(
@@ -272,16 +371,29 @@ unsafe fn update_annotations_namespace(
             }
             Some(())
         })();
-        if !retired.is_empty() {
+        let changed = !retired.is_empty();
+        if changed {
             class_bump_layout_version(class);
         }
+        molt_cpython_abi::api::errors::with_preserved_error(|| drop(retired));
+        let mut published = true;
+        if changed {
+            let publication = publication.as_mut().expect("prepared annotation mutation");
+            if exception_pending(py) {
+                molt_cpython_abi::api::errors::with_preserved_error(|| {
+                    published = publication.publish();
+                });
+            } else {
+                published = publication.publish();
+            }
+        }
         molt_cpython_abi::api::errors::with_preserved_error(|| {
-            drop(retired);
+            drop(publication);
             for name in names {
                 dec_ref_bits(py, name);
             }
         });
-        result.is_some()
+        result.is_some() && published
     }
 }
 
@@ -447,12 +559,20 @@ pub(crate) unsafe fn write_type_metadata(
         let class_bits = MoltObject::from_ptr(class).bits();
         if !matches!(
             field,
-            Field::Name | Field::QualName | Field::Bases | Field::Annotations | Field::Annotate
+            Field::Name
+                | Field::QualName
+                | Field::Bases
+                | Field::Annotations
+                | Field::Annotate
+                | Field::Doc
+                | Field::AbstractMethods
         ) {
             return raise_exception::<_>(py, "AttributeError", "type metadata is read-only");
         }
         let attr_name = field.name();
-        if crate::object::class_is_immutable(py, class) {
+        // CPython's abstract-method getset admits direct descriptor writes on
+        // immutable types. Normal type mutation enforces immutability earlier.
+        if field != Field::AbstractMethods && crate::object::class_is_immutable(py, class) {
             return raise_exception::<_>(
                 py,
                 "TypeError",
@@ -464,6 +584,9 @@ pub(crate) unsafe fn write_type_metadata(
         }
         if matches!(field, Field::Annotations | Field::Annotate) {
             return write_type_annotations(py, class, field, value);
+        }
+        if matches!(field, Field::Doc | Field::AbstractMethods) {
+            return write_namespace_metadata(py, class, field, value);
         }
         let Some(value) = value else {
             return raise_exception::<_>(
@@ -499,14 +622,14 @@ pub(crate) unsafe fn write_type_metadata(
                 ),
             );
         }
-        let _retired = MetadataRetirement::new(py, class, field);
+        let mut publication = super::TypeMutation::runtime_only(py, class);
         let published = if field == Field::Name {
             class_set_name_bits(py, class, value)
         } else {
             class_set_qualname_bits(py, class, value)
         };
-        if !published {
-            return MoltObject::none().bits();
+        if published {
+            publication.publish();
         }
         MoltObject::none().bits()
     }

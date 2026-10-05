@@ -9,7 +9,9 @@ use crate::abi_types::{PyDescrGetFunc, PyDescrSetFunc, PyObject};
 use crate::api::callback::CallbackOperands;
 use crate::api::errors;
 use crate::bridge::{GLOBAL_BRIDGE, RuntimeValue};
-use crate::hooks::{DecodedHandleResult, DescriptorMutationStatus, DescriptorProtocol, hooks_or_stubs};
+use crate::hooks::{
+    DecodedHandleResult, DescriptorMutationStatus, DescriptorProtocol, hooks_or_stubs,
+};
 use std::os::raw::c_int;
 use std::ptr;
 
@@ -33,7 +35,10 @@ unsafe fn protocol(descriptor: *mut PyObject) -> Result<DescriptorProtocol, ()> 
     let Some(kind) = (unsafe { (*descriptor).ob_type.as_ref() }) else {
         return Ok(DescriptorProtocol::None);
     };
-    Ok(DescriptorProtocol::from_slots(kind.tp_descr_get.is_some(), kind.tp_descr_set.is_some()))
+    Ok(DescriptorProtocol::from_slots(
+        kind.tp_descr_get.is_some(),
+        kind.tp_descr_set.is_some(),
+    ))
 }
 
 pub(crate) unsafe fn has_get(descriptor: *mut PyObject) -> Result<bool, ()> {
@@ -83,7 +88,7 @@ pub(crate) unsafe fn get(
     }
     if GLOBAL_BRIDGE.molt_handle_for_pyobj(descriptor).is_some() {
         match unsafe { has_get(descriptor) } {
-            Ok(true) => {},
+            Ok(true) => {}
             Ok(false) => return None,
             Err(()) => return Some(ptr::null_mut()),
         }
@@ -138,7 +143,7 @@ pub(crate) unsafe fn set(
     }
     if GLOBAL_BRIDGE.molt_handle_for_pyobj(descriptor).is_some() {
         match unsafe { is_data(descriptor) } {
-            Ok(true) => {},
+            Ok(true) => {}
             Ok(false) => return None,
             Err(()) => return Some(-1),
         }
@@ -156,7 +161,8 @@ pub(crate) unsafe fn set(
         let value_bits = value.as_ref().map(RuntimeValue::bits);
         let status = unsafe {
             (hooks_or_stubs().descriptor_set)(
-                descriptor.bits(), receiver.bits(),
+                descriptor.bits(),
+                receiver.bits(),
                 value_bits.as_ref().map_or(ptr::null(), |bits| bits),
             )
         };

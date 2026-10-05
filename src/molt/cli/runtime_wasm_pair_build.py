@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from molt.cli import progress as _progress
 from molt.cli.runtime_build_python import build_python_scope
 
 import contextlib
@@ -38,7 +39,7 @@ from molt.cli.models import (
 from molt.cli.runtime_artifact_selection import (
     RuntimeCrateType,
 )
-from molt.cli.runtime_build_identity import (
+from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
     RuntimeToolchainContentManifest,
     runtime_build_fingerprint,
@@ -287,10 +288,7 @@ def _prepopulate_combined_runtime_wasm_target(
         return True
     env, cmd = _combined_runtime_wasm_command(ctx)
     if not json_output:
-        print(
-            "Building runtime wasm (single combined compile: staticlib+cdylib)...",
-            file=sys.stderr,
-        )
+        _progress.notice("WASM runtime artifacts need one combined source build")
     started = time.perf_counter()
     try:
         build, reported_cdylib = _run_runtime_wasm_cargo_build(

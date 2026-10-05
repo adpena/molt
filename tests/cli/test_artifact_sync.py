@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 
 from molt.cli import native_symbol_inspection
@@ -19,6 +20,15 @@ from molt.cli.backend_artifact_contract import (
 from molt.toolchain_identity import stable_regular_file_identity
 from tests.cli.native_link_test_support import static_archive_bytes
 from tests.native_artifact_fixtures import native_relocatable_object
+
+
+def test_artifact_sync_payload_bound_precedes_warm_parse_cache(tmp_path, monkeypatch):
+    path = tmp_path / "receipt.json"
+    path.write_bytes(b'{"key":1}')
+    assert sync._read_artifact_sync_state(path) == {"key": 1}
+    monkeypatch.setattr(sync, "RUNTIME_ARTIFACT_METADATA_MAX_BYTES", 8)
+    assert sync._read_artifact_sync_state(path) is None
+    assert path not in sync._ARTIFACT_SYNC_STATE_CACHE
 
 
 @pytest.fixture(autouse=True)
@@ -126,17 +136,28 @@ def test_warm_payload_cache_rejects_restored_mtime_sidecar_substitution(
     assert second is not first
 
 
-def test_warm_payload_cache_checks_generation_without_rehash(tmp_path, monkeypatch):
+def test_warm_payload_cache_validates_bytes_and_reuses_only_parsing(
+    tmp_path, monkeypatch
+):
     receipt = tmp_path / "receipt.json"
     receipt.write_text('{"source_key":"key"}', encoding="utf-8")
+    captures = []
+    capture = sync.capture_stable_regular_file
+
+    def counted_capture(path, **kwargs):
+        captures.append(path)
+        return capture(path, **kwargs)
+
+    monkeypatch.setattr(sync, "capture_stable_regular_file", counted_capture)
     first = sync._read_artifact_sync_state(receipt)
 
-    def unexpected_hash(*args, **kwargs):
-        raise AssertionError("warm receipt payload must not rehash")
+    def unexpected_parse(*args, **kwargs):
+        raise AssertionError("unchanged receipt payload must not be parsed twice")
 
     with monkeypatch.context() as warm:
-        warm.setattr(sync, "stable_regular_file_identity", unexpected_hash)
+        warm.setattr(sync.json, "loads", unexpected_parse)
         assert sync._read_artifact_sync_state(receipt) is first
+    assert captures == [receipt, receipt]
     receipt.unlink()
     assert sync._read_artifact_sync_state(receipt) is None
 
@@ -174,18 +195,14 @@ def test_legacy_stat_receipt_is_a_miss_even_for_identical_bytes(tmp_path):
     )
 
 
-def test_receipt_reuses_path_bound_validation_identity_without_rehash(
-    tmp_path, monkeypatch
+def test_receipt_validates_path_bound_identity_against_current_content(
+    tmp_path,
 ):
     artifact = tmp_path / "artifact.rs"
     artifact.write_bytes(b"return 1\n")
     identity = stable_regular_file_identity(artifact, label="test output")
     receipt = tmp_path / "receipt.json"
 
-    def unexpected_hash(*args, **kwargs):
-        raise AssertionError("receipt must reuse transaction content identity")
-
-    monkeypatch.setattr(sync, "stable_regular_file_identity", unexpected_hash)
     sync._write_artifact_sync_state(
         receipt, source_key="key", tier="module", artifact=artifact, identity=identity
     )
@@ -199,6 +216,9 @@ def test_receipt_reuses_path_bound_validation_identity_without_rehash(
         state, source_key="key", tier="module", artifact=other, identity=identity
     )
     _replace_restoring_mtime(artifact, b"return 2\n", in_place=True)
+    current = stable_regular_file_identity(artifact, label="current output")
+    # The old digest must be rejected even if all detached metadata agrees.
+    identity = replace(current, sha256=identity.sha256)
     assert not sync._artifact_sync_state_matches(
         state, source_key="key", tier="module", artifact=artifact, identity=identity
     )
@@ -314,7 +334,7 @@ def test_all_backend_sync_consumers_reject_replacement_and_materialize_requested
     assert warnings == []
 
 
-def test_backend_receipt_decision_reuses_exactly_one_validation_identity(
+def test_backend_receipt_decision_validates_shape_once_and_readmits_content(
     tmp_path, monkeypatch
 ):
     contract = BackendArtifactContract(BackendArtifactKind.RUST)
@@ -335,11 +355,15 @@ def test_backend_receipt_decision_reuses_exactly_one_validation_identity(
         calls.append(path)
         return original_validate(path, **kwargs)
 
-    def unexpected_receipt_hash(*args, **kwargs):
-        raise AssertionError("backend receipt lookup rehashed validated bytes")
+    receipt_hashes = []
+    capture = sync.stable_regular_file_identity
+
+    def receipt_hash(path, **kwargs):
+        receipt_hashes.append(path)
+        return capture(path, **kwargs)
 
     monkeypatch.setattr(cache, "_validate_backend_cache_artifact", validate)
-    monkeypatch.setattr(sync, "stable_regular_file_identity", unexpected_receipt_hash)
+    monkeypatch.setattr(sync, "stable_regular_file_identity", receipt_hash)
     hit = cache._synced_backend_output_cache_hit(
         state,
         artifact,
@@ -352,6 +376,7 @@ def test_backend_receipt_decision_reuses_exactly_one_validation_identity(
     assert hit is not None and hit.tier == "module"
     assert hit.identity.path == artifact
     assert calls == [artifact]
+    assert receipt_hashes == [artifact]
 
 
 def test_daemon_sync_reuses_validation_identity_for_module_chunk_closure(

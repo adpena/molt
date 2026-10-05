@@ -560,7 +560,9 @@ def test_run_diff_serial_emits_run_line_before_file_work(
         }
 
     monkeypatch.setattr(module, "_diff_run_single", _fake_run_single)
-    monkeypatch.setattr(module, "_memory_guard_trip_message", lambda: None)
+    monkeypatch.setattr(
+        module, "_memory_guard_trip_outcome", lambda sentinel=None: None
+    )
     monkeypatch.setattr(module, "_top_rss_entries", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(module, "_aggregate_rss_metrics", lambda _run_id: {})
     monkeypatch.setattr(module, "_print_rss_top", lambda *_args, **_kwargs: None)
@@ -693,8 +695,12 @@ def test_diff_memory_guard_kills_active_child_tree_limit(
             pgid=200,
             matched=True,
             samples=(
-                module.memory_guard.ProcessSample(200, os.getpid(), 9_000, "build"),
-                module.memory_guard.ProcessSample(201, 200, 12_000, "rustc"),
+                module.memory_guard.ProcessSample(
+                    200, os.getpid(), 9_000, "build", started_at_ns=1000
+                ),
+                module.memory_guard.ProcessSample(
+                    201, 200, 12_000, "rustc", started_at_ns=2000
+                ),
             ),
         )
     ]

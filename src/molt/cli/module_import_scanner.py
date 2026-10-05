@@ -8,8 +8,8 @@ from molt.python_private_names import (
 import ntpath
 import os
 import posixpath
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, cast
 
@@ -30,14 +30,13 @@ from molt.target_python import (
     _DEFAULT_TARGET_PYTHON_VERSION,
 )
 from molt.compiler_analysis.static_truth import (
+    statically_executed_boolop_values,
     StaticExpressionResult,
+    static_expression_result,
     static_if_live_branch,
-    static_test_truthiness,
 )
-from molt.compiler_analysis.python_binding_facts import (
-    PythonIdentity,
-    PythonParameterRef,
-)
+from molt.compiler_analysis.python_binding_facts import PythonParameterRef
+from molt.compiler_analysis.python_value_identity import PythonIdentity
 from molt.compiler_analysis.python_binding_flow import (
     PythonBindingFlowPolicy,
     PythonBindingPolicy,
@@ -51,10 +50,14 @@ from molt.compiler_analysis.python_imports import (
     bind_static_import_call_arguments,
     dunder_globals_state_from_expression,
     metadata_value_from_expression,
+    module_import_context_with_metadata_proof,
     plan_static_import_request,
     require_static_import_modules,
-    resolve_relative_import,
     static_import_candidates,
+    static_import_discovery,
+    source_import_requests_from_expressions,
+    static_import_level_from_result,
+    static_import_fromlist_is_empty,
     UnresolvedStaticImportError,
 )
 from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
@@ -107,50 +110,35 @@ class _DynamicRelativeImportDiscovery:
     seen: set[str] = field(default_factory=set)
     required: bool = False
 
-    @classmethod
-    def from_projection(
-        cls, projection: _ImportDiscoveryProjection
-    ) -> _DynamicRelativeImportDiscovery:
-        candidates = list(projection.dynamic_relative_import_candidates)
-        return cls(
-            candidates, set(candidates), projection.requires_runtime_package_anchor
-        )
-
     def record(
         self,
         request: StaticImportRequest,
         contexts: Sequence[ModuleImportContext],
         *,
         lexical_request: StaticImportRequest | None = None,
-    ) -> None:
+    ) -> tuple[str, ...]:
         self.required = True
-        if not contexts:
-            return
-        if lexical_request is None:
-            if request.kind != "statement" or request.level <= 0:
-                return
-            lexical_request = request
-        lexical_contexts = tuple(
-            ModuleImportContext(
-                context.module_name,
-                context.is_package,
-                spec_name=context.spec_name,
-                target_python=context.target_python,
-                execution_kind=context.execution_kind,
-            )
-            for context in contexts
-        )
-        lexical_plan = plan_static_import_request(lexical_request, lexical_contexts)
-        if lexical_plan.requires_runtime or lexical_plan.errors:
-            return
-        for candidate in lexical_plan.modules:
+        candidates = static_import_discovery(
+            request, contexts, lexical_request=lexical_request
+        ).modules
+        for candidate in candidates:
             if candidate not in self.seen:
                 self.seen.add(candidate)
                 self.candidates.append(candidate)
+        return candidates
 
-    def projection(self, imports: Collection[str]) -> _ImportDiscoveryProjection:
+    def projection(
+        self,
+        imports: Collection[str],
+        star_modules: Collection[str],
+        dynamic_star_modules: Collection[str],
+    ) -> _ImportDiscoveryProjection:
         return _ImportDiscoveryProjection(
-            tuple(imports), tuple(self.candidates), self.required
+            tuple(imports),
+            tuple(self.candidates),
+            self.required,
+            tuple(dict.fromkeys(star_modules)),
+            tuple(dict.fromkeys(dynamic_star_modules)),
         )
 
     def record_call_binding(self, name: str | None) -> None:
@@ -172,26 +160,53 @@ def _sealed_import_modules(
     source_ast_digest: str | None = None,
     dynamic_relative_import_discovery: _DynamicRelativeImportDiscovery | None = None,
     lexical_discovery_request: StaticImportRequest | None = None,
+    lexical_discovery_contexts: Sequence[ModuleImportContext] = (),
+    source_discovery_requests: Sequence[
+        tuple[StaticImportRequest, ModuleImportContext]
+    ] = (),
 ) -> tuple[str, ...]:
     module_name = contexts[0].module_name if contexts else None
     plan = plan_static_import_request(request, contexts)
     unclassified_errors = tuple(
         error for error in plan.errors if error not in _DYNAMIC_RELATIVE_ANCHOR_ERRORS
     )
-    if plan.requires_runtime and unclassified_errors:
+    # Calls and the runtime's two relative-statement ImportErrors remain
+    # catchable under exact custody. Other statement errors stay build-fatal.
+    runtime_resolution_errors = bool(plan.errors) and (
+        request.kind != "statement"
+        or request.level > 0
+        and all(
+            error in _DYNAMIC_RELATIVE_ANCHOR_ERRORS
+            or error in {"no_parent", "beyond_top"}
+            for error in plan.errors
+        )
+    )
+    needs_runtime_custody = plan.requires_runtime or runtime_resolution_errors
+    if plan.requires_runtime and unclassified_errors and not runtime_resolution_errors:
         raise UnresolvedStaticImportError(
             "module import scanner "
             f"({module_name or '<script>'}: {request.name!r}) cannot resolve import: "
             + ", ".join(unclassified_errors)
         )
     if plan.requires_runtime and dynamic_relative_import_discovery is not None:
+        # A rejected storage proof does not erase source-state possibilities.
+        # Keep those roots in the same discovery-only projection as the fresh
+        # source-owner twin; neither grants execution metadata authority.
+        if lexical_discovery_contexts:
+            dynamic_relative_import_discovery.record(
+                request, lexical_discovery_contexts
+            )
+        for source_request, source_context in source_discovery_requests:
+            dynamic_relative_import_discovery.record(source_request, (source_context,))
         dynamic_relative_import_discovery.record(
             request,
             contexts,
             lexical_request=lexical_discovery_request,
         )
+    if runtime_resolution_errors and dynamic_relative_import_discovery is not None:
+        dynamic_relative_import_discovery.required = True
     if (
-        plan.requires_runtime
+        needs_runtime_custody
         and runtime_import_custody is not None
         and runtime_import_custody.admits_scan(
             module_name, source_path, source_ast_digest
@@ -201,7 +216,7 @@ def _sealed_import_modules(
         # keeps Python's relative-import semantics and may select any retained
         # catalog row (or fail closed if the requested module is not admitted).
         return tuple(dict.fromkeys((*plan.modules, *runtime_import_custody.modules)))
-    if plan.requires_runtime and dynamic_relative_import_discovery is not None:
+    if needs_runtime_custody and dynamic_relative_import_discovery is not None:
         # Graph discovery retains only statically proven semantic alternatives
         # here. Lexical owner candidates travel in a distinct projection and
         # cannot become a runtime relative-import fallback.
@@ -218,16 +233,6 @@ _RUNTIME_IMPORT_PROTOCOL_MARKERS = (
     "__import__",
     "import_module",
     "find_spec",
-)
-
-
-_RUNTIME_IMPORT_PROTOCOL_TARGETS = frozenset(
-    {
-        "__import__",
-        "builtins.__import__",
-        "importlib.import_module",
-        "importlib.util.find_spec",
-    }
 )
 
 
@@ -251,6 +256,7 @@ _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class _StaticImportCallPayload:
+    call: ast.Call
     target: str
     name: ast.expr | None
     package: ast.expr | None = None
@@ -486,41 +492,6 @@ def _qualified_child(prefix: tuple[str, ...], name: str) -> tuple[str, ...]:
     return (*prefix, name)
 
 
-def _statically_executed_boolop_values(
-    node: ast.BoolOp,
-    *,
-    fact_result: Callable[[ast.expr], StaticExpressionResult | None],
-) -> tuple[ast.expr, ...]:
-    values: list[ast.expr] = []
-    if isinstance(node.op, ast.And):
-        for idx, value in enumerate(node.values):
-            values.append(value)
-            value_truth = static_test_truthiness(
-                value,
-                fact_result=fact_result,
-            )
-            if value_truth is False:
-                return tuple(values)
-            if value_truth is None:
-                values.extend(node.values[idx + 1 :])
-                return tuple(values)
-        return tuple(values)
-    if isinstance(node.op, ast.Or):
-        for idx, value in enumerate(node.values):
-            values.append(value)
-            value_truth = static_test_truthiness(
-                value,
-                fact_result=fact_result,
-            )
-            if value_truth is True:
-                return tuple(values)
-            if value_truth is None:
-                values.extend(node.values[idx + 1 :])
-                return tuple(values)
-        return tuple(values)
-    return tuple(node.values)
-
-
 def _function_parameter_names_from_args(args: ast.arguments) -> list[str]:
     names = [arg.arg for arg in args.posonlyargs]
     names.extend(arg.arg for arg in args.args)
@@ -584,7 +555,7 @@ def _static_scan_nodes(
             visit(node.target, qualname_prefix)
             return
         if isinstance(node, ast.BoolOp):
-            for value in _statically_executed_boolop_values(
+            for value in statically_executed_boolop_values(
                 node,
                 fact_result=binding_index.expression_result,
             ):
@@ -749,6 +720,8 @@ def _collect_imports(
     source_path: Path | None = None,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
     _dynamic_relative_import_discovery: _DynamicRelativeImportDiscovery | None = None,
+    _star_modules: list[str] | None = None,
+    _dynamic_star_modules: list[str] | None = None,
 ) -> list[str]:
     if runtime_import_custody is not None:
         runtime_import_custody.validate_scan_mode(
@@ -787,14 +760,21 @@ def _collect_imports(
             module_spec_name=module_name,
             module_is_package=is_package,
             module_execution_kind="script" if module_name is None else "imported",
+            include_import_discovery=_dynamic_relative_import_discovery is not None,
         ),
     )
     import_flow = binding_index.module_import_flow
 
-    def _import_contexts(node: ast.AST) -> tuple[ModuleImportContext, ...]:
+    def _import_contexts(
+        node: ast.AST, *, source_discovery: bool = False
+    ) -> tuple[ModuleImportContext, ...]:
         return tuple(
             base_import_context.with_state(state)
-            for state in import_flow.states_for(node)
+            for state in (
+                import_flow.source_states_for(node)
+                if source_discovery
+                else import_flow.states_for(node)
+            )
         )
 
     module_body = list(getattr(tree, "body", []))
@@ -822,15 +802,13 @@ def _collect_imports(
                     return "importlib.import_module"
                 if fact.callee_may_be(PythonIdentity.IMPORTLIB_FIND_SPEC):
                     return "importlib.util.find_spec"
-        return call.func.id if isinstance(call.func, ast.Name) else None
+        return None
 
     def _is_static_import_target(target: str | None) -> bool:
         return target in {
             "builtins.__import__",
             "importlib.import_module",
             "importlib.util.find_spec",
-            "_MOLT_IMPORTLIB_IMPORT_TRANSACTION",
-            "molt_importlib_import_transaction",
         }
 
     def _bound_static_value(
@@ -841,6 +819,24 @@ def _collect_imports(
         if isinstance(value, PythonParameterRef):
             return bindings.get(value.name)
         return value
+
+    def _bound_expression_result(
+        node: ast.expr, bindings: Mapping[str, object]
+    ) -> StaticExpressionResult:
+        value = binding_index.static_value(node)
+        if isinstance(value, PythonParameterRef) and value.name in bindings:
+            return StaticExpressionResult.scalar(
+                bindings[value.name], evaluation_required=True
+            )
+        result = binding_index.expression_result(node)
+        if bindings and isinstance(node, ast.UnaryOp) and not result.value_known:
+            # Instantiate retained parameter facts through the shared operator
+            # authority; an expired/unknown name has no parameter fact to bind.
+            return static_expression_result(
+                node,
+                fact_result=lambda child: _bound_expression_result(child, bindings),
+            )
+        return result
 
     def _resolve_string_sequence(
         node: ast.expr, bindings: dict[str, object], seen: set[str]
@@ -869,32 +865,6 @@ def _collect_imports(
                 return left + right
             return None
         if isinstance(node, ast.Call):
-            target = _static_call_target(node)
-            if (
-                target
-                in {
-                    "_MOLT_IMPORTLIB_RESOLVE_NAME",
-                    "molt_importlib_resolve_name",
-                }
-                and node.args
-            ):
-                resolved = _resolve_string_constant(node.args[0], bindings, seen)
-                if resolved is None:
-                    return None
-                if not resolved.startswith("."):
-                    return resolved
-                if len(node.args) < 2:
-                    return None
-                package = _resolve_string_constant(node.args[1], bindings, seen)
-                if package is None:
-                    return None
-                level = len(resolved) - len(resolved.lstrip("."))
-                module = resolved[level:] or None
-                return resolve_relative_import(
-                    module,
-                    level,
-                    ModuleImportContext(module_name=package, is_package=True),
-                ).module
             if (
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr == "join"
@@ -981,14 +951,6 @@ def _collect_imports(
             current = local_expr_bindings[current.id]
         return current
 
-    def _resolve_int_constant(
-        node: ast.expr | None, bindings: Mapping[str, object]
-    ) -> int | None:
-        if node is None:
-            return None
-        value = _bound_static_value(node, bindings)
-        return value if isinstance(value, int) and not isinstance(value, bool) else None
-
     def _static_import_call_payload(
         call: ast.Call,
         target: str,
@@ -1012,12 +974,14 @@ def _collect_imports(
         name_expr = resolve_local(arguments.name)
         if target in {"importlib.import_module", "importlib.util.find_spec"}:
             return _StaticImportCallPayload(
+                call=call,
                 target=target,
                 name=name_expr,
                 package=resolve_local(arguments.package),
                 requires_runtime_binding=arguments.requires_runtime_binding,
             )
         return _StaticImportCallPayload(
+            call=call,
             target=target,
             name=name_expr,
             globals=resolve_local(arguments.globals),
@@ -1028,7 +992,6 @@ def _collect_imports(
 
     def _resolve_static_import_call(
         payload: _StaticImportCallPayload,
-        call: ast.Call,
         bindings: dict[str, object] | None = None,
     ) -> tuple[str, ...]:
         bindings = bindings or {}
@@ -1037,28 +1000,141 @@ def _collect_imports(
             if payload.name is not None
             else None
         )
-        if payload.requires_runtime_binding:
+        source_requests: dict[
+            StaticImportRequest,
+            tuple[tuple[StaticImportRequest, ModuleImportContext], ...],
+        ] = {}
+
+        def source_requests_for(
+            request: StaticImportRequest,
+        ) -> tuple[tuple[StaticImportRequest, ModuleImportContext], ...]:
+            if _dynamic_relative_import_discovery is None:
+                return ()
+            cached = source_requests.get(request)
+            if cached is not None:
+                return cached
+            candidates = []
+            for context in _import_contexts(payload.call, source_discovery=True):
+                candidates.extend(
+                    (candidate, context)
+                    for candidate in source_import_requests_from_expressions(
+                        request,
+                        context,
+                        package_expression=payload.package,
+                        globals_expression=payload.globals,
+                        source_contexts_for_read=lambda expression: _import_contexts(
+                            expression, source_discovery=True
+                        ),
+                        resolve_string=resolve_string,
+                        fact_result=lambda node: _bound_expression_result(
+                            node, bindings
+                        ),
+                        expression_fact=binding_index.expression_fact,
+                        call_fact=binding_index.call_fact(payload.call),
+                    )
+                )
+            result = tuple(candidates)
+            source_requests[request] = result
+            return result
+
+        def require_runtime_call_custody(
+            reason: str,
+            *,
+            request: StaticImportRequest | None = None,
+            context: ModuleImportContext | None = None,
+            lexical_request: StaticImportRequest | None = None,
+            star: bool = False,
+        ) -> tuple[str, ...]:
+            candidates: tuple[str, ...] = ()
             if _dynamic_relative_import_discovery is not None:
-                _dynamic_relative_import_discovery.record_call_binding(name)
+                if request is None:
+                    # Only unresolved argument binding or level loses the
+                    # planner's package/level contract.
+                    _dynamic_relative_import_discovery.record_call_binding(name)
+                else:
+                    assert context is not None
+                    source_candidates = []
+                    for source_request, source_context in source_requests_for(request):
+                        source_candidates.extend(
+                            _dynamic_relative_import_discovery.record(
+                                source_request, (source_context,)
+                            )
+                        )
+                    candidates = tuple(
+                        dict.fromkeys(
+                            (
+                                *source_candidates,
+                                *_dynamic_relative_import_discovery.record(
+                                    request, (context,), lexical_request=lexical_request
+                                ),
+                            )
+                        )
+                    )
             if (
                 runtime_import_custody is not None
                 and runtime_import_custody.admits_scan(
                     module_name, source_path, ast_digest_admission.digest
                 )
             ):
+                if star and _star_modules is not None:
+                    assert request is not None and context is not None
+                    plan = plan_static_import_request(request, (context,))
+                    _star_modules.extend(
+                        runtime_import_custody.modules
+                        if plan.requires_runtime
+                        else plan.modules
+                    )
                 return runtime_import_custody.modules
             if _dynamic_relative_import_discovery is not None:
+                if star and _dynamic_star_modules is not None:
+                    _dynamic_star_modules.extend(candidates)
                 return ()
             raise UnresolvedStaticImportError(
-                "dynamic import argument expansion requires runtime import custody"
+                f"{reason} requires runtime import custody"
             )
+
+        if payload.requires_runtime_binding:
+            return require_runtime_call_custody("dynamic import argument expansion")
         if name is None:
             return ()
 
         def resolve_string(expression: ast.expr) -> str | None:
             return _resolve_string_constant(expression, bindings, set())
 
-        contexts = _import_contexts(call)
+        import_module_call = payload.target in {
+            "importlib.import_module",
+            "importlib.util.find_spec",
+        }
+        fromlist = (
+            _resolve_string_sequence(payload.fromlist, bindings, set())
+            if payload.fromlist is not None
+            else []
+        )
+        if (
+            fromlist is None
+            and payload.fromlist is not None
+            and static_import_fromlist_is_empty(
+                _bound_expression_result(payload.fromlist, bindings)
+            )
+        ):
+            # __import__ skips fromlist processing for every proven falsy value,
+            # including explicit None. Unknown and expired values remain dynamic.
+            fromlist = []
+        level, level_is_invalid = (
+            static_import_level_from_result(
+                _bound_expression_result(payload.level, bindings)
+            )
+            if payload.level is not None
+            else (0, False)
+        )
+        if (
+            not import_module_call
+            and payload.level is not None
+            and level is None
+            and not level_is_invalid
+        ):
+            return require_runtime_call_custody("non-literal __import__ level")
+        contexts = _import_contexts(payload.call)
         modules: list[str] = []
         seen: set[str] = set()
         for context in contexts:
@@ -1069,53 +1145,52 @@ def _collect_imports(
                 target_python=context.target_python,
                 execution_kind=context.execution_kind,
             )
-            if payload.target in {
-                "importlib.import_module",
-                "importlib.util.find_spec",
-            }:
+            if import_module_call:
                 request = StaticImportRequest.import_module(
                     name,
                     metadata_value_from_expression(
-                        payload.package, context, resolve_string
+                        payload.package,
+                        context,
+                        resolve_string,
+                        fact_result=lambda node: _bound_expression_result(
+                            node, bindings
+                        ),
+                        expression_fact=binding_index.expression_fact,
+                        call_fact=binding_index.call_fact(payload.call),
                     ),
                 )
                 lexical_request = StaticImportRequest.import_module(
                     name,
                     metadata_value_from_expression(
-                        payload.package, lexical_context, resolve_string
+                        payload.package,
+                        lexical_context,
+                        resolve_string,
+                        fact_result=lambda node: _bound_expression_result(
+                            node, bindings
+                        ),
+                        expression_fact=binding_index.expression_fact,
+                        call_fact=binding_index.call_fact(payload.call),
+                        allow_activation_metadata_for_discovery=True,
                     ),
                 )
             else:
-                fromlist = (
-                    _resolve_string_sequence(payload.fromlist, bindings, set())
-                    if payload.fromlist is not None
-                    else []
-                )
-                level = _resolve_int_constant(payload.level, bindings)
-                if fromlist is None:
-                    if payload.fromlist is not None:
-                        raise ValueError(
-                            "non-literal __import__ fromlist requires runtime import custody"
-                        )
-                    fromlist = []
-                if payload.level is not None and level is None:
-                    raise ValueError(
-                        "non-literal __import__ level requires runtime import custody"
-                    )
-                if "*" in fromlist:
-                    if payload.target == "_MOLT_IMPORTLIB_IMPORT_TRANSACTION":
-                        fromlist = []
-                    else:
-                        raise ValueError(
-                            "dynamic __import__ star fromlist requires runtime import custody"
-                        )
+                # Establish the base and lexical twin before dynamic fromlist
+                # admission. Empty fromlist preserves name/level/globals while
+                # leaving child selection to runtime custody.
                 request = StaticImportRequest(
                     "dunder_import",
                     name,
                     level=0 if level is None else level,
-                    fromlist=tuple(fromlist),
+                    level_is_invalid=level_is_invalid,
                     globals_state=dunder_globals_state_from_expression(
-                        payload.globals, context, resolve_string
+                        payload.globals,
+                        context,
+                        resolve_string,
+                        fact_result=lambda node: _bound_expression_result(
+                            node, bindings
+                        ),
+                        expression_fact=binding_index.expression_fact,
+                        call_fact=binding_index.call_fact(payload.call),
                     ),
                     globals_were_supplied=payload.globals is not None,
                 )
@@ -1123,20 +1198,66 @@ def _collect_imports(
                     "dunder_import",
                     name,
                     level=0 if level is None else level,
-                    fromlist=tuple(fromlist),
+                    level_is_invalid=level_is_invalid,
                     globals_state=dunder_globals_state_from_expression(
-                        payload.globals, lexical_context, resolve_string
+                        payload.globals,
+                        lexical_context,
+                        resolve_string,
+                        fact_result=lambda node: _bound_expression_result(
+                            node, bindings
+                        ),
+                        expression_fact=binding_index.expression_fact,
+                        call_fact=binding_index.call_fact(payload.call),
+                        allow_possible_current_globals=True,
                     ),
                     globals_were_supplied=payload.globals is not None,
                 )
+                star = fromlist is not None and "*" in fromlist
+                if fromlist is None or star:
+                    if star and _dynamic_relative_import_discovery is not None:
+                        # Explicit siblings in ('child', '*') are candidates
+                        # too; only the base participates in __all__ expansion.
+                        assert fromlist is not None
+                        children = tuple(item for item in fromlist if item != "*")
+                        if children:
+                            for source_request, source_context in source_requests_for(
+                                replace(request, fromlist=children)
+                            ):
+                                _dynamic_relative_import_discovery.record(
+                                    source_request, (source_context,)
+                                )
+                            _dynamic_relative_import_discovery.record(
+                                replace(request, fromlist=children),
+                                (context,),
+                                lexical_request=replace(
+                                    lexical_request, fromlist=children
+                                ),
+                            )
+                    resolved = require_runtime_call_custody(
+                        "dynamic __import__ star fromlist"
+                        if star
+                        else "non-literal __import__ fromlist",
+                        request=request,
+                        context=context,
+                        lexical_request=lexical_request,
+                        star=star,
+                    )
+                    for module in resolved:
+                        if module not in seen:
+                            seen.add(module)
+                            modules.append(module)
+                    continue
+                request = replace(request, fromlist=tuple(fromlist))
+                lexical_request = replace(lexical_request, fromlist=tuple(fromlist))
             for module in _sealed_import_modules(
                 request,
                 (context,),
                 runtime_import_custody=runtime_import_custody,
                 source_path=source_path,
                 source_ast_digest=ast_digest_admission.digest,
-                dynamic_relative_import_discovery=(_dynamic_relative_import_discovery),
+                dynamic_relative_import_discovery=_dynamic_relative_import_discovery,
                 lexical_discovery_request=lexical_request,
+                source_discovery_requests=source_requests_for(request),
             ):
                 if module not in seen:
                     seen.add(module)
@@ -1155,9 +1276,9 @@ def _collect_imports(
             if scalar is not None:
                 bindings[param] = scalar
                 continue
-            integer = _resolve_int_constant(arg, {})
-            if integer is not None:
-                bindings[param] = integer
+            result = _bound_expression_result(arg, {})
+            if result.value_known:
+                bindings[param] = result.value
                 continue
             seq = _resolve_string_sequence(arg, {}, set())
             if seq is not None:
@@ -1171,9 +1292,9 @@ def _collect_imports(
             if scalar is not None:
                 bindings[keyword.arg] = scalar
                 continue
-            integer = _resolve_int_constant(keyword.value, {})
-            if integer is not None:
-                bindings[keyword.arg] = integer
+            result = _bound_expression_result(keyword.value, {})
+            if result.value_known:
+                bindings[keyword.arg] = result.value
                 continue
             seq = _resolve_string_sequence(keyword.value, {}, set())
             if seq is not None:
@@ -1264,7 +1385,7 @@ def _collect_imports(
                 if call_bindings is not None:
                     for payload in payloads:
                         imports.extend(
-                            _resolve_static_import_call(payload, node, call_bindings)
+                            _resolve_static_import_call(payload, call_bindings)
                         )
 
     def _record_import_statement(
@@ -1274,29 +1395,42 @@ def _collect_imports(
             for alias in node.names:
                 imports.append(alias.name)
             return
+        names = tuple(python_source_field(alias, "name") for alias in node.names)
         if node.level == 0:
-            imports.extend(
-                static_import_candidates(
-                    node.module or "",
-                    tuple(python_source_field(alias, "name") for alias in node.names),
-                )
-            )
+            imports.extend(static_import_candidates(node.module or "", names))
+            if _star_modules is not None and "*" in names and node.module:
+                _star_modules.append(node.module)
             return
         request = StaticImportRequest.statement(
-            node.module or "",
-            level=node.level,
-            fromlist=tuple(python_source_field(alias, "name") for alias in node.names),
+            node.module or "", level=node.level, fromlist=names
         )
-        imports.extend(
-            _sealed_import_modules(
-                request,
-                _import_contexts(node),
-                runtime_import_custody=runtime_import_custody,
-                source_path=source_path,
-                source_ast_digest=ast_digest_admission.digest,
-                dynamic_relative_import_discovery=(_dynamic_relative_import_discovery),
+        statement_fact = binding_index.statement_fact(node)
+        lexical_contexts = (
+            _import_contexts(node, source_discovery=True)
+            if _dynamic_relative_import_discovery is not None
+            else ()
+        )
+        contexts = tuple(
+            module_import_context_with_metadata_proof(
+                context,
+                statement_fact.module_metadata_at_entry
+                if statement_fact is not None
+                else None,
             )
+            for context in _import_contexts(node)
         )
+        resolved = _sealed_import_modules(
+            request,
+            contexts,
+            lexical_discovery_contexts=lexical_contexts,
+            runtime_import_custody=runtime_import_custody,
+            source_path=source_path,
+            source_ast_digest=ast_digest_admission.digest,
+            dynamic_relative_import_discovery=_dynamic_relative_import_discovery,
+        )
+        imports.extend(resolved)
+        if _star_modules is not None and "*" in names:
+            _star_modules.extend(resolved)
 
     def _collect_import_call(node: ast.Call) -> None:
         if not import_flow.states_for(node):
@@ -1310,7 +1444,7 @@ def _collect_imports(
         assert target is not None
         payload = _static_import_call_payload(node, target)
         if payload is not None:
-            imports.extend(_resolve_static_import_call(payload, node))
+            imports.extend(_resolve_static_import_call(payload))
 
     def _function_parameter_names(
         node: ast.Lambda | ast.FunctionDef | ast.AsyncFunctionDef,
@@ -1371,7 +1505,7 @@ def _collect_imports(
             _visit(node.target, qualname_prefix)
             return
         if isinstance(node, ast.BoolOp):
-            for value in _statically_executed_boolop_values(
+            for value in statically_executed_boolop_values(
                 node,
                 fact_result=binding_index.expression_result,
             ):
@@ -1491,6 +1625,8 @@ def _collect_imports_for_graph(
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
 ) -> _ImportDiscoveryProjection:
     discovery = _DynamicRelativeImportDiscovery()
+    star_modules: list[str] = []
+    dynamic_star_modules: list[str] = []
     imports = _collect_imports(
         tree,
         module_name,
@@ -1501,136 +1637,14 @@ def _collect_imports_for_graph(
         source_path=source_path,
         ast_digest_admission=ast_digest_admission,
         _dynamic_relative_import_discovery=discovery,
+        _star_modules=star_modules,
+        _dynamic_star_modules=dynamic_star_modules,
     )
-    return discovery.projection(imports)
+    return discovery.projection(imports, star_modules, dynamic_star_modules)
 
 
 def _source_may_use_runtime_import_protocol(source: str) -> bool:
     return any(marker in source for marker in _RUNTIME_IMPORT_PROTOCOL_MARKERS)
-
-
-def _resolve_runtime_import_expr_name(
-    expr: ast.expr,
-    alias_bindings: Mapping[str, str],
-) -> str | None:
-    if isinstance(expr, ast.Name):
-        return alias_bindings.get(expr.id, expr.id)
-    if (
-        isinstance(expr, ast.Call)
-        and isinstance(expr.func, ast.Name)
-        and expr.func.id == "getattr"
-        and len(expr.args) >= 2
-        and not expr.keywords
-    ):
-        base = _resolve_runtime_import_expr_name(expr.args[0], alias_bindings)
-        attr_node = expr.args[1]
-        if (
-            base is not None
-            and isinstance(attr_node, ast.Constant)
-            and isinstance(attr_node.value, str)
-        ):
-            return f"{base}.{attr_node.value}"
-        return None
-    if isinstance(expr, ast.Attribute):
-        base = _resolve_runtime_import_expr_name(expr.value, alias_bindings)
-        if base is None:
-            return None
-        return f"{base}.{expr.attr}"
-    return None
-
-
-def _runtime_import_alias_bindings(
-    tree: ast.AST,
-    *,
-    module_name: str | None,
-    is_package: bool,
-    import_scan_mode: ImportScanMode = "full",
-    target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
-    ast_digest_admission: _PythonAstDigestAdmission | None = None,
-) -> dict[str, str]:
-    bindings: dict[str, str] = {}
-    ast_digest_admission = _PythonAstDigestAdmission.for_tree(
-        tree, ast_digest_admission
-    )
-    base_context = ModuleImportContext(
-        module_name, is_package, target_python=target_python.feature_version
-    )
-    import_flow = analyze_module_import_flow(
-        tree, base_context, ast_digest_admission=ast_digest_admission
-    )
-    scan_nodes = _scan_nodes_for_import_mode(
-        tree,
-        import_scan_mode,
-        module_name=module_name,
-        target_python=target_python,
-        ast_digest_admission=ast_digest_admission,
-    )
-
-    def _register_binding(local_name: str, qualified_name: str) -> None:
-        if local_name and qualified_name:
-            bindings[local_name] = qualified_name
-
-    for node in scan_nodes:
-        if not import_flow.states_for(node):
-            continue
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                local_name = python_import_binding(alias)
-                qualified_name = (
-                    alias.name if alias.asname else alias.name.partition(".")[0]
-                )
-                _register_binding(local_name, qualified_name)
-            continue
-        if not isinstance(node, ast.ImportFrom):
-            continue
-        contexts = tuple(
-            base_context.with_state(state) for state in import_flow.states_for(node)
-        )
-        resolved_modules = _sealed_import_modules(
-            StaticImportRequest.statement(node.module or "", level=node.level),
-            contexts,
-        )
-        if not resolved_modules:
-            continue
-        for alias in node.names:
-            if alias.name == "*":
-                continue
-            local_name = alias.asname or alias.name
-            candidates = tuple(
-                f"{resolved_module}.{alias.name}"
-                for resolved_module in resolved_modules
-            )
-            preferred = next(
-                (
-                    candidate
-                    for candidate in candidates
-                    if candidate in _RUNTIME_IMPORT_PROTOCOL_TARGETS
-                ),
-                candidates[0],
-            )
-            _register_binding(local_name, preferred)
-
-    for node in scan_nodes:
-        if not import_flow.states_for(node):
-            continue
-        value: ast.expr | None = None
-        target_names: list[str] = []
-        if isinstance(node, ast.Assign):
-            value = node.value
-            target_names = [
-                target.id for target in node.targets if isinstance(target, ast.Name)
-            ]
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            value = node.value
-            target_names = [node.target.id]
-        if value is None or not target_names:
-            continue
-        resolved_value = _resolve_runtime_import_expr_name(value, bindings)
-        if resolved_value not in _RUNTIME_IMPORT_PROTOCOL_TARGETS:
-            continue
-        for target_name in target_names:
-            _register_binding(target_name, resolved_value)
-    return bindings
 
 
 def _tree_uses_runtime_import_protocol(
@@ -1641,40 +1655,52 @@ def _tree_uses_runtime_import_protocol(
     import_scan_mode: ImportScanMode = "full",
     target_python: TargetPythonVersion = _DEFAULT_TARGET_PYTHON_VERSION,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
+    include_statements: bool = False,
 ) -> bool:
     ast_digest_admission = _PythonAstDigestAdmission.for_tree(
         tree, ast_digest_admission
     )
-    import_flow = analyze_module_import_flow(
-        tree,
-        ModuleImportContext(
-            module_name, is_package, target_python=target_python.feature_version
+    binding_index = analyze_python_bindings(
+        cast(ast.Module, tree),
+        source_digest=ast_digest_admission.digest,
+        policy=PythonBindingPolicy(
+            target_python=target_python.feature_version,
+            module_name=module_name,
+            module_spec_name=module_name,
+            module_is_package=is_package,
+            module_execution_kind="script" if module_name is None else "imported",
         ),
-        ast_digest_admission=ast_digest_admission,
     )
-    alias_bindings = _runtime_import_alias_bindings(
-        tree,
-        module_name=module_name,
-        is_package=is_package,
-        import_scan_mode=import_scan_mode,
-        target_python=target_python,
-        ast_digest_admission=ast_digest_admission,
-    )
-    scan_nodes = _scan_nodes_for_import_mode(
+    for node in _scan_nodes_for_import_mode(
         tree,
         import_scan_mode,
         module_name=module_name,
         target_python=target_python,
         ast_digest_admission=ast_digest_admission,
-    )
-    for node in scan_nodes:
-        if not isinstance(node, ast.Call):
+    ):
+        if not binding_index.module_import_flow.states_for(node):
             continue
-        if not import_flow.states_for(node):
-            continue
-        target = _resolve_runtime_import_expr_name(node.func, alias_bindings)
-        if target in _RUNTIME_IMPORT_PROTOCOL_TARGETS:
-            return True
+        if include_statements:
+            if isinstance(node, ast.Import):
+                if any(alias.name != "_intrinsics" for alias in node.names):
+                    return True
+            elif isinstance(node, ast.ImportFrom):
+                if node.module == "__future__":
+                    continue
+                if node.level == 0 and (
+                    node.module == "_intrinsics"
+                    or node.module is not None
+                    and node.module.endswith("._intrinsics")
+                ):
+                    continue
+                return True
+        if isinstance(node, ast.Call):
+            fact = binding_index.call_fact(node)
+            if fact is not None and (
+                fact.possible_import_call_kinds()
+                or fact.callee_may_be(PythonIdentity.IMPORTLIB_FIND_SPEC)
+            ):
+                return True
     return False
 
 
@@ -1745,54 +1771,25 @@ def _collect_import_star_modules(
     source_path: Path | None = None,
     ast_digest_admission: _PythonAstDigestAdmission | None = None,
     _dynamic_relative_import_discovery: _DynamicRelativeImportDiscovery | None = None,
+    _dynamic_star_modules: list[str] | None = None,
 ) -> tuple[str, ...]:
-    if runtime_import_custody is not None:
-        runtime_import_custody.validate_scan_mode(
-            module_name, source_path, import_scan_mode
-        )
-    ast_digest_admission = _PythonAstDigestAdmission.for_tree(
-        tree, ast_digest_admission
-    )
-    _validate_import_scan_mode(import_scan_mode)
-    base_context = ModuleImportContext(
+    # Use the same binding facts, helper forwarding, request planner and scan
+    # depth as ordinary imports. Star collection is a projection, not an analyzer.
+    out: list[str] = []
+    _collect_imports(
+        tree,
         module_name,
         is_package,
-        target_python=target_python.feature_version,
-    )
-    import_flow = analyze_module_import_flow(
-        tree,
-        base_context,
-        ast_digest_admission=ast_digest_admission,
-    )
-    scan_nodes = _scan_nodes_for_import_mode(
-        tree,
-        import_scan_mode,
-        module_name=module_name,
+        import_scan_mode=import_scan_mode,
         target_python=target_python,
+        runtime_import_custody=runtime_import_custody,
+        source_path=source_path,
         ast_digest_admission=ast_digest_admission,
+        _dynamic_relative_import_discovery=_dynamic_relative_import_discovery,
+        _star_modules=out,
+        _dynamic_star_modules=_dynamic_star_modules,
     )
-    out: list[str] = []
-    seen: set[str] = set()
-    for node in scan_nodes:
-        if not isinstance(node, ast.ImportFrom):
-            continue
-        if not any(alias.name == "*" for alias in node.names):
-            continue
-        contexts = tuple(
-            base_context.with_state(state) for state in import_flow.states_for(node)
-        )
-        for resolved in _sealed_import_modules(
-            StaticImportRequest.statement(node.module or "", level=node.level),
-            contexts,
-            runtime_import_custody=runtime_import_custody,
-            source_path=source_path,
-            source_ast_digest=ast_digest_admission.digest,
-            dynamic_relative_import_discovery=(_dynamic_relative_import_discovery),
-        ):
-            if resolved and resolved not in seen:
-                seen.add(resolved)
-                out.append(resolved)
-    return tuple(out)
+    return tuple(dict.fromkeys(out))
 
 
 def _expand_static_package_all_star_children(
@@ -1861,25 +1858,11 @@ def _collect_import_scan_requests(
     *,
     source_path: Path,
     module_name: str,
-    is_package: bool,
     import_scan_mode: ImportScanMode,
     target_python: TargetPythonVersion,
-    runtime_import_custody: _RuntimeImportScanCustody | None,
     ast_digest_admission: _PythonAstDigestAdmission,
     source: str | None = None,
 ) -> _ImportScanRequests:
-    discovery = _DynamicRelativeImportDiscovery.from_projection(projection)
-    star_modules = _collect_import_star_modules(
-        tree,
-        module_name,
-        is_package,
-        import_scan_mode=import_scan_mode,
-        target_python=target_python,
-        runtime_import_custody=runtime_import_custody,
-        source_path=source_path,
-        ast_digest_admission=ast_digest_admission,
-        _dynamic_relative_import_discovery=discovery,
-    )
     executions = (
         ()
         if source is not None and not _source_may_use_static_source_execution(source)
@@ -1895,9 +1878,10 @@ def _collect_import_scan_requests(
     return _ImportScanRequests(
         projection.imports,
         executions,
-        star_modules,
-        tuple(discovery.candidates),
-        discovery.required,
+        projection.star_modules,
+        projection.dynamic_relative_import_candidates,
+        projection.requires_runtime_package_anchor,
+        projection.dynamic_star_modules,
     )
 
 
@@ -1939,14 +1923,27 @@ def _complete_import_scan(
 ) -> _CompleteImportScan:
     """Resolve every filesystem-derived decision in this operation, including misses."""
     imports = requests.imports
-    if requests.star_modules and (
+    if (requests.star_modules or requests.dynamic_star_modules) and (
         roots is None or stdlib_root is None or stdlib_allowlist is None
     ):
         raise ValueError("star-import completion requires current resolution context")
+    candidates = requests.dynamic_relative_import_candidates
     if roots is not None and stdlib_root is not None and stdlib_allowlist is not None:
+        # Star provenance travels with the source request. An ordinary import
+        # sharing a dynamic-star base must not promote its children to semantic
+        # edges; both projections use the same live __all__ expansion authority.
         imports = _expand_static_package_all_star_children(
             imports,
             requests.star_modules,
+            roots=roots,
+            stdlib_root=stdlib_root,
+            stdlib_allowlist=stdlib_allowlist,
+            resolution_cache=resolution_cache,
+            target_python=target_python,
+        )
+        candidates = _expand_static_package_all_star_children(
+            candidates,
+            requests.dynamic_star_modules,
             roots=roots,
             stdlib_root=stdlib_root,
             stdlib_allowlist=stdlib_allowlist,
@@ -1971,7 +1968,7 @@ def _complete_import_scan(
     return _CompleteImportScan(
         imports,
         tuple(executions),
-        requests.dynamic_relative_import_candidates,
+        candidates,
         requests.requires_runtime_package_anchor,
     )
 
@@ -2024,38 +2021,6 @@ def _module_uses_runtime_import_protocol(
             except SyntaxError:
                 return True
         ast_digest_admission = _PythonAstDigestAdmission(scan_tree)
-        scan_nodes = _scan_nodes_for_import_mode(
-            scan_tree,
-            import_scan_mode,
-            module_name=module_name,
-            target_python=target_python,
-            ast_digest_admission=ast_digest_admission,
-        )
-        import_flow = analyze_module_import_flow(
-            scan_tree,
-            ModuleImportContext(
-                module_name, is_package, target_python=target_python.feature_version
-            ),
-            ast_digest_admission=ast_digest_admission,
-        )
-        for node in scan_nodes:
-            if not import_flow.states_for(node):
-                continue
-            if isinstance(node, ast.Import):
-                if any(alias.name != "_intrinsics" for alias in node.names):
-                    return True
-                continue
-            if isinstance(node, ast.ImportFrom):
-                if node.module == "__future__":
-                    continue
-                if node.level == 0 and (
-                    node.module == "_intrinsics"
-                    or (
-                        node.module is not None and node.module.endswith("._intrinsics")
-                    )
-                ):
-                    continue
-                return True
         return _tree_uses_runtime_import_protocol(
             scan_tree,
             module_name=module_name,
@@ -2063,6 +2028,7 @@ def _module_uses_runtime_import_protocol(
             import_scan_mode=import_scan_mode,
             target_python=target_python,
             ast_digest_admission=ast_digest_admission,
+            include_statements=True,
         )
 
     return module_resolution_cache.uses_runtime_import_protocol(
