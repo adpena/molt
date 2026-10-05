@@ -91,26 +91,38 @@ def test_setup_project_cache_identity_is_complete_and_non_incremental() -> None:
     steps = yaml.safe_load(action)["runs"]["steps"]
     configure = next(step for step in steps if step.get("id") == "cargo-cache")
     cache = next(
-        step for step in steps if "Swatinem/rust-cache@" in step.get("uses", "")
+        step
+        for step in steps
+        if step.get("name") == "Cache Cargo builds and source downloads"
     )
-    assert re.fullmatch(r"Swatinem/rust-cache@[0-9a-f]{40}", cache["uses"])
+    assert re.fullmatch(r"actions/cache@[0-9a-f]{40}", cache["uses"])
     assert (
         configure["if"] == cache["if"] == "steps.inputs.outputs.cache-cargo == 'true'"
     )
     assert configure["run"] == "python3 tools/ci_cargo_cache.py"
-    assert (
-        cache["with"]["workspaces"]
-        == ". -> ${{ steps.cargo-cache.outputs.target-dir }}"
-    )
-    assert cache["with"]["cache-workspace-crates"] == "true"
-    assert cache["with"]["cache-targets"] == "true"
-    assert cache["with"]["cache-all-crates"] == "true"
-    assert cache["with"]["cache-bin"] == "false"
-    assert "shared-key" not in cache["with"]
-    assert "cache-on-failure" not in cache["with"]
+    cached_paths = cache["with"]["path"].split()
+    assert "${{" in " ".join(cached_paths)
+    assert "steps.cargo-cache.outputs.target-dir" in cache["with"]["path"]
+    for source in (
+        "~/.cargo/registry/index",
+        "~/.cargo/registry/cache",
+        "~/.cargo/git/db",
+    ):
+        assert source in cached_paths
+    for token in ("runner.os", "runner.arch", "steps.inputs.outputs.rust-cache-token"):
+        assert token in cache["with"]["key"]
+        assert token in cache["with"]["restore-keys"]
+    assert "hashFiles(" in cache["with"]["key"]
+    assert "hashFiles(" not in cache["with"]["restore-keys"]
     install = next(step for step in steps if step.get("name") == "Install exact Rust")
     assert steps.index(install) < steps.index(configure) < steps.index(cache)
-    assert sum("Swatinem/rust-cache@" in step.get("uses", "") for step in steps) == 1
+    assert (
+        sum(
+            step.get("name") == "Cache Cargo builds and source downloads"
+            for step in steps
+        )
+        == 1
+    )
     assert "Cache Cargo source downloads" not in action
     assert "cache-uv requires uv" in normalizer
     assert "sync requires uv" in normalizer
@@ -1072,8 +1084,8 @@ def test_rust_security_reuses_cached_tool_builds() -> None:
     assert 'rust-toolchain: "1.96.1"' in rust_security
     assert 'cache-cargo: "true"' in rust_security
     setup_project = _read(".github/actions/setup-project/action.yml")
-    assert "Swatinem/rust-cache@" in setup_project
-    assert 'cache-all-crates: "true"' in setup_project
+    assert "Cache Cargo builds and source downloads" in setup_project
+    assert "steps.cargo-cache.outputs.target-dir" in setup_project
     assert "cargo install cargo-deny --version 0.20.2 --locked" in rust_security
     assert "cargo install cargo-audit --version 0.22.2 --locked" in rust_security
     assert "rm -rf" not in rust_security
@@ -1750,3 +1762,58 @@ def test_wasm_ci_guarded_steps_have_github_timeout_backstops() -> None:
     assert "MOLT_WASM_TEST_TIMEOUT_SEC:" not in wasm_text
     assert '"--timeout",' in proof_text
     assert 'command.data.get("timeout_env", [])' in proof_text
+
+
+# Repository Actions policy (Settings > Actions > General), read from
+# `gh api repos/adpena/molt/actions/permissions/selected-actions`: GitHub-owned
+# actions, actions owned by the repository owner, and these patterns. A
+# disallowed `uses:` fails every job at "Prepare all required actions" before
+# any step runs, so the policy is checked statically here.
+_ACTIONS_POLICY_OWNERS = frozenset(("actions", "github", "adpena"))
+_ACTIONS_POLICY_PATTERNS = (
+    "astral-sh/setup-uv@*",
+    "cloudflare/wrangler-action@*",
+    "softprops/action-gh-release@*",
+    "taiki-e/install-action@*",
+)
+
+
+def _action_references() -> list[tuple[str, str]]:
+    references: list[tuple[str, str]] = []
+    root = Path(__file__).resolve().parents[1]
+    paths = sorted((root / ".github" / "workflows").glob("*.yml")) + sorted(
+        (root / ".github" / "actions").glob("*/action.yml")
+    )
+    for path in paths:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        jobs = (document or {}).get("jobs", {}) or {}
+        steps = [
+            step for job in jobs.values() for step in (job or {}).get("steps", []) or []
+        ]
+        steps += ((document or {}).get("runs", {}) or {}).get("steps", []) or []
+        uses = [
+            job["uses"]
+            for job in jobs.values()
+            if isinstance(job, dict) and "uses" in job
+        ]
+        uses += [
+            step["uses"] for step in steps if isinstance(step, dict) and "uses" in step
+        ]
+        references.extend((path.relative_to(root).as_posix(), use) for use in uses)
+    return references
+
+
+def test_every_action_reference_is_admitted_by_repository_policy() -> None:
+    references = _action_references()
+    assert references
+    for source, use in references:
+        if use.startswith("./"):
+            continue
+        assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", use), (source, use)
+        owner = use.split("/", 1)[0]
+        admitted = owner in _ACTIONS_POLICY_OWNERS or any(
+            fnmatchcase(use, pattern) for pattern in _ACTIONS_POLICY_PATTERNS
+        )
+        assert admitted, (
+            f"{source}: {use} is not allowed by the repository Actions policy"
+        )
