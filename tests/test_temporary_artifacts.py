@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,87 @@ def _finish(lease, *, success=True, closed=True, **kwargs):
         evidence={"authority": "fixture", "child_returncode": 0 if success else 1},
         **kwargs,
     )
+
+
+def _alternate_path(path: Path) -> str:
+    if os.name == "nt":
+        spelling = str(path)
+        return (
+            "\\\\?\\UNC\\" + spelling[2:]
+            if spelling.startswith("\\\\")
+            else "\\\\?\\" + spelling
+        )
+    return str(path.parent) + os.sep + "." + os.sep + path.name
+
+
+@pytest.mark.parametrize("parent_alternate", [False, True])
+@pytest.mark.parametrize("child_alternate", [False, True])
+def test_allocation_identity_is_independent_of_path_spelling(
+    tmp_path, parent_alternate, child_alternate
+):
+    root = Path(_alternate_path(tmp_path)) if parent_alternate else tmp_path
+    lease, env = _lease(root)
+    if child_alternate:
+        for field in (
+            "MOLT_MEMORY_GUARD_STATE_ROOT",
+            "MOLT_MEMORY_GUARD_MARKER",
+            scratch.SCRATCH_ENV,
+        ):
+            env[field] = _alternate_path(scratch.resolve_owned_path(Path(env[field])))
+    else:
+        env = {
+            key: str(scratch.resolve_owned_path(Path(value)))
+            if key != "MOLT_MEMORY_GUARD_TOKEN"
+            else value
+            for key, value in env.items()
+        }
+    try:
+        assert scratch.guard_scratch(tmp_path, env) == lease.target
+    finally:
+        result = _finish(lease)
+    assert result["state"] == "reclaimed"
+    assert result["retention"]["errors"] == []
+    assert not lease.target.exists()
+
+
+@pytest.mark.parametrize("field", ["generation", "guard_marker", "target"])
+def test_owner_path_identity_accepts_equivalent_receipt_spelling(tmp_path, field):
+    lease, env = _lease(tmp_path)
+    owner_path = lease.generation / "owner.json"
+    owner = dict(lease.owner)
+    owner[field] = _alternate_path(Path(owner[field]))
+    write_exact(owner_path, owner)
+    try:
+        assert scratch.guard_scratch(tmp_path, env) == lease.target
+        assert _read(owner_path) == owner
+    finally:
+        write_exact(owner_path, lease.owner)
+        _finish(lease)
+
+
+def test_retention_compares_canonical_paths_without_changing_receipt_digest(tmp_path):
+    lease, _ = _lease(tmp_path)
+    _finish(lease, success=False)
+    terminal_path = lease.generation / "terminal.json"
+    terminal = _read(terminal_path)
+    terminal["generation"] = _alternate_path(lease.generation)
+    terminal["target"] = _alternate_path(Path(terminal["target"]))
+    owner = _read(lease.generation / "owner.json")
+    owner["generation"] = _alternate_path(lease.generation)
+    owner["terminal_digest"] = canonical_json_sha256(terminal)
+    write_exact(terminal_path, terminal)
+    write_exact(lease.generation / "owner.json", owner)
+    write_exact(
+        scratch._index_path(lease.generation),
+        {"schema": scratch.SCHEMA, "terminal_digest": owner["terminal_digest"]},
+    )
+    result = scratch.reclaim_terminal_scratch(
+        lease.generation.parent, retention=scratch.ScratchRetention(0, 0)
+    )
+    assert result["errors"] == []
+    assert result["reclaimed"] == [str(lease.generation)]
+    assert _read(terminal_path) == terminal
+    assert not (lease.generation / "payload").exists()
 
 
 def test_parent_allocation_binds_consumption_and_terminal_cleanup(tmp_path):

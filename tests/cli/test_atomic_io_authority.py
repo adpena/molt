@@ -25,6 +25,17 @@ from molt.wasm_artifact import (
 from tests.runtime_build_identity_helper import runtime_build_identity
 
 
+def test_owned_path_has_one_spelling_before_and_after_allocation(tmp_path):
+    path = tmp_path / "owned-generation"
+    spellings = [path]
+    if os.name == "nt":
+        spellings.append(Path("\\\\?\\" + str(path)))
+    before = [file_publication.resolve_owned_path(value) for value in spellings]
+    path.mkdir()
+    after = [file_publication.resolve_owned_path(value) for value in spellings]
+    assert {str(value) for value in before + after} == {str(path.resolve())}
+
+
 @pytest.mark.parametrize("existing", [False, True])
 def test_verified_copy_checks_staged_bytes_before_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing: bool
