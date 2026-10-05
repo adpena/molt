@@ -146,6 +146,7 @@
 - Implemented: `aiter`/`anext` lowering + async-for parity with `__aiter__`/`__anext__` support (sync-iter fallback retained for now).
 - Implemented: `anext` default handling outside `await` expressions.
 - **TC3 (Late):** memoryview, type/object, modules, descriptors.
+  - TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:partial): memoryview character stores after key-induced release retain Molt's safe final rejection, including defined CPython cases with independently live storage; exact parity requires a shared non-exporting storage-liveness authority that preserves release/resize callbacks, never a retained invalid pointer or extra export pin.
   - TODO(type-coverage, owner:runtime, milestone:TC3, priority:P2, status:missing): memoryview multi-dimensional slicing + sub-views (retain C-order semantics + parity errors).
   - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:missing): import/module rules + module object model (`__import__`, package resolution, `sys.path` policy).
   - TODO(type-coverage, owner:stdlib, milestone:TC3, priority:P2, status:planned): reflection builtins (`type`, `isinstance`, `issubclass`, `getattr`, `setattr`, `hasattr`, `dir`, `vars`, `globals`, `locals`).

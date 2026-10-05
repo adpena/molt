@@ -1332,7 +1332,11 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                     if guard_dict_shapes.get(guarded_obj.name) == expected:
                         continue
 
-            if canonical_op.kind == "GUARD_TAG" and len(canonical_op.args) == 2:
+            if (
+                canonical_op.kind in {"GUARD_TAG", "GUARD_TYPE"}
+                and len(canonical_op.args) == 2
+                and canonical_op.result.name == "none"
+            ):
                 guarded = canonical_op.args[0]
                 expected = canonical_op.args[1]
                 if isinstance(guarded, MoltValue) and isinstance(expected, MoltValue):
@@ -1500,13 +1504,6 @@ class MidendCanonicalizationMixin(GeneratorMixinBase):
                     arg_const = const_int_values.get(arg.name)
                     if arg_const is not None:
                         const_int_values[result_name] = abs(arg_const)
-                        state_dirty = True
-            elif canonical_op.kind == "GUARD_TAG" and len(canonical_op.args) == 2:
-                guarded, expected = canonical_op.args
-                if isinstance(guarded, MoltValue) and isinstance(expected, MoltValue):
-                    expected_tag = const_int_values.get(expected.name)
-                    if expected_tag is not None:
-                        value_type_tags[guarded.name] = expected_tag
                         state_dirty = True
             elif (
                 canonical_op.kind == "GUARD_DICT_SHAPE" and len(canonical_op.args) == 3

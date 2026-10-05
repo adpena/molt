@@ -508,7 +508,8 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             ..OpIR::default()
         }),
         OpCode::StateSet | OpCode::IsPending | OpCode::TaskWait => Some(OpIR {
-            kind: crate::tir::op_kinds_generated::opcode_canonical_kind_table(op.opcode).to_string(),
+            kind: crate::tir::op_kinds_generated::opcode_canonical_kind_table(op.opcode)
+                .to_string(),
             args: Some(operand_args(op)),
             out: out_var,
             value: attr_int(&op.attrs, "value"),

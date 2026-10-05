@@ -7,6 +7,6 @@ pub(crate) use op_classifiers::{
     wasm_scalar_truthiness_fast_path_for_name,
 };
 pub(crate) use stage_audit::{
-    emit_wasm_numeric_lane_audit, emit_wasm_stage_audit, simple_ir_stage_shape,
+    WasmStageAudit, emit_wasm_numeric_lane_audit, emit_wasm_stage_audit, simple_ir_stage_shape,
     tir_module_stage_shape,
 };

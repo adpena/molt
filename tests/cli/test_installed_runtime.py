@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from molt.cli.native_link_plan import resolve_native_target_spec
+
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -24,6 +27,10 @@ from molt.cli import (
 )
 from molt.cli import runtime_wasm_pair_build
 from molt.cli.models import _RuntimeArtifactState
+from molt.cli.installed_runtime_contract import (
+    InstalledNativeAdmission,
+    InstalledRuntimeError,
+)
 from molt.cli.native_link_manifest import native_link_dependency_manifest_path
 from molt.cli.runtime_paths import _runtime_lib_archive_name
 from molt.cli.runtime_wasm_build_support import (
@@ -242,6 +249,7 @@ def test_installed_native_cell_is_admitted_and_retained_outside_bundle(
     _forbid_cargo(monkeypatch)
     cell = _cell(bundle)
     admission = installed_runtime.admit_installed_native_runtime(cell)
+    assert type(admission) is InstalledNativeAdmission
     runtime_lib, identity = admission.runtime_lib, admission.build_identity
     assert runtime_lib == cell.runtime_lib
     assert runtime_lib.is_relative_to(tmp_path / "home" / "installed-runtime")
@@ -271,7 +279,7 @@ def test_receipt_identity_must_agree_with_the_cell_key(bundle):
     cell["id"] = distribution.runtime_cell_id(cell["kind"], cell["key"], cell["files"])
     manifest.write_text(json.dumps(payload), "utf-8")
     old.rename(bundle / distribution.RUNTIME_ROOT / cell["id"])
-    with pytest.raises(installed_runtime.InstalledRuntimeError, match="features"):
+    with pytest.raises(InstalledRuntimeError, match="features"):
         installed_runtime.admit_installed_native_runtime(_cell(bundle))
 
 
@@ -279,14 +287,14 @@ def test_retained_generation_damage_fails_readmission(bundle):
     cell = _cell(bundle)
     runtime_lib = installed_runtime.admit_installed_native_runtime(cell).runtime_lib
     runtime_lib.write_bytes(runtime_lib.read_bytes() + b"x")
-    with pytest.raises(installed_runtime.InstalledRuntimeError, match="differs"):
+    with pytest.raises(InstalledRuntimeError, match="differs"):
         installed_runtime.installed_native_runtime_identity(cell, runtime_lib)
 
 
 def test_readmission_rejects_a_different_runtime_path(bundle, tmp_path):
     cell = _cell(bundle)
     installed_runtime.admit_installed_native_runtime(cell)
-    with pytest.raises(installed_runtime.InstalledRuntimeError, match="retained"):
+    with pytest.raises(InstalledRuntimeError, match="retained"):
         installed_runtime.installed_native_runtime_identity(cell, tmp_path / "x.a")
 
 
@@ -302,13 +310,13 @@ def test_damaged_shipped_member_fails_before_retention(bundle, tmp_path, role):
     cell = _cell(bundle)
     shipped = bundle / distribution.RUNTIME_ROOT / cell.id / cell.file_name(role)
     shipped.write_bytes(shipped.read_bytes() + b" ")
-    with pytest.raises(installed_runtime.InstalledRuntimeError, match="damaged"):
+    with pytest.raises(InstalledRuntimeError, match="damaged"):
         installed_runtime.admit_installed_native_runtime(cell)
     assert not (tmp_path / "home" / "installed-runtime" / cell.id).exists()
 
 
 def test_unshipped_cell_fails_with_the_shipped_matrix(bundle):
-    with pytest.raises(installed_runtime.InstalledRuntimeError) as error:
+    with pytest.raises(InstalledRuntimeError) as error:
         installed_runtime.select_installed_native_runtime(
             bundle / "source",
             target_triple=None,
@@ -388,13 +396,13 @@ def test_internal_runtime_wasm_build_requires_a_source_checkout(bundle, monkeypa
 
 def test_source_runtime_selector_is_rejected_for_installed_molt(bundle, monkeypatch):
     monkeypatch.setenv("MOLT_WASM_RUNTIME_DIR", str(bundle))
-    with pytest.raises(installed_runtime.InstalledRuntimeError, match="source"):
+    with pytest.raises(InstalledRuntimeError, match="source"):
         installed_runtime.installed_runtime_active(bundle / "source")
 
 
 def test_retention_store_inside_the_installation_is_rejected(bundle, monkeypatch):
     monkeypatch.setenv("MOLT_HOME", str(bundle / "state"))
-    with pytest.raises(installed_runtime.InstalledRuntimeError, match="outside"):
+    with pytest.raises(InstalledRuntimeError, match="outside"):
         installed_runtime.admit_installed_native_runtime(_cell(bundle))
     assert not (bundle / "state").exists()
 
@@ -481,7 +489,7 @@ def test_wasm_receipts_must_carry_distribution_semantics(bundle):
     cell = installed_runtime.InstalledRuntimeCell(
         installed, record, installed.runtime_root / record["id"]
     )
-    with pytest.raises(installed_runtime.InstalledRuntimeError, match="SIMD"):
+    with pytest.raises(InstalledRuntimeError, match="SIMD"):
         installed_runtime._require_wasm_semantics(
             cell, runtime_build_identity("shared")
         )
@@ -537,7 +545,7 @@ def _forbid_symbol_reader(monkeypatch) -> None:
     monkeypatch.setattr(native_symbol_inspection, "_native_symbol_reader", fail)
     monkeypatch.setattr(native_symbol_inspection, "_nm_candidate_binaries", fail)
     monkeypatch.setattr(
-        native_symbol_inspection, "_native_archive_global_symbol_facts", fail
+        native_symbol_inspection, "_native_symbol_facts_admission", fail
     )
 
 
@@ -627,7 +635,7 @@ def test_cell_receipts_admit_the_canonical_projection(tmp_path):
 def test_cell_receipts_bind_the_projection_to_the_shipped_archive(tmp_path):
     record, members = _native_cell(tmp_path, projection_archive_sha256="0" * 64)
     root = next(iter(members.values())).parent
-    with pytest.raises(installed_runtime.InstalledRuntimeError, match="named"):
+    with pytest.raises(InstalledRuntimeError, match="named"):
         installed_runtime.admit_runtime_cell_receipts(record, root)
 
 
@@ -684,9 +692,9 @@ def test_release_native_cell_stages_the_canonical_projection(tmp_path, monkeypat
         }
 
     monkeypatch.setattr(runtime_native_build, "_ensure_runtime_lib", ensure)
-    monkeypatch.setattr(
-        native_symbol_inspection, "_native_archive_global_symbol_facts", facts
-    )
+    from tests.cli.native_link_test_support import stub_native_symbol_admission
+
+    stub_native_symbol_admission(monkeypatch, facts)
     monkeypatch.setattr(runtime_cells, "runtime_cell_key", key)
     (tmp_path / "source").mkdir()
     output = tmp_path / "cells"
@@ -948,7 +956,7 @@ def test_installed_link_rejects_a_changed_selection_after_codegen(
         if selection == "source-checkout":
             return None
         if selection == "unshipped":
-            raise installed_runtime.InstalledRuntimeError("does not ship")
+            raise InstalledRuntimeError("does not ship")
         return installed_runtime.InstalledRuntimeCell(
             cell.installed, {**cell.record, "id": "f" * 64}, cell.members_root
         )
@@ -1233,7 +1241,7 @@ def test_installed_custody_is_retained_and_admitted_by_content_at_link(
     changed = damaged.read_bytes()
     with pytest.raises(NativeLinkDependencyManifestError, match="native-link custody"):
         _custodied_link_flags(binding)
-    with pytest.raises(installed_runtime.InstalledRuntimeError, match="custody"):
+    with pytest.raises(InstalledRuntimeError, match="custody"):
         installed_runtime.admit_installed_native_runtime(cell)
     assert damaged.read_bytes() == changed
 
@@ -1261,10 +1269,8 @@ def _distribution_wasm_identities(key, **facts):
     The production family constructor builds the pair. ``facts`` replaces one
     receipt fact, to model a shipped cell whose receipt disagrees with its key.
     """
-    from molt.cli.runtime_build_identity import (
-        RuntimeBuildMemberPlan,
-        _resolve_runtime_build_family_identities,
-    )
+    from molt.cli.runtime_build_identity import _resolve_runtime_build_family_identities
+    from molt.cli.runtime_identity_schema import RuntimeBuildMemberPlan
     from tests.runtime_build_identity_helper import (
         runtime_toolchain_content_manifest,
     )
@@ -1398,6 +1404,59 @@ def _record_wasm_hydrations(monkeypatch) -> list[Path]:
     return hydrations
 
 
+def test_installed_wasm_admits_consumed_members_once_per_transaction(
+    bundle, tmp_path, monkeypatch
+):
+    from molt import toolchain_identity
+    from molt.cli import runtime_wasm_generation
+
+    _forbid_cargo(monkeypatch)
+    _ship_installed_wasm_cell(bundle, tmp_path)
+    cell = _select_installed_wasm(bundle)
+    captured = []
+    original = toolchain_identity.stable_regular_file_handle_identity
+
+    def capture(opened, **kwargs):
+        captured.append(opened.path)
+        return original(opened, **kwargs)
+
+    monkeypatch.setattr(
+        toolchain_identity, "stable_regular_file_handle_identity", capture
+    )
+    monkeypatch.setattr(
+        runtime_wasm_generation, "stable_regular_file_handle_identity", capture
+    )
+    first = installed_runtime.admit_installed_wasm_runtime(cell)
+    shipped = {
+        cell.members_root / cell.file_record(role)["name"]
+        for role in ("wasm_shared_member", "wasm_reloc_member")
+    }
+    assert all(captured.count(path) == 1 for path in shipped)
+    assert captured.count(first.shared) == captured.count(first.reloc) == 1
+    captured.clear()
+    second = installed_runtime.admit_installed_wasm_runtime(cell)
+    assert second.shared == first.shared and second.reloc == first.reloc
+    assert not shipped.intersection(captured)
+    assert captured == [first.shared, first.reloc]
+
+
+@pytest.mark.parametrize("damage", ["missing", "size"])
+def test_installed_wasm_warm_selection_still_requires_shipped_regular_members(
+    bundle, tmp_path, monkeypatch, damage
+):
+    _forbid_cargo(monkeypatch)
+    _ship_installed_wasm_cell(bundle, tmp_path)
+    cell = _select_installed_wasm(bundle)
+    installed_runtime.admit_installed_wasm_runtime(cell)
+    member = cell.members_root / cell.file_record("wasm_shared_member")["name"]
+    if damage == "missing":
+        member.unlink()
+    else:
+        member.write_bytes(b"wrong-size")
+    with pytest.raises(InstalledRuntimeError):
+        installed_runtime.admit_installed_wasm_runtime(cell)
+
+
 def test_installed_wasm_first_admission_hydrates_then_reuses_the_retained_pair(
     bundle, tmp_path, monkeypatch
 ):
@@ -1480,7 +1539,7 @@ def test_installed_wasm_admission_requires_receipt_distribution_semantics(
         if defect == "required-feature"
         else frozenset()
     )
-    with pytest.raises(installed_runtime.InstalledRuntimeError, match=message):
+    with pytest.raises(InstalledRuntimeError, match=message):
         installed_runtime.admit_installed_wasm_runtime(
             cell, required_link_features=required
         )
@@ -1532,13 +1591,13 @@ def test_installed_wasm_retained_generation_follows_the_content_addressed_rule(
         # The pinned codegen receipt and its members are untouched.
         installed_runtime.reuse_installed_wasm_generation(cell, binding.generation)
     else:
-        with pytest.raises(
-            installed_runtime.InstalledRuntimeError, match="changed after admission"
-        ):
+        with pytest.raises(InstalledRuntimeError, match="changed after admission"):
             installed_runtime.reuse_installed_wasm_generation(cell, binding.generation)
     if damage == "rewritten-member":
         changed = member.read_bytes()
-        with pytest.raises(installed_runtime.InstalledRuntimeError, match="corrupt"):
+        with pytest.raises(
+            InstalledRuntimeError, match="member content differs from its record"
+        ):
             installed_runtime.admit_installed_wasm_runtime(cell)
         # Rehydration was attempted and refused to replace the named member.
         assert hydrations == [cell.retained_root / "molt_runtime.wasm"]
@@ -1586,9 +1645,7 @@ def test_signed_receipt_damage_is_rejected_before_json_parsing(
         pytest.fail("signed digest mismatch entered the JSON parser")
 
     monkeypatch.setattr(installed_runtime, "loads_exact", parser)
-    with pytest.raises(
-        installed_runtime.InstalledRuntimeError, match="missing or damaged"
-    ):
+    with pytest.raises(InstalledRuntimeError, match="missing or damaged"):
         cell.bundle_json(role)
     assert parsed == []
 
@@ -1674,7 +1731,7 @@ def test_installed_native_final_link_rechecks_custody(
         json_output=True,
         output_binary=binary,
         runtime_codegen_binding=binding,
-        target_triple=None,
+        target=resolve_native_target_spec(None),
         sysroot_path=None,
         profile="dev",
         project_root=tmp_path,
@@ -1703,7 +1760,7 @@ def test_cold_native_retention_reuses_staged_custody_validation(
     validating = []
     validate = custody._validate_archive_file
     open_tar = custody.tarfile.open
-    identity = custody._file_identity
+    identity = custody.stable_regular_file_handle_identity
 
     def scan(path, **kwargs):
         validating.append(path)
@@ -1717,19 +1774,21 @@ def test_cold_native_retention_reuses_staged_custody_validation(
             archive_reads.append(validating[-1])
         return open_tar(*args, **kwargs)
 
-    def hash_file(path, *args, **kwargs):
-        hashes.append(path)
-        return identity(path, *args, **kwargs)
+    def hash_file(opened, *args, **kwargs):
+        assert not opened.stream.closed
+        hashes.append(opened.path)
+        return identity(opened, *args, **kwargs)
 
     monkeypatch.setattr(custody, "_validate_archive_file", scan)
     monkeypatch.setattr(custody.tarfile, "open", tar)
-    monkeypatch.setattr(custody, "_file_identity", hash_file)
+    monkeypatch.setattr(custody, "stable_regular_file_handle_identity", hash_file)
     copy = installed_runtime.copy_native_link_custody_archive
 
+    @contextmanager
     def retain(*args, **kwargs):
-        observation = copy(*args, **kwargs)
-        validations.append(observation)
-        return observation
+        with copy(*args, **kwargs) as admission:
+            validations.append(admission.observation)
+            yield admission
 
     monkeypatch.setattr(installed_runtime, "copy_native_link_custody_archive", retain)
     admission = installed_runtime.admit_installed_native_runtime(cell)
@@ -1743,3 +1802,10 @@ def test_cold_native_retention_reuses_staged_custody_validation(
         member.path.is_relative_to(cell.retained_root)
         for _, member in admission.custody.files
     )
+
+
+def test_installed_admission_contract_has_one_defining_authority():
+    assert InstalledNativeAdmission.__module__ == "molt.cli.installed_runtime_contract"
+    assert InstalledRuntimeError.__module__ == "molt.cli.installed_runtime_contract"
+    assert not hasattr(installed_runtime, "InstalledNativeAdmission")
+    assert not hasattr(installed_runtime, "InstalledRuntimeError")

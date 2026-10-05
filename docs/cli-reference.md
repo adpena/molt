@@ -74,9 +74,12 @@ from project configuration: `[tool.molt.build] entry-file = "app.py"` or
 | `--snapshot` | Generate a non-restorable `molt.snapshot.json` metadata template; live runtime state and pause/resume are not supported. |
 | `--portable` | Use baseline ISA (no host-specific CPU features). |
 | `--deterministic / --no-deterministic` | Require deterministic inputs (lockfiles). |
-| `--build-profile {dev,release}` | Build profile for backend/runtime. |
+| `--build-profile {dev,release}` | Profile for the generated program and its runtime. The host compiler has an independent profile selected by `MOLT_BACKEND_PROFILE`. |
 | `--stdlib-profile {auto,micro,edge,standard,server,full}` | Runtime stdlib intent. `auto` is the default and selects the smallest concrete tier whose Cargo feature ceiling covers the reached intrinsic set; named tiers are explicit ceilings. |
 | `--wasm-profile {auto,full,pure}` | WASM import profile (`auto` plans imports from observed IR). |
+| `--progress {auto,plain,off}` | Show terminal status, plain phase lines, or no status; also supported by `molt run`. |
+| `--headless` | Use plain status lines without terminal control codes; also supported by `molt run`. |
+| `--quiet` | Hide build status and success messages while retaining errors and guest output; also supported by `molt run`. |
 | `--cache / --no-cache` | Enable/disable build cache. |
 | `--cache-dir DIR` | Override build cache directory. |
 | `--trusted / --no-trusted` | Select the finite generated maximum built-in capability tier. |
@@ -564,7 +567,7 @@ falls back to the host process version when a target is selected.
 | `MOLT_MODULE_ROOTS` | Colon-separated additional module search roots. |
 | `MOLT_EXTERNAL_STATIC_PACKAGES` | Comma/space-separated external package names admitted from external roots. Pure-Python packages may admit source closure; source-recompiled NumPy/SciPy roots require package-local native/static artifact candidates before graph discovery, WASM static-link artifact manifests must declare `python_exports` or `callable_exports`, required package-root imports such as `numpy` must be covered by matching `python_exports`, and package initializer sources do not seed broad source closure. Direct entry imports from external roots remain bounded when unset. |
 | `MOLT_STATIC_IMPORT_MODULES` | Comma/space-separated Python module names to admit as explicit static roots in the binary image closure. |
-| `MOLT_PORTABLE` | Set to `1` for baseline ISA codegen. |
+| `MOLT_PORTABLE` | Target baseline by default (`1`); set `0` to explicitly specialize for the host CPU. Host specialization participates in native cache identity. |
 | `MOLT_SPLIT_RUNTIME` | Set to `1` to enable split-runtime WASM by default. |
 | `MOLT_DEAD_MODULE_ELIMINATION` | Set to `1` to narrow the import plan's compile module set to modules reachable from the entry and required support roots. This is part of wrapper-cache semantic identity. |
 | `MOLT_BUILD_STATE_DIR` | Override the build state directory. |

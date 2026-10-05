@@ -2017,6 +2017,9 @@ def _validate_async_work_poll_after_kinds(
 
 def _simpleir_var_forbidden_spellings(data: dict) -> list[str]:
     kinds = {row["canonical"]: row for row in data.get("kind", [])}
+    # Preserved Copy operations have canonical shapes without mapper rows.
+    # Their explicit classifier registrations own those wire spellings.
+    preserved = {member for table in _CLASSIFIER_SETS for member in data.get(table, [])}
     shaped = {
         row.get("kind")
         for row in data.get("simpleir_op_shape", [])
@@ -2024,12 +2027,12 @@ def _simpleir_var_forbidden_spellings(data: dict) -> list[str]:
     }
     spellings: list[str] = []
     for member in data.get("simpleir_var_forbidden_kinds", []):
-        if member not in kinds or member not in shaped:
+        if (member not in kinds and member not in preserved) or member not in shaped:
             raise OpKindTableError(
                 "simpleir_var_forbidden_kinds requires a canonical shaped kind: "
                 f"{member!r}"
             )
-        spellings.extend((member, *kinds[member].get("aliases", [])))
+        spellings.extend((member, *kinds.get(member, {}).get("aliases", [])))
     return spellings
 
 

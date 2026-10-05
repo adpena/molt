@@ -38,6 +38,22 @@ pub(crate) unsafe fn dict_publish_staged(py: &PyToken<'_>, live: *mut u8, staged
         assert!(
             !(*header_from_obj_ptr(staged)).has_flag(crate::object::HEADER_FLAG_FROZEN_LAYOUT_MAP)
         );
+        crate::object::field_storage::debug::dictionary(
+            py,
+            "dict_swap_live",
+            std::ptr::null_mut(),
+            MoltObject::from_ptr(live).bits(),
+            None,
+            None,
+        );
+        crate::object::field_storage::debug::dictionary(
+            py,
+            "dict_swap_incoming",
+            std::ptr::null_mut(),
+            MoltObject::from_ptr(staged).bits(),
+            None,
+            None,
+        );
         let live_order = dict_order(live) as *mut Vec<u64>;
         let live_hashes = dict_hashes(live) as *mut Vec<u64>;
         let live_table = dict_table(live) as *mut Vec<usize>;
@@ -124,6 +140,13 @@ unsafe fn dict_replace_value(
 ) -> u64 {
     unsafe {
         let old_bits = dict_order(ptr)[value_index];
+        crate::object::field_storage::debug::replacement(
+            _py,
+            "dict_replace_before",
+            ptr,
+            value_index,
+            new_bits,
+        );
         if old_bits == new_bits {
             return 0;
         }
@@ -134,6 +157,13 @@ unsafe fn dict_replace_value(
         // Publish the slot and tracking state before releasing the old edge.
         dict_order(ptr)[value_index] = new_bits;
         crate::object::gc::gc_track_dict_references(_py, ptr, &[new_bits]);
+        crate::object::field_storage::debug::replacement(
+            _py,
+            "dict_replace",
+            ptr,
+            value_index,
+            new_bits,
+        );
         old_bits
     }
 }
@@ -1738,6 +1768,14 @@ unsafe fn dict_append_reserved_entry(
         let entry_idx = order.len() / 2 - 1;
         dict_insert_entry_with_hash(_py, order, dict_table(ptr), entry_idx, hash);
         dict_commit_insertion(_py, ptr, key_bits, val_bits);
+        crate::object::field_storage::debug::dictionary(
+            _py,
+            "dict_insert",
+            std::ptr::null_mut(),
+            MoltObject::from_ptr(ptr).bits(),
+            Some(key_bits),
+            Some(val_bits),
+        );
     }
 }
 
@@ -2161,6 +2199,14 @@ pub(crate) unsafe fn dict_del_deferred<'a, 'py>(
             return None;
         }
         let found = dict_find_entry(_py, ptr, key_bits);
+        crate::object::field_storage::debug::dictionary(
+            _py,
+            "dict_delete",
+            std::ptr::null_mut(),
+            MoltObject::from_ptr(ptr).bits(),
+            Some(key_bits),
+            None,
+        );
         let order = dict_order(ptr);
         let hashes = dict_hashes(ptr);
         let table = dict_table(ptr);
@@ -2231,6 +2277,14 @@ pub(crate) unsafe fn dict_clear_deferred<'a, 'py>(
 unsafe fn dict_detach_contents(_py: &PyToken<'_>, ptr: *mut u8) -> Vec<u64> {
     unsafe {
         crate::gil_assert();
+        crate::object::field_storage::debug::dictionary(
+            _py,
+            "dict_detach",
+            std::ptr::null_mut(),
+            MoltObject::from_ptr(ptr).bits(),
+            None,
+            None,
+        );
         let order = dict_order(ptr);
         let removed: Vec<u64> = std::mem::take(order);
         let hashes = dict_hashes(ptr);

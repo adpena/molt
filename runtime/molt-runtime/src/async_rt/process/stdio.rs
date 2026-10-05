@@ -1,6 +1,6 @@
 use super::super::generators_async::asyncio_clear_pending_exception;
-use crate::*;
 use crate::object::ops_compare::{CompareBoolOutcome, compare_object_eq_bool};
+use crate::*;
 #[cfg(not(target_arch = "wasm32"))]
 use std::process::{Command, Stdio};
 

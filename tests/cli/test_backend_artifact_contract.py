@@ -369,6 +369,7 @@ def test_archive_shape_skips_payload_hash_and_reads_only_required_header_bytes(
         hashed_sizes.append(size)
         return real_hash(stream, size)
 
+    monkeypatch.setattr(contracts, "open_stable_regular_file", metered_open)
     monkeypatch.setattr(archive_identity, "open_stable_regular_file", metered_open)
     monkeypatch.setattr(archive_identity, "_hash_exact", metered_hash)
     contracts.resolve_backend_artifact_contract(
@@ -382,3 +383,16 @@ def test_archive_shape_skips_payload_hash_and_reads_only_required_header_bytes(
     assert identity["content_size_bytes"] == len(payload)
     assert hashed_sizes == [len(payload)]
     assert streams[1].bytes_read == len(path.read_bytes())
+
+
+def test_host_selection_is_preserved_separately_from_explicit_artifact_identity():
+    host = contracts.resolve_backend_artifact_contract(target="native", emit_mode="bin")
+    explicit = contracts.resolve_backend_artifact_contract(
+        target=host.target_triple, emit_mode="bin"
+    )
+    assert host.native_target.is_host
+    assert host.native_target.cargo_target is None
+    assert not explicit.native_target.is_host
+    assert explicit.native_target.cargo_target == host.target_triple
+    assert host.native_target.triple == explicit.native_target.triple
+    assert host.cache_identity == explicit.cache_identity

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from .runtime_requirements import (
+    integer_semantics_by_kind,
     runtime_callable_attribute_requirement_masks,
     runtime_symbol_requirement_masks,
+    runtime_kind_requirement_masks,
+    target_runtime_requirement_masks,
 )
 from .primitive_effects import (
     comparison_warning_pairs,
@@ -271,6 +274,21 @@ def _render_py_frontend_effect_sets(data: dict) -> str:
             f"SIMPLEIR_RUNTIME_REQUIREMENT_{row['constant']}: int = 1 << {row['bit']}\n"
         )
     out.append("\n")
+    out.append(
+        "# Minimum execution requirements shared with target admission and source audits.\n"
+    )
+    out.append("SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {\n")
+    for kind, bits in sorted(runtime_kind_requirement_masks(data).items()):
+        out.append(f'    "{kind}": {bits},\n')
+    out.append("}\n\n")
+    out.append("SIMPLEIR_TARGET_RUNTIME_REQUIREMENTS: dict[str, int] = {\n")
+    for target, bits in sorted(target_runtime_requirement_masks(data).items()):
+        out.append(f'    "{target}": {bits},\n')
+    out.append("}\n\n")
+    out.append("SIMPLEIR_INTEGER_SEMANTICS: dict[str, str] = {\n")
+    for kind, role in sorted(integer_semantics_by_kind(data).items()):
+        out.append(f'    "{kind}": "{role}",\n')
+    out.append("}\n\n")
     out.append("SIMPLEIR_RUNTIME_QUALIFIED_CALLABLE_SYMBOL: dict[str, str] = {\n")
     for row in sorted(
         data.get("simpleir_runtime_qualified_callable", []),
@@ -620,6 +638,20 @@ def render_py(data: dict) -> str:
     out.append("}\n\n\n")
 
     out.append(_render_py_binary_image_fact_sets(data))
+
+    out.append("def validate_serialized_kind(kind: str) -> None:\n")
+    out.append('    """Reject frontend semantic tokens at the wire boundary.\n\n')
+    out.append(
+        "    Preserved wire operations retain their spelling and target-specific\n"
+    )
+    out.append(
+        "    admission. This check never collapses local binding aliases or invents\n"
+    )
+    out.append('    a target support claim for an unclassified wire operation."""\n')
+    out.append("    if kind in FRONTEND_EFFECT_CLASS:\n")
+    out.append(
+        '        raise ValueError(f"frontend operation {kind!r} escaped serialization")\n\n\n'
+    )
 
     out.append("def canonical_kind(kind: str) -> str:\n")
     out.append('    """Return the canonical wire spelling for *kind*.\n\n')

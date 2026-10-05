@@ -89,7 +89,7 @@ fn activation_yield_transfers_pair_and_releases_element_owner_before_suspending(
     let pair = fresh(&mut func, TirType::Tuple(vec![TirType::DynBox]));
     let reloaded = fresh(&mut func, TirType::DynBox);
     func.blocks.get_mut(&first).unwrap().ops = vec![
-        op(OpCode::Call, vec![], vec![element]),
+        named_call("fixture_external_call", vec![], vec![element]),
         set_state(op(OpCode::ClosureStore, vec![frame, element], vec![]), 24),
         op(OpCode::BuildTuple, vec![element], vec![pair]),
         set_state(op(OpCode::StateYield, vec![pair], vec![]), 9),
@@ -170,7 +170,13 @@ fn activation_wait_pending_and_ready_paths_both_release_invocation_future() {
     let block = func.blocks.get_mut(&resume).unwrap();
     block.ops = vec![
         set_state(op(OpCode::ClosureLoad, vec![frame], vec![future]), 24),
-        set_state(op(OpCode::ConstInt, vec![], vec![pending]), 9),
+        set_state(
+            TirOp {
+                attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(35))]),
+                ..op(OpCode::ConstInt, vec![], vec![pending])
+            },
+            9,
+        ),
         set_state(
             op(OpCode::StateTransition, vec![future, pending], vec![result]),
             10,

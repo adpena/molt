@@ -333,7 +333,11 @@ fn socketserver_complete_request(
         };
         if owner != server_bits {
             drop(runtime);
-            return Err(raise_exception::<u64>(py, "RuntimeError", "request id owner mismatch"));
+            return Err(raise_exception::<u64>(
+                py,
+                "RuntimeError",
+                "request id owner mismatch",
+            ));
         }
         let Some(pending) = runtime.pending_requests.get_mut(&request_id) else {
             runtime.request_server.remove(&request_id);
@@ -349,15 +353,21 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(py, {
         let get_request = match attr_optional(py, server_bits, b"get_request") {
             Ok(Some(method)) => method,
-            Ok(None) => return raise_exception::<_>(
-                py, "RuntimeError", "socketserver server is missing get_request",
-            ),
+            Ok(None) => {
+                return raise_exception::<_>(
+                    py,
+                    "RuntimeError",
+                    "socketserver server is missing get_request",
+                );
+            }
             Err(bits) => return bits,
         };
         if !molt_is_callable(get_request) {
             dec_ref_bits(py, get_request);
             return raise_exception::<_>(
-                py, "RuntimeError", "socketserver server is missing get_request",
+                py,
+                "RuntimeError",
+                "socketserver server is missing get_request",
             );
         }
         let request_tuple_bits = call_callable0(py, get_request);
@@ -377,7 +387,9 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
                 if !molt_is_callable(method) {
                     dec_ref_bits(py, method);
                     return Err(raise_exception::<u64>(
-                        py, "RuntimeError", "socketserver server verify_request must be callable",
+                        py,
+                        "RuntimeError",
+                        "socketserver server verify_request must be callable",
                     ));
                 }
                 let verify_bits = call_callable2(py, method, request_bits, client_address_bits);
@@ -400,13 +412,17 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
             let process_result = (|| -> Result<(), u64> {
                 let Some(method) = attr_optional(py, server_bits, b"process_request")? else {
                     return Err(raise_exception::<u64>(
-                        py, "RuntimeError", "socketserver server is missing process_request",
+                        py,
+                        "RuntimeError",
+                        "socketserver server is missing process_request",
                     ));
                 };
                 if !molt_is_callable(method) {
                     dec_ref_bits(py, method);
                     return Err(raise_exception::<u64>(
-                        py, "RuntimeError", "socketserver server is missing process_request",
+                        py,
+                        "RuntimeError",
+                        "socketserver server is missing process_request",
                     ));
                 }
                 let result = call_callable2(py, method, request_bits, client_address_bits);
@@ -421,7 +437,10 @@ pub extern "C" fn molt_socketserver_handle_request(server_bits: u64) -> u64 {
             if process_result.is_err() && pending_exception_matches_builtin(py, "Exception") {
                 return with_handled_exception(py, || {
                     let handled = socketserver_call_handle_error(
-                        py, server_bits, request_bits, client_address_bits,
+                        py,
+                        server_bits,
+                        request_bits,
+                        client_address_bits,
                     );
                     // A failed handle_error remains pending through cleanup.
                     // Its replacement wins only if cleanup itself fails.

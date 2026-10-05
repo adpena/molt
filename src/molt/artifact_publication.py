@@ -33,6 +33,7 @@ from molt.toolchain_identity import (
     StableRegularFileIdentity,
     open_stable_regular_file,
     stable_regular_file_version,
+    verify_stable_regular_file_content,
     verify_stable_regular_file_identity,
 )
 
@@ -219,8 +220,19 @@ def staged_copy_file(
             with open_stable_regular_file(
                 src, label="staged copy source", observed=observed
             ) as opened:
+                digest = hashlib.sha256()
+                size = 0
                 with tmp_path.open("xb") as destination:
-                    shutil.copyfileobj(opened.stream, destination, length=1024 * 1024)
+                    while block := opened.stream.read(1024 * 1024):
+                        digest.update(block)
+                        size += len(block)
+                        destination.write(block)
+                verify_stable_regular_file_content(
+                    observed,
+                    sha256=digest.hexdigest(),
+                    size=size,
+                    label="staged copy source",
+                )
         if prepare is not None:
             prepare(tmp_path)
         if expected_sha256 is not None and _sha256_file(tmp_path) != expected_sha256:

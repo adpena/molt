@@ -155,7 +155,9 @@ impl CallerFacts {
         let mut read = block.ops[site.op_index + 1..]
             .iter()
             .any(|op| op.operands.iter().any(|&operand| names(operand)));
-        block.terminator.for_each_value(|value| read |= names(value));
+        block
+            .terminator
+            .for_each_value(|value| read |= names(value));
         read || self.liveness.is_live_out(site.block, root)
     }
 }

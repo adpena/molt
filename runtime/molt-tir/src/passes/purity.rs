@@ -21,6 +21,7 @@ use std::collections::BTreeMap;
 pub struct SimpleIrScalarPurityFacts<'a> {
     plan: Option<&'a ScalarRepresentationPlan>,
     literal_kinds: BTreeMap<String, ScalarKind>,
+    guards: super::guard_elision::RuntimeGuardFacts,
 }
 
 impl<'a> SimpleIrScalarPurityFacts<'a> {
@@ -36,6 +37,7 @@ impl<'a> SimpleIrScalarPurityFacts<'a> {
         Self {
             plan,
             literal_kinds,
+            guards: super::guard_elision::RuntimeGuardFacts::for_function(func),
         }
     }
 
@@ -72,6 +74,10 @@ pub fn simple_ir_op_is_provably_nonthrowing_with_facts(
     op: &OpIR,
 ) -> bool {
     let kind = op.kind.as_str();
+
+    if matches!(kind, "guard_tag" | "guard_type") {
+        return facts.is_some_and(|facts| facts.guards.is_nonthrowing(op, facts.plan));
+    }
 
     if op.is_async_work_poll() {
         return false;
@@ -133,7 +139,7 @@ pub fn simple_ir_op_is_provably_nonthrowing_with_facts(
 
     if matches!(
         kind,
-        "guard_tag" | "guard_layout" | "guard_int" | "guard_float" | "type_guard"
+        "guard_layout" | "guard_int" | "guard_float" | "type_guard"
     ) {
         return true;
     }

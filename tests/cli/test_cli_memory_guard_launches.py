@@ -367,7 +367,6 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
         socket_path,
         cargo_profile="dev-fast",
         project_root=tmp_path,
-        target_triple=None,
         config_digest="a" * 64,
         startup_timeout=1.0,
         json_output=True,

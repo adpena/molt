@@ -106,7 +106,7 @@ def test_declared_matrix_preserves_semantic_floor_and_all_primary_workloads():
 
     matrix = required_matrix(source_sha="a" * 40, root=ROOT)
     assert set(matrix.semantic_ids) == {c.id for c in verified_subset_coordinates()}
-    assert len(matrix.semantic_ids) == 72
+    assert len(matrix.semantic_ids) == 3 * 6 * 3 * 2
     cells = matrix.performance_cells
     assert {c["python"] for c in cells} == {"3.12", "3.13", "3.14"}
     assert len({(c["platform"], c["arch"]) for c in cells}) == 6
@@ -121,7 +121,10 @@ def test_declared_matrix_preserves_semantic_floor_and_all_primary_workloads():
     )
     assert len(cells) == 3 * 6 * 11 * len({c["benchmark"] for c in cells})
     assert matrix.blockers  # No unit-fixture result can claim release readiness.
-    assert any("semantic backend llvm" in p for p in matrix.blockers)
+    assert not any(
+        "canonical E3 coordinate/receipt producer unavailable" in p
+        for p in matrix.blockers
+    )
 
 
 def test_parallel_projection_is_disjoint_complete_and_order_independent():

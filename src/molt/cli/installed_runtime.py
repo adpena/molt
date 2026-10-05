@@ -32,6 +32,7 @@ from typing import Any, Collection, Mapping, Sequence, cast, get_args
 import uuid
 
 from molt._wasm_runtime_exports import wasm_cpython_abi_distribution_export_names
+from molt.cli import installed_runtime_contract as _runtime_contract
 from molt.cli.atomic_io import _atomic_copy_file, _remove_file_or_tree
 from molt.cli.cargo_profiles import _resolve_cargo_profile_name
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
@@ -39,7 +40,7 @@ from molt.cli.default_paths import _default_molt_home
 from molt.cli.models import BuildProfile
 from molt.cli.native_link_custody import (
     NativeLinkCustodyError,
-    NativeLinkCustodyObservation,
+    NativeLinkCustodyAdmission,
     copy_native_link_custody_archive,
     native_link_custody_archive_path,
     observe_native_link_custody,
@@ -50,12 +51,10 @@ from molt.cli.native_link_manifest import (
     native_link_dependency_manifest_path,
     validate_native_link_dependency_manifest,
 )
-from molt.cli.runtime_build_identity import (
-    RuntimeBuildIdentity,
-)
 from molt.cli.runtime_features import runtime_fingerprint_features_for_profile
 from molt.cli.runtime_identity_schema import (
     RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+    RuntimeBuildIdentity,
     _freeze_json,
 )
 from molt.cli.runtime_paths import _runtime_lib_archive_name
@@ -68,6 +67,7 @@ from molt.cli.runtime_wasm_generation import (
     hydrate_runtime_wasm_generation,
     read_runtime_wasm_generation,
     runtime_wasm_generation_path,
+    _generation_record_descriptors,
     _validate_generation_payload,
 )
 from molt.cli.static_archive_identity import (
@@ -92,6 +92,7 @@ from molt.toolchain_identity import (
     StableRegularFileIdentity,
     capture_stable_regular_file,
     stable_regular_file_identity,
+    stable_regular_file_version,
     verify_stable_regular_file_identity,
 )
 from molt.verified_subset import current_host_coordinate
@@ -114,10 +115,6 @@ _ADMISSION_ERRORS = (
 )
 
 
-class InstalledRuntimeError(ValueError):
-    """A shipped runtime cell is unsupported, missing, damaged or mismatched."""
-
-
 def _installed(project_root: Path) -> InstalledCompiler | None:
     installed = installed_compiler(project_root)
     if installed is None:
@@ -126,7 +123,7 @@ def _installed(project_root: Path) -> InstalledCompiler | None:
         name for name in _SOURCE_RUNTIME_SELECTORS if os.environ.get(name)
     )
     if selectors:
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             "installed Molt uses its shipped runtime cells; "
             + ", ".join(selectors)
             + " selects source-checkout runtime artifacts. Unset it, or set "
@@ -145,7 +142,7 @@ def installed_runtime_store(installed: InstalledCompiler) -> Path:
     store = resolve_owned_path(_default_molt_home() / INSTALLED_RUNTIME_STORE)
     bundle = resolve_owned_path(installed.source_root.parent)
     if store == bundle or bundle in store.parents:
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             "MOLT_HOME must be outside the immutable Molt installation"
         )
     return store
@@ -190,14 +187,16 @@ class InstalledRuntimeCell:
         for entry in self.record["files"]:
             if entry["role"] == role:
                 return cast(Mapping[str, Any], entry)
-        raise InstalledRuntimeError(f"installed runtime cell {self.id} has no {role}")
+        raise _runtime_contract.InstalledRuntimeError(
+            f"installed runtime cell {self.id} has no {role}"
+        )
 
     def bundle_file(self, role: str) -> StableRegularFileIdentity:
         """Return one shipped member after content admission against the manifest."""
         try:
             return verify_runtime_member(self.members_root, self.record, role)
         except (OSError, ValueError) as exc:
-            raise InstalledRuntimeError(
+            raise _runtime_contract.InstalledRuntimeError(
                 f"installed runtime cell {self.id} {role} is missing or damaged; "
                 f"reinstall Molt: {exc}"
             ) from exc
@@ -214,8 +213,13 @@ class InstalledRuntimeCell:
             )
             self.require_signed_member(role, identity)
             return identity, loads_exact(content.decode("utf-8"))
-        except (OSError, UnicodeError, ValueError, InstalledRuntimeError) as exc:
-            raise InstalledRuntimeError(
+        except (
+            OSError,
+            UnicodeError,
+            ValueError,
+            _runtime_contract.InstalledRuntimeError,
+        ) as exc:
+            raise _runtime_contract.InstalledRuntimeError(
                 f"installed runtime cell {self.id} {role} is missing or damaged; "
                 f"reinstall Molt: {exc}"
             ) from exc
@@ -232,8 +236,8 @@ class InstalledRuntimeCell:
                 max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
             )
             return self.require_signed_member(role, identity), content
-        except (OSError, ValueError, InstalledRuntimeError) as exc:
-            raise InstalledRuntimeError(
+        except (OSError, ValueError, _runtime_contract.InstalledRuntimeError) as exc:
+            raise _runtime_contract.InstalledRuntimeError(
                 f"installed runtime cell {self.id} {role} is missing or damaged; "
                 f"reinstall Molt: {exc}"
             ) from exc
@@ -241,14 +245,18 @@ class InstalledRuntimeCell:
     @property
     def retained_root(self) -> Path:
         if self.installed is None:
-            raise InstalledRuntimeError("a staged runtime cell has no retention store")
+            raise _runtime_contract.InstalledRuntimeError(
+                "a staged runtime cell has no retention store"
+            )
         return installed_runtime_store(self.installed) / self.id
 
     @property
     def runtime_lib(self) -> Path:
         """Retained native archive coordinate consumed by codegen and link."""
         if self.kind != NATIVE_RUNTIME_CELL:
-            raise InstalledRuntimeError("installed runtime cell is not native")
+            raise _runtime_contract.InstalledRuntimeError(
+                "installed runtime cell is not native"
+            )
         return self.retained_root / cast(str, self.file_name("runtime_archive"))
 
     def require_signed_member(
@@ -257,7 +265,7 @@ class InstalledRuntimeCell:
         """Admit one hashed retained member against its signed release record."""
         record = self.file_record(role)
         if (identity.sha256, identity.size) != (record["sha256"], record["size"]):
-            raise InstalledRuntimeError(
+            raise _runtime_contract.InstalledRuntimeError(
                 f"retained installed runtime {role} differs from its release record: "
                 f"{identity.path}"
             )
@@ -302,7 +310,7 @@ def select_installed_runtime_cell(
             for name, value in sorted(key.items())
             if name != "runtime_features"
         )
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             f"installed Molt does not ship a {kind} runtime for {requested} "
             f"(features: {', '.join(key.get('runtime_features', ()))}). "
             f"Shipped {kind} cells: {_describe_cells(installed, kind)}. "
@@ -381,7 +389,7 @@ def select_installed_native_runtime(
     cell = select_installed_runtime_cell(installed, kind=NATIVE_RUNTIME_CELL, key=key)
     expected = _runtime_lib_archive_name(key["stdlib_profile"], target_triple)
     if cell.file_name("runtime_archive") != expected:
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             f"installed runtime cell {cell.id} archive is not the {expected} member"
         )
     return cell
@@ -445,7 +453,7 @@ def _require_features(
         set(cast(Sequence[str], _common_config(identity)["runtime_features"]))
     )
     if recorded != list(cell.key["runtime_features"]):
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             f"installed runtime cell {cell.id} build features differ from its key"
         )
 
@@ -461,7 +469,7 @@ def _shipped_native_identity(
     """Observe the canonical receipt once against the already-admitted archive."""
     receipt, payload = cell.bundle_json("native_link_manifest")
     if receipt.path != native_link_dependency_manifest_path(archive.path):
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             "installed native-link manifest is not adjacent to its archive"
         )
     facts = validate_native_link_dependency_manifest(
@@ -475,14 +483,14 @@ def _shipped_native_identity(
     if cell.target_triple is None:
         host = RUST_TARGET_BY_COORDINATE.get(current_host_coordinate())
         if facts.build_identity.effective_target != host:
-            raise InstalledRuntimeError(
+            raise _runtime_contract.InstalledRuntimeError(
                 f"installed native runtime targets {facts.build_identity.effective_target}, not this host ({host})"
             )
     custody = facts.custody
     custody_archive = native_link_custody_archive_path(archive.path, custody)
     declared = cell.file_name("native_link_custody_archive")
     if (custody_archive.name if custody_archive is not None else None) != declared:
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             "installed custody archive differs from its native-link manifest"
         )
     verify_stable_regular_file_identity(archive, label="shipped native archive")
@@ -504,46 +512,6 @@ def _retained_callable_projection(
     )
 
 
-@dataclass(frozen=True, slots=True)
-class InstalledNativeAdmission:
-    """One build operation's content admission of a retained native generation.
-
-    Each member was hashed once against the signed cell record, and the
-    retained receipt was validated against the archive's content identity and
-    custody closure. Later consumers in the same operation verify these
-    stable-file fences (handle identity and content change time, never mtime
-    alone) instead of re-hashing or re-admitting the shipped cell. Every field
-    is an immutable value; nothing here is a process-global cache.
-    """
-
-    cell_id: str
-    runtime_lib: Path
-    build_identity: RuntimeBuildIdentity
-    archive: StableRegularFileIdentity
-    manifest: StableRegularFileIdentity
-    callable_projection: StableRegularFileIdentity
-    link_facts: NativeLinkManifestFacts
-    custody: NativeLinkCustodyObservation
-    callable_semantic_digest: str
-
-    def members(self) -> tuple[tuple[str, StableRegularFileIdentity], ...]:
-        return (
-            ("runtime_archive", self.archive),
-            ("native_link_manifest", self.manifest),
-            (NATIVE_CALLABLE_PROJECTION_ROLE, self.callable_projection),
-        )
-
-    def verify(self) -> None:
-        if resolve_owned_path(self.runtime_lib) != self.archive.path:
-            raise InstalledRuntimeError(
-                "installed native runtime path no longer names its admitted generation"
-            )
-        for role, identity in self.members():
-            verify_stable_regular_file_identity(
-                identity, label=f"admitted installed runtime {role}"
-            )
-
-
 def _admit_retained_native(
     cell: InstalledRuntimeCell,
     runtime_lib: Path,
@@ -552,8 +520,8 @@ def _admit_retained_native(
     source_projection: StableRegularFileIdentity,
     facts: NativeLinkManifestFacts,
     callable_semantic_digest: str,
-    previous_custody: NativeLinkCustodyObservation | None = None,
-) -> InstalledNativeAdmission:
+    custody_admission: NativeLinkCustodyAdmission | None = None,
+) -> _runtime_contract.InstalledNativeAdmission:
     archive = cell.verify_retained_file("runtime_archive", runtime_lib)
     receipt = cell.verify_retained_file(
         "native_link_manifest", native_link_dependency_manifest_path(runtime_lib)
@@ -568,13 +536,15 @@ def _admit_retained_native(
         (projection, source_projection),
     ):
         if (actual.sha256, actual.size) != (source.sha256, source.size):
-            raise InstalledRuntimeError(
+            raise _runtime_contract.InstalledRuntimeError(
                 "retained native generation differs from observed shipped semantics"
             )
-    custody = observe_native_link_custody(
-        runtime_lib, facts.custody, previous=previous_custody
+    custody = (
+        observe_native_link_custody(runtime_lib, facts.custody)
+        if custody_admission is None
+        else custody_admission.borrow(runtime_lib, facts.custody)
     )
-    admission = InstalledNativeAdmission(
+    admission = _runtime_contract.InstalledNativeAdmission(
         cell.id,
         runtime_lib,
         facts.build_identity,
@@ -597,13 +567,13 @@ def _retain_native(
     facts: NativeLinkManifestFacts,
     callable_semantic_digest: str,
     custody_identity: StableRegularFileIdentity | None,
-) -> InstalledNativeAdmission:
+) -> _runtime_contract.InstalledNativeAdmission:
     root = cell.retained_root
     runtime_lib = root / archive.path.name
 
     def admit(
-        path: Path, previous_custody: NativeLinkCustodyObservation | None = None
-    ) -> InstalledNativeAdmission:
+        path: Path, custody_admission: NativeLinkCustodyAdmission | None = None
+    ) -> _runtime_contract.InstalledNativeAdmission:
         return _admit_retained_native(
             cell,
             path,
@@ -612,7 +582,7 @@ def _retain_native(
             projection,
             facts,
             callable_semantic_digest,
-            previous_custody,
+            custody_admission,
         )
 
     if not root.exists() and not is_link_like(root):
@@ -636,13 +606,13 @@ def _retain_native(
                 _retained_callable_projection(cell, staged_lib),
                 observed=projection,
             )
-            staged_custody = copy_native_link_custody_archive(
+            with copy_native_link_custody_archive(
                 archive.path,
                 staged_lib,
                 facts.custody,
                 source_identity=custody_identity,
-            )
-            staged = admit(staged_lib, staged_custody)
+            ) as custody_admission:
+                staged = admit(staged_lib, custody_admission)
             return publish_native_runtime_directory(
                 stage,
                 root,
@@ -658,7 +628,7 @@ def _retain_native(
 
 def admit_installed_native_runtime(
     cell: InstalledRuntimeCell,
-) -> InstalledNativeAdmission:
+) -> _runtime_contract.InstalledNativeAdmission:
     """Admit shipped bytes, retain one generation, and fence its exact members."""
     try:
         archive = cell.bundle_file("runtime_archive")
@@ -673,10 +643,10 @@ def admit_installed_native_runtime(
             projection.semantic_digest,
             custody_identity,
         )
-    except InstalledRuntimeError:
+    except _runtime_contract.InstalledRuntimeError:
         raise
     except _ADMISSION_ERRORS as exc:
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             f"installed native runtime cell {cell.id} failed admission: {exc}"
         ) from exc
 
@@ -691,24 +661,24 @@ def installed_native_runtime_identity(
     """
     try:
         if runtime_lib != cell.runtime_lib:
-            raise InstalledRuntimeError(
+            raise _runtime_contract.InstalledRuntimeError(
                 "native runtime path is not this installed cell's retained generation"
             )
         if not cell.retained_root.exists():
-            raise InstalledRuntimeError(
+            raise _runtime_contract.InstalledRuntimeError(
                 "installed native retained generation is missing"
             )
         return admit_installed_native_runtime(cell).build_identity
-    except InstalledRuntimeError:
+    except _runtime_contract.InstalledRuntimeError:
         raise
     except _ADMISSION_ERRORS as exc:
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             f"installed native runtime cell {cell.id} failed re-admission: {exc}"
         ) from exc
 
 
 def reuse_installed_native_admission(
-    cell: InstalledRuntimeCell, admission: InstalledNativeAdmission
+    cell: InstalledRuntimeCell, admission: _runtime_contract.InstalledNativeAdmission
 ) -> None:
     """Reuse this operation's admission for the cell the request still selects.
 
@@ -723,22 +693,22 @@ def reuse_installed_native_admission(
             or cell.id != admission.cell_id
             or cell.runtime_lib != admission.runtime_lib
         ):
-            raise InstalledRuntimeError(
+            raise _runtime_contract.InstalledRuntimeError(
                 "installed native runtime selection changed after admission"
             )
         for role, identity in admission.members():
             cell.require_signed_member(role, identity)
         admission.verify()
-    except InstalledRuntimeError:
+    except _runtime_contract.InstalledRuntimeError:
         raise
     except _ADMISSION_ERRORS as exc:
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             f"installed native runtime cell {cell.id} changed after admission: {exc}"
         ) from exc
 
 
 def installed_native_callable_projection(
-    cell: InstalledRuntimeCell, admission: InstalledNativeAdmission
+    cell: InstalledRuntimeCell, admission: _runtime_contract.InstalledNativeAdmission
 ) -> tuple[Path, str]:
     """Name the callable projection this operation admitted beside its archive.
 
@@ -762,7 +732,7 @@ def _require_wasm_semantics(
         config["target_triple"] != WASM_RUNTIME_TARGET
         or config["cargo_profile"] != cell.key["cargo_profile"]
     ):
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             f"installed runtime cell {cell.id} WASM target/profile differs from its key"
         )
     _require_features(cell, identity)
@@ -770,7 +740,7 @@ def _require_wasm_semantics(
     if not isinstance(flags, Sequence) or wasm_runtime_simd_enabled(
         cast(Sequence[str], flags)
     ) != bool(cell.key["simd"]):
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             f"installed runtime cell {cell.id} SIMD code generation differs from its key"
         )
     scripts = cast(Mapping[str, object], config["build_script_environment"])
@@ -778,7 +748,7 @@ def _require_wasm_semantics(
     if not isinstance(exports, Sequence) or list(exports) != list(
         wasm_cpython_abi_distribution_export_names()
     ):
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             f"installed runtime cell {cell.id} does not carry the distributed "
             "CPython C-API export surface"
         )
@@ -790,7 +760,7 @@ def _shipped_wasm_identities(
     payload = string_keyed_mapping(value)
     receipts = string_keyed_mapping(payload.get("receipts")) if payload else None
     if receipts is None or set(receipts) != {"shared", "reloc"}:
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             f"installed runtime cell {cell.id} WASM generation receipts are invalid"
         )
     shared = RuntimeBuildIdentity.from_dict(
@@ -804,7 +774,7 @@ def _shipped_wasm_identities(
         or reloc.payload.get("member_kind") != "reloc"
         or shared.family_digest != reloc.family_digest
     ):
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             f"installed runtime cell {cell.id} WASM receipts are not one pair"
         )
     _require_wasm_semantics(cell, shared)
@@ -819,7 +789,7 @@ def _require_link_features(
         set(required_link_features).difference(cell.key["runtime_features"])
     )
     if missing:
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             f"installed WASM runtime cell {cell.id} lacks required runtime "
             f"features: {', '.join(missing)}"
         )
@@ -832,7 +802,7 @@ def _retained_wasm_member(
     # Reject a link or junction anywhere on the retained path, as hashing did.
     resolve_owned_path(identity.path)
     if identity.path.parent != cell.retained_root:
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             f"installed runtime cell {cell.id} {role} is not its retained "
             f"generation: {identity.path}"
         )
@@ -848,27 +818,35 @@ def admit_installed_wasm_runtime(
     try:
         manifest, payload = cell.bundle_json("wasm_generation_manifest")
         payload = _freeze_json(payload)
-        shipped_shared = cell.bundle_file("wasm_shared_member")
-        shipped_reloc = cell.bundle_file("wasm_reloc_member")
         shared_identity, reloc_identity = _shipped_wasm_identities(cell, payload)
         _require_link_features(cell, required_link_features)
-        source = _validate_generation_payload(
+        descriptors = _generation_record_descriptors(
             manifest.path,
             payload,
             expected_shared_identity=shared_identity,
             expected_reloc_identity=reloc_identity,
-            receipt_identity=manifest,
-            observed_members=(shipped_shared, shipped_reloc),
         )
-        if (
-            source is None
-            or source.shared.resolve() != shipped_shared.path
-            or source.reloc.resolve() != shipped_reloc.path
-        ):
-            raise InstalledRuntimeError(
-                f"installed runtime cell {cell.id} WASM generation does not name "
-                "its shipped members"
+        if descriptors is None:
+            raise _runtime_contract.InstalledRuntimeError(
+                f"installed runtime cell {cell.id} WASM generation is invalid"
             )
+        for role, (path, digest, size) in zip(
+            ("wasm_shared_member", "wasm_reloc_member"), descriptors, strict=True
+        ):
+            record = cell.file_record(role)
+            expected = resolve_owned_path(cell.members_root / record["name"])
+            selected = stable_regular_file_version(
+                expected, label=f"installed runtime {role}"
+            )
+            if (
+                path.absolute() != expected
+                or (digest, size) != (record["sha256"], record["size"])
+                or selected.size != size
+            ):
+                raise _runtime_contract.InstalledRuntimeError(
+                    f"installed runtime cell {cell.id} WASM generation does not name "
+                    "its signed shipped members"
+                )
         root = cell.retained_root
         dest_shared = root / _SHARED_RUNTIME_NAME
         dest_reloc = root / _RELOC_RUNTIME_NAME
@@ -878,6 +856,30 @@ def admit_installed_wasm_runtime(
             expected_reloc_identity=reloc_identity,
         )
         if retained is None:
+            source = _validate_generation_payload(
+                manifest.path,
+                payload,
+                expected_shared_identity=shared_identity,
+                expected_reloc_identity=reloc_identity,
+                receipt_identity=manifest,
+            )
+            if source is None:
+                raise _runtime_contract.InstalledRuntimeError(
+                    f"installed runtime cell {cell.id} WASM generation is invalid"
+                )
+            for role, member in (
+                ("wasm_shared_member", source.shared_member_identity),
+                ("wasm_reloc_member", source.reloc_member_identity),
+            ):
+                expected = resolve_owned_path(
+                    cell.members_root / cell.file_record(role)["name"]
+                )
+                if member.path != expected:
+                    raise _runtime_contract.InstalledRuntimeError(
+                        f"installed runtime cell {cell.id} WASM generation does not "
+                        "name its shipped members"
+                    )
+                cell.require_signed_member(role, member)
             root.mkdir(parents=True, exist_ok=True)
             retained = hydrate_runtime_wasm_generation(
                 source_manifest=manifest.path,
@@ -894,10 +896,10 @@ def admit_installed_wasm_runtime(
         ):
             _retained_wasm_member(cell, role, member)
         return retained
-    except InstalledRuntimeError:
+    except _runtime_contract.InstalledRuntimeError:
         raise
     except _ADMISSION_ERRORS as exc:
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             f"installed WASM runtime cell {cell.id} failed admission: {exc}"
         ) from exc
 
@@ -925,10 +927,10 @@ def reuse_installed_wasm_generation(
             verify_stable_regular_file_identity(
                 member, label=f"admitted installed runtime {role}"
             )
-    except InstalledRuntimeError:
+    except _runtime_contract.InstalledRuntimeError:
         raise
     except _ADMISSION_ERRORS as exc:
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             f"installed WASM runtime cell {cell.id} changed after admission: {exc}"
         ) from exc
 
@@ -972,9 +974,9 @@ def admit_runtime_cell_receipts(
         return _shipped_wasm_identities(
             cell, _freeze_json(cell.bundle_json("wasm_generation_manifest")[1])
         )
-    except InstalledRuntimeError:
+    except _runtime_contract.InstalledRuntimeError:
         raise
     except _ADMISSION_ERRORS as exc:
-        raise InstalledRuntimeError(
+        raise _runtime_contract.InstalledRuntimeError(
             f"runtime cell {cell.id} receipts failed admission: {exc}"
         ) from exc

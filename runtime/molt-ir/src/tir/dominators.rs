@@ -21,7 +21,7 @@ mod indexed;
 mod points;
 mod simple_points;
 pub use indexed::IndexedDominance;
-pub use points::ProgramPointDominance;
+pub use points::{ProgramPointDominance, ProgramPointGraph};
 pub use simple_points::{SimpleExecutionDominance, SimpleProgramPoint};
 
 // ---------------------------------------------------------------------------
@@ -47,9 +47,14 @@ pub fn terminator_successors(term: &Terminator) -> Vec<BlockId> {
 /// logic (via [`exception_successors`]) when building its block-lowering order,
 /// instead of re-deriving the label→block mapping in `lowering.rs`.
 pub fn exception_label_to_block(func: &TirFunction) -> HashMap<i64, BlockId> {
-    let mut targets = HashMap::with_capacity(func.label_id_map.len());
+    exception_labels_to_blocks(&func.label_id_map)
+}
+
+/// Resolve a borrowed label map for TIR and LIR with the same ambiguity rule.
+pub fn exception_labels_to_blocks(labels: &HashMap<u32, i64>) -> HashMap<i64, BlockId> {
+    let mut targets = HashMap::with_capacity(labels.len());
     let mut ambiguous = HashSet::new();
-    for (&bid, &label) in &func.label_id_map {
+    for (&bid, &label) in labels {
         if targets.insert(label, BlockId(bid)).is_some() {
             ambiguous.insert(label);
         }

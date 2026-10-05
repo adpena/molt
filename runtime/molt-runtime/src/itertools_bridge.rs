@@ -96,121 +96,70 @@ pub extern "C" fn molt_itertools_alloc_class(
     name_len: usize,
     layout_size: i64,
     shape_id: u16,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let name = unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(name_ptr, name_len))
-        };
-        let Some(shape) = crate::object::ObjectShapeId::from_u16(shape_id) else {
-            return MoltObject::none().bits();
-        };
-        crate::itertools_class::alloc_itertools_class(_py, name, layout_size, shape)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_class_set_iter_next(
-    class_bits: u64,
-    iter_fn_bits: u64,
-    next_fn_bits: u64,
-) {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return;
-        };
-        let dict_bits = unsafe { class_dict_bits(class_ptr) };
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-            && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
-        {
-            let iter_name = intern_static_name(
-                _py,
-                &crate::runtime_state(_py).interned.iter_name,
-                b"__iter__",
-            );
-            unsafe { dict_set_in_place(_py, dict_ptr, iter_name, iter_fn_bits) };
-            let next_name = intern_static_name(
-                _py,
-                &crate::runtime_state(_py).interned.next_name,
-                b"__next__",
-            );
-            unsafe { dict_set_in_place(_py, dict_ptr, next_name, next_fn_bits) };
-        }
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_class_set_new(class_bits: u64, new_fn_bits: u64) {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-            return;
-        };
-        let dict_bits = unsafe { class_dict_bits(class_ptr) };
-        if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-            && unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT
-        {
-            let new_name = intern_static_name(
-                _py,
-                &crate::runtime_state(_py).interned.new_name,
-                b"__new__",
-            );
-            unsafe { dict_set_in_place(_py, dict_ptr, new_name, new_fn_bits) };
-        }
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_alloc_function(fn_ptr: u64, arity: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let bits = crate::builtins::methods::alloc_builtin_function(_py, fn_ptr, arity);
-        if bits == 0 {
-            MoltObject::none().bits()
-        } else {
-            bits
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_itertools_alloc_function_with_defaults(
-    fn_ptr: u64,
-    arity: u64,
+    iter_fn: u64,
+    next_fn: u64,
+    new_fn: u64,
+    new_arity: u64,
     defaults_ptr: *const u64,
     defaults_len: usize,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let defaults = if defaults_len == 0 {
-            &[]
-        } else {
-            if defaults_ptr.is_null()
-                || !defaults_ptr.is_aligned()
-                || defaults_len > isize::MAX as usize / std::mem::size_of::<u64>()
-            {
-                return raise_exception::<_>(_py, "SystemError", "invalid itertools defaults span");
-            }
-            unsafe { std::slice::from_raw_parts(defaults_ptr, defaults_len) }
-        };
-        let bits = crate::builtins::methods::alloc_builtin_function_with_defaults(
-            _py, fn_ptr, arity, defaults,
-        );
-        if bits == 0 {
-            MoltObject::none().bits()
-        } else {
-            bits
+    crate::with_gil_entry_nopanic!(py, {
+        if exception_pending(py) {
+            return MoltObject::none().bits();
         }
+        if name_ptr.is_null() || name_len > isize::MAX as usize {
+            return raise_exception::<u64>(py, "SystemError", "invalid itertools class name span");
+        }
+        let Ok(name) =
+            std::str::from_utf8(unsafe { std::slice::from_raw_parts(name_ptr, name_len) })
+        else {
+            return raise_exception::<u64>(py, "SystemError", "invalid itertools class name");
+        };
+        let Some(shape) = crate::object::ObjectShapeId::from_u16(shape_id) else {
+            return raise_exception::<u64>(py, "SystemError", "invalid itertools shape id");
+        };
+        let constructor = if new_fn == 0 {
+            if new_arity != 0 || defaults_len != 0 {
+                return raise_exception::<u64>(
+                    py,
+                    "SystemError",
+                    "invalid absent itertools constructor",
+                );
+            }
+            None
+        } else {
+            let defaults = if defaults_len == 0 {
+                &[]
+            } else {
+                if defaults_ptr.is_null()
+                    || !defaults_ptr.is_aligned()
+                    || defaults_len > isize::MAX as usize / std::mem::size_of::<u64>()
+                {
+                    return raise_exception::<u64>(
+                        py,
+                        "SystemError",
+                        "invalid itertools defaults span",
+                    );
+                }
+                unsafe { std::slice::from_raw_parts(defaults_ptr, defaults_len) }
+            };
+            Some((new_fn, new_arity, defaults))
+        };
+        crate::itertools_class::alloc_itertools_class(
+            py,
+            name,
+            layout_size,
+            shape,
+            iter_fn,
+            next_fn,
+            constructor,
+        )
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_itertools_alloc_kwd_mark() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let total = std::mem::size_of::<MoltHeader>();
-        let ptr = alloc_object(_py, total, TYPE_ID_OBJECT);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
+    crate::with_gil_entry_nopanic!(_py, { crate::state::cache::alloc_kwd_mark(_py) })
 }
 
 #[unsafe(no_mangle)]

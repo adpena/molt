@@ -13,12 +13,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::bridge::{
     alloc_bytes, alloc_dict_with_pairs, alloc_list_with_capacity, alloc_string, alloc_tuple,
     attr_name_bits_from_bytes, bytes_like_slice, call_callable0, call_callable1, call_callable2,
-    call_class_init_with_args, clear_exception, dec_ref_bits, env_state_get,
-    exception_pending, inc_ref_bits, index_bigint_from_obj, int_bits_from_bigint, is_truthy,
-    missing_bits, molt_float_from_obj,
-    molt_getattr_builtin, molt_is_callable, molt_iter, molt_iter_next, molt_list_insert,
-    object_type_id, pending_exception_matches_builtin, raise_exception, seq_snapshot,
-    string_obj_to_owned, to_f64, to_i64, with_handled_exception, with_saved_exception,
+    call_class_init_with_args, clear_exception, dec_ref_bits, env_state_get, exception_pending,
+    inc_ref_bits, index_bigint_from_obj, int_bits_from_bigint, is_truthy, missing_bits,
+    molt_float_from_obj, molt_getattr_builtin, molt_is_callable, molt_iter, molt_iter_next,
+    molt_list_insert, object_type_id, pending_exception_matches_builtin, raise_exception,
+    seq_snapshot, string_obj_to_owned, to_f64, to_i64, with_handled_exception,
+    with_saved_exception,
 };
 
 #[path = "functions_http/client_core.rs"]

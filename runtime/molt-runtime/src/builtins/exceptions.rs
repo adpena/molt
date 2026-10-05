@@ -80,7 +80,9 @@ pub use attributes::{
     molt_exception_member_delete, molt_exception_member_get, molt_exception_member_set,
 };
 
+mod raise_protocol;
 mod storage;
+pub use raise_protocol::molt_exception_prepare_raise;
 pub(crate) use storage::{
     ExceptionStorage, ExceptionValue, exception_class, exception_field, exception_traceback,
 };
@@ -3152,11 +3154,7 @@ fn cache_exception_type(_py: &PyToken<'_>, name: &str, class_bits: u64) -> u64 {
     let class_ptr = obj_from_bits(class_bits)
         .as_ptr()
         .expect("new exception class");
-    if exception_pending(_py)
-        || !unsafe {
-            crate::builtins::attr::capture_class_slot_declaration_for_seal(_py, class_ptr)
-        }
-    {
+    if exception_pending(_py) {
         dec_ref_bits(_py, class_bits);
         return 0;
     }
@@ -3194,6 +3192,17 @@ fn cache_exception_type(_py: &PyToken<'_>, name: &str, class_bits: u64) -> u64 {
             dec_ref_bits(_py, class_bits);
             return 0;
         }
+    }
+    // Descriptor publication below resolves canonical owners through this
+    // cache. Seal the complete layout and creation metadata before making the
+    // identity visible to that reentry, as every other native factory does.
+    if unsafe { crate::object::class_finish_definition(_py, class_ptr) }.is_err() {
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            unsafe { crate::object::class_storage::clear_class_runtime_contents(_py, class_ptr) };
+            class_break_cycles(_py, class_bits);
+            dec_ref_bits(_py, class_bits);
+        });
+        return 0;
     }
     // Transfer the constructor's owned reference into the cache. The returned
     // reference is borrowed on both a miss and a hit; no creator hold leaks.
@@ -3373,68 +3382,6 @@ pub(crate) fn exception_normalize_args(_py: &PyToken<'_>, args_bits: u64) -> u64
         MoltObject::none().bits()
     } else {
         MoltObject::from_ptr(ptr).bits()
-    }
-}
-
-pub(crate) unsafe fn exception_store_args_and_message(
-    _py: &PyToken<'_>,
-    ptr: *mut u8,
-    args_bits: u64,
-    msg_bits: u64,
-) -> bool {
-    unsafe {
-        crate::gil_assert();
-        let args_slot = ptr.add(EXCEPTION_ARGS_SLOT * std::mem::size_of::<u64>()) as *mut u64;
-        let old_args = *args_slot;
-        let payload_slot =
-            ptr.add(EXCEPTION_ARGS_PAYLOAD_SLOT * std::mem::size_of::<u64>()) as *mut u64;
-        let old_payload = *payload_slot;
-        let clear_payload =
-            exception_args_is_lazy_single(old_args) && old_payload != MoltObject::none().bits();
-        if clear_payload {
-            inc_ref_bits(_py, MoltObject::none().bits());
-        }
-        if old_args != args_bits {
-            *args_slot = args_bits;
-        }
-        if clear_payload {
-            *payload_slot = MoltObject::none().bits();
-        }
-        let msg_slot = ptr.add(EXCEPTION_MSG_SLOT * std::mem::size_of::<u64>()) as *mut u64;
-        let old_msg = *msg_slot;
-        if old_msg != msg_bits {
-            *msg_slot = msg_bits;
-        }
-        let header = crate::header_from_obj_ptr(ptr);
-        let pushed =
-            ((*header).load_synchronized_flags() & crate::object::HEADER_FLAG_HAS_ABI_VIEW) == 0
-                || molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                    .refresh_exception_view(MoltObject::from_ptr(ptr).bits());
-        if !pushed {
-            *args_slot = old_args;
-            *msg_slot = old_msg;
-            if clear_payload {
-                *payload_slot = old_payload;
-                dec_ref_bits(_py, MoltObject::none().bits());
-            }
-            dec_ref_bits(_py, args_bits);
-            dec_ref_bits(_py, msg_bits);
-            return false;
-        }
-        if old_args != args_bits {
-            dec_ref_bits(_py, old_args);
-        } else {
-            dec_ref_bits(_py, args_bits);
-        }
-        if old_msg != msg_bits {
-            dec_ref_bits(_py, old_msg);
-        } else {
-            dec_ref_bits(_py, msg_bits);
-        }
-        if clear_payload {
-            dec_ref_bits(_py, old_payload);
-        }
-        true
     }
 }
 
@@ -3804,21 +3751,6 @@ unsafe fn exception_reinitialize_from_args(
         ExceptionLayoutKind::Base | ExceptionLayoutKind::Group => unsafe {
             exception_reinit_default_message(_py, ptr, args_bits, &[])
         },
-    }
-}
-
-unsafe fn exception_reinitialize_from_owner_root(
-    _py: &PyToken<'_>,
-    ptr: *mut u8,
-    args_bits: u64,
-    owner_root: ExceptionLayoutRoot,
-) -> Result<(), &'static str> {
-    match owner_root {
-        ExceptionLayoutRoot::Base | ExceptionLayoutRoot::BaseExceptionGroup => unsafe {
-            exception_reinit_default_message(_py, ptr, args_bits, &[])
-        },
-        ExceptionLayoutRoot::OSError => Ok(()),
-        _ => unsafe { exception_reinitialize_from_args(_py, ptr, args_bits) },
     }
 }
 
@@ -4381,40 +4313,31 @@ pub extern "C" fn molt_exception_new_bound(class_bits: u64, args_bits: u64) -> u
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_init(self_bits: u64, args_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let self_obj = obj_from_bits(self_bits);
-        let Some(self_ptr) = self_obj.as_ptr() else {
+    crate::with_gil_entry_nopanic!(py, {
+        let _args = ExceptionValue::adopt(py, args_bits);
+        if exception_pending(py)
+            || unsafe { !molt_cpython_abi::api::errors::PyErr_Occurred().is_null() }
+        {
+            return MoltObject::none().bits();
+        }
+        let Some(storage) = ExceptionStorage::for_exception(py, self_bits) else {
+            if exception_pending(py)
+                || unsafe { !molt_cpython_abi::api::errors::PyErr_Occurred().is_null() }
+            {
+                return MoltObject::none().bits();
+            }
             return raise_exception::<u64>(
-                _py,
+                py,
                 "TypeError",
                 "exception init expects exception instance",
             );
         };
-        unsafe {
-            if object_type_id(self_ptr) != TYPE_ID_EXCEPTION {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "exception init expects exception instance",
-                );
-            }
-        }
-        let norm_bits = exception_normalize_args(_py, args_bits);
-        if obj_from_bits(norm_bits).is_none() {
-            if !obj_from_bits(args_bits).is_none() {
-                dec_ref_bits(_py, args_bits);
-            }
+        let _receiver = ExceptionValue::pin(py, self_bits);
+        let norm = ExceptionValue::adopt(py, exception_normalize_args(py, args_bits));
+        if obj_from_bits(norm.bits()).is_none() {
             return MoltObject::none().bits();
         }
-        let reinitialized =
-            unsafe { exception_reinitialize_from_args(_py, self_ptr, norm_bits) }.is_ok();
-        dec_ref_bits(_py, norm_bits);
-        if !obj_from_bits(args_bits).is_none() {
-            dec_ref_bits(_py, args_bits);
-        }
-        if !reinitialized {
-            return MoltObject::none().bits();
-        }
+        let _ = storage.initialize(py, storage.layout_root(py), norm.bits(), &[], &[]);
         MoltObject::none().bits()
     })
 }
@@ -4426,41 +4349,58 @@ pub(crate) extern "C" fn molt_exception_init_owned(
     keyword_names_bits: u64,
     keyword_values_bits: u64,
 ) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
+    crate::with_gil_entry_nopanic!(py, {
+        // This ABI consumes the three packed inputs on every outcome. Their
+        // guards retain them across callbacks and preserve both raised channels.
+        let _args = ExceptionValue::adopt(py, args_bits);
+        let _names = ExceptionValue::adopt(py, keyword_names_bits);
+        let _values = ExceptionValue::adopt(py, keyword_values_bits);
+        if exception_pending(py)
+            || unsafe { !molt_cpython_abi::api::errors::PyErr_Occurred().is_null() }
+        {
+            return MoltObject::none().bits();
+        }
         let Some(owner_root) = obj_from_bits(owner_root_bits)
             .as_int()
             .and_then(|value| u8::try_from(value).ok())
             .and_then(ExceptionLayoutRoot::from_u8)
         else {
-            for bits in [args_bits, keyword_names_bits, keyword_values_bits] {
-                if !obj_from_bits(bits).is_none() {
-                    dec_ref_bits(_py, bits);
-                }
-            }
-            return raise_exception::<u64>(_py, "SystemError", "invalid exception init owner");
+            return raise_exception::<u64>(py, "SystemError", "invalid exception init owner");
         };
-        let owner_bits = exception_type_bits_from_name(_py, owner_root.owner_name());
-        let cleanup = || {
-            for bits in [args_bits, keyword_names_bits, keyword_values_bits] {
-                if !obj_from_bits(bits).is_none() {
-                    dec_ref_bits(_py, bits);
-                }
+        // Logical subtype admission does not establish a managed payload.
+        // Capture physical storage before dispatching the declaring initializer.
+        let Some(storage) = ExceptionStorage::for_exception(py, self_bits) else {
+            if exception_pending(py)
+                || unsafe { !molt_cpython_abi::api::errors::PyErr_Occurred().is_null() }
+            {
+                return MoltObject::none().bits();
             }
+            return raise_exception::<u64>(
+                py,
+                "TypeError",
+                "exception init expects exception instance",
+            );
         };
-        if !isinstance_bits(_py, self_bits, owner_bits) {
+        let _receiver = ExceptionValue::pin(py, self_bits);
+        let owner_bits = exception_type_bits_from_name(py, owner_root.owner_name());
+        if !isinstance_bits(py, self_bits, owner_bits) {
+            if exception_pending(py)
+                || unsafe { !molt_cpython_abi::api::errors::PyErr_Occurred().is_null() }
+            {
+                return MoltObject::none().bits();
+            }
             let owner_name = class_name_for_error(owner_bits);
-            let received = class_name_for_error(type_of_bits(_py, self_bits));
+            let received = class_name_for_error(type_of_bits(py, self_bits));
             let message = format!(
                 "descriptor '__init__' requires a '{owner_name}' object but received a '{received}'"
             );
-            cleanup();
-            return raise_exception::<u64>(_py, "TypeError", &message);
+            return raise_exception::<u64>(py, "TypeError", &message);
         }
         let names = obj_from_bits(keyword_names_bits)
             .as_ptr()
             .and_then(|ptr| unsafe {
                 crate::object::seq_access::snapshot(
-                    _py,
+                    py,
                     ptr,
                     "exception keyword-name snapshot allocation failed",
                 )
@@ -4469,20 +4409,20 @@ pub(crate) extern "C" fn molt_exception_init_owned(
             .as_ptr()
             .and_then(|ptr| unsafe {
                 crate::object::seq_access::snapshot(
-                    _py,
+                    py,
                     ptr,
                     "exception keyword-value snapshot allocation failed",
                 )
             });
         let (Some(names), Some(values)) = (names, values) else {
-            cleanup();
+            if !exception_pending(py) {
+                raise_exception::<u64>(py, "SystemError", "malformed exception keywords");
+            }
             return MoltObject::none().bits();
         };
         if names.len() != values.len() {
-            cleanup();
-            return raise_exception::<u64>(_py, "SystemError", "malformed exception keywords");
+            return raise_exception::<u64>(py, "SystemError", "malformed exception keywords");
         }
-
         let keyword_capable = matches!(
             owner_root,
             ExceptionLayoutRoot::AttributeError
@@ -4490,48 +4430,14 @@ pub(crate) extern "C" fn molt_exception_init_owned(
                 | ExceptionLayoutRoot::ImportError
         );
         if !names.is_empty() && !keyword_capable {
-            let receiver_class_bits = type_of_bits(_py, self_bits);
-            let receiver_name = class_name_for_error(receiver_class_bits);
-            let message = format!("{receiver_name}() takes no keyword arguments");
-            cleanup();
-            return raise_exception::<u64>(_py, "TypeError", &message);
-        }
-        let Some(self_ptr) = obj_from_bits(self_bits).as_ptr() else {
-            cleanup();
+            let receiver_name = class_name_for_error(type_of_bits(py, self_bits));
             return raise_exception::<u64>(
-                _py,
+                py,
                 "TypeError",
-                "exception init expects exception instance",
-            );
-        };
-        if owner_root == ExceptionLayoutRoot::BaseExceptionGroup {
-            let message = unsafe { exception_msg_bits(self_ptr) };
-            inc_ref_bits(_py, args_bits);
-            inc_ref_bits(_py, message);
-            let _ = unsafe { exception_store_args_and_message(_py, self_ptr, args_bits, message) };
-            for bits in [keyword_names_bits, keyword_values_bits] {
-                dec_ref_bits(_py, bits);
-            }
-            return MoltObject::none().bits();
-        }
-        // Typed keyword families stage common positional state first, validate
-        // the complete keyword set, then atomically replace the whole typed
-        // family. A rejected keyword therefore updates .args while preserving
-        // every prior typed field, exactly like CPython.
-        let reinitialized = if names.is_empty() {
-            unsafe { exception_reinitialize_from_owner_root(_py, self_ptr, args_bits, owner_root) }
-        } else {
-            unsafe { exception_reinit_default_message(_py, self_ptr, args_bits, &[]) }
-        };
-        if reinitialized.is_ok() && !names.is_empty() {
-            let _ = crate::call::class_init::apply_builtin_exception_keywords(
-                _py, owner_bits, self_bits, &names, &values,
+                &format!("{receiver_name}() takes no keyword arguments"),
             );
         }
-        dec_ref_bits(_py, args_bits);
-        for bits in [keyword_names_bits, keyword_values_bits] {
-            dec_ref_bits(_py, bits);
-        }
+        let _ = storage.initialize(py, owner_root, args_bits, &names, &values);
         MoltObject::none().bits()
     })
 }
@@ -4680,18 +4586,6 @@ pub extern "C" fn molt_exception_message(exc_bits: u64) -> u64 {
             return raise_exception::<u64>(_py, "TypeError", "expected exception object");
         }
         molt_str_from_obj(exc_bits)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_exception_set_cause(exc_bits: u64, cause_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if let Err(message) =
-            exception_replace_field_bits(_py, exc_bits, ExceptionFieldSlot::Cause, cause_bits)
-        {
-            return raise_exception::<u64>(_py, "TypeError", message);
-        }
-        MoltObject::none().bits()
     })
 }
 

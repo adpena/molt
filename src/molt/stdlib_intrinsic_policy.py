@@ -14,7 +14,7 @@ from molt.compiler_analysis.python_imports import (
     StaticImportRequest,
     StaticImportPlan,
     UnresolvedStaticImportError,
-    analyze_module_import_flow,
+    module_import_context_with_metadata_proof,
     plan_static_import_request,
     require_static_import_modules,
 )
@@ -407,14 +407,38 @@ def _stdlib_module_import_evidence_from_tree(
         is_package=path.name == "__init__.py",
         target_python=target_python.feature_version,
     )
-    import_flow = analyze_module_import_flow(tree, base_context)
+    from molt.compiler_analysis.python_binding_flow import (
+        PythonBindingPolicy,
+        analyze_python_bindings,
+    )
+    from molt.compiler_analysis.python_source_keys import python_ast_digest
+
+    bindings = analyze_python_bindings(
+        tree,
+        source_digest=python_ast_digest(tree),
+        policy=PythonBindingPolicy(
+            target_python=target_python.feature_version,
+            module_name=module_name,
+            module_is_package=path.name == "__init__.py",
+        ),
+    )
+    import_flow = bindings.module_import_flow
     facade_imports = _pure_facade_imports(tree)
     facade_bindings: list[StdlibFacadeBinding] = []
 
     def contexts_for(node: ast.AST) -> tuple[ModuleImportContext, ...]:
-        return tuple(
+        contexts = tuple(
             base_context.with_state(state) for state in import_flow.states_for(node)
         )
+        if isinstance(node, ast.ImportFrom) and node.level:
+            fact = bindings.statement_fact(node)
+            return tuple(
+                module_import_context_with_metadata_proof(
+                    context, fact.module_metadata_at_entry if fact is not None else None
+                )
+                for context in contexts
+            )
+        return contexts
 
     def record_request(node: ast.AST, request: StaticImportRequest) -> None:
         plan = plan_static_import_request(request, contexts_for(node))

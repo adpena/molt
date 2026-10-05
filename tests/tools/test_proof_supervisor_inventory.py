@@ -16,6 +16,7 @@ from tools.proof_queue_pkg import (
     execution_custody,
     process_image_capture,
     supervisor_custody,
+    supervisor_generation,
 )
 
 
@@ -105,19 +106,11 @@ def test_supervisor_policy_cannot_publish_nonfinite_json(tmp_path: Path) -> None
 
 @functools.lru_cache(maxsize=1)
 def _test_proof_supervisor_binary() -> Path:
-    build = (
-        Path(supervisor_custody.__file__).resolve().parents[1]
-        / "proof_supervisor"
-        / "build.py"
-    )
-    completed = run_custody_subject_process(
-        [sys.executable, str(build), "--release"],
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
+    binary, _receipt = supervisor_generation.provision(
+        cwd=Path(supervisor_custody.__file__).resolve().parents[2],
         env=proof_queue_owned_roots.native_build_environment(source=Path(__file__)),
     )
-    return Path(completed.stdout.splitlines()[-1]).resolve(strict=True)
+    return binary
 
 
 def test_supervisor_admits_exact_platform_image_without_directory_authority(

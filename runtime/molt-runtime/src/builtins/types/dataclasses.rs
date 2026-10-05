@@ -540,7 +540,7 @@ pub extern "C" fn molt_dataclasses_set_field_metadata(field_bits: u64, metadata_
             metadata_bits
         };
 
-        let _ = crate::molt_object_setattr(field_bits, meta_name_bits, val_bits);
+        let _ = crate::molt_set_attr_name(field_bits, meta_name_bits, val_bits);
         dec_ref_bits(_py, meta_name_bits);
 
         MoltObject::none().bits()

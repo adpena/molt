@@ -31,12 +31,8 @@ fn flag(func: &mut TirFunction) -> ValueId {
     value
 }
 
-fn produce(result: ValueId) -> TirOp {
-    op(OpCode::Call, vec![], vec![result])
-}
-
 fn consume(value: ValueId) -> TirOp {
-    op(OpCode::Call, vec![value], vec![])
+    borrow(vec![value])
 }
 
 fn observe(label: i64, payload: Vec<ValueId>) -> TirOp {
@@ -103,6 +99,8 @@ fn handler_argument_keeps_the_loop_value_it_receives() {
     let carried = owned(&mut func);
     let handled = owned(&mut func);
     let more = flag(&mut func);
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let more_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let header = func.fresh_block();
     let body = func.fresh_block();
     let handler = func.fresh_block();
@@ -110,21 +108,15 @@ fn handler_argument_keeps_the_loop_value_it_receives() {
     func.label_id_map.insert(handler.0, 37);
     func.loop_roles.insert(header, LoopRole::LoopHeader);
     let entry = func.entry_block;
-    func.blocks.insert(
-        entry,
-        block(
-            entry,
-            vec![],
-            vec![produce(tuple)],
-            jump(header, vec![tuple]),
-        ),
-    );
+    // Preserve the authored signature while filling the entry body.
+    func.blocks.get_mut(&entry).unwrap().ops = vec![produce(tuple)];
+    func.blocks.get_mut(&entry).unwrap().terminator = jump(header, vec![tuple]);
     func.blocks.insert(
         header,
         block(
             header,
             vec![carried],
-            vec![op(OpCode::ConstBool, vec![], vec![more])],
+            vec![op(OpCode::Copy, vec![more_input], vec![more])],
             choose(more, body, exit),
         ),
     );
@@ -135,7 +127,7 @@ fn handler_argument_keeps_the_loop_value_it_receives() {
             vec![],
             vec![
                 protect(37, vec![carried]),
-                op(OpCode::Call, vec![], vec![]),
+                named_call("fixture_external_call", vec![], vec![]),
                 observe(37, vec![carried]),
             ],
             jump(header, vec![carried]),
@@ -317,15 +309,8 @@ fn dead_handler_argument_releases_what_its_check_moved() {
     );
     func.blocks
         .insert(next, block(next, vec![], vec![consume(root)], done()));
-    func.blocks.insert(
-        handler,
-        block(
-            handler,
-            vec![bound],
-            vec![op(OpCode::WarnStderr, vec![], vec![])],
-            done(),
-        ),
-    );
+    func.blocks
+        .insert(handler, block(handler, vec![bound], vec![marker()], done()));
 
     insert(&mut func);
     assert_eq!(trace(&func, 0, &[]), vec![Event::Freed(0)]);
@@ -345,19 +330,15 @@ fn dead_join_argument_releases_what_each_arm_moved() {
     let right = owned(&mut func);
     let joined = owned(&mut func);
     let cond = flag(&mut func);
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let then_block = func.fresh_block();
     let else_block = func.fresh_block();
     let join = func.fresh_block();
     let entry = func.entry_block;
-    func.blocks.insert(
-        entry,
-        block(
-            entry,
-            vec![],
-            vec![op(OpCode::ConstBool, vec![], vec![cond])],
-            choose(cond, then_block, else_block),
-        ),
-    );
+    // Preserve the authored signature while filling the entry body.
+    func.blocks.get_mut(&entry).unwrap().ops = vec![op(OpCode::Copy, vec![cond_input], vec![cond])];
+    func.blocks.get_mut(&entry).unwrap().terminator = choose(cond, then_block, else_block);
     func.blocks.insert(
         then_block,
         block(
@@ -376,15 +357,8 @@ fn dead_join_argument_releases_what_each_arm_moved() {
             jump(join, vec![right]),
         ),
     );
-    func.blocks.insert(
-        join,
-        block(
-            join,
-            vec![joined],
-            vec![op(OpCode::WarnStderr, vec![], vec![])],
-            done(),
-        ),
-    );
+    func.blocks
+        .insert(join, block(join, vec![joined], vec![marker()], done()));
 
     insert(&mut func);
     let paths: [&[bool]; 2] = [&[true], &[false]];
@@ -425,7 +399,10 @@ fn handler_reentering_itself_keeps_one_owner() {
         block(
             handler,
             vec![bound],
-            vec![op(OpCode::Call, vec![], vec![]), observe(44, vec![bound])],
+            vec![
+                named_call("fixture_external_call", vec![], vec![]),
+                observe(44, vec![bound]),
+            ],
             jump(recovered, vec![]),
         ),
     );
@@ -531,7 +508,7 @@ fn local_moved_into_a_handler_argument_is_released_once_at_scope_exit() {
             exit,
             vec![current],
             vec![
-                op(OpCode::WarnStderr, vec![], vec![]),
+                marker(),
                 original_copy_with_operands("load_var", vec![current], vec![loaded]),
                 op(OpCode::DelBoundary, vec![loaded], vec![]),
             ],
@@ -590,15 +567,8 @@ fn frame_boundary_of_a_moved_local_releases_it_only_where_it_is_owned() {
             jump(exit, vec![]),
         ),
     );
-    func.blocks.insert(
-        exit,
-        block(
-            exit,
-            vec![],
-            vec![op(OpCode::WarnStderr, vec![], vec![])],
-            done(),
-        ),
-    );
+    func.blocks
+        .insert(exit, block(exit, vec![], vec![marker()], done()));
 
     insert(&mut func);
     let paths: [&[bool]; 2] = [&[], &[true]];
@@ -712,13 +682,15 @@ fn borrowed_phi_retains_run_only_on_the_selected_arc() {
         let entry = func.entry_block;
         let borrowed = func.blocks[&entry].args[0].id;
         let condition = flag(&mut func);
+        // Keep both CFG paths executable; this fixture condition is not a literal.
+        let condition_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
         let then_block = func.fresh_block();
         let else_block = func.fresh_block();
         let then_values: Vec<_> = (0..then_count).map(|_| owned(&mut func)).collect();
         let else_values: Vec<_> = (0..else_count).map(|_| owned(&mut func)).collect();
         let body = func.blocks.get_mut(&entry).unwrap();
         body.ops
-            .push(op(OpCode::ConstBool, vec![], vec![condition]));
+            .push(op(OpCode::Copy, vec![condition_input], vec![condition]));
         body.terminator = Terminator::CondBranch {
             cond: condition,
             then_block,
@@ -766,7 +738,13 @@ fn dead_handler_argument_unbound_at_region_entry_releases_what_its_check_moved()
             entry,
             vec![],
             vec![
-                op(OpCode::ConstBool, vec![], vec![unbound]),
+                TirOp {
+                    attrs: AttrDict::from([(
+                        "value".into(),
+                        molt_ir::tir::ops::AttrValue::Bool(true),
+                    )]),
+                    ..op(OpCode::ConstBool, vec![], vec![unbound])
+                },
                 protect(51, vec![unbound]),
                 produce(root),
                 observe(51, vec![root]),
@@ -776,15 +754,8 @@ fn dead_handler_argument_unbound_at_region_entry_releases_what_its_check_moved()
     );
     func.blocks
         .insert(next, block(next, vec![], vec![consume(root)], done()));
-    func.blocks.insert(
-        handler,
-        block(
-            handler,
-            vec![bound],
-            vec![op(OpCode::WarnStderr, vec![], vec![])],
-            done(),
-        ),
-    );
+    func.blocks
+        .insert(handler, block(handler, vec![bound], vec![marker()], done()));
 
     insert(&mut func);
     assert_eq!(trace(&func, 0, &[]), vec![Event::Freed(0)]);
@@ -819,7 +790,7 @@ fn equivalent_exception_cleanups_share_code_but_keep_each_edges_values() {
             func.label_id_map.insert(handler.0, 99);
             let handler_args: Vec<_> = (0..forwarded.len()).map(|_| owned(&mut func)).collect();
             let mut handler_ops: Vec<_> = handler_args.iter().copied().map(consume).collect();
-            handler_ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+            handler_ops.push(marker());
             func.blocks
                 .insert(handler, block(handler, handler_args, handler_ops, done()));
             let mut sources = vec![entry];
@@ -912,7 +883,7 @@ fn construction_prefix_cleanup_is_linear_and_preserves_every_failure_path() {
             func.label_id_map.insert(handler.0, 91);
             let handler_args: Vec<_> = (0..forwarded.len()).map(|_| owned(&mut func)).collect();
             let mut handler_ops: Vec<_> = handler_args.iter().copied().map(consume).collect();
-            handler_ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+            handler_ops.push(marker());
             func.blocks
                 .insert(handler, block(handler, handler_args, handler_ops, done()));
             let values: Vec<_> = (0..count).map(|_| owned(&mut func)).collect();

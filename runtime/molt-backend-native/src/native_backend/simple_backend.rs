@@ -113,8 +113,7 @@ pub struct SimpleBackend {
     /// The entry custody of every function a `func_new` in the batch being
     /// compiled can name, derived from that function's own parameter
     /// declaration. `compile` sets it before any function is lowered.
-    pub(crate) function_entry_custody:
-        BTreeMap<String, molt_codegen_abi::EntryCustodyDeclaration>,
+    pub(crate) function_entry_custody: BTreeMap<String, molt_codegen_abi::EntryCustodyDeclaration>,
 }
 
 #[cfg(all(test, feature = "native-backend"))]

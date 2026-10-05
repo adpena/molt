@@ -3,6 +3,7 @@ use crate::{TYPE_ID_LIST, alloc_list, call_callable0, call_callable1, header_fro
 use num_bigint::BigInt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod logical_type;
 mod protocol;
 mod wrapper_integration;
 
@@ -44,7 +45,7 @@ fn method_resolution_owns_selection_through_reentrant_cache_eviction_and_consume
             scalar_attr_identity as *const (),
             1,
         );
-        let owner = test_class_bits(py, b"EvictionMethodOwner", &[(b"method", method)]);
+        let owner = test_class_bits(py, b"EvictionMethodOwner", &[], &[(b"method", method)]);
         let receiver = unsafe { call_callable0(py, owner) };
         let name = string_bits(py, b"method");
         assert!(!exception_pending(py));
@@ -56,7 +57,8 @@ fn method_resolution_owns_selection_through_reentrant_cache_eviction_and_consume
             cache_eviction_removes_selected_method as *const (),
             1,
         );
-        let retiring_class = test_class_bits(py, b"RetiringCacheValue", &[(b"__del__", finalizer)]);
+        let retiring_class =
+            test_class_bits(py, b"RetiringCacheValue", &[], &[(b"__del__", finalizer)]);
         let retiring = unsafe { call_callable0(py, retiring_class) };
         assert!(!exception_pending(py));
         dec_ref_bits(py, finalizer);
@@ -239,7 +241,7 @@ fn runtime_function_bits(
     MoltObject::from_ptr(ptr).bits()
 }
 
-fn test_class_bits(_py: &PyToken<'_>, name: &[u8], attrs: &[(&[u8], u64)]) -> u64 {
+fn test_class_bits(_py: &PyToken<'_>, name: &[u8], bases: &[u64], attrs: &[(&[u8], u64)]) -> u64 {
     let builtins = builtin_classes(_py);
     let name_bits = string_bits(_py, name);
     let namespace_bits = crate::molt_dict_new(attrs.len() as u64);
@@ -252,13 +254,19 @@ fn test_class_bits(_py: &PyToken<'_>, name: &[u8], attrs: &[(&[u8], u64)]) -> u6
         );
         dec_ref_bits(_py, attr_bits);
     }
+    // Bases belong to construction. The returned type has completed slot
+    // admission, so the construction-only base setter cannot mutate it later.
+    let bases_ptr = alloc_tuple(_py, bases);
+    assert!(!bases_ptr.is_null());
+    let bases_bits = MoltObject::from_ptr(bases_ptr).bits();
     let class_bits = crate::builtins::types::molt_type_new(
         builtins.type_obj,
         name_bits,
-        MoltObject::none().bits(),
+        bases_bits,
         namespace_bits,
         MoltObject::none().bits(),
     );
+    dec_ref_bits(_py, bases_bits);
     assert!(!obj_from_bits(class_bits).is_none());
     assert!(!exception_pending(_py));
     dec_ref_bits(_py, namespace_bits);
@@ -543,14 +551,15 @@ fn descriptor_bind_custom_get_preserves_arguments_across_owner_mutation() {
             3,
         );
         let descriptor_class_bits =
-            test_class_bits(_py, b"ScalarAttrDescriptor", &[(b"__get__", get_bits)]);
+            test_class_bits(_py, b"ScalarAttrDescriptor", &[], &[(b"__get__", get_bits)]);
         let descriptor_class_ptr = obj_from_bits(descriptor_class_bits)
             .as_ptr()
             .expect("descriptor class pointer");
         let descriptor_bits = unsafe { crate::alloc_instance_for_class(_py, descriptor_class_ptr) };
         assert!(!obj_from_bits(descriptor_bits).is_none());
 
-        let owner_bits = test_class_bits(_py, b"ScalarAttrOwner", &[(b"probe", descriptor_bits)]);
+        let owner_bits =
+            test_class_bits(_py, b"ScalarAttrOwner", &[], &[(b"probe", descriptor_bits)]);
         let owner_ptr = obj_from_bits(owner_bits)
             .as_ptr()
             .expect("owner class pointer");
@@ -631,6 +640,7 @@ fn dir_raw_mro_lookup_preserves_class_held_function_descriptor() {
         let class_bits = test_class_bits(
             _py,
             b"DescriptorDirOwner",
+            &[],
             &[(b"__dir__", dir_function_bits)],
         );
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class pointer");
@@ -877,6 +887,7 @@ fn descriptor_call1_pins_generic_get_method_across_self_replacement() {
         let descriptor_class_bits = test_class_bits(
             _py,
             b"SelfReplacingGetDescriptor",
+            &[],
             &[(b"__get__", get_bits)],
         );
         let descriptor_class_ptr = obj_from_bits(descriptor_class_bits)
@@ -887,6 +898,7 @@ fn descriptor_call1_pins_generic_get_method_across_self_replacement() {
         let owner_bits = test_class_bits(
             _py,
             b"SelfReplacingGetOwner",
+            &[],
             &[(b"probe", descriptor_bits)],
         );
         let owner_ptr = obj_from_bits(owner_bits)

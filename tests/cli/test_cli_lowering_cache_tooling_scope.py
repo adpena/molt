@@ -1,5 +1,4 @@
-"""Scoped frontend-tooling fingerprint: unrelated CLI/runtime/link edits must
-not cold-start the persisted per-module frontend caches.
+"""Frontend fingerprints retain reachability scope when anchors are known.
 
 The persisted analysis / lowering / import-graph caches key on a *frontend
 tooling* fingerprint. Historically that fingerprint hashed the entire
@@ -13,7 +12,9 @@ a post-lowering CLI module, while it still changes for any edit that could
 genuinely affect lowering (a ``frontend/`` file or a frontend-driver CLI file).
 The scope is derived structurally by module-level import reachability from the
 frontend/module drivers -- no hand-maintained denylist -- so a post-lowering file
-is out of scope precisely because no lowering-reachable module imports it. The
+is out of scope when no lowering-reachable module imports it and no unknown
+literal-relative anchor requires complete local owner coverage. Such coverage
+deliberately broadens invalidation rather than assuming loader metadata. The
 broad :func:`_cache_tooling_fingerprint` -- the input the caches used before the
 fix -- is asserted to *still change* on the unrelated edit, so the tests have
 teeth: without the scoping the cache keys would move.
@@ -24,6 +25,7 @@ from tests.process_guard_common import run_guarded_test_process
 
 import importlib
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -173,25 +175,14 @@ def test_analysis_and_lowering_cache_keys_ignore_orthogonal_cli_edit(
     assert broad_after != broad_before
 
 
-def test_frontend_drivers_in_scope_and_post_lowering_excluded() -> None:
-    """The structurally-derived scope includes every frontend/module driver and
-    excludes the post-lowering backend/link/cargo/toolchain layer.
-
-    This replaces the old hand-maintained orthogonal denylist: instead of asserting
-    a curated list is disjoint from drivers, it asserts the reachability-derived
-    source set (the real cache key input) has the two required properties. A
-    frontend driver falling out of scope would serve a stale lowering; a backend
-    file falling into scope would needlessly cold-start it.
-    """
+def test_frontend_drivers_and_explicit_local_coverage_scope() -> None:
+    """Drivers always participate; broad coverage is explicit in the receipt."""
     root = CF._compiler_root()
+    inputs = CF._frontend_semantic_tooling_sources(root)
     # Restrict to ``cli/`` basenames: other packages may legitimately reuse a
     # basename (e.g. ``compiler_analysis/backend_ir.py`` is frontend-analysis IR,
     # unrelated to the post-lowering ``cli/backend_ir.py``).
-    scoped = {
-        path.name
-        for path in CF._frontend_semantic_tooling_sources(root).paths
-        if path.parent.name == "cli"
-    }
+    scoped = {path.name for path in inputs.paths if path.parent.name == "cli"}
 
     frontend_drivers = {
         "frontend_execution.py",
@@ -227,6 +218,7 @@ def test_frontend_drivers_in_scope_and_post_lowering_excluded() -> None:
         "backend_ir.py",
         "cargo_execution.py",
         "cargo_profiles.py",
+        "installed_runtime.py",
         "link_pipeline.py",
         "mlir_backend.py",
         "native_binary.py",
@@ -244,8 +236,10 @@ def test_frontend_drivers_in_scope_and_post_lowering_excluded() -> None:
         "toolchain_validation.py",
         "setup_readiness.py",
     }
-    leaked = sorted(post_lowering & scoped)
-    assert not leaked, f"post-lowering files leaked into the lowering scope: {leaked}"
+    if inputs.topology_digest:
+        assert post_lowering <= scoped
+    else:
+        assert not post_lowering & scoped
 
 
 def test_reachability_follows_driver_imports_but_not_backend() -> None:
@@ -289,8 +283,8 @@ def test_reachability_follows_driver_imports_but_not_backend() -> None:
 
 def test_scoped_fingerprint_differs_from_broad_on_real_tree() -> None:
     """On the real source tree the scoped and broad fingerprints are distinct --
-    the scope genuinely drops the orthogonal cli files (and uses a separate scope
-    tag), so wiring a cache to one vs the other is observable."""
+    distinct consumer domains remain distinct even when local coverage expands
+    the semantic input set."""
     assert (
         CF._frontend_semantic_tooling_fingerprint() != CF._cache_tooling_fingerprint()
     )
@@ -306,13 +300,13 @@ def test_admission_policy_files_stay_in_scope() -> None:
     from molt.cli import cache_fingerprints as cf
 
     root = Path(cf.__file__).resolve().parents[3]
-    names = {p.name for p in cf._frontend_semantic_tooling_sources(root).paths}
+    inputs = cf._frontend_semantic_tooling_sources(root)
+    names = {p.name for p in inputs.paths}
     assert "external_native.py" in names, (
         "external_native.py fell out of the lowering fingerprint scope -> stale-lowering risk"
     )
-    # sanity: the genuinely post-lowering files stay excluded (perf win intact)
-    assert "link_pipeline.py" not in names
-    assert "backend_cache.py" not in names
+    for name in ("link_pipeline.py", "backend_cache.py"):
+        assert (name in names) is bool(inputs.topology_digest)
 
 
 def test_import_molt_cli_does_not_load_backend() -> None:
@@ -419,6 +413,7 @@ def _scope_relpaths(root: Path) -> set[str]:
 _COMMAND_LAYER_OUT = (
     "cli/__init__.py",
     "cli/build_locks.py",
+    "cli/source_build_environment.py",
     "file_locks.py",
     "cli/extension_seal.py",
     "cli/extension_scan.py",
@@ -440,6 +435,7 @@ _LOWERING_RELEVANT_IN = (
     "compiler_analysis/static_truth.py",
     "compiler_analysis/python_builtin_shapes.py",
     "compiler_analysis/python_binding_facts.py",
+    "compiler_analysis/python_value_identity.py",
     "compiler_analysis/python_binding_flow.py",
     "compiler_analysis/native_support_slice.py",
     "compiler_analysis/hashing.py",
@@ -454,23 +450,18 @@ _LOWERING_RELEVANT_IN = (
     "cli/native_symbol_inspection.py",
     "cli/wasm_link_inputs.py",
     "cli/compiler_target.py",
+    "cli/source_build_environment_schema.py",
     "compat.py",
 )
 
 
-def test_command_orchestration_layer_excluded_but_analysis_and_intrinsics_kept() -> (
-    None
-):
-    """Acceptance (scope shrank + what dropped): the command/extension/daemon/debug
-    orchestration layer is out of the lowering scope while every IR/TIR analysis
-    file and generated intrinsic/feature-gate table stays in."""
-    rels = _scope_relpaths(CF._compiler_root())
-
-    leaked = [rel for rel in _COMMAND_LAYER_OUT if rel in rels]
-    assert not leaked, (
-        f"command-orchestration files leaked into the lowering scope "
-        f"(every landing edits these -> chronic cold-start): {leaked}"
-    )
+def test_command_layer_matches_coverage_and_analysis_and_intrinsics_are_kept() -> None:
+    """Complete coverage includes all owners; narrow graphs exclude orchestration."""
+    root = CF._compiler_root()
+    inputs = CF._frontend_semantic_tooling_sources(root)
+    rels = _scope_relpaths(root)
+    for rel in _COMMAND_LAYER_OUT:
+        assert (rel in rels) is bool(inputs.topology_digest)
 
     dropped = [rel for rel in _LOWERING_RELEVANT_IN if rel not in rels]
     assert not dropped, (
@@ -568,12 +559,70 @@ def test_lowering_graph_does_not_swallow_transitive_source_errors(
     molt = _build_leak_tree(tmp_path)
     helper = molt / "cli" / "frontend_execution.py"
     helper.write_text(
-        "if :\n" if malformed else "__package__ = unknown\nfrom .child import item\n",
+        "if :\n" if malformed else "__package__ = 1\nfrom .child import item\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError) as exc:
         CF._lowering_scope_source_closure(tmp_path).paths
     assert str(helper) in str(exc.value)
+
+
+@pytest.mark.parametrize("warm", [False, True])
+@pytest.mark.parametrize(
+    "source, covered",
+    [
+        ("__package__ = unknown\nfrom .child import item\n", True),
+        ("import os\nfrom .child import item\n", True),
+        ("__import__(unknown)\n", False),
+    ],
+)
+def test_lowering_complete_identity_covers_relative_but_checks_dynamic_obligations(
+    tmp_path: Path, isolated_molt_cache: Path, source: str, covered: bool, warm: bool
+) -> None:
+    molt = _build_leak_tree(tmp_path)
+    helper = molt / "cli" / "frontend_execution.py"
+    helper.write_text(source, encoding="utf-8")
+    _write(molt / "cli" / "child.py", "item = 1\n")
+    if warm:
+        # A permissive source query may cache candidates and diagnostics, but
+        # the complete lowering consumer cannot inherit its acceptance policy.
+        candidate_policy = replace(
+            CF._FRONTEND_LOWERING_IMPORT_POLICY,
+            fail_on_nonliteral_dynamic_import=False,
+            unknown_relative_sources="require_known",
+        )
+        candidate = CF.local_python_import_closure(
+            tmp_path,
+            CF._lowering_scope_seed_paths(tmp_path),
+            policy=candidate_policy,
+            search_roots=(tmp_path / "src",),
+        )
+        assert helper in candidate.paths
+    if covered:
+        receipt = CF._lowering_scope_source_closure(tmp_path)
+        assert receipt.topology_digest
+        assert molt / "cli/orchestration_only.py" in receipt.paths
+    else:
+        with pytest.raises(ValueError) as exc:
+            CF._lowering_scope_source_closure(tmp_path)
+        assert str(helper) in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "statement", ["from .child import item", "__import__(unknown)"]
+)
+def test_closed_lowering_policy_still_excludes_deferred_requests(
+    tmp_path: Path, isolated_molt_cache: Path, statement: str
+) -> None:
+    molt = _build_leak_tree(tmp_path)
+    helper = molt / "cli" / "frontend_execution.py"
+    helper.write_text(f"def deferred():\n    {statement}\n", encoding="utf-8")
+    child = molt / "cli" / "child.py"
+    _write(child, "item = 1\n")
+    for _ in range(2):
+        paths = set(CF._lowering_scope_source_closure(tmp_path).paths)
+        assert helper in paths
+        assert child not in paths
 
 
 def _build_analysis_tree(root: Path) -> Path:
@@ -624,4 +673,29 @@ def test_kept_analysis_and_intrinsic_edits_still_invalidate(
     assert scoped_after != scoped_before, (
         f"editing kept lowering-relevant file {edit_relpath!r} did NOT invalidate "
         f"the scoped fingerprint -> stale-lowering risk"
+    )
+
+
+def test_installed_admission_contract_has_no_eager_producer_dependencies() -> None:
+    from molt.cli.python_source_closure import local_python_import_closure
+
+    root = CF._compiler_root()
+    contract = root / "src/molt/cli/installed_runtime_contract.py"
+    closure = local_python_import_closure(
+        root,
+        (contract,),
+        policy=CF._FRONTEND_LOWERING_IMPORT_POLICY,
+        search_roots=(root / "src",),
+    )
+    rels = {path.relative_to(root / "src/molt").as_posix() for path in closure.paths}
+    assert "cli/installed_runtime_contract.py" in rels
+    assert "cli/runtime_identity_schema.py" in rels
+    assert not set(_COMMAND_LAYER_OUT) & rels
+    assert (
+        not {
+            "cli/installed_runtime.py",
+            "cli/runtime_build_identity.py",
+            "artifact_publication.py",
+        }
+        & rels
     )

@@ -40,12 +40,14 @@ law or the real backends' codegen.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from tools.memory_guard_core import harness_outcomes
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Callable, Literal, Protocol
 
@@ -79,6 +81,26 @@ _RUN_WASM_JS = _REPO_ROOT / "wasm" / "run_wasm.js"
 # ---------------------------------------------------------------------------
 
 
+# Only complete allocator/exception diagnostics establish unmeasured exhaustion.
+# Command lines, environment values, source excerpts and guard repro JSON are
+# context, not allocation observations. In particular, neither SIGKILL nor an
+# arbitrary occurrence of "oom" is an OOM verdict.
+_ALLOCATION_FAILURE_LINE = re.compile(
+    r"(?:MemoryError(?::[^\r\n]*)?"
+    r"|(?:OOM|out of memory|cannot allocate memory|allocation failed)(?:: [^\r\n]*)?"
+    r"|std::bad_alloc"
+    r"|[ \t]*what\(\):[ \t]+std::bad_alloc"
+    r"|terminate called after throwing an instance of ['\"]std::bad_alloc['\"]"
+    r"|memory allocation (?:of )?[0-9]+ bytes failed"
+    r"|LLVM ERROR: out of memory(?::[^\r\n]*)?"
+    r"|FATAL ERROR: [^\r\n]*Allocation failed[^\r\n]*heap out of memory"
+    r"|OSError: \[Errno 12\] Cannot allocate memory[^\r\n]*"
+    r"|RuntimeError: (?:memory allocation failed|out of memory)(?::[^\r\n]*)?"
+    r")",
+    re.IGNORECASE,
+)
+
+
 @dataclass(frozen=True)
 class BackendResult:
     """One backend's outcome for a single test.
@@ -97,9 +119,59 @@ class BackendResult:
     timed_out: bool = False
     child_returncode: int | None = None
     infrastructure_failure: GuardInfrastructureFailure | None = None
+    rss_limit_exceeded: bool = False
+    guard_signal: int | None = None
+    diagnostic_stderr: str | None = None
+
+    def __post_init__(self) -> None:
+        # Freeze the diagnostic source before adapters append build stdout,
+        # deadline prose, cleanup messages or reproduction instructions.
+        if self.diagnostic_stderr is None:
+            object.__setattr__(self, "diagnostic_stderr", self.stderr)
+
+    @property
+    def resource_failure(
+        self,
+    ) -> Literal["rss_limit_exceeded", "allocation_failed"] | None:
+        if self.infrastructure_failure is not None:
+            return None
+        if self.rss_limit_exceeded:
+            return "rss_limit_exceeded"
+        if (
+            self.timed_out
+            or self.guard_signal is not None
+            or self.returncode in (0, 124)
+        ):
+            return None
+        lines = (self.diagnostic_stderr or "").splitlines()
+        # An ownership/header abort must remain visible even if cleanup also
+        # reports an allocation exception. Measured RSS remains authoritative.
+        if any(line.startswith("molt fatal:") for line in lines):
+            return None
+        # A guarded compiler nested inside a CLI/batch server reports its RSS
+        # observation in the child stream. Accept that canonical diagnostic,
+        # never the guard's reproduction/environment/ancestry payload.
+        if any(line.startswith("memory_guard: RSS limit exceeded; ") for line in lines):
+            return "rss_limit_exceeded"
+        if any(_ALLOCATION_FAILURE_LINE.fullmatch(line) for line in lines):
+            return "allocation_failed"
+        return None
+
+    @property
+    def blocks_build_recovery(self) -> bool:
+        return (
+            self.timed_out
+            or self.infrastructure_failure is not None
+            or self.guard_signal is not None
+            or self.resource_failure is not None
+        )
 
     @classmethod
-    def from_process(cls, proc: subprocess.CompletedProcess[str]) -> BackendResult:
+    def from_process(
+        cls, proc: subprocess.CompletedProcess[str] | BackendResult
+    ) -> BackendResult:
+        if isinstance(proc, cls):
+            return proc
         return cls(
             proc.stdout,
             proc.stderr,
@@ -107,6 +179,9 @@ class BackendResult:
             timed_out=bool(getattr(proc, "timed_out", False)),
             child_returncode=getattr(proc, "child_returncode", None),
             infrastructure_failure=getattr(proc, "infrastructure_failure", None),
+            rss_limit_exceeded=getattr(proc, "violation", None) is not None,
+            guard_signal=getattr(proc, "guard_signal", None),
+            diagnostic_stderr=cls._text(getattr(proc, "child_stderr", proc.stderr)),
         )
 
     @staticmethod
@@ -326,6 +401,71 @@ def _molt_cli_python() -> str:
     return molt_diff._resolve_molt_cli_python()
 
 
+def suite_trip_outcome(
+    evidence: harness_outcomes.SuiteTripEvidence | None,
+) -> BackendResult | None:
+    """Suite-level admission/summary outcome, with no claimed child execution."""
+    if evidence is None:
+        return None
+    return BackendResult(
+        "",
+        evidence.message + "\n",
+        harness_outcomes.memory_guard.INFRASTRUCTURE_RETURN_CODE
+        if evidence.infrastructure_failure is not None
+        else harness_outcomes.memory_guard.GUARD_RETURN_CODE,
+        infrastructure_failure=evidence.infrastructure_failure,
+        rss_limit_exceeded=bool(evidence.trips),
+        diagnostic_stderr="",
+    )
+
+
+def merge_suite_trip_result(
+    result: BackendResult,
+    process: object,
+    evidence: harness_outcomes.SuiteTripEvidence | None,
+) -> BackendResult:
+    """Attribute a suite kill only to the captured launch instance it targeted.
+
+    A malformed marker belongs to the parent suite outcome, not an unrelated
+    child's diagnostics. A child that completed normally retains that success.
+    Existing child deadline/signal/infrastructure observations keep precedence.
+    """
+    if (
+        evidence is None
+        or evidence.infrastructure_failure is not None
+        or result.timed_out
+        or result.guard_signal is not None
+    ):
+        return result
+    child_returncode = getattr(process, "child_returncode", None)
+    if child_returncode is None:
+        child_returncode = getattr(process, "returncode", None)
+    if child_returncode in {None, 0}:
+        return result
+    child = getattr(process, "child_process", None)
+    owned = getattr(process, "owned_process_identities", ())
+    matched = tuple(
+        trip
+        for trip in evidence.trips
+        if trip.matches(
+            child,
+            owned,
+            request_started_at_ns=getattr(process, "request_started_at_ns", None),
+        )
+    )
+    if not matched:
+        return result
+    message = "\n".join(dict.fromkeys(trip.details for trip in matched)) + "\n"
+    return replace(
+        result,
+        returncode=result.returncode
+        if result.infrastructure_failure is not None
+        else harness_outcomes.memory_guard.GUARD_RETURN_CODE,
+        stderr=result.stderr if message in result.stderr else result.stderr + message,
+        rss_limit_exceeded=True,
+    )
+
+
 def _guarded_run(
     cmd: list[str],
     *,
@@ -334,17 +474,14 @@ def _guarded_run(
     timeout_default: float,
     cwd: str | None = None,
 ) -> BackendResult:
-    """Run a child under the shared harness memory guard.
-
-    Every cross-backend build and artifact run returns the canonical typed
-    outcome so deadline and partial-output facts survive adapter boundaries.
-    """
+    """Run every cross-backend build/artifact under the shared typed guard."""
     from tools import harness_memory_guard
 
+    trip = suite_trip_outcome(harness_outcomes.read_suite_trip(env))
+    if trip is not None:
+        return trip
     timeout = harness_memory_guard.timeout_from_env(
-        prefix,
-        env,
-        default=timeout_default,
+        prefix, env, default=timeout_default
     )
     try:
         proc = harness_memory_guard.guarded_completed_process(
@@ -358,14 +495,12 @@ def _guarded_run(
         )
     except subprocess.TimeoutExpired as exc:
         return BackendResult.from_timeout(exc)
-    result = BackendResult.from_process(proc)
+    result = merge_suite_trip_result(
+        BackendResult.from_process(proc), proc, harness_outcomes.read_suite_trip(env)
+    )
     if result.timed_out:
-        # A guard may terminate a timed-out child with SIGKILL/137. Preserve its
-        # explicit deadline instead of letting the OOM heuristic reinterpret it.
         deadline = BackendResult.from_deadline(
-            timeout=timeout,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
+            timeout=timeout, stdout=proc.stdout, stderr=proc.stderr
         )
         return replace(result, returncode=deadline.returncode, stderr=deadline.stderr)
     return result
@@ -484,7 +619,9 @@ def run_with_guest_outputs(
     return replace(
         result,
         infrastructure_failure=GuardInfrastructureFailure(
-            phase="temporary_artifact_custody",
+            phase=existing.phase
+            if existing is not None
+            else "temporary_artifact_custody",
             details=(*existing.details, *diagnostics)
             if existing is not None
             else diagnostics,

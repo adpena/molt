@@ -652,7 +652,11 @@ fn binary_runtime_fallbacks_share_one_box_for_a_repeated_raw_operand() {
     let call = "call i64 @molt_add(i64 %boxed_int, i64 %boxed_int)";
     let release = "call void @molt_dec_ref_obj(i64 %binary_owner_bits)";
     assert!(ir.contains(call), "both positions carry one box: {ir}");
-    assert_eq!(ir.matches("call i64 @molt_int_from_i64(").count(), 1, "{ir}");
+    assert_eq!(
+        ir.matches("call i64 @molt_int_from_i64(").count(),
+        1,
+        "{ir}"
+    );
     assert_eq!(ir.matches(release).count(), 1, "{ir}");
     assert!(
         ir.find(call).unwrap() < ir.find(release).unwrap(),
@@ -712,14 +716,22 @@ fn boolean_selection_owns_exactly_the_selected_operand() {
         block_text("bool_or_true").contains("label %box_int_inline"),
         "only the edge that selects the raw integer boxes it: {ir}"
     );
-    assert_eq!(ir.matches("call i64 @molt_int_from_i64(").count(), 1, "{ir}");
+    assert_eq!(
+        ir.matches("call i64 @molt_int_from_i64(").count(),
+        1,
+        "{ir}"
+    );
     let object_edge = block_text("bool_or_false");
     assert!(
         object_edge.contains("call void @molt_inc_ref_obj(i64 %0)")
             && !object_edge.contains("@molt_int_from_i64("),
         "the selected object is retained and the unselected integer is not boxed: {ir}"
     );
-    assert_eq!(ir.matches("call void @molt_inc_ref_obj(").count(), 1, "{ir}");
+    assert_eq!(
+        ir.matches("call void @molt_inc_ref_obj(").count(),
+        1,
+        "{ir}"
+    );
     assert!(
         !ir.contains("@molt_dec_ref_obj("),
         "a minted box is the selected result's owner: {ir}"

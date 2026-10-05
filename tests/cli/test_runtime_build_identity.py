@@ -21,6 +21,7 @@ from molt.cli.runtime_artifact_selection import (
 )
 from molt.exact_json import canonical_json_bytes, canonical_json_sha256
 from molt.wasi_sysroot import resolve_wasi_sysroot_layout
+from tests.operation_probe import same_thread_probe
 from tests.runtime_build_identity_helper import build_python_identity_fixture
 from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
 from molt.cli import runtime_cargo_plan as cargo_plans
@@ -60,7 +61,7 @@ def _test_plan(
     )
 
 
-def _provision_toolchain(root: Path) -> identity.RuntimeToolchainContentManifest:
+def _provision_toolchain(root: Path) -> schema.RuntimeToolchainContentManifest:
     archive_root = root / "archives"
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
@@ -104,7 +105,7 @@ def _resolve(
     extra_env: dict[str, str] | None = None,
     artifact_selection: RuntimeArtifactSelection = RUNTIME_WASM_COMBINED_ARTIFACTS,
     runtime_features: tuple[str, ...] = ("stdlib_micro",),
-) -> identity.RuntimeBuildIdentity:
+) -> schema.RuntimeBuildIdentity:
     archive_root = root / "archives"
     sysroot = root / "wasi-sysroot"
     archives = [
@@ -173,7 +174,7 @@ def _resolve(
         cargo_command=plan.command,
         producer_artifact_selection=artifact_selection,
         members=(
-            identity.RuntimeBuildMemberPlan(
+            schema.RuntimeBuildMemberPlan(
                 kind="shared",
                 resolved_rustflags=(
                     "-C panic=abort --cfg shared"
@@ -185,7 +186,7 @@ def _resolve(
                 preserve_debug=False,
                 link_args=("--export=shared",),
             ),
-            identity.RuntimeBuildMemberPlan(
+            schema.RuntimeBuildMemberPlan(
                 kind="reloc",
                 resolved_rustflags="-C panic=abort --cfg reloc",
                 publication_transform=(
@@ -332,13 +333,13 @@ def test_identity_roundtrips_and_shared_reloc_form_one_family(
 
     assert shared.digest != reloc.digest
     assert shared.family_digest == reloc.family_digest
-    assert identity.RuntimeBuildIdentity.from_dict(shared.to_dict()) == shared
+    assert schema.RuntimeBuildIdentity.from_dict(shared.to_dict()) == shared
 
 
 def test_runtime_features_change_exact_compile_and_member_identity(
     identity_root: Path,
 ) -> None:
-    def resolve(features: tuple[str, ...]) -> identity.RuntimeBuildIdentity:
+    def resolve(features: tuple[str, ...]) -> schema.RuntimeBuildIdentity:
         return _resolve(
             identity_root,
             kind="shared",
@@ -494,15 +495,15 @@ def test_deserializer_rejects_self_asserted_digest(identity_root: Path) -> None:
     ).to_dict()
     value["digest"] = "0" * 64
     with pytest.raises(ValueError, match="digest"):
-        identity.RuntimeBuildIdentity.from_dict(value)
+        schema.RuntimeBuildIdentity.from_dict(value)
 
 
 def test_identity_json_objects_reject_non_string_key_aliasing() -> None:
     with pytest.raises(TypeError, match="keys must be strings"):
-        identity._freeze_json({1: "integer", "1": "string"})
+        schema._freeze_json({1: "integer", "1": "string"})
 
     with pytest.raises(ValueError, match="incomplete"):
-        identity.RuntimeBuildIdentity.from_dict(
+        schema.RuntimeBuildIdentity.from_dict(
             {
                 "schema": "molt.runtime-build-member-identity.v3",
                 "digest": "0" * 64,
@@ -517,12 +518,12 @@ def test_runtime_identity_uses_shared_exact_json_authority() -> None:
     payload = {"language": "λ", "values": [1, True, None]}
 
     assert (
-        identity._digest(payload)
+        schema._digest(payload)
         == hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
     )
-    assert identity._digest(payload) == canonical_json_sha256(payload)
+    assert schema._digest(payload) == canonical_json_sha256(payload)
     with pytest.raises(ValueError, match="non-finite JSON number"):
-        identity._digest({"invalid": float("nan")})
+        schema._digest({"invalid": float("nan")})
 
 
 def test_identity_rejects_digest_valid_wrong_family_schema(
@@ -535,22 +536,22 @@ def test_identity_rejects_digest_valid_wrong_family_schema(
     ).to_dict()
     family = value["payload"]["family"]
     family["schema"] = "molt.runtime-build-family.v2"
-    value["family_digest"] = identity._digest(family)
-    value["digest"] = identity._digest(value["payload"])
+    value["family_digest"] = schema._digest(family)
+    value["digest"] = schema._digest(value["payload"])
 
     with pytest.raises(ValueError, match="family shape"):
-        identity.RuntimeBuildIdentity.from_dict(value)
+        schema.RuntimeBuildIdentity.from_dict(value)
 
 
 def _reseal_runtime_build_identity(value: dict[str, object]) -> None:
     payload = value["payload"]
     family = payload["family"]
     compile_payload = family["compile"]
-    compile_digest = identity._digest(compile_payload)
+    compile_digest = schema._digest(compile_payload)
     family["compile_digest"] = compile_digest
     value["compile_digest"] = compile_digest
-    value["family_digest"] = identity._digest(family)
-    value["digest"] = identity._digest(payload)
+    value["family_digest"] = schema._digest(family)
+    value["digest"] = schema._digest(payload)
 
 
 def test_identity_rejects_digest_valid_shape_and_type_drift(
@@ -565,23 +566,23 @@ def test_identity_rejects_digest_valid_shape_and_type_drift(
     outer_extra = json.loads(json.dumps(baseline))
     outer_extra["legacy"] = True
     with pytest.raises(ValueError, match="schema"):
-        identity.RuntimeBuildIdentity.from_dict(outer_extra)
+        schema.RuntimeBuildIdentity.from_dict(outer_extra)
 
     compile_extra = json.loads(json.dumps(baseline))
     compile_extra["payload"]["family"]["compile"]["legacy"] = True
     _reseal_runtime_build_identity(compile_extra)
     with pytest.raises(ValueError, match="compile/family shape"):
-        identity.RuntimeBuildIdentity.from_dict(compile_extra)
+        schema.RuntimeBuildIdentity.from_dict(compile_extra)
 
     member_type = json.loads(json.dumps(baseline))
     member_type["payload"]["family"]["members"]["shared"]["preserve_debug"] = 1
     _reseal_runtime_build_identity(member_type)
     with pytest.raises(ValueError, match="member shape"):
-        identity.RuntimeBuildIdentity.from_dict(member_type)
+        schema.RuntimeBuildIdentity.from_dict(member_type)
 
     direct_payload = member_type["payload"]
     with pytest.raises(ValueError, match="member shape"):
-        identity.RuntimeBuildIdentity(
+        schema.RuntimeBuildIdentity(
             digest=member_type["digest"],
             compile_digest=member_type["compile_digest"],
             family_digest=member_type["family_digest"],
@@ -911,7 +912,7 @@ def test_flag_projection_resolves_roots_once_not_per_export(
         resolved.append(path)
         return original(path, strict=strict)
 
-    monkeypatch.setattr(Path, "resolve", resolve)
+    monkeypatch.setattr(Path, "resolve", same_thread_probe(original, resolve))
     projection = identity._RuntimeFlagProjection.capture(roots)
     assert resolved == [path for _label, path in roots]
     exports = tuple(
@@ -1037,7 +1038,7 @@ def test_tree_identity_is_deterministic_across_parallel_completion_order(
 
 @pytest.mark.parametrize(
     "file_count,expected_futures,expected_pending",
-    [(3, 6, 3), (6 * identity._TREE_HASH_BATCH_SIZE + 7, 14, 6)],
+    [(3, 3, 3), (6 * identity._TREE_HASH_BATCH_SIZE + 7, 7, 6)],
 )
 def test_tree_identity_parallel_scheduler_bounds_in_flight_futures(
     tmp_path: Path,
@@ -1073,7 +1074,7 @@ def test_tree_identity_parallel_scheduler_bounds_in_flight_futures(
     result = identity._tree_identity((("runtime/source", source),), require_all=True)
 
     assert result["file_count"] == file_count
-    # Both passes batch large closures and keep small closures parallel.
+    # One owned-read pass batches large closures and keeps small closures parallel.
     assert submitted == expected_futures
     assert pending_sizes
     assert max(pending_sizes) == expected_pending
@@ -1159,14 +1160,15 @@ def test_tree_identity_rejects_same_size_mutation_during_hash(
 
 
 @pytest.mark.parametrize("restore_mtime", [False, True])
-def test_tree_identity_rejects_mutation_after_enumeration_before_open(
+def test_tree_identity_rejects_mutation_after_admission_before_hash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restore_mtime: bool
 ) -> None:
     source = tmp_path / "source.bin"
     source.write_bytes(b"before")
     original = identity._hash_tree_input_file
 
-    def mutate_before_open(file: identity._TreeInputFile) -> str:
+    def mutate_after_admission(file: identity._TreeInputFile) -> str:
+        # The owning worker has admitted this read handle before invoking hash.
         before = file.path.stat()
         file.path.write_bytes(b"after!")
         os.utime(
@@ -1180,11 +1182,32 @@ def test_tree_identity_rejects_mutation_after_enumeration_before_open(
         )
         return original(file)
 
-    monkeypatch.setattr(identity, "_hash_tree_input_file", mutate_before_open)
+    monkeypatch.setattr(identity, "_hash_tree_input_file", mutate_after_admission)
     monkeypatch.setattr(identity, "_tree_hash_worker_count", lambda _count: 1)
 
     with pytest.raises(ValueError, match="changed while hashing"):
         identity._tree_identity((("runtime/source", source),), require_all=True)
+
+
+def test_cargo_configuration_parses_and_identifies_one_owned_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "config.toml"
+    raw = b"[build]\njobs = 3\n"
+    config.write_bytes(raw)
+    opens = []
+    open_descriptor = toolchain_identity.open_stable_read_descriptor
+
+    def counted_open(path: Path) -> int:
+        opens.append(path)
+        return open_descriptor(path)
+
+    monkeypatch.setattr(toolchain_identity, "open_stable_read_descriptor", counted_open)
+    captured = cargo_plans._capture_config(config, label="fixture config")
+    assert captured.document == {"build": {"jobs": 3}}
+    assert captured.identity.sha256 == hashlib.sha256(raw).hexdigest()
+    assert captured.identity.size == len(raw)
+    assert opens == [config]
 
 
 def test_tree_identity_rejects_mutation_after_open_before_read(
@@ -1217,13 +1240,13 @@ def test_tree_identity_fails_closed_on_hash_io_error(
     source.mkdir()
     victim = source / "victim.rs"
     victim.write_text("pub fn victim() {}\n", encoding="utf-8")
-    original = identity._hash_tree_input_file
+    original = identity._capture_tree_input_file
 
-    def delete_before_open(file: identity._TreeInputFile) -> str:
+    def delete_before_open(file: identity._TreeInputCandidate) -> tuple[int, str]:
         file.path.unlink()
         return original(file)
 
-    monkeypatch.setattr(identity, "_hash_tree_input_file", delete_before_open)
+    monkeypatch.setattr(identity, "_capture_tree_input_file", delete_before_open)
     monkeypatch.setattr(identity, "_tree_hash_worker_count", lambda _count: 1)
 
     with pytest.raises(OSError, match="runtime input hashing failed.*victim.rs"):
@@ -1416,7 +1439,7 @@ def test_portable_manifest_is_evidence_not_live_capture_authority(
     )
     manifest_path = identity_root / "toolchain.json"
     before.toolchain_manifest.write(manifest_path)
-    restored = identity.RuntimeToolchainContentManifest.read(manifest_path)
+    restored = schema.RuntimeToolchainContentManifest.read(manifest_path)
     assert restored == before.toolchain_manifest
     if resource == "archive":
         (identity_root / "archives" / "libc.a").write_bytes(b"changed")
@@ -1465,7 +1488,7 @@ def test_toolchain_manifest_is_relocatable_and_rejects_tampering(
     value = first.to_dict()
     value["payload"]["target_triple"] = "wasm32-poison"
     with pytest.raises(ValueError, match="digest"):
-        identity.RuntimeToolchainContentManifest.from_dict(value)
+        schema.RuntimeToolchainContentManifest.from_dict(value)
 
 
 def test_toolchain_manifest_rejects_resealed_nested_python_runtime_drift(
@@ -1478,14 +1501,14 @@ def test_toolchain_manifest_rejects_resealed_nested_python_runtime_drift(
     runtime["explicit_files"][0]["node"] = "missing-node"
     runtime_material = dict(runtime)
     runtime_material.pop("runtime_closure_sha256")
-    runtime["runtime_closure_sha256"] = identity._digest(runtime_material)
+    runtime["runtime_closure_sha256"] = schema._digest(runtime_material)
     build_python_material = dict(build_python)
     build_python_material.pop("identity_sha256")
-    build_python["identity_sha256"] = identity._digest(build_python_material)
-    value["digest"] = identity._digest(payload)
+    build_python["identity_sha256"] = schema._digest(build_python_material)
+    value["digest"] = schema._digest(payload)
 
     with pytest.raises(ValueError, match="build Python closure is invalid"):
-        identity.RuntimeToolchainContentManifest.from_dict(value)
+        schema.RuntimeToolchainContentManifest.from_dict(value)
 
 
 def test_toolchain_manifest_rejects_nested_mutation_at_consumption(
@@ -1507,7 +1530,7 @@ def test_toolchain_manifest_concurrent_publication_is_atomic(
     barrier = threading.Barrier(2)
     errors: list[BaseException] = []
 
-    def publish(manifest: identity.RuntimeToolchainContentManifest) -> None:
+    def publish(manifest: schema.RuntimeToolchainContentManifest) -> None:
         try:
             barrier.wait()
             for _ in range(32):
@@ -1525,7 +1548,7 @@ def test_toolchain_manifest_concurrent_publication_is_atomic(
         thread.join()
 
     assert errors == []
-    final = identity.RuntimeToolchainContentManifest.read(path)
+    final = schema.RuntimeToolchainContentManifest.read(path)
     assert final.digest in {first.digest, second.digest}
 
 

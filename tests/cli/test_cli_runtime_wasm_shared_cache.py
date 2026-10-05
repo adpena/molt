@@ -11,7 +11,7 @@ import molt.dx as DX
 from molt.cli import cargo_execution as CARGO_EXEC
 from molt.cli import runtime_wasm_cache as cache
 from molt.cli import runtime_wasm_cache_diagnostics as diagnostics
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from tests.runtime_build_identity_helper import runtime_build_identity
 
 

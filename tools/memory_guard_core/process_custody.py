@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 import threading
-from typing import TYPE_CHECKING, Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Self, TypeAlias, get_args
 
 if TYPE_CHECKING:
     from tools.win_job import WindowsJobCleanup
@@ -88,14 +88,21 @@ class GuardSamplingTelemetry:
         return self.transient_failures == 0 and self.attempts == self.successes
 
 
+GuardInfrastructurePhase: TypeAlias = Literal[
+    "temporary_artifact_custody", "rss_trip_evidence"
+]
+_INFRASTRUCTURE_FAILURE_PHASES = frozenset(get_args(GuardInfrastructurePhase))
+
+
 @dataclass(frozen=True, slots=True)
 class GuardInfrastructureFailure:
-    phase: Literal["temporary_artifact_custody"]
+    phase: GuardInfrastructurePhase
     details: tuple[str, ...]
 
     def __post_init__(self) -> None:
         if (
-            self.phase != "temporary_artifact_custody"
+            type(self.phase) is not str
+            or self.phase not in _INFRASTRUCTURE_FAILURE_PHASES
             or type(self.details) is not tuple
             or not self.details
             or any(
@@ -111,7 +118,8 @@ class GuardInfrastructureFailure:
         if (
             not isinstance(value, dict)
             or set(value) != {"phase", "details"}
-            or value["phase"] != "temporary_artifact_custody"
+            or type(value["phase"]) is not str
+            or value["phase"] not in _INFRASTRUCTURE_FAILURE_PHASES
             or type(value["details"]) is not list
         ):
             raise ValueError("invalid guard infrastructure failure payload")
@@ -141,6 +149,7 @@ class GuardResult:
     cargo_incremental_quarantine: CargoIncrementalQuarantine | None = None
     guard_signal: int | None = None
     child_process: GuardedChildProcess | None = None
+    owned_process_identities: tuple[tuple[int, ProcessIdentity], ...] = ()
     termination_reports: tuple[GuardTerminationReport, ...] = ()
     sampling_telemetry: GuardSamplingTelemetry | None = None
     peak_job_commit_bytes: int | None = None

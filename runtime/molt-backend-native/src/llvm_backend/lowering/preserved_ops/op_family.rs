@@ -199,7 +199,6 @@ mod tests {
             ("exception_resolve_captured", 1),
             ("exception_set_last", 1),
             ("exception_context_set", 1),
-            ("exception_set_cause", 2),
             ("class_apply_set_name", 1),
             ("class_merge_layout", 3),
             ("str_from_obj", 1),

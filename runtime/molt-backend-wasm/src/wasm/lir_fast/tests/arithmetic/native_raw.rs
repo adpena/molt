@@ -168,7 +168,7 @@ fn add_two_f64s() {
                 opcode: OpCode::ConstFloat,
                 operands: vec![],
                 results: vec![value],
-                attrs: AttrDict::from([("value".into(), AttrValue::Float(number))]),
+                attrs: AttrDict::from([("f_value".into(), AttrValue::Float(number))]),
                 source_span: None,
             },
         );
@@ -228,7 +228,7 @@ fn f64_mod_requires_exact_runtime_semantics_for_proven_float_carriers() {
                 opcode: OpCode::ConstFloat,
                 operands: vec![],
                 results: vec![value],
-                attrs: AttrDict::from([("value".into(), AttrValue::Float(number))]),
+                attrs: AttrDict::from([("f_value".into(), AttrValue::Float(number))]),
                 source_span: None,
             },
         );

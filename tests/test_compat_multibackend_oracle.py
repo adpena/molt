@@ -21,6 +21,7 @@ deterministic regression that the divergence logic itself is correct.
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 import hashlib
 import os
 import subprocess
@@ -731,9 +732,7 @@ def test_timeout_preserves_diagnostic_and_is_never_oom(
     assert "killed" in result.stderr
     assert "timeout after 60.0s" in result.stderr
     assert result.returncode == 124 and result.timed_out
-    assert not molt_diff._should_retry_oom(
-        result.returncode, "out of memory: " + result.stderr
-    )
+    assert replace(result, diagnostic_stderr="MemoryError").resource_failure is None
 
 
 @pytest.mark.parametrize("backend", ("wasm", "llvm", "luau"))
@@ -867,7 +866,7 @@ def test_oom_keeps_prior_backend_receipt_and_its_own_diagnostic(
         {
             "native": _outcome("42\n"),
             "wasm": compat_backends.BackendResult(
-                None, diagnostic, 137, build_failed=True
+                None, diagnostic, 137, build_failed=True, rss_limit_exceeded=True
             ),
         }
     )
@@ -1037,10 +1036,27 @@ def test_intentional_exit_125_remains_semantic_evidence(
 
 
 @pytest.mark.parametrize("entry", ["initial", "after-dyld", "after-daemon"])
+@pytest.mark.parametrize(
+    "kind", ["infrastructure", "rss", "allocation", "interrupted", "timeout"]
+)
 def test_native_infrastructure_failure_never_triggers_another_retry_or_quarantine(
-    monkeypatch, entry
+    monkeypatch, entry, kind
 ):
-    failure = _infrastructure_outcome(build_failed=True)
+    failure = {
+        "infrastructure": _infrastructure_outcome(build_failed=True),
+        "rss": compat_backends.BackendResult(
+            None, "RSS limit exceeded", 125, build_failed=True, rss_limit_exceeded=True
+        ),
+        "allocation": compat_backends.BackendResult(
+            None, "MemoryError", 1, build_failed=True
+        ),
+        "interrupted": compat_backends.BackendResult(
+            None, "guard interrupted", 143, build_failed=True, guard_signal=15
+        ),
+        "timeout": compat_backends.BackendResult.from_deadline(
+            timeout=5, build_failed=True
+        ),
+    }[kind]
     results = [failure] if entry == "initial" else [_outcome(None, rc=1), failure]
     calls = []
 
@@ -1063,7 +1079,9 @@ def test_native_infrastructure_failure_never_triggers_another_retry_or_quarantin
         monkeypatch.setattr(
             molt_diff,
             hook,
-            lambda: pytest.fail("infrastructure cannot authorize retry/quarantine"),
+            lambda: pytest.fail(
+                "terminal execution evidence cannot authorize retry/quarantine"
+            ),
         )
     context = compat_backends.BackendExecutionContext(
         target_python=TargetPythonVersion(3, 12, 0),
@@ -1074,3 +1092,274 @@ def test_native_infrastructure_failure_never_triggers_another_retry_or_quarantin
     assert molt_diff._run_native_backend("fixture.py", context) is failure
     assert len(calls) == (1 if entry == "initial" else 2)
     assert results == []
+
+
+@pytest.mark.parametrize("returncode", [0, 1, 9, -9, 137, 0xC0000409])
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "RuntimeError: boom",
+        'memory_guard: repro context: {"command": ["--no-retry-oom"], "env": {"NOTE": "out of memory"}}',
+        "command: compiler --error-label=MemoryError --output=allocation failed",
+        '  File "out of memory.py", line 2\n    raise MemoryError',
+        "molt fatal: invalid object header in dec_ref\nMemoryError: cleanup failed",
+    ],
+)
+def test_resource_verdict_ignores_context_and_unmeasured_kills(returncode, diagnostic):
+    result = compat_backends.BackendResult("", diagnostic, returncode)
+    assert result.resource_failure is None
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "MemoryError",
+        "MemoryError: out of memory",
+        "OOM",
+        "out of memory",
+        "std::bad_alloc",
+        "  what():  std::bad_alloc",
+        "terminate called after throwing an instance of 'std::bad_alloc'",
+        "memory allocation of 4096 bytes failed",
+        "LLVM ERROR: out of memory",
+        "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory",
+        "OSError: [Errno 12] Cannot allocate memory",
+        "RuntimeError: memory allocation failed",
+    ],
+)
+def test_resource_verdict_retains_allocator_evidence(diagnostic):
+    result = compat_backends.BackendResult("", diagnostic + "\n", 1)
+    assert result.resource_failure == "allocation_failed"
+    assert replace(result, returncode=0).resource_failure is None
+    assert replace(result, timed_out=True).resource_failure is None
+    assert replace(result, guard_signal=15).resource_failure is None
+    assert (
+        replace(
+            result,
+            infrastructure_failure=_infrastructure_outcome().infrastructure_failure,
+        ).resource_failure
+        is None
+    )
+
+
+@pytest.mark.parametrize("prefix", _COMPAT_GUARD_PHASES)
+@pytest.mark.parametrize("measured", [False, True])
+def test_guard_resource_facts_survive_adapter_and_build_conversion(
+    prefix, measured, monkeypatch
+):
+    guard = molt_diff.harness_memory_guard
+    result = guard.GuardedCompletedProcess(
+        ["fixture", "--no-retry-oom"],
+        137 if measured else 0xC0000409,
+        "MemoryError\n",
+        "runtime crashed\nMemoryError\n",
+        elapsed_s=0.1,
+        child_stderr="runtime crashed\n",
+        violation=molt_diff.memory_guard.RssViolation(7, 2048, "fixture", "process")
+        if measured
+        else None,
+        child_returncode=-9 if measured else 0xC0000409,
+    )
+    monkeypatch.setattr(guard, "guarded_completed_process", lambda *a, **k: result)
+    actual = compat_backends._guarded_run(
+        ["fixture"], prefix=prefix, env={}, timeout_default=5
+    )
+    for converted in [
+        actual,
+        actual.as_build_failure(detail="build failed", fallback="failed"),
+    ]:
+        assert converted.rss_limit_exceeded is measured
+        assert converted.child_returncode == result.child_returncode
+        assert converted.diagnostic_stderr == "runtime crashed\n"
+        assert converted.resource_failure == (
+            "rss_limit_exceeded" if measured else None
+        )
+
+
+@pytest.mark.parametrize("backend", ["native", "wasm", "llvm", "luau"])
+def test_runtime_abort_with_oom_repro_stays_failure(
+    backend, fake_test_file, install_fake_registry, monkeypatch
+):
+    diagnostic = (
+        "molt fatal: invalid object header in dec_ref\n"
+        "memory_guard: command exited with NTSTATUS 0xC0000409; no RSS violation observed\n"
+        'memory_guard: repro context: {"command": ["--no-retry-oom"], "env": {"OOM": "1"}}\n'
+    )
+    install_fake_registry(
+        {backend: compat_backends.BackendResult("", diagnostic, 0xC0000409)}
+    )
+    records = []
+    monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
+    assert molt_diff.diff_test(str(fake_test_file), targets=(backend,)) == "fail"
+    row = records[0]["backend_rows"][0]
+    assert row["raw_status"] == "fail" and row["returncode"] == 0xC0000409
+    assert row["resource_failure"] is None and not row["rss_limit_exceeded"]
+    assert row["stderr_sha256"] == hashlib.sha256(diagnostic.encode()).hexdigest()
+
+
+@pytest.mark.parametrize("measured", [False, True])
+def test_cpython_resource_verdict_uses_same_evidence(
+    fake_test_file, install_fake_registry, monkeypatch, measured
+):
+    oracle = compat_backends.BackendResult(
+        "",
+        "memory_guard: repro context: --no-retry-oom",
+        137,
+        rss_limit_exceeded=measured,
+    )
+    install_fake_registry({"native": _outcome("42\n")}, cpython=oracle)
+    records = []
+    monkeypatch.setattr(molt_diff, "_record_diff_result", records.append)
+    assert molt_diff.diff_test(str(fake_test_file), targets=("native",)) == (
+        "oom" if measured else "fail"
+    )
+    assert records[0]["cpython_resource_failure"] == (
+        "rss_limit_exceeded" if measured else None
+    )
+
+
+def test_nested_guard_rss_diagnostic_is_evidence_but_repro_mention_is_not():
+    line = "memory_guard: RSS limit exceeded; terminated tracked child: pid=7 rss=2.00GB limit=1.00GB"
+    result = compat_backends.BackendResult("", line, 125)
+    assert result.resource_failure == "rss_limit_exceeded"
+    repro = 'memory_guard: repro context: {"command": [' + repr(line) + "]}"
+    assert compat_backends.BackendResult("", repro, 125).resource_failure is None
+
+
+def _suite_victim_record(pid, born):
+    return {
+        "event": "guard_tripped",
+        "message": f"observed suite RSS victim {pid}",
+        "violation": {"rss_kb": 4096, "scope": "process_tree"},
+        "shared_sentinel_event": {
+            "event": "repo_process_guard_tripped",
+            "victim_pgid": pid,
+            "violation": {
+                "pgid": pid,
+                "process_samples": [{"pid": pid, "started_at_ns": born}],
+            },
+            "termination": {"rss_triggered": True, "attempted": True},
+        },
+    }
+
+
+@pytest.mark.parametrize("adapter", ["cpython", "native", "wasm", "llvm", "luau"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "victim",
+        "unrelated",
+        "reused",
+        "success",
+        "missing_birth",
+        "descendant_unknown_root",
+        "descendant",
+        "descendant_reused",
+        "timeout",
+        "infrastructure",
+    ],
+)
+def test_suite_rss_transport_matches_captured_process_instance(
+    adapter, case, monkeypatch, tmp_path
+):
+    from tools import harness_memory_guard, memory_guard
+    from tools.memory_guard_core import harness_outcomes
+
+    marker = tmp_path / "trip.json"
+    env = {harness_outcomes.SUITE_TRIP_FILE_ENV: str(marker)}
+    monkeypatch.setattr(molt_diff, "_diff_memory_guard_trip_file", lambda: marker)
+    monkeypatch.setattr(molt_diff, "_diff_root", lambda: tmp_path)
+    monkeypatch.setattr(molt_diff, "_diff_memory_guard_limits", lambda *_: None)
+    child = memory_guard.GuardedChildProcess(
+        pid=11,
+        pgid=11,
+        sid=11,
+        command=("fixture",),
+        started_at="fixture",
+        started_at_ns=None
+        if case in {"missing_birth", "descendant_unknown_root"}
+        else 1000,
+    )
+    victim_pid = 22 if case == "unrelated" or case.startswith("descendant") else 11
+    born = 2000 if victim_pid == 22 else 1000
+    if case in {"reused", "descendant_reused"}:
+        born += 1
+    rc = 0 if case == "success" else 137
+    owned = (
+        ((22, memory_guard.ProcessIdentity(2000)),)
+        if case.startswith("descendant")
+        else ()
+    )
+    failure = (
+        memory_guard.GuardInfrastructureFailure(
+            phase="temporary_artifact_custody", details=("existing cleanup failure",)
+        )
+        if case == "infrastructure"
+        else None
+    )
+    proc = harness_memory_guard.GuardedCompletedProcess(
+        ["fixture"],
+        rc,
+        "partial",
+        "child stderr",
+        elapsed_s=0.1,
+        child_process=child,
+        child_returncode=rc,
+        owned_process_identities=owned,
+        infrastructure_failure=failure,
+        timed_out=case == "timeout",
+    )
+
+    def launch(*args, **kwargs):
+        harness_outcomes.publish_suite_trip(
+            marker, _suite_victim_record(victim_pid, born)
+        )
+        return proc
+
+    if adapter in {"native", "cpython"}:
+        monkeypatch.setattr(
+            harness_memory_guard.HarnessExecutionContext,
+            "from_env",
+            lambda *a, **k: SimpleNamespace(run=launch),
+        )
+        if case == "timeout":
+            with pytest.raises(subprocess.TimeoutExpired):
+                molt_diff._run_subprocess(["fixture"], env=env, timeout=5)
+            return
+        result = molt_diff._run_subprocess(["fixture"], env=env, timeout=5)
+    else:
+        monkeypatch.setattr(harness_memory_guard, "guarded_completed_process", launch)
+        result = compat_backends._guarded_run(
+            ["fixture"], prefix="MOLT_" + adapter.upper(), env=env, timeout_default=5
+        )
+    expected = case in {"victim", "descendant", "descendant_unknown_root"}
+    assert result.rss_limit_exceeded is (expected or case == "infrastructure")
+    assert result.resource_failure == ("rss_limit_exceeded" if expected else None)
+    assert result.child_returncode == rc
+    assert result.stdout == "partial"
+    assert result.diagnostic_stderr == "child stderr"
+    assert result.infrastructure_failure is failure
+    assert ("observed suite RSS" in result.stderr) is (
+        expected or case == "infrastructure"
+    )
+
+
+def test_guest_retirement_preserves_existing_trip_infrastructure_phase(tmp_path):
+    from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
+
+    existing = GuardInfrastructureFailure(
+        phase="rss_trip_evidence", details=("marker failed",)
+    )
+    initial = compat_backends.BackendResult(
+        "partial", "diagnostic", 137, infrastructure_failure=existing
+    )
+    lease = SimpleNamespace(path=tmp_path, retire=lambda **k: "retirement failed")
+    result = compat_backends.run_with_guest_outputs(
+        [lease], lambda: initial, environment={}, repo_root=_REPO_ROOT
+    )
+    assert result.infrastructure_failure.phase == "rss_trip_evidence"
+    assert result.infrastructure_failure.details == (
+        "marker failed",
+        "retirement failed",
+    )
+    assert result.resource_failure is None

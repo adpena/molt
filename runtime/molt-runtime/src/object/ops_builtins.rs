@@ -1809,7 +1809,7 @@ pub extern "C" fn molt_getattr_builtin(obj_bits: u64, name_bits: u64, default_bi
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_setattr_builtin(obj_bits: u64, name_bits: u64, val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        molt_object_setattr(obj_bits, name_bits, val_bits);
+        molt_set_attr_name(obj_bits, name_bits, val_bits);
         MoltObject::none().bits()
     })
 }
@@ -1818,7 +1818,7 @@ pub extern "C" fn molt_setattr_builtin(obj_bits: u64, name_bits: u64, val_bits: 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_delattr_builtin(obj_bits: u64, name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_object_delattr(obj_bits, name_bits);
+        let res = molt_del_attr_name(obj_bits, name_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
@@ -1860,7 +1860,8 @@ pub extern "C" fn molt_object_getstate(_self_bits: u64) -> u64 {
             return MoltObject::none().bits();
         };
         let type_id = unsafe { object_type_id(ptr) };
-        if !crate::object::heap_kind_has_class_shape(type_id) && type_id != crate::TYPE_ID_DATACLASS
+        if !unsafe { crate::object::object_has_class_shape(ptr) }
+            && type_id != crate::TYPE_ID_DATACLASS
         {
             return MoltObject::none().bits();
         }
@@ -2101,12 +2102,17 @@ pub(crate) fn object_getattribute(obj_bits: u64, name_bits: u64, suppress: bool)
             }
             let attr_name = string_obj_to_owned(obj_from_bits(name_bits))
                 .unwrap_or_else(|| "<attr>".to_string());
-            if let Some(val) =
-                crate::builtins::attributes::resolve_scalar_attr(_py, obj_bits, &attr_name)
+            if maybe_ptr_from_bits(obj_bits).is_none()
+                || crate::builtins::attributes::is_numeric_scalar_attr_receiver(_py, obj_bits)
             {
-                return val;
-            }
-            if crate::builtins::attributes::is_numeric_scalar_attr_receiver(_py, obj_bits) {
+                if let Some(val) =
+                    crate::builtins::attributes::resolve_scalar_attr(_py, obj_bits, &attr_name)
+                {
+                    return val;
+                }
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return attr_error_with_obj(
                     _py,
                     type_name(_py, obj_from_bits(obj_bits)),
@@ -2117,6 +2123,12 @@ pub(crate) fn object_getattribute(obj_bits: u64, name_bits: u64, suppress: bool)
             if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
                 let type_id = object_type_id(obj_ptr);
                 let found = match type_id {
+                    crate::TYPE_ID_FOREIGN => crate::builtins::attributes::foreign_attr_lookup(
+                        _py,
+                        obj_ptr,
+                        name_bits,
+                        molt_cpython_abi::hooks::AttributeAccess::Generic,
+                    ),
                     type_id if crate::object::heap_kind_has_class_shape(type_id) => {
                         crate::builtins::attr::object_attr_lookup_with_policy(
                             _py, obj_ptr, name_bits, suppress,
@@ -2125,6 +2137,15 @@ pub(crate) fn object_getattribute(obj_bits: u64, name_bits: u64, suppress: bool)
                     TYPE_ID_DATACLASS => crate::builtins::attr::dataclass_attr_lookup_inner(
                         _py, obj_ptr, name_bits, None, suppress,
                     ),
+                    TYPE_ID_TYPE => {
+                        // Generic lookup sees the physical object dictionary:
+                        // heap types alias their own namespace; static types
+                        // have a distinct initially empty dictionary. Bases
+                        // and native namespace publication remain type lookup.
+                        crate::builtins::attr::object_attr_lookup_with_policy(
+                            _py, obj_ptr, name_bits, suppress,
+                        )
+                    }
                     _ => crate::builtins::attributes::attr_lookup_ptr_default_with_suppression(
                         _py, obj_ptr, name_bits, suppress,
                     ),
@@ -2271,100 +2292,26 @@ pub extern "C" fn molt_type_call(cls_bits: u64) -> u64 {
     })
 }
 
+/// Explicit Python object.__setattr__: admit every receiver before the raw
+/// generic primitive. Internal normal stores use molt_set_attr_name instead.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_setattr(obj_bits: u64, name_bits: u64, val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let name_obj = obj_from_bits(name_bits);
-        let Some(name_ptr) = name_obj.as_ptr() else {
-            return raise_attr_name_type_error(_py, name_bits);
-        };
-        unsafe {
-            if object_type_id(name_ptr) != TYPE_ID_STRING {
-                return raise_attr_name_type_error(_py, name_bits);
-            }
-            let attr_name = string_obj_to_owned(obj_from_bits(name_bits))
-                .unwrap_or_else(|| "<attr>".to_string());
-            let Some(attr_bits) = attr_name_bits_from_bytes(_py, attr_name.as_bytes()) else {
-                return MoltObject::none().bits();
-            };
-            if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
-                let type_id = object_type_id(obj_ptr);
-                // Type objects (classes) support setattr — class attributes
-                // are stored in the object's generic attribute dict, same as
-                // any other object.  The previous TYPE_ID_TYPE guard was
-                // incorrect: it blocked ALL attribute modification on classes,
-                // breaking metaclass __init__, @classmethod setattr, and
-                // dynamic Protocol registration.
-                let res = if crate::object::heap_kind_has_class_shape(type_id)
-                    || crate::object::native_instance::has_fields(obj_ptr)
-                    || (type_id != TYPE_ID_DATACLASS
-                        && !crate::object::instance_dict_bits_ptr(obj_ptr).is_null())
-                {
-                    object_setattr_raw(_py, obj_ptr, attr_bits, &attr_name, val_bits)
-                } else if type_id == TYPE_ID_DATACLASS {
-                    dataclass_setattr_raw_unchecked(_py, obj_ptr, attr_bits, &attr_name, val_bits)
-                } else {
-                    let bytes = string_bytes(name_ptr);
-                    let len = string_len(name_ptr);
-                    molt_set_attr_generic(obj_ptr, bytes, len as u64, val_bits)
-                };
-                dec_ref_bits(_py, attr_bits);
-                let _ = res;
-                return MoltObject::none().bits();
-            }
-            let obj = obj_from_bits(obj_bits);
-            let _ = attr_error_with_obj(_py, type_name(_py, obj), &attr_name, obj_bits);
-            dec_ref_bits(_py, attr_bits);
-            MoltObject::none().bits()
+    crate::with_gil_entry_nopanic!(py, {
+        if !crate::builtins::attributes::explicit_object_mutation_admitted(py, obj_bits, false) {
+            return MoltObject::none().bits();
         }
+        crate::builtins::attributes::generic_set_attr_name(obj_bits, name_bits, val_bits)
     })
 }
 
+/// Explicit Python object.__delattr__, with the same admission as its setter.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_object_delattr(obj_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let name_obj = obj_from_bits(name_bits);
-        let Some(name_ptr) = name_obj.as_ptr() else {
-            return raise_attr_name_type_error(_py, name_bits);
-        };
-        unsafe {
-            if object_type_id(name_ptr) != TYPE_ID_STRING {
-                return raise_attr_name_type_error(_py, name_bits);
-            }
-            let attr_name = string_obj_to_owned(obj_from_bits(name_bits))
-                .unwrap_or_else(|| "<attr>".to_string());
-            let Some(attr_bits) = attr_name_bits_from_bytes(_py, attr_name.as_bytes()) else {
-                return MoltObject::none().bits();
-            };
-            if let Some(obj_ptr) = maybe_ptr_from_bits(obj_bits) {
-                let type_id = object_type_id(obj_ptr);
-                if type_id == TYPE_ID_TYPE {
-                    dec_ref_bits(_py, attr_bits);
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "can't apply this __delattr__ to type object",
-                    );
-                }
-                let res = if crate::object::heap_kind_has_class_shape(type_id)
-                    || crate::object::native_instance::has_fields(obj_ptr)
-                    || (type_id != TYPE_ID_DATACLASS
-                        && !crate::object::instance_dict_bits_ptr(obj_ptr).is_null())
-                {
-                    object_delattr_raw(_py, obj_ptr, attr_bits, &attr_name)
-                } else if type_id == TYPE_ID_DATACLASS {
-                    dataclass_delattr_raw_unchecked(_py, obj_ptr, attr_bits, &attr_name)
-                } else {
-                    del_attr_ptr(_py, obj_ptr, attr_bits, &attr_name)
-                };
-                dec_ref_bits(_py, attr_bits);
-                return res;
-            }
-            let obj = obj_from_bits(obj_bits);
-            let res = attr_error(_py, type_name(_py, obj), &attr_name);
-            dec_ref_bits(_py, attr_bits);
-            res
+    crate::with_gil_entry_nopanic!(py, {
+        if !crate::builtins::attributes::explicit_object_mutation_admitted(py, obj_bits, true) {
+            return MoltObject::none().bits();
         }
+        crate::builtins::attributes::generic_del_attr_name(obj_bits, name_bits)
     })
 }
 
@@ -2942,81 +2889,13 @@ pub extern "C" fn molt_slice(obj_bits: u64, start_bits: u64, end_bits: u64) -> u
                     return MoltObject::from_ptr(out).bits();
                 }
                 if type_id == TYPE_ID_MEMORYVIEW {
-                    if memoryview_released(ptr) {
-                        return raise_released_memoryview(_py);
-                    }
-                    let len = memoryview_len(ptr) as isize;
-                    let start = match decode_slice_bound(_py, start_obj, len, 0) {
-                        Ok(v) => v,
-                        Err(err) => return slice_error(_py, err),
-                    };
-                    let end = match decode_slice_bound(_py, end_obj, len, len) {
-                        Ok(v) => v,
-                        Err(err) => return slice_error(_py, err),
-                    };
-                    if memoryview_released(ptr) {
-                        return raise_released_memoryview(_py);
-                    }
-                    if end < start {
-                        let stride = memoryview_stride(ptr);
-                        let data = memoryview_data(ptr);
-                        let storage = TypedStridedStorage::new(
-                            data,
-                            memoryview_readonly(ptr),
-                            memoryview_itemsize(ptr),
-                            memoryview_offset(ptr),
-                            memoryview_base_bits(ptr),
-                            memoryview_format_bits(ptr),
-                            vec![0],
-                            vec![stride],
-                        )
-                        .map(|storage| storage.with_owner(memoryview_owner_bits(ptr)));
-                        let out_ptr = match storage {
-                            Some(storage) => alloc_memoryview_from_storage(_py, storage),
-                            None => std::ptr::null_mut(),
-                        };
-                        if out_ptr.is_null() {
-                            return MoltObject::none().bits();
-                        }
-                        return MoltObject::from_ptr(out_ptr).bits();
-                    }
-                    let stride = memoryview_stride(ptr);
-                    let Some(byte_offset) = start.checked_mul(stride) else {
-                        return MoltObject::none().bits();
-                    };
-                    let new_len = (end - start) as usize;
-                    let base_data = memoryview_data(ptr);
-                    let data = if new_len == 0 {
-                        base_data
-                    } else {
-                        base_data.offset(byte_offset)
-                    };
-                    let Some(offset) = memoryview_offset(ptr).checked_add(if new_len == 0 {
-                        0
-                    } else {
-                        byte_offset
-                    }) else {
-                        return MoltObject::none().bits();
-                    };
-                    let storage = TypedStridedStorage::new(
-                        data,
-                        memoryview_readonly(ptr),
-                        memoryview_itemsize(ptr),
-                        offset,
-                        memoryview_base_bits(ptr),
-                        memoryview_format_bits(ptr),
-                        vec![new_len as isize],
-                        vec![stride],
-                    )
-                    .map(|storage| storage.with_owner(memoryview_owner_bits(ptr)));
-                    let out_ptr = match storage {
-                        Some(storage) => alloc_memoryview_from_storage(_py, storage),
-                        None => std::ptr::null_mut(),
-                    };
-                    if out_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    return MoltObject::from_ptr(out_ptr).bits();
+                    return crate::object::memoryview::memoryview_slice(
+                        _py,
+                        ptr,
+                        start_bits,
+                        end_bits,
+                        MoltObject::none().bits(),
+                    );
                 }
                 if type_id == TYPE_ID_LIST && crate::object::iterable::builtin_receiver(_py, ptr) {
                     let len = list_len(ptr) as isize;

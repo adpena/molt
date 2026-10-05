@@ -8,7 +8,7 @@ from pathlib import Path
 from secrets import token_hex
 from typing import Any, cast
 
-from .contracts import DebugSubcommand
+from molt.debug.contracts import DebugSubcommand
 
 
 @dataclass(frozen=True)

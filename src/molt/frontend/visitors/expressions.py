@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import ast
 from molt.compiler_analysis.python_builtin_shapes import BUILTIN_SHAPE_NAMES
-from molt.compiler_analysis.python_binding_facts import UNBOUND_IDENTITY
+from molt.compiler_analysis.python_value_identity import UNBOUND_IDENTITY
 from typing import (
     Any,
 )

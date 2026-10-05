@@ -6,7 +6,7 @@ from pathlib import Path
 
 from molt.cli import runtime_wasm_cache_diagnostics as _cache_diagnostics
 from molt.cli.default_paths import _default_molt_cache
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.runtime_wasm_generation import (
     RuntimeWasmGeneration,
     hydrate_runtime_wasm_generation,

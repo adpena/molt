@@ -149,25 +149,6 @@ pub(crate) fn copy_kind_raw_carrier_type(kind: Option<&str>) -> Option<crate::ti
     }
 }
 
-/// Returns whether an `OpCode::Copy` op is an EXPLICIT transparent local alias:
-/// its result PROVABLY names operand 0's heap object (bit-for-bit, no incref). The
-/// alias union-find unions the result into operand 0's root, so this MUST be
-/// PRECISE — a false union would let MemGVN forward a store from one object to a
-/// load from a *different* object (a miscompile). Therefore it is the EXPLICIT
-/// no-incref pass-through set only (bare `Copy`, the named SSA/var moves, and the
-/// validate-and-pass-through guards `guard_tag`/`guard_type` whose runtime returns
-/// operand 0 unchanged); an UNKNOWN kind is NOT unioned (it gets its own root).
-///
-/// This is intentionally DISTINCT from the drop pass's fail-closed droppability
-/// rule: the union-find fails closed to "NOT an alias" (precise, MemGVN-safe),
-/// while the drop pass separately fails closed to "do NOT release" (leak-safe,
-/// see `drop_insertion`'s `copy_result_is_owned_ref`). The two axes fail closed
-/// in opposite directions, so they use different predicates — collapsing them
-/// re-creates either a MemGVN miscompile or a drop-pass double-free.
-pub(super) fn copy_is_known_local_alias(op: &TirOp) -> bool {
-    copy_kind_is_explicit_no_heap_move(copy_original_kind(op))
-}
-
 /// Returns whether an `OpCode::Copy` op is an EXPLICIT no-heap-footprint pure
 /// move: a bare `Copy`, one of the named SSA/var moves, or a validate-and-pass-
 /// through guard (`guard_tag`/`guard_type`). These provably touch NO heap memory

@@ -407,12 +407,6 @@ runtime_name = "molt_abc_update_abstractmethods"
 callable_arity = 1
 
 [[import]]
-name = "abc_abstractmethod_check"
-type = 2
-runtime_name = "molt_abc_abstractmethod_check"
-callable_arity = 1
-
-[[import]]
 name = "array_new"
 type = 2
 runtime_name = "molt_array_new"
@@ -722,6 +716,12 @@ runtime_name = "molt_frame_cell_publish"
 callable_arity = 2
 
 [[import]]
+name = "exception_prepare_raise"
+type = 3
+runtime_name = "molt_exception_prepare_raise"
+callable_arity = 2
+
+[[import]]
 name = "exception_trace_prepend"
 type = 2
 runtime_name = "molt_exception_trace_prepend"
@@ -832,10 +832,6 @@ type = 0
 name = "exception_push"
 return_contract = "owned_object"
 type = 0
-
-[[import]]
-name = "exception_set_cause"
-type = 3
 
 [[import]]
 name = "exception_set_last"
@@ -1486,6 +1482,11 @@ type = 2
 name = "guard_layout"
 return_contract = "owned_object"
 type = 5
+
+[[import]]
+name = "profile_enabled"
+return_contract = "raw_bits"
+type = 0
 
 [[import]]
 name = "guard_type"
@@ -5272,6 +5273,16 @@ callable_arity = 3
 # `_original_kind` key and carry only the operand count here.
 
 [[lir_runtime_call]]
+variant = "ProfileEnabled"
+import_name = "profile_enabled"
+
+[[lir_runtime_call]]
+variant = "GuardType"
+import_name = "guard_type"
+boxed_operand_count = 2
+preserved_copy_operand_count = 2
+
+[[lir_runtime_call]]
 variant = "Add"
 import_name = "add"
 boxed_operand_count = 2
@@ -6418,6 +6429,15 @@ args = ["local:0"]
 kind = "guard_tag"
 import_name = "guard_type"
 args = ["local:0", "local:1"]
+required_imports = ["guard_type", "profile_enabled"]
+lir_variant = "GuardType"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "guard_type"
+import_name = "guard_type"
+args = ["local:0", "local:1"]
+required_imports = ["guard_type", "profile_enabled"]
 
 [[op_loop_runtime_call]]
 kind = "string_format"
@@ -6581,7 +6601,6 @@ kinds = [
   "exception_new",
   "exception_new_from_class",
   "exceptiongroup_match",
-  "exception_set_cause",
   "exception_set_value",
 ]
 
@@ -7967,7 +7986,6 @@ lir_fast = "materialize"
 [[const_op_policy]]
 kind = "const_str"
 materializer_import = "string_from_bytes"
-literal_payload = "string"
 dispatch_runtime_seed = true
 raw_int_effect = "clear"
 lir_fast = "materialize"
@@ -7975,7 +7993,6 @@ lir_fast = "materialize"
 [[const_op_policy]]
 kind = "const_bigint"
 materializer_import = "bigint_from_str"
-literal_payload = "bigint_decimal"
 dispatch_runtime_seed = true
 raw_int_effect = "clear"
 lir_fast = "materialize"
@@ -7983,7 +8000,6 @@ lir_fast = "materialize"
 [[const_op_policy]]
 kind = "const_bytes"
 materializer_import = "bytes_from_bytes"
-literal_payload = "bytes"
 dispatch_runtime_seed = true
 raw_int_effect = "clear"
 lir_fast = "materialize"

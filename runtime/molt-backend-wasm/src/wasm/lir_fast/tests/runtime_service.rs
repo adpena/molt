@@ -238,3 +238,159 @@ fn unsupported_preserved_copy_runtime_service_bails_instead_of_aliasing_operand(
         "unsupported preserved Copy runtime service must not fake a partial LIR runtime call"
     );
 }
+
+#[test]
+fn runtime_guards_keep_both_reads_and_borrow_the_alias_result() {
+    for kind in ["guard_tag", "guard_type"] {
+        for bound in [false, true] {
+            let func = make_copy_original_kind_runtime_func(kind, kind, 2, bound);
+            let body = lower_tir_to_wasm(&func);
+            let output = body.test_view();
+            assert!(!output.bails_to_generic_path, "{kind}/{bound}");
+            assert_eq!(
+                output
+                    .runtime_calls
+                    .iter()
+                    .filter(|&&name| name == "guard_type")
+                    .count(),
+                1
+            );
+            assert!(
+                !output.runtime_calls.contains(&"inc_ref_obj"),
+                "guard alias mints no owner"
+            );
+            let module = super::execution_support::executable_module(&body);
+            assert_linked_guard_call(&module, true);
+        }
+    }
+}
+
+#[test]
+fn runtime_guard_literal_tag_gates_profiling_and_keeps_float_alias_carrier() {
+    for kind in ["guard_tag", "guard_type"] {
+        let mut func = make_scalar_const_return_func(
+            kind,
+            OpCode::ConstFloat,
+            TirType::F64,
+            AttrDict::from([("f_value".into(), AttrValue::Float(1.25))]),
+        );
+        let tag = func.fresh_value();
+        let result = func.fresh_value();
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        let source = entry.ops[0].results[0];
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::ConstInt,
+            operands: vec![],
+            results: vec![tag],
+            attrs: AttrDict::from([("value".into(), AttrValue::Int(5))]),
+            source_span: None,
+        });
+        entry.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Copy,
+            operands: vec![source, tag],
+            results: vec![result],
+            attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
+            source_span: None,
+        });
+        entry.terminator = Terminator::Return {
+            values: vec![result],
+        };
+        let body = lower_tir_to_wasm(&func);
+        let output = body.test_view();
+        assert!(!output.bails_to_generic_path, "{kind}");
+        assert_eq!(output.result_types, vec![ValType::F64]);
+        assert_eq!(
+            output
+                .runtime_calls
+                .iter()
+                .filter(|&&name| name == "profile_enabled")
+                .count(),
+            1
+        );
+        assert_eq!(
+            output
+                .runtime_calls
+                .iter()
+                .filter(|&&name| name == "guard_type")
+                .count(),
+            1
+        );
+        assert!(
+            output
+                .instructions
+                .iter()
+                .any(|ins| matches!(ins, Instruction::If(_)))
+        );
+        let module = super::execution_support::executable_module(&body);
+        assert_linked_guard_call(&module, false);
+    }
+}
+
+fn assert_linked_guard_call(module: &[u8], parameter_operands: bool) {
+    use wasmparser::{Operator, Parser, Payload, TypeRef};
+
+    let mut imports = Vec::new();
+    let mut operators = Vec::new();
+    for payload in Parser::new(0).parse_all(module) {
+        match payload.expect("valid linked guard module") {
+            Payload::ImportSection(section) => {
+                for import in section.into_imports() {
+                    let import = import.expect("valid linked runtime import");
+                    if matches!(import.ty, TypeRef::Func(_) | TypeRef::FuncExact(_)) {
+                        assert_eq!(import.module, "molt_runtime");
+                        imports.push(import.name);
+                    }
+                }
+            }
+            Payload::CodeSectionEntry(body) => {
+                operators.extend(
+                    body.get_operators_reader()
+                        .unwrap()
+                        .into_iter()
+                        .map(Result::unwrap),
+                );
+            }
+            _ => {}
+        }
+    }
+    let guard_import = imports
+        .iter()
+        .position(|name| *name == LirRuntimeCall::GuardType.import().name())
+        .expect("linked guard_type import") as u32;
+    let call_sites: Vec<_> = operators
+        .iter()
+        .enumerate()
+        .filter_map(|(index, op)| {
+            matches!(op, Operator::Call { function_index } if *function_index == guard_import)
+                .then_some(index)
+        })
+        .collect();
+    assert_eq!(call_sites.len(), 1, "one actual linked guard call");
+    let call = call_sites[0];
+    assert!(
+        matches!(operators.get(call + 1), Some(Operator::Drop)),
+        "borrowed guard result is discarded"
+    );
+    if parameter_operands {
+        assert!(
+            matches!(
+                operators.get(call.wrapping_sub(2)),
+                Some(Operator::LocalGet { local_index: 0 })
+            ),
+            "guard reads the value parameter"
+        );
+        assert!(
+            matches!(
+                operators.get(call.wrapping_sub(1)),
+                Some(Operator::LocalGet { local_index: 1 })
+            ),
+            "guard reads the tag parameter"
+        );
+    }
+    assert!(
+        !imports.contains(&"inc_ref_obj"),
+        "guard alias creates no independent owner"
+    );
+}

@@ -420,7 +420,7 @@ fcntl; keep every hook ASCII-safe and UTF-8-explicit (M43's cp1252 class).
 **Build:** `tools/hooks/landing_gate.py`, invoked from stop_gates. Window =
 session-start HEAD marker .. current HEAD (per-worktree) + proof_queue rows +
 a blocker ledger (`.molt/state/blockers.jsonl`, new, append-only). If a turn
-produced substantive tool activity but the window shows NO landed commit, NO
+produced potentially mutating assistant tool activity but the window shows NO landed commit, NO
 queue row in flight, and NO named-blocker entry, emit a block: "This turn
 reported without landing. Land a commit/proof/passing test via the queue, or
 record the real external blocker in blockers.jsonl, then stop." Escape:
@@ -429,6 +429,12 @@ This is exactly pact's triality-detector *shape* (git-window marker,
 fail-open, block-JSON) pointed at molt's most-repeated directive.
 **Mechanizes:** M12 (land signal every turn; name real blockers), M05
 (a PASS is a hypothesis until reproduced — the gate asks for the artifact).
+Read-only reviews are complete outcomes: recognized inspection tools do not
+activate the landing requirement. SessionStart renders the gate's canonical
+`READ_ONLY_TOOLS` set and limits its directive to potentially mutating work.
+The bounded JSONL activity reader ignores
+quoted/result records and duplicate tool IDs; shells and unfamiliar tools remain
+potentially mutating. Transcript errors fail open with a visible diagnostic.
 **Composes with:** proof_queue.py (rows = evidence), ff_land landing flow.
 
 ### A3. Molt triality drift detector (M63 made mechanical)

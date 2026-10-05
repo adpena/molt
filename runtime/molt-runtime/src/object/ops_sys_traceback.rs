@@ -33,7 +33,9 @@ pub(crate) fn traceback_limit_from_bits(
 /// managed and native traceback/frame objects. Each result stays owned across
 /// later lookups, which may call Python and replace neighboring fields.
 fn traceback_attribute<'a, 'py>(
-    py: &'a PyToken<'py>, value: u64, name: u64,
+    py: &'a PyToken<'py>,
+    value: u64,
+    name: u64,
 ) -> Option<ExceptionValue<'a, 'py>> {
     let ptr = obj_from_bits(value).as_ptr()?;
     unsafe { crate::builtins::attr::attr_lookup_ptr_allow_missing(py, ptr, name) }
@@ -45,20 +47,34 @@ fn traceback_frame_info(py: &PyToken<'_>, frame: u64) -> Option<(Vec<u8>, i64, V
     let code_name = intern_static_name(py, &interned.f_code_name, b"f_code");
     let line_name = intern_static_name(py, &interned.f_lineno_name, b"f_lineno");
     let code = traceback_attribute(py, frame, code_name);
-    if exception_pending(py) { return None; }
+    if exception_pending(py) {
+        return None;
+    }
     let line = traceback_attribute(py, frame, line_name);
-    if exception_pending(py) { return None; }
-    if code.is_none() && line.is_none() { return None; }
-    let lineno = line.as_ref().and_then(|value| to_i64(obj_from_bits(value.bits()))).unwrap_or(0);
+    if exception_pending(py) {
+        return None;
+    }
+    if code.is_none() && line.is_none() {
+        return None;
+    }
+    let lineno = line
+        .as_ref()
+        .and_then(|value| to_i64(obj_from_bits(value.bits())))
+        .unwrap_or(0);
     let mut filename = b"<unknown>".to_vec();
     let mut function = b"<module>".to_vec();
     if let Some(code) = code {
-        let filename_name = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"co_filename")?);
+        let filename_name =
+            ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"co_filename")?);
         let function_name = ExceptionValue::adopt(py, attr_name_bits_from_bytes(py, b"co_name")?);
         let file = traceback_attribute(py, code.bits(), filename_name.bits());
-        if exception_pending(py) { return None; }
+        if exception_pending(py) {
+            return None;
+        }
         let name = traceback_attribute(py, code.bits(), function_name.bits());
-        if exception_pending(py) { return None; }
+        if exception_pending(py) {
+            return None;
+        }
         if let Some(file) = file.and_then(|value| string_obj_bytes(obj_from_bits(value.bits()))) {
             filename = file;
         }
@@ -72,7 +88,9 @@ fn traceback_frame_info(py: &PyToken<'_>, frame: u64) -> Option<(Vec<u8>, i64, V
 }
 
 pub(crate) fn traceback_frames(
-    py: &PyToken<'_>, tb_bits: u64, limit: Option<usize>,
+    py: &PyToken<'_>,
+    tb_bits: u64,
+    limit: Option<usize>,
 ) -> Vec<(Vec<u8>, i64, Vec<u8>)> {
     let interned = &runtime_state(py).interned;
     let frame_name = intern_static_name(py, &interned.tb_frame_name, b"tb_frame");
@@ -83,18 +101,35 @@ pub(crate) fn traceback_frames(
     let mut seen = HashSet::new();
     let mut owners = Vec::new();
     while !obj_from_bits(current.bits()).is_none() {
-        if limit.is_some_and(|max| out.len() >= max) || !seen.insert(current.bits()) { break; }
-        let Some(frame) = traceback_attribute(py, current.bits(), frame_name) else { break; };
+        if limit.is_some_and(|max| out.len() >= max) || !seen.insert(current.bits()) {
+            break;
+        }
+        let Some(frame) = traceback_attribute(py, current.bits(), frame_name) else {
+            break;
+        };
         let line = traceback_attribute(py, current.bits(), line_name);
-        if exception_pending(py) { return Vec::new(); }
+        if exception_pending(py) {
+            return Vec::new();
+        }
         let next = traceback_attribute(py, current.bits(), next_name);
-        if exception_pending(py) { return Vec::new(); }
+        if exception_pending(py) {
+            return Vec::new();
+        }
         let info = traceback_frame_info(py, frame.bits());
-        if exception_pending(py) { return Vec::new(); }
-        let (filename, frame_line, name) = info.unwrap_or_else(|| (b"<unknown>".to_vec(), 0, b"<module>".to_vec()));
-        let lineno = line.as_ref().and_then(|value| to_i64(obj_from_bits(value.bits()))).filter(|line| *line > 0).unwrap_or(frame_line);
+        if exception_pending(py) {
+            return Vec::new();
+        }
+        let (filename, frame_line, name) =
+            info.unwrap_or_else(|| (b"<unknown>".to_vec(), 0, b"<module>".to_vec()));
+        let lineno = line
+            .as_ref()
+            .and_then(|value| to_i64(obj_from_bits(value.bits())))
+            .filter(|line| *line > 0)
+            .unwrap_or(frame_line);
         out.push((filename, lineno, name));
-        let Some(next) = next else { break; };
+        let Some(next) = next else {
+            break;
+        };
         owners.push(current);
         current = next;
     }
@@ -706,7 +741,8 @@ pub(crate) fn traceback_format_exception_only_line(
 }
 
 pub(crate) fn traceback_exception_type<'a, 'py>(
-    py: &'a PyToken<'py>, value_bits: u64,
+    py: &'a PyToken<'py>,
+    value_bits: u64,
 ) -> Option<ExceptionValue<'a, 'py>> {
     if exception_is_instance(py, value_bits) {
         exception_class(py, value_bits)
@@ -721,7 +757,8 @@ pub(crate) fn traceback_exception_type<'a, 'py>(
 }
 
 pub(crate) fn traceback_exception_trace<'a, 'py>(
-    py: &'a PyToken<'py>, value_bits: u64,
+    py: &'a PyToken<'py>,
+    value_bits: u64,
 ) -> Option<ExceptionValue<'a, 'py>> {
     if exception_is_instance(py, value_bits) {
         exception_field(py, value_bits, ExceptionFieldSlot::Traceback)
@@ -741,23 +778,34 @@ pub(crate) struct TracebackExceptionLink<'a, 'py> {
 /// Retain every visited identity so callbacks cannot recycle an identity while
 /// rendering, and terminate before a cycle would repeat an exception.
 pub(crate) fn traceback_exception_chain<'a, 'py>(
-    py: &'a PyToken<'py>, value: u64,
+    py: &'a PyToken<'py>,
+    value: u64,
 ) -> Option<Vec<TracebackExceptionLink<'a, 'py>>> {
     let mut chain = vec![TracebackExceptionLink {
-        value: ExceptionValue::pin(py, value), separator: None,
+        value: ExceptionValue::pin(py, value),
+        separator: None,
     }];
     let mut seen = HashSet::from([value]);
     loop {
-        let current = chain.last().expect("exception chain has its root").value.bits();
+        let current = chain
+            .last()
+            .expect("exception chain has its root")
+            .value
+            .bits();
         let Some(storage) = ExceptionStorage::for_exception(py, current) else {
             return raise_exception(py, "TypeError", "value must be an exception instance");
         };
         let cause = exception_field(py, current, ExceptionFieldSlot::Cause)?;
         let (next, separator) = if !obj_from_bits(cause.bits()).is_none() {
-            (cause, "\nThe above exception was the direct cause of the following exception:\n\n")
+            (
+                cause,
+                "\nThe above exception was the direct cause of the following exception:\n\n",
+            )
         } else if !storage.suppress_context() {
-            (exception_field(py, current, ExceptionFieldSlot::Context)?,
-             "\nDuring handling of the above exception, another exception occurred:\n\n")
+            (
+                exception_field(py, current, ExceptionFieldSlot::Context)?,
+                "\nDuring handling of the above exception, another exception occurred:\n\n",
+            )
         } else {
             break;
         };
@@ -765,9 +813,16 @@ pub(crate) fn traceback_exception_chain<'a, 'py>(
             break;
         }
         if !exception_is_instance(py, next.bits()) {
-            return raise_exception(py, "TypeError", "exception chain must contain exception instances");
+            return raise_exception(
+                py,
+                "TypeError",
+                "exception chain must contain exception instances",
+            );
         }
-        chain.push(TracebackExceptionLink { value: next, separator: Some(separator) });
+        chain.push(TracebackExceptionLink {
+            value: next,
+            separator: Some(separator),
+        });
     }
     Some(chain)
 }
@@ -825,20 +880,48 @@ pub(crate) fn traceback_append_exception_chain_lines(
         );
         return;
     }
-    let Some(entries) = traceback_exception_chain(_py, value_bits) else { return; };
+    let Some(entries) = traceback_exception_chain(_py, value_bits) else {
+        return;
+    };
     for index in (0..entries.len()).rev() {
         if index + 1 < entries.len() {
-            out.push(entries[index + 1].separator.expect("linked exception").as_bytes().to_vec());
+            out.push(
+                entries[index + 1]
+                    .separator
+                    .expect("linked exception")
+                    .as_bytes()
+                    .to_vec(),
+            );
         }
         if index == 0 {
-            traceback_append_exception_single_lines(_py, exc_type_bits, value_bits, tb_bits, limit, out);
+            traceback_append_exception_single_lines(
+                _py,
+                exc_type_bits,
+                value_bits,
+                tb_bits,
+                limit,
+                out,
+            );
         } else {
             let value = entries[index].value.bits();
-            let Some(class) = traceback_exception_type(_py, value) else { return; };
-            let Some(traceback) = traceback_exception_trace(_py, value) else { return; };
-            traceback_append_exception_single_lines(_py, class.bits(), value, traceback.bits(), limit, out);
+            let Some(class) = traceback_exception_type(_py, value) else {
+                return;
+            };
+            let Some(traceback) = traceback_exception_trace(_py, value) else {
+                return;
+            };
+            traceback_append_exception_single_lines(
+                _py,
+                class.bits(),
+                value,
+                traceback.bits(),
+                limit,
+                out,
+            );
         }
-        if exception_pending(_py) { return; }
+        if exception_pending(_py) {
+            return;
+        }
     }
 }
 
@@ -923,7 +1006,9 @@ pub(crate) fn traceback_payload_from_traceback(
 }
 
 pub(crate) fn traceback_payload_from_frame_chain(
-    py: &PyToken<'_>, source_bits: u64, limit: Option<usize>,
+    py: &PyToken<'_>,
+    source_bits: u64,
+    limit: Option<usize>,
 ) -> Vec<TracebackPayloadFrame> {
     let back_name = intern_static_name(py, &runtime_state(py).interned.f_back_name, b"f_back");
     let mut out = Vec::new();
@@ -931,19 +1016,33 @@ pub(crate) fn traceback_payload_from_frame_chain(
     let mut seen = HashSet::new();
     let mut owners = Vec::new();
     while !obj_from_bits(current.bits()).is_none() && seen.insert(current.bits()) {
-        let Some((filename, lineno, name)) = traceback_frame_info(py, current.bits()) else { break; };
+        let Some((filename, lineno, name)) = traceback_frame_info(py, current.bits()) else {
+            break;
+        };
         let back = traceback_attribute(py, current.bits(), back_name);
-        if exception_pending(py) { return Vec::new(); }
+        if exception_pending(py) {
+            return Vec::new();
+        }
         let line = traceback_source_line_native(py, &filename, lineno);
         out.push(TracebackPayloadFrame {
-            filename, lineno, end_lineno: lineno, colno: -1, end_colno: -1, name, line,
+            filename,
+            lineno,
+            end_lineno: lineno,
+            colno: -1,
+            end_colno: -1,
+            name,
+            line,
         });
-        let Some(back) = back else { break; };
+        let Some(back) = back else {
+            break;
+        };
         owners.push(current);
         current = back;
     }
     out.reverse();
-    if let Some(max) = limit && out.len() > max {
+    if let Some(max) = limit
+        && out.len() > max
+    {
         return out[out.len() - max..].to_vec();
     }
     out
@@ -1253,16 +1352,19 @@ pub(crate) fn traceback_payload_from_source(
     if obj_from_bits(source_bits).is_none() {
         return Vec::new();
     }
-    if obj_from_bits(source_bits).as_ptr().is_some_and(|ptr| unsafe {
-        object_type_id(ptr) == TYPE_ID_TRACEBACK_PAYLOAD
-    }) {
+    if obj_from_bits(source_bits)
+        .as_ptr()
+        .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_TRACEBACK_PAYLOAD })
+    {
         return traceback_payload_from_lazy_chain(_py, source_bits, limit);
     }
     // Real traceback and frame objects have one protocol walk, including an
     // empty result. Reprobing them through fallback shapes would repeat native
     // descriptors and other Python callbacks.
     let builtins = builtin_classes(_py);
-    if unsafe { crate::object::class_layout::is_real_instance(_py, source_bits, builtins.traceback) } {
+    if unsafe {
+        crate::object::class_layout::is_real_instance(_py, source_bits, builtins.traceback)
+    } {
         return traceback_payload_from_traceback(_py, source_bits, limit);
     }
     if unsafe { crate::object::class_layout::is_real_instance(_py, source_bits, builtins.frame) } {
@@ -1735,7 +1837,11 @@ pub(crate) fn traceback_exception_components_payload(
 ) -> Result<u64, u64> {
     let value = ExceptionValue::pin(py, value_bits);
     let Some(storage) = ExceptionStorage::for_exception(py, value.bits()) else {
-        return Err(raise_exception(py, "TypeError", "value must be an exception instance"));
+        return Err(raise_exception(
+            py,
+            "TypeError",
+            "value must be an exception instance",
+        ));
     };
     // Snapshot every physical field before source retrieval can call Python.
     let traceback = exception_field(py, value.bits(), ExceptionFieldSlot::Traceback)
@@ -1746,14 +1852,22 @@ pub(crate) fn traceback_exception_components_payload(
         .ok_or_else(|| traceback_payload_failure(py))?;
     let suppress_context = storage.suppress_context();
     let payload = traceback_payload_from_source(py, traceback.bits(), limit);
-    if exception_pending(py) { return Err(MoltObject::none().bits()); }
+    if exception_pending(py) {
+        return Err(MoltObject::none().bits());
+    }
     let frames = ExceptionValue::adopt(py, traceback_payload_to_list(py, &payload));
     if obj_from_bits(frames.bits()).is_none() || exception_pending(py) {
         return Err(traceback_payload_failure(py));
     }
-    let tuple = alloc_tuple(py, &[
-        frames.bits(), cause.bits(), context.bits(), MoltObject::from_bool(suppress_context).bits(),
-    ]);
+    let tuple = alloc_tuple(
+        py,
+        &[
+            frames.bits(),
+            cause.bits(),
+            context.bits(),
+            MoltObject::from_bool(suppress_context).bits(),
+        ],
+    );
     if tuple.is_null() {
         Err(traceback_payload_failure(py))
     } else {
@@ -1769,13 +1883,23 @@ pub(crate) fn traceback_exception_chain_collect<'a, 'py>(
     seen: &mut HashMap<u64, usize>,
     depth: usize,
 ) -> Result<usize, u64> {
-    if let Some(index) = seen.get(&value_bits) { return Ok(*index); }
+    if let Some(index) = seen.get(&value_bits) {
+        return Ok(*index);
+    }
     if depth > 1024 {
-        return Err(raise_exception(py, "RuntimeError", "traceback exception chain recursion too deep"));
+        return Err(raise_exception(
+            py,
+            "RuntimeError",
+            "traceback exception chain recursion too deep",
+        ));
     }
     let value = ExceptionValue::pin(py, value_bits);
     let Some(storage) = ExceptionStorage::for_exception(py, value.bits()) else {
-        return Err(raise_exception(py, "TypeError", "value must be an exception instance"));
+        return Err(raise_exception(
+            py,
+            "TypeError",
+            "value must be an exception instance",
+        ));
     };
     let traceback = exception_field(py, value.bits(), ExceptionFieldSlot::Traceback)
         .ok_or_else(|| traceback_payload_failure(py))?;
@@ -1785,26 +1909,50 @@ pub(crate) fn traceback_exception_chain_collect<'a, 'py>(
         .ok_or_else(|| traceback_payload_failure(py))?;
     let suppress_context = storage.suppress_context();
     let frames = traceback_payload_from_source(py, traceback.bits(), limit);
-    if exception_pending(py) { return Err(MoltObject::none().bits()); }
+    if exception_pending(py) {
+        return Err(MoltObject::none().bits());
+    }
     let index = nodes.len();
     seen.insert(value_bits, index);
     nodes.push(TracebackExceptionChainNode {
-        value, frames, suppress_context, cause_index: None, context_index: None,
+        value,
+        frames,
+        suppress_context,
+        cause_index: None,
+        context_index: None,
     });
     if !obj_from_bits(cause.bits()).is_none() {
         if !exception_is_instance(py, cause.bits()) {
-            return Err(raise_exception(py, "TypeError", "exception __cause__ must be an exception instance or None"));
+            return Err(raise_exception(
+                py,
+                "TypeError",
+                "exception __cause__ must be an exception instance or None",
+            ));
         }
         nodes[index].cause_index = Some(traceback_exception_chain_collect(
-            py, cause.bits(), limit, nodes, seen, depth + 1,
+            py,
+            cause.bits(),
+            limit,
+            nodes,
+            seen,
+            depth + 1,
         )?);
     }
     if !suppress_context && !obj_from_bits(context.bits()).is_none() {
         if !exception_is_instance(py, context.bits()) {
-            return Err(raise_exception(py, "TypeError", "exception __context__ must be an exception instance or None"));
+            return Err(raise_exception(
+                py,
+                "TypeError",
+                "exception __context__ must be an exception instance or None",
+            ));
         }
         nodes[index].context_index = Some(traceback_exception_chain_collect(
-            py, context.bits(), limit, nodes, seen, depth + 1,
+            py,
+            context.bits(),
+            limit,
+            nodes,
+            seen,
+            depth + 1,
         )?);
     }
     Ok(index)
@@ -1824,21 +1972,40 @@ pub(crate) fn traceback_exception_chain_payload_bits(
         if obj_from_bits(frames.bits()).is_none() || exception_pending(py) {
             return Err(traceback_payload_failure(py));
         }
-        let cause = ExceptionValue::adopt(py, match node.cause_index {
-            Some(index) => int_bits_from_i64(py, index as i64),
-            None => MoltObject::none().bits(),
-        });
-        let context = ExceptionValue::adopt(py, match node.context_index {
-            Some(index) => int_bits_from_i64(py, index as i64),
-            None => MoltObject::none().bits(),
-        });
-        if exception_pending(py) { return Err(MoltObject::none().bits()); }
-        let tuple = alloc_tuple(py, &[
-            node.value.bits(), frames.bits(), MoltObject::from_bool(node.suppress_context).bits(),
-            cause.bits(), context.bits(),
-        ]);
-        if tuple.is_null() { return Err(traceback_payload_failure(py)); }
-        tuples.push(ExceptionValue::adopt(py, MoltObject::from_ptr(tuple).bits()));
+        let cause = ExceptionValue::adopt(
+            py,
+            match node.cause_index {
+                Some(index) => int_bits_from_i64(py, index as i64),
+                None => MoltObject::none().bits(),
+            },
+        );
+        let context = ExceptionValue::adopt(
+            py,
+            match node.context_index {
+                Some(index) => int_bits_from_i64(py, index as i64),
+                None => MoltObject::none().bits(),
+            },
+        );
+        if exception_pending(py) {
+            return Err(MoltObject::none().bits());
+        }
+        let tuple = alloc_tuple(
+            py,
+            &[
+                node.value.bits(),
+                frames.bits(),
+                MoltObject::from_bool(node.suppress_context).bits(),
+                cause.bits(),
+                context.bits(),
+            ],
+        );
+        if tuple.is_null() {
+            return Err(traceback_payload_failure(py));
+        }
+        tuples.push(ExceptionValue::adopt(
+            py,
+            MoltObject::from_ptr(tuple).bits(),
+        ));
     }
     let tuple_bits: Vec<_> = tuples.iter().map(ExceptionValue::bits).collect();
     let list = alloc_list(py, &tuple_bits);

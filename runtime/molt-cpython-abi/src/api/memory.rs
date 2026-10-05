@@ -958,6 +958,7 @@ impl Drop for MemoryViewLease {
 unsafe fn runtime_memoryview_from_descriptor(
     info: *const Py_buffer,
     lease: *const MemoryViewLease,
+    restricted: bool,
 ) -> *mut PyObject {
     let descriptor = match unsafe { crate::api::buffer::descriptor_from_pybuffer(info) } {
         Ok(view) => view,
@@ -977,7 +978,12 @@ unsafe fn runtime_memoryview_from_descriptor(
         unsafe { (*info).format }
     };
     let result = unsafe {
-        (crate::hooks::hooks_or_stubs().memoryview_from_buffer)(&descriptor, format, lease.cast())
+        (crate::hooks::hooks_or_stubs().memoryview_from_buffer)(
+            &descriptor,
+            format,
+            lease.cast(),
+            restricted,
+        )
     };
     unsafe { crate::bridge::GLOBAL_BRIDGE.owned_result_to_pyobj(result) }
 }
@@ -1006,14 +1012,20 @@ pub unsafe extern "C" fn PyMemoryView_FromMemory(
     {
         return std::ptr::null_mut();
     }
-    unsafe { runtime_memoryview_from_descriptor(&raw const view, std::ptr::null()) }
+    unsafe { runtime_memoryview_from_descriptor(&raw const view, std::ptr::null(), false) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMemoryView_FromBuffer(info: *mut Py_buffer) -> *mut PyObject {
     // CPython copies descriptor values but does not own info.obj or its release.
     // The caller retains responsibility for the raw storage's lifetime.
-    unsafe { runtime_memoryview_from_descriptor(info, std::ptr::null()) }
+    unsafe { runtime_memoryview_from_descriptor(info, std::ptr::null(), false) }
+}
+
+/// The native release callback's borrowed descriptor has no independent owner.
+/// Runtime restrictions forbid every alias/export until it is released.
+pub(crate) unsafe fn restricted_memoryview_from_buffer(info: *const Py_buffer) -> *mut PyObject {
+    unsafe { runtime_memoryview_from_descriptor(info, std::ptr::null(), true) }
 }
 
 #[unsafe(no_mangle)]
@@ -1051,7 +1063,7 @@ pub(crate) unsafe fn memoryview_from_buffer_proc(
     let Ok(lease) = (unsafe { MemoryViewLease::acquire(op, flags, get) }) else {
         return std::ptr::null_mut();
     };
-    unsafe { runtime_memoryview_from_descriptor(lease.descriptor(), &lease) }
+    unsafe { runtime_memoryview_from_descriptor(lease.descriptor(), &lease, false) }
 }
 
 #[unsafe(no_mangle)]

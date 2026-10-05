@@ -220,7 +220,7 @@ mod tests {
     use crate::OpIR;
     use crate::wasm::local_analysis::ValueOccupancy;
     use crate::wasm::{WasmFrameLocalKind, WasmFrameLocals, WasmFrameSyntheticLocal};
-    use crate::wasm_abi_generated::WasmConstLiteralPayload;
+    use molt_tir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
 
     fn op(kind: &str, out: Option<&str>, args: &[&str]) -> OpIR {
         OpIR {
@@ -289,7 +289,7 @@ mod tests {
         );
         locals.ensure_literal_scratch(
             "payload",
-            WasmConstLiteralPayload::String,
+            OwnedLiteralPayloadKind::String,
             &mut local_types,
             &mut local_count,
         );

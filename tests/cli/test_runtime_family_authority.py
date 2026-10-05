@@ -630,13 +630,36 @@ def test_link_response_projection_consumes_capture_not_a_second_read(
     plan = _plan(plan_root, args=("--", "-C", "link-arg=@" + str(response)))
     monkeypatch.setattr(
         plans,
-        "stable_regular_file_identity",
+        "capture_stable_regular_file",
         lambda *args, **kwargs: pytest.fail(
             "response bytes were independently recaptured"
         ),
     )
     projected = plan.project_link_arguments(plan.partition_command()[1])
     assert any("@response:sha256=" in item for item in projected)
+
+
+def test_link_response_aliases_share_one_bounded_byte_capture(tmp_path, monkeypatch):
+    response = tmp_path / "exports.rsp"
+    response.write_bytes(b"--export=first\n")
+    original = plans.capture_stable_regular_file
+    captures = []
+
+    def capture(path, **kwargs):
+        assert kwargs["max_bytes"] == plans.RUNTIME_ARTIFACT_METADATA_MAX_BYTES
+        captures.append(path)
+        return original(path, **kwargs)
+
+    monkeypatch.setattr(plans, "capture_stable_regular_file", capture)
+    roots = (
+        plans.CargoResourceRoot("ordinary-first", response),
+        plans.CargoResourceRoot("rust/link-response/first", response),
+        plans.CargoResourceRoot("rust/link-response/second", response),
+    )
+    custody = plans.CargoResourceCustody.capture(roots)
+    assert captures == [response]
+    assert len(custody.files) == 3
+    assert all(item.identity is custody.files[0].identity for item in custody.files)
 
 
 @pytest.mark.parametrize(
@@ -1654,7 +1677,7 @@ def test_runtime_family_shares_immutable_capture_and_exports_detached_wire(
     assert schema._runtime_toolchain_build_python(manifest) is python
     assert schema._runtime_toolchain_build_python(manifest) is python
     members = tuple(
-        builder.RuntimeBuildMemberPlan(
+        schema.RuntimeBuildMemberPlan(
             kind=kind,
             resolved_rustflags=tuple(member["resolved_rustflags"]),
             link_args=tuple(member["link_args"]),

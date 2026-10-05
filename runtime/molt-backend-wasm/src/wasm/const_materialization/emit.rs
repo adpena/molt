@@ -1,9 +1,10 @@
 use crate::wasm::WasmBackend;
 use crate::wasm::frame_locals::WasmLiteralScratchLocals;
-use crate::wasm_abi_generated::{WasmConstLiteralPayload, WasmRuntimeImport};
+use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::emit_call;
 use crate::wasm_data::DataSegmentRef;
 use crate::wasm_import_tracking::TrackedImportIds;
+use molt_tir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
 use std::sync::Arc;
 use wasm_encoder::{Function, Instruction};
 
@@ -41,7 +42,7 @@ impl WasmConstMaterialization {
     pub(in crate::wasm::const_materialization) fn literal(
         import: WasmRuntimeImport,
         out_local: u32,
-        payload: WasmConstLiteralPayload,
+        payload: OwnedLiteralPayloadKind,
         bytes: Arc<[u8]>,
         scratch: WasmConstMaterializationScratch,
     ) -> Self {
@@ -124,7 +125,7 @@ enum WasmConstMaterializationPayload {
     RuntimeSingleton,
     ScalarI64(i64),
     Literal {
-        payload: WasmConstLiteralPayload,
+        payload: OwnedLiteralPayloadKind,
         bytes: Arc<[u8]>,
         scratch: WasmConstMaterializationScratch,
     },
@@ -159,13 +160,13 @@ fn emit_literal_materialization(
     import_id: u32,
     scratch_segment: DataSegmentRef,
     out_local: u32,
-    payload: WasmConstLiteralPayload,
+    payload: OwnedLiteralPayloadKind,
     bytes: &[u8],
     scratch: WasmConstMaterializationScratch,
 ) {
     emit_literal_ptr_len(backend, func, func_index, reloc_enabled, bytes, scratch);
     match payload {
-        WasmConstLiteralPayload::String | WasmConstLiteralPayload::Bytes => {
+        OwnedLiteralPayloadKind::String | OwnedLiteralPayloadKind::Bytes => {
             func.instruction(&Instruction::LocalGet(scratch.ptr_local));
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::LocalGet(scratch.len_local));
@@ -181,14 +182,13 @@ fn emit_literal_materialization(
             }));
             func.instruction(&Instruction::LocalSet(out_local));
         }
-        WasmConstLiteralPayload::BigintDecimal => {
+        OwnedLiteralPayloadKind::BigintDecimal => {
             func.instruction(&Instruction::LocalGet(scratch.ptr_local));
             func.instruction(&Instruction::I32WrapI64);
             func.instruction(&Instruction::LocalGet(scratch.len_local));
             emit_call(func, reloc_enabled, import_id);
             func.instruction(&Instruction::LocalSet(out_local));
         }
-        WasmConstLiteralPayload::None => unreachable!("literal materialization checked above"),
     }
 }
 

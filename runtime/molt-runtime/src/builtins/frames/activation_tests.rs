@@ -163,9 +163,8 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
         // The frame's bindings are the task's, read through its payload.
         let depth = FRAME_STACK.with(|stack| stack.borrow().len());
         let owners = [refs(globals), refs(builtins)];
-        let snapshot_of = |bindings: u64| {
-            bindings::frame_bindings_snapshot(py, bindings).expect("frame locals")
-        };
+        let snapshot_of =
+            |bindings: u64| bindings::frame_bindings_snapshot(py, bindings).expect("frame locals");
         let payload = {
             let scope = unsafe { ActivationFrameScope::enter(py, ptr) }.expect("admitted");
             let top = FRAME_STACK.with(|stack| *stack.borrow().last().unwrap());
@@ -464,9 +463,8 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
         let payload = frame_stack_trace_payload_bits(py, None, false).unwrap();
         let entry =
             unsafe { traceback_payload_frame_entry(obj_from_bits(payload).as_ptr().unwrap()) };
-        let unwind_locals = || {
-            bindings::frame_bindings_snapshot(py, entry.bindings.payload_bits).expect("locals")
-        };
+        let unwind_locals =
+            || bindings::frame_bindings_snapshot(py, entry.bindings.payload_bits).expect("locals");
         let recorded = unwind_locals();
         assert_eq!(lookup(py, recorded, x), Some(raw_cell));
         assert_eq!(lookup(py, recorded, body), Some(int(29)));

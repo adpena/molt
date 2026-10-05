@@ -393,7 +393,6 @@ pub extern "C" fn molt_asyncio_future_set_exception_fast(handle_bits: u64, exc_b
         state.exception_bits = exc_bits;
         state.done = true;
 
-
         MoltObject::none().bits()
     })
 }

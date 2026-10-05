@@ -21,6 +21,12 @@ pub(crate) struct IntrinsicSpec {
 
 pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
+        name: "molt_compatibility_error",
+        symbol: "molt_compatibility_error",
+        arity: 1,
+        defaults: &[],
+    },
+    IntrinsicSpec {
         name: "molt_capabilities_trusted",
         symbol: "molt_capabilities_trusted",
         arity: 0,
@@ -515,12 +521,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_abc_update_abstractmethods",
         symbol: "molt_abc_update_abstractmethods",
-        arity: 1,
-        defaults: &[],
-    },
-    IntrinsicSpec {
-        name: "molt_abc_abstractmethod_check",
-        symbol: "molt_abc_abstractmethod_check",
         arity: 1,
         defaults: &[],
     },

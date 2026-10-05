@@ -153,7 +153,9 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
     let mut offsets: BTreeSet<i64> = BTreeSet::new();
     for (&bid, block) in &poll.blocks {
         let mut frame_used = false;
-        block.terminator.for_each_value(|value| frame_used |= value == frame);
+        block
+            .terminator
+            .for_each_value(|value| frame_used |= value == frame);
         if frame_used {
             return None;
         }
@@ -239,7 +241,10 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
                 }
             }
         }
-        if slot_live.iter().any(|block| exception_targets.contains(block)) {
+        if slot_live
+            .iter()
+            .any(|block| exception_targets.contains(block))
+        {
             return None;
         }
     }

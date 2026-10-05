@@ -412,3 +412,53 @@ fn fuse_method_dispatch_projects_source_call_adoption() {
         );
     }
 }
+
+#[test]
+fn split_field_guards_require_matching_tags_and_no_observed_alias() {
+    for kind in ["guard_tag", "guard_type"] {
+        for (tag, output, removable) in
+            [(5, None, true), (1, None, false), (5, Some("alias"), false)]
+        {
+            let mut check = op_with("check_exception", None, None, &[]);
+            check.value = Some(9);
+            let mut handler = op_with("label", None, None, &[]);
+            handler.value = Some(9);
+            let mut func = FunctionIR {
+                name: "split_field_guard".into(),
+                params: vec!["hay".into(), "sep".into(), "idx".into()],
+                ops: vec![
+                    make_const_int("tag", tag),
+                    op_with(
+                        "string_split_field",
+                        Some("field"),
+                        None,
+                        &["hay", "sep", "idx"],
+                    ),
+                    check,
+                    op_with(kind, output, None, &["field", "tag"]),
+                    op_with("len", Some("n"), None, &["field"]),
+                    op_with("ret_void", None, None, &[]),
+                    handler,
+                    op_with("ret_void", None, None, &[]),
+                ],
+                return_abi: molt_ir::FunctionReturnAbi::Void,
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                codegen_partition: false,
+                parameter_custody: vec![],
+                execution_context: Default::default(),
+            };
+            deforest_split_field_reads(&mut func);
+            assert_eq!(
+                func.ops.iter().any(|op| op.kind == kind),
+                !removable,
+                "{kind}/{tag}/{output:?}"
+            );
+            assert_eq!(
+                func.ops.iter().any(|op| op.kind == "string_split_field"),
+                !removable
+            );
+        }
+    }
+}

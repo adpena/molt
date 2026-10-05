@@ -1069,33 +1069,16 @@ pub(super) fn store_var_targets_all_sources_where(
 /// Identity edges are independent of semantic type and of the storage promise
 /// a consumer eventually asks for.
 fn tir_container_identity(op: &TirOp) -> bool {
-    use crate::tir::op_kinds_generated::{
-        AliasTransparentAliasRole, copy_kind_is_explicit_no_heap_move_table,
-        copy_kind_mints_owned_alias_ref_table, opcode_alias_transparent_alias_role_table,
-        opcode_canonical_kind_table,
-    };
-    if op.operands.len() != 1 || op.results.len() != 1 {
-        return false;
+    if crate::tir::passes::value_identity::no_heap_alias_source(op).is_some() {
+        return true;
     }
-    match opcode_alias_transparent_alias_role_table(op.opcode) {
-        AliasTransparentAliasRole::Copy => {
-            // SSA provenance attributes do not turn a genuine Copy into an
-            // opaque runtime operation. The generated semantic kind owns this
-            // distinction; unknown or malformed fallback metadata fails closed.
-            let kind = match op.attrs.get("_original_kind") {
-                None => opcode_canonical_kind_table(op.opcode),
-                Some(AttrValue::Str(kind)) => kind.as_str(),
-                Some(_) => return false,
-            };
-            // Retaining a binding capture changes ownership, not heap identity.
-            // Both class provenance and storage invalidation follow that edge;
-            // this grants no release or no-heap-effect permission.
-            copy_kind_is_explicit_no_heap_move_table(kind)
-                || copy_kind_mints_owned_alias_ref_table(kind)
-        }
-        AliasTransparentAliasRole::TypeGuard => !op.attrs.contains_key("_original_kind"),
-        AliasTransparentAliasRole::NotTransparentAlias => false,
-    }
+    // A retained binding has the same heap identity, but a separate owner.
+    // It never gains the no-heap-move permission used by drop placement.
+    op.opcode == crate::tir::ops::OpCode::Copy
+        && op.operands.len() == 1
+        && op.results.len() == 1
+        && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind))
+            if crate::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(kind))
 }
 
 fn tir_container_alias_inputs(func: &TirFunction) -> HashMap<ValueId, Vec<ValueId>> {

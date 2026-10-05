@@ -11,8 +11,32 @@ pub(crate) struct WasmStageAuditShape {
     largest_ops: usize,
 }
 
-fn wasm_stage_audit_enabled() -> bool {
-    std::env::var("MOLT_WASM_STAGE_AUDIT").as_deref() == Ok("1")
+/// One request-scoped decision, shared by every stage and emitted function.
+/// Daemon requests may select different environments; no process-global cache.
+#[derive(Clone, Copy)]
+pub(crate) struct WasmStageAudit {
+    enabled: bool,
+}
+
+impl WasmStageAudit {
+    pub(crate) fn from_environment() -> Self {
+        Self {
+            enabled: std::env::var("MOLT_WASM_STAGE_AUDIT").as_deref() == Ok("1"),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(enabled: bool) -> Self {
+        Self { enabled }
+    }
+
+    pub(crate) const fn enabled(self) -> bool {
+        self.enabled
+    }
+
+    pub(crate) fn start(self) -> Option<std::time::Instant> {
+        self.enabled.then(std::time::Instant::now)
+    }
 }
 
 pub(crate) fn simple_ir_stage_shape(functions: &[FunctionIR]) -> WasmStageAuditShape {
@@ -68,16 +92,21 @@ pub(crate) fn tir_module_stage_shape(
 }
 
 pub(crate) fn emit_wasm_stage_audit(
+    audit: WasmStageAudit,
     stage: &str,
-    shape: WasmStageAuditShape,
+    shape: impl FnOnce() -> WasmStageAuditShape,
     bytes: Option<usize>,
     unused_imports: Option<usize>,
     changed_functions: Option<usize>,
-    elapsed_ms: Option<u128>,
+    elapsed_ms: impl FnOnce() -> Option<u128>,
 ) {
-    if !wasm_stage_audit_enabled() {
+    if !audit.enabled() {
         return;
     }
+    // Shape walks, owned name projections, elapsed sampling and RSS lookup all
+    // happen after this one audit gate, including calls from shared TIR stages.
+    let shape = shape();
+    let elapsed_ms = elapsed_ms();
     eprintln!(
         "[molt-wasm-stage-audit] stage={stage} functions={} simple_ops={} tir_blocks={} tir_ops={} largest_function={} largest_ops={} bytes={} unused_imports={} changed_functions={} elapsed_ms={} peak_rss_mib={}",
         shape.functions,
@@ -102,8 +131,8 @@ pub(crate) fn emit_wasm_stage_audit(
     );
 }
 
-pub(crate) fn emit_wasm_numeric_lane_audit(stats: WasmNumericLaneStats) {
-    if !wasm_stage_audit_enabled() {
+pub(crate) fn emit_wasm_numeric_lane_audit(audit: WasmStageAudit, stats: WasmNumericLaneStats) {
+    if !audit.enabled() {
         return;
     }
     eprintln!(
@@ -120,4 +149,28 @@ pub(crate) fn emit_wasm_numeric_lane_audit(stats: WasmNumericLaneStats) {
         stats.raw_result_total(),
         stats.guarded_or_boxed_total(),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_request_never_evaluates_observation_inputs() {
+        let audit = WasmStageAudit { enabled: false };
+        assert!(audit.start().is_none());
+        for _ in 0..128 {
+            emit_wasm_stage_audit(
+                audit,
+                "disabled",
+                || panic!("disabled audit projected the IR"),
+                None,
+                None,
+                None,
+                || panic!("disabled audit sampled elapsed time"),
+            );
+        }
+        assert!(WasmStageAudit { enabled: true }.start().is_some());
+        assert!(!audit.enabled());
+    }
 }

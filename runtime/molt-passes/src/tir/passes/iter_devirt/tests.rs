@@ -70,10 +70,8 @@ fn build_list_for_loop(use_build_list: bool) -> TirFunction {
             vec![list_val],
         ));
     } else {
-        // Simulate a list from a call with container_type annotation.
-        // Use a dummy operand so the verifier accepts the CallBuiltin.
-        let dummy = func.fresh_value();
-        entry_ops.push(make_const_int(dummy, 0));
+        // A named zero-argument call is canonical. Its container annotation
+        // remains the fact under test; admission needs no fabricated operand.
         let mut attrs = AttrDict::new();
         attrs.insert("name".to_string(), AttrValue::Str("get_data".to_string()));
         attrs.insert(
@@ -83,7 +81,7 @@ fn build_list_for_loop(use_build_list: bool) -> TirFunction {
         entry_ops.push(TirOp {
             dialect: Dialect::Molt,
             opcode: OpCode::CallBuiltin,
-            operands: vec![dummy],
+            operands: vec![],
             results: vec![list_val],
             attrs,
             source_span: None,

@@ -512,7 +512,7 @@ for (const test of config.cases) {
 
 #[test]
 fn raw_and_borrowed_runtime_results_do_not_acquire_discarded_owners() {
-    for (kind, argc, borrowed) in [("call", 1, false), ("guard_tag", 2, true)] {
+    for (kind, argc) in [("call", 1), ("guard_tag", 2), ("guard_type", 2)] {
         for result in [None, Some("none"), Some("unused"), Some("result")] {
             let retained = result == Some("result");
             let mut operation = wasm_test_op(kind, result, vec!["value"; argc]);
@@ -535,7 +535,7 @@ fn raw_and_borrowed_runtime_results_do_not_acquire_discarded_owners() {
             assert_eq!(releases, 0, "{kind} {result:?}: {operators:?}");
             assert_eq!(
                 retains,
-                usize::from(borrowed && retained),
+                0, // Runtime guard aliases share their source root; no new owner.
                 "{kind} {result:?}: {operators:?}"
             );
         }

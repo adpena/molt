@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys as _sys
+from _compatibility_errors import counter_fromkeys_error as _counter_fromkeys_error
 
 from typing import TYPE_CHECKING
 
@@ -605,8 +606,7 @@ class Counter(dict):
         # to one is easily accomplished with Counter(set(iterable)).  For
         # more exotic cases, create a dictionary first using a dictionary
         # comprehension or dict.fromkeys().
-        raise NotImplementedError(
-            'Counter.fromkeys() is undefined.  Use Counter(iterable) instead.')
+        raise _counter_fromkeys_error()
 
     def update(self, iterable=None, /, **kwds):
         '''Like dict.update() but add counts instead of replacing them.

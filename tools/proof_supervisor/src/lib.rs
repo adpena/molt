@@ -618,9 +618,11 @@ impl Policy {
 
 impl ValidatedPolicy {
     pub fn root_exit_disposition(&self, canonical_path: &Path) -> RootExitDisposition {
-        self.fixed.get(canonical_path).map_or(RootExitDisposition::RequireExit, |authority| {
-            authority.root_exit_disposition
-        })
+        self.fixed
+            .get(canonical_path)
+            .map_or(RootExitDisposition::RequireExit, |authority| {
+                authority.root_exit_disposition
+            })
     }
 
     pub fn classify_path(
@@ -962,23 +964,25 @@ mod tests {
             reason: Some("test".to_owned()),
         };
         let mut receipt = Receipt::rejected(&policy, &capability, "unavailable");
-        receipt.attach_evidence(PublishedEvidence {
-            event_log: ArtifactSummary {
-                schema: evidence::EVENT_LOG_SCHEMA.to_owned(),
-                file: "receipt.events.jsonl".to_owned(),
-                count: 0,
-                bytes: 0,
-                sha256: sha256_bytes(b""),
-            },
-            verified: VerifiedEventLog {
-                derived_images: IdentitySummary::empty(),
-                accounting: receipt.accounting.clone(),
-                root_exit_code: receipt.root_exit_code,
-                violation_count: receipt.violation_count,
-                violations: receipt.violations.clone(),
-                active_processes: BTreeSet::new(),
-            },
-        }).unwrap();
+        receipt
+            .attach_evidence(PublishedEvidence {
+                event_log: ArtifactSummary {
+                    schema: evidence::EVENT_LOG_SCHEMA.to_owned(),
+                    file: "receipt.events.jsonl".to_owned(),
+                    count: 0,
+                    bytes: 0,
+                    sha256: sha256_bytes(b""),
+                },
+                verified: VerifiedEventLog {
+                    derived_images: IdentitySummary::empty(),
+                    accounting: receipt.accounting.clone(),
+                    root_exit_code: receipt.root_exit_code,
+                    violation_count: receipt.violation_count,
+                    violations: receipt.violations.clone(),
+                    active_processes: BTreeSet::new(),
+                },
+            })
+            .unwrap();
         assert_eq!(receipt.identity_sha256.len(), 64);
         assert!(receipt.identity_is_valid());
         assert!(receipt.terminal_is_consistent());
@@ -1021,23 +1025,25 @@ mod tests {
             receipt.record_error(format!("error-{index}-{}", "x".repeat(4096)));
             receipt.record_violation(format!("violation-{index}-{}", "y".repeat(4096)));
         }
-        receipt.attach_evidence(PublishedEvidence {
-            event_log: ArtifactSummary {
-                schema: evidence::EVENT_LOG_SCHEMA.to_owned(),
-                file: "receipt.events.jsonl".to_owned(),
-                count: 0,
-                bytes: 0,
-                sha256: sha256_bytes(b""),
-            },
-            verified: VerifiedEventLog {
-                derived_images: IdentitySummary::empty(),
-                accounting: receipt.accounting.clone(),
-                root_exit_code: receipt.root_exit_code,
-                violation_count: receipt.violation_count,
-                violations: receipt.violations.clone(),
-                active_processes: BTreeSet::new(),
-            },
-        }).unwrap();
+        receipt
+            .attach_evidence(PublishedEvidence {
+                event_log: ArtifactSummary {
+                    schema: evidence::EVENT_LOG_SCHEMA.to_owned(),
+                    file: "receipt.events.jsonl".to_owned(),
+                    count: 0,
+                    bytes: 0,
+                    sha256: sha256_bytes(b""),
+                },
+                verified: VerifiedEventLog {
+                    derived_images: IdentitySummary::empty(),
+                    accounting: receipt.accounting.clone(),
+                    root_exit_code: receipt.root_exit_code,
+                    violation_count: receipt.violation_count,
+                    violations: receipt.violations.clone(),
+                    active_processes: BTreeSet::new(),
+                },
+            })
+            .unwrap();
         assert_eq!(receipt.errors.len(), MAX_DIAGNOSTICS_PER_CLASS);
         assert_eq!(receipt.violations.len(), MAX_DIAGNOSTICS_PER_CLASS);
         assert_eq!(receipt.error_count, 1_001);

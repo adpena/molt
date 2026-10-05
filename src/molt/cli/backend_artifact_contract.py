@@ -4,11 +4,18 @@ This contract validates container/target shape, not program semantics. Native
 symbol closure remains a separate required cache admission step; text outputs
 never enter that native reader. Filename extensions are projections, not input
 evidence, and no encoding fact enables a compiler support-matrix cell.
+
+NativeTargetSpec preserves whether the request selected the default host or an
+explicit target. Its triple always names artifact identity; is_host controls
+host toolchain policy, and cargo_target alone projects Cargo's native None wire
+value. Explicitly spelling the host triple remains an explicit toolchain/Cargo
+selection while sharing the same artifact target identity.
 """
 
 from __future__ import annotations
 
 import codecs
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from enum import Enum
 import hashlib
@@ -19,7 +26,6 @@ from typing import BinaryIO
 from molt.cli.native_link_plan import (
     NativeArtifactKind,
     NativeTargetSpec,
-    _host_target_triple,
     resolve_native_target_spec,
     target_is_wasm,
 )
@@ -36,7 +42,7 @@ from molt.native_artifact_header import (
     native_artifact_from_file,
 )
 from molt.native_target_shape import native_artifact_shape
-from molt.toolchain_identity import open_stable_regular_file
+from molt.toolchain_identity import StableRegularFileHandle, open_stable_regular_file
 
 
 class BackendArtifactKind(str, Enum):
@@ -74,9 +80,7 @@ class BackendArtifactContract:
                 )
         try:
             native_target = (
-                resolve_native_target_spec(triple or _host_target_triple())
-                if self.is_native
-                else None
+                resolve_native_target_spec(triple) if self.is_native else None
             )
         except RuntimeError as error:
             raise ValueError(str(error)) from error
@@ -151,7 +155,9 @@ class BackendArtifactContract:
         if enabled and self.kind is not BackendArtifactKind.NATIVE_ARCHIVE:
             raise ValueError("Shared stdlib extraction requires native archive output")
 
-    def validate_native_shape(self, path: Path) -> None:
+    def validate_native_shape(
+        self, path: Path, *, opened: StableRegularFileHandle | None = None
+    ) -> None:
         """Admit exact native object shape, including every archive content member."""
         target = self.native_target
         if target is None:
@@ -185,18 +191,23 @@ class BackendArtifactContract:
                 target_triple=target.triple,
                 object_format=target.object_format,
             )
-            if self.native_kind is NativeArtifactKind.ARCHIVE:
-                member_count = visit_static_archive_members(
-                    path, visit_member=visit_member
-                )
-                if member_count == 0:
-                    raise NativeArtifactError(
-                        "backend archive has no relocatable members"
+            if opened is not None and opened.path != path.expanduser().absolute():
+                raise NativeArtifactError("native shape handle belongs to another path")
+            with (
+                open_stable_regular_file(path, label="backend native artifact")
+                if opened is None
+                else nullcontext(opened)
+            ) as opened:
+                opened.stream.seek(0)
+                if self.native_kind is NativeArtifactKind.ARCHIVE:
+                    member_count = visit_static_archive_members(
+                        path, visit_member=visit_member, opened=opened
                     )
-            else:
-                with open_stable_regular_file(
-                    path, label="backend native object"
-                ) as opened:
+                    if member_count == 0:
+                        raise NativeArtifactError(
+                            "backend archive has no relocatable members"
+                        )
+                else:
                     admit(native_artifact_from_file(opened.stream))
         except (OSError, ValueError, RuntimeError) as error:
             raise BackendArtifactValidationError(

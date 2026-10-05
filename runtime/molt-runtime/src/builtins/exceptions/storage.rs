@@ -77,6 +77,146 @@ impl ExceptionStorage {
         })
     }
 
+    /// The receiver's concrete root is independent of descriptor ownership.
+    pub(crate) fn layout_root(self, py: &PyToken<'_>) -> ExceptionLayoutRoot {
+        unsafe {
+            match self {
+                Self::Managed(ptr) => exception_layout_root_for_class(py, object_class_bits(ptr))
+                    .unwrap_or(ExceptionLayoutRoot::Base),
+                Self::Native(ptr) => cabi::exception_layout_root_for_type((*ptr).ob_type)
+                    .expect("admitted native exception layout"),
+            }
+        }
+    }
+
+    /// Run the declaring initializer against admitted physical storage. The
+    /// shared BaseException prefix is an args update, never a typed-tail init.
+    /// Native typed parsing stays owned by the existing C exception initializer.
+    pub(crate) fn initialize(
+        self,
+        py: &PyToken<'_>,
+        owner_root: ExceptionLayoutRoot,
+        args: u64,
+        names: &[u64],
+        values: &[u64],
+    ) -> Option<()> {
+        if exception_pending(py) || unsafe { !cerrors::PyErr_Occurred().is_null() } {
+            return None;
+        }
+        if names.len() != values.len() {
+            return fail(py, "SystemError", "malformed exception keywords");
+        }
+        if owner_root != ExceptionLayoutRoot::Base && owner_root != self.layout_root(py) {
+            return fail(
+                py,
+                "TypeError",
+                "exception initializer requires compatible physical storage",
+            );
+        }
+        if let Self::Managed(ptr) = self {
+            if owner_root != ExceptionLayoutRoot::Base
+                && unsafe { exception_layout_kind(ptr) } != owner_root.kind()
+            {
+                return fail(
+                    py,
+                    "TypeError",
+                    "exception initializer requires compatible physical storage",
+                );
+            }
+        }
+        if matches!(
+            owner_root,
+            ExceptionLayoutRoot::Base | ExceptionLayoutRoot::BaseExceptionGroup
+        ) {
+            return self.publish(py, ExceptionFieldSlot::Args, args);
+        }
+        match self {
+            Self::Managed(ptr) => {
+                let initialized = if names.is_empty() {
+                    unsafe { exception_reinitialize_from_args(py, ptr, args) }
+                } else {
+                    unsafe { exception_reinit_default_message(py, ptr, args, &[]) }
+                };
+                if let Err(message) = initialized {
+                    return fail(py, "SystemError", message);
+                }
+                if !names.is_empty() {
+                    let owner = exception_type_bits_from_name(py, owner_root.owner_name());
+                    crate::call::class_init::apply_builtin_exception_keywords(
+                        py,
+                        owner,
+                        MoltObject::from_ptr(ptr).bits(),
+                        names,
+                        values,
+                    );
+                }
+                (!exception_pending(py)).then_some(())
+            }
+            Self::Native(ptr) => unsafe {
+                let args = cref::OwnedPyObject::from_owned(
+                    GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(args),
+                );
+                if args.as_ptr().is_null() {
+                    crate::cpython_abi_hooks::propagate_native_failure(
+                        py,
+                        "exception initializer argument projection",
+                    );
+                    return None;
+                }
+                let keywords = cref::OwnedPyObject::from_owned(if names.is_empty() {
+                    std::ptr::null_mut()
+                } else {
+                    molt_cpython_abi::api::mapping::PyDict_New()
+                });
+                if !names.is_empty() && keywords.as_ptr().is_null() {
+                    crate::cpython_abi_hooks::propagate_native_failure(
+                        py,
+                        "exception initializer keyword allocation",
+                    );
+                    return None;
+                }
+                for (&name, &value) in names.iter().zip(values) {
+                    let name = cref::OwnedPyObject::from_owned(
+                        GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(name),
+                    );
+                    if name.as_ptr().is_null() {
+                        crate::cpython_abi_hooks::propagate_native_failure(
+                            py,
+                            "exception initializer keyword-name projection",
+                        );
+                        return None;
+                    }
+                    let value = cref::OwnedPyObject::from_owned(
+                        GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(value),
+                    );
+                    if value.as_ptr().is_null()
+                        || molt_cpython_abi::api::mapping::PyDict_SetItem(
+                            keywords.as_ptr(),
+                            name.as_ptr(),
+                            value.as_ptr(),
+                        ) != 0
+                    {
+                        crate::cpython_abi_hooks::propagate_native_failure(
+                            py,
+                            "exception initializer keyword projection",
+                        );
+                        return None;
+                    }
+                }
+                let status =
+                    cerrors::molt_native_exception_init(ptr, args.as_ptr(), keywords.as_ptr());
+                if status != 0 || !cerrors::PyErr_Occurred().is_null() {
+                    crate::cpython_abi_hooks::propagate_native_failure(
+                        py,
+                        "native exception initializer",
+                    );
+                    return None;
+                }
+                Some(())
+            },
+        }
+    }
+
     pub(crate) fn typed_field<'a, 'py>(
         self,
         py: &'a PyToken<'py>,

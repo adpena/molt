@@ -15,6 +15,7 @@ use crate::abi_types::{
     Py_buffer, PyBUF_ANY_CONTIGUOUS, PyBUF_C_CONTIGUOUS, PyBUF_F_CONTIGUOUS, PyBUF_FORMAT,
     PyBUF_ND, PyBUF_STRIDES, PyBUF_WRITABLE, PyExc_BufferError, PyExc_TypeError, PyObject,
 };
+use crate::api::typeobj::{type_bf_getbuffer, type_bf_releasebuffer};
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::{MOLT_BUFFER_FORMAT_CAP, MOLT_BUFFER_MAX_NDIM, MoltBufferView, hooks_or_stubs};
 use std::alloc::Layout;
@@ -418,43 +419,6 @@ fn descriptor_satisfies_flags(descriptor: &MoltBufferView, flags: c_int) -> bool
     true
 }
 
-type BfGetBuffer = unsafe extern "C" fn(*mut PyObject, *mut Py_buffer, c_int) -> c_int;
-type BfReleaseBuffer = unsafe extern "C" fn(*mut PyObject, *mut Py_buffer);
-
-/// Read a foreign object's `tp_as_buffer->bf_getbuffer` slot, if any.
-unsafe fn foreign_bf_getbuffer(obj: *mut PyObject) -> Option<BfGetBuffer> {
-    let tp = unsafe { (*obj).ob_type };
-    if tp.is_null() {
-        return None;
-    }
-    let pb = unsafe { (*tp).tp_as_buffer }.cast::<crate::abi_types::PyBufferProcs>();
-    if pb.is_null() {
-        return None;
-    }
-    let raw = unsafe { (*pb).bf_getbuffer };
-    if raw.is_null() {
-        return None;
-    }
-    Some(unsafe { std::mem::transmute::<*mut std::ffi::c_void, BfGetBuffer>(raw) })
-}
-
-/// Read a foreign object's `tp_as_buffer->bf_releasebuffer` slot, if any.
-unsafe fn foreign_bf_releasebuffer(obj: *mut PyObject) -> Option<BfReleaseBuffer> {
-    let tp = unsafe { (*obj).ob_type };
-    if tp.is_null() {
-        return None;
-    }
-    let pb = unsafe { (*tp).tp_as_buffer }.cast::<crate::abi_types::PyBufferProcs>();
-    if pb.is_null() {
-        return None;
-    }
-    let raw = unsafe { (*pb).bf_releasebuffer };
-    if raw.is_null() {
-        return None;
-    }
-    Some(unsafe { std::mem::transmute::<*mut std::ffi::c_void, BfReleaseBuffer>(raw) })
-}
-
 /// CPython's no-buffer-slot failure: PyErr_Format(TypeError,
 /// "a bytes-like object is required, not '%.100s'").
 unsafe fn raise_bytes_like_type_error(obj: *mut PyObject) {
@@ -506,7 +470,7 @@ pub unsafe extern "C" fn PyObject_GetBuffer(
             // PyType_FromSpec was previously DEAD (no call site), so a
             // C-extension type (numpy's PyArray_Type) could never export a
             // buffer through the standard protocol.
-            if let Some(getbuffer) = unsafe { foreign_bf_getbuffer(obj) } {
+            if let Some(getbuffer) = unsafe { type_bf_getbuffer((*obj).ob_type) } {
                 return unsafe { getbuffer(obj, view, flags) };
             }
             // No buffer slot: TypeError with CPython's message (was BufferError).
@@ -644,7 +608,7 @@ pub unsafe extern "C" fn PyBuffer_Release(view: *mut Py_buffer) {
         if is_molt_native {
             // Only managed acquisition publishes this internal layout.
             release_managed_export(view);
-        } else if let Some(releasebuffer) = foreign_bf_releasebuffer(obj) {
+        } else if let Some(releasebuffer) = type_bf_releasebuffer((*obj).ob_type) {
             // View filled by a C-extension bf_getbuffer: CPython calls
             // `pb->bf_releasebuffer(obj, view)` when present, BEFORE the obj
             // DECREF — skipping it imbalances the exporter's refcount/resources.
@@ -678,7 +642,7 @@ pub unsafe extern "C" fn PyObject_CheckBuffer(obj: *mut PyObject) -> c_int {
     match resolved {
         crate::bridge::ResolvedPyObject::Foreign => {
             // Foreign object: honest slot test.
-            (unsafe { foreign_bf_getbuffer(obj) }).is_some() as c_int
+            (unsafe { type_bf_getbuffer((*obj).ob_type) }).is_some() as c_int
         }
         crate::bridge::ResolvedPyObject::ManagedMolt(bits) => {
             // Runtime metadata owns managed exporter eligibility. This is a

@@ -24,12 +24,15 @@ from molt.memory_guard_paths import (
 )
 
 
-def test_infrastructure_failure_has_one_exact_wire_authority() -> None:
+@pytest.mark.parametrize("phase", ["temporary_artifact_custody", "rss_trip_evidence"])
+def test_infrastructure_failure_has_one_exact_wire_authority(
+    phase: process_custody.GuardInfrastructurePhase,
+) -> None:
     failure = memory_guard.GuardInfrastructureFailure(
-        phase="temporary_artifact_custody", details=("invalid index", "closure unknown")
+        phase=phase, details=("invalid index", "closure unknown")
     )
     payload = {
-        "phase": "temporary_artifact_custody",
+        "phase": phase,
         "details": ["invalid index", "closure unknown"],
     }
     assert failure.json_payload() == payload
@@ -47,6 +50,9 @@ def test_infrastructure_failure_has_one_exact_wire_authority() -> None:
         [],
         {},
         {"phase": "unknown", "details": ["failure"]},
+        {"phase": [], "details": ["failure"]},
+        {"phase": {}, "details": ["failure"]},
+        {"phase": False, "details": ["failure"]},
         {"phase": "temporary_artifact_custody", "details": []},
         {"phase": "temporary_artifact_custody", "details": [""]},
         {"phase": "temporary_artifact_custody", "details": [" "]},
@@ -1075,12 +1081,154 @@ def test_timeout_sampler_uses_bounded_windows_snapshot_only_for_default_sampler(
     )
 
 
+def test_custody_ancestry_freezes_live_births_and_request_admission():
+    sample = memory_guard.ProcessSample
+    tracker = memory_guard.ProcessTreeTracker(100)
+    # Deliberately leaf-first: lineage cannot depend on sampler row ordering.
+    samples = {
+        300: sample(300, 200, 10, "compiler", pgid=300, started_at_ns=3000),
+        200: sample(200, 100, 10, "batch", pgid=200, started_at_ns=2000),
+        100: sample(100, 1, 10, "suite", pgid=100, started_at_ns=1000),
+    }
+    tracker.update(samples, observed_at_ns=100)
+    record = tracker.custody_ancestry_payload({300: samples[300]})[0]
+    assert record["admitted_at_ns"] == 100
+    assert record["ancestors"] == [
+        {"pid": 200, "started_at_ns": 2000},
+        {"pid": 100, "started_at_ns": 1000},
+    ]
+    reparented = {300: sample(300, 1, 10, "compiler", pgid=300, started_at_ns=3000)}
+    tracker.update(reparented, observed_at_ns=200)
+    assert tracker.custody_ancestry_payload(reparented) == [record]
+    assert tracker.custody_ancestry_payload(reparented, excluded_roots={200}) == []
+    degraded = {300: sample(300, 1, 10, "compiler", pgid=300)}
+    tracker.update(degraded, observed_at_ns=300)
+    assert tracker.custody_ancestry_payload(degraded) == []
+    assert tracker.custody_ancestry_payload(reparented) == [record]
+    reused = {300: sample(300, 1, 10, "unrelated", pgid=300, started_at_ns=3001)}
+    tracker.update(reused, observed_at_ns=400)
+    assert tracker.custody_ancestry_payload(reused) == []
+
+
+@pytest.mark.parametrize("leaf_first", [False, True])
+def test_stale_parent_birth_cannot_admit_membership_or_request_ancestry(leaf_first):
+    sample = memory_guard.ProcessSample
+    tracker = memory_guard.ProcessTreeTracker(100)
+    rows = [
+        sample(100, 1, 10, "suite", started_at_ns=1000),
+        sample(200, 100, 10, "batch", started_at_ns=2000),
+        sample(300, 200, 10, "compiler", started_at_ns=3000),
+        sample(400, 300, 10, "older unrelated", started_at_ns=2500),
+        sample(500, 400, 10, "unrelated child", started_at_ns=4000),
+    ]
+    samples = {row.pid: row for row in (reversed(rows) if leaf_first else rows)}
+    assert tracker.update(samples, observed_at_ns=100) == {100, 200, 300}
+    assert memory_guard.watched_pids(samples, 100) == {100, 200, 300}
+    assert memory_guard.total_rss(samples, root_pid=100).rss_kb == 30
+    assert tracker.custody_identities({400, 500}) == {}
+    assert (
+        tracker.custody_ancestry_payload({400: samples[400], 500: samples[500]}) == []
+    )
+    assert tracker.custody_ancestry_payload({300: samples[300]})[0]["ancestors"] == [
+        {"pid": 200, "started_at_ns": 2000},
+        {"pid": 100, "started_at_ns": 1000},
+    ]
+
+
+@pytest.mark.parametrize(
+    "parent_birth,child_birth,admitted",
+    [
+        (1000, 1000, True),
+        (1000, 1001, True),
+        (1001, 1000, False),
+        (None, 1000, False),
+        (1000, None, False),
+        (0, 1000, False),
+        (1000, 0, False),
+        (-1, 1000, False),
+        (1000, -1, False),
+        (True, 1000, False),
+        (1, True, False),
+        (1000.0, 1000, False),
+        (1000, 1000.0, False),
+        ("1000", 1000, False),
+        (1000, "1000", False),
+    ],
+)
+def test_new_custody_edge_requires_ordered_exact_births(
+    parent_birth, child_birth, admitted
+):
+    sample = memory_guard.ProcessSample
+    tracker = memory_guard.ProcessTreeTracker(100)
+    samples = {
+        200: sample(200, 100, 10, "worker", started_at_ns=child_birth),
+        100: sample(100, 1, 10, "suite", started_at_ns=parent_birth),
+    }
+    assert tracker.update(samples, observed_at_ns=100) == (
+        {100, 200} if admitted else {100}
+    )
+    assert memory_guard.watched_pids(samples, 100) == (
+        {100, 200} if admitted else {100}
+    )
+    payload = tracker.custody_ancestry_payload({200: samples[200]})
+    assert bool(payload) is admitted
+
+
+def test_historical_custody_does_not_create_an_impossible_new_parent_edge():
+    sample = memory_guard.ProcessSample
+    # Explicitly adopted members can predate the command root. Their historical
+    # membership is authoritative, but a stale PPID cannot manufacture ancestry.
+    tracker = memory_guard.ProcessTreeTracker(
+        100,
+        known_pids={200},
+        known_identities={200: memory_guard.ProcessIdentity(1000)},
+    )
+    samples = {
+        100: sample(100, 1, 10, "new command", started_at_ns=2000),
+        200: sample(200, 100, 10, "adopted worker", started_at_ns=1000),
+    }
+    assert tracker.update(samples, observed_at_ns=100) == {100, 200}
+    assert tracker.custody_ancestry_payload({200: samples[200]}) == []
+
+
+def test_custody_ancestry_stays_cut_after_suite_adopted_daemon_exits():
+    sample = memory_guard.ProcessSample
+    tracker = memory_guard.ProcessTreeTracker(100)
+    samples = {
+        100: sample(100, 1, 10, "suite", started_at_ns=1000),
+        200: sample(200, 100, 10, "batch", started_at_ns=2000),
+        300: sample(300, 200, 10, "daemon", started_at_ns=3000),
+        400: sample(400, 300, 10, "compiler", started_at_ns=4000),
+    }
+    tracker.update(samples, observed_at_ns=100)
+    tracker.cut_ancestry_at(
+        {300: memory_guard.ProcessIdentity(3000)}, observed_at_ns=110
+    )
+    assert tracker.custody_ancestry_payload({300: samples[300]}) == []
+    assert tracker.custody_ancestry_payload({400: samples[400]})[0]["ancestors"] == [
+        {"pid": 300, "started_at_ns": 3000}
+    ]
+    remaining = {400: sample(400, 1, 10, "compiler", started_at_ns=4000)}
+    tracker.update(remaining, observed_at_ns=200)
+    assert tracker.custody_ancestry_payload(remaining)[0]["ancestors"] == [
+        {"pid": 300, "started_at_ns": 3000}
+    ]
+
+
 def test_watched_pids_excludes_unobserved_reparented_process_group_members() -> None:
     samples = {
-        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
-        101: memory_guard.ProcessSample(101, 100, 20, "child", pgid=100),
-        102: memory_guard.ProcessSample(102, 1, 30, "reparented", pgid=100),
-        200: memory_guard.ProcessSample(200, 1, 999_999, "unrelated", pgid=200),
+        100: memory_guard.ProcessSample(
+            100, 1, 10, "root", pgid=100, started_at_ns=1000
+        ),
+        101: memory_guard.ProcessSample(
+            101, 100, 20, "child", pgid=100, started_at_ns=2000
+        ),
+        102: memory_guard.ProcessSample(
+            102, 1, 30, "reparented", pgid=100, started_at_ns=1000
+        ),
+        200: memory_guard.ProcessSample(
+            200, 1, 999_999, "unrelated", pgid=200, started_at_ns=1000
+        ),
     }
 
     assert memory_guard.watched_pids(samples, 100) == {100, 101}
@@ -1703,6 +1851,7 @@ def test_protected_process_groups_include_external_codex_descendant_not_owned_ch
             500_000,
             "/Applications/Codex.app/Contents/MacOS/Codex",
             pgid=100,
+            started_at_ns=1000,
         ),
         101: memory_guard.ProcessSample(
             101,
@@ -1710,6 +1859,7 @@ def test_protected_process_groups_include_external_codex_descendant_not_owned_ch
             10_000,
             "/bin/zsh -l",
             pgid=101,
+            started_at_ns=2000,
         ),
         777: memory_guard.ProcessSample(
             777,
@@ -1717,6 +1867,7 @@ def test_protected_process_groups_include_external_codex_descendant_not_owned_ch
             250_000,
             "/Users/adpena/Projects/molt/target/dev-fast/molt-backend",
             pgid=777,
+            started_at_ns=3000,
         ),
         999: memory_guard.ProcessSample(
             999,
@@ -1724,6 +1875,7 @@ def test_protected_process_groups_include_external_codex_descendant_not_owned_ch
             30_000,
             "python tools/memory_guard.py -- pytest",
             pgid=999,
+            started_at_ns=2000,
         ),
         200: memory_guard.ProcessSample(
             200,
@@ -1731,6 +1883,7 @@ def test_protected_process_groups_include_external_codex_descendant_not_owned_ch
             250_000,
             "/Users/adpena/Projects/molt/target/dev-fast/molt-backend",
             pgid=200,
+            started_at_ns=3000,
         ),
     }
 
@@ -1758,6 +1911,7 @@ def test_protected_process_groups_include_external_claude_descendant_not_owned_c
             500_000,
             "claude --dangerously-skip-permissions",
             pgid=100,
+            started_at_ns=1000,
         ),
         101: memory_guard.ProcessSample(
             101,
@@ -1765,6 +1919,7 @@ def test_protected_process_groups_include_external_claude_descendant_not_owned_c
             10_000,
             "/bin/zsh -c source /Users/adpena/.claude/shell-snapshots/snapshot-zsh",
             pgid=101,
+            started_at_ns=2000,
         ),
         777: memory_guard.ProcessSample(
             777,
@@ -1772,6 +1927,7 @@ def test_protected_process_groups_include_external_claude_descendant_not_owned_c
             250_000,
             "/Users/adpena/Projects/molt/target/dev-fast/molt-backend",
             pgid=777,
+            started_at_ns=3000,
         ),
         999: memory_guard.ProcessSample(
             999,
@@ -1779,6 +1935,7 @@ def test_protected_process_groups_include_external_claude_descendant_not_owned_c
             30_000,
             "python tools/memory_guard.py -- pytest",
             pgid=999,
+            started_at_ns=1000,
         ),
         200: memory_guard.ProcessSample(
             200,
@@ -1786,6 +1943,7 @@ def test_protected_process_groups_include_external_claude_descendant_not_owned_c
             250_000,
             "/Users/adpena/Projects/molt/target/dev-fast/molt-backend",
             pgid=200,
+            started_at_ns=2000,
         ),
     }
 
@@ -2157,9 +2315,15 @@ def test_terminate_watched_processes_never_kills_learned_group_peer(
         pytest.skip("requires POSIX process custody")
     tracker = process_custody.ProcessTreeTracker(100)
     samples = {
-        100: process_custody.ProcessSample(100, 1, 10, "root", pgid=100),
-        101: process_custody.ProcessSample(101, 100, 20, "child", pgid=777),
-        200: process_custody.ProcessSample(200, 1, 999, "unrelated", pgid=777),
+        100: process_custody.ProcessSample(
+            100, 1, 10, "root", pgid=100, started_at_ns=100
+        ),
+        101: process_custody.ProcessSample(
+            101, 100, 20, "child", pgid=777, started_at_ns=101
+        ),
+        200: process_custody.ProcessSample(
+            200, 1, 999, "unrelated", pgid=777, started_at_ns=200
+        ),
     }
     assert tracker.update(samples) == {100, 101}
     sent_groups: list[tuple[int, int]] = []
@@ -2279,9 +2443,13 @@ def test_terminate_watched_processes_never_kills_host_control_plane_group(
 
 def test_find_rss_violation_ignores_unrelated_processes() -> None:
     samples = {
-        100: memory_guard.ProcessSample(100, 1, 10, "root"),
-        101: memory_guard.ProcessSample(101, 100, 26_000_000, "child"),
-        200: memory_guard.ProcessSample(200, 1, 40_000_000, "unrelated"),
+        100: memory_guard.ProcessSample(100, 1, 10, "root", started_at_ns=1000),
+        101: memory_guard.ProcessSample(
+            101, 100, 26_000_000, "child", started_at_ns=2000
+        ),
+        200: memory_guard.ProcessSample(
+            200, 1, 40_000_000, "unrelated", started_at_ns=1000
+        ),
     }
 
     violation = memory_guard.find_rss_violation(
@@ -2297,9 +2465,13 @@ def test_find_rss_violation_ignores_unrelated_processes() -> None:
 
 def test_find_rss_violation_returns_highest_descendant() -> None:
     samples = {
-        100: memory_guard.ProcessSample(100, 1, 10, "root"),
-        101: memory_guard.ProcessSample(101, 100, 28_000_000, "smaller"),
-        102: memory_guard.ProcessSample(102, 100, 29_000_000, "larger"),
+        100: memory_guard.ProcessSample(100, 1, 10, "root", started_at_ns=1000),
+        101: memory_guard.ProcessSample(
+            101, 100, 28_000_000, "smaller", started_at_ns=2000
+        ),
+        102: memory_guard.ProcessSample(
+            102, 100, 29_000_000, "larger", started_at_ns=2000
+        ),
     }
 
     violation = memory_guard.find_rss_violation(
@@ -2313,10 +2485,18 @@ def test_find_rss_violation_returns_highest_descendant() -> None:
 
 def test_find_rss_violation_catches_aggregate_process_tree_rss() -> None:
     samples = {
-        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
-        101: memory_guard.ProcessSample(101, 100, 15_000_000, "child-a", pgid=100),
-        102: memory_guard.ProcessSample(102, 100, 15_000_000, "child-b", pgid=100),
-        200: memory_guard.ProcessSample(200, 1, 40_000_000, "unrelated", pgid=200),
+        100: memory_guard.ProcessSample(
+            100, 1, 10, "root", pgid=100, started_at_ns=1000
+        ),
+        101: memory_guard.ProcessSample(
+            101, 100, 15_000_000, "child-a", pgid=100, started_at_ns=2000
+        ),
+        102: memory_guard.ProcessSample(
+            102, 100, 15_000_000, "child-b", pgid=100, started_at_ns=2000
+        ),
+        200: memory_guard.ProcessSample(
+            200, 1, 40_000_000, "unrelated", pgid=200, started_at_ns=1000
+        ),
     }
 
     violation = memory_guard.find_rss_violation(
@@ -3930,6 +4110,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
                 pgid=100,
                 rss_kb=64,
                 command=f"{root}/.venv/bin/python3 -m pytest tests/root.py",
+                started_at_ns=100,
             ),
             200: memory_guard.ProcessSample(
                 pid=200,
@@ -3937,6 +4118,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
                 pgid=200,
                 rss_kb=64,
                 command=f"{root}/.venv/bin/python3 -m molt.cli build main.py",
+                started_at_ns=200,
             ),
             300: memory_guard.ProcessSample(
                 pid=300,
@@ -3944,6 +4126,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
                 pgid=300,
                 rss_kb=64,
                 command=f"{root}/target/dev-fast/molt-backend --ir-file ir.json",
+                started_at_ns=300,
             ),
         }
     )
@@ -3954,6 +4137,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
             pgid=50,
             rss_kb=64,
             command="/bin/zsh -l",
+            started_at_ns=50,
         ),
         200: memory_guard.ProcessSample(
             pid=200,
@@ -3961,6 +4145,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
             pgid=200,
             rss_kb=64,
             command=f"{root}/.venv/bin/python3 -m molt.cli build main.py",
+            started_at_ns=200,
         ),
         300: memory_guard.ProcessSample(
             pid=300,
@@ -3968,6 +4153,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
             pgid=300,
             rss_kb=64,
             command=f"{root}/target/dev-fast/molt-backend --ir-file ir.json",
+            started_at_ns=300,
         ),
         400: memory_guard.ProcessSample(
             pid=400,
@@ -3975,6 +4161,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
             pgid=400,
             rss_kb=64,
             command=f"{root}/.venv/bin/python3 -m pytest tests/some_test.py",
+            started_at_ns=400,
         ),
         500: memory_guard.ProcessSample(
             pid=500,
@@ -3982,6 +4169,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
             pgid=500,
             rss_kb=64,
             command=f"{root}/target/dev-fast/molt-backend --old",
+            started_at_ns=500,
         ),
         550: memory_guard.ProcessSample(
             pid=550,
@@ -3989,6 +4177,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
             pgid=550,
             rss_kb=64,
             command=f"{root}/target/dev-fast/molt-backend --untracked",
+            started_at_ns=550,
         ),
         600: memory_guard.ProcessSample(
             pid=600,
@@ -3996,6 +4185,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
             pgid=600,
             rss_kb=64,
             command="/Applications/Claude.app/Contents/MacOS/Claude",
+            started_at_ns=600,
         ),
         601: memory_guard.ProcessSample(
             pid=601,
@@ -4003,6 +4193,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
             pgid=600,
             rss_kb=64,
             command=f"{root}/target/dev-fast/molt-backend --protected",
+            started_at_ns=601,
         ),
     }
     terminated: list[tuple[int, int]] = []
@@ -4062,6 +4253,7 @@ def test_cleanup_repo_scoped_orphans_revalidates_identity_before_signal(
                 pgid=100,
                 rss_kb=64,
                 command=f"{root}/.venv/bin/python3 -m pytest tests/root.py",
+                started_at_ns=100,
             ),
             200: memory_guard.ProcessSample(
                 pid=200,
@@ -4069,6 +4261,7 @@ def test_cleanup_repo_scoped_orphans_revalidates_identity_before_signal(
                 pgid=200,
                 rss_kb=64,
                 command=f"{root}/target/dev-fast/molt-backend --owned",
+                started_at_ns=200,
             ),
         }
     )
@@ -4079,6 +4272,7 @@ def test_cleanup_repo_scoped_orphans_revalidates_identity_before_signal(
             pgid=200,
             rss_kb=64,
             command=f"{root}/target/dev-fast/molt-backend --owned",
+            started_at_ns=200,
         )
     }
     reused_pid = {
@@ -4088,6 +4282,7 @@ def test_cleanup_repo_scoped_orphans_revalidates_identity_before_signal(
             pgid=200,
             rss_kb=64,
             command="/Applications/Claude.app/Contents/MacOS/Claude",
+            started_at_ns=201,
         )
     }
     sampler_calls = 0
@@ -7201,6 +7396,47 @@ def test_main_streams_samples_without_sample_artifact(
     assert not samples_path.exists()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX launch group identity")
+@pytest.mark.parametrize("child_rlimit_kb", [None, 2 * 1024 * 1024])
+def test_posix_launch_identity_survives_reap_before_clock_returns(
+    monkeypatch, child_rlimit_kb
+):
+    real_clock = process_custody.ChildExecutionClock
+
+    def reap_before_return(proc, started):
+        clock = real_clock(proc, started)
+        # Force the adversarial schedule through the actual sole reaper.
+        # No timing race or repeated fast-command loop is needed.
+        assert proc.wait(timeout=5) == 0
+        assert clock.done.is_set()
+        return clock
+
+    monkeypatch.setattr(process_custody, "ChildExecutionClock", reap_before_return)
+    result = memory_guard.run_guarded(
+        [getattr(sys, "_base_executable", sys.executable), "-I", "-S", "-c", "pass"],
+        max_rss_kb=1024 * 1024,
+        max_total_rss_kb=2 * 1024 * 1024,
+        capture_output=True,
+        text=False,
+        poll_interval=0.01,
+        timeout=10,
+        child_rlimit_kb=child_rlimit_kb,
+    )
+    assert result.child_returncode == 0
+    assert result.returncode == 0, result.stderr
+    assert result.infrastructure_failure is None
+    assert result.child_process is not None
+    assert result.child_process.pgid == result.child_process.pid
+    assert result.child_process.sid == result.child_process.pid
+    assert result.descendants_closed
+    assert result.temporary_artifacts is not None
+    closure = result.temporary_artifacts["closure"]
+    assert closure["authority"] == "posix-sampled-process-group"
+    assert closure["root_process_group_closed"] is True
+    assert closure["remaining_tracked_pids"] == []
+    assert closure["root_process_group_members"] == []
+
+
 @pytest.mark.parametrize("delayed_boundary", ["sampler", "scratch"])
 def test_child_clock_is_independent_of_guard_setup_and_sampler(
     monkeypatch, delayed_boundary
@@ -7335,3 +7571,67 @@ def test_windows_child_clock_publishes_exit_only_after_timestamp():
     assert proc.wait(timeout=1.0) == 0
     assert clock.finished is not None
     assert proc.poll() == 0
+
+
+@pytest.mark.parametrize(
+    "parent_birth,child_birth,admitted",
+    [
+        (100, 100, True),
+        (100, 200, True),
+        (200, 100, False),
+        (None, 200, False),
+        (100, None, False),
+        (0, 200, False),
+        (100, 0, False),
+        (True, 200, False),
+        (100, True, False),
+    ],
+)
+def test_host_protection_exemptions_require_birth_fenced_current_ancestry(
+    parent_birth,
+    child_birth,
+    admitted,
+):
+    sample = memory_guard.ProcessSample
+    samples = {
+        50: sample(50, 1, 1, "codex", pgid=50),
+        100: sample(
+            100,
+            50,
+            1,
+            "python tools/memory_guard.py",
+            pgid=100,
+            started_at_ns=parent_birth,
+        ),
+        200: sample(200, 100, 1, "molt-backend", pgid=200, started_at_ns=child_birth),
+        201: sample(201, 200, 1, "worker", pgid=201, started_at_ns=300),
+        300: sample(300, 100, 1, "node node_repl.js", pgid=300, started_at_ns=300),
+    }
+    protected = process_model.protected_process_group_ids(
+        samples,
+        self_pid=100,
+        owned_pids={200, 201, 300},
+    )
+    assert {50, 100, 300} <= protected
+    assert (200 not in protected) is admitted
+    assert (201 not in protected) is admitted
+    assert process_model.has_external_host_control_plane_lineage(
+        samples,
+        200,
+        current_pid=100,
+        owned_pids={200},
+    ) is (not admitted)
+    assert process_model.has_external_host_control_plane_lineage(
+        samples,
+        300,
+        current_pid=100,
+        owned_pids={300},
+    )
+    # Protection must keep possible host lineage even when its birth is unknown.
+    assert process_model.host_control_plane_ancestor_pids(samples, 201) == {50}
+
+
+def test_untracked_watch_cannot_admit_children_of_an_absent_root():
+    sample = memory_guard.ProcessSample
+    samples = {200: sample(200, 100, 1, "stale parent pid", started_at_ns=200)}
+    assert memory_guard.watched_pids(samples, 100) == set()

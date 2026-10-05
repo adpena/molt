@@ -1,6 +1,6 @@
 //! Executable helper providers, dependency closure, and lexical binding custody.
 //!
-//! Provider source owns its exports and references. Whole code identifiers use
+//! Provider source owns its bindings and references. Whole code identifiers use
 //! the same literal/comment masking as source validation; diagnostic strings
 //! never select helpers. Runtime fragments use column-zero module bindings and
 //! indented private scopes, so bindings can be hoisted without rewriting bodies.
@@ -8,8 +8,14 @@
 use super::*;
 use std::sync::OnceLock;
 
+// Luau permits 200 simultaneously active locals. Reserve the existing two
+// entry-point exception-guard cells in every chunk budget calculation.
+pub(super) const CHUNK_LOCAL_LIMIT: usize = 198;
+
 pub(super) struct Prelude {
     pub source: String,
+    /// Exported cells still live when guest declarations begin. Provider-private
+    /// cells have left lexical scope, even when retained by exported closures.
     pub local_count: usize,
 }
 
@@ -63,24 +69,55 @@ fn code_identifiers(source: &str) -> BTreeSet<String> {
         .collect()
 }
 
-fn module_binding(code: &str) -> Option<&str> {
-    if let Some(rest) = code.strip_prefix("local function ") {
-        return Some(identifier(rest));
+fn module_binding(code: &str) -> Result<Option<&str>, &'static str> {
+    if code.starts_with("function ") {
+        return Err("must declare module functions with `local function` or a bare assignment");
     }
-    if let Some(rest) = code.strip_prefix("local ") {
-        return Some(identifier(rest));
+    let function = code.strip_prefix("local function ");
+    let local = code.strip_prefix("local ");
+    let rest = function.or(local).unwrap_or(code);
+    let name = identifier(rest);
+    let tail = rest[name.len()..].trim_start();
+    if local.is_some() {
+        if !name.starts_with(|ch: char| ch.is_ascii_alphabetic() || ch == '_') {
+            return Err("has an invalid module binding name");
+        }
+        if function.is_some() {
+            if !tail.starts_with('(') {
+                return Err("must declare an unqualified module function");
+            }
+        } else if tail.starts_with(',') {
+            return Err("must declare one module binding per statement");
+        } else if !tail.is_empty() && !tail.starts_with(':') && !tail.starts_with('=') {
+            return Err("has an unsupported module binding declaration");
+        }
+        return Ok(Some(name));
     }
-    // Existing mutually recursive fragments assign a prior local declaration.
-    // These definitions are providers too; forward declarations alone are not.
-    let name = identifier(code);
-    (name.starts_with("molt_") && code[name.len()..].trim_start().starts_with("= function"))
-        .then_some(name)
+    if name.is_empty() {
+        return Ok(None);
+    }
+    // Bare assignments are source-owned definitions as well, including the
+    // mutually recursive equality/call providers and scalar initialization.
+    // Hoist every such cell; an unfamiliar definition must never become global.
+    if tail.starts_with('=') && !tail.starts_with("==") {
+        return Ok(Some(name));
+    }
+    if tail.starts_with(',') && tail.contains('=') {
+        return Err("must assign one module binding per statement");
+    }
+    if ["+=", "-=", "*=", "/=", "//=", "%=", "^=", "..="]
+        .iter()
+        .any(|operator| tail.starts_with(*operator))
+    {
+        return Err("must initialize module bindings with a plain assignment");
+    }
+    Ok(None)
 }
 
 fn has_definition(source: &str, name: &str) -> bool {
     source.lines().any(|line| {
         let code = source_checks::luau_line_code(line);
-        let code = code.trim_start();
+        let code = code.as_str();
         if let Some(rest) = code.strip_prefix("local function ") {
             return identifier(rest) == name;
         }
@@ -105,12 +142,14 @@ fn emit_fragment(source: &str, output: &mut String) {
     for line in source.lines() {
         let code = source_checks::luau_line_code(line);
         if code.starts_with("local function ") {
-            // Every provider has one hoisted local, including recursive groups.
+            // Every binding has one hoisted local, including recursive groups.
             // Preserve @native and all function/argument annotations.
+            output.push('\t');
             output.push_str(&line["local ".len()..]);
         } else if let Some(rest) = code.strip_prefix("local ") {
             let name = identifier(rest);
             if let Some(equal) = code.find('=') {
+                output.push('\t');
                 output.push_str(name);
                 output.push(' ');
                 output.push_str(&line[equal..]);
@@ -119,6 +158,7 @@ fn emit_fragment(source: &str, output: &mut String) {
                 continue;
             }
         } else {
+            output.push('\t');
             output.push_str(line);
         }
         output.push('\n');
@@ -127,21 +167,20 @@ fn emit_fragment(source: &str, output: &mut String) {
 }
 
 impl RuntimeLibrary {
-    fn new(sources: Vec<(&'static str, String)>) -> Result<Self, String> {
+    pub(super) fn new(sources: Vec<(&'static str, String)>) -> Result<Self, String> {
         let mut fragments = Vec::new();
         let mut providers = BTreeMap::new();
         for (name, source) in sources {
             let mut bindings = BTreeSet::new();
+            let mut declarations = BTreeSet::new();
             for line in source.lines() {
                 let code = source_checks::luau_line_code(line);
-                if let Some(binding) = module_binding(&code) {
-                    let tail = code.strip_prefix("local ").unwrap_or(&code);
-                    if tail
-                        .strip_prefix(binding)
-                        .is_some_and(|rest| rest.trim_start().starts_with(','))
-                    {
+                if let Some(binding) = module_binding(&code)
+                    .map_err(|reason| format!("runtime fragment `{name}` {reason}"))?
+                {
+                    if code.starts_with("local ") && !declarations.insert(binding.to_string()) {
                         return Err(format!(
-                            "runtime fragment `{name}` must declare one module binding per statement"
+                            "runtime fragment `{name}` redeclares module binding `{binding}`"
                         ));
                     }
                     if binding.is_empty() || !has_definition(&source, binding) {
@@ -235,33 +274,51 @@ impl RuntimeLibrary {
                 roots.insert(provider.to_string());
             }
         }
-        let selected = self.close(roots)?;
-        let bindings: BTreeSet<_> = selected
-            .iter()
-            .flat_map(|&index| &self.fragments[index].bindings)
-            .collect();
-        // The entry-point exception guard can add two locals. Guest function
-        // forward declarations share this same chunk budget in emit_source.
-        if bindings.len() > 198 {
-            return Err(format!(
-                "Luau runtime needs {} chunk locals, exceeding the 198 available before the entry-point guard",
-                bindings.len()
-            ));
+        let selected = self.close(roots.clone())?;
+        let mut exports = roots;
+        for &index in &selected {
+            exports.extend(self.fragments[index].references.iter().filter_map(|name| {
+                self.providers
+                    .get(name)
+                    .filter(|&&provider| provider != index)
+                    .map(|_| name.clone())
+            }));
+        }
+        // Exports stay live throughout initialization. Each provider's private
+        // cells coexist only with those exports, not with other providers or
+        // later guest declarations. Escaping closures retain the same cells.
+        for &index in &selected {
+            let fragment = &self.fragments[index];
+            let private_count = fragment.bindings.difference(&exports).count();
+            let active_count = exports.len() + private_count;
+            if active_count > CHUNK_LOCAL_LIMIT {
+                return Err(format!(
+                    "Luau runtime provider `{}` needs {active_count} simultaneously active locals ({} exports and {private_count} private), exceeding the {CHUNK_LOCAL_LIMIT} available before the entry-point guard",
+                    fragment.name,
+                    exports.len()
+                ));
+            }
         }
         let mut source = String::from(
             "--!native\n--!strict\n-- Molt -> Luau transpiled output\n-- Runtime helpers\n\n",
         );
-        for binding in &bindings {
+        for binding in &exports {
             let _ = writeln!(source, "local {binding}: any");
         }
         source.push('\n');
         for &index in &selected {
-            emit_fragment(&self.fragments[index].source, &mut source);
+            let fragment = &self.fragments[index];
+            let _ = writeln!(source, "do -- Runtime provider: {}", fragment.name);
+            for binding in fragment.bindings.difference(&exports) {
+                let _ = writeln!(source, "\tlocal {binding}: any");
+            }
+            emit_fragment(&fragment.source, &mut source);
+            source.push_str("end\n\n");
         }
         source.push_str(&publication);
         Ok(Prelude {
             source,
-            local_count: bindings.len(),
+            local_count: exports.len(),
         })
     }
 }

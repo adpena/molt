@@ -554,7 +554,9 @@ pub extern "C" fn molt_enum_member(cls_bits: u64, value_bits: u64) -> u64 {
                     pair
                 };
                 let outcome = crate::object::ops_compare::compare_object_eq_bool(
-                    _py, obj_from_bits(pair.1), obj_from_bits(value_bits),
+                    _py,
+                    obj_from_bits(pair.1),
+                    obj_from_bits(value_bits),
                 );
                 dec_ref_bits(_py, pair.1);
                 match outcome {

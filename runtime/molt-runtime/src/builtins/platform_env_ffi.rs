@@ -267,7 +267,9 @@ pub extern "C" fn molt_gettext_ngettext(singular_bits: u64, plural_bits: u64, n_
     crate::with_gil_entry_nopanic!(_py, {
         let one = MoltObject::from_int(1);
         let result_bits = match crate::object::ops_compare::compare_object_eq_bool(
-            _py, obj_from_bits(n_bits), one,
+            _py,
+            obj_from_bits(n_bits),
+            one,
         ) {
             crate::object::ops_compare::CompareBoolOutcome::True => singular_bits,
             crate::object::ops_compare::CompareBoolOutcome::False => plural_bits,

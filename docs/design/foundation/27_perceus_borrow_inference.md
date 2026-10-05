@@ -152,9 +152,13 @@ is the minimal carrier that keeps the seven classes un-expressible.
 
 ### 1.3 Per alias-root, not per SSA value (subsumes C1)
 
-A molt `Copy`/`TypeGuard`/`guard_tag` produces a *bit-identical alias* of its
-operand with **no incref** (`CopyLowering::TransparentAlias`,
-`alias_analysis.rs:444`). The loop-carried accumulator is reloaded via
+An operation admitted by `value_identity::no_heap_alias_source` produces a
+*bit-identical alias* of its source (operand zero) with **no incref**. The shared
+fact validates the generated alias role, no-heap-move contract, and declared
+shape. Runtime `guard_tag` and `guard_type` also read the expected tag; preserving
+the object's root does not permit erasing their checks or exceptions.
+`CopyLowering::TransparentAlias` alone proves non-owning custody, not identity.
+The loop-carried accumulator is reloaded via
 `load_var → Copy` every iteration, so one heap object has many SSA ids. Rung 1
 discovered (the hard way, design 20 §4.1 Finding #1) that ownership is a property
 of the **alias root**, and built `AliasUnionFind` (`alias_analysis.rs:357`) to
@@ -165,10 +169,12 @@ root carries the `Owned(k)`. C1 — a second `DecRef` on a `Copy` of an owned
 object — cannot be expressed because a non-root alias has no `Owned` state to
 release.
 
-The union-find is built by `record_transparent_aliases` (`alias_analysis.rs:381`)
-over the `classify_copy_kind` contract (`alias_analysis.rs:515`): `OwnedValue`
-results get their own root (a real `+1`); `TransparentAlias` results union into
-operand 0's root; `InertMarker` results carry no heap reference (`Raw`/no-state).
+The union-find is built by `record_transparent_aliases` in `alias_analysis/mod.rs`
+through the shared `value_identity::no_heap_alias_source` fact. Only admitted
+results union into the source's root. `OwnedValue` results and retained binding
+aliases have separate ownership roots; a `TransparentAlias` custody class does
+not establish this union. `InertMarker` results carry no heap reference
+(`Raw`/no-state).
 Current implementation status: conditionally-valid iterator results and
 FinalizerSensitive roots are already materialized inside `OwnershipLattice` in
 alias-root space. DropInsertion consumes those root facts for placement; it no
@@ -285,11 +291,13 @@ Rung 2 adds:
 
 | New column | Domain | Meaning | Replaces (file:line) |
 |---|---|---|---|
-| `result_ownership` | `owned` \| `borrowed` \| `raw` \| `alias_of_operand(i)` \| `cond_owned(edge)` | the lattice state of the op's result at definition | `classify_copy_kind` buckets (`alias_analysis.rs:515`); the `OwnedValue`/`TransparentAlias`/`InertMarker` enum |
+| `result_ownership` | `owned` \| `borrowed` \| `raw` \| `alias_of_operand(i)` \| `cond_owned(edge)` | the lattice state of the op's result at definition | `classify_copy_kind` custody buckets (`alias_analysis/copy_kind.rs`) plus the separate `value_identity::no_heap_alias_source` identity fact |
 | `operand_ownership[]` | per-operand: `borrowed` \| `consumed` | does the op release this operand internally? | the default "operands borrowed" assumption + `op_transferred_operands` (`ownership_lattice_min.rs`) |
 
-`result_ownership = alias_of_operand(0)` is the `TransparentAlias` class (union
-into operand 0's root). `cond_owned(not_done)` is the `IterNextUnboxed` class
+`result_ownership = alias_of_operand(0)` requires the separate no-heap alias
+source fact before unioning into operand zero's root. The `TransparentAlias`
+custody class alone also includes unknown non-owning results and cannot grant
+that identity. `cond_owned(not_done)` is the `IterNextUnboxed` class
 (`Owned` on the not-done edge, `MaybeUninit` elsewhere). `raw` is the
 `InertMarker`/repr class.
 
@@ -626,11 +634,11 @@ mirrors both:
   lattice
   removes the cross-set inconsistencies that produced the batch-sensitive
   miscompile.
-- **Reuse lowering (P3)** is gated by a new per-target predicate
-  `target_uses_tir_reuse(target)` (default: the same set drop insertion is active
-  on) and a `reuse_lowered` marker, so reuse can roll out per-backend
-  independently of drop activation. Reuse stays **dormant** (annotations produced
-  but not lowered) until the per-backend lowering is verified leak-clean.
+- **Reuse lowering (P3)** is design-only. Ownership-safe candidate analysis,
+  typed reuse operations, target policies, every backend lowering, and the
+  terminal-semantics-aware runtime mechanism must land together. Current
+  compilation produces no reuse annotations or token ABI. Activate each target
+  only after its allocation, finalizer/weakref, leak, and resource gates pass.
 
 ---
 
@@ -681,7 +689,7 @@ hide in *this* design and which gate catches it. Plus new risks rung 2 introduce
 | C2 (phi mixed-ownership) | If the join used `Owned ⊔ Borrowed = Borrowed` (no retain). | The join is `Owned ⊔ Borrowed = Owned` with a materialized `dup` (§1.4); P1 gate: the `apply(base, n)` / `x = a if c else fresh()` repros (design 20 §5). |
 | C3 (forwarded-arg double-drop) | If a branch-arg transfer were not excluded from edge-dying. | Transfer is a lattice consume (§2.4); per-arc custody in `drop_insertion/availability.rs`, over branch args and exception-edge payloads. P1 gate: the inliner `x = a+a; return x+a` repro (`drop_insertion.rs:851-853`). |
 | C4 (getter lifetime) | A compiler bypass extracts a raw handle, or a synthetic borrow graph delays unrelated finalizers. | Ordinary compiled protocol dispatch plus independently owned results (§1.5); real getter/Counter differential guests. |
-| C5 (unmapped-Copy droppability) | If an unknown kind defaulted to `Owned result`. | `result_ownership` fail-closes to `borrowed`/`alias_of_operand(0)` for unknown kinds (§2.1, the `_ => TransparentAlias` rail, `alias_analysis.rs:544`); P4 makes it an explicit column. **Leak-not-UAF** is the only failure direction. |
+| C5 (unmapped-Copy droppability) | If an unknown kind defaulted to `Owned result`. | `result_ownership` fail-closes to non-owning `borrowed` for unknown kinds (§2.1, the `_ => TransparentAlias` custody rail in `alias_analysis/copy_kind.rs`); unknown kinds do not gain `alias_of_operand(0)` identity. P4 makes custody an explicit column. **Leak-not-UAF** is the only failure direction. |
 | C6 (CallArgs consumed) | If `operand_ownership` missed a consuming op. | The `consumed` column (§2.3); P1 gate: `call_bind_callargs_operand_not_dropped` (`drop_insertion.rs` test). Adding a consuming op without the column → the op double-frees → caught by `MOLT_ASSERT_NO_LEAK` + the abort. P4 makes it compiler-checked. |
 | C7 (use-scan completeness) | If `MaybeUninit` were conflated with `Borrowed`, or a drop placed where the def doesn't dominate. | `MaybeUninit` is a distinct lattice state, never droppable on its edge (§1.6); the TerminatorOnly dominance placement guard (§1.6, `drop_insertion.rs:806`). P1 gate: `list(gen)`/`"".join(gen)` exhaustion repros. |
 

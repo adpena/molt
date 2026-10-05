@@ -35,7 +35,7 @@ from molt.cli.native_link_custody import (  # noqa: E402
 from molt.cli.runtime_artifact_selection import (  # noqa: E402
     RUNTIME_STATICLIB_ARTIFACTS,
 )
-from molt.cli.runtime_build_identity import (  # noqa: E402
+from molt.cli.runtime_identity_schema import (  # noqa: E402
     RuntimeBuildIdentity,
     require_native_runtime_staticlib_identity,
 )

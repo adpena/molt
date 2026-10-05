@@ -9,6 +9,7 @@ import pytest
 
 import molt.cli as cli
 from molt.cli import runtime_callable_symbols, native_symbol_inspection
+from tests.cli.native_link_test_support import stub_native_symbol_admission
 
 _RUNTIME_CALLABLE_SYMBOL_NAMES = (
     "_runtime_callable_symbols_digest",
@@ -50,9 +51,7 @@ def test_native_callable_symbol_stage_excludes_raw_borrowed_intrinsics(
             symbols, frozenset(), symbols, artifact_digest=identity.sha256
         )
 
-    monkeypatch.setattr(
-        native_symbol_inspection, "_native_archive_global_symbol_facts", inspect_archive
-    )
+    stub_native_symbol_admission(monkeypatch, inspect_archive)
 
     symbols_file, failure = runtime_callable_symbols._runtime_callable_symbols_file(
         runtime_lib,
@@ -81,9 +80,7 @@ def test_callable_projection_cannot_reuse_same_size_restored_mtime(
             symbols, frozenset(), symbols, artifact_digest=identity.sha256
         )
 
-    monkeypatch.setattr(
-        native_symbol_inspection, "_native_archive_global_symbol_facts", inspect_archive
-    )
+    stub_native_symbol_admission(monkeypatch, inspect_archive)
     first, failure = runtime_callable_symbols._runtime_callable_symbols_file(
         runtime_lib,
         identity=native_symbol_inspection._native_symbol_artifact_identity(runtime_lib),
@@ -118,9 +115,8 @@ def test_callable_projection_concurrent_creators_preserve_winner_generation(
     runtime_lib.write_bytes(b"runtime")
     identity = native_symbol_inspection._native_symbol_artifact_identity(runtime_lib)
     symbols = frozenset({"molt_len"})
-    monkeypatch.setattr(
-        native_symbol_inspection,
-        "_native_archive_global_symbol_facts",
+    stub_native_symbol_admission(
+        monkeypatch,
         lambda *_args, **_kwargs: native_symbol_inspection._NativeGlobalSymbolFacts(
             symbols, frozenset(), symbols, artifact_digest=identity.sha256
         ),
@@ -160,9 +156,7 @@ def test_callable_projection_preserves_shared_reader_failures(
     def inspect_archive(path, **kwargs):
         raise native_symbol_inspection.NativeSymbolInspectionError(path, [failure])
 
-    monkeypatch.setattr(
-        native_symbol_inspection, "_native_archive_global_symbol_facts", inspect_archive
-    )
+    stub_native_symbol_admission(monkeypatch, inspect_archive)
     path, diagnostic = runtime_callable_symbols._runtime_callable_symbols_file(
         runtime_lib,
         identity=native_symbol_inspection._native_symbol_artifact_identity(runtime_lib),
@@ -397,9 +391,8 @@ def test_async_runtime_completion_is_bound_before_codegen(
     future.set_result(True)
     state.runtime_lib_ready_future = future
     symbols = frozenset({"molt_async_fixture"})
-    monkeypatch.setattr(
-        native_symbol_inspection,
-        "_native_archive_global_symbol_facts",
+    stub_native_symbol_admission(
+        monkeypatch,
         lambda _path, **kwargs: native_symbol_inspection._NativeGlobalSymbolFacts(
             symbols, frozenset(), symbols, artifact_digest=kwargs["identity"].sha256
         ),
@@ -510,7 +503,9 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
             cache_enabled=True,
             ir={"functions": []},
             target="native",
-            target_triple=None,
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="bin", target_triple=None
+            ),
             profile="dev",
             runtime_cargo_profile="dev-fast",
             backend_cargo_profile="dev-fast",
@@ -648,7 +643,6 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
         cache_key=first_cache.cache_key,
         function_cache_key=first_cache.function_cache_key,
         cache_setup=first_cache,
-        target_triple=None,
         backend_daemon_config_digest=None,
         entry_module="__main__",
         ir={"functions": []},
@@ -719,13 +713,25 @@ def test_absent_binding_cannot_inherit_ambient_callable_inputs(tmp_path, monkeyp
 
 @pytest.mark.parametrize("when", ["final_capture", "object_projection"])
 def test_native_object_output_rejects_runtime_generation_drift(
-    admitted_runtime, tmp_path, monkeypatch, when
+    admitted_runtime, tmp_path, monkeypatch, when, request
 ):
     from types import SimpleNamespace as NS
     from molt import file_publication
+    from molt.capability_manifest import CapabilityManifest
     from molt.cli import backend_output_pipeline, runtime_native_build
+    from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
+    from molt.cli.models import (
+        _BackendCacheSetup,
+        _PreparedBackendSetup,
+        _PreparedBuildConfig,
+    )
+    from molt.cli.runtime_build_python import BuildPythonAdmission
+    from molt.target_python import TargetPythonVersion
 
     state = admitted_runtime
+    admission = BuildPythonAdmission()
+    request.addfinalizer(admission.close)
+    state.build_python_admission = admission
     binding = state.native_runtime_codegen_binding
     calls = []
     staged_object = file_publication.staged_file_path(
@@ -763,6 +769,55 @@ def test_native_object_output_rejects_runtime_generation_drift(
         "_emit_non_native_build_result",
         lambda **_kwargs: pytest.fail("mutated object reported success"),
     )
+    cache_setup = _BackendCacheSetup(
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="obj"
+        ),
+        cache_enabled=False,
+        cache_key=None,
+        function_cache_key=None,
+        cache_path=None,
+        function_cache_path=None,
+        stdlib_object_path=None,
+        stdlib_object_cache_key=None,
+        cache_candidates=(),
+        cache_hit=False,
+        cache_hit_tier=None,
+    )
+    backend_setup = _PreparedBackendSetup(
+        runtime_state=state,
+        backend_bin=tmp_path / "backend.exe",
+        cache_setup=cache_setup,
+        cache_hit=cache_setup.cache_hit,
+        cache_hit_tier=cache_setup.cache_hit_tier,
+        cache_key=cache_setup.cache_key,
+        function_cache_key=cache_setup.function_cache_key,
+        cache_path=cache_setup.cache_path,
+        function_cache_path=cache_setup.function_cache_path,
+        stdlib_object_path=cache_setup.stdlib_object_path,
+        cache_candidates=list(cache_setup.cache_candidates),
+    )
+    config = _PreparedBuildConfig(
+        pgo_profile_summary=None,
+        pgo_profile_path=None,
+        runtime_feedback_summary=None,
+        runtime_feedback_path=None,
+        pgo_hot_function_names=set(),
+        pgo_hot_function_names_sorted=(),
+        pgo_profile_payload=None,
+        runtime_feedback_payload=None,
+        cargo_timeout=None,
+        backend_timeout=None,
+        link_timeout=None,
+        frontend_phase_timeout=None,
+        backend_profile="dev",
+        runtime_cargo_profile="dev-fast",
+        backend_cargo_profile="dev-fast",
+        resolved_capability_policy=CapabilityManifest().resolve(),
+        capabilities_source=None,
+        target_python=TargetPythonVersion(3, 12, 0),
+        target_sys_platform=None,
+    )
     result = backend_output_pipeline._emit_backend_pipeline_outputs(
         native_object_destination=tmp_path / "output.o",
         prepared_build_preamble=NS(
@@ -771,7 +826,7 @@ def test_native_object_output_rejects_runtime_generation_drift(
             resolved_diagnostics_verbosity="quiet",
         ),
         prepared_build_roots=NS(molt_root=tmp_path),
-        prepared_build_config=NS(runtime_cargo_profile="dev-fast", cargo_timeout=None),
+        prepared_build_config=config,
         resolved_build_entry=NS(),
         output_layout=NS(
             is_rust_transpile=False,
@@ -781,7 +836,7 @@ def test_native_object_output_rejects_runtime_generation_drift(
             target_triple=None,
             output_artifact=staged_object,
         ),
-        prepared_backend_setup=NS(cache_setup=NS(stdlib_object_path=None)),
+        prepared_backend_setup=backend_setup,
         prepared_backend_runtime_context=NS(
             runtime_state=state,
             ensure_runtime_wasm_both=None,
@@ -836,9 +891,8 @@ def test_callable_projection_cannot_admit_bytes_disconnected_from_archive(
     state.runtime_lib_ready_future = ready
     state.native_runtime_codegen_binding = None
     symbols = frozenset({"molt_allowed"})
-    monkeypatch.setattr(
-        native_symbol_inspection,
-        "_native_archive_global_symbol_facts",
+    stub_native_symbol_admission(
+        monkeypatch,
         lambda _path, **kwargs: native_symbol_inspection._NativeGlobalSymbolFacts(
             symbols, frozenset(), symbols, artifact_digest=kwargs["identity"].sha256
         ),

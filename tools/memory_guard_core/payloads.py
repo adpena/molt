@@ -40,6 +40,15 @@ def guarded_child_process_payload(
     }
 
 
+def process_identities_payload(
+    identities: Sequence[tuple[int, Any]],
+) -> list[dict[str, object]]:
+    return [
+        {"pid": pid, "started_at_ns": identity.started_at_ns}
+        for pid, identity in identities
+    ]
+
+
 def termination_action_payload(
     action: Any,
 ) -> dict[str, object]:

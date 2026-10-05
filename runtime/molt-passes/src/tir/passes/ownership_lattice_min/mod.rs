@@ -137,14 +137,12 @@ pub(crate) fn op_transferred_operands(op: &TirOp) -> Vec<OperandTransfer> {
 /// alias during CFG surgery; the classifier read itself stays in the ownership
 /// fact module.
 pub(crate) fn copy_transparent_alias(op: &TirOp) -> Option<NoHeapCopyAlias> {
-    if op.opcode != OpCode::Copy || op.operands.len() != 1 || op.results.len() != 1 {
+    if op.opcode != OpCode::Copy {
         return None;
     }
-    if !copy_kind_is_explicit_no_heap_move(original_kind(op)) {
-        return None;
-    }
+    let source = super::value_identity::no_heap_alias_source(op)?;
     Some(NoHeapCopyAlias {
-        source: op.operands[0],
+        source,
         result: op.results[0],
     })
 }

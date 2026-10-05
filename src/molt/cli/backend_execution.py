@@ -47,7 +47,10 @@ from molt.cli.compiler_identity import (
     installed_compiler_admission,
 )
 from molt.cli.cache_keys import _json_ir_default, _write_backend_ir_text
-from molt.cli.command_runtime import _load_cli_harness_memory_guard
+from molt.cli.command_runtime import (
+    _load_cli_harness_memory_guard,
+    _run_completed_command,
+)
 from molt.cli.config_resolution import ENTRY_OVERRIDE_ENV
 from molt.cli.env_paths import _resolve_env_path
 from molt.cli.models import _BackendDaemonCompileResult
@@ -169,6 +172,73 @@ def _backend_binary_identity(backend_bin: Path) -> str:
             return f"missing:{backend_bin.absolute()}"
         raise
     return canonical_json_sha256({"schema": 2, "binary": identity})
+
+
+def _backend_native_codegen_identity(
+    backend_bin: Path,
+    *,
+    backend_identity: str,
+    target_triple: str,
+    env: Mapping[str, str],
+) -> str:
+    """Baseline is deterministic; explicit host specialization is observed.
+
+    The caller also binds the compiler executable and canonical codegen
+    environment in its cache variant. Baseline admission needs no subprocess.
+    """
+    portable = env.get("MOLT_PORTABLE", "").strip().lower()
+    if portable in {"", "1", "true"}:
+        return canonical_json_sha256(
+            {
+                "schema": "molt.native-codegen-policy.v1",
+                "mode": "target-baseline",
+                "target": target_triple,
+            }
+        )
+    if portable not in {"0", "false"}:
+        raise ValueError("Invalid MOLT_PORTABLE; expected 0/1 or false/true")
+    return _observed_native_codegen_identity(
+        str(backend_bin), backend_identity, target_triple, tuple(sorted(env.items()))
+    )
+
+
+@functools.lru_cache(maxsize=64)
+def _observed_native_codegen_identity(
+    backend_path: str,
+    backend_identity: str,
+    target_triple: str,
+    environment: tuple[tuple[str, str], ...],
+) -> str:
+    # Executable content is deliberately part of the memo key, not its path,
+    # size, modification time or a Python reconstruction of CPU features.
+    try:
+        result = _run_completed_command(
+            [backend_path, "--native-codegen-identity", target_triple],
+            capture_output=True,
+            env=dict(environment),
+            cwd=Path(backend_path).parent,
+            timeout=30,
+            memory_guard_prefix="MOLT_BUILD",
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError(f"Cannot resolve native codegen identity: {error}") from error
+    if result.returncode != 0:
+        raise ValueError(
+            f"Native codegen identity failed ({result.returncode}): {result.stderr}"
+        )
+    try:
+        payload = json.loads(result.stdout)
+    except (ValueError, TypeError) as error:
+        raise ValueError("Native codegen identity is not JSON") from error
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != "molt.native-codegen-identity.v1"
+        or payload.get("requested_target") != target_triple
+        or not isinstance(payload.get("identity"), dict)
+        or not payload["identity"]
+    ):
+        raise ValueError("Native codegen identity does not match the selected target")
+    return canonical_json_sha256(payload)
 
 
 @functools.lru_cache(maxsize=64)
@@ -1110,7 +1180,6 @@ def _start_backend_daemon(
     *,
     cargo_profile: str,
     project_root: Path,
-    target_triple: str | None,
     config_digest: str | None,
     startup_timeout: float | None,
     json_output: bool,

@@ -464,12 +464,7 @@ fn append_spec_formatted_value(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_module_spec_type() -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let class_bits = module_spec_class(py);
-        if class_bits == 0 {
-            return MoltObject::none().bits();
-        }
-        inc_ref_bits(py, class_bits);
-        class_bits
+        crate::state::cache::retain_cached_result(py, module_spec_class(py))
     })
 }
 
@@ -500,11 +495,11 @@ mod tests {
         crate::with_gil_entry_nopanic!(py, {
             if string_obj_to_owned(obj_from_bits(name_bits)).as_deref() == Some("name") {
                 let observed = str_bits(py, b"observed.leaf");
-                let result = molt_object_setattr(self_bits, name_bits, observed);
+                let result = crate::molt_object_setattr(self_bits, name_bits, observed);
                 dec_ref_bits(py, observed);
                 result
             } else {
-                molt_object_setattr(self_bits, name_bits, value_bits)
+                crate::molt_object_setattr(self_bits, name_bits, value_bits)
             }
         })
     }
@@ -524,11 +519,13 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let class = module_spec_class(py);
-            let setter = crate::builtins::methods::alloc_builtin_function(
-                py,
-                observed_setattr as *const () as usize as u64,
-                3,
-            );
+            let setter =
+                MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    crate::provenance::abi::expose_function_address(observed_setattr as *const ()),
+                    3,
+                ))
+                .bits();
             let setter_name = str_bits(py, b"__setattr__");
             inc_ref_bits(py, class);
             let _restore_class = RemoveAttribute(class, setter_name);
@@ -647,7 +644,7 @@ mod tests {
             assert_eq!(attr_text(py, keyword, b"parent"), "top");
 
             let parent_name = str_bits(py, b"parent");
-            let _ = molt_object_setattr(keyword, parent_name, name);
+            let _ = molt_set_attr_name(keyword, parent_name, name);
             assert!(exception_pending(py), "parent is a read-only property");
             clear_exception(py);
 

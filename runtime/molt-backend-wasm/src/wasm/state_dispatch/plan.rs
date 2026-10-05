@@ -61,8 +61,7 @@ impl NonLinearDispatchPlan {
         let control_maps = build_dispatch_control_maps(&func_ir.ops, stateful, &func_ir.name);
         let state_resume = stateful.then(|| {
             let entry_prologue_end = stateful_entry_prologue_end(&func_ir.ops);
-            let state_map =
-                build_state_resume_maps(&func_ir.ops, entry_prologue_end + 1);
+            let state_map = build_state_resume_maps(&func_ir.ops, entry_prologue_end + 1);
             let remap_table = build_dense_state_remap_table(&state_map).map(|remap_bytes| {
                 let remap_entries = (remap_bytes.len() / std::mem::size_of::<i64>()) as i64;
                 let remap_segment = backend.add_data_segment(reloc_enabled, &remap_bytes);

@@ -509,7 +509,7 @@ fn pure_float_remains_float_vector() {
     let acc2 = ValueId(2);
 
     let mut float_attrs = AttrDict::new();
-    float_attrs.insert("value".into(), AttrValue::Float(1.5));
+    float_attrs.insert("f_value".into(), AttrValue::Float(1.5));
 
     let mut func = build_loop_func(
         "pure_float_loop",

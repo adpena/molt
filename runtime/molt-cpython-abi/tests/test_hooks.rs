@@ -98,7 +98,10 @@ fn test_stub_dict_operations() {
     let val = unsafe { (h.dict_get)(0, 0, molt_cpython_abi::hooks::DictHashSource::Compute, 0) };
     assert!(matches!(val.decode(), DecodedHandleResult::Error));
 
-    assert_eq!(unsafe { (h.dict_set)(0, 0, 0) }, -1);
+    assert_eq!(
+        unsafe { (h.dict_mutate)(0, 0, 0, 0, None, std::ptr::null_mut()) },
+        -1
+    );
 }
 
 #[test]

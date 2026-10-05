@@ -58,6 +58,8 @@ pub(super) struct WasmFunctionFrame {
     value_occupancy: Option<ValueOccupancy>,
     runtime_lookup_only_vars: BTreeSet<String>,
     scalar_plan: ScalarRepresentationPlan,
+    guard_facts: molt_tir::passes::RuntimeGuardFacts,
+    guard_profile_local: Option<u32>,
     control_mode: WasmFrameControlMode,
     tail_call_eligible: bool,
     // Per-invocation custody, never a persistent generator/task field. A failed
@@ -76,6 +78,13 @@ pub(super) struct WasmFunctionFrame {
 }
 
 impl WasmFunctionFrame {
+    pub(super) fn guard_profile_local(&self, op: &crate::OpIR) -> Option<u32> {
+        self.guard_facts
+            .is_profile_only(op)
+            .then_some(self.guard_profile_local)
+            .flatten()
+    }
+
     pub(super) fn control_mode(&self) -> WasmFrameControlMode {
         self.control_mode
     }

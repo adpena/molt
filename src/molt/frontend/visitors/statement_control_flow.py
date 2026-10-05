@@ -1436,6 +1436,26 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         exc_val = emit_exception_value(node.exc, allow_none=False, context="raise")
         if exc_val is None:
             return None
+        # Python evaluates both expressions before constructing either class.
+        # MISSING distinguishes absence of `from` from explicit `from None`.
+        if node.cause is not None:
+            cause_val = emit_exception_value(
+                node.cause, allow_none=True, context="raise cause"
+            )
+            if cause_val is None:
+                return None
+        else:
+            cause_val = MoltValue(self.next_var())
+            self.emit(MoltOp(kind="CONST_MISSING", args=[], result=cause_val))
+        prepared = MoltValue(self.next_var(), type_hint="exception")
+        self.emit(
+            MoltOp(
+                kind="CALL",
+                args=["molt_exception_prepare_raise", exc_val, cause_val],
+                result=prepared,
+            )
+        )
+        exc_val = prepared
         if clear_handlers:
             self.emit(
                 MoltOp(
@@ -1453,19 +1473,6 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                 MoltOp(
                     kind="SETATTR_GENERIC_OBJ",
                     args=[exc_val, "__context__", context_val],
-                    result=MoltValue("none"),
-                )
-            )
-        if node.cause is not None:
-            cause_val = emit_exception_value(
-                node.cause, allow_none=True, context="raise cause"
-            )
-            if cause_val is None:
-                return None
-            self.emit(
-                MoltOp(
-                    kind="EXCEPTION_SET_CAUSE",
-                    args=[exc_val, cause_val],
                     result=MoltValue("none"),
                 )
             )

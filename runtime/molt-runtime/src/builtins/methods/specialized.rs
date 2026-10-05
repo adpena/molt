@@ -251,10 +251,58 @@ crate::builtins::methods::native_method_table!(
     {}, {}
 );
 
+// Native view length descriptors share the existing live dictionary-storage
+// owner. Each expansion retains its exact declaring class and receiver kind;
+// neither a Python __len__ lookup nor mapping admission supplies the result.
+macro_rules! dict_view_length_descriptor {
+    ($py:ident, $owner:ident, $kind:ident) => {{
+        extern "C" fn length(view: u64) -> u64 {
+            crate::with_gil_entry_nopanic!(py, {
+                let Some(pointer) = obj_from_bits(view)
+                    .as_ptr()
+                    .filter(|pointer| unsafe { object_type_id(*pointer) } == $kind)
+                else {
+                    return raise_exception::<_>(
+                        py,
+                        "TypeError",
+                        &format!(
+                            "descriptor '__len__' requires a '{}' object but received a '{}'",
+                            stringify!($owner),
+                            type_name(py, obj_from_bits(view)),
+                        ),
+                    );
+                };
+                MoltObject::from_int(
+                    unsafe { crate::builtins::containers::dict_view_len(pointer) } as i64,
+                )
+                .bits()
+            })
+        }
+        Some(builtin_func_bits(
+            $py,
+            NativeCallableSpec::declared(
+                NativeCallableKind::WrapperDescriptor,
+                builtin_classes($py).$owner,
+                "__len__",
+            )
+            .with_text_signature("($self, /)"),
+            fn_addr!(length),
+            1,
+        ))
+    }};
+}
+
+crate::builtins::methods::native_method_table!(
+    dict_values_method_bits, publish_dict_values_methods, py, name, [], {}, {
+        "__len__" => dict_view_length_descriptor!(py, dict_values, TYPE_ID_DICT_VALUES_VIEW),
+    }
+);
+
 crate::builtins::methods::native_method_table!(
     dict_keys_method_bits, publish_dict_keys_methods, py, name, [],
     comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::DictKeys,
     {}, {
+        "__len__" => dict_view_length_descriptor!(py, dict_keys, TYPE_ID_DICT_KEYS_VIEW),
         "__contains__" => {
             extern "C" fn contains(view: u64, item: u64) -> u64 {
                 crate::with_gil_entry_nopanic!(py, {
@@ -275,6 +323,7 @@ crate::builtins::methods::native_method_table!(
     dict_items_method_bits, publish_dict_items_methods, py, name, [],
     comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::DictItems,
     {}, {
+        "__len__" => dict_view_length_descriptor!(py, dict_items, TYPE_ID_DICT_ITEMS_VIEW),
         "__contains__" => {
             extern "C" fn contains(view: u64, item: u64) -> u64 {
                 crate::with_gil_entry_nopanic!(py, {

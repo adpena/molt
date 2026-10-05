@@ -68,6 +68,7 @@ native_method_families! {
     union_type => super::specialized::union_method_bits, super::specialized::publish_union_methods;
     dict_keys => super::specialized::dict_keys_method_bits, super::specialized::publish_dict_keys_methods;
     dict_items => super::specialized::dict_items_method_bits, super::specialized::publish_dict_items_methods;
+    dict_values => super::specialized::dict_values_method_bits, super::specialized::publish_dict_values_methods;
     generic_alias => super::specialized::generic_alias_method_bits, super::specialized::publish_generic_alias_methods;
     object => super::core_types::object_method_bits, super::core_types::publish_object_methods;
     type_obj => super::core_types::type_method_bits, super::core_types::publish_type_methods;

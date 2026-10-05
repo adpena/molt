@@ -2980,7 +2980,9 @@ pub unsafe extern "C" fn molt_bytearray_dealloc(op: *mut PyObject) {
         return;
     };
     crate::api::errors::with_preserved_error(|| unsafe {
-        let Some(deallocation) = crate::api::typeobj::NativeDeallocation::storage(op) else { return; };
+        let Some(deallocation) = crate::api::typeobj::NativeDeallocation::storage(op) else {
+            return;
+        };
         let bytes = std::mem::replace(&mut (*obj).ob_bytes, ptr::null_mut());
         (*obj).ob_start = ptr::null_mut();
         crate::api::memory::PyMem_Free(bytes.cast());

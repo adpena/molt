@@ -311,8 +311,19 @@ fn exact_builtin_list_class_requires_allocator_provenance() {
     assert_eq!(plan.name_container_kind("xs"), Some(ContainerKind::List));
     assert!(!plan.op_has_exact_builtin_list(&index));
 
-    for kind in ["copy", "identity_alias", "binding_alias", "guard_type"] {
+    for kind in [
+        "copy",
+        "identity_alias",
+        "binding_alias",
+        "guard_tag",
+        "guard_type",
+    ] {
         let alias_index = op("index", Some("item"), None, &["alias", "i"]);
+        let inputs: &[&str] = if matches!(kind, "guard_tag" | "guard_type") {
+            &["xs", "expected_tag"]
+        } else {
+            &["xs"]
+        };
         let constructed = function(
             "exact_list_alias",
             &[],
@@ -320,8 +331,9 @@ fn exact_builtin_list_class_requires_allocator_provenance() {
             vec![
                 const_int("i", 0),
                 const_int("value", 1),
+                const_int("expected_tag", 8),
                 op("list_new", Some("xs"), None, &["value"]),
-                op(kind, Some("alias"), None, &["xs"]),
+                op(kind, Some("alias"), None, inputs),
                 alias_index.clone(),
             ],
         );
@@ -333,7 +345,7 @@ fn exact_builtin_list_class_requires_allocator_provenance() {
         ambiguous.param_types = None;
         ambiguous
             .ops
-            .insert(4, op("copy", Some("alias"), None, &["unknown"]));
+            .insert(5, op("copy", Some("alias"), None, &["unknown"]));
         let plan = native_representation_plan(&ambiguous);
         assert!(!plan.op_has_exact_builtin_list(&alias_index), "{kind}");
     }
@@ -1916,5 +1928,42 @@ fn canonical_repeat_proves_singleton_aliases_before_publishing_flat_storage() {
                 expected
             );
         }
+    }
+}
+
+#[test]
+fn runtime_guard_alias_keeps_source_carrier_despite_mismatching_tag() {
+    for kind in ["guard_tag", "guard_type"] {
+        let func = function(
+            "runtime_guard_carriers",
+            &[],
+            None,
+            vec![
+                const_int("left", 1_i64 << 31),
+                const_int("right", 1_i64 << 31),
+                op(
+                    "checked_mul",
+                    Some("overflow"),
+                    Some("wide"),
+                    &["left", "right"],
+                ),
+                const_int("small", 7),
+                const_float("float", 1.25),
+                const_bool("bool", true),
+                const_int("tag", 5),
+                op(kind, Some("wide_alias"), None, &["wide", "tag"]),
+                op(kind, Some("small_alias"), None, &["small", "tag"]),
+                op(kind, Some("float_alias"), None, &["float", "tag"]),
+                op(kind, Some("bool_alias"), None, &["bool", "tag"]),
+            ],
+        );
+        let plan = native_representation_plan(&func);
+        assert!(plan.is_full_deopt_int_name("wide_alias"), "{kind}");
+        assert!(plan.is_inline_safe_int_name("small_alias"), "{kind}");
+        assert!(plan.is_float_unboxed("float_alias"), "{kind}");
+        assert!(plan.is_bool_unboxed("bool_alias"), "{kind}");
+        let facts = crate::passes::RuntimeGuardFacts::for_function(&func);
+        assert!(!facts.is_nonthrowing(&func.ops[7], Some(&plan)));
+        assert!(facts.is_nonthrowing(&func.ops[8], Some(&plan)));
     }
 }

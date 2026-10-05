@@ -1500,7 +1500,6 @@ def test_verified_busy_or_ready_reuse_requires_receiver_ack(
             owned.socket_path,
             cargo_profile="dev-fast",
             project_root=tmp_path,
-            target_triple=None,
             config_digest=owned.config_digest,
             startup_timeout=0.1,
             json_output=True,

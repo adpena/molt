@@ -178,8 +178,9 @@ Physical build storage and proof evidence are separate authorities. Use
 `--cargo-output-root` (submission field `cargo_output_root`) to select an existing
 absolute output directory for a Cargo proof. The selection is frozen at
 admission and survives queued or detached execution. Without an explicit
-selection, outputs remain on the result-root volume. A missing selected
-volume is an error, never a request to fall back to the system drive.
+selection, payload outputs remain on the result-root volume. Supervisor
+bootstrap intermediates use the implementation checkout's existing custody root.
+A missing selected volume is an error, never a request to fall back to the system drive.
 Queued submission logs project the persisted command and storage declaration;
 they do not reconstruct an incomplete envelope from command-line arguments.
 
@@ -189,6 +190,35 @@ generation owners and locks, immutable receipts, content-addressed evidence,
 source and toolchain custody remain at their existing canonical locations.
 The supervisor executable is copied into the existing evidence CAS before
 execution; relocating its intermediate build does not relocate that authority.
+
+Supervisor bootstrap builds share one source-path-bound store below the selected
+output root, or the implementation checkout's verified custody root when no
+output tier was declared. A fresh result directory never creates another Cargo
+build directory. If that store overlaps source or receipt custody, select an
+external output root; there is no placement fallback. One existing file lock
+serializes input capture, Cargo freshness and immutable publication. The atomic
+publication pin covers file operations only, since it forbids subprocess entry.
+One existing repository-observer scope covers the complete supervisor setup
+transaction and borrows an already active scope when present. Its nested metadata
+and linker probes still use each command's `memory_guard.run_guarded`, including
+pre-entry identity, descendant closure and scratch cleanup. The setup scope does
+not drain unrelated processes, publish an ambient sentinel marker, or cache
+linker selections across invocations. This avoids repeated Windows process-table
+baselines and sentinel start/stop cycles for each setup probe.
+Every selection still executes `cargo build --locked`; retained generation records
+never bypass Cargo. Source/local dependency files, toolchain and linker images,
+Cargo configuration, release profile and the effective environment are bound
+before the build and checked before publication. Cargo remains the only build
+freshness authority, including third-party dependencies and build scripts.
+
+The executable and generation record are published through the existing CAS.
+Each execution copies both into its own evidence root and independently checks
+the generation-to-binary binding; replay does not require the shared build store.
+Provision telemetry records fresh and compiled Cargo artifact counts. A failed
+build or changed captured input cannot publish a new generation. This bootstrap
+tool reuse does not admit warm payload Cargo targets, relax interruption closure,
+or replace native supervisor capability checks. The Python fixture cache has no
+supervisor placement or provisioning authority.
 
 Capacity admission measures the actual build-output volume against the same
 25 GiB default floor. Root identity, exact generation paths and ownership are
@@ -384,7 +414,11 @@ Shared lock files are content-neutral: OS lock arbitration precedes any protecte
 work, and unused PID publication cannot race a contender's lock initialization.
 Windows requires completed empty-Job accounting; POSIX records sampled/process-
 group closure with a final sample and positive-bounded liveness probe, not a
-kernel-equivalent tree guarantee. Indeterminate closure preserves the allocation.
+kernel-equivalent tree guarantee. The guard records the original POSIX process
+group and session before its independent exit-clock reaper starts, while the
+owned child PID is still reserved. A completed child never authorizes querying
+a recycled PID or inventing missing group identity. Indeterminate closure
+preserves the allocation.
 After proven closure the parent exclusively retires the payload into its own
 `gs/<guard-token>/payload`. Only this nested payload is reclaimable from persisted
 receipts; forged metadata cannot redirect cleanup to a legacy sibling `pt-*`.
@@ -1097,11 +1131,24 @@ cache, a broad selector, or a stale generated file.
   output is a structural DX defect, not background noise.
 - If a proof lane is already active, monitor it instead of stacking another
   Cargo/WASM proof unless the new command is independent and cheap.
-- The native proof supervisor is provisioned for its run through the existing
-  Cargo custody path. Source digests and a rustc version string alone do not
-  prove a reusable build: configuration, wrappers, linkers, environment and
-  build-script inputs also matter. Do not adopt a shared supervisor binary
-  until the complete input identity is proven by the owning Cargo authority.
+- The native proof supervisor uses one source-bound bootstrap Cargo store.
+  Explicit output declarations keep their existing custody. Without a declaration,
+  canonical external checkout custody is reused; plain clones and temporary
+  sources place the store beside the source. Source and receipt overlap, links,
+  and Windows path-budget violations are rejected before provisioning.
+- Every supervisor selection runs Cargo `build --locked`. The direct driver and
+  proof producer share the same captured-input build authority. Each local crate
+  receives its own content digest through Cargo's tracked environment inputs;
+  restored source mtimes cannot bind a new generation to an old build. Cargo
+  owns dependency propagation and registry freshness. The supervisor build script
+  tracks its digest both while compiling the script and while generating protocol
+  constants; the local publication crate tracks its digest in rustc dep-info.
+- Compiler/linker image bytes, Cargo configuration, profile, target, manifests,
+  lockfile and compiled source bytes enter the build projection. Receipt roots,
+  guard tokens and scheduling fields stay outside that projection. The complete
+  effective environment remains independently bound in the immutable generation
+  receipt. Generation and binary copies in each result CAS remain replayable
+  independently of the retained bootstrap store.
 
 ## TOML DSL
 

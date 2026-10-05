@@ -1922,6 +1922,7 @@ unsafe fn function_descriptor_receiver(
                 py,
                 function_ptr,
                 kind,
+                crate::builtins::functions::native_callable::NativeDescriptorContext::Binding,
                 owner,
                 instance,
             )
@@ -2061,9 +2062,9 @@ unsafe fn bind_descriptor(
                     val_ptr,
                     b"__get__",
                     match type_id {
-                        TYPE_ID_CLASSMETHOD => fn_addr!(crate::molt_classmethod_get),
-                        TYPE_ID_STATICMETHOD => fn_addr!(crate::molt_staticmethod_get),
-                        _ => fn_addr!(crate::molt_property_get),
+                        TYPE_ID_CLASSMETHOD => fn_key!(crate::molt_classmethod_get),
+                        TYPE_ID_STATICMETHOD => fn_key!(crate::molt_staticmethod_get),
+                        _ => fn_key!(crate::molt_property_get),
                     },
                 ) =>
             {
@@ -2385,8 +2386,8 @@ pub(crate) unsafe fn descriptor_mutate(
                     DescriptorMutation::Delete => b"__delete__",
                 },
                 match mutation {
-                    DescriptorMutation::Set(_) => fn_addr!(crate::molt_property_set),
-                    DescriptorMutation::Delete => fn_addr!(crate::molt_property_delete),
+                    DescriptorMutation::Set(_) => fn_key!(crate::molt_property_set),
+                    DescriptorMutation::Delete => fn_key!(crate::molt_property_delete),
                 },
             )
         {
@@ -2730,7 +2731,6 @@ pub(crate) unsafe fn object_attr_lookup_with_policy(
             _py,
             MoltObject::from_ptr(obj_ptr).bits(),
             obj_ptr,
-            object_class_bits(obj_ptr),
             attr_bits,
             None,
             suppress,
@@ -2753,41 +2753,24 @@ pub(crate) unsafe fn object_attr_lookup_with_dict(
         if !pointer.is_null() && object_type_id(pointer) == TYPE_ID_DATACLASS {
             return dataclass_attr_lookup_inner(py, pointer, name, Some(dictionary), suppress);
         }
-        object_attr_lookup_inner(
-            py,
-            object,
-            pointer,
-            type_of_bits(py, object),
-            name,
-            Some(dictionary),
-            suppress,
-        )
+        object_attr_lookup_inner(py, object, pointer, name, Some(dictionary), suppress)
     }
 }
 
-pub(crate) unsafe fn object_attr_lookup_inner(
+// The semantic type belongs to type_of_bits, not the optional header class
+// edge. Native tasks and other builtins can have a type without that edge.
+unsafe fn object_attr_lookup_inner(
     _py: &PyToken<'_>,
     obj_bits: u64,
     obj_ptr: *mut u8,
-    class_bits: u64,
     attr_bits: u64,
     dictionary: Option<u64>,
     suppress: bool,
 ) -> Option<u64> {
     unsafe {
         crate::gil_assert();
-        if class_bits == 0 && !obj_ptr.is_null() {
-            let await_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.await_name, b"__await__");
-            if crate::object::ops_compare::string_storage_equal(attr_bits, await_name_bits)
-                && crate::object::object_poll_fn(obj_ptr) != 0
-            {
-                let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                let func_bits = awaitable_await_func_bits(_py);
-                return Some(molt_bound_method_new(func_bits, self_bits));
-            }
-        }
-        with_class_descriptor_snapshot(_py, class_bits, attr_bits, |snapshot| {
+        let class_bits = type_of_bits(_py, obj_bits);
+        let result = with_class_descriptor_snapshot(_py, class_bits, attr_bits, |snapshot| {
             if exception_pending(_py) {
                 return None;
             }
@@ -2799,6 +2782,12 @@ pub(crate) unsafe fn object_attr_lookup_inner(
                     return bound;
                 }
             }
+            // A logical class edge never grants access to inline words in a
+            // fixed type object or a task's separately owned capture payload.
+            let uses_inline_fields = dictionary.is_none()
+                && !obj_ptr.is_null()
+                && (crate::object::object_has_class_shape(obj_ptr)
+                    || crate::object::native_instance::has_fields(obj_ptr));
             let mut field_offset_resolved = None;
             if let Some(class_ptr) = class_ptr_opt {
                 // Field-offset IC: explicit dictionaries replace inferred storage.
@@ -2807,7 +2796,7 @@ pub(crate) unsafe fn object_attr_lookup_inner(
                     .filter(|&p| object_type_id(p) == TYPE_ID_STRING)
                     .map(|p| std::slice::from_raw_parts(string_bytes(p), string_len(p)));
                 let current_type_version = crate::object::global_type_version();
-                if dictionary.is_none()
+                if uses_inline_fields
                     && let Some(name_bytes) = attr_name_slice
                     && let Some(offset) =
                         field_offset_ic_lookup(class_bits, name_bytes, current_type_version)
@@ -2815,7 +2804,7 @@ pub(crate) unsafe fn object_attr_lookup_inner(
                     profile_hit_unchecked(&FIELD_OFFSET_IC_HIT_COUNT);
                     field_offset_resolved = Some(offset);
                 }
-                if dictionary.is_none()
+                if uses_inline_fields
                     && field_offset_resolved.is_none()
                     && let Some(offset) = class_inferred_field_offset(_py, class_ptr, attr_bits)
                 {
@@ -2873,7 +2862,22 @@ pub(crate) unsafe fn object_attr_lookup_inner(
                 .and_then(|bits| {
                     descriptor_bind(_py, bits, Some(type_of_bits(_py, obj_bits)), Some(obj_bits))
                 })
-        })
+        });
+        if result.is_some() || exception_pending(_py) {
+            return result;
+        }
+        // Internal futures expose their poll adapter only after normal class
+        // and dictionary lookup misses. Absence of an attached class edge is
+        // a storage fact here, never evidence that the object has no type.
+        if crate::async_rt::generators::is_native_poll_future_bits(obj_bits) {
+            let await_name_bits =
+                intern_static_name(_py, &runtime_state(_py).interned.await_name, b"__await__");
+            if crate::object::ops_compare::string_storage_equal(attr_bits, await_name_bits) {
+                let func_bits = awaitable_await_func_bits(_py);
+                return Some(molt_bound_method_new(func_bits, obj_bits));
+            }
+        }
+        None
     }
 }
 
@@ -2906,7 +2910,7 @@ pub(crate) unsafe fn object_method_ic_resolve<R>(
     unsafe {
         crate::gil_assert();
         let type_id = object_type_id(obj_ptr);
-        if !crate::object::heap_kind_has_class_shape(type_id) && type_id != TYPE_ID_DATACLASS {
+        if !crate::object::object_has_class_shape(obj_ptr) && type_id != TYPE_ID_DATACLASS {
             return None;
         }
         let class_bits = object_class_bits(obj_ptr);
@@ -3033,90 +3037,116 @@ pub(crate) struct SuperIcResolution {
     pub(crate) func_bits: u64,
 }
 
-/// `super().method(args)` fast path: resolve the MRO-next plain method without
-/// allocating a `super` object, a bound method, or a CallArgs builder.
-///
-/// `start_class_bits` is the defining class (`__class__`); `self_bits` is the
-/// instance.  Mirrors the `TYPE_ID_SUPER` branch of `attr_lookup_ptr`: walk the
-/// MRO of `type(self)` (the object-bound super form) starting AFTER
-/// `start_class`, and return the first plain-`TYPE_ID_FUNCTION` attribute found
-/// in a class dict, along with the `(type(self), version)` IC key.  Returns
-/// `None` (caller falls back to the allocating `super_new` + `get_attr` + `call`
-/// path) for any non-function descriptor, builtin-class hit, or unsupported
-/// shape.  The returned `func_bits` is BORROWED (it lives in a class dict).
+/// One raw super selection over the receiver MRO strictly after the start
+/// class. The selected namespace value is retained before the MRO pin retires.
+/// Unlike ordinary class lookup this never restarts from a declaring class.
+unsafe fn super_attribute_owned(
+    py: &PyToken<'_>,
+    start: u64,
+    receiver_class: u64,
+    name: u64,
+) -> Option<(u64, u64)> {
+    unsafe {
+        let class = obj_from_bits(receiver_class).as_ptr()?;
+        if object_type_id(class) != TYPE_ID_TYPE {
+            return None;
+        }
+        let mro = class_mro_view(py, class);
+        let mut after_start = false;
+        for declaring in mro.iter().copied() {
+            if !after_start {
+                after_start = declaring == start;
+                continue;
+            }
+            let Some(owner) = obj_from_bits(declaring).as_ptr() else {
+                continue;
+            };
+            if object_type_id(owner) != TYPE_ID_TYPE {
+                continue;
+            }
+            if let Some(value) = class_namespace_lookup_raw(py, owner, name) {
+                inc_ref_bits(py, value);
+                return Some((declaring, value));
+            }
+            if exception_pending(py) {
+                return None;
+            }
+        }
+        None
+    }
+}
+
+/// Normal super lookup delegates first; a clean miss and __class__ inspect the
+/// proxy itself. Explicit object/C-generic lookup never enters this protocol.
+pub(crate) unsafe fn super_attr_lookup(py: &PyToken<'_>, proxy: *mut u8, name: u64) -> Option<u64> {
+    unsafe {
+        let spelling = string_obj_to_owned(obj_from_bits(name));
+        let receiver = crate::super_obj_bits(proxy);
+        let receiver_class = crate::object::layout::super_receiver_class_bits(proxy);
+        if spelling.as_deref() != Some("__class__")
+            && let Some((_, selected)) =
+                super_attribute_owned(py, crate::super_type_bits(proxy), receiver_class, name)
+        {
+            let instance = (receiver != receiver_class).then_some(receiver);
+            let bound = descriptor_bind(py, selected, Some(receiver_class), instance);
+            dec_ref_bits(py, selected);
+            return bound;
+        }
+        if exception_pending(py) {
+            return None;
+        }
+        object_attr_lookup_with_policy(py, proxy, name, false)
+    }
+}
+
+/// Optimized super calls consume the same MRO-suffix selection as materialized
+/// proxies. Only plain Python instance methods qualify. The returned function is OWNED
+/// until the call-site cache pins it or rejects the selection.
 ///
 /// # Safety
-/// `self_bits` must be a live object; the GIL must be held.
+/// All inputs must be live and the GIL held.
 pub(crate) unsafe fn super_resolve_method_unbound(
-    _py: &PyToken<'_>,
+    py: &PyToken<'_>,
     start_class_bits: u64,
     self_bits: u64,
     attr_bits: u64,
 ) -> Option<SuperIcResolution> {
     unsafe {
         crate::gil_assert();
-        // Object-bound super: walk the MRO of `type(self)`.  (The class-bound
-        // `super(C, D)` form, where the target is itself a type, is left to the
-        // slow path — it is rare and outside the per-call hot loop.)
         let self_ptr = maybe_ptr_from_bits(self_bits)?;
-        if object_type_id(self_ptr) == TYPE_ID_TYPE {
+        if object_type_id(self_ptr) == TYPE_ID_TYPE
+            || string_obj_to_owned(obj_from_bits(attr_bits)).as_deref() == Some("__class__")
+        {
             return None;
         }
-        let obj_type_bits = type_of_bits(_py, self_bits);
+        let obj_type_bits = type_of_bits(py, self_bits);
         let obj_type_ptr = obj_from_bits(obj_type_bits).as_ptr()?;
         if object_type_id(obj_type_ptr) != TYPE_ID_TYPE {
             return None;
         }
         let self_class_version = class_layout_version_bits(obj_type_ptr);
-        let mro = class_mro_view(_py, obj_type_ptr);
-        let mut found_start = false;
-        for class_bits in mro.iter().copied() {
-            if !found_start {
-                if class_bits == start_class_bits {
-                    found_start = true;
-                }
-                continue;
-            }
-            let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-                continue;
-            };
-            if object_type_id(class_ptr) != TYPE_ID_TYPE {
-                continue;
-            }
-            // Builtin classes resolve methods through a separate table; defer
-            // those to the slow path for exact parity.
-            if is_builtin_class_bits(_py, class_bits) {
-                return None;
-            }
-            let dict_bits = class_dict_bits(class_ptr);
-            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                continue;
-            };
-            if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                continue;
-            }
-            let Some(val_bits) = dict_get_in_place(_py, dict_ptr, attr_bits) else {
-                continue;
-            };
-            // Only a plain function qualifies; anything else (classmethod /
-            // staticmethod / property / data descriptor) needs descriptor_bind.
-            let val_ptr = maybe_ptr_from_bits(val_bits)?;
-            if object_type_id(val_ptr) != TYPE_ID_FUNCTION {
-                return None;
-            }
-            if !matches!(
-                function_descriptor_receiver(_py, val_ptr, Some(obj_type_bits), Some(self_bits)),
-                Ok(Some(admitted)) if admitted.bits() == self_bits
-            ) {
-                return None;
-            }
-            return Some(SuperIcResolution {
-                self_class_bits: obj_type_bits,
-                self_class_version,
-                func_bits: val_bits,
-            });
+        let (_, value) = super_attribute_owned(py, start_class_bits, obj_type_bits, attr_bits)?;
+        let eligible = obj_from_bits(value).as_ptr().is_some_and(|ptr| {
+            object_type_id(ptr) == TYPE_ID_FUNCTION
+                && crate::builtins::functions::native_callable::NativeCallableKind::from_class(
+                    py,
+                    object_class_bits(ptr),
+                )
+                .is_none()
+                && matches!(
+                    function_descriptor_receiver(py, ptr, Some(obj_type_bits), Some(self_bits)),
+                    Ok(Some(admitted)) if admitted.bits() == self_bits
+                )
+        });
+        if !eligible {
+            dec_ref_bits(py, value);
+            return None;
         }
-        None
+        Some(SuperIcResolution {
+            self_class_bits: obj_type_bits,
+            self_class_version,
+            func_bits: value,
+        })
     }
 }
 

@@ -82,6 +82,16 @@ Runtime hook registration admits the integer ABI prefix before reading any
 callback. An incompatible magic, version, or table size returns failure without
 reading the table tail; only the exact current layout permits a complete vtable
 read. Rejected short or unaligned producer tables do not acquire runtime state.
+`RUNTIME_HOOKS_ABI_VERSION` versions callback signatures and argument domains
+as well as table layout. A signature or policy change increments that version
+even when the table size is unchanged. Version 53 introduces commit/publication/retirement callbacks
+for dictionary mutation and the three-way attribute mutation policy;
+version 52 producers must be rebuilt. Version 53 also includes exact-class latched
+abstract state in `TypeMetadataField::SemanticFlags`. Its complete domain is
+`TYPE_SEMANTIC_FLAGS_MASK`: HEAPTYPE, IMMUTABLETYPE, BASETYPE and IS_ABSTRACT.
+Static binding replaces that whole domain, including across runtime restarts;
+physical readiness, protocol and GC flags remain C-owned. Both runtime producers
+and test stubs use the canonical version constant.
 
 ### Managed iterator protocol
 
@@ -689,6 +699,162 @@ failure; a synchronization failure after callback success remains an error.
 Ordinary attribute access and explicit generic access share
 the runtime lookup kernel with an explicit policy; generic access bypasses user
 get/set overrides while retaining descriptor and dictionary semantics.
+The shared lookup derives its class from the same actual-type authority as
+`type()`, including native coroutines and other builtin values without an
+attached header class edge. `object.__class__` remains an inherited data
+descriptor: custom descriptors, instance shadowing of non-data descriptors,
+and descriptor failures retain ordinary precedence. Explicit generic lookup
+replaces only the instance dictionary; it cannot substitute another type.
+The scalar resolver admits only immediate values and exact numeric scalars;
+heap instances enter the descriptor/dictionary transaction exactly once.
+Internal future poll adapters remain available after ordinary lookup misses
+only for classless, non-coroutine TYPE_ID_OBJECT payloads with a poll function.
+Generator poll functions do not grant the Python __await__ protocol.
+
+Super lookup selects the receiver's retained MRO suffix strictly after the
+starting class before consulting the proxy's own namespace. A clean miss uses
+ordinary proxy lookup; __class__ always observes the proxy itself. Materialized
+and optimized super calls share the same retained namespace selection. The super
+call cache admits only plain Python instance methods, using native callable kind
+identity; builtin descriptors (including non-anchor exception owners) continue
+through ordinary descriptor binding. Explicit object lookup and C generic lookup bypass super delegation. The proxy's readonly
+__thisclass__, __self__ and __self_class__ members, and native coroutine cr_running,
+cr_frame, cr_code and cr_await members, are native descriptors in their declaring
+namespaces. All generic readers reach those descriptors with ordinary data
+descriptor precedence; normal super lookup preserves receiver delegation first.
+
+Explicit object lookup and C generic lookup use the class's physical generic
+dictionary. For semantic heap types it aliases the own type namespace; static
+types own a separate initially empty dictionary. Raw generic mutation may
+populate that dictionary without changing the static namespace, vars(), tp_dict,
+or normal type lookup. Inherited members remain exclusive to type lookup;
+warming ordinary builtin lookup does not change generic admission. Metaclass
+descriptors such as __dict__ and __name__ remain visible for both origins.
+The same RootMetadata descriptor authority publishes __doc__, __text_signature__
+and __abstractmethods__. Documentation reads the own namespace and binds an own
+descriptor with a null instance; it does not inherit a base class's docstring.
+Internal documentation supplies signature text independently of mutable __doc__.
+Managed classes capture an exact UTF-8 copy of the creation doc, truncated at its
+first NUL, in the traced ClassReferenceSlot::CreationDoc owner. They do not retain
+the original string subclass. Signature lookup shares the native internal-doc
+parser and interprets the captured bytes with the current class name; renaming
+can hide or reveal the signature. Public doc replacement never recaptures it.
+Abstract-method metadata reads only the own namespace and raises AttributeError
+when absent, including on type itself. Assignment evaluates truth before mutation
+and stores that result in class-owned state; existing C views consume that bit.
+Only the object.__new__ allocator enforces it, including specialized dataclass
+allocation. Custom __new__, native value allocators and exception allocators keep
+their own admission. Rejection iterates, sorts and joins the live abstract-method
+value to produce the complete CPython error. Changing contents does not reevaluate
+the latched state, and neither inheritance nor raw namespace edits sets it.
+Deletion clears it.
+Normal mutation rejects immutable types; the abstract-method getset's direct
+setter retains CPython's exception to that restriction. Already-published static
+C aliases receive the same state without creating another projection.
+The runtime TypeMutation owner bumps the runtime layout epoch and delegates C
+publication to the existing RuntimeTypeMutation transaction. Ordinary TypeDefault
+namespace mutation commits and publishes before retiring displaced entries.
+Descriptor-owned metadata preserves CPython's distinct observable order: doc
+invalidates C views before its dictionary write; abstract methods store and retire
+the prior value, invalidate C views, then latch the abstract flag; annotations
+store and retire before C invalidation. Name/qualname release their prior identity
+inside the direct setter without C invalidation. No outer pin delays a descriptor's
+own retirement. Successful outer TypeDefault descriptor dispatch invalidates after
+the callback returns; failure omits that outer publication, without undoing an
+inner descriptor's own invalidation. Direct setters preserve the same field rules.
+Runtime dictionary commits still advance the layout epoch before reentry. The
+abstract flag owner advances it again after C watchers, so a constructor shortcut
+warmed while a watcher saw the previous flag cannot survive the actual flag commit.
+__doc__ can be replaced on mutable types but cannot be deleted through its getset; __text_signature__ is read-only.
+Generic dictionary writes do not publish class metadata or invalidate type caches.
+Descriptors reached by generic mutation retain their own setter semantics. The
+exact-class StaticType declaration selects the owner and is not inherited by
+heap subclasses. Allocation, tracing, cycle clear, terminal drop, and runtime
+retirement use the existing ClassReferenceSlot authority for both dictionaries;
+retirement empties both before releasing any callback-bearing value. Foreign
+normal mutation uses PyObject_SetAttr. Internal normal stores (including
+awaited-future marker reset, update_wrapper, pickle BUILD slot state, module
+execution and the HTTP bridge) use molt_set_attr_name/molt_del_attr_name.
+Python's explicit object.__setattr__ and object.__delattr__ share physical slot
+wrappers' CPython receiver admission for every receiver, managed or native:
+they reject crossing a native tp_setattro override with the corresponding
+"can't apply this __setattr__/__delattr__ to X object" TypeError. This includes
+class objects; the diagnostic names their actual metaclass. Normal metaclass
+mutation resolves the shared setter/deleter pair: paired object defaults use raw
+generic storage, paired type defaults use TypeDefault, and a mixed pair invokes
+its explicit wrapper with the corresponding admission. Descriptor lookup and
+shadowing are preserved before storage in every case. Explicit type defaults are
+real type methods and invoke the canonical native type setter, so custom
+metaclasses can delegate without entering object mutation.
+
+Managed Python Type views are skipped as Python slot dispatch, while native
+slots (including a null slot with a valid MRO) remain checked. Canonical static
+builtin shells publish their inherited generic setter during initialization;
+admission never infers a replacement for a genuine native NULL slot. A missing
+MRO preserves CPython's permissive case. Admission precedes attribute-name
+validation, as in CPython's explicit wrappers.
+
+The C generic mutation hook reaches the shared descriptor/storage primitive
+directly, without receiver admission or __setattr__/__delattr__ redispatch.
+This applies equally to managed classes and native receivers. The mutation
+hook distinguishes normal protocol, raw generic storage, and default type
+mutation. Raw class mutation uses the physical instance dictionary: heap classes
+alias their namespace, while static classes own a separate dictionary that is
+visible only through generic lookup. Raw writes do not publish type cache or
+finalizer metadata changes. For a foreign native heap type, the metatype's
+`tp_dictoffset` points to `PyTypeObject.tp_dict`; raw generic get/set/delete
+therefore shares the existing physical namespace without publishing slots.
+This layout fact is inherited by native metatypes. Default type writes use the canonical namespace
+transaction; normal mutation selects its paired slot or metaclass override before
+entering that transaction. Default type mutation bypasses metaclass overrides.
+Deletion has an explicit presence bit, so float
++0.0 remains a value. Temporary operand owners preserve original exceptions.
+Pickle BUILD dictionary state updates the actual __dict__; only its slot state
+invokes setattr. update_wrapper propagates assignment failures and retires
+iterator/name/value owners through the same exception-preserving boundary.
+
+The named mutation primitive carries the original admitted name object through
+normal overrides, descriptors, and raw dictionary hash/equality. Byte entrypoints
+construct one exact string and enter that same primitive. The default type setter
+alone canonicalizes a string subclass, matching CPython type_setattro.
+
+Native default type mutation commits through the same deferred dictionary
+transaction as ordinary dictionary stores. The actual displaced key and value
+remain owned until cache invalidation and special-method slot publication finish.
+Slot names, ABI groups, wrappers and typed Python dispatch targets come from one
+SLOT_WRAPPER_DEFS declaration. Publication resolves the current namespace and live
+subclass hierarchy after dictionary comparison callbacks; a plan computed before
+those callbacks is not authoritative. Own descendant definitions stop propagation.
+As in CPython update_one_slot, MRO lookup errors are suppressed during recomputation;
+errors checking descendant shadowing propagate after the namespace commit. Raw
+GenericSetAttr performs no derived slot publication. Explicit object setter
+admission recognizes these Python dispatch slots as it does managed type views.
+The typed dispatchers retain CPython's individual optional-method rules after
+raw namespace edits: __iter__ = None rejects iteration, while missing __iter__
+requires __getitem__ before creating a sequence iterator. Missing __get__ returns
+the descriptor itself and removes the stale generic get slot. Missing __del__
+is silent and preserves the incoming exception. Missing or None __hash__ is
+unhashable; missing __contains__ uses the shared iterator-search primitive and
+None rejects containment. Repr lookup failure uses the default representation;
+async lookup failures report their specific missing method. Required slots and
+binary NotImplemented fallbacks keep their separate contracts.
+
+Native Python buffer slots retain the exact returned memoryview in a traced native
+export owner. __release_buffer__ receives that same view once. Native base resource
+release cannot be omitted by a Python override. A temporary view of a native buffer
+being released carries restricted state in the existing runtime MemoryView; clone,
+slice, cast, readonly conversion, C import and independent exports share admission
+that rejects aliases. The temporary view is released before its native storage owner.
+
+The independent CPython C oracle is tests/fixtures/attribute_mutation_probe.
+Its real tp_setattro counter distinguishes ordinary writes, explicit object
+rejection, raw generic writes/deletes, BUILD state and update_wrapper. Runtime
+generic_attributes_tests::mutation_consumers covers both bridge directions;
+mutation_name_identity covers original names; mutation_native_slots covers real
+native length, subscript, numeric, call, subclass, retirement, equality-reentry and
+buffer lifetime consumers;
+scheduled_foreign_future_reset_invokes_native_setter_once covers scheduling's
+marker consumer. These sources are proof selectors, not a support claim.
 
 Descriptors found by native lookup use the same semantic boundary: managed
 values bind and mutate through the runtime's live descriptor protocol; genuinely
@@ -726,6 +892,15 @@ Managed and native tuples share ordered traversal with owned elements and no
 sequence overrides. These public rules never admit unsafe layouts or exception
 classes: their physical checks remain callback-free. Hash and callability use
 special-method/slot authority rather than ordinary attribute presence.
+
+Runtime tuple base descriptors admit managed tuple storage and native C tuple
+storage through the physical ABI guard. Native length, subscript, containment,
+concat, repeat and comparison reuse the root tuple's published operations.
+Count/index borrow managed elements from retained immutable receivers and own
+native projections; the existing tuple iterator returns owned elements. Explicit
+base descriptors bypass subclass overrides, while ordinary operations retain
+semantic special-method lookup. Native tuple pointers are never reinterpreted
+as managed tuple payloads.
 Containment on managed C views uses the runtime's canonical Python membership
 protocol, including class overrides, hash admission, byte substrings and range
 arithmetic. Native C objects retain `sq_contains` and the ordinary iterator
@@ -758,8 +933,70 @@ coupled comparison/hash, GC/free and vectorcall rules.
 A runtime binding alone does not make a native shell a managed projection.
 Managed projection ownership requires the exact physical view identity. Native
 aliases retain ordinary C roots and complete native declaration readiness while
-preserving the runtime's canonical bases, MRO and shared dictionary. Bootstrap
-READY flags do not certify completed namespace publication.
+preserving the runtime's canonical bases, C3 order and shared dictionary. Every
+physical MRO begins with its exact owning C type: a noncanonical alias owns an
+MRO tuple with that alias at the head and the canonical runtime tail unchanged.
+This translation does not mutate the semantic tuple or its canonical reverse
+projection. Native descendants retain their exact physical bases and merge these
+MROs through the shared C3 policy, including diamond inheritance. Repeated
+readiness and rebinding stage the same translation in the existing ownership
+transaction before publication. Bootstrap READY flags do not certify completed
+namespace publication. Container and
+slice projection ingress validates the exact admitted direct C pointer/handle
+pair, including a noncanonical alias; a canonical reverse projection is not
+required for that direct binding. This does not relax managed-view, numeric, or
+foreign-wrapper identity admission.
+
+Native sequence and mapping capabilities constrain the exact class's own
+declarations in the existing class declaration owner. Runtime slot publication
+consumes that typed inventory, including every sequence and mapping slot, instead of treating
+the same Python method name as permission to create both protocols. Mappingproxy
+has mapping length/subscript and sequence containment; dictionary views have
+sequence length, without mapping length. Native subtypes retain inherited slots
+only when the namespace supplying the resolved method has that physical slot.
+An excluded own or nearer inherited declaration blocks the entire slot, including
+its sibling spellings; masks are never unioned across the MRO. Thus native
+UnraisableHookArgs inherits tuple protocols without manufacturing sequence slots
+from a mapping-only declaration. Ordinary Python heap subclasses derive
+their own slots from methods: a dict or set subclass can therefore expose both
+length slots even though its native base exposes only one. These facts do not
+classify Python-defined standard-library classes by spelling or payload shape.
+
+Managed native callable receiver admission reads its declared public name and
+owner from typed metadata, and reads the receiver's actual semantic type without
+Python identity or formatting hooks. Binding and direct invocation share that
+admission while preserving CPython's distinct descriptor diagnostics: wrapper
+calls require the owner instance, method/binding errors identify both types, and
+classmethods distinguish missing types from unrelated subtypes. Failed native
+type inquiries propagate their original error. Callable repr uses the same public
+name rather than the qualified argument-binding label.
+
+Native runtime factories finish class definition before publishing a cache or
+returning the class. Slot-declaration capture alone is not finalization: the
+shared seal owns concrete layout, creation documentation and finalizer facts.
+UnraisableHookArgs, the shared itertools factory and lazy exception classes use
+that same seal as builtin roots and configured cached classes. Lazy exception
+descriptor publication can reenter its identity cache only after the class is
+sealed. First-instance allocation and first C projection never repair missing
+factory metadata. A managed tuple's physical carrier remains storage authority;
+public type inquiry projects its actual runtime class before protocol dispatch.
+
+Compact runtime type views and explicitly declared runtime-backed process shells
+share owned protocol-table storage. Allocation ownership remains separate from
+slot authority: the exported mappingproxy shell retains its process identity and
+C root ownership, while its canonical runtime declarations populate slots through
+the same readiness/mutation resolver as managed type views. It starts without
+READY; the existing post-hook builtin readiness transaction fills its protocol
+tables. Native builtin/extension declarations keep their actual C slots, and a
+runtime-slot shell cannot be mistaken for a native-specific slot authority.
+
+The neighboring range public declaration family remains unclosed. The concrete
+source diagnostic is `PyRange_Type.tp_as_sequence` / `tp_as_mapping` without any
+storage declaration, paired with a runtime range method table that declares
+count/index/comparisons but not the len/getitem/iter/new protocol family. The
+mappingproxy closure does not certify range C-API slot support. Completing those
+canonical range declarations and their native/WASM consumers is a separate
+release lead; no fallback or synthetic range implementation is supplied here.
 
 Recursive physical projections share publication custody. A type and its MRO
 tuple cannot become independently ready while either still depends on the
@@ -931,3 +1168,20 @@ are shared runtime resources, visible as mixed GC edges and retired after view
 invalidation. Clone, slice, cast and read-only views retain the same transaction.
 FromBuffer copies borrowed descriptor values with a null base and leaves raw
 storage lifetime to its caller. Indirect/suboffset descriptors remain rejected.
+
+
+### Typed poll payloads and logical classes
+
+The generated heap kind grants potential class layout; the immutable object
+subshape admits the actual managed fields and dictionary tail. Every task
+subshape owns capture storage through its typed lifecycle, including a zero
+poll address. Attaching a logical class to an adapter does not add fields or a
+dictionary and does not transfer its last capture to class storage. The native
+coroutine wrapper therefore keeps its sole coroutine owner as one capture edge.
+
+Dictionary access, inline field projection, layout guards, method-cache
+admission, state serialization/reset, class reassignment, and GC traversal and
+clearing obey that same typed boundary. Task capture traversal and detachment
+remain responsible for those words exactly once; ordinary class allocations,
+native subtype tails, and dedicated dictionary-bearing kinds retain their
+existing owners. No type name or mutable poll address selects class storage.

@@ -102,55 +102,37 @@ pub(crate) unsafe fn builtin_receiver(py: &PyToken<'_>, ptr: *mut u8) -> bool {
 
 pub(crate) struct OwnedIterator<'a, 'py> {
     py: &'a PyToken<'py>,
-    bits: u64,
+    owner: molt_runtime_core::OwnedRuntimeValue<'a>,
 }
 
 impl<'a, 'py> OwnedIterator<'a, 'py> {
     pub(crate) fn new(py: &'a PyToken<'py>, iterable: u64) -> Option<Self> {
         let bits = molt_iter(iterable);
         if exception_pending(py) {
-            dec_ref_bits(py, bits);
+            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, bits));
             return None;
         }
         if obj_from_bits(bits).is_none() {
             raise_not_iterable::<()>(py, iterable);
             return None;
         }
-        Some(Self { py, bits })
+        Some(Self {
+            py,
+            owner: unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), bits)
+            },
+        })
     }
 
     pub(crate) fn bits(&self) -> u64 {
-        self.bits
+        self.owner.bits()
     }
 
     /// An item carries one owned reference; None means clean exhaustion only.
     pub(crate) fn next(&mut self) -> Result<Option<u64>, ()> {
-        let mut item = MoltObject::none().bits();
-        let done = unsafe {
-            crate::object::ops_iter::molt_iter_next_unboxed(
-                self.bits,
-                (&raw mut item) as usize as u64,
-            )
-        };
-        if exception_pending(self.py) {
-            dec_ref_bits(self.py, item);
-            return Err(());
-        }
-        match obj_from_bits(done).as_bool() {
-            Some(false) => Ok(Some(item)),
-            Some(true) => Ok(None),
-            None => {
-                dec_ref_bits(self.py, item);
-                raise_exception::<()>(self.py, "SystemError", "invalid iterator completion result");
-                Err(())
-            }
-        }
-    }
-}
-
-impl Drop for OwnedIterator<'_, '_> {
-    fn drop(&mut self) {
-        dec_ref_bits(self.py, self.bits);
+        // Both in-tree consumers and satellites use the same owned transport.
+        molt_runtime_core::iter_next_owned(self.py.core_token(), &self.owner)
+            .map(|item| item.map(molt_runtime_core::OwnedRuntimeValue::into_bits))
     }
 }
 

@@ -132,7 +132,7 @@ def test_rust_module_cluster_inline_path_and_ambiguity(tmp_path: Path) -> None:
     assert "pub fn custom_inner" in _read_rs_module_cluster(root)
     (custom / "inner").mkdir()
     (custom / "inner" / "mod.rs").write_text("", encoding="utf-8")
-    with pytest.raises(RuntimeError, match="ambiguous source files"):
+    with pytest.raises(RuntimeError, match="ambiguous sources"):
         _read_rs_module_cluster(root)
 
 
@@ -140,9 +140,9 @@ def test_rust_module_cluster_inline_path_and_ambiguity(tmp_path: Path) -> None:
 def test_rust_module_cluster_preserves_attribute_spans_and_scope_cursors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, whitespace: str
 ) -> None:
-    from tools.op_kinds import paths
+    from molt import rust_source_scan
 
-    expression = paths._RUST_MODULE_OR_SCOPE_RE
+    expression = rust_source_scan._RUST_MODULE_OR_SCOPE_RE
     search_count = 0
 
     class CursorCheckedSearch:
@@ -154,7 +154,9 @@ def test_rust_module_cluster_preserves_attribute_spans_and_scope_cursors(
             search_count += 1
             return expression.search(text, start, end)
 
-    monkeypatch.setattr(paths, "_RUST_MODULE_OR_SCOPE_RE", CursorCheckedSearch())
+    monkeypatch.setattr(
+        rust_source_scan, "_RUST_MODULE_OR_SCOPE_RE", CursorCheckedSearch()
+    )
     root = tmp_path / "mod.rs"
     prefix = (
         "fn irrelevant() { let nested = { 1 }; }\n"
@@ -349,6 +351,9 @@ def test_simpleir_control_kinds_delegate_to_generated_tables() -> None:
         "ret": {"structural", "terminator"},
         "ret_void": {"structural", "terminator"},
         "nop": {"structural"},
+        "drop_inserted": {"structural"},
+        "exception_region_drops_inserted": {"structural"},
+        "loop_index_end": {"structural"},
         "state_switch": {"structural", "block_ender"},
         "state_yield": {"suspend", "block_ender"},
         "state_transition": {"suspend", "repoll", "block_leader", "block_ender"},
@@ -512,6 +517,11 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
     data = gen.load_table()
     shapes = {row["kind"]: row for row in data["simpleir_op_shape"]}
     assert {kind: row["operands"] for kind, row in shapes.items()} == {
+        "pos": 1,
+        "type_guard": 1,
+        "guard_tag": 2,
+        "guard_type": 2,
+        "warn_stderr": 1,
         "frame_context_set": 3,
         "frame_home_store": 1,
         "frame_home_cell": 1,
@@ -558,16 +568,11 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
     assert '"list_repeat_range"' not in rendered
     assert "pub requires_result:" not in rendered
     assert "SIMPLEIR_OP_SHAPES.iter().find" not in rendered
+    aliases = {row["canonical"]: row.get("aliases", []) for row in data["kind"]}
     spellings = [
-        "code_new",
-        "code_slot_set",
-        "code_slots_init",
-        "trace_enter_slot",
-        "bytearray_fill_range",
-        "box",
-        "box_from_raw_int",
-        "unbox",
-        "unbox_to_raw_int",
+        spelling
+        for row in data["simpleir_op_shape"]
+        for spelling in (row["kind"], *aliases.get(row["kind"], []))
     ]
     for index, kind in enumerate(spellings):
         assert f'"{kind}" => Some(&SIMPLEIR_OP_SHAPES[{index}])' in rendered
@@ -653,7 +658,15 @@ def test_representation_shape_var_is_forbidden_for_canonical_and_alias(
 def test_representation_var_roles_reject_conflicting_alias_roles(spelling) -> None:
     gen = _gen()
     data = gen.load_table()
-    assert data["simpleir_var_forbidden_kinds"] == ["box", "unbox"]
+    assert data["simpleir_var_forbidden_kinds"] == [
+        "box",
+        "unbox",
+        "type_guard",
+        "pos",
+        "warn_stderr",
+        "guard_tag",
+        "guard_type",
+    ]
     data["simpleir_var_result_kinds"].append(spelling)
     with pytest.raises(gen.OpKindTableError, match="appears in both"):
         gen._validate_simpleir_field_roles(data)
@@ -4529,9 +4542,29 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
     assert "OpCode::" not in body
 
     transparent_body = _rust_fn_body(alias, "fn transparent_alias_root(")
-    assert "opcode_alias_transparent_alias_role_table" in transparent_body
+    assert "no_heap_alias_source" in transparent_body
+    assert "opcode_alias_transparent_alias_role_table" not in transparent_body
+    assert "copy_kind_is_explicit_no_heap_move" not in transparent_body
     assert "match op.opcode" not in transparent_body
     assert "OpCode::" not in transparent_body
+
+    identity = tir_path("passes/value_identity.rs").read_text(encoding="utf-8")
+    identity_body = _rust_fn_body(identity, "fn no_heap_alias_source(")
+    assert "opcode_alias_transparent_alias_role_table" in identity_body
+    assert "copy_kind_is_explicit_no_heap_move_table" in identity_body
+    assert "simpleir_op_shape" in identity_body
+    assert "match op.opcode" not in identity_body
+    assert '"guard_tag"' not in identity_body
+    assert '"guard_type"' not in identity_body
+
+    indexed_facts = (
+        ROOT / "runtime/molt-tir/src/representation_plan/indexed_facts.rs"
+    ).read_text(encoding="utf-8")
+    container_body = _rust_fn_body(indexed_facts, "fn tir_container_identity(")
+    assert "no_heap_alias_source" in container_body
+    assert "opcode_alias_transparent_alias_role_table" not in container_body
+    assert "copy_kind_is_explicit_no_heap_move" not in container_body
+    assert "simpleir_op_shape" not in container_body
 
     typed_body = _rust_fn_body(alias_regions, "fn typed_slot_obj_offset(")
     assert "plain_typed_slot_load" in typed_body
@@ -4687,7 +4720,12 @@ def test_canonicalize_delegates_opcode_facts_to_generated_tables() -> None:
 
     expected_literals = {
         "ConstInt": "int",
+        "ConstFloat": "float",
+        "ConstNone": "none",
         "ConstBool": "bool",
+        "ConstStr": "string",
+        "ConstBytes": "bytes",
+        "ConstBigInt": "bigint_decimal",
     }
     expected_domains = {
         "Add": "numeric",
@@ -4730,11 +4768,17 @@ def test_canonicalize_delegates_opcode_facts_to_generated_tables() -> None:
     )[0]
     literal_variant = {
         "int": "LiteralPayloadKind::Int",
+        "float": "LiteralPayloadKind::Float",
+        "none": "LiteralPayloadKind::None",
         "bool": "LiteralPayloadKind::Bool",
+        "string": "LiteralPayloadKind::Owned(OwnedLiteralPayloadKind::String)",
+        "bytes": "LiteralPayloadKind::Owned(OwnedLiteralPayloadKind::Bytes)",
+        "bigint_decimal": "LiteralPayloadKind::Owned(OwnedLiteralPayloadKind::BigintDecimal)",
     }
     for opcode, literal in expected_literals.items():
-        assert f"OpCode::{opcode} => Some({literal_variant[literal]})," in literal_block
-    assert "OpCode::ConstNone => None," in literal_block
+        arm = literal_block.split(f"OpCode::{opcode} =>", 1)[1].split("OpCode::", 1)[0]
+        assert literal_variant[literal] in "".join(arm.split()).replace(",", "")
+    assert "OpCode::ConstNone => Some(LiteralPayloadKind::None)," in literal_block
 
     variant = {
         "numeric": "CanonicalizeCommutativeDomain::Numeric",
@@ -4771,7 +4815,7 @@ def test_literal_payload_fact_validation_rejects_drift() -> None:
     opcodes = {row["name"] for row in data["opcode"]}
 
     bad_literal = json.loads(json.dumps(data))
-    bad_literal["literal_payload_opcodes"][0]["literal"] = "float"
+    bad_literal["literal_payload_opcodes"][0]["literal"] = "unregistered_payload"
     try:
         gen._validate_literal_payload_facts(bad_literal, opcodes)
     except gen.OpKindTableError as e:
@@ -6780,23 +6824,28 @@ def test_drop_insertion_consumes_non_owning_copy_roots_from_ownership_lattice() 
 def test_drop_insertion_consumes_no_heap_copy_aliases_from_ownership_lattice() -> None:
     """Exception-pop CFG splitting may remap no-heap copy aliases.
 
-    DropInsertion owns the split placement, but the `_original_kind` classifier
-    read belongs to the ownership fact module so the pass does not grow another
-    copy-spelling authority.
+    DropInsertion consumes the ownership projection for split placement. The
+    ownership fact delegates alias identity and declared shape to the shared
+    value-identity authority, without duplicating its classifier.
     """
     drop = _read_rs_module_cluster(tir_path("passes/drop_insertion.rs"))
     drop_prod = drop.split("mod tests", 1)[0]
     lattice = _read_rs_module_cluster(tir_path("passes/ownership_lattice_min.rs"))
 
     assert "copy_transparent_alias" in drop_prod
+    assert "no_heap_alias_source" not in drop_prod
     assert "copy_kind_is_explicit_no_heap_move" not in drop_prod
     assert "fn original_kind(" not in drop_prod
 
     assert _rust_pub_decl(lattice, "struct", "NoHeapCopyAlias")
     assert _rust_pub_fn(lattice, "copy_transparent_alias")
-    assert "copy_kind_is_explicit_no_heap_move(original_kind(op))" in lattice
-    assert "source: op.operands[0]" in lattice
-    assert "result: op.results[0]" in lattice
+    alias_body = _rust_fn_body(lattice, "fn copy_transparent_alias(")
+    assert "no_heap_alias_source" in alias_body
+    assert "NoHeapCopyAlias" in alias_body
+    assert "copy_kind_is_explicit_no_heap_move" not in alias_body
+    assert "simpleir_op_shape" not in alias_body
+    assert "original_kind" not in alias_body
+    assert "op.operands[" not in alias_body
 
 
 def test_drop_insertion_consumes_borrowed_roots_without_allocation_no_drop_facts() -> (
@@ -7523,13 +7572,15 @@ def test_serialized_ellipsis_is_registered_without_broad_runtime_admission():
 
     data = tomllib.loads(TABLE.read_text(encoding="utf-8"))
     registered = _simpleir_registered_runtime_kinds(data)
-    assert "CONST_ELLIPSIS" in registered
-    assert "const_ellipsis" in registered
-    # NotImplemented is a separate singleton with version-dependent truth;
-    # this repair must not implicitly authorize its absent representation.
-    assert (
-        "const_not_implemented" not in data["simpleir_runtime_neutral_semantics_kinds"]
-    )
+    assert "CONST_ELLIPSIS" not in registered
+    neutral = {
+        "const_ellipsis",
+        "const_not_implemented",
+        "binding_alias",
+        "identity_alias",
+    }
+    assert neutral <= registered
+    assert neutral <= set(data["simpleir_runtime_neutral_semantics_kinds"])
     rust_profile = next(
         p for p in data["simpleir_target_runtime_profiles"] if p["target"] == "rust"
     )
@@ -7542,7 +7593,8 @@ def test_serialized_ellipsis_is_registered_without_broad_runtime_admission():
         r"(?P<patterns>[^;{}]+) => Some\(SimpleIrRuntimeRequirements\(0\)\)", body
     )
     assert pattern is not None
-    assert '"const_ellipsis"' in pattern.group("patterns")
+    for kind in neutral:
+        assert f'"{kind}"' in pattern.group("patterns")
 
 
 def test_frame_publication_has_effects_without_a_call_return_poll_role() -> None:
@@ -7669,3 +7721,76 @@ def test_runtime_aliases_share_first_class_result_custody():
         assert mapped[kind] == opcode
         assert kind not in data["classifier_owned_value"]
     assert "guarded_load" in data["ssa_original_kind_preserving_kinds"]
+
+
+def test_runtime_requirement_projection_has_one_composition_authority():
+    from tools.op_kinds.runtime_requirements import (
+        runtime_kind_requirement_masks,
+        target_runtime_requirement_masks,
+    )
+
+    data = {
+        "kind": [{"canonical": "plain"}, {"canonical": "protocol"}],
+        "protocol_kinds": ["protocol"],
+        "simpleir_runtime_requirement_roles": [
+            {"table": "protocol_kinds", "constant": "PROTOCOL", "bit": 3}
+        ],
+        "simpleir_target_runtime_profiles": [
+            {"target": "source", "supported": []},
+            {"target": "runtime", "supported": ["PROTOCOL"]},
+        ],
+    }
+    assert runtime_kind_requirement_masks(data) == {"plain": 0, "protocol": 8}
+    assert target_runtime_requirement_masks(data) == {"source": 0, "runtime": 8}
+
+
+def test_integer_role_aliases_inherit_the_canonical_value_contract():
+    from tools.op_kinds.runtime_requirements import integer_semantics_by_kind
+
+    data = {
+        "kind": [{"canonical": "const", "aliases": ["load_const", "const_int"]}],
+        "simpleir_integer_literal_semantics_kinds": ["const"],
+    }
+    assert integer_semantics_by_kind(data) == {
+        "const": "IntegerLiteral",
+        "load_const": "IntegerLiteral",
+        "const_int": "IntegerLiteral",
+    }
+
+
+def test_frontend_effects_do_not_register_runtime_wire_operations():
+    from tools.op_kinds.runtime_requirements import registered_runtime_kinds
+
+    data = {
+        "kind": [{"canonical": "literal", "aliases": ["literal_alias"]}],
+        "simpleir_control_kind": [{"kind": "return_wire"}],
+        "frontend_effect_kind": [{"kind": "ONLY_FRONTEND", "effect": "pure"}],
+        "simpleir_runtime_neutral_semantics_kinds": ["singleton_wire"],
+    }
+    assert registered_runtime_kinds(data) == {
+        "literal",
+        "literal_alias",
+        "return_wire",
+        "singleton_wire",
+    }
+
+
+def test_generated_serialization_boundary_preserves_wire_field_roles():
+    namespace = {}
+    exec(_gen().render_py(_gen().load_table()), namespace)
+    validate = namespace["validate_serialized_kind"]
+    for kind in ("CONST_NOT_IMPLEMENTED", "STORE_VAR", "PHI"):
+        with pytest.raises(ValueError, match="escaped serialization"):
+            validate(kind)
+    for kind in (
+        "const_not_implemented",
+        "store_var",
+        "load_var",
+        "copy_var",
+        "binding_alias",
+        "string_split_field_to_int",
+    ):
+        assert validate(kind) is None
+    # This boundary does not grant support: unknown wire kinds are the target
+    # semantic validator's obligation, independent of frontend optimizer facts.
+    assert validate("future_unclassified_wire_kind") is None

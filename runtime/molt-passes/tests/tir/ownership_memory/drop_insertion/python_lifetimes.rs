@@ -20,7 +20,7 @@ fn multi_result_unpack_releases_every_owned_output_once() {
         let mut unpack = op(OpCode::UnpackSequence, vec![sequence], vec![first, second]);
         unpack.attrs.insert("value".into(), AttrValue::Int(2));
         block.ops.push(unpack);
-        block.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        block.ops.push(marker());
         block.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -61,7 +61,7 @@ fn getattr_default_result_and_default_temporary_are_independent_owned_roots() {
             vec![receiver, name, default],
             vec![result],
         ));
-        block.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        block.ops.push(marker());
         block.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -97,7 +97,7 @@ fn special_attribute_result_is_an_independent_owned_root() {
             vec![receiver],
             vec![result],
         ));
-        block.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        block.ops.push(marker());
         block.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -133,7 +133,7 @@ fn finalizer_sensitive_container_releases_at_return_boundary() {
         b.ops.push(op(OpCode::BuildList, vec![item], vec![list]));
         b.ops
             .push(original_copy_with_operands("store_var", vec![list], vec![]));
-        b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -147,7 +147,7 @@ fn finalizer_sensitive_container_releases_at_return_boundary() {
         .expect("BuildList op must survive");
     let marker_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::WarnStderr)
+        .position(is_observation)
         .expect("marker op must survive");
     let dropped: Vec<(usize, ValueId)> = ops
         .iter()
@@ -190,7 +190,7 @@ fn result_carrying_store_var_keeps_container_owner_to_return_boundary() {
             vec![list],
             vec![stored],
         ));
-        b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -208,7 +208,7 @@ fn result_carrying_store_var_keeps_container_owner_to_return_boundary() {
         .expect("store_var marker must survive");
     let marker_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::WarnStderr)
+        .position(is_observation)
         .expect("marker op must survive");
     let dropped: Vec<(usize, ValueId)> = ops
         .iter()
@@ -247,7 +247,7 @@ fn store_var_boundary_transferred_to_cleanup_block_arg_releases_once() {
     let cleanup = func.fresh_block();
     {
         let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops.push(finalizer_call_bind(class_obj));
+        b.ops.push(finalizer_call(class_obj));
         b.ops.push(original_copy_with_operands(
             "store_var",
             vec![class_obj],
@@ -314,6 +314,8 @@ fn store_var_transfer_phi_live_in_descendant_blocks_old_root_drop() {
     let stored = func.fresh_value();
     let phi = func.fresh_value();
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     for v in [list, stored, phi] {
         func.value_types.insert(v, TirType::DynBox);
     }
@@ -342,7 +344,7 @@ fn store_var_transfer_phi_live_in_descendant_blocks_old_root_drop() {
                 id: phi,
                 ty: TirType::DynBox,
             }],
-            ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+            ops: vec![op(OpCode::Copy, vec![cond_input], vec![cond])],
             terminator: Terminator::CondBranch {
                 cond,
                 then_block,
@@ -500,7 +502,7 @@ fn returned_phi_alias_keeps_transferred_owner_across_cleanup_blocks() {
                 id: cleanup,
                 args: vec![],
                 // Return unwinding can run after the last textual phi use.
-                ops: vec![op(OpCode::WarnStderr, vec![], vec![])],
+                ops: vec![marker()],
                 terminator: Terminator::Branch {
                     target: ret,
                     args: vec![],
@@ -563,6 +565,8 @@ fn store_var_scope_root_survives_loop_exit_to_return_boundary() {
     let stored = func.fresh_value();
     let alias = func.fresh_value();
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let call_result = func.fresh_value();
     for v in [owner, stored, alias, call_result] {
         func.value_types.insert(v, TirType::DynBox);
@@ -572,7 +576,7 @@ fn store_var_scope_root_survives_loop_exit_to_return_boundary() {
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops.push(finalizer_call_bind(owner));
+        b.ops.push(finalizer_call(owner));
         b.ops.push(original_copy_with_operands(
             "store_var",
             vec![owner],
@@ -593,7 +597,7 @@ fn store_var_scope_root_survives_loop_exit_to_return_boundary() {
         TirBlock {
             id: header,
             args: vec![],
-            ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+            ops: vec![op(OpCode::Copy, vec![cond_input], vec![cond])],
             terminator: Terminator::CondBranch {
                 cond,
                 then_block: body,
@@ -608,7 +612,11 @@ fn store_var_scope_root_survives_loop_exit_to_return_boundary() {
         TirBlock {
             id: body,
             args: vec![],
-            ops: vec![op(OpCode::Call, vec![alias], vec![call_result])],
+            ops: vec![named_call(
+                "fixture_external_call",
+                vec![alias],
+                vec![call_result],
+            )],
             terminator: Terminator::Branch {
                 target: header,
                 args: vec![],
@@ -658,6 +666,8 @@ fn store_var_boundary_mixed_return_paths_split_non_transfer_release() {
     let fallback = func.fresh_value();
     let selected = func.fresh_value();
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     for v in [class_obj, stored, fallback, selected] {
         func.value_types.insert(v, TirType::DynBox);
     }
@@ -665,14 +675,14 @@ fn store_var_boundary_mixed_return_paths_split_non_transfer_release() {
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops.push(finalizer_call_bind(class_obj));
+        b.ops.push(finalizer_call(class_obj));
         b.ops.push(original_copy_with_operands(
             "store_var",
             vec![class_obj],
             vec![stored],
         ));
         b.ops.push(finalizer_object(fallback));
-        b.ops.push(op(OpCode::ConstBool, vec![], vec![cond]));
+        b.ops.push(op(OpCode::Copy, vec![cond_input], vec![cond]));
         b.terminator = Terminator::CondBranch {
             cond,
             then_block,
@@ -775,7 +785,9 @@ fn store_var_rebind_epoch_closes_old_scope_cleanup_candidate() {
     let current_phi = func.fresh_value();
     let cleanup_phi = func.fresh_value();
     let cond = func.fresh_value();
-    let old_len = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
+    let old_truth = func.fresh_value();
     for v in [
         old_owner,
         old_stored,
@@ -789,7 +801,7 @@ fn store_var_rebind_epoch_closes_old_scope_cleanup_candidate() {
         func.value_types.insert(v, TirType::DynBox);
     }
     func.value_types.insert(cond, TirType::Bool);
-    func.value_types.insert(old_len, TirType::I64);
+    func.value_types.insert(old_truth, TirType::Bool);
 
     let entry = func.entry_block;
     {
@@ -801,7 +813,7 @@ fn store_var_rebind_epoch_closes_old_scope_cleanup_candidate() {
         ));
         b.ops
             .push(original_store_var("or_clause", old_owner, old_stored));
-        b.ops.push(op(OpCode::ConstBool, vec![], vec![cond]));
+        b.ops.push(op(OpCode::Copy, vec![cond_input], vec![cond]));
         b.terminator = Terminator::CondBranch {
             cond,
             then_block: rebind,
@@ -819,7 +831,7 @@ fn store_var_rebind_epoch_closes_old_scope_cleanup_candidate() {
                 ty: TirType::DynBox,
             }],
             ops: vec![
-                original_copy_with_operands("len", vec![rebind_current], vec![old_len]),
+                op(OpCode::Bool, vec![rebind_current], vec![old_truth]),
                 original_copy_with_operands("list_new", vec![], vec![new_owner]),
                 original_store_var("or_clause", new_owner, new_stored),
             ],
@@ -1004,7 +1016,11 @@ fn store_var_origin_carrier_live_to_return_cleanup_suppresses_source_release() {
         TirBlock {
             id: ret,
             args: vec![],
-            ops: vec![op(OpCode::Call, vec![carrier_b], vec![use_result])],
+            ops: vec![named_call(
+                "fixture_external_call",
+                vec![carrier_b],
+                vec![use_result],
+            )],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -1062,7 +1078,7 @@ fn owned_root_forwarded_to_three_owned_phis_gets_two_retains() {
     let entry = func.entry_block;
     {
         let block = func.blocks.get_mut(&entry).unwrap();
-        block.ops.push(finalizer_call_bind(owner));
+        block.ops.push(finalizer_call(owner));
         block.terminator = Terminator::Branch {
             target: join,
             args: vec![owner, owner, owner],
@@ -1128,6 +1144,8 @@ fn store_var_boundary_transferred_through_loop_phi_releases_phi_once() {
     let next_owner = func.fresh_value();
     let next_stored = func.fresh_value();
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     for v in [set_owner, stored, current_phi, next_owner, next_stored] {
         func.value_types.insert(v, TirType::DynBox);
     }
@@ -1158,7 +1176,7 @@ fn store_var_boundary_transferred_through_loop_phi_releases_phi_once() {
                 id: current_phi,
                 ty: TirType::DynBox,
             }],
-            ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+            ops: vec![op(OpCode::Copy, vec![cond_input], vec![cond])],
             terminator: Terminator::CondBranch {
                 cond,
                 then_block: exit,
@@ -1271,7 +1289,7 @@ fn result_carrying_store_var_later_container_absorb_keeps_owner_to_return_bounda
             vec![stored, item],
             vec![],
         ));
-        b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -1293,7 +1311,7 @@ fn result_carrying_store_var_later_container_absorb_keeps_owner_to_return_bounda
         .expect("list_append op must survive");
     let marker_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::WarnStderr)
+        .position(is_observation)
         .expect("marker op must survive");
     let dropped: Vec<(usize, ValueId)> = ops
         .iter()
@@ -1344,7 +1362,7 @@ fn copy_list_new_finalizer_sensitive_container_releases_at_return_boundary() {
         ));
         b.ops
             .push(original_copy_with_operands("store_var", vec![list], vec![]));
-        b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -1358,7 +1376,7 @@ fn copy_list_new_finalizer_sensitive_container_releases_at_return_boundary() {
         .expect("list_new op must survive");
     let marker_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::WarnStderr)
+        .position(is_observation)
         .expect("marker op must survive");
     let dropped: Vec<(usize, ValueId)> = ops
         .iter()
@@ -1402,7 +1420,7 @@ fn copy_class_def_descriptor_temp_releases_at_class_construction_boundary() {
             vec![class_obj],
             vec![],
         ));
-        b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -1420,7 +1438,7 @@ fn copy_class_def_descriptor_temp_releases_at_class_construction_boundary() {
         .expect("store_var op must survive");
     let marker_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::WarnStderr)
+        .position(is_observation)
         .expect("marker op must survive");
     let tracked_drops: Vec<(usize, ValueId)> = ops
         .iter()
@@ -1453,9 +1471,9 @@ fn copy_class_def_descriptor_temp_releases_at_class_construction_boundary() {
 }
 
 #[test]
-fn call_bind_list_new_finalizer_sensitive_container_releases_at_return_boundary() {
+fn call_result_list_new_finalizer_sensitive_container_releases_at_return_boundary() {
     let mut func = TirFunction::new(
-        "finalizer_scope_call_bind_list".into(),
+        "finalizer_scope_call_result_list".into(),
         vec![],
         TirType::None,
         molt_ir::FunctionReturnAbi::Void,
@@ -1468,7 +1486,7 @@ fn call_bind_list_new_finalizer_sensitive_container_releases_at_return_boundary(
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops.push(finalizer_call_bind(item));
+        b.ops.push(finalizer_call(item));
         b.ops.push(original_copy_with_operands(
             "list_new",
             vec![item],
@@ -1476,7 +1494,7 @@ fn call_bind_list_new_finalizer_sensitive_container_releases_at_return_boundary(
         ));
         b.ops
             .push(original_copy_with_operands("store_var", vec![list], vec![]));
-        b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -1490,7 +1508,7 @@ fn call_bind_list_new_finalizer_sensitive_container_releases_at_return_boundary(
         .expect("list_new op must survive");
     let marker_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::WarnStderr)
+        .position(is_observation)
         .expect("marker op must survive");
     let dropped: Vec<(usize, ValueId)> = ops
         .iter()
@@ -1501,7 +1519,7 @@ fn call_bind_list_new_finalizer_sensitive_container_releases_at_return_boundary(
     assert_eq!(
         dropped,
         vec![(list_idx + 1, item), (marker_idx + 1, list)],
-        "call_bind-created finalizer temps release at list_new while the container owner defers"
+        "call-result finalizer temps release at list_new while the container owner defers"
     );
 }
 
@@ -1527,8 +1545,9 @@ fn unbound_finalizer_container_call_arg_releases_at_call_boundary() {
             vec![item],
             vec![list],
         ));
-        b.ops.push(op(OpCode::Call, vec![list], vec![]));
-        b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        b.ops
+            .push(named_call("fixture_external_call", vec![list], vec![]));
+        b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -1546,7 +1565,7 @@ fn unbound_finalizer_container_call_arg_releases_at_call_boundary() {
         .expect("call op must survive");
     let marker_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::WarnStderr)
+        .position(is_observation)
         .expect("marker op must survive");
     let dropped: Vec<(usize, ValueId)> = ops
         .iter()
@@ -1589,9 +1608,7 @@ fn call_bind_check_exception_list_new_finalizer_releases_at_return_boundary() {
             vec![],
             vec![builder],
         ));
-        let mut call = finalizer_call_bind(item);
-        call.operands = vec![callee, builder];
-        b.ops.push(call);
+        b.ops.push(finalizer_call_bind(callee, builder, item));
         b.ops.push(op(OpCode::CheckException, vec![], vec![]));
         b.ops.push(original_copy_with_operands(
             "list_new",
@@ -1601,7 +1618,7 @@ fn call_bind_check_exception_list_new_finalizer_releases_at_return_boundary() {
         b.ops
             .push(original_copy_with_operands("store_var", vec![list], vec![]));
         b.ops.push(op(OpCode::CheckException, vec![], vec![]));
-        b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -1615,7 +1632,7 @@ fn call_bind_check_exception_list_new_finalizer_releases_at_return_boundary() {
         .expect("list_new op must survive");
     let marker_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::WarnStderr)
+        .position(is_observation)
         .expect("marker op must survive");
     let dropped: Vec<(usize, ValueId)> = ops
         .iter()
@@ -1659,7 +1676,7 @@ fn list_append_absorbed_temp_releases_at_append_boundary() {
             vec![list, item],
             vec![],
         ));
-        b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -1673,7 +1690,7 @@ fn list_append_absorbed_temp_releases_at_append_boundary() {
         .expect("list_append op must survive");
     let marker_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::WarnStderr)
+        .position(is_observation)
         .expect("marker op must survive");
     let dropped: Vec<(usize, ValueId)> = ops
         .iter()
@@ -1722,7 +1739,7 @@ fn module_set_attr_releases_absorbed_value_before_later_borrowed_use() {
         ));
         b.ops
             .push(op(OpCode::ModuleDelGlobal, vec![module, name], vec![]));
-        b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -1803,7 +1820,7 @@ fn generic_attr_store_releases_absorbed_defaults_tuple_before_later_borrowed_use
             vec![func_obj],
             vec![version],
         ));
-        b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -1885,7 +1902,7 @@ fn discarded_list_pop_result_releases_at_pop_boundary() {
             vec![list],
             vec![popped],
         ));
-        b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -1903,7 +1920,7 @@ fn discarded_list_pop_result_releases_at_pop_boundary() {
         .expect("list_pop op must survive");
     let marker_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::WarnStderr)
+        .position(is_observation)
         .expect("marker op must survive");
     let dropped: Vec<(usize, ValueId)> = ops
         .iter()
@@ -1946,7 +1963,7 @@ fn named_local_absorbed_into_list_is_not_released_at_absorption_boundary() {
             vec![item],
             vec![list],
         ));
-        b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -1960,7 +1977,7 @@ fn named_local_absorbed_into_list_is_not_released_at_absorption_boundary() {
         .expect("list_new op must survive");
     let marker_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::WarnStderr)
+        .position(is_observation)
         .expect("marker op must survive");
     let dropped: Vec<(usize, ValueId)> = ops
         .iter()
@@ -1996,7 +2013,7 @@ fn non_finalizer_local_store_releases_at_last_use_not_return_boundary() {
             .push(original_copy_with_operands("list_new", vec![], vec![list]));
         b.ops
             .push(original_copy_with_operands("store_var", vec![list], vec![]));
-        b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -2010,7 +2027,7 @@ fn non_finalizer_local_store_releases_at_last_use_not_return_boundary() {
         .expect("store_var marker must survive");
     let marker_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::WarnStderr)
+        .position(is_observation)
         .expect("marker op must survive");
     let dropped: Vec<(usize, ValueId)> = ops
         .iter()
@@ -2043,6 +2060,8 @@ fn edge_dying_skips_finalizer_boundary_owned_local_root() {
     let item = func.fresh_value();
     let list = func.fresh_value();
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let body_arg = func.fresh_value();
     let body_use = func.fresh_value();
     for v in [item, list, body_arg, body_use] {
@@ -2069,7 +2088,7 @@ fn edge_dying_skips_finalizer_boundary_owned_local_root() {
         TirBlock {
             id: gate,
             args: vec![],
-            ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+            ops: vec![op(OpCode::Copy, vec![cond_input], vec![cond])],
             terminator: Terminator::CondBranch {
                 cond,
                 then_block: body,
@@ -2096,7 +2115,7 @@ fn edge_dying_skips_finalizer_boundary_owned_local_root() {
         TirBlock {
             id: exit,
             args: vec![],
-            ops: vec![op(OpCode::WarnStderr, vec![], vec![])],
+            ops: vec![marker()],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -2107,7 +2126,7 @@ fn edge_dying_skips_finalizer_boundary_owned_local_root() {
     let exit_ops = &func.blocks[&exit].ops;
     let marker_idx = exit_ops
         .iter()
-        .position(|op| op.opcode == OpCode::WarnStderr)
+        .position(is_observation)
         .expect("exit marker must survive");
     let dropped: Vec<(usize, ValueId)> = exit_ops
         .iter()
@@ -2184,7 +2203,7 @@ fn delete_var_releases_old_slot_at_delete_boundary() {
             .attrs
             .insert("_var".into(), AttrValue::Str("item".into()));
         b.ops.push(delete);
-        b.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+        b.ops.push(marker());
         b.terminator = Terminator::Return { values: vec![] };
     }
 
@@ -2198,7 +2217,7 @@ fn delete_var_releases_old_slot_at_delete_boundary() {
         .expect("delete_var op must survive");
     let marker_idx = ops
         .iter()
-        .position(|op| op.opcode == OpCode::WarnStderr)
+        .position(is_observation)
         .expect("marker op must survive");
     let dropped: Vec<(usize, ValueId)> = ops
         .iter()
@@ -2237,7 +2256,11 @@ fn positive_named_ownership_not_finalizer_absence_selects_python_boundary() {
                         func.value_types.insert(value, TirType::DynBox);
                         let missing = func.fresh_value();
                         let deleted = func.fresh_value();
-                        let mut producer = op(producer_kind, vec![ValueId(0)], vec![value]);
+                        let mut producer = if producer_kind == OpCode::Call {
+                            named_call("fixture_produce_owned", vec![ValueId(0)], vec![value])
+                        } else {
+                            op(producer_kind, vec![ValueId(0)], vec![value])
+                        };
                         if named {
                             producer
                                 .attrs
@@ -2271,14 +2294,11 @@ fn positive_named_ownership_not_finalizer_absence_selects_python_boundary() {
                             "none" => {}
                             _ => unreachable!(),
                         }
-                        entry.ops.push(op(OpCode::WarnStderr, vec![], vec![]));
+                        entry.ops.push(marker());
                         entry.terminator = Terminator::Return { values: vec![] };
                         run(&mut func, &mut AnalysisManager::new());
                         let ops = &func.blocks[&func.entry_block].ops;
-                        let marker = ops
-                            .iter()
-                            .position(|op| op.opcode == OpCode::WarnStderr)
-                            .unwrap();
+                        let marker = ops.iter().position(is_observation).unwrap();
                         let releases: Vec<usize> = ops
                             .iter()
                             .enumerate()
@@ -2322,6 +2342,8 @@ fn store_var_boundary_moved_on_one_arm_is_released_on_the_other() {
     let local = func.fresh_value();
     let taken = func.fresh_value();
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     for value in [local, taken] {
         func.value_types.insert(value, TirType::DynBox);
     }
@@ -2329,14 +2351,14 @@ fn store_var_boundary_moved_on_one_arm_is_released_on_the_other() {
     let entry = func.entry_block;
     {
         let block = func.blocks.get_mut(&entry).unwrap();
-        let mut producer = op(OpCode::Call, vec![], vec![local]);
+        let mut producer = named_call("fixture_external_call", vec![], vec![local]);
         producer
             .attrs
             .insert("bound_local".into(), AttrValue::Bool(true));
         block.ops = vec![
             producer,
             original_copy_with_operands("store_var", vec![local], vec![]),
-            op(OpCode::ConstBool, vec![], vec![cond]),
+            op(OpCode::Copy, vec![cond_input], vec![cond]),
         ];
         block.terminator = Terminator::CondBranch {
             cond,
@@ -2354,7 +2376,7 @@ fn store_var_boundary_moved_on_one_arm_is_released_on_the_other() {
                 id: taken,
                 ty: TirType::DynBox,
             }],
-            ops: vec![op(OpCode::Call, vec![taken], vec![])],
+            ops: vec![named_call("fixture_external_call", vec![taken], vec![])],
             terminator: Terminator::Branch {
                 target: join,
                 args: vec![],
@@ -2366,7 +2388,7 @@ fn store_var_boundary_moved_on_one_arm_is_released_on_the_other() {
         TirBlock {
             id: join,
             args: vec![],
-            ops: vec![op(OpCode::WarnStderr, vec![], vec![])],
+            ops: vec![marker()],
             terminator: Terminator::Return { values: vec![] },
         },
     );

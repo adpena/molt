@@ -1,4 +1,3 @@
-use crate::{OpIR, ParameterCustody};
 use crate::native_callable_abi::{NATIVE_CALLABLE_ABI_CHOICES, parse_native_callable_abi};
 use crate::tir::op_kinds_generated::{
     SimpleIrCallTargetRole, SimpleIrOpValueRule, SimpleIrReturnShape, SimpleIrRuntimeRequirements,
@@ -9,6 +8,7 @@ use crate::tir::op_kinds_generated::{
     simpleir_kind_may_carry_runtime_requirement_bits, simpleir_kind_may_carry_runtime_symbol,
     simpleir_op_shape, simpleir_return_shape, simpleir_var_field_role_table,
 };
+use crate::{OpIR, ParameterCustody};
 
 const SCALAR_FAST_INT_KINDS: &[&str] = &[
     "abs",
@@ -336,6 +336,8 @@ mod op_shape_tests {
 
 /// Validate the control-label transport of the typed StateDispatch terminator.
 /// Source IR without a map is lifted before terminal activation lowering.
+/// Explicit maps must cover the saved state of each executable suspension;
+/// an omitted state is invalid, never permission to infer another dispatch map.
 pub fn validate_state_dispatch(ops: &[OpIR]) -> Result<(), String> {
     use std::collections::BTreeSet;
     let mut labels = BTreeSet::new();
@@ -377,7 +379,7 @@ pub fn validate_state_dispatch(ops: &[OpIR]) -> Result<(), String> {
             }
         }
     }
-    Ok(())
+    crate::simple_verify::validate_explicit_state_resume_coverage(ops)
 }
 
 pub(crate) fn validate_required_fields(op: &OpIR) -> Result<(), String> {
@@ -410,7 +412,57 @@ pub(crate) fn validate_required_fields(op: &OpIR) -> Result<(), String> {
     }
     validate_simple_op_shape(op).map_err(|error| error.to_string())?;
     crate::literal_payload::validate_simple_literal(op)?;
+    validate_value_transport(op)?;
     validate_representation_fields(op)
+}
+
+/// Canonical field roles and alias facts govern value transport before any
+/// backend sees it. A malformed transport is never a backend support decision.
+fn validate_value_transport(op: &OpIR) -> Result<(), String> {
+    use crate::tir::op_kinds_generated::{
+        copy_kind_is_explicit_no_heap_move_table, copy_kind_mints_owned_alias_ref_table,
+        opcode_fixed_result_count_table, simpleir_kind_is_structural,
+    };
+    use crate::tir::simple_def_use::{
+        simple_ir_binding, visit_simple_ir_reads, visit_simple_ir_result_names,
+    };
+
+    let binding = simpleir_var_field_role_table(&op.kind) == SimpleIrVarFieldRole::Definition;
+    if binding {
+        let destination = simple_ir_binding(op).map(|binding| binding.destination);
+        if destination.is_none_or(|name| name.is_empty() || name == "none") {
+            return Err(format!(
+                "{} requires a non-empty, non-reserved binding destination",
+                op.kind
+            ));
+        }
+    }
+    if copy_kind_is_explicit_no_heap_move_table(&op.kind)
+        || copy_kind_mints_owned_alias_ref_table(&op.kind)
+    {
+        // Ownership transparency identifies the result's alias, not the number
+        // of reads. Runtime guards also read their expected tag. Their exact
+        // generated shape owns that arity; ordinary copy transports are unary.
+        let expected = simpleir_op_shape(&op.kind).map_or(1, |shape| shape.operands);
+        let mut actual = 0;
+        visit_simple_ir_reads(op, |_| actual += 1);
+        if actual != expected {
+            return Err(format!(
+                "{} requires exactly {expected} semantic source operand(s), found {actual}",
+                op.kind
+            ));
+        }
+    }
+    if simpleir_kind_is_structural(&op.kind)
+        || kind_to_opcode_table(&op.kind).and_then(opcode_fixed_result_count_table) == Some(0)
+    {
+        let mut result = false;
+        visit_simple_ir_result_names(op, |_| result = true);
+        if result {
+            return Err(format!("{} cannot declare a value result", op.kind));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_function_param_types(

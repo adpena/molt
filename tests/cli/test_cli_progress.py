@@ -200,3 +200,55 @@ def test_ci_and_dumb_terminals_do_not_animate(name, monkeypatch, live_calls):
         pass
     assert live_calls == []
     assert "\x1b" not in stream.getvalue()
+
+
+def test_announced_source_build_restores_phase_on_failure():
+    stream = io.StringIO()
+    with progress.BuildProgress(stream=stream):
+        progress.phase("backend_pipeline")
+        with pytest.raises(RuntimeError, match="build failed"):
+            with progress.subprocess_status(
+                "Runtime build (dev-fast, wasm32-wasip1)", announce=True
+            ) as label:
+                assert label is None
+                raise RuntimeError("build failed")
+    assert stream.getvalue().splitlines()[-2:] == [
+        "molt: Runtime build (dev-fast, wasm32-wasip1)",
+        "molt: Generating and linking output",
+    ]
+
+
+@pytest.mark.parametrize("policy", [{}, {"quiet": True}, {"json_output": True}])
+def test_background_build_does_not_share_renderer_and_keeps_failures(policy, capsys):
+    from concurrent.futures import ThreadPoolExecutor
+
+    stream = io.StringIO()
+
+    def work():
+        progress.notice("background compilation")
+        output.fail("actual background error", False, command="build")
+        raise RuntimeError("build failed")
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with progress.BuildProgress(stream=stream, **policy):
+            task = progress.background_task(work)
+            with pytest.raises(RuntimeError, match="build failed"):
+                executor.submit(task).result()
+    assert "background compilation" not in stream.getvalue()
+    assert capsys.readouterr() == ("", "actual background error\n")
+
+
+def test_transient_notice_is_not_replayed_by_subprocess_restore():
+    stream = io.StringIO()
+    with progress.BuildProgress(mode="plain", stream=stream):
+        progress.phase("backend_pipeline")
+        progress.notice("Runtime needs a source build")
+        with progress.subprocess_status("Runtime build", announce=True):
+            pass
+    assert stream.getvalue().splitlines() == [
+        "molt: Preparing build",
+        "molt: Generating and linking output",
+        "molt: Runtime needs a source build",
+        "molt: Runtime build",
+        "molt: Generating and linking output",
+    ]

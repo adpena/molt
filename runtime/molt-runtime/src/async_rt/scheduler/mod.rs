@@ -1000,7 +1000,8 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                     Some("1")
                 ) {
                     let pending_kind = if exception_pending(_py) {
-                        let exc_bits = crate::exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());
+                        let exc_bits = crate::exception_last_bits_noinc(_py)
+                            .unwrap_or_else(|| MoltObject::none().bits());
                         if let Some(exc_ptr) = maybe_ptr_from_bits(exc_bits) {
                             crate::builtins::exceptions::exception_diagnostic_name(exc_ptr)
                         } else {
@@ -1252,7 +1253,8 @@ pub unsafe extern "C" fn molt_block_on(task_bits: u64) -> i64 {
                 }
                 let pending = exception_pending(_py);
                 let kind = if pending {
-                    let exc_bits = crate::exception_last_bits_noinc(_py).unwrap_or_else(|| MoltObject::none().bits());
+                    let exc_bits = crate::exception_last_bits_noinc(_py)
+                        .unwrap_or_else(|| MoltObject::none().bits());
                     if let Some(exc_ptr) = maybe_ptr_from_bits(exc_bits) {
                         crate::builtins::exceptions::exception_diagnostic_name(exc_ptr)
                     } else {

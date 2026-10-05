@@ -15,6 +15,12 @@ from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
 from molt.compiler_analysis.python_source_keys import python_pattern_capture_names
+from molt.compiler_analysis.static_truth import (
+    ExpressionResultLookup,
+    static_if_live_branch,
+    static_test_truthiness,
+    statically_executed_boolop_values,
+)
 
 LexicalDefinitionNode: TypeAlias = (
     ast.FunctionDef
@@ -92,6 +98,7 @@ def definition_lexical_regions(
         for index, generator in enumerate(node.generators):
             if index:
                 expressions.append(generator.iter)
+            expressions.append(generator.target)
             expressions.extend(generator.ifs)
         if isinstance(node, ast.DictComp):
             expressions.extend((node.key, node.value))
@@ -146,6 +153,99 @@ def definition_lexical_regions(
     return DefinitionLexicalRegions(
         tuple(enclosing), tuple(annotations), body, kind, parameters, parameter_names
     )
+
+
+def python_eager_nodes(
+    tree: ast.Module,
+    *,
+    target_python: tuple[int, int],
+    fact_result: ExpressionResultLookup | None = None,
+) -> tuple[ast.AST, ...]:
+    """Source dependency nodes evaluated in the module's eager activation.
+
+    Binding facts still own reachable execution and operand meaning. Regions
+    keep defaults/decorators/class bodies while excluding deferred functions,
+    generator bodies and lazy annotations from the module-only source policy.
+    """
+    future = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "__future__"
+        and any(alias.name == "annotations" for alias in node.names)
+        for node in tree.body
+    )
+    eager_annotations = target_python < (3, 14) and not future
+    nodes: list[ast.AST] = []
+    pending: list[ast.AST] = list(reversed(tree.body))
+    while pending:
+        node = pending.pop()
+        nodes.append(node)
+        if isinstance(
+            node,
+            (
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.Lambda,
+                ast.ClassDef,
+                ast.TypeAlias,
+                ast.ListComp,
+                ast.SetComp,
+                ast.DictComp,
+                ast.GeneratorExp,
+            ),
+        ):
+            regions = definition_lexical_regions(
+                node, eager_annotations=eager_annotations, future_annotations=future
+            )
+            children: tuple[ast.AST, ...] = regions.enclosing
+            if isinstance(node, ast.ClassDef):
+                # Generic class bases execute in the type-parameter scope;
+                # bounds/defaults and deferred annotations remain lazy.
+                if regions.type_parameters:
+                    children += (*node.bases, *(k.value for k in node.keywords))
+                children += regions.body
+            elif (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and regions.type_parameters
+                and eager_annotations
+            ):
+                # Generic function annotations execute at definition time in
+                # their type-parameter scope before 3.14; bounds stay lazy.
+                children += function_annotation_expressions(node)
+            elif isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp)):
+                children += regions.body
+        elif isinstance(node, ast.If):
+            live = static_if_live_branch(node, fact_result=fact_result)
+            children = (
+                node.test,
+                *(live if live is not None else (*node.body, *node.orelse)),
+            )
+        elif isinstance(node, ast.IfExp):
+            truth = static_test_truthiness(node.test, fact_result=fact_result)
+            children = (
+                node.test,
+                *(
+                    (node.body,)
+                    if truth is True
+                    else (node.orelse,)
+                    if truth is False
+                    else (node.body, node.orelse)
+                ),
+            )
+        elif isinstance(node, ast.While):
+            truth = static_test_truthiness(node.test, fact_result=fact_result)
+            children = (node.test, *(() if truth is False else node.body), *node.orelse)
+        elif isinstance(node, ast.BoolOp):
+            children = statically_executed_boolop_values(node, fact_result=fact_result)
+        elif isinstance(node, ast.AnnAssign):
+            children = (node.target,)
+            if node.value is not None:
+                children += (node.value,)
+            if eager_annotations:
+                children += (node.annotation,)
+        else:
+            children = tuple(ast.iter_child_nodes(node))
+        pending.extend(reversed(children))
+    return tuple(nodes)
 
 
 class PythonLexicalScopeVisitor(ast.NodeVisitor):
@@ -405,7 +505,8 @@ def python_code_name_layout(
     *,
     freevars: Sequence[str] = (),
     cellvars: Sequence[str] = (),
-    eager_annotations: bool,
+    target_python: tuple[int, int],
+    future_annotations: bool,
     module_scope: bool = False,
 ) -> PythonCodeNameLayout:
     """Project local and external names from the same lexical operation walk.
@@ -416,6 +517,10 @@ def python_code_name_layout(
     branch selection is the code object's layout. No host code compilation or
     symbol-table API participates in this projection.
     """
+    # Stringized annotations still write __annotations__; deferred annotations
+    # use different namespace machinery. A single eager/not-eager bit cannot
+    # project both modes, even though neither evaluates the annotation here.
+    eager_annotations = target_python < (3, 14) and not future_annotations
     statements: list[ast.stmt] = []
     for node in body:
         if isinstance(node, ast.stmt):
@@ -437,6 +542,8 @@ def python_code_name_layout(
 
     class Collector(PythonLexicalScopeVisitor):
         comprehension_locals: frozenset[str] = frozenset()
+        namespace_annotations = False
+        deferred_simple_annotation = False
 
         def name(self, name: str) -> None:
             if name in self.comprehension_locals:
@@ -474,8 +581,18 @@ def python_code_name_layout(
             elif isinstance(node.target, ast.Subscript):
                 self.visit(node.target.value)
                 self.visit(node.target.slice)
-            if module_scope and eager_annotations:
+            if not module_scope:
+                # Function-local annotation expressions and namespace storage
+                # are absent; target/value evaluation above still takes place.
+                return
+            self.namespace_annotations = True
+            if eager_annotations:
                 self.visit(node.annotation)
+            if isinstance(node.target, ast.Name) and node.simple:
+                if eager_annotations or future_annotations:
+                    names.setdefault("__annotations__", None)
+                else:
+                    self.deferred_simple_annotation = True
 
         def visit_Dict(self, node: ast.Dict) -> None:
             for key, value in zip(node.keys, node.values):
@@ -588,6 +705,15 @@ def python_code_name_layout(
     )
     for node in body:
         collector.visit(node)
+    if module_scope and target_python >= (3, 14) and collector.namespace_annotations:
+        # CPython reserves this module prologue name for every scoped annotated
+        # assignment, including non-simple targets and unreachable statements.
+        # Definition bodies remain excluded by the shared lexical visitor.
+        names = {"__conditional_annotations__": None, **names}
+    if collector.deferred_simple_annotation:
+        # The generated evaluator is published after the ordinary body. An
+        # earlier explicit use keeps its existing name-table position.
+        names.setdefault("__annotate__", None)
     return PythonCodeNameLayout(tuple(variables), tuple(names))
 
 
@@ -660,6 +786,7 @@ class PythonDefinitionDependencies:
     body: PythonLexicalDependencies
     annotations: PythonLexicalDependencies
     class_cell_required: bool = False
+    contains_yield: bool = False
 
 
 class _DependencyProjection(PythonLexicalScopeVisitor):
@@ -680,6 +807,7 @@ class _DependencyProjection(PythonLexicalScopeVisitor):
         self.deferred_variable_annotations = deferred_variable_annotations
         self.loads: set[str] = set()
         self.loads_class_cell = False
+        self.contains_yield = False
         self.loads_class_name = False
         self.nested: set[str] = set()
         self.globals: set[str] = set()
@@ -699,6 +827,14 @@ class _DependencyProjection(PythonLexicalScopeVisitor):
             or self.authority.include_lexical_read(node)
         ):
             self.loads.add(node.id)
+
+    def visit_Yield(self, node: ast.Yield) -> None:
+        self.contains_yield = True
+        self.generic_visit(node)
+
+    def visit_YieldFrom(self, node: ast.YieldFrom) -> None:
+        self.contains_yield = True
+        self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         super().visit_AnnAssign(node)
@@ -873,6 +1009,7 @@ class PythonDependencyAuthority:
             class_cell_required=(
                 regions.kind == "class" and "__class__" in body.nested
             ),
+            contains_yield=body.contains_yield,
         )
         self.summaries[node] = result
         return result
@@ -893,3 +1030,72 @@ def python_scope_declarations(
     return PythonScopeDeclarations(
         frozenset(bound), frozenset(collector.globals), frozenset(collector.nonlocals)
     )
+
+
+def _push_arg_annotations(stack: list[ast.AST], args: ast.arguments) -> None:
+    for arg in (
+        args.posonlyargs
+        + args.args
+        + args.kwonlyargs
+        + ([] if args.vararg is None else [args.vararg])
+        + ([] if args.kwarg is None else [args.kwarg])
+    ):
+        if arg.annotation is not None:
+            stack.append(arg.annotation)
+
+
+def expression_contains_yield(node: ast.AST) -> bool:
+    class YieldVisitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.found = False
+
+        def visit_Yield(self, node: ast.Yield) -> None:
+            self.found = True
+
+        def visit_YieldFrom(self, node: ast.YieldFrom) -> None:
+            self.found = True
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            return
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+    visitor = YieldVisitor()
+    visitor.visit(node)
+    return visitor.found
+
+
+def function_contains_yield(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    stack: list[ast.AST] = list(node.body)
+    while stack:
+        current = stack.pop()
+        if isinstance(current, (ast.Yield, ast.YieldFrom)):
+            return True
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            stack.extend(current.decorator_list)
+            stack.extend(current.args.defaults)
+            stack.extend(
+                default for default in current.args.kw_defaults if default is not None
+            )
+            _push_arg_annotations(stack, current.args)
+            if current.returns is not None:
+                stack.append(current.returns)
+            continue
+        if isinstance(current, ast.ClassDef):
+            stack.extend(current.decorator_list)
+            stack.extend(current.bases)
+            stack.extend(keyword.value for keyword in current.keywords)
+            continue
+        if isinstance(current, ast.Lambda):
+            continue
+        stack.extend(ast.iter_child_nodes(current))
+    return False

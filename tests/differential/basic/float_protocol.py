@@ -257,6 +257,38 @@ with warnings.catch_warnings():
         warnings.showwarning = old_showwarning
     print("custom-warning", shown)
 
+# Hexadecimal conversion is one exact binary64 operation: accepted grammar,
+# subnormals, halfway ties, carry to a new exponent and overflow diagnostics.
+for text in (
+    "1", "a", "0x1", "1p1", ".8", "0x.8", "1.", " +0X1.8P+1 \t", "\v1\f",
+    "1p-1074", "-1p-1074", "1p-1075", "-1p-1075",
+    "1.00000000000008p0", "1.0000000000000800001p0", "1.00000000000018p0",
+    "0x0.fffffffffffff8p-1022", "1.fffffffffffff7p1023", "1.fffffffffffff8p1023",
+    "0p99999999999999999999", "1p-99999999999999999999", "1p99999999999999999999",
+    "1p1024junk", "0p1024junk", "\u00a01", "1_0", "1p", "0x", ".", "0x1..0",
+    "nan", "-nan", " +infinity ", "\ud800",
+):
+    try:
+        outcome = ("ok", float.hex(float.fromhex(text)))
+    except Exception as error:
+        outcome = (type(error).__name__, str(error))
+    print("float-fromhex-boundary", repr(text), outcome)
+
+
+class HexConstruction(float):
+    def __new__(cls, value):
+        events.append((type(value).__name__, float.hex(value)))
+        return "constructed"
+
+
+for text in ("1p-1074", "1p1024", "invalid"):
+    events.clear()
+    try:
+        outcome = ("ok", HexConstruction.fromhex(text))
+    except Exception as error:
+        outcome = (type(error).__name__, str(error))
+    print("float-fromhex-construction", text, outcome, events[:])
+
 # Explicit base descriptors inspect intrinsic storage, bypassing __float__.
 for label, payload in (
     ("fraction", 1.25),
@@ -337,7 +369,6 @@ for value, spec in (
     (10.0, ".3"), (100.0, ".3"), (2.0, ".2"),
     (999999.7, "g"), (0.0000999999999, "g"),
     (999999.7, "#g"), (0.0, "#g"), (0.0, ".1"), (1e16, "#"),
-    (1.0, ".2147483648f"),
     (complex(1, -float("nan")), ""),
     (complex(-float("nan"), 1), "+"),
     (complex(-0.0, -0.0), "z"), (complex(-0.04, -0.04), "+z.1f"),
@@ -392,7 +423,7 @@ for value, spec in (
     (1.5, "999999999999999999999999999999999999f"),
     (1.5, ".999999999999999999999999999999999999f"),
     (1e308, "#%"), (1e308, "010,%"), (-1e308, "010,%"),
-    (1j, "0.2147483648"), (RenderComplex(1), "d"),
+    (RenderComplex(1), "d"),
 ):
     try:
         outcome = ("ok", format(value, spec))
@@ -421,12 +452,62 @@ for spec, arguments in (
         outcome = (type(error).__name__, str(error))
     print("percent-parser-boundary", spec, outcome, events[:])
 
-events.clear()
-try:
-    outcome = ("ok", format(IntSubclass(42), ".2147483648f"))
-except Exception as error:
-    outcome = (type(error).__name__, str(error))
-print("format-conversion-error-order", outcome, events[:])
+# Grammar fields use the target Py_ssize_t; float/complex precision uses C
+# INT_MAX only after grammar admission. A 64-bit oracle and WASM32 must prove
+# their own exact diagnostics and callback ordering, then emit the same facts.
+def check_format_size_boundary(label, value, spec, message, callbacks):
+    events.clear()
+    try:
+        format(value, spec)
+    except ValueError as error:
+        assert str(error) == message, (label, str(error), message)
+    else:
+        raise AssertionError((label, "expected ValueError"))
+    assert events == callbacks, (label, events, callbacks)
+    print("format-size-boundary", label, "diagnostic-and-callback-order")
+
+
+parser_limit_message = "Too many decimal digits in format string"
+precision_limit_message = "precision too big"
+int_max = (1 << 31) - 1
+precision_overflows_parser = int_max + 1 > sys.maxsize
+for label, value, spec, callback in (
+    ("float", 1.0, ".2147483648f", []),
+    ("complex", 1j, "0.2147483648", []),
+    ("converted-int", IntSubclass(42), ".2147483648f", ["int-subclass"]),
+):
+    check_format_size_boundary(
+        label, value, spec,
+        parser_limit_message if precision_overflows_parser else precision_limit_message,
+        [] if precision_overflows_parser else callback,
+    )
+
+for label, value in (("float", 1.0), ("complex", 1j), ("converted-int", IntSubclass(42))):
+    check_format_size_boundary(
+        label + "-grammar-overflow", value, "." + str(sys.maxsize + 1) + "f",
+        parser_limit_message, [],
+    )
+
+# The exact parser boundary is admitted, and format-specific validation then
+# wins without attempting a giant allocation. Complex rejects zero padding
+# only after the precision bound; float rejects an unsupported presentation.
+check_format_size_boundary(
+    "complex-int-max", 1j, "0." + str(int_max),
+    "Zero padding is not allowed in complex format specifier", [],
+)
+check_format_size_boundary(
+    "complex-ssize-max", 1j, "0." + str(sys.maxsize),
+    precision_limit_message if sys.maxsize > int_max
+    else "Zero padding is not allowed in complex format specifier", [],
+)
+check_format_size_boundary(
+    "width-ssize-max", 1.0, str(sys.maxsize) + "s",
+    "Unknown format code 's' for object of type 'float'", [],
+)
+check_format_size_boundary(
+    "width-grammar-overflow", IntSubclass(42), str(sys.maxsize + 1) + "f",
+    parser_limit_message, [],
+)
 
 class PercentMapping:
     def __getitem__(self, key):

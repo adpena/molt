@@ -163,12 +163,7 @@ pub extern "C" fn molt_importlib_compiled_loader_types() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_compiled_loader() -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let bits = compiled_loader_singleton(py);
-        if bits == 0 {
-            return MoltObject::none().bits();
-        }
-        inc_ref_bits(py, bits);
-        bits
+        crate::state::cache::retain_cached_result(py, compiled_loader_singleton(py))
     })
 }
 
@@ -407,7 +402,7 @@ mod tests {
 
     fn set_attr(py: &PyToken<'_>, target: u64, name: &[u8], value: u64) {
         let key = text(py, name);
-        let result = molt_object_setattr(target, key, value);
+        let result = molt_set_attr_name(target, key, value);
         if !obj_from_bits(result).is_none() {
             dec_ref_bits(py, result);
         }

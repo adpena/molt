@@ -240,9 +240,12 @@ def _emit_backend_pipeline_outputs(
             finalize_inputs=finalize_inputs,
         )
 
+    native_target = prepared_backend_setup.cache_setup.artifact_contract.native_target
+    assert native_target is not None
+
     if not _ensure_native_runtime_lib_ready_before_link(
         prepared_backend_runtime_context.runtime_state,
-        target_triple=output_layout.target_triple,
+        target_triple=native_target.cargo_target,
         json_output=json_output,
         runtime_cargo_profile=prepared_build_config.runtime_cargo_profile,
         molt_root=prepared_build_roots.molt_root,
@@ -292,7 +295,7 @@ def _emit_backend_pipeline_outputs(
                 output_artifact=output_layout.output_artifact,
                 stdlib_obj_path=prepared_backend_setup.cache_setup.stdlib_object_path,
                 json_output=json_output,
-                target_triple=output_layout.target_triple,
+                target=native_target,
             )
         )
         if prepared_object_error is not None:
@@ -389,7 +392,7 @@ def _emit_backend_pipeline_outputs(
             json_output=json_output,
             output_binary=output_layout.output_binary,
             runtime_codegen_binding=runtime_codegen_binding,
-            target_triple=output_layout.target_triple,
+            target=native_target,
             sysroot_path=prepared_build_roots.sysroot_path,
             profile=profile,
             project_root=prepared_build_roots.project_root,

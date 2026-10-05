@@ -1,3 +1,7 @@
+// rustc also tracks this on the build-script executable itself, so restored
+// mtimes cannot retain old protocol generation logic.
+const _: Option<&str> = option_env!("MOLT_CARGO_INPUT_MOLT_PROOF_SUPERVISOR");
+
 use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;
@@ -12,6 +16,9 @@ struct ProtocolSchemas {
 }
 
 fn main() {
+    // Cargo tracks content identity as an environment dependency, even when a
+    // source sync restores mtimes (including protocol.json/build.rs changes).
+    println!("cargo:rerun-if-env-changed=MOLT_CARGO_INPUT_MOLT_PROOF_SUPERVISOR");
     let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo supplies CARGO_MANIFEST_DIR"),
     );

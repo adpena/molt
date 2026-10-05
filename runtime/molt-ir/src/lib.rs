@@ -41,3 +41,10 @@ pub use crate::simple_verify::{SimpleIrDiagnostic, SimpleIrVerificationReport, v
 /// The implicit FIRST parameter name the frontend prepends to every closure's
 /// parameter list to carry its captured environment.
 pub const MOLT_CLOSURE_PARAM_NAME: &str = "__molt_closure__";
+
+/// Lossless Python code-point carrier shared with standalone source backends.
+pub mod python_string;
+pub const PYTHON_STRING_SOURCE: &str = include_str!("python_string.rs");
+
+#[cfg(test)]
+mod python_string_tests;

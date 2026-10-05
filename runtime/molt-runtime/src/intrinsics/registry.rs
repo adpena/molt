@@ -1722,7 +1722,7 @@ mod tests {
         );
         assert_eq!(
             format!("{:?}", import_info.defaults),
-            "[None, None, EmptyTuple, Int(0)]"
+            "[Missing, None, EmptyTuple, Int(0)]"
         );
     }
 

@@ -19,7 +19,10 @@ from molt.cli.binary_image_analysis import (
     _non_native_artifact_binary_image_analysis_payload,
 )
 from molt.cli.build_diagnostics import _emit_build_diagnostics_if_present
-from molt.cli.command_runtime import _run_completed_command
+from molt.cli.command_runtime import (
+    _finish_build_input_custody,
+    _run_completed_command,
+)
 from molt.cli.output import success as _success
 from molt.cli.extension_manifest import _cpu_baseline
 from molt.cli.models import _StagedExternalPackageNativeArtifact
@@ -450,18 +453,6 @@ def _finalize_native_link_candidate(
     finally:
         if link_selection is not None:
             discard_staged_output(link_selection[0])
-
-
-def _finish_build_input_custody(
-    finalize_inputs: Callable[[], None] | None,
-) -> str | None:
-    """Close admitted inputs before any successful terminal result is emitted."""
-    if finalize_inputs is not None:
-        try:
-            finalize_inputs()
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
-            return f"Build input custody failed to close: {exc}"
-    return None
 
 
 def _emit_native_link_result(

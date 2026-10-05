@@ -10,15 +10,12 @@ import re
 import secrets
 import sys
 import tempfile
-import time
 from typing import Mapping, Sequence, TypedDict, cast
 
 from molt import cargo_workspace
 from molt.dx import PROOF_SCRATCH_ROOT_ENV
 from molt.exact_json import ExactJsonError, encode_exact, loads_exact, read_exact
-from tools.proof_queue_pkg import command_admission as admission
 from tools.proof_queue_pkg import command_identity
-from tools.proof_queue_pkg import cargo_output_layout
 from tools.proof_queue_pkg import custody_cas
 from tools.proof_queue_pkg import execution_custody
 from tools.proof_queue_pkg import process_image_capture
@@ -89,6 +86,11 @@ def source_authority_paths(repo_root: Path) -> tuple[Path, ...]:
         source / "Cargo.lock",
         source / "protocol.json",
         Path(cargo_workspace.__file__),
+        Path(__file__).with_name("supervisor_generation.py"),
+        Path(__file__).with_name("cargo_output_layout.py"),
+        Path(__file__).with_name("guarded_execution.py"),
+        Path(__file__).with_name("command_identity.py"),
+        Path(__file__).with_name("toolchain_capture.py"),
     }
     for crate_root in crate_roots:
         paths.update((crate_root / "src").rglob("*"))
@@ -202,44 +204,6 @@ def _verified_supervisor_event_artifact(
     ):
         raise ValueError("native proof supervisor event artifact identity changed")
     return event_path, list(unique_images)
-
-
-def _provision_proof_supervisor(
-    *, cwd: Path, env: Mapping[str, str]
-) -> tuple[Path, dict[str, object]]:
-    target = Path(env["CARGO_TARGET_DIR"])
-    if not target.is_absolute():
-        raise ValueError(
-            "native proof supervisor requires an explicit absolute Cargo target"
-        )
-    cargo_output_layout.CargoOutputLayout.admit_cargo_path(target)
-    started = time.perf_counter()
-    build = admission._REPO_ROOT / "tools" / "proof_supervisor" / "build.py"
-    completed = command_identity._run_captured(
-        (sys.executable, str(build), "--release"),
-        cwd=cwd,
-        env=env,
-        timeout=600.0,
-    )
-    if completed.returncode != 0:
-        raise ValueError(
-            "native proof supervisor provisioning failed: "
-            + (completed.stderr.strip() or completed.stdout.strip())
-        )
-    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
-    if not lines:
-        raise ValueError("native proof supervisor build returned no binary")
-    binary = Path(lines[-1]).resolve(strict=True)
-    if not binary.is_file():
-        raise ValueError("native proof supervisor binary is unavailable")
-    binary_identity = command_identity._file_identity(binary)
-    return binary, {
-        "schema": "molt.proof-supervisor-provision-telemetry.v1",
-        "build_s": time.perf_counter() - started,
-        "build_target_dir": str(Path(env["CARGO_TARGET_DIR"]).resolve(strict=True)),
-        "build_output_sha256": binary_identity["sha256"],
-        "build_output_size_bytes": binary_identity["size_bytes"],
-    }
 
 
 def decode_supervisor_capability(capability: object, *, mode: str) -> dict[str, str]:

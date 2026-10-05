@@ -1,7 +1,7 @@
 use crate::{CAPABILITY_SCHEMA, Capability, ClosureMode, EventJournal, Receipt, ValidatedPolicy};
-use std::collections::BTreeMap;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::{KernelAccounting, SupervisorState};
+use std::collections::BTreeMap;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::time::Instant;
 

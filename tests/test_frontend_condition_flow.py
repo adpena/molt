@@ -578,3 +578,105 @@ def test_code_slot_declaration_matches_cpython_slot_lookup(source: str) -> None:
 def test_code_slot_declaration_rejects_inconsistent_parameter_prefix() -> None:
     with pytest.raises(ValueError, match="parameters must prefix"):
         CodeSlotDeclaration(("argument",), ("other",), (), ())
+
+
+@pytest.mark.parametrize("future", [False, True])
+@pytest.mark.parametrize("dead", [False, True])
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "value: Annotation",
+        "value: Annotation = Initial",
+        "(value): Annotation",
+        "(value): Annotation = Initial",
+        "owner.member: Annotation",
+        "owner.member: Annotation = Initial",
+        "owner[index]: Annotation",
+        "owner[index]: Annotation = Initial",
+        "owner[start:stop:step]: Annotation",
+        "__annotations__: Annotation = Initial",
+        "__conditional_annotations__: Annotation = Initial",
+        "__annotate__: Annotation = Initial",
+        "class Inner:\n    value: Annotation",
+        "def inner():\n    value: Annotation",
+    ],
+)
+def test_annotation_code_names_match_independent_cpython_scope_and_version(
+    statement: str, dead: bool, future: bool
+) -> None:
+    # Run on each supported CPython oracle; the selected target always matches
+    # that oracle. Only compile the reference: annotation/target effects never
+    # execute. The same lexical visitor must isolate nested class/function bodies.
+    if dead:
+        statement = "if False:\n" + "\n".join(
+            "    " + line for line in statement.splitlines()
+        )
+    body = "before = Before\n" + statement + "\nafter = After\n"
+    prefix = "from __future__ import annotations\n" if future else ""
+    for module_scope in (True, False):
+        source = prefix + (
+            body
+            if module_scope
+            else "def probe():\n"
+            + "".join("    " + line + "\n" for line in body.splitlines())
+        )
+        reference = compile(source, "<annotation-names>", "exec", dont_inherit=True)
+        tree = ast.parse(source)
+        nodes = tree.body
+        if not module_scope:
+            function = next(node for node in nodes if isinstance(node, ast.FunctionDef))
+            nodes = function.body
+            reference = next(
+                value
+                for value in reference.co_consts
+                if isinstance(value, types.CodeType) and value.co_name == "probe"
+            )
+        generator = SimpleTIRGenerator(target_python=sys.version_info[:2])
+        generator.future_annotations = future
+        names = generator._collect_code_names_for_body(
+            nodes,
+            varnames=reference.co_varnames,
+            free_vars=reference.co_freevars,
+            module_scope=module_scope,
+        )
+        assert tuple(names) == reference.co_names
+
+
+@pytest.mark.parametrize("phi", [False, True])
+def test_if_lowering_keeps_cpython_branch_after_index_mutates_owner(phi: bool) -> None:
+    source = (
+        "values = [1]\n"
+        "def replace():\n    values[0] = 0\n    return 0\n"
+        "if values[(replace(), 0)[1]]:\n    result = 'before-index'\n"
+        "else:\n    result = 'after-index'\n"
+    )
+    namespace = {}
+    exec(compile(source, "<if-post-index-oracle>", "exec"), namespace)
+    assert namespace["result"] == "after-index"
+    ops = _ops(source, phi=phi)
+    strings = {op.args[0] for op in ops if op.kind == "CONST_STR" and op.args}
+    assert {"before-index", "after-index"} <= strings
+    generator = SimpleTIRGenerator(
+        module_name="condition_flow", enable_phi=phi, target_python=(3, 12)
+    )
+    tree = ast.parse(source)
+    generator.visit(tree)
+    live = generator._module_live_statements_for_target(tree.body)
+    assert any(isinstance(node, ast.If) for node in live)
+
+
+@pytest.mark.parametrize("phi", [False, True])
+def test_if_lowering_keeps_later_comprehension_iteration(phi: bool) -> None:
+    source = (
+        "y = 0\n"
+        "if [(y, (y := 1))[0] for _ in (0, 1)][1]:\n"
+        "    result = 'later-iteration'\n"
+        "else:\n    result = 'first-iteration'\n"
+    )
+    namespace = {}
+    exec(compile(source, "<comprehension-if-oracle>", "exec"), namespace)
+    assert namespace["result"] == "later-iteration"
+    strings = {
+        op.args[0] for op in _ops(source, phi=phi) if op.kind == "CONST_STR" and op.args
+    }
+    assert {"later-iteration", "first-iteration"} <= strings

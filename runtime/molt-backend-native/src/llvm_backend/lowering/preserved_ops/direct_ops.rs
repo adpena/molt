@@ -76,6 +76,30 @@ pub(super) const HANDLED_KINDS: &[&str] = &[
 ];
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
+    fn runtime_guard_profile_flag(&mut self) -> inkwell::values::IntValue<'ctx> {
+        if let Some(flag) = self.guard_profile_flag {
+            return flag;
+        }
+        let function = self.ensure_runtime_i64_fn("molt_profile_enabled", 0);
+        let builder = self.backend.context.create_builder();
+        let entry = self.llvm_fn.get_first_basic_block().expect("LLVM entry");
+        // The runtime profile flag is initialized once per runtime epoch. One
+        // activation observes it at entry, before any guard or callback runs.
+        if let Some(first) = entry.get_first_instruction() {
+            builder.position_before(&first);
+        } else {
+            builder.position_at_end(entry);
+        }
+        let flag = builder
+            .build_call(function, &[], "runtime_profile_enabled")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic()
+            .into_int_value();
+        self.guard_profile_flag = Some(flag);
+        flag
+    }
+
     pub(super) fn lower_preserved_direct_op(&mut self, op: &TirOp, kind: &str) -> bool {
         let i64_ty = self.backend.context.i64_type();
         match kind {
@@ -876,19 +900,45 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 true
             }
 
-            // Type/tag guard: a runtime CHECK that raises `TypeError` on
-            // mismatch; the return value is discarded (the op is result-less on
-            // native). `molt_guard_type(val, expected)`. A passthrough here would
-            // SILENTLY ELIDE the guard — the program would not raise where
-            // CPython does. (`guard_type` is the canonical kind and IS mapped to
-            // a dedicated TIR `OpCode::TypeGuard`; only the `guard_tag` alias
-            // reaches here as a preserved `Copy`, but we keep `guard_type` in the
-            // arm for completeness/idempotence.) The guard may return its
-            // borrowed value, so its word is never adopted.
+            // Runtime mismatch only profiles and preserves the source. A tag
+            // rejected by to_i64 can raise; unary TypeGuard is distinct.
             "guard_type" | "guard_tag" => {
                 if op.operands.len() != 2 {
                     return false;
                 }
+                let profile_join = if self.guard_facts.is_profile_only(op) {
+                    let enabled = self.runtime_guard_profile_flag();
+                    let enabled = self
+                        .backend
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::NE,
+                            enabled,
+                            i64_ty.const_zero(),
+                            "guard_profile_enabled",
+                        )
+                        .unwrap();
+                    let origin = self.backend.builder.get_insert_block().unwrap();
+                    let check = self
+                        .backend
+                        .context
+                        .append_basic_block(self.llvm_fn, "guard_profile");
+                    let join = self
+                        .backend
+                        .context
+                        .append_basic_block(self.llvm_fn, "guard_done");
+                    self.all_llvm_blocks.extend([check, join]);
+                    self.backend
+                        .builder
+                        .build_conditional_branch(enabled, check, join)
+                        .unwrap();
+                    self.record_llvm_edge(origin, check);
+                    self.record_llvm_edge(origin, join);
+                    self.backend.builder.position_at_end(check);
+                    Some(join)
+                } else {
+                    None
+                };
                 let guard_fn = self.ensure_runtime_i64_fn("molt_guard_type", 2);
                 self.emit_positional_runtime_call(
                     op,
@@ -897,6 +947,26 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     kind,
                     "guard_type",
                 );
+                if let Some(join) = profile_join {
+                    let checked = self.backend.builder.get_insert_block().unwrap();
+                    self.backend
+                        .builder
+                        .build_unconditional_branch(join)
+                        .unwrap();
+                    self.record_llvm_edge(checked, join);
+                    self.backend.builder.position_at_end(join);
+                }
+                let source = op.operands[0];
+                let value = self.resolve(source);
+                let ty = self
+                    .value_types
+                    .get(&source)
+                    .cloned()
+                    .unwrap_or(TirType::DynBox);
+                for &result in &op.results {
+                    self.values.insert(result, value);
+                    self.value_types.insert(result, ty.clone());
+                }
                 true
             }
 

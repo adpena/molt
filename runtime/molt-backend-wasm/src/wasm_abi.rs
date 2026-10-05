@@ -274,12 +274,15 @@ mod tests {
                 .required_imports
                 .contains(&WasmRuntimeImport::DecRefObj)
         );
-        let borrowed = op_loop_runtime_call("guard_tag", false).expect("borrowed guard result");
-        assert!(
-            !borrowed
-                .required_imports
-                .contains(&WasmRuntimeImport::IncRefObj)
-        );
+        for kind in ["guard_tag", "guard_type"] {
+            let borrowed = op_loop_runtime_call(kind, false).expect("borrowed guard result");
+            assert_eq!(borrowed.import, WasmRuntimeImport::GuardType);
+            assert!(
+                !borrowed
+                    .required_imports
+                    .contains(&WasmRuntimeImport::IncRefObj)
+            );
+        }
     }
 
     fn static_type_section_signatures() -> Vec<(usize, usize)> {

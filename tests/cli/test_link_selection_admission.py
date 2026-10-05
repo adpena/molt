@@ -281,3 +281,61 @@ def test_real_selection_dormant_api_is_ignored_but_selected_api_is_rejected(
     archive.write_bytes(archive.read_bytes() + b"changed")
     with pytest.raises((OSError, ValueError), match="changed"):
         admission.admit(**kwargs)
+
+
+@pytest.mark.parametrize("archive", [False, True])
+def test_native_selection_captures_member_facts_under_owned_admission(
+    tmp_path, monkeypatch, archive
+):
+    from contextlib import contextmanager
+    from collections import OrderedDict
+    import subprocess
+    import sys
+
+    from molt.cli import native_symbol_inspection as symbols
+    from molt.cli.extension_scan_surface import _ExtensionScanSurface
+    from tests.cli.native_link_test_support import static_archive_bytes
+    from tests.native_artifact_fixtures import native_relocatable_object
+
+    target = "x86_64-unknown-linux-gnu"
+    payload = native_relocatable_object(target_triple=target, symbols=("selected",))
+    artifact = tmp_path / ("dependency.a" if archive else "dependency.o")
+    artifact.write_bytes(static_archive_bytes(payload) if archive else payload)
+    surface = _ExtensionScanSurface(
+        frozenset(), frozenset(), frozenset(), tmp_path / "Python.h"
+    )
+    requirements = SourceExtensionLinkRequirements(
+        target, (source_extension_link_file(artifact),)
+    )
+    original_open = symbols.open_stable_regular_file
+    handles = []
+
+    @contextmanager
+    def own(path, **kwargs):
+        with original_open(path, **kwargs) as opened:
+            handles.append(opened)
+            yield opened
+
+    def inspect(argv, **kwargs):
+        assert len(handles) == 1 and not handles[0].stream.closed
+        return subprocess.CompletedProcess(
+            argv, 0, ("object.o:\n" if archive else "") + "0000 T selected\n", ""
+        )
+
+    monkeypatch.setattr(symbols, "open_stable_regular_file", own)
+    monkeypatch.setattr(symbols, "_nm_candidate_binaries", lambda: [sys.executable])
+    monkeypatch.setattr(symbols, "_run_completed_command", inspect)
+    monkeypatch.setattr(symbols, "_default_molt_cache", lambda: tmp_path / "cache")
+    monkeypatch.setattr(symbols, "_NATIVE_OBJECT_SYMBOL_SETS_CACHE", OrderedDict())
+    captured = LinkSelectionAdmission.capture(requirements, surface=surface)
+    facts = captured.facts[artifact]
+    assert facts.defined_functions == {"selected"}
+    assert facts.artifact_digest == hashlib.sha256(artifact.read_bytes()).hexdigest()
+    assert len(handles) == 1 and handles[0].stream.closed
+    if archive:
+        assert facts.members is not None and len(facts.members) == 1
+        assert facts.members[0].identity.sha256 == hashlib.sha256(payload).hexdigest()
+        assert set(captured.lazy_archives) == {artifact}
+    else:
+        assert facts.members is None
+        assert not captured.lazy_archives

@@ -32,6 +32,7 @@ pub(crate) const CONSERVATIVE_RUNTIME_IMPORTS: &[RuntimeImportSignature] = &[
     runtime_sig("molt_get_attr_name_default", 3, RuntimeReturnAbi::I64),
     runtime_sig("molt_guard_layout", 3, RuntimeReturnAbi::I64),
     runtime_sig("molt_guard_type", 2, RuntimeReturnAbi::I64),
+    runtime_sig("molt_profile_enabled", 0, RuntimeReturnAbi::I64),
     runtime_sig("molt_guarded_class_def", 8, RuntimeReturnAbi::I64),
     runtime_sig("molt_guarded_field_get", 6, RuntimeReturnAbi::I64),
     runtime_sig("molt_guarded_field_init_ptr", 7, RuntimeReturnAbi::I64),

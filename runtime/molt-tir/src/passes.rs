@@ -40,7 +40,9 @@ pub use self::dead_ops::eliminate_dead_ops;
 pub use self::escape::escape_analysis;
 pub use self::exception_check_elision::elide_safe_exception_checks;
 pub use self::exception_edges::canonicalize_direct_raise_edges;
-pub use self::guard_elision::eliminate_redundant_guard_tags;
+pub use self::guard_elision::{
+    RuntimeGuardFacts, SsaRuntimeGuardFacts, eliminate_redundant_guard_tags,
+};
 pub use self::megafunction_split::{
     split_large_function, split_megafunctions, split_megafunctions_with_filter,
 };

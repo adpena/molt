@@ -102,5 +102,9 @@ pub(in crate::wasm::op_loop) fn release_adopted_callable(
     }
     let args = op.args.as_deref().unwrap_or(&[]);
     func.instruction(&Instruction::LocalGet(locals[&args[0]]));
-    emit_call(func, reloc_enabled, import_ids[WasmRuntimeImport::DecRefObj]);
+    emit_call(
+        func,
+        reloc_enabled,
+        import_ids[WasmRuntimeImport::DecRefObj],
+    );
 }

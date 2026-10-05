@@ -38,12 +38,11 @@ from molt.cli.wasm_link_args import runtime_link_response_arguments
 from molt.toolchain_identity import (
     ExecutableIdentity,
     StableRegularFileIdentity,
-    read_stable_regular_file,
+    capture_stable_regular_file,
     resolve_executable,
     executable_content_path,
     stable_executable_probe,
     stable_native_executable_probe,
-    stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
 
@@ -190,24 +189,35 @@ class CargoResourceCustody:
     def capture(cls, roots: tuple[CargoResourceRoot, ...]) -> CargoResourceCustody:
         snapshots: dict[Path, StableRegularFileIdentity] = {}
         files: list[CargoFileCustody] = []
-        for root in roots:
-            for label, path in root.files():
-                content_path = executable_content_path(path, label=label)
-                prior = snapshots.get(content_path)
-                if prior is None:
-                    captured = CargoFileCustody.capture(label, path)
-                    snapshots[captured.identity.path] = captured.identity
-                else:
-                    captured = CargoFileCustody(label, path, prior)
-                if label.startswith("rust/link-response/"):
-                    if captured.identity.size > RUNTIME_ARTIFACT_METADATA_MAX_BYTES:
-                        raise ValueError(
-                            "runtime linker response exceeds the artifact metadata limit"
-                        )
-                    runtime_link_response_arguments(
-                        read_stable_regular_file(captured.identity, label=label)
-                    )
-                files.append(captured)
+        selected = tuple(
+            (label, path, executable_content_path(path, label=label))
+            for root in roots
+            for label, path in root.files()
+        )
+        response_paths = {
+            content_path
+            for label, _path, content_path in selected
+            if label.startswith("rust/link-response/")
+        }
+        for label, path, content_path in selected:
+            prior = snapshots.get(content_path)
+            if prior is not None:
+                captured = CargoFileCustody(label, path, prior)
+            elif content_path in response_paths:
+                # Capture and parse the same bounded bytes, even if this file
+                # first occurs under another resource label. Retain only its
+                # identity; no response-content cache outlives this operation.
+                identity, content = capture_stable_regular_file(
+                    content_path,
+                    label="runtime linker response",
+                    max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+                )
+                runtime_link_response_arguments(content)
+                captured = CargoFileCustody(label, path, identity)
+            else:
+                captured = CargoFileCustody.capture(label, path)
+            snapshots[captured.identity.path] = captured.identity
+            files.append(captured)
         result = cls(roots, tuple(files))
         result.verify()
         return result
@@ -1064,8 +1074,7 @@ def _apply_cargo_environment(
 
 
 def _capture_config(path: Path, *, label: str) -> CargoConfigurationInput:
-    identity = stable_regular_file_identity(path, label=label)
-    raw = read_stable_regular_file(identity, label=label)
+    identity, raw = capture_stable_regular_file(path, label=label)
     try:
         value = tomllib.loads(raw.decode("utf-8"))
     except (UnicodeError, tomllib.TOMLDecodeError) as exc:
@@ -1397,6 +1406,26 @@ class RuntimeCargoPlan:
     link_resources: CargoResourceCustody
     forced_environment: tuple[str, ...]
     c_environment: Mapping[str, tuple[str, ...]]
+
+    @property
+    def cargo_profile(self) -> str:
+        """Present the profile selected by the admitted Cargo command.
+
+        Rustc arguments after `--` never select a Cargo profile. This is a
+        command projection only; it performs no configuration or identity work.
+        """
+        profile = "dev"
+        arguments = iter(self.command[1:])
+        for argument in arguments:
+            if argument == "--":
+                break
+            if argument == "--release":
+                profile = "release"
+            elif argument == "--profile":
+                profile = next(arguments)
+            elif argument.startswith("--profile="):
+                profile = argument.partition("=")[2]
+        return profile
 
     @property
     def logical_paths(self) -> tuple[tuple[str, Path], ...]:

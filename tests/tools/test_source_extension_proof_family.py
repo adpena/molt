@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from molt.cli import source_build_environment as build_environment
+from molt.cli import source_build_environment_schema as build_environment_schema
 from molt.cli import source_extension_set_registry as registry_authority
 from molt.cli.source_extension_invocation import SourceExtensionSetInvocation
 from tools.proof_queue_pkg import command_admission as admission
@@ -21,7 +22,7 @@ def producer_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     scripts.mkdir(parents=True)
     python = scripts / ("python.exe" if os.name == "nt" else "python")
     python.write_bytes(b"fixture interpreter; never executed")
-    manifest = root / build_environment.SOURCE_BUILD_ENVIRONMENT_MANIFEST
+    manifest = root / build_environment_schema.SOURCE_BUILD_ENVIRONMENT_MANIFEST
     manifest.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
         build_environment, "_source_build_custody_root", lambda _: root.parent
@@ -291,13 +292,14 @@ def test_named_native_intent_reaches_host_compiler_selection(
     assert target.compiler_target_triple is None
     assert admitted_targets and set(admitted_targets) == {target.target_triple}
 
-    compiler = tmp_path / "host-cc"
-    cxx = tmp_path / "host-cxx"
+    msvc = target.target_triple.endswith("-windows-msvc")
+    compiler = tmp_path / ("clang-cl.exe" if msvc else "host-cc")
+    cxx = tmp_path / ("cxx-clang-cl.exe" if msvc else "host-cxx")
     compiler.write_bytes(b"fixture; never executed")
     cxx.write_bytes(b"fixture; never executed")
     selected = {
         "CC": str(compiler),
-        "CXX": str(cxx),
+        "CXX": str(cxx) + (" --driver-mode=cl" if msvc else ""),
         "MOLT_CROSS_CC": str(tmp_path / "must-not-select-cross-cc"),
         "MOLT_CROSS_CXX": str(tmp_path / "must-not-select-cross-cxx"),
         "PATH": "",
@@ -330,10 +332,11 @@ def test_named_native_intent_reaches_host_compiler_selection(
     resolved = source_extension_toolchain._resolve_source_extension_toolchain(
         target, environment=selected
     )
-    assert resolved.compiler_kind == "host"
+    assert resolved.compiler_kind == ("host-clang-cl" if msvc else "host")
     assert resolved.commands["c"] == (str(compiler),)
-    assert resolved.commands["cpp"] == (str(cxx),)
-    assert seen == [{"cc": (str(compiler),), "cxx": (str(cxx),)}]
+    expected_cxx = (str(cxx), "--driver-mode=cl") if msvc else (str(cxx),)
+    assert resolved.commands["cpp"] == expected_cxx
+    assert seen == [{"cc": (str(compiler),), "cxx": expected_cxx}]
 
 
 def test_invalid_publication_identity_is_rejected_before_setup(

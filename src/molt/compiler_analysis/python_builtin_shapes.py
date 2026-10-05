@@ -9,9 +9,14 @@ to elide evaluation or dispatch.
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final, cast
 
+from molt.compiler_analysis.python_value_identity import (
+    IdentityMask,
+    OTHER_IDENTITY,
+    PythonIdentity,
+)
 from molt.compiler_analysis.python_effects_generated import (
     ALLOCATES,
     EXECUTES_ARBITRARY_PYTHON,
@@ -31,6 +36,8 @@ from molt.compiler_analysis.static_truth import (
     StaticExpressionResult,
     UNKNOWN_EXPRESSION_RESULT,
     iterable_element_result,
+    expression_result_for_publication,
+    expression_result_without_value_facts,
     join_static_expression_results,
 )
 
@@ -97,6 +104,9 @@ class BuiltinCallShape:
     result: StaticExpressionResult
     invocation_effects: EffectMask
     specialization_valid: bool
+    # The result roots all referents whose release could run Python. The
+    # exact outer tuple/list itself has no user-defined retirement hook.
+    retained_argument_indices: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +135,7 @@ def _normal_result(
     length: int | None = None,
     element_result: StaticExpressionResult | None = None,
     publication_release_stable: bool | None = None,
+    identities: IdentityMask = int(PythonIdentity.INERT_VALUE),
 ) -> StaticExpressionResult:
     return StaticExpressionResult(
         truth=truth,
@@ -136,6 +147,7 @@ def _normal_result(
         length=length,
         element_result=element_result,
         _publication_release_stable=publication_release_stable,
+        identities=identities,
     )
 
 
@@ -255,15 +267,35 @@ def _result_shape(
             return StaticExpressionResult.scalar(
                 positional[0].truth, evaluation_required=True
             )
-        if name in {"tuple", "list"} and positional[0].kind in {"tuple", "list"}:
+        if name in {"tuple", "list", "set", "frozenset"} and positional[0].kind in {
+            "tuple",
+            "list",
+            "set",
+            "frozenset",
+            "dict",
+            "str",
+            "bytes",
+            "bytearray",
+            "range",
+        }:
+            ordered_copy = name in {"tuple", "list"} and positional[0].kind in {
+                "tuple",
+                "list",
+            }
             return _normal_result(
                 kind,
                 truth=positional[0].truth,
-                items=positional[0].items,
+                items=positional[0].items if ordered_copy else None,
                 release_may_call=positional[0].release_may_call,
-                fresh_container=name == "list",
-                length=positional[0].length,
-                element_result=positional[0].element_result,
+                fresh_container=name in {"list", "set"},
+                length=(
+                    positional[0].length
+                    if name in {"tuple", "list"}
+                    else 0
+                    if positional[0].truth is False
+                    else None
+                ),
+                element_result=iterable_element_result(positional[0]),
                 publication_release_stable=(
                     bool(positional[0]._publication_release_stable)
                     if name == "tuple"
@@ -272,6 +304,21 @@ def _result_shape(
                     else None
                 ),
             )
+    if (
+        len(positional) == 1
+        and not node.keywords
+        and name in {"tuple", "list", "set", "frozenset"}
+    ):
+        element = iterable_element_result(positional[0])
+        return _normal_result(
+            kind,
+            fresh_container=name in {"list", "set"},
+            element_result=(
+                expression_result_without_value_facts(element)
+                if element is not None
+                else None
+            ),
+        )
     if (
         name == "dict"
         and not positional
@@ -462,6 +509,20 @@ def builtin_call_shape(
     )
     invocation_effects = _invocation_effects(name, node, arguments)
     result = _result_shape(name, node, arguments)
+    if name in {"tuple", "list", "set", "frozenset", "dict"}:
+        # Constructor provenance includes unpacked/opaque inputs whose concrete
+        # contents cannot be retained in the result graph.
+        result = replace(
+            result,
+            exposed_deferred=result.exposed_deferred
+            | frozenset().union(
+                *(argument.exposed_deferred for argument in argument_results)
+            ),
+            exposes_module_globals=(
+                result.exposes_module_globals
+                or any(argument.exposes_module_globals for argument in argument_results)
+            ),
+        )
     if name in {"str", "bytes"} and _text_result_may_be_strict_subclass(
         node, arguments
     ):
@@ -469,7 +530,17 @@ def builtin_call_shape(
         # numeric constructors, these calls do not normalize every hook result
         # to the exact builtin type.
         result = UNKNOWN_EXPRESSION_RESULT
-    return BuiltinCallShape(result, invocation_effects, specialization_valid)
+    retained_arguments = (
+        frozenset({0})
+        if specialization_valid
+        and name in {"tuple", "list"}
+        and len(argument_results) == 1
+        and argument_results[0].kind in {"tuple", "list"}
+        else frozenset()
+    )
+    return BuiltinCallShape(
+        result, invocation_effects, specialization_valid, retained_arguments
+    )
 
 
 def _builtin_open_shape(
@@ -501,6 +572,7 @@ def _builtin_open_shape(
     result = (
         _normal_result(
             "file_bytes" if "b" in mode else "file_text",
+            identities=OTHER_IDENTITY,
             release_may_call=True,
         )
         if mode is not None
@@ -520,10 +592,11 @@ def _joined_element_result(
     current = iterable_element_result(receiver)
     if receiver.truth is False:
         return incoming
-    if current is None or incoming is None:
+    if current is None and incoming is None:
         return None
-    joined = join_static_expression_results((current, incoming))
-    return None if joined.kind == "unknown" else joined
+    return join_static_expression_results(
+        (current or UNKNOWN_EXPRESSION_RESULT, incoming or UNKNOWN_EXPRESSION_RESULT)
+    )
 
 
 def _receiver_with_element(
@@ -538,6 +611,9 @@ def _receiver_with_element(
         release_may_call=release_may_call,
         element_result=element,
         _publication_release_stable=receiver._publication_release_stable,
+        identities=receiver.identities,
+        exposes_module_globals=receiver.exposes_module_globals,
+        exposed_deferred=receiver.exposed_deferred,
     )
 
 
@@ -782,9 +858,11 @@ def builtin_method_call_shape(
             if not callback_free:
                 effects |= EXECUTES_ARBITRARY_PYTHON
             return shape(
-                element or UNKNOWN_EXPRESSION_RESULT
+                expression_result_for_publication(element or UNKNOWN_EXPRESSION_RESULT)
                 if callback_free
-                else UNKNOWN_EXPRESSION_RESULT,
+                else expression_result_without_value_facts(
+                    element or UNKNOWN_EXPRESSION_RESULT
+                ),
                 effects,
                 _receiver_with_element(
                     receiver,
@@ -851,9 +929,21 @@ def builtin_method_call_shape(
                 effects |= _RELEASE_CALLBACK_EFFECTS
             default = positional[1] if len(positional) > 1 else inert_none
             result = (
-                default
+                expression_result_for_publication(default)
                 if receiver.truth is False and safe
-                else UNKNOWN_EXPRESSION_RESULT
+                else replace(
+                    join_static_expression_results(
+                        (
+                            expression_result_for_publication(default),
+                            UNKNOWN_EXPRESSION_RESULT,
+                        )
+                    ),
+                    deferred=receiver.exposed_deferred | default.deferred,
+                    exposes_module_globals=(
+                        receiver.exposes_module_globals
+                        or default.exposes_module_globals
+                    ),
+                )
             )
             receiver_after = None
             if mutates and safe and not effects & _RELEASE_CALLBACK_EFFECTS:
@@ -866,6 +956,16 @@ def builtin_method_call_shape(
                         receiver.release_may_call
                         or method == "setdefault"
                         and (key.release_may_call or default.release_may_call)
+                    ),
+                )
+            if receiver_after is not None and method == "setdefault":
+                receiver_after = replace(
+                    receiver_after,
+                    exposed_deferred=receiver_after.exposed_deferred
+                    | default.exposed_deferred,
+                    exposes_module_globals=(
+                        receiver_after.exposes_module_globals
+                        or default.exposes_module_globals
                     ),
                 )
             return shape(

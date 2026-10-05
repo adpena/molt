@@ -1,6 +1,12 @@
 // Call-site inline-cache authority for call binding, fused method dispatch,
 // fused super dispatch, C-ABI IC entry points, and cache lifecycle.
 
+use super::arguments::{ArgumentCustody, CallArguments};
+use super::constructors::is_default_type_call;
+use super::frame_binding::{
+    call_owned_function, function_binding_meta, function_binding_shape,
+    function_requires_full_binding,
+};
 use super::*;
 use crate::object::layout::function_mutation_version;
 use crate::{attr_name_bits_from_bytes, molt_super_new};
@@ -658,7 +664,7 @@ pub(super) unsafe fn call_bind_ic_entry_for_call(
                     return None;
                 }
                 let fn_ptr = function_fn_ptr(func_ptr);
-                if fn_ptr == fn_addr!(molt_list_append) {
+                if fn_ptr == fn_key!(molt_list_append) {
                     Some(CallBindIcEntry {
                         fn_ptr,
                         function_version: function_mutation_version(func_ptr),
@@ -1993,31 +1999,36 @@ unsafe fn call_super_method_ic_dispatch(
                 self_bits,
                 attr_bits,
             );
-            if let Some(info) = resolved
-                && type_resolution_epoch_is_stable(type_version)
-            {
-                let selected = SuperIcEntry {
-                    start_class_bits,
-                    self_class_bits: info.self_class_bits,
-                    self_class_version: info.self_class_version,
-                    type_version,
-                    func_bits: info.func_bits,
-                    function_version: function_mutation_version(
-                        obj_from_bits(info.func_bits)
-                            .as_ptr()
-                            .expect("resolved super function"),
-                    ),
-                    attr_bits,
-                    valid: true,
+            if let Some(info) = resolved {
+                if type_resolution_epoch_is_stable(type_version) {
+                    let selected = SuperIcEntry {
+                        start_class_bits,
+                        self_class_bits: info.self_class_bits,
+                        self_class_version: info.self_class_version,
+                        type_version,
+                        func_bits: info.func_bits,
+                        function_version: function_mutation_version(
+                            obj_from_bits(info.func_bits)
+                                .as_ptr()
+                                .expect("resolved super function"),
+                        ),
+                        attr_bits,
+                        valid: true,
+                    }
+                    .pin(_py);
+                    dec_ref_bits(_py, info.func_bits);
+                    dec_ref_bits(_py, attr_bits);
+                    if let Some(site_id) = ic_site_from_bits(site_bits) {
+                        super_ic_insert(_py, site_id, &selected);
+                    }
+                    return call_direct(_py, selected.entry.func_bits);
                 }
-                .pin(_py);
-                dec_ref_bits(_py, attr_bits);
-                if let Some(site_id) = ic_site_from_bits(site_bits) {
-                    super_ic_insert(_py, site_id, &selected);
-                }
-                return call_direct(_py, selected.entry.func_bits);
+                dec_ref_bits(_py, info.func_bits);
             }
             dec_ref_bits(_py, attr_bits);
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
         }
 
         // SLOW PATH: byte-identical to the legacy lowering.
@@ -3106,3 +3117,7 @@ pub extern "C" fn molt_call_indirect_ic(site_bits: u64, call_bits: u64, builder_
         unsafe { call_bind_ic_dispatch(_py, site_bits, call_bits, builder_bits) }
     })
 }
+
+#[cfg(test)]
+#[path = "inline_cache_binding_tests.rs"]
+mod binding_tests;

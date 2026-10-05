@@ -39,6 +39,8 @@ pub(crate) mod buffer_exports;
 pub(crate) mod builders;
 pub(crate) mod cells;
 pub(crate) mod class_layout;
+#[cfg(test)]
+mod class_shape_tests;
 pub(crate) mod class_storage;
 pub(crate) mod code_layout;
 pub(crate) mod field_storage;
@@ -86,6 +88,7 @@ pub(crate) mod seq_access;
 pub(crate) mod sequence_index;
 #[allow(dead_code)]
 pub mod string_intern;
+pub(crate) mod tuple_storage;
 #[allow(dead_code)]
 pub(crate) mod type_ids;
 pub(crate) mod utf8_cache;
@@ -929,7 +932,8 @@ pub(crate) struct MemoryView {
     pub(crate) readonly: u8,
     pub(crate) ndim: u8,
     pub(crate) released: u8,
-    pub(crate) _pad: [u8; 5],
+    pub(crate) restricted: u8,
+    pub(crate) _pad: [u8; 4],
     pub(crate) format_bits: u64,
     pub(crate) shape_ptr: *mut Vec<isize>,
     pub(crate) strides_ptr: *mut Vec<isize>,
@@ -1386,12 +1390,23 @@ pub(crate) unsafe fn class_instance_type_id(class_ptr: *mut u8) -> u32 {
     }
 }
 
-/// Whether this heap kind uses the shared Python class/slot/dict instance
-/// layout. Attribute and lifetime consumers must query this generated policy
-/// instead of re-listing individual physical type IDs.
+/// Whether this heap kind permits the shared Python class/slot/dict layout.
+/// Allocation uses this generated policy. Live-object consumers must additionally
+/// admit the immutable payload shape through `object_has_class_shape`.
 #[inline]
 pub(crate) fn heap_kind_has_class_shape(type_id: u32) -> bool {
     heap_shape_policy(type_id) == Some(HeapShapePolicy::Class)
+}
+
+/// A logical class edge does not change a task's physical capture payload.
+/// Its typed lifecycle owns every capture word, including the last word; none
+/// belongs to managed class fields or the shared instance-dictionary tail.
+#[inline]
+pub(crate) unsafe fn object_has_class_shape(ptr: *mut u8) -> bool {
+    unsafe {
+        heap_kind_has_class_shape(object_type_id(ptr))
+            && !object_shape_is_task(object_shape_id(ptr))
+    }
 }
 
 pub(crate) unsafe fn class_set_instance_type_id(class_ptr: *mut u8, type_id: u32) -> bool {
@@ -1844,7 +1859,7 @@ pub(crate) unsafe fn object_init_shape_unpublished(
 /// Resolve a task constructor's code pointer to its immutable lifecycle shape.
 /// This conversion runs once while the object is unpublished; lifecycle paths
 /// dispatch only on the resulting compact ID.
-pub(crate) fn object_shape_for_poll_fn(poll_fn: u64) -> ObjectShapeId {
+pub(crate) fn task_shape_for_poll_fn(poll_fn: u64) -> ObjectShapeId {
     if poll_fn == crate::promise_poll_fn_addr() {
         ObjectShapeId::Promise
     } else if poll_fn == crate::async_sleep_poll_fn_addr() {
@@ -1899,10 +1914,10 @@ pub(crate) fn object_shape_for_poll_fn(poll_fn: u64) -> ObjectShapeId {
         ObjectShapeId::IoWait
     } else if poll_fn == ws_wait_poll_fn_addr() {
         ObjectShapeId::WebsocketWait
-    } else if poll_fn != 0 {
-        ObjectShapeId::GenericTaskPayload
     } else {
-        ObjectShapeId::Plain
+        // Task construction owns capture storage even when no callable address
+        // has been installed. Zero cannot turn that payload into class fields.
+        ObjectShapeId::GenericTaskPayload
     }
 }
 
@@ -2372,6 +2387,7 @@ pub(crate) unsafe fn object_payload_size(ptr: *mut u8) -> usize {
 pub(crate) unsafe fn instance_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
     unsafe {
         match object_type_id(ptr) {
+            TYPE_ID_TYPE => return class_storage::class_generic_dict_bits_ptr(ptr),
             TYPE_ID_FUNCTION => return layout::function_dict_bits_ptr(ptr),
             TYPE_ID_DATACLASS => return dataclass_dict_bits_ptr(ptr),
             TYPE_ID_EXCEPTION => return crate::builtins::exceptions::exception_dict_bits_ptr(ptr),
@@ -2395,11 +2411,10 @@ pub(crate) unsafe fn instance_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
                     .cast()
             };
         }
-        // Every generated class-shaped heap kind reserves the trailing managed
-        // `__dict__` word in its instance payload. Physical heap IDs must not
-        // reclassify that shared shape: doing so strands subtype dictionaries
-        // outside attribute lookup, GC traversal, and cycle clearing.
-        if !heap_kind_has_class_shape(object_type_id(ptr)) || object_class_bits(ptr) == 0 {
+        // The physical kind admits class layout only when its immutable
+        // subshape does too. Classed poll adapters retain a capture in their
+        // final word; their logical class must never reinterpret it as __dict__.
+        if !object_has_class_shape(ptr) || object_class_bits(ptr) == 0 {
             return std::ptr::null_mut();
         }
         let payload = object_payload_size(ptr);
@@ -2973,7 +2988,9 @@ pub(crate) unsafe fn class_finish_definition(
             return Err(());
         }
         class_refresh_declared_finalizer_flag(_py, class_ptr);
-        if crate::exception_pending(_py) {
+        if crate::exception_pending(_py)
+            || !class_storage::class_capture_creation_doc(_py, class_ptr)
+        {
             return Err(());
         }
         // All allocation and validation precedes this GIL-held publication.

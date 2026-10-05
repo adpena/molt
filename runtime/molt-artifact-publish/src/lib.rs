@@ -4,6 +4,10 @@
 //! durability barrier fails. Preserve [`PublicationState`] through error chains;
 //! callers must never treat [`PublicationState::Replaced`] as a rollback.
 
+// rustc records option_env! in Cargo dep-info. A changed source-content digest
+// rebuilds this crate and its dependents without invalidating registry crates.
+const _: Option<&str> = option_env!("MOLT_CARGO_INPUT_MOLT_ARTIFACT_PUBLISH");
+
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions, Permissions};
 use std::io::{self, BufWriter, Write};

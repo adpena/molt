@@ -59,22 +59,12 @@ pub struct CFG {
     /// member of this relation: liveness, SSA placement, and edge arguments
     /// must all observe the same re-entry.
     pub exception_edges: Vec<(usize, usize)>,
-    /// State-machine resume edges: implicit control-flow from the `state_switch`
-    /// dispatch block to every suspend op's resume-continuation block.  Each
-    /// entry is `(state_switch_block, resume_block, resume_state_id)` — the
-    /// `resume_state_id` is the suspend op's saved-state value, used by the
-    /// `StateDispatch` terminator's switch cases.
-    ///
-    /// A `_poll` function re-enters at a saved state via the `state_switch`
-    /// dispatch: control jumps from the entry block's `state_switch` straight to
-    /// the op *after* the suspend op (`state_yield` / `state_transition` /
-    /// `chan_*_yield`) that established that state, OR — for the re-poll ops
-    /// (`state_transition` / `chan_*_yield`) — back to the suspend op itself (a
-    /// pending re-poll re-entry).  These edges are otherwise invisible to the
-    /// regular successor relation (a suspend op `ret`s, so its continuation has
-    /// no ordinary predecessor — exactly like an exception handler block).  They
-    /// are folded into the SSA pass's augmented CFG so dominance, phi placement,
-    /// and liveness are computed on the *real* re-entrant control flow.
+    /// Resume edges projected from the canonical operation-level dispatch
+    /// relation. Entries are `(dispatch_block, resume_block, saved_state_id)`.
+    /// Explicit `state_targets` maps own terminal identity; source suspension
+    /// sites establish that identity only when no map has been authored yet.
+    /// These edges join the augmented SSA graph for dominance, phi placement,
+    /// and liveness, while ordinary successors retain the default-entry path.
     pub state_resume_edges: Vec<(usize, usize, i64)>,
 }
 
@@ -632,139 +622,20 @@ fn compute_exception_edges(
 // Phase 6: state-machine resume edge computation
 // ---------------------------------------------------------------------------
 
-/// Compute the implicit `state_switch` dispatch edges.
-///
-/// A `_poll` function's entry block contains exactly one `state_switch` op.  On
-/// resume, the runtime restores the saved state and the `state_switch` jumps to
-/// the resume continuation that established that state.  ONLY states that are
-/// actually *saved* at a suspend point are dispatch targets:
-///
-/// 1. `state_yield value=N` at op K → the continuation is the block of op K+1
-///    (the post-yield throw-check / send-value read).  This block has NO regular
-///    predecessor (the yield `ret`s), so the dispatch edge is essential.  The
-///    saved state is `N`.
-/// 2. A re-poll suspend (`state_transition` / `chan_*_yield`) saves a *pending*
-///    state (an operand that is a `const` equal to some `state_label`'s id) and
-///    `ret`s on the pending path; on resume the `state_switch` dispatches that
-///    pending state to the matching `state_label` block (the re-poll re-entry).
-///    The saved state is the pending-state const.
-///
-/// Internal `state_label`s that are ONLY jump targets — loop-body continue
-/// targets and after-loop break targets from `rewrite_stateful_loops`, and the
-/// frontend's `try`/`jump` labels — are NOT dispatch targets: the runtime never
-/// saves their id as the resume state, and they already have a regular `jump`
-/// predecessor.  Adding a (dead) dispatch edge to them would pollute the loop
-/// header's phis with an undef incoming on a path that is never taken at runtime.
-///
-/// These edges are otherwise invisible to the regular successor relation, so
-/// folding them into the SSA pass's augmented CFG (mirroring `exception_edges`)
-/// is what makes dominance, phi placement, and liveness correct over the
-/// re-entrant `_poll` control flow, and the `StateDispatch` terminator built
-/// from them dispatches LLVM to the real resume blocks.
+/// Project the canonical operation-level resume relation into this CFG's
+/// blocks. Source suspension and explicit terminal maps have one authority;
+/// block extraction must not reconstruct either convention independently.
 fn compute_state_resume_edges(ops: &[OpIR], blocks: &[BasicBlock]) -> Vec<(usize, usize, i64)> {
-    // Find the single `state_switch` block (the dispatch site).  If the function
-    // has no `state_switch`, it is not a state machine and has no resume edges.
-    let Some(switch_op_idx) = ops.iter().position(|op| op.kind == "state_switch") else {
-        return Vec::new();
-    };
-    let Some(switch_bid) = block_containing(blocks, switch_op_idx) else {
-        return Vec::new();
-    };
-
-    if let Some(targets) = &ops[switch_op_idx].state_targets {
-        let labels: HashMap<i64, usize> = ops
-            .iter()
-            .enumerate()
-            .filter_map(|(index, op)| {
-                matches!(op.kind.as_str(), "label" | "state_label")
-                    .then(|| op.value.zip(block_containing(blocks, index)))
-                    .flatten()
-            })
-            .collect();
-        return targets
-            .iter()
-            .map(|&(state, label)| {
-                let target = *labels.get(&label).unwrap_or_else(|| {
-                    panic!("state {state} refers to missing control label {label}")
-                });
-                (switch_bid, target, state)
-            })
-            .collect();
-    }
-
-    // Map each `state_label` id → the block it leads (the re-poll re-entry target
-    // for a pending state).
-    let mut state_label_block: HashMap<i64, usize> = HashMap::new();
-    // Map each SSA value name (a `const` output) → its integer value, so a
-    // re-poll op's pending-state operand can be resolved to a concrete state id.
-    let mut const_values: HashMap<&str, i64> = HashMap::new();
-    for (idx, op) in ops.iter().enumerate() {
-        match op.kind.as_str() {
-            "state_label" => {
-                if let Some(state_id) = op.value
-                    && let Some(bid) = block_containing(blocks, idx)
-                {
-                    state_label_block.insert(state_id, bid);
-                }
-            }
-            "const" => {
-                if let (Some(out), Some(v)) = (op.out.as_deref(), op.value) {
-                    const_values.insert(out, v);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let mut edges: Vec<(usize, usize, i64)> = Vec::new();
-    let mut push_edge = |resume_bid: usize, state_id: i64| {
-        if resume_bid != switch_bid {
-            edges.push((switch_bid, resume_bid, state_id));
-        }
-    };
-
-    for (idx, op) in ops.iter().enumerate() {
-        let kind = op.kind.as_str();
-        match kind {
-            // (1) pure suspend: dispatch lands on an explicit `state_label
-            // <saved-state>` when the stream carries one. TIR roundtrips are
-            // free to linearize blocks in RPO, so physical adjacency is only a
-            // source-stream fallback.
-            _ if simpleir_kind_is_suspend(kind) && !simpleir_kind_is_repoll(kind) => {
-                if let Some(state_id) = op.value {
-                    if let Some(&resume_bid) = state_label_block.get(&state_id) {
-                        push_edge(resume_bid, state_id);
-                    } else {
-                        let cont_idx = idx + 1;
-                        if cont_idx < ops.len()
-                            && let Some(resume_bid) = block_containing(blocks, cont_idx)
-                        {
-                            push_edge(resume_bid, state_id);
-                        }
-                    }
-                }
-            }
-            // (2) re-poll suspend: the pending-state operand names a `const`
-            // whose value is a `state_label` id; on resume the dispatch lands on
-            // that label's block (re-poll re-entry). The pending operand position
-            // is op shape, so membership is table-owned while the operand lookup
-            // stays explicit here.
-            _ if simpleir_kind_is_repoll(kind) => {
-                if let Some(args) = &op.args
-                    && let Some(pending_name) = args.last()
-                    && let Some(&pending_state) = const_values.get(pending_name.as_str())
-                    && let Some(&resume_bid) = state_label_block.get(&pending_state)
-                {
-                    push_edge(resume_bid, pending_state);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    edges.sort_unstable();
-    edges.dedup();
-    edges
+    crate::simple_verify::state_resume_op_edges(ops)
+        .into_iter()
+        .filter_map(|(source, target, state)| {
+            Some((
+                block_containing(blocks, source)?,
+                block_containing(blocks, target)?,
+                state,
+            ))
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

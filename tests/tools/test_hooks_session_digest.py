@@ -38,6 +38,11 @@ def test_digest_exits_zero_and_prints_sections(tmp_path, monkeypatch, capsys):
     assert code == 0
     assert "session digest" in out
     assert "GOAL" in out and "STANDING DIRECTIVES" in out and "APPARATUS" in out
+    assert "LAND every work turn" not in out
+    assert "LAND potentially mutating work" in out
+    assert "read-only reviews are complete outcomes" in out
+    assert "read-only reviews can finish without a commit or blocker" in out
+    assert ", ".join(sorted(lg.READ_ONLY_TOOLS)) in out
 
 
 def test_digest_writes_landing_baseline(tmp_path, monkeypatch, capsys):

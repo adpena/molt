@@ -580,6 +580,90 @@ fn native_type_metadata_and_c_mappingproxy_share_runtime_descriptors() {
                 b"Visible documentation."
             );
 
+            let signature_key = OwnedPyObject::from_owned(strings::PyUnicode_FromString(
+                c"__text_signature__".as_ptr(),
+            ));
+            let generic_doc = OwnedPyObject::from_owned(object::PyObject_GenericGetAttr(
+                class.as_ptr(),
+                key.as_ptr(),
+            ));
+            assert_eq!(
+                typeobj::PyObject_RichCompareBool(generic_doc.as_ptr(), doc.as_ptr(), 2),
+                1
+            );
+            let signature = OwnedPyObject::from_owned(object::PyObject_GenericGetAttr(
+                class.as_ptr(),
+                signature_key.as_ptr(),
+            ));
+            assert_eq!(
+                std::ffi::CStr::from_ptr(strings::PyUnicode_AsUTF8(signature.as_ptr())).to_bytes(),
+                b"($self, /)"
+            );
+            let abstract_key = OwnedPyObject::from_owned(strings::PyUnicode_FromString(
+                c"__abstractmethods__".as_ptr(),
+            ));
+            assert!(
+                object::PyObject_GenericGetAttr(class.as_ptr(), abstract_key.as_ptr()).is_null()
+            );
+            assert_ne!(
+                errors::PyErr_ExceptionMatches((&raw mut PyExc_AttributeError).cast()),
+                0
+            );
+            errors::PyErr_Clear();
+            let truth =
+                OwnedPyObject::from_owned(molt_cpython_abi::api::numbers::PyLong_FromLong(1));
+            assert_eq!(
+                object::PyObject_SetAttr(class.as_ptr(), abstract_key.as_ptr(), truth.as_ptr()),
+                0
+            );
+            assert_ne!((*class_ptr).tp_flags & Py_TPFLAGS_IS_ABSTRACT, 0);
+            let abstract_value = OwnedPyObject::from_owned(object::PyObject_GenericGetAttr(
+                class.as_ptr(),
+                abstract_key.as_ptr(),
+            ));
+            assert_eq!(abstract_value.as_ptr(), truth.as_ptr());
+            assert_eq!(
+                object::PyObject_SetAttr(class.as_ptr(), abstract_key.as_ptr(), ptr::null_mut()),
+                0
+            );
+            assert_eq!((*class_ptr).tp_flags & Py_TPFLAGS_IS_ABSTRACT, 0);
+            assert_eq!(
+                object::PyObject_SetAttr(class.as_ptr(), abstract_key.as_ptr(), ptr::null_mut()),
+                -1
+            );
+            assert_ne!(
+                errors::PyErr_ExceptionMatches((&raw mut PyExc_AttributeError).cast()),
+                0
+            );
+            errors::PyErr_Clear();
+            assert_eq!(
+                object::PyObject_SetAttr(class.as_ptr(), signature_key.as_ptr(), truth.as_ptr()),
+                -1
+            );
+            assert_ne!(
+                errors::PyErr_ExceptionMatches((&raw mut PyExc_AttributeError).cast()),
+                0
+            );
+            errors::PyErr_Clear();
+            assert_eq!(
+                object::PyObject_SetAttr(class.as_ptr(), key.as_ptr(), truth.as_ptr()),
+                0
+            );
+            let changed_doc = OwnedPyObject::from_owned(object::PyObject_GenericGetAttr(
+                class.as_ptr(),
+                key.as_ptr(),
+            ));
+            assert_eq!(changed_doc.as_ptr(), truth.as_ptr());
+            assert_eq!(
+                object::PyObject_SetAttr(class.as_ptr(), key.as_ptr(), ptr::null_mut()),
+                -1
+            );
+            assert_ne!(
+                errors::PyErr_ExceptionMatches((&raw mut PyExc_TypeError).cast()),
+                0
+            );
+            errors::PyErr_Clear();
+
             assert_eq!(typeobj::PyUnstable_Type_AssignVersionTag(class_ptr), 1);
             let renamed =
                 OwnedPyObject::from_owned(strings::PyUnicode_FromString(c"RenamedProbe".as_ptr()));
@@ -946,6 +1030,370 @@ fn function_typed_metadata_survives_public_dictionary_replacement_and_clears_onc
                 dec_ref_bits(py, bit);
             }
             assert!(!exception_pending(py));
+        }
+    });
+}
+
+#[test]
+fn type_abstract_state_is_local_latched_and_updates_only_existing_c_views() {
+    use crate::object::class_storage::class_is_abstract;
+    use molt_cpython_abi::abi_types::{Py_TPFLAGS_IS_ABSTRACT, PyTypeObject};
+    use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let name = attr_name_bits_from_bytes(py, b"AbstractState").unwrap();
+            let class = crate::molt_class_new(name);
+            let child = crate::molt_class_new(name);
+            dec_ref_bits(py, name);
+            crate::molt_class_set_base(class, builtin_classes(py).object);
+            crate::molt_class_set_base(child, class);
+            let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+            let child_ptr = obj_from_bits(child).as_ptr().unwrap();
+            crate::object::class_finish_definition(py, class_ptr).unwrap();
+            crate::object::class_finish_definition(py, child_ptr).unwrap();
+            let key = attr_name_bits_from_bytes(py, b"__abstractmethods__").unwrap();
+            let values =
+                MoltObject::from_ptr(alloc_list(py, &[MoltObject::from_int(1).bits()])).bits();
+            assert!(!GLOBAL_BRIDGE.type_has_projection(class));
+            crate::molt_set_attr_name(class, key, values);
+            assert!(!exception_pending(py));
+            assert!(class_is_abstract(class_ptr));
+            assert!(!class_is_abstract(child_ptr));
+            assert!(!GLOBAL_BRIDGE.type_has_projection(class));
+            let view = GLOBAL_BRIDGE
+                .borrowed_handle_to_new_pyobj(class)
+                .cast::<PyTypeObject>();
+            assert!(!view.is_null());
+            assert_ne!((*view).tp_flags & Py_TPFLAGS_IS_ABSTRACT, 0);
+            let mut heap_alias: Box<molt_cpython_abi::abi_types::PyHeapTypeObject> =
+                Box::new(std::mem::zeroed());
+            heap_alias.ht_type.ob_base.ob_base.ob_refcnt =
+                molt_cpython_abi::abi_types::IMMORTAL_REFCNT;
+            heap_alias.ht_type.tp_flags = molt_cpython_abi::abi_types::Py_TPFLAGS_HEAPTYPE;
+            let heap_alias_pointer = (&raw mut heap_alias.ht_type).cast();
+            GLOBAL_BRIDGE
+                .bind_static_pyobj_to_runtime_handle(heap_alias_pointer, class, false)
+                .unwrap();
+            crate::molt_set_attr_name(class, key, values);
+            assert!(!exception_pending(py));
+            assert_ne!(heap_alias.ht_type.tp_flags & Py_TPFLAGS_IS_ABSTRACT, 0);
+            crate::molt_set_attr_name(class, key, MoltObject::none().bits());
+            assert!(!exception_pending(py));
+            assert!(!class_is_abstract(class_ptr));
+            assert_eq!((*view).tp_flags & Py_TPFLAGS_IS_ABSTRACT, 0);
+            assert_eq!(heap_alias.ht_type.tp_flags & Py_TPFLAGS_IS_ABSTRACT, 0);
+            assert!(
+                GLOBAL_BRIDGE.unbind_static_pyobj_from_runtime_handle(heap_alias_pointer, class)
+            );
+            crate::molt_del_attr_name(class, key);
+            assert!(!exception_pending(py));
+            assert!(!class_is_abstract(class_ptr));
+            // Direct abstract getset writes are a CPython exception to normal
+            // immutable-type mutation. Every existing static alias observes it.
+            let static_class = builtin_classes(py).int;
+            let static_ptr = obj_from_bits(static_class).as_ptr().unwrap();
+            crate::molt_set_attr_name(static_class, key, values);
+            assert!(exception_pending(py));
+            molt_exception_clear();
+            let metatype = obj_from_bits(builtin_classes(py).type_obj)
+                .as_ptr()
+                .unwrap();
+            let namespace = obj_from_bits(class_dict_bits(metatype)).as_ptr().unwrap();
+            let descriptor = dict_get_in_place(py, namespace, key).unwrap();
+            let canonical = GLOBAL_BRIDGE
+                .borrowed_handle_to_new_pyobj(static_class)
+                .cast::<PyTypeObject>();
+            let mut alias: Box<PyTypeObject> = Box::new(std::mem::zeroed());
+            alias.ob_base.ob_base.ob_refcnt = molt_cpython_abi::abi_types::IMMORTAL_REFCNT;
+            alias.tp_flags = molt_cpython_abi::abi_types::Py_TPFLAGS_IMMUTABLETYPE;
+            let alias_pointer = (&mut *alias as *mut PyTypeObject).cast();
+            GLOBAL_BRIDGE
+                .bind_static_pyobj_to_runtime_handle(alias_pointer, static_class, false)
+                .unwrap();
+            crate::builtins::types::native_descriptor_mutate(
+                py,
+                descriptor,
+                static_class,
+                Some(values),
+            );
+            assert!(!exception_pending(py));
+            assert!(class_is_abstract(static_ptr));
+            assert_ne!((*canonical).tp_flags & Py_TPFLAGS_IS_ABSTRACT, 0);
+            assert_ne!(alias.tp_flags & Py_TPFLAGS_IS_ABSTRACT, 0);
+            crate::builtins::types::native_descriptor_mutate(py, descriptor, static_class, None);
+            assert!(!exception_pending(py));
+            assert!(!class_is_abstract(static_ptr));
+            assert_eq!((*canonical).tp_flags & Py_TPFLAGS_IS_ABSTRACT, 0);
+            assert_eq!(alias.tp_flags & Py_TPFLAGS_IS_ABSTRACT, 0);
+            assert!(
+                GLOBAL_BRIDGE.unbind_static_pyobj_from_runtime_handle(alias_pointer, static_class)
+            );
+            molt_cpython_abi::api::refcount::Py_DECREF(canonical.cast());
+            molt_cpython_abi::api::refcount::Py_DECREF(view.cast());
+            for bits in [values, key, child, class] {
+                dec_ref_bits(py, bits);
+            }
+        }
+    });
+}
+
+#[test]
+fn managed_type_metadata_publication_orders_watchers_and_displaced_reentry() {
+    use molt_cpython_abi::abi_types::{PyObject, PyTypeObject};
+    use molt_cpython_abi::api::{refcount::OwnedPyObject, typeobj};
+    use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    static WATCHES: AtomicUsize = AtomicUsize::new(0);
+    static ROOT: AtomicU64 = AtomicU64::new(0);
+    static VIEW: AtomicUsize = AtomicUsize::new(0);
+    static RETIRED: AtomicUsize = AtomicUsize::new(0);
+    unsafe extern "C" fn watched(_: *mut PyObject) -> i32 {
+        WATCHES.fetch_add(1, Ordering::Relaxed);
+        0
+    }
+    extern "C" fn retired(_: u64) -> u64 {
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let class = ROOT.load(Ordering::Relaxed);
+                let view = VIEW.load(Ordering::Relaxed) as *mut PyTypeObject;
+                let doc = type_metadata::read(py, class, typeobj::TypeAttributeField::Doc);
+                if obj_from_bits(doc).as_int() == Some(37)
+                    && WATCHES.load(Ordering::Relaxed) == 1
+                    && (*view).tp_version_tag == 0
+                {
+                    RETIRED.store(1, Ordering::Relaxed);
+                }
+                dec_ref_bits(py, doc);
+                // Reentry must see and be allowed to replace the committed doc.
+                type_metadata::write(
+                    py,
+                    class,
+                    typeobj::TypeAttributeField::Doc,
+                    Some(MoltObject::from_int(73).bits()),
+                );
+            }
+            MoltObject::none().bits()
+        })
+    }
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let name = attr_name_bits_from_bytes(py, b"MetadataPublication").unwrap();
+            let class = molt_class_new(name);
+            molt_class_set_base(class, builtin_classes(py).object);
+            let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+            crate::object::class_finish_definition(py, class_ptr).unwrap();
+            let view = OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(class));
+            let tp = view.as_ptr().cast::<PyTypeObject>();
+            let watcher = typeobj::PyType_AddWatcher(Some(watched));
+            assert!(watcher >= 0);
+            assert_eq!(typeobj::PyType_Watch(watcher, view.as_ptr()), 0);
+            let dictionary = crate::molt_dict_new(0);
+            let methods = MoltObject::from_ptr(alloc_tuple(py, &[name])).bits();
+            let root_namespace = obj_from_bits(class_dict_bits(
+                obj_from_bits(builtin_classes(py).type_obj)
+                    .as_ptr()
+                    .unwrap(),
+            ))
+            .as_ptr()
+            .unwrap();
+            for direct in [false, true] {
+                for (field, value) in [
+                    (typeobj::TypeAttributeField::Doc, name),
+                    (typeobj::TypeAttributeField::Name, name),
+                    (typeobj::TypeAttributeField::QualName, name),
+                    (typeobj::TypeAttributeField::Annotations, dictionary),
+                    (typeobj::TypeAttributeField::AbstractMethods, methods),
+                ] {
+                    let key = attr_name_bits_from_bytes(py, field.name().as_bytes()).unwrap();
+                    assert_eq!(typeobj::PyUnstable_Type_AssignVersionTag(tp), 1);
+                    WATCHES.store(0, Ordering::Relaxed);
+                    let epoch = class_layout_version_bits(class_ptr);
+                    if direct {
+                        let descriptor = dict_get_in_place(py, root_namespace, key).unwrap();
+                        crate::builtins::types::native_descriptor_mutate(
+                            py,
+                            descriptor,
+                            class,
+                            Some(value),
+                        );
+                    } else {
+                        molt_set_attr_name(class, key, value);
+                    }
+                    assert!(!exception_pending(py));
+                    let invalidates = !direct
+                        || !matches!(
+                            field,
+                            typeobj::TypeAttributeField::Name
+                                | typeobj::TypeAttributeField::QualName
+                        );
+                    assert_eq!(WATCHES.load(Ordering::Relaxed), usize::from(invalidates));
+                    assert_eq!((*tp).tp_version_tag == 0, invalidates);
+                    assert_ne!(class_layout_version_bits(class_ptr), epoch);
+                    dec_ref_bits(py, key);
+                }
+                assert_eq!(typeobj::PyUnstable_Type_AssignVersionTag(tp), 1);
+                WATCHES.store(0, Ordering::Relaxed);
+                let epoch = class_layout_version_bits(class_ptr);
+                if direct {
+                    type_metadata::write(
+                        py,
+                        class,
+                        typeobj::TypeAttributeField::Name,
+                        Some(MoltObject::from_int(1).bits()),
+                    );
+                } else {
+                    let key = attr_name_bits_from_bytes(py, b"__name__").unwrap();
+                    molt_set_attr_name(class, key, MoltObject::from_int(1).bits());
+                    dec_ref_bits(py, key);
+                }
+                assert!(exception_pending(py));
+                molt_exception_clear();
+                assert_eq!(WATCHES.load(Ordering::Relaxed), 0);
+                assert_ne!((*tp).tp_version_tag, 0);
+                assert_eq!(class_layout_version_bits(class_ptr), epoch);
+            }
+            // An existing class C view must not force a C view for an ordinary
+            // exact-string name merely to discover it has no physical slots.
+            let key_ptr = alloc_string(py, b"metadata_unprojected_plain_field");
+            let key = MoltObject::from_ptr(key_ptr).bits();
+            assert!(
+                !(*header_from_obj_ptr(key_ptr)).has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW)
+            );
+            molt_set_attr_name(class, key, MoltObject::from_int(11).bits());
+            molt_del_attr_name(class, key);
+            assert!(!exception_pending(py));
+            assert!(
+                !(*header_from_obj_ptr(key_ptr)).has_flag(crate::object::HEADER_FLAG_HAS_ABI_VIEW)
+            );
+
+            let finalizer_class = molt_class_new(name);
+            molt_class_set_base(finalizer_class, builtin_classes(py).object);
+            let finalizer_key = attr_name_bits_from_bytes(py, b"__del__").unwrap();
+            let function =
+                MoltObject::from_ptr(alloc_function_obj(py, fn_addr!(retired), 1)).bits();
+            molt_set_attr_name(finalizer_class, finalizer_key, function);
+            let old_doc = crate::molt_object_new_bound(finalizer_class);
+            type_metadata::write(py, class, typeobj::TypeAttributeField::Doc, Some(old_doc));
+            dec_ref_bits(py, old_doc);
+            ROOT.store(class, Ordering::Relaxed);
+            VIEW.store(tp.addr(), Ordering::Relaxed);
+            RETIRED.store(0, Ordering::Relaxed);
+            assert_eq!(typeobj::PyUnstable_Type_AssignVersionTag(tp), 1);
+            WATCHES.store(0, Ordering::Relaxed);
+            type_metadata::write(
+                py,
+                class,
+                typeobj::TypeAttributeField::Doc,
+                Some(MoltObject::from_int(37).bits()),
+            );
+            assert!(!exception_pending(py));
+            assert_eq!(RETIRED.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                type_metadata::read(py, class, typeobj::TypeAttributeField::Doc),
+                MoltObject::from_int(73).bits()
+            );
+            assert_eq!(typeobj::PyType_Unwatch(watcher, view.as_ptr()), 0);
+            assert_eq!(typeobj::PyType_ClearWatcher(watcher), 0);
+            ROOT.store(0, Ordering::Relaxed);
+            VIEW.store(0, Ordering::Relaxed);
+            drop(view);
+            for bits in [
+                finalizer_key,
+                function,
+                finalizer_class,
+                key,
+                methods,
+                dictionary,
+                class,
+                name,
+            ] {
+                dec_ref_bits(py, bits);
+            }
+        }
+    });
+}
+
+#[test]
+fn class_creation_doc_is_private_traced_and_independent_of_mutable_namespace() {
+    use crate::object::class_storage::ClassReferenceSlot;
+    use molt_cpython_abi::api::typeobj::TypeAttributeField as Field;
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            for guarded in [false, true] {
+                let name = attr_name_bits_from_bytes(py, b"BirthDoc").unwrap();
+                let key = attr_name_bits_from_bytes(py, b"__doc__").unwrap();
+                let doc = MoltObject::from_ptr(alloc_string(
+                    py,
+                    b"BirthDoc(a, b)\n--\n\nOriginal.\0ignored",
+                ))
+                .bits();
+                let class = if guarded {
+                    let attrs = [key, doc];
+                    crate::object::ops::molt_guarded_class_def(
+                        name,
+                        0,
+                        0,
+                        crate::provenance::abi::expose_address(attrs.as_ptr()),
+                        1,
+                        8,
+                        1,
+                        0,
+                    )
+                } else {
+                    let namespace =
+                        MoltObject::from_ptr(alloc_dict_with_pairs(py, &[key, doc])).bits();
+                    let class = crate::builtins::types::molt_type_new(
+                        builtin_classes(py).type_obj,
+                        name,
+                        MoltObject::none().bits(),
+                        namespace,
+                        MoltObject::none().bits(),
+                    );
+                    dec_ref_bits(py, namespace);
+                    class
+                };
+                assert!(!exception_pending(py));
+                let pointer = obj_from_bits(class).as_ptr().unwrap();
+                let captured = ClassReferenceSlot::CreationDoc.load(pointer);
+                assert_ne!(captured, doc);
+                let mut edges = Vec::new();
+                crate::object::heap_lifecycle::visit_owned_values(py, pointer, &mut |edge| {
+                    edges.push(edge)
+                });
+                assert!(edges.contains(&captured));
+                assert_eq!(
+                    string_obj_to_owned(obj_from_bits(captured)).as_deref(),
+                    Some("BirthDoc(a, b)\n--\n\nOriginal.")
+                );
+                molt_set_attr_name(class, key, MoltObject::from_int(19).bits());
+                assert_eq!(
+                    (*header_from_obj_ptr(obj_from_bits(doc).as_ptr().unwrap()))
+                        .ref_count_snapshot(),
+                    1
+                );
+                for (current, expected) in [
+                    (b"BirthDoc".as_slice(), Some("(a, b)")),
+                    (b"Renamed".as_slice(), None),
+                    (b"BirthDoc".as_slice(), Some("(a, b)")),
+                ] {
+                    let current = attr_name_bits_from_bytes(py, current).unwrap();
+                    type_metadata::write(py, class, Field::Name, Some(current));
+                    let result = type_metadata::read(py, class, Field::TextSignature);
+                    assert_eq!(
+                        string_obj_to_owned(obj_from_bits(result)).as_deref(),
+                        expected
+                    );
+                    dec_ref_bits(py, result);
+                    dec_ref_bits(py, current);
+                }
+                assert!(!exception_pending(py));
+                for bits in [class, doc, key, name] {
+                    dec_ref_bits(py, bits);
+                }
+            }
         }
     });
 }

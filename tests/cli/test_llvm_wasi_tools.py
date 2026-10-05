@@ -10,6 +10,7 @@ from molt.cli import llvm_wasi_tools
 from molt.cli import source_extension_target
 from molt.cli import source_extension_toolchain
 from molt import llvm_toolchain
+from tests.operation_probe import same_thread_probe
 from molt.toolchain_identity import resolve_explicit_tool_command
 from molt.llvm_linker_roles import LlvmLinkerRole, executable_selects_linker_role
 from tests.cli.native_link_test_support import (
@@ -604,8 +605,8 @@ def test_sdk_provenance_reuses_resolution_and_layout_across_roles_and_warm_hits(
         layout_probes.append(path)
         return is_dir(path)
 
-    monkeypatch.setattr(Path, "resolve", observed_resolve)
-    monkeypatch.setattr(Path, "is_dir", observed_is_dir)
+    monkeypatch.setattr(Path, "resolve", same_thread_probe(resolve, observed_resolve))
+    monkeypatch.setattr(Path, "is_dir", same_thread_probe(is_dir, observed_is_dir))
     assert llvm_wasi_tools.llvm_tool_candidates("cc", environment=environment) == (
         native["cc"],
     )

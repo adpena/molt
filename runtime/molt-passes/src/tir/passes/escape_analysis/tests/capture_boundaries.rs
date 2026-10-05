@@ -171,6 +171,8 @@ fn every_cfg_edge_carries_escape_back_to_the_allocation() {
         let root = func.fresh_value();
         let parameter = func.fresh_value();
         let control = func.fresh_value();
+        // Keep both CFG paths executable; this fixture condition is not a literal.
+        let control_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
         let destination = func.fresh_block();
         let mut target = empty_block(destination);
         target.args.push(TirValue {
@@ -185,7 +187,7 @@ fn every_cfg_edge_carries_escape_back_to_the_allocation() {
         entry.ops.push(make_op(OpCode::Alloc, vec![], vec![root]));
         entry
             .ops
-            .push(make_op(OpCode::ConstBool, vec![], vec![control]));
+            .push(make_op(OpCode::Copy, vec![control_input], vec![control]));
         entry.terminator = match shape {
             0 => Terminator::Branch {
                 target: destination,
@@ -299,6 +301,8 @@ fn storing_into_mixed_cfg_owner_does_not_prove_local_containment() {
     let child = func.fresh_value();
     let parameter = func.fresh_value();
     let control = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let control_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let none = func.fresh_value();
     let destination = func.fresh_block();
     let mut target = empty_block(destination);
@@ -317,7 +321,7 @@ fn storing_into_mixed_cfg_owner_does_not_prove_local_containment() {
     entry.ops.push(make_op(OpCode::Alloc, vec![], vec![child]));
     entry
         .ops
-        .push(make_op(OpCode::ConstBool, vec![], vec![control]));
+        .push(make_op(OpCode::Copy, vec![control_input], vec![control]));
     entry.terminator = Terminator::CondBranch {
         cond: control,
         then_block: destination,

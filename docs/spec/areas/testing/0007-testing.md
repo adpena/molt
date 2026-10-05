@@ -288,3 +288,47 @@ candidate in the receipt. These are boundary observations, not proof that no
 transient mutation occurred between observations, nor a claim of deterministic
 semantics. Existing immutable source-snapshot consumers retain their own stronger
 source custody.
+
+
+## Suite RSS victim attribution
+
+Suite trip decoding retains every positive PID-and-birth pair, reports the
+number of unidentified samples, and rejects an entry only when no victim birth
+can be identified. Missing root birth does not discard an independently
+captured descendant birth. PID-only matching is never sufficient.
+
+Persistent batch builds use the shared suite-trip result merger before strict
+retry or subprocess fallback. The client captures the server launch birth and
+each serialized request's monotonic start. The existing suite sentinel records
+the sample clock and ancestor chains captured by ProcessTreeTracker during live
+admission. New custody edges require positive exact-integer parent and child
+births with the parent no younger than the child. This shared rule also governs
+live descendant adoption and live or persisted Cargo incremental observations;
+an old child carrying a reused parent PID cannot enter membership or request
+ancestry. Equal native timestamps are admitted. Previously admitted exact
+instances retain custody after reparenting, while released identities stay cut.
+A descendant can identify a batch request only when its exact birth
+entered that server's custody during that request. Old trip records, reused
+PIDs, and earlier or suite-adopted daemons cannot identify a later request.
+These remain suite-level resource evidence. Success, deadlines, and existing
+infrastructure failures retain their precedence. No extra sampler, scheduler,
+request worker, or post-exit ancestry lookup is introduced.
+
+
+## WASM stage audit boundaries
+
+`MOLT_WASM_STAGE_AUDIT=1` enables the existing stage stream. Module emission
+begins before the module emitter and closes with `after-module-emission`,
+including final byte size. `before-module-finalization` follows the function
+loop and precedes resolver, trampoline, table, registry, section, and diagnostic
+emission. `after-module-finalization` follows module finishing, optional import
+stripping and validation, and relocation sections. The final byte count belongs
+to the returned artifact; an interrupted stage has no closing marker.
+
+The audit selection is resolved once per compilation and passed through TIR,
+function emission, finalization and import stripping. Disabled auditing performs
+no per-function environment lookups. Audit shapes and elapsed projections are
+lazy at the shared emission entry point. Audit-only clocks start only when enabled, and the shared TIR module
+pipeline samples its observer-only duration only when an observer is installed.
+The WASM observer is absent when this audit is disabled. Ordinary TIR progress
+and optimization timing retain their existing independent controls.

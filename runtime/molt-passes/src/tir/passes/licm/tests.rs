@@ -76,6 +76,8 @@ fn build_single_loop(func: &mut TirFunction) -> SingleLoop {
     let seed = func.fresh_value();
     let loop_arg = func.fresh_value();
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(func, TirType::Bool);
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(make_const_int(0, seed));
@@ -105,8 +107,8 @@ fn build_single_loop(func: &mut TirFunction) -> SingleLoop {
             }],
             ops: vec![TirOp {
                 dialect: Dialect::Molt,
-                opcode: OpCode::ConstBool,
-                operands: vec![],
+                opcode: OpCode::Copy,
+                operands: vec![cond_input],
                 results: vec![cond],
                 attrs: AttrDict::new(),
                 source_span: None,
@@ -468,14 +470,16 @@ fn sibling_definition_that_does_not_dominate_preheader_cannot_hoist() {
     let loop_shape = build_single_loop(&mut func);
     let sibling = func.fresh_block();
     let entry_cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let entry_cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let sibling_value = func.fresh_value();
     let copied = func.fresh_value();
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
             dialect: Dialect::Molt,
-            opcode: OpCode::ConstBool,
-            operands: vec![],
+            opcode: OpCode::Copy,
+            operands: vec![entry_cond_input],
             results: vec![entry_cond],
             attrs: AttrDict::new(),
             source_span: None,

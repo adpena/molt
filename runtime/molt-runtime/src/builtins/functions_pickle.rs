@@ -308,6 +308,8 @@ pub use protocol01::{
     molt_pickle_dumps_protocol01, molt_pickle_encode_protocol0, molt_pickle_loads_protocol01,
 };
 mod binary;
+#[cfg(test)]
+pub(crate) use binary::pickle_apply_build;
 pub(crate) use binary::pickle_resolve_global_bits;
 pub use binary::{
     molt_multiprocessing_codec_dumps, molt_multiprocessing_codec_loads, molt_pickle_dumps_core,

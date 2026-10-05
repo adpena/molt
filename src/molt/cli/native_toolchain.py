@@ -13,7 +13,7 @@ from typing import Any
 from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.config_resolution import _coerce_bool
 from molt.cli.link_fingerprints import FinalLinkReceiptRequest
-from molt.cli.native_link_plan import resolve_native_target_spec
+from molt.cli.native_link_plan import NativeTargetSpec, resolve_native_target_spec
 
 
 def _cli_module() -> Any:
@@ -274,7 +274,7 @@ def _detect_macos_deployment_target(arch: str | None = None) -> str | None:
 def _append_darwin_runtime_frameworks(
     args: list[str],
     *,
-    target_triple: str | None = None,
+    target: NativeTargetSpec,
 ) -> None:
     """Append macOS framework flags when targeting Darwin.
 
@@ -282,17 +282,12 @@ def _append_darwin_runtime_frameworks(
     aarch64 host) the linker is invoked without rustc's host-SDK
     auto-discovery, so the framework search path is empty and `-framework
     Security` fails to resolve. Inject `-F <sdk>/System/Library/Frameworks`
-    explicitly when we have a target triple in hand.
+    explicitly for an explicit cross-target selection.
     """
-    is_darwin = False
-    if target_triple:
-        is_darwin = "apple" in target_triple or "darwin" in target_triple
-    else:
-        is_darwin = sys.platform == "darwin"
-    if is_darwin:
+    if target.os == "macos":
         # Only inject SDK paths when cross-targeting; native builds get
         # the search paths for free from rustc's default SDK probing.
-        if target_triple:
+        if not target.is_host:
             sdk_root = _resolve_macos_sdk_root()
             if sdk_root:
                 # -isysroot points the linker at the cross-target SDK so

@@ -313,6 +313,9 @@ unsafe fn visit_common_class_edge(ptr: *mut u8, visit: &mut dyn FnMut(u64)) {
 
 #[inline]
 unsafe fn visit_class_shaped_values(py: &PyToken<'_>, ptr: *mut u8, visit: &mut dyn FnMut(u64)) {
+    if !unsafe { super::object_has_class_shape(ptr) || super::native_instance::has_fields(ptr) } {
+        return;
+    }
     let class_bits = unsafe { object_class_bits(ptr) };
     if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
         unsafe {
@@ -956,6 +959,12 @@ pub(crate) unsafe fn close_unstarted_coroutine(py: &PyToken<'_>, ptr: *mut u8) -
 
 #[inline]
 unsafe fn clear_class_shaped_edges(py: &PyToken<'_>, ptr: *mut u8, sink: &mut DetachedEdgeSink) {
+    if !unsafe { super::object_has_class_shape(ptr) || super::native_instance::has_fields(ptr) } {
+        return;
+    }
+    unsafe {
+        super::field_storage::debug::instance(py, "instance_clear", ptr);
+    }
     let class_bits = unsafe { object_class_bits(ptr) };
     if let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() {
         unsafe {
@@ -1125,6 +1134,14 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                 clear_class_shaped_edges(py, ptr, sink);
             }
             HeapLifecycleHandler::Dict => {
+                super::field_storage::debug::dictionary(
+                    py,
+                    "dict_clear_edges",
+                    std::ptr::null_mut(),
+                    MoltObject::from_ptr(ptr).bits(),
+                    None,
+                    None,
+                );
                 let order = crate::builtins::containers::dict_order_ptr(ptr);
                 let table = crate::builtins::containers::dict_table_ptr(ptr);
                 let hashes = crate::builtins::containers::dict_hashes_ptr(ptr);
@@ -1212,6 +1229,14 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                     sink.detach_if_heap(field.take(ptr));
                 }
                 let dictionary = super::instance_dict_bits_ptr(ptr);
+                super::field_storage::debug::dictionary(
+                    py,
+                    "function_clear",
+                    ptr,
+                    *dictionary,
+                    None,
+                    None,
+                );
                 sink.detach_if_heap(std::mem::replace(&mut *dictionary, 0));
                 detach(sink, detach_slots(ptr, [3, 4, 6, 7, 9, 11]));
                 if (*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_HAS_ABI_VIEW)

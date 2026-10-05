@@ -125,26 +125,23 @@ unsafe fn asyncio_close_connection_best_effort(_py: &PyToken<'_>, conn_bits: u64
 }
 
 fn asyncio_oserror_errno_from_exception(_py: &PyToken<'_>, exc_bits: u64) -> Option<i64> {
-        if !crate::builtins::exceptions::exception_matches_builtin_name(_py, exc_bits, "OSError") {
-            return None;
-        }
-        if crate::builtins::exceptions::exception_matches_builtin_name(
-            _py,
-            exc_bits,
-            "BlockingIOError",
-        ) {
-            return Some(libc::EWOULDBLOCK as i64);
-        }
-        if crate::builtins::exceptions::exception_matches_builtin_name(
-            _py,
-            exc_bits,
-            "InterruptedError",
-        ) {
-            return Some(libc::EINTR as i64);
-        }
-        let value = crate::builtins::exceptions::ExceptionStorage::for_exception(_py, exc_bits)?
-            .typed_field(_py, molt_obj_model::ExceptionTypedField::OSErrorErrno)?;
-        to_i64(obj_from_bits(value.bits()))
+    if !crate::builtins::exceptions::exception_matches_builtin_name(_py, exc_bits, "OSError") {
+        return None;
+    }
+    if crate::builtins::exceptions::exception_matches_builtin_name(_py, exc_bits, "BlockingIOError")
+    {
+        return Some(libc::EWOULDBLOCK as i64);
+    }
+    if crate::builtins::exceptions::exception_matches_builtin_name(
+        _py,
+        exc_bits,
+        "InterruptedError",
+    ) {
+        return Some(libc::EINTR as i64);
+    }
+    let value = crate::builtins::exceptions::ExceptionStorage::for_exception(_py, exc_bits)?
+        .typed_field(_py, molt_obj_model::ExceptionTypedField::OSErrorErrno)?;
+    to_i64(obj_from_bits(value.bits()))
 }
 
 #[cfg(test)]
@@ -153,22 +150,48 @@ mod exception_storage_tests {
 
     #[test]
     fn retry_errno_uses_native_and_managed_oserror_field_not_mutated_args() {
-        use crate::builtins::exceptions::{ExceptionFieldSlot, exception_replace_field_bits, exception_typed_field_replace_internal};
-        use molt_cpython_abi::{abi_types::PyExc_OSError, api::{errors, refcount::OwnedPyObject}, bridge::GLOBAL_BRIDGE};
+        use crate::builtins::exceptions::{
+            ExceptionFieldSlot, exception_replace_field_bits,
+            exception_typed_field_replace_internal,
+        };
+        use molt_cpython_abi::{
+            abi_types::PyExc_OSError,
+            api::{errors, refcount::OwnedPyObject},
+            bridge::GLOBAL_BRIDGE,
+        };
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         crate::with_gil_entry_nopanic!(py, {
             unsafe {
-                let native = errors::molt_native_exception_new(&raw mut PyExc_OSError, std::ptr::null_mut(), std::ptr::null_mut());
+                let native = errors::molt_native_exception_new(
+                    &raw mut PyExc_OSError,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                );
                 assert!(!native.is_null());
                 let native = OwnedPyObject::from_owned(native);
                 let native_bits = GLOBAL_BRIDGE.molt_value_for_pyobj(native.as_ptr()).unwrap();
-                let managed = MoltObject::from_ptr(crate::alloc_exception(py, "OSError", "retry")).bits();
-                let args = MoltObject::from_ptr(alloc_tuple(py, &[MoltObject::from_int(libc::EINTR as i64).bits()])).bits();
+                let managed =
+                    MoltObject::from_ptr(crate::alloc_exception(py, "OSError", "retry")).bits();
+                let args = MoltObject::from_ptr(alloc_tuple(
+                    py,
+                    &[MoltObject::from_int(libc::EINTR as i64).bits()],
+                ))
+                .bits();
                 for exception in [managed, native_bits] {
-                    exception_typed_field_replace_internal(py, exception, molt_obj_model::ExceptionTypedField::OSErrorErrno, MoltObject::from_int(libc::EALREADY as i64).bits()).unwrap();
-                    exception_replace_field_bits(py, exception, ExceptionFieldSlot::Args, args).unwrap();
-                    assert_eq!(asyncio_oserror_errno_from_exception(py, exception), Some(libc::EALREADY as i64));
+                    exception_typed_field_replace_internal(
+                        py,
+                        exception,
+                        molt_obj_model::ExceptionTypedField::OSErrorErrno,
+                        MoltObject::from_int(libc::EALREADY as i64).bits(),
+                    )
+                    .unwrap();
+                    exception_replace_field_bits(py, exception, ExceptionFieldSlot::Args, args)
+                        .unwrap();
+                    assert_eq!(
+                        asyncio_oserror_errno_from_exception(py, exception),
+                        Some(libc::EALREADY as i64)
+                    );
                     assert!(!exception_pending(py));
                     dec_ref_bits(py, exception);
                 }

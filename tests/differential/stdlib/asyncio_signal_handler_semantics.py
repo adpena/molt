@@ -1,9 +1,10 @@
 # MOLT_ENV: MOLT_CAPABILITIES=thread,signal.signal,signal.raise
-# MOLT_META: backends=llvm,native platforms=posix
+# MOLT_META: backends=llvm,native
 """Loop signal-handler registration follows CPython's Unix event loop."""
 
 import asyncio
 import signal
+import sys
 import threading
 
 
@@ -67,6 +68,24 @@ async def count_deliveries():
     print("deliveries", seen)
 
 
-registration_errors()
-sigint_removal_restores_default_int_handler()
-asyncio.run(count_deliveries())
+if sys.platform == "win32":
+    loop = asyncio.new_event_loop()
+    try:
+        # CPython Windows loops reject before validating signal, callback,
+        # closed state, or attempting any OS registration.
+        for sig in (signal.SIGINT, "invalid", 4242):
+            for callback in (print, coroutine_callback):
+                result = outcome(lambda: loop.add_signal_handler(sig, callback))
+                assert result == "NotImplementedError "
+                print("windows add", result)
+            result = outcome(lambda: loop.remove_signal_handler(sig))
+            assert result == "NotImplementedError "
+            print("windows remove", result)
+    finally:
+        loop.close()
+    print("windows closed add", outcome(lambda: loop.add_signal_handler(signal.SIGINT, print)))
+    print("windows closed remove", outcome(lambda: loop.remove_signal_handler(signal.SIGINT)))
+else:
+    registration_errors()
+    sigint_removal_restores_default_int_handler()
+    asyncio.run(count_deliveries())

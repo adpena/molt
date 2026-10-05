@@ -1,4 +1,9 @@
 use super::*;
+use crate::builtins::compatibility_error::CompatibilityError;
+use crate::object::memoryview::{
+    memoryview_adjust_format, memoryview_assign_slice, memoryview_is_index_key,
+    memoryview_read_item_at, memoryview_slice, memoryview_write_item_at,
+};
 use molt_cpython_abi::api::errors::with_preserved_error;
 
 #[cfg(test)]
@@ -39,12 +44,7 @@ pub(crate) fn molt_sequence_item_builtin(obj_bits: u64, key_bits: u64) -> u64 {
     index_impl(obj_bits, key_bits, true, false)
 }
 
-fn index_impl(
-    obj_bits: u64,
-    key_bits: u64,
-    builtin_only: bool,
-    normalize_negative: bool,
-) -> u64 {
+fn index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool, normalize_negative: bool) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         // Fast path: dict[key] — skips exception_pending and type dispatch chain.
         if let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() {
@@ -76,6 +76,12 @@ fn index_impl(
                         );
                     }
                 }
+                if builtin_only && crate::object::tuple_storage::native_tuple(obj_bits).is_some() {
+                    let tuple =
+                        crate::object::tuple_storage::TupleStorage::from_bits(_py, obj_bits)
+                            .unwrap();
+                    return tuple.getitem(key_bits, normalize_negative);
+                }
                 if object_is_exact_builtin_dict(_py, obj_ptr) {
                     if let Some(val) = dict_get_in_place(_py, obj_ptr, key_bits) {
                         if obj_from_bits(val).as_ptr().is_some() {
@@ -91,11 +97,19 @@ fn index_impl(
                 // list_int: flat i64 storage — delegate to specialized getitem
                 let tid = object_type_id(obj_ptr);
                 if tid == TYPE_ID_LIST_INT {
-                    return super::specialized_list::list_int_getitem_impl(obj_bits, key_bits, normalize_negative);
+                    return super::specialized_list::list_int_getitem_impl(
+                        obj_bits,
+                        key_bits,
+                        normalize_negative,
+                    );
                 }
                 // list_bool: flat u8 storage — delegate to specialized getitem
                 if tid == TYPE_ID_LIST_BOOL {
-                    return super::specialized_list::list_bool_getitem_impl(obj_bits, key_bits, normalize_negative);
+                    return super::specialized_list::list_bool_getitem_impl(
+                        obj_bits,
+                        key_bits,
+                        normalize_negative,
+                    );
                 }
                 // tuple[int]: the most common indexed-tuple shape. Completes the
                 // entry fast-path tier (dict / list_int / list_bool already have
@@ -111,7 +125,11 @@ fn index_impl(
                     if key.is_int() {
                         let len = crate::object::seq_access::len(obj_ptr) as i64;
                         let raw = key.as_int_unchecked();
-                        let idx = if normalize_negative && raw < 0 { raw + len } else { raw };
+                        let idx = if normalize_negative && raw < 0 {
+                            raw + len
+                        } else {
+                            raw
+                        };
                         if idx >= 0 && idx < len {
                             let Some(val) = crate::object::seq_access::item(obj_ptr, idx as usize)
                             else {
@@ -137,30 +155,38 @@ fn index_impl(
             unsafe {
                 let type_id = object_type_id(ptr);
                 if type_id == TYPE_ID_MEMORYVIEW {
+                    if let Some(slice_ptr) = key.as_ptr()
+                        && object_type_id(slice_ptr) == TYPE_ID_SLICE
+                    {
+                        return memoryview_slice(
+                            _py,
+                            ptr,
+                            slice_start_bits(slice_ptr),
+                            slice_stop_bits(slice_ptr),
+                            slice_step_bits(slice_ptr),
+                        );
+                    }
                     if memoryview_released(ptr) {
                         return raise_released_memoryview(_py);
                     }
-                    let fmt = match memoryview_format_from_bits(memoryview_format_bits(ptr)) {
-                        Some(fmt) => fmt,
-                        None => {
-                            let format =
-                                string_obj_to_owned(obj_from_bits(memoryview_format_bits(ptr)))
-                                    .unwrap_or_default();
-                            return raise_exception::<_>(
-                                _py,
-                                "NotImplementedError",
-                                &format!("memoryview: unsupported format {format}"),
-                            );
-                        }
-                    };
-                    let data = memoryview_data(ptr);
-                    if data.is_null() {
-                        return MoltObject::none().bits();
+                    if memoryview_data(ptr).is_null() {
+                        return raise_exception::<_>(
+                            _py,
+                            "BufferError",
+                            "invalid memoryview storage",
+                        );
                     }
                     let shape = memoryview_shape(ptr).unwrap_or(&[]);
                     let strides = memoryview_strides(ptr).unwrap_or(&[]);
                     let ndim = shape.len();
                     if ndim == 0 {
+                        if key
+                            .as_ptr()
+                            .is_some_and(|key| object_type_id(key) == TYPE_ID_ELLIPSIS)
+                        {
+                            inc_ref_bits(_py, obj_bits);
+                            return obj_bits;
+                        }
                         if let Some(tup_ptr) = key.as_ptr()
                             && object_type_id(tup_ptr) == TYPE_ID_TUPLE
                             && crate::object::seq_access::with_immutable_tuple_slice(
@@ -169,7 +195,10 @@ fn index_impl(
                             )
                             .unwrap_or(false)
                         {
-                            let val = memoryview_read_scalar_at(_py, ptr, 0, fmt);
+                            let Some(format) = memoryview_adjust_format(_py, ptr) else {
+                                return MoltObject::none().bits();
+                            };
+                            let val = memoryview_read_item_at(_py, ptr, 0, &format);
                             return val.unwrap_or_else(|| MoltObject::none().bits());
                         }
                         return raise_exception::<_>(
@@ -204,11 +233,13 @@ fn index_impl(
                         }
                         if has_slice {
                             if all_slice {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "NotImplementedError",
-                                    "multi-dimensional slicing is not implemented",
-                                );
+                                return CompatibilityError::MemoryviewSlice {
+                                    rank: ndim,
+                                    slices: elems.len(),
+                                    tuple: true,
+                                    assignment: false,
+                                }
+                                .raise(_py);
                             }
                             return raise_exception::<_>(
                                 _py,
@@ -216,12 +247,27 @@ fn index_impl(
                                 "memoryview: invalid slice key",
                             );
                         }
-                        if elems.len() < ndim {
+                        if !elems.iter().all(|&key| memoryview_is_index_key(_py, key)) {
+                            if exception_pending(_py) {
+                                return MoltObject::none().bits();
+                            }
                             return raise_exception::<_>(
                                 _py,
-                                "NotImplementedError",
-                                "multi-dimensional sub-views are not implemented",
+                                "TypeError",
+                                "memoryview: invalid slice key",
                             );
+                        }
+                        let Some(format) = memoryview_adjust_format(_py, ptr) else {
+                            return MoltObject::none().bits();
+                        };
+                        if elems.len() < ndim {
+                            return CompatibilityError::MemoryviewSubView {
+                                rank: ndim,
+                                indices: elems.len(),
+                                tuple: true,
+                                assignment: false,
+                            }
+                            .raise(_py);
                         }
                         if elems.len() > ndim {
                             let msg = format!(
@@ -232,7 +278,11 @@ fn index_impl(
                             return raise_exception::<_>(_py, "TypeError", &msg);
                         }
                         if shape.len() != strides.len() {
-                            return MoltObject::none().bits();
+                            return raise_exception::<_>(
+                                _py,
+                                "BufferError",
+                                "invalid memoryview strides",
+                            );
                         }
                         let mut indices = Vec::with_capacity(elems.len());
                         for (dim, &elem_bits) in elems.iter().enumerate() {
@@ -243,9 +293,6 @@ fn index_impl(
                             ) else {
                                 return MoltObject::none().bits();
                             };
-                            if memoryview_released(ptr) {
-                                return raise_released_memoryview(_py);
-                            }
                             let mut i = idx;
                             let dim_len = shape[dim];
                             let dim_len_i64 = dim_len as i64;
@@ -259,87 +306,14 @@ fn index_impl(
                             indices.push(i as isize);
                         }
                         let Some(pos) = memoryview_strided_offset(&indices, strides) else {
-                            return MoltObject::none().bits();
+                            return raise_exception::<_>(
+                                _py,
+                                "BufferError",
+                                "invalid memoryview index offset",
+                            );
                         };
-                        let val = memoryview_read_scalar_at(_py, ptr, pos, fmt);
+                        let val = memoryview_read_item_at(_py, ptr, pos, &format);
                         return val.unwrap_or_else(|| MoltObject::none().bits());
-                    }
-                    if let Some(slice_ptr) = key.as_ptr()
-                        && object_type_id(slice_ptr) == TYPE_ID_SLICE
-                    {
-                        let len = shape[0];
-                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
-                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
-                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                        let (start, stop, step) = match normalize_slice_indices(
-                            _py, len, start_obj, stop_obj, step_obj,
-                        ) {
-                            Ok(vals) => vals,
-                            Err(err) => return slice_error(_py, err),
-                        };
-                        let base_offset = memoryview_offset(ptr);
-                        if memoryview_released(ptr) {
-                            return raise_released_memoryview(_py);
-                        }
-                        let base_stride = strides[0];
-                        let itemsize = memoryview_itemsize(ptr);
-                        let new_len = range_len_i64(start as i64, stop as i64, step as i64);
-                        let new_len = new_len.max(0) as usize;
-                        let start_delta = if new_len == 0 {
-                            0
-                        } else {
-                            if start < 0 {
-                                return MoltObject::none().bits();
-                            }
-                            let Some(start_delta) =
-                                memoryview_linear_offset(start as usize, base_stride)
-                            else {
-                                return MoltObject::none().bits();
-                            };
-                            start_delta
-                        };
-                        let Some(new_offset) = base_offset.checked_add(start_delta) else {
-                            return MoltObject::none().bits();
-                        };
-                        let Some(new_stride) = base_stride.checked_mul(step) else {
-                            return MoltObject::none().bits();
-                        };
-                        let mut new_shape = shape.to_vec();
-                        let mut new_strides = strides.to_vec();
-                        if !new_shape.is_empty() {
-                            new_shape[0] = new_len as isize;
-                            new_strides[0] = new_stride;
-                        }
-                        let storage = TypedStridedStorage::new(
-                            data.offset(start_delta),
-                            memoryview_readonly(ptr),
-                            itemsize,
-                            new_offset,
-                            memoryview_base_bits(ptr),
-                            memoryview_format_bits(ptr),
-                            new_shape,
-                            new_strides,
-                        )
-                        .map(|storage| {
-                            storage
-                                .with_owner(memoryview_owner_bits(ptr))
-                                .with_native_lease((*memoryview_ptr(ptr)).native_lease.clone())
-                        });
-                        let out_ptr = match storage {
-                            Some(storage) => alloc_memoryview_from_storage(_py, storage),
-                            None => std::ptr::null_mut(),
-                        };
-                        if out_ptr.is_null() {
-                            return MoltObject::none().bits();
-                        }
-                        return MoltObject::from_ptr(out_ptr).bits();
-                    }
-                    if ndim > 1 {
-                        return raise_exception::<_>(
-                            _py,
-                            "NotImplementedError",
-                            "multi-dimensional sub-views are not implemented",
-                        );
                     }
                     let Some(idx) = sequence_index_i64_with_type_error(
                         _py,
@@ -350,6 +324,18 @@ fn index_impl(
                     };
                     if memoryview_released(ptr) {
                         return raise_released_memoryview(_py);
+                    }
+                    let Some(format) = memoryview_adjust_format(_py, ptr) else {
+                        return MoltObject::none().bits();
+                    };
+                    if ndim > 1 {
+                        return CompatibilityError::MemoryviewSubView {
+                            rank: ndim,
+                            indices: 1,
+                            tuple: false,
+                            assignment: false,
+                        }
+                        .raise(_py);
                     }
                     let len = shape[0] as i64;
                     let mut i = idx;
@@ -364,9 +350,13 @@ fn index_impl(
                         );
                     }
                     let Some(pos) = memoryview_linear_offset(i as usize, strides[0]) else {
-                        return MoltObject::none().bits();
+                        return raise_exception::<_>(
+                            _py,
+                            "BufferError",
+                            "invalid memoryview index offset",
+                        );
                     };
-                    let val = memoryview_read_scalar_at(_py, ptr, pos, fmt);
+                    let val = memoryview_read_item_at(_py, ptr, pos, &format);
                     return val.unwrap_or_else(|| MoltObject::none().bits());
                 }
                 if type_id == TYPE_ID_STRING
@@ -1296,6 +1286,9 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                     if memoryview_released(ptr) {
                         return raise_released_memoryview(_py);
                     }
+                    let Some(format) = memoryview_adjust_format(_py, ptr) else {
+                        return MoltObject::none().bits();
+                    };
                     if memoryview_readonly(ptr) {
                         return raise_exception::<_>(
                             _py,
@@ -1303,18 +1296,26 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                             "cannot modify read-only memory",
                         );
                     }
-                    let data = memoryview_data(ptr);
-                    if data.is_null() {
-                        return MoltObject::none().bits();
+                    if memoryview_data(ptr).is_null() {
+                        return raise_exception::<_>(
+                            _py,
+                            "BufferError",
+                            "invalid memoryview storage",
+                        );
                     }
-                    let fmt = match memoryview_format_from_bits(memoryview_format_bits(ptr)) {
-                        Some(fmt) => fmt,
-                        None => return MoltObject::none().bits(),
-                    };
                     let shape = memoryview_shape(ptr).unwrap_or(&[]);
                     let strides = memoryview_strides(ptr).unwrap_or(&[]);
                     let ndim = shape.len();
                     if ndim == 0 {
+                        if key
+                            .as_ptr()
+                            .is_some_and(|key| object_type_id(key) == TYPE_ID_ELLIPSIS)
+                        {
+                            if memoryview_write_item_at(_py, ptr, 0, &format, val_bits).is_none() {
+                                return MoltObject::none().bits();
+                            }
+                            return obj_bits;
+                        }
                         if let Some(tup_ptr) = key.as_ptr()
                             && object_type_id(tup_ptr) == TYPE_ID_TUPLE
                             && crate::object::seq_access::with_immutable_tuple_slice(
@@ -1323,7 +1324,7 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                             )
                             .unwrap_or(false)
                         {
-                            let ok = memoryview_write_scalar_at(_py, ptr, 0, fmt, val_bits);
+                            let ok = memoryview_write_item_at(_py, ptr, 0, &format, val_bits);
                             if ok.is_none() {
                                 return MoltObject::none().bits();
                             }
@@ -1361,11 +1362,23 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                         }
                         if has_slice {
                             if all_slice {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "NotImplementedError",
-                                    "memoryview slice assignments are currently restricted to ndim = 1",
-                                );
+                                return CompatibilityError::MemoryviewSlice {
+                                    rank: ndim,
+                                    slices: elems.len(),
+                                    tuple: true,
+                                    assignment: true,
+                                }
+                                .raise(_py);
+                            }
+                            return raise_exception::<_>(
+                                _py,
+                                "TypeError",
+                                "memoryview: invalid slice key",
+                            );
+                        }
+                        if !elems.iter().all(|&key| memoryview_is_index_key(_py, key)) {
+                            if exception_pending(_py) {
+                                return MoltObject::none().bits();
                             }
                             return raise_exception::<_>(
                                 _py,
@@ -1374,11 +1387,13 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                             );
                         }
                         if elems.len() < ndim {
-                            return raise_exception::<_>(
-                                _py,
-                                "NotImplementedError",
-                                "sub-views are not implemented",
-                            );
+                            return CompatibilityError::MemoryviewSubView {
+                                rank: ndim,
+                                indices: elems.len(),
+                                tuple: true,
+                                assignment: true,
+                            }
+                            .raise(_py);
                         }
                         if elems.len() > ndim {
                             let msg = format!(
@@ -1389,7 +1404,11 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                             return raise_exception::<_>(_py, "TypeError", &msg);
                         }
                         if shape.len() != strides.len() {
-                            return MoltObject::none().bits();
+                            return raise_exception::<_>(
+                                _py,
+                                "BufferError",
+                                "invalid memoryview strides",
+                            );
                         }
                         let mut indices = Vec::with_capacity(elems.len());
                         for (dim, &elem_bits) in elems.iter().enumerate() {
@@ -1400,9 +1419,6 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                             ) else {
                                 return MoltObject::none().bits();
                             };
-                            if memoryview_released(ptr) {
-                                return raise_released_memoryview(_py);
-                            }
                             let mut i = idx;
                             let dim_len = shape[dim];
                             let dim_len_i64 = dim_len as i64;
@@ -1416,9 +1432,13 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                             indices.push(i as isize);
                         }
                         let Some(pos) = memoryview_strided_offset(&indices, strides) else {
-                            return MoltObject::none().bits();
+                            return raise_exception::<_>(
+                                _py,
+                                "BufferError",
+                                "invalid memoryview index offset",
+                            );
                         };
-                        let ok = memoryview_write_scalar_at(_py, ptr, pos, fmt, val_bits);
+                        let ok = memoryview_write_item_at(_py, ptr, pos, &format, val_bits);
                         if ok.is_none() {
                             return MoltObject::none().bits();
                         }
@@ -1428,122 +1448,47 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                         && object_type_id(slice_ptr) == TYPE_ID_SLICE
                     {
                         if ndim != 1 {
-                            return raise_exception::<_>(
-                                _py,
-                                "NotImplementedError",
-                                "memoryview slice assignments are currently restricted to ndim = 1",
-                            );
-                        }
-                        let len = shape[0];
-                        let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
-                        let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
-                        let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
-                        let (start, stop, step) = match normalize_slice_indices(
-                            _py, len, start_obj, stop_obj, step_obj,
-                        ) {
-                            Ok(vals) => vals,
-                            Err(err) => return slice_error(_py, err),
-                        };
-                        let indices = collect_slice_indices(start, stop, step);
-                        let elem_count = indices.len();
-                        if memoryview_released(ptr) {
-                            return raise_released_memoryview(_py);
-                        }
-                        let val_obj = obj_from_bits(val_bits);
-                        let src_bytes = if let Some(src_ptr) = val_obj.as_ptr() {
-                            let src_type = object_type_id(src_ptr);
-                            if src_type == TYPE_ID_BYTES || src_type == TYPE_ID_BYTEARRAY {
-                                if fmt.code != b'B' {
-                                    return raise_exception::<_>(
-                                        _py,
-                                        "ValueError",
-                                        "memoryview assignment: lvalue and rvalue have different structures",
-                                    );
-                                }
-                                bytes_like_slice_raw(src_ptr).unwrap_or(&[]).to_vec()
-                            } else if src_type == TYPE_ID_MEMORYVIEW {
-                                if memoryview_released(src_ptr) {
-                                    return raise_released_memoryview(_py);
-                                }
-                                let src_fmt = match memoryview_format_from_bits(
-                                    memoryview_format_bits(src_ptr),
-                                ) {
-                                    Some(fmt) => fmt,
-                                    None => return MoltObject::none().bits(),
-                                };
-                                let src_shape = memoryview_shape(src_ptr).unwrap_or(&[]);
-                                if src_fmt.code != fmt.code
-                                    || src_shape.len() != 1
-                                    || src_shape[0] as usize != elem_count
-                                {
-                                    return raise_exception::<_>(
-                                        _py,
-                                        "ValueError",
-                                        "memoryview assignment: lvalue and rvalue have different structures",
-                                    );
-                                }
-                                match memoryview_collect_bytes(src_ptr) {
-                                    Some(buf) => buf,
-                                    None => return MoltObject::none().bits(),
-                                }
-                            } else {
-                                return raise_exception::<_>(
-                                    _py,
-                                    "TypeError",
-                                    &format!(
-                                        "a bytes-like object is required, not '{}'",
-                                        type_name(_py, val_obj)
-                                    ),
-                                );
+                            return CompatibilityError::MemoryviewSlice {
+                                rank: ndim,
+                                slices: 1,
+                                tuple: false,
+                                assignment: true,
                             }
-                        } else {
-                            return raise_exception::<_>(
-                                _py,
-                                "TypeError",
-                                &format!(
-                                    "a bytes-like object is required, not '{}'",
-                                    type_name(_py, val_obj)
-                                ),
-                            );
-                        };
-                        let expected = elem_count * fmt.itemsize;
-                        if src_bytes.len() != expected {
-                            return raise_exception::<_>(
-                                _py,
-                                "ValueError",
-                                "memoryview assignment: lvalue and rvalue have different structures",
-                            );
+                            .raise(_py);
                         }
-                        let base_stride = strides[0];
-                        if start < 0 {
+                        if memoryview_assign_slice(
+                            _py,
+                            ptr,
+                            slice_start_bits(slice_ptr),
+                            slice_stop_bits(slice_ptr),
+                            slice_step_bits(slice_ptr),
+                            val_bits,
+                            &format,
+                        )
+                        .is_none()
+                        {
                             return MoltObject::none().bits();
-                        }
-                        let Some(mut pos) = memoryview_linear_offset(start as usize, base_stride)
-                        else {
-                            return MoltObject::none().bits();
-                        };
-                        let Some(step_stride) = base_stride.checked_mul(step) else {
-                            return MoltObject::none().bits();
-                        };
-                        let mut idx = 0usize;
-                        while idx < src_bytes.len() {
-                            let dst =
-                                std::slice::from_raw_parts_mut(data.offset(pos), fmt.itemsize);
-                            dst.copy_from_slice(&src_bytes[idx..idx + fmt.itemsize]);
-                            idx += fmt.itemsize;
-                            let Some(next_pos) = pos.checked_add(step_stride) else {
-                                return MoltObject::none().bits();
-                            };
-                            pos = next_pos;
                         }
                         return obj_bits;
                     }
-                    if ndim != 1 {
+                    if !memoryview_is_index_key(_py, key_bits) {
+                        if exception_pending(_py) {
+                            return MoltObject::none().bits();
+                        }
                         return raise_exception::<_>(
                             _py,
-                            "NotImplementedError",
-                            "sub-views are not implemented",
+                            "TypeError",
+                            "memoryview: invalid slice key",
                         );
+                    }
+                    if ndim != 1 {
+                        return CompatibilityError::MemoryviewSubView {
+                            rank: ndim,
+                            indices: 1,
+                            tuple: false,
+                            assignment: true,
+                        }
+                        .raise(_py);
                     }
                     let Some(idx) = sequence_index_i64_with_type_error(
                         _py,
@@ -1552,9 +1497,6 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                     ) else {
                         return MoltObject::none().bits();
                     };
-                    if memoryview_released(ptr) {
-                        return raise_released_memoryview(_py);
-                    }
                     let len = shape[0] as i64;
                     let mut i = idx;
                     if i < 0 {
@@ -1568,9 +1510,13 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                         );
                     }
                     let Some(pos) = memoryview_linear_offset(i as usize, strides[0]) else {
-                        return MoltObject::none().bits();
+                        return raise_exception::<_>(
+                            _py,
+                            "BufferError",
+                            "invalid memoryview index offset",
+                        );
                     };
-                    let ok = memoryview_write_scalar_at(_py, ptr, pos, fmt, val_bits);
+                    let ok = memoryview_write_item_at(_py, ptr, pos, &format, val_bits);
                     if ok.is_none() {
                         return MoltObject::none().bits();
                     }
@@ -2002,7 +1948,18 @@ fn contains_impl(container_bits: u64, item_bits: u64, builtin_only: bool) -> u64
         let item = obj_from_bits(item_bits);
         if let Some(ptr) = container.as_ptr() {
             unsafe {
-                if !builtin_only && !crate::object::iterable::builtin_receiver(_py, ptr) {
+                if builtin_only
+                    && crate::object::tuple_storage::native_tuple(container_bits).is_some()
+                {
+                    let tuple =
+                        crate::object::tuple_storage::TupleStorage::from_bits(_py, container_bits)
+                            .unwrap();
+                    return tuple.contains(item_bits);
+                }
+                if !builtin_only
+                    && (object_type_id(ptr) == crate::TYPE_ID_FOREIGN
+                        || !crate::object::iterable::builtin_receiver(_py, ptr))
+                {
                     if let Some(method) = crate::builtins::attr::lookup_special_method(
                         _py,
                         container_bits,

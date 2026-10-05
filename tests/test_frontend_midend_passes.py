@@ -1907,7 +1907,7 @@ def test_cfg_gvn_reuses_pure_int_arithmetic() -> None:
     assert final_add["args"][0] == "x"
 
 
-def test_cfg_dedupes_redundant_guard_tag_after_first_guard() -> None:
+def test_cfg_preserves_repeated_runtime_guard_profile_events() -> None:
     lowered = _lower_ops(
         [
             MoltOp(kind="MISSING", args=[], result=MoltValue("value")),
@@ -1926,7 +1926,7 @@ def test_cfg_dedupes_redundant_guard_tag_after_first_guard() -> None:
     )
 
     guards = [op for op in lowered if op.get("kind") == "guard_tag"]
-    assert len(guards) == 1
+    assert len(guards) == 2
 
 
 def test_cfg_dedupes_redundant_guard_dict_shape_after_first_guard() -> None:
@@ -2444,7 +2444,7 @@ def test_call_argument_preparation_preserves_its_exception_edge(kind: str) -> No
     assert not gen._op_instance_cannot_raise(gen.current_ops[0], {})
 
 
-def test_known_guard_failure_preserves_pending_exception_routing() -> None:
+def test_guard_mismatch_preserves_pending_exception_routing() -> None:
     ops = [
         MoltOp("CONST", [10], MoltValue("value")),
         MoltOp("CONST", [2], MoltValue("float_tag")),
@@ -2656,7 +2656,7 @@ def test_try_except_join_normalization_threads_deep_check_ladders() -> None:
     assert any(op.kind == "JUMP" and op.args and op.args[0] == 30 for op in rewritten)
 
 
-def test_region_wide_guard_elision_removes_post_join_duplicate_guard() -> None:
+def test_region_wide_guard_elision_preserves_post_join_profile_event() -> None:
     ops = [
         MoltOp(kind="MISSING", args=[], result=MoltValue("cond")),
         MoltOp(kind="MISSING", args=[], result=MoltValue("value")),
@@ -2685,10 +2685,8 @@ def test_region_wide_guard_elision_removes_post_join_duplicate_guard() -> None:
     gen = SimpleTIRGenerator()
     rewritten, attempted, accepted, rejected = gen._eliminate_redundant_guards_cfg(ops)
     guards = [op for op in rewritten if op.kind == "GUARD_TAG"]
-    assert len(guards) == 2
-    assert attempted >= 3
-    assert accepted >= 1
-    assert rejected == attempted - accepted
+    assert len(guards) == 3
+    assert attempted == accepted == rejected == 0
 
 
 def test_sccp_preserves_non_raising_region_metadata_for_tir() -> None:
@@ -2707,7 +2705,7 @@ def test_sccp_preserves_non_raising_region_metadata_for_tir() -> None:
     ]
 
 
-def test_guard_failure_retains_region_metadata_while_dce_removes_unused_data() -> None:
+def test_guard_mismatch_retains_region_metadata_while_dce_removes_unused_data() -> None:
     lowered = _lower_ops(
         [
             MoltOp(kind="CONST", args=[10], result=MoltValue("value")),
@@ -6158,3 +6156,51 @@ def test_cse_projected_inputs_invalidate_predecessor_signature() -> None:
     )
     assert lowered[-1].kind == "RETURN"
     assert lowered[-1].args == [a]
+
+
+@pytest.mark.parametrize("kind", ["GUARD_TAG", "GUARD_TYPE"])
+def test_proven_runtime_guard_keeps_a_used_alias_result(kind: str) -> None:
+    lowered = _lower_ops(
+        [
+            MoltOp(kind="CONST", args=[7], result=MoltValue("source")),
+            MoltOp(kind="CONST", args=[1], result=MoltValue("tag")),
+            MoltOp(
+                kind=kind,
+                args=[MoltValue("source"), MoltValue("tag")],
+                result=MoltValue("checked"),
+            ),
+            MoltOp(
+                kind="RETURN", args=[MoltValue("checked")], result=MoltValue("none")
+            ),
+        ]
+    )
+    assert any(
+        op.get("kind") == kind.lower() and op.get("out") == "checked" for op in lowered
+    )
+
+
+@pytest.mark.parametrize("kind", ["GUARD_TAG", "GUARD_TYPE"])
+def test_runtime_guard_mismatch_continues_sccp_and_preserves_source_type(
+    kind: str,
+) -> None:
+    source, tag, checked, later = map(MoltValue, ["source", "tag", "checked", "later"])
+    ops = [
+        MoltOp("CONST", [7], source),
+        MoltOp("CONST", [BUILTIN_TYPE_TAGS["float"]], tag),
+        MoltOp(kind, [source, tag], checked),
+        MoltOp("CONST", [11], later),
+        MoltOp("RETURN", [later], MoltValue("none")),
+    ]
+    gen = SimpleTIRGenerator()
+    cfg = build_cfg(ops)
+    sccp = gen._compute_sccp(ops, cfg)
+    after = sccp.out_values[cfg.index_to_block[3]]
+    assert after["checked"] == 7
+    assert after["later"] == 11
+    _, canonical = gen._canonicalize_block_with_state(
+        ops[:-1], gen._empty_canonicalization_state(), induction_steps={}
+    )
+    assert canonical["value_type_tags"]["source"] == BUILTIN_TYPE_TAGS["int"]
+    # The guard's result may propagate, but its mismatch event remains.
+    lowered = _lower_ops(ops)
+    assert any(op.get("kind") == kind.lower() for op in lowered)

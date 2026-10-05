@@ -21,6 +21,12 @@ fn lower_lir_to_wasm_with_abi(func: &LirFunction, abi: LirWasmAbi) -> Option<Was
     let mut ctx = LirLowerCtx::new_with_local_base(func, plan.ctx_local_base);
     ctx.allocate_function_locals();
     abi.emit_entry_prologue(&mut ctx);
+    if ctx.guard_facts.has_profile_only() {
+        let local = ctx.alloc_scratch_local(wasm_encoder::ValType::I64);
+        ctx.emit_runtime_call(super::LirRuntimeCall::ProfileEnabled);
+        ctx.instructions.push(Instruction::LocalSet(local));
+        ctx.guard_profile_local = Some(local);
+    }
     emit_lir_function_body(&mut ctx, plan.return_abi);
 
     ctx.instructions.push(Instruction::End);

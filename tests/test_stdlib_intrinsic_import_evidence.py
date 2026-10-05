@@ -543,25 +543,45 @@ def test_facade_relative_owner_uses_shared_import_context(
     assert classification.unresolved_imports_payload() == []
 
 
+@pytest.mark.parametrize(
+    ("source", "owners", "error"),
+    [
+        pytest.param(
+            "from .owner import Value\n"
+            "from ...other import Other\n"
+            "__all__ = ['Value', 'Other']\n",
+            ("pkg.owner", None),
+            "unknown_package",
+            id="prior-import-taints-package",
+        ),
+        pytest.param(
+            "from ...other import Other\n"
+            "from pkg.owner import Value\n"
+            "__all__ = ['Value', 'Other']\n",
+            (None, "pkg.owner"),
+            "beyond_top",
+            id="known-package-beyond-top",
+        ),
+    ],
+)
 def test_unresolved_facade_owner_does_not_fall_through_to_resolved_sibling(
-    tmp_path: Path,
+    tmp_path: Path, source: str, owners: tuple[str | None, ...], error: str
 ) -> None:
+    # A prior import can mutate package metadata, so uncertainty precedes the
+    # depth check. With no prior import, the known package proves beyond_top.
+    # The absolute sibling in that case stays resolved despite import effects.
     classification = _classify_sources(
         tmp_path,
         {
-            "pkg._facade": (
-                "from .owner import Value\n"
-                "from ...other import Other\n"
-                "__all__ = ['Value', 'Other']\n"
-            ),
+            "pkg._facade": source,
             "pkg.owner": _INTRINSIC_OWNER,
         },
     )
     assert classification.statuses["pkg._facade"] == STATUS_PYTHON_ONLY
     facade = classification.import_evidence["pkg._facade"].facade
     assert facade is not None and not facade.resolved
-    assert facade.bindings[1].owner_module is None
-    assert classification.unresolved_imports_payload()[0]["errors"] == ["beyond_top"]
+    assert tuple(binding.owner_module for binding in facade.bindings) == owners
+    assert classification.unresolved_imports_payload()[0]["errors"] == [error]
 
 
 @pytest.mark.parametrize(

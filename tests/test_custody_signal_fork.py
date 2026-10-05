@@ -144,6 +144,22 @@ def test_birth_fenced_descendants_follow_moved_ancestors_and_reject_pid_reuse():
     assert birth_fenced_descendants(samples, {90010: 100}) == ({}, set())
 
 
+@pytest.mark.parametrize("child_birth", [None, 0, -1, True, 200.0, "200", 99])
+def test_birth_fenced_descendants_leave_invalid_edges_unresolved(child_birth):
+    from tools.memory_guard_core.process_model import birth_fenced_descendants
+
+    sample = memory_guard.ProcessSample
+    samples = {
+        300: sample(300, 200, 1, "behind invalid edge", started_at_ns=300),
+        200: sample(200, 100, 1, "invalid birth", started_at_ns=child_birth),
+        101: sample(101, 100, 1, "same clock tick", started_at_ns=100),
+        100: sample(100, 1, 1, "observed parent", started_at_ns=100),
+    }
+    owned, unresolved = birth_fenced_descendants(samples, {100: 100})
+    assert set(owned) == {100, 101}
+    assert unresolved == {200}
+
+
 def test_durable_transfer_does_not_reenter_command_tracker_and_allows_new_pid_birth():
     tracker = memory_guard.ProcessTreeTracker(90020)
     root = memory_guard.ProcessSample(90020, 1, 1, "command", 90020, None, 100)

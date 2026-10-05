@@ -109,3 +109,15 @@ pub(crate) fn env_setting(var: &str) -> Option<String> {
         .map(|raw| raw.trim().to_string())
         .filter(|raw| !raw.is_empty())
 }
+
+/// Standalone artifacts use the target baseline unless host specialization is
+/// explicitly requested. Both native backends consume this policy.
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
+pub(crate) fn native_codegen_portable() -> bool {
+    let setting = env_setting("MOLT_PORTABLE").map(|value| value.to_ascii_lowercase());
+    match setting.as_deref() {
+        None | Some("1") | Some("true") => true,
+        Some("0") | Some("false") => false,
+        Some(value) => panic!("invalid MOLT_PORTABLE={value:?}; expected 0/1 or false/true"),
+    }
+}

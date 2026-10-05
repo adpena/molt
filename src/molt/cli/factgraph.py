@@ -9,7 +9,7 @@ import subprocess
 import sys
 from typing import Any
 from molt.cli.config_resolution import _select_codegen_backend
-from molt.cli.build_results import _finish_build_input_custody
+from molt.cli.command_runtime import _finish_build_input_custody
 from molt.cli.native_link_plan import NativeArtifactKind
 
 

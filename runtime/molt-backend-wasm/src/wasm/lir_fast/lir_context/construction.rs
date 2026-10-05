@@ -27,6 +27,8 @@ impl<'a> LirLowerCtx<'a> {
             rpo,
             cfg,
             operation_owners: None,
+            guard_facts: molt_tir::passes::SsaRuntimeGuardFacts::for_lir(func),
+            guard_profile_local: None,
         }
     }
 }

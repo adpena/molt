@@ -117,6 +117,15 @@ class BuildProgress:
         else:
             self._update(label)
 
+    def notice(self, message: str) -> None:
+        """Render one transient notice without changing the durable phase."""
+        if self._finished or self.mode == "off":
+            return
+        if self.mode == "plain":
+            print(f"molt: {message}", file=self.stream, flush=True)
+        else:
+            self._update(message)
+
     def frontend_module(self, module: str, total_s: float, *, timed_out: bool) -> None:
         # Plain logs stay bounded by phases, not the number of stdlib modules.
         if self.mode != "tty" or self._finished:
@@ -153,7 +162,9 @@ def success_is_visible() -> bool:
 
 
 @contextmanager
-def subprocess_status(label: str | None) -> Iterator[str | None]:
+def subprocess_status(
+    label: str | None, *, announce: bool = False
+) -> Iterator[str | None]:
     """Route existing subprocess labels through this renderer, once.
 
     Outside a CLI build, retain the guard's existing keepalive behavior.
@@ -161,6 +172,8 @@ def subprocess_status(label: str | None) -> Iterator[str | None]:
     """
     active = _ACTIVE.get()
     if active is None:
+        if announce and label is not None:
+            notice(label)
         yield label
         return
     previous = active._last_phase
@@ -178,7 +191,26 @@ def notice(message: str) -> None:
     if active is None:
         print(message, file=sys.stderr, flush=True)
     else:
-        active.phase(message)
+        active.notice(message)
+
+
+def background_task(function: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Carry presentation policy into a worker, without sharing its renderer.
+
+    The foreground owns status while waiting on the future. Worker diagnostics
+    still propagate; worker notices are suppressed while the foreground owns status.
+    """
+    active = _ACTIVE.get()
+    if active is None:
+        return function
+    quiet, json_output = active.quiet, active.json_output
+
+    @wraps(function)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with BuildProgress(mode="off", quiet=quiet, json_output=json_output):
+            return function(*args, **kwargs)
+
+    return wrapped
 
 
 def finish_after(function: Callable[_P, _R]) -> Callable[_P, _R]:

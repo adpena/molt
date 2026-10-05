@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 INTRINSIC_SYMBOL_NAMES: dict[str, str] = {
+    "molt_compatibility_error": "molt_compatibility_error",
     "molt_capabilities_trusted": "molt_capabilities_trusted",
     "molt_capabilities_has": "molt_capabilities_has",
     "molt_capabilities_require": "molt_capabilities_require",
@@ -87,7 +88,6 @@ INTRINSIC_SYMBOL_NAMES: dict[str, str] = {
     "molt_abc_reset_registry": "molt_abc_reset_registry",
     "molt_abc_reset_caches": "molt_abc_reset_caches",
     "molt_abc_update_abstractmethods": "molt_abc_update_abstractmethods",
-    "molt_abc_abstractmethod_check": "molt_abc_abstractmethod_check",
     "molt_protocol_check": "molt_protocol_check",
     "molt_protocol_get_structural_members": "molt_protocol_get_structural_members",
     "molt_protocol_register": "molt_protocol_register",

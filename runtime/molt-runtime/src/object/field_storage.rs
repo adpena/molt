@@ -8,6 +8,9 @@ pub(crate) use super::class_layout::ClassField as InstanceField;
 use crate::*;
 use std::mem::size_of;
 
+#[path = "field_storage_debug.rs"]
+pub(crate) mod debug;
+
 /// The same layout traversal serves backing transitions, GC, and serialization.
 /// Concrete typed rows retain every physical owner, including hidden inherited
 /// slots. The pinned class record outlives callback-capable visits.
@@ -42,6 +45,9 @@ pub(crate) unsafe fn for_each_instance_field(
                     (*fields).as_mut_ptr().add(index),
                 );
             }
+            return;
+        }
+        if !super::object_has_class_shape(object) && !super::native_instance::has_fields(object) {
             return;
         }
         let extent =
@@ -128,6 +134,9 @@ pub(crate) unsafe fn field_at_offset(
                 kind: (&(*desc).field_layout).get(index)?.kind,
             });
         }
+        if !super::object_has_class_shape(object) && !super::native_instance::has_fields(object) {
+            return None;
+        }
         let class = obj_from_bits(object_class_bits(object)).as_ptr()?;
         if object_type_id(class) != TYPE_ID_TYPE {
             return None;
@@ -197,9 +206,7 @@ unsafe fn inferred_inline_owners(py: &PyToken<'_>, object: *mut u8) -> Vec<(u64,
         let mut fields = Vec::new();
         // Native payloads can own dictionaries without hosting managed inline
         // fields. Their typed prefix/items must never be interpreted as slots.
-        if !super::heap_kind_has_class_shape(object_type_id(object))
-            && object_type_id(object) != TYPE_ID_DATACLASS
-        {
+        if !super::object_has_class_shape(object) && object_type_id(object) != TYPE_ID_DATACLASS {
             return fields;
         }
         if let Some(class) = obj_from_bits(object_class_bits(object)).as_ptr()
@@ -228,6 +235,8 @@ unsafe fn publish(
         // representation-specific steps. Exception projection must succeed
         // before the previous dictionary owner can be retired.
         if object_type_id(object) == TYPE_ID_EXCEPTION {
+            debug::instance(py, "publish_previous", object);
+            debug::dictionary(py, "publish_incoming", object, dictionary, None, None);
             debug_assert!(fields.is_empty());
             let result = crate::builtins::exceptions::exception_replace_field_bits(
                 py,
@@ -266,6 +275,8 @@ unsafe fn publish(
             return false;
         }
         let previous = instance_dict_bits(object);
+        debug::dictionary(py, "publish_previous", object, previous, None, None);
+        debug::dictionary(py, "publish_incoming", object, dictionary, None, None);
         // Reset can retire initialized scalar fields without publishing a dict.
         // Their empty words must still pass through missing/class-fallback lookup.
         object_mark_has_ptrs(py, object);
@@ -273,11 +284,13 @@ unsafe fn publish(
         for (_, slot, _) in &fields {
             **slot = missing;
         }
+        debug::fields(py, "inline_retired", object, dictionary, &fields);
         molt_cpython_abi::api::errors::with_preserved_error(|| {
             for (_, _, value) in fields {
                 dec_ref_bits(py, value);
             }
             if previous != 0 {
+                debug::dictionary(py, "previous_release", object, previous, None, None);
                 dec_ref_bits(py, previous);
             }
         });
@@ -338,9 +351,11 @@ pub(crate) unsafe fn resolve(
     slot: *mut u64,
 ) -> Option<FieldStorage> {
     unsafe {
-        // Closure/task/raw allocation payloads have no class field layout and
-        // do not reserve an instance-dictionary word. Their last word is data.
-        if object_class_bits(object) == 0 {
+        // The immutable task shape owns capture words even when the adapter
+        // has a logical class. Raw/classless storage is equally direct.
+        if object_class_bits(object) == 0
+            || super::object_shape_is_task(super::object_shape_id(object))
+        {
             return Some(FieldStorage::Inline(slot));
         }
         let Some(dictionary) = current_dictionary(py, object).ok()? else {
@@ -383,6 +398,7 @@ unsafe fn materialize_with_pairs(
             .flat_map(|(name, _, value)| [*name, *value])
             .chain(initial_pairs.iter().copied())
             .collect();
+        debug::fields(py, "materialize_inline", object, 0, &fields);
         let dict = alloc_dict_with_pairs(py, &pairs);
         if dict.is_null() {
             if !exception_pending(py) {
@@ -395,6 +411,7 @@ unsafe fn materialize_with_pairs(
             molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, bits));
             return None;
         }
+        debug::dictionary(py, "materialize_staged", object, bits, None, None);
         publish(py, object, bits, fields).then_some(bits)
     }
 }
@@ -442,11 +459,27 @@ pub(crate) unsafe fn set_item_deferred<'a, 'py>(
         // Key equality may replace the object's dictionary. Pin the original
         // mapping throughout the update and preserve errors when retiring it.
         inc_ref_bits(py, dictionary);
+        debug::dictionary(
+            py,
+            "instance_set_before",
+            object,
+            dictionary,
+            Some(name),
+            Some(value),
+        );
         let result = super::ops::dict_set_deferred(
             py,
             obj_from_bits(dictionary).as_ptr().unwrap(),
             name,
             value,
+        );
+        debug::dictionary(
+            py,
+            "instance_set_after",
+            object,
+            dictionary,
+            Some(name),
+            Some(value),
         );
         molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, dictionary));
         if result.is_err() && !exception_pending(py) {
@@ -499,6 +532,9 @@ pub(crate) unsafe fn class_allows_dictionary(py: &PyToken<'_>, object: *mut u8) 
 /// release any old value while sibling slots still expose the previous state.
 pub(crate) unsafe fn reset(py: &PyToken<'_>, object: *mut u8) {
     unsafe {
+        if super::instance_dict_bits_ptr(object).is_null() {
+            return;
+        }
         let Some(class) = obj_from_bits(object_class_bits(object)).as_ptr() else {
             return;
         };
@@ -523,6 +559,7 @@ pub(crate) unsafe fn reset(py: &PyToken<'_>, object: *mut u8) {
             detached.push((slot, *slot));
         });
         let old_dict = instance_dict_bits(object);
+        debug::dictionary(py, "instance_reset", object, old_dict, None, None);
         for &(slot, _) in detached.iter() {
             *slot = missing;
         }
@@ -546,6 +583,9 @@ pub(crate) unsafe fn slot_state_names<'a, 'py>(
     object: *mut u8,
 ) -> Option<super::seq_access::PinnedSequenceSnapshot<'a, 'py>> {
     unsafe {
+        if super::object_shape_is_task(super::object_shape_id(object)) {
+            return None;
+        }
         let class = obj_from_bits(object_class_bits(object)).as_ptr()?;
         if object_type_id(class) != TYPE_ID_TYPE {
             return None;

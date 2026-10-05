@@ -1,3 +1,5 @@
+use super::arguments::CallArgumentView;
+use super::frame_binding::function_binding_meta;
 use super::*;
 use crate::call::type_policy::{ObjectConstructorCall, object_constructor_extra_args_allowed};
 use crate::{dict_update_apply, dict_update_set_in_place};
@@ -95,13 +97,7 @@ pub(super) unsafe fn builtin_call_binding(
         // callable registry lock on every metadata/inline-cache query.
         macro_rules! matches_builtin {
             ($symbol:path) => {
-                callable_matches_runtime_symbol(
-                    callable_bits,
-                    crate::builtins::functions::runtime_fn_key(
-                        stringify!($symbol),
-                        $symbol as *const (),
-                    ),
-                )
+                callable_matches_runtime_symbol(callable_bits, fn_key!($symbol))
             };
         }
         let bind_kind = obj_from_bits(function_binding_meta(
@@ -168,9 +164,9 @@ pub(super) unsafe fn builtin_call_binding(
                     ) {
                         // `__molt_bind_kind__` is the dispatch authority; the raw
                         // function pointer is only a diagnostic label.
-                        let kind = if fn_ptr == fn_addr!(molt_type_new) {
+                        let kind = if fn_ptr == fn_key!(molt_type_new) {
                             "type.__new__"
-                        } else if fn_ptr == fn_addr!(molt_type_init) {
+                        } else if fn_ptr == fn_key!(molt_type_init) {
                             "type.__init__"
                         } else {
                             "type.__new__/__init__"
@@ -1159,7 +1155,9 @@ unsafe fn bind_builtin_print(
 /// The sealed protocol tag chooses binding; names and defaults remain owned by
 /// the published callable's typed metadata. No public spelling is executable.
 unsafe fn bind_builtin_named(
-    py: &PyToken<'_>, func_ptr: *mut u8, args: &CallArgumentView<'_>,
+    py: &PyToken<'_>,
+    func_ptr: *mut u8,
+    args: &CallArgumentView<'_>,
     storage: &mut BuiltinArgumentStorage,
 ) -> Option<Vec<u64>> {
     use crate::builtins::native_arguments::{NativeKeywords, bind_named_slots};
@@ -1187,10 +1185,27 @@ unsafe fn bind_builtin_named(
         let names = crate::object::seq_access::pin_tuple(py, tuple_ptrs[0])?;
         let defaults = crate::object::seq_access::pin_tuple(py, tuple_ptrs[1])?;
         let kwonly = crate::object::seq_access::pin_tuple(py, tuple_ptrs[2])?;
-        if !kwonly.is_empty() || defaults.len() > names.len()
-            || obj_from_bits(function_binding_meta(py, func_ptr, FunctionBindingField::PositionalOnly)).as_int() != Some(0)
-            || !obj_from_bits(function_binding_meta(py, func_ptr, FunctionBindingField::Varargs)).is_none()
-            || !obj_from_bits(function_binding_meta(py, func_ptr, FunctionBindingField::VarKeywords)).is_none()
+        if !kwonly.is_empty()
+            || defaults.len() > names.len()
+            || obj_from_bits(function_binding_meta(
+                py,
+                func_ptr,
+                FunctionBindingField::PositionalOnly,
+            ))
+            .as_int()
+                != Some(0)
+            || !obj_from_bits(function_binding_meta(
+                py,
+                func_ptr,
+                FunctionBindingField::Varargs,
+            ))
+            .is_none()
+            || !obj_from_bits(function_binding_meta(
+                py,
+                func_ptr,
+                FunctionBindingField::VarKeywords,
+            ))
+            .is_none()
             || function_arity_usize(func_ptr) != Some(names.len())
             || args.kw_names.len() != args.kw_values.len()
         {
@@ -1202,12 +1217,21 @@ unsafe fn bind_builtin_named(
         if slots.try_reserve_exact(names.len()).is_err()
             || out.try_reserve_exact(names.len()).is_err()
         {
-            return raise_exception(py, "MemoryError", "named builtin argument allocation failed");
+            return raise_exception(
+                py,
+                "MemoryError",
+                "named builtin argument allocation failed",
+            );
         }
         slots.resize(names.len(), None);
-        let bound = bind_named_slots(py, &name, args.pos,
+        let bound = bind_named_slots(
+            py,
+            &name,
+            args.pos,
             NativeKeywords::vector(args.kw_names, args.kw_values),
-            &names, required, slots,
+            &names,
+            required,
+            slots,
         )?;
         let (slots, owners) = bound.into_parts();
         if storage.owners.try_reserve(owners.len()).is_err() {
@@ -2121,3 +2145,7 @@ unsafe fn bind_builtin_text_codec(
 #[cfg(test)]
 #[path = "builtin_args_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "builtin_args_binding_tests.rs"]
+mod binding_tests;
