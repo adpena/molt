@@ -6,8 +6,8 @@ extension/freestanding variant, and the matching compiler/runtime sources. The o
 with its own command and data paths; installing both does not duplicate ownership.
 Molt requires the local toolchains listed below; it does not install them on
 your behalf. Private CLI dependencies require the explicit setup command below.
-Binaries produced by `molt build` are expected to run on target machines without
-any host Python installation or hidden CPython fallback.
+Binaries produced by `molt build` are expected to run on target machines
+without any host Python installation or hidden CPython fallback.
 
 ## Requirements
 

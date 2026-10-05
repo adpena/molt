@@ -3,7 +3,7 @@ schema = "molt.public-contract.v1"
 # Artifact and receipt formats a downstream consumer may depend on.
 public_schemas = [
   "molt.release-supply-chain.v1",
-  "molt.release-candidate.v4",
+  "molt.release-candidate.v5",
   "molt.release-manifest.v4",
   "molt.release-consumer-proof.v6",
   "molt.release-compiler-source.v5",

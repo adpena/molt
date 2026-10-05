@@ -414,6 +414,9 @@ def test_rust_stub_surface_probe_counts_live_stubs_not_tests(tmp_path: Path):
     )
     tests = tmp_path / "runtime" / "molt-backend-rust" / "tests"
     tests.mkdir(parents=True)
+    (tests.parent / "Cargo.toml").write_text(
+        '[package]\nname = "fixture"\nversion = "0.1.0"\n', encoding="utf-8"
+    )
     (tests / "stub_fixture.rs").write_text(
         'fn fixture() { unimplemented!("fixture only"); }\n',
         encoding="utf-8",
@@ -623,6 +626,13 @@ def test_enum_variant_extraction_handles_payloads():
     assert variants == {"Add", "Call", "Phi", "Const", "Last"}, variants
 
 
+@pytest.mark.parametrize("parameters", ["<'a>", "<Value>", "<Value: Into<(u64, u64)>>"])
+def test_enum_variant_extraction_handles_generic_headers(parameters: str):
+    source = f"pub enum Domain{parameters} {{ Unit, Tuple(Value), Record {{ value: Value }} }}"
+    assert SA._count_enum_variants(source, "Domain") == {"Unit", "Tuple", "Record"}
+    assert SA._count_enum_variants(f'const TEXT: &str = "{source}";', "Domain") == set()
+
+
 def test_large_single_cohesive_region_is_not_kitchen_sink_file(tmp_path: Path):
     src = tmp_path / "runtime" / "molt-backend" / "src"
     src.mkdir(parents=True)
@@ -742,6 +752,9 @@ def test_duplicate_authority_probe_ignores_split_rust_test_modules(tmp_path: Pat
     passes = tmp_path / "runtime" / "molt-passes" / "src" / "tir" / "passes"
     tests = passes / "gvn"
     tests.mkdir(parents=True)
+    (passes / "gvn.rs").write_text(
+        '#[cfg(test)]\n#[path = "gvn/tests.rs"]\nmod tests;\n', encoding="utf-8"
+    )
     (passes / "effects.rs").write_text(
         "fn opcode_is_side_effecting(opcode: OpCode) -> bool {\n"
         "    matches!(opcode, OpCode::Call)\n"
@@ -2163,6 +2176,18 @@ def test_rust_admitted_domain_numeric_total_rejection_requires_each_branch(
         ),
         (
             "runtime/molt-ir/src/ir_schema.rs",
+            "if actual != expected",
+            "if actual > expected",
+            "rust_backend_rejection_applicability",
+        ),
+        (
+            "runtime/molt-ir/src/ir_schema.rs",
+            "simpleir_op_shape(&op.kind).map_or(1, |shape| shape.operands)",
+            "simpleir_op_shape(&op.kind).map_or(0, |shape| shape.operands)",
+            "rust_backend_rejection_applicability",
+        ),
+        (
+            "runtime/molt-ir/src/ir_schema.rs",
             'name.is_empty() || name == "none"',
             'name.is_empty() || name == "n one"',
             "rust_backend_rejection_applicability",
@@ -2196,6 +2221,12 @@ def test_rust_admitted_domain_numeric_total_rejection_requires_each_branch(
             '"warn_stderr" => self.emit_op_warn_stderr(op),',
             "",
             "rust_backend_lowering_gap",
+        ),
+        (
+            "runtime/molt-ir/src/tir/op_kinds_generated.rs",
+            'kind: "type_guard",\n        family: "value_transport",\n        operands: 1,',
+            'kind: "type_guard",\n        family: "value_transport",\n        operands: 2,',
+            "rust_backend_rejection_applicability",
         ),
         (
             "runtime/molt-backend-rust/src/rust/op_emitter.rs",

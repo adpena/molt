@@ -409,7 +409,7 @@ def _value_contract(schema: str) -> bool:
             opcode_fixed_result_count_table, simpleir_kind_is_structural,
         };
         use crate::tir::simple_def_use::{
-            simple_ir_binding, simple_ir_single_read, visit_simple_ir_result_names,
+            simple_ir_binding, visit_simple_ir_reads, visit_simple_ir_result_names,
         };
         let binding = simpleir_var_field_role_table(&op.kind) == SimpleIrVarFieldRole::Definition;
         if binding {
@@ -418,10 +418,14 @@ def _value_contract(schema: str) -> bool:
                 return Err(format!("", op.kind));
             }
         }
-        if (copy_kind_is_explicit_no_heap_move_table(&op.kind)
-            || copy_kind_mints_owned_alias_ref_table(&op.kind))
-            && simple_ir_single_read(op).is_none()
-        { return Err(format!("", op.kind)); }
+        if copy_kind_is_explicit_no_heap_move_table(&op.kind)
+            || copy_kind_mints_owned_alias_ref_table(&op.kind)
+        {
+            let expected = simpleir_op_shape(&op.kind).map_or(1, |shape| shape.operands);
+            let mut actual = 0;
+            visit_simple_ir_reads(op, |_| actual += 1);
+            if actual != expected { return Err(format!("", op.kind)); }
+        }
         if simpleir_kind_is_structural(&op.kind)
             || kind_to_opcode_table(&op.kind).and_then(opcode_fixed_result_count_table) == Some(0)
         {
@@ -433,7 +437,7 @@ def _value_contract(schema: str) -> bool:
     """)
 
 
-def _unary_shapes(schema: str, generated: str) -> frozenset[str]:
+def _operand_shapes(schema: str, generated: str) -> dict[str, int] | None:
     if _compact(_body(schema, "validate_op_shape") or "") != _compact("""
         validate_op_not_retired(kind)?;
         let Some(shape) = simpleir_op_shape(kind) else { return Ok(()); };
@@ -455,20 +459,20 @@ def _unary_shapes(schema: str, generated: str) -> frozenset[str]:
         { return Err(OpShapeDiagnostic { family: shape.family, kind: shape.kind, violation: OpShapeViolation::ForbiddenVar, }); }
         Ok(())
     """):
-        return frozenset()
+        return None
     prefix = _locate(generated, "pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[")
     if prefix is None:
-        return frozenset()
+        return None
     closing = _closing(generated, prefix[1] - 1)
     if closing is None:
-        return frozenset()
+        return None
     rows = generated[prefix[1] : closing - 1]
     pattern = re.compile(
         r'SimpleIrOpShape\s*\{\s*kind:\s*"(?P<kind>[a-z_][a-z0-9_]*)",\s*family:\s*"[a-z_]+",\s*operands:\s*(?P<arity>\d+),\s*value_rule:\s*SimpleIrOpValueRule::(?:Unconstrained|NonNegative),\s*\},'
     )
     values = list(pattern.finditer(rows))
     if pattern.sub("", rows).strip():
-        return frozenset()
+        return None
     table = _generated_literal_table(
         _body(generated, "simpleir_op_shape"),
         r"Some\(&SIMPLEIR_OP_SHAPES\[(?P<value>\d+)\]\)",
@@ -478,10 +482,8 @@ def _unary_shapes(schema: str, generated: str) -> frozenset[str]:
         int(index) >= len(values) or values[int(index)]["kind"] != kind
         for kind, index in table.items()
     ):
-        return frozenset()
-    return frozenset(
-        kind for kind, index in table.items() if int(values[int(index)]["arity"]) == 1
-    )
+        return None
+    return {kind: int(values[int(index)]["arity"]) for kind, index in table.items()}
 
 
 def _unary_reads(defuse: str, generated: str, unary: frozenset[str]) -> frozenset[str]:
@@ -701,12 +703,13 @@ def proven_branch_projection(
     value = _value_contract(source["schema"])
     moves = _bool_table(source["generated"], "copy_kind_is_explicit_no_heap_move_table")
     aliases = _bool_table(source["generated"], "copy_kind_mints_owned_alias_ref_table")
+    operands = _operand_shapes(source["schema"], source["generated"])
     single_read = (
-        (moves | aliases)
-        if value and moves is not None and aliases is not None
+        frozenset(kind for kind in moves | aliases if operands.get(kind, 1) == 1)
+        if value and moves is not None and aliases is not None and operands is not None
         else frozenset()
     )
-    unary = _unary_shapes(source["schema"], source["generated"])
+    unary = frozenset(kind for kind, arity in (operands or {}).items() if arity == 1)
     single_read |= _unary_reads(source["defuse"], source["generated"], unary)
     roles = _enum_table(
         source["generated"],

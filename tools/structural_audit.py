@@ -2410,7 +2410,8 @@ def _count_enum_variants(rust_text: str, enum_name: str) -> set[str]:
     takes the leading CamelCase identifier of each segment after stripping
     attributes/doc-comments. Robust to tuple/struct variants and `= discriminant`.
     """
-    m = re.search(rf"\benum\s+{re.escape(enum_name)}\s*\{{", rust_text)
+    code = mask_rust_comments_and_strings(rust_text)
+    m = re.search(rf"\benum\s+{re.escape(enum_name)}\s*(?:<[^{{}};]*>)?\s*\{{", code)
     if not m:
         return set()
     _, block = _balanced_block(rust_text, m.end() - 1)
