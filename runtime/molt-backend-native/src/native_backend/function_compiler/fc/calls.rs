@@ -584,8 +584,8 @@ fn handle_call_direct_op(
     // value-only guarded dispatcher adds no trace and corrupts a void ABI.
     // CHECK_EXCEPTION owns post-call routing; the recursion-limit arm returns
     // immediately to preserve the pending exception.
-    let needs_python_recursion_guard = !leaf_functions.contains(target_name)
-        && !(runtime_result.is_some() && linkage == Linkage::Import);
+    let needs_python_recursion_guard = !(leaf_functions.contains(target_name)
+        || (runtime_result.is_some() && linkage == Linkage::Import));
     let res = if !needs_python_recursion_guard {
         // Classified runtime services are not Python activations. Their user
         // callbacks own their call boundaries; do not add a second boundary
