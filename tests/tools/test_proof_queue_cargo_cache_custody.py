@@ -19,6 +19,9 @@ from tools.proof_queue_pkg import (
 )
 
 
+pytestmark = pytest.mark.usefixtures("cargo_output_implementation_source")
+
+
 @pytest.fixture(autouse=True)
 def source_admission(monkeypatch):
     monkeypatch.setattr(
