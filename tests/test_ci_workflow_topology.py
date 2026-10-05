@@ -820,6 +820,37 @@ def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
     assert "LLVM_SYS_${MAJOR}1_PREFIX" not in perf_text
 
 
+def test_wasm_ci_provisions_pinned_optimizer_before_linked_partitions() -> None:
+    workflow = yaml.safe_load(_read(".github/workflows/molt-wasm-ci.yml"))
+    steps = workflow["jobs"]["wasm-build"]["steps"]
+    optimizer_steps = [
+        (index, step)
+        for index, step in enumerate(steps)
+        if step.get("uses") == "./.github/actions/setup-binaryen"
+    ]
+    assert len(optimizer_steps) == 1
+    optimizer_index, optimizer = optimizer_steps[0]
+    assert optimizer["id"] == "binaryen"
+    partition_index, partition = next(
+        (index, step)
+        for index, step in enumerate(steps)
+        if "--run-family wasm" in step.get("run", "")
+    )
+    assert optimizer_index < partition_index
+    assert partition["env"]["MOLT_WASM_OPT"] == (
+        "${{ steps.binaryen.outputs.wasm_opt }}"
+    )
+    action = yaml.safe_load(_read(".github/actions/setup-binaryen/action.yml"))
+    assert action["outputs"]["wasm_opt"]["value"] == (
+        "${{ steps.binaryen.outputs.wasm_opt }}"
+    )
+    provision = next(
+        step for step in action["runs"]["steps"] if step.get("id") == "binaryen"
+    )
+    assert "python -m tools.provision_binaryen" in provision["run"]
+    assert '--github-output "$GITHUB_OUTPUT"' in provision["run"]
+
+
 def test_pr_trust_labeler_is_advisory_not_authoritative() -> None:
     labeler_text = _read(".github/workflows/pr_trust_labeler.yml")
     gate_text = _read(".github/workflows/pr_trust_gate.yml")

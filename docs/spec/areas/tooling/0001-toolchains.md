@@ -84,6 +84,15 @@ PATH-resolved name must pass lexical and resolved-content custody before probing
 the captured executable generation is checked again at execution and cache reuse.
 Quoted paths preserve spaces and native separators without admitting arguments.
 
+Optimized linked WASM builds require Binaryen from
+`config/binaryen_releases.toml`, provisioned by `tools/provision_binaryen.py`.
+The manifest owns each host archive and extracted-tree identity, not
+`config/tool_releases.toml`'s standalone validator executables. Hosted WASM CI
+uses `.github/actions/setup-binaryen` alongside pinned `wasm-tools` provisioning
+and passes its exact `wasm_opt` output as `MOLT_WASM_OPT` to the proof partitions.
+Link fingerprints require optimizer identity only when optimization is selected;
+missing tooling is a provisioning error, not permission to omit optimization.
+
 Rust via rustup:
 - `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 

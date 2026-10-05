@@ -228,6 +228,57 @@ fn callable_provenance_and_execution_context_survive_tir_roundtrip() {
     assert!(call.passes_execution_context);
 }
 
+/// `builtin_func` keeps its paired `builtin_name` and name operand across
+/// repeated TIR roundtrips, so every backend admits the same encoding.
+#[test]
+fn named_builtin_encoding_survives_repeated_tir_roundtrips() {
+    for (symbol, builtin_name, arity) in [
+        ("molt_len", "len", 1),
+        ("molt_zip", "zip", 1),
+        ("molt_iter_sentinel", "molt_iter_sentinel", 2),
+    ] {
+        let mut function = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: "builtin_encoding".into(),
+            params: vec!["name".into()],
+            ops: vec![
+                OpIR {
+                    kind: "builtin_func".into(),
+                    s_value: Some(symbol.into()),
+                    builtin_name: Some(builtin_name.into()),
+                    value: Some(arity),
+                    args: Some(vec!["name".into()]),
+                    out: Some("callable".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "return".into(),
+                    args: Some(vec!["callable".into()]),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        };
+        for _ in 0..2 {
+            function.ops = lower_to_simple_ir(&lower_to_tir(&function));
+            let builtin = function
+                .ops
+                .iter()
+                .find(|op| op.kind == "builtin_func")
+                .unwrap();
+            assert_eq!(builtin.s_value.as_deref(), Some(symbol));
+            assert_eq!(builtin.builtin_name.as_deref(), Some(builtin_name));
+            assert_eq!(builtin.value, Some(arity));
+            assert_eq!(builtin.args.as_ref().map(Vec::len), Some(1));
+            crate::validate_simple_ir(&crate::ir::SimpleIR {
+                functions: vec![function.clone()],
+                profile: None,
+            })
+            .expect("shared builtin encoding must remain valid after every TIR roundtrip");
+        }
+    }
+}
+
 /// A source call's typed operand custody survives the lift and the lowering
 /// position by position: a `super()` method call borrows its class and adopts
 /// its `self` and argument, and an unmarked call borrows every operand.

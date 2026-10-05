@@ -35,6 +35,9 @@ pub(super) fn annotate_lowered_op(
     original_to_new_label: &HashMap<i64, i64>,
 ) {
     annotate_type_flags(opir, tir_op);
+    if let Some(AttrValue::Str(name)) = tir_op.attrs.get("builtin_name") {
+        opir.builtin_name = Some(name.clone());
+    }
     // Canonical callable provenance and execution-context threading are typed
     // SimpleIR transport fields carried as TIR attrs during optimization. They
     // must survive every relift/back-conversion before target admission and

@@ -667,7 +667,7 @@ All use the standard `args` + `out` pattern.
 |---------------------------|------------------------------------------|--------------------------------|
 | `func_new`                | `s_value` (name), `value` (arity), `out`, optional paired `task_kind` / `task_closure_size` | Create function object |
 | `func_new_closure`        | `s_value`, `value`, `args` [closure], `out`, optional paired `task_kind` / `task_closure_size` | Create closure |
-| `builtin_func`            | `s_value` (name), `value` (arity), `out` | Reference to built-in function |
+| `builtin_func`            | `s_value` (runtime symbol), `value` (arity), `out`, paired `builtin_name` / `args` [name] | Acquire a public builtin binding or construct a runtime callable |
 | `code_new`                | `args`, `out`                            | Create code object             |
 | `code_slot_set`           | `value` (code_id), `args` [code_obj, globals_dict] | Bind owned code and lexical namespace in slot table |
 | `code_slots_init`         | `value` (count)                          | Initialize code slot table     |
@@ -676,6 +676,12 @@ All use the standard `args` + `out` pattern.
 | `property_new`            | `args`, `out`                            | Create property descriptor     |
 | `bound_method_new`        | `args`, `out`                            | Create bound method            |
 | `function_closure_bits`   | `args`, `out`                            | Closure capture bitmap         |
+
+`builtin_name` and the single executable name operand are inseparable: neither
+may appear without the other. Public builtin acquisition and named runtime
+construction use this encoding; unnamed runtime constructors carry neither.
+The shared SimpleIR/TIR conversion preserves the pair through every optimization
+roundtrip, before native, LLVM, WASM, Luau, or Rust admission and emission.
 
 ### Module
 
