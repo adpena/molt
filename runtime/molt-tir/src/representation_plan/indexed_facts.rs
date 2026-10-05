@@ -1085,11 +1085,11 @@ fn tir_container_alias_inputs(func: &TirFunction) -> HashMap<ValueId, Vec<ValueI
     let mut inputs: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
     for block in func.blocks.values() {
         for op in &block.ops {
-            if tir_container_identity(op) || op.opcode == crate::tir::ops::OpCode::StoreIndex {
-                if let Some(&source) = op.operands.first() {
-                    for &result in &op.results {
-                        inputs.entry(result).or_default().push(source);
-                    }
+            if (tir_container_identity(op) || op.opcode == crate::tir::ops::OpCode::StoreIndex)
+                && let Some(&source) = op.operands.first()
+            {
+                for &result in &op.results {
+                    inputs.entry(result).or_default().push(source);
                 }
             }
         }

@@ -57,7 +57,7 @@ impl PythonString {
         &self.0
     }
 
-    pub fn code_points(&self) -> impl Iterator<Item = u32> + DoubleEndedIterator + '_ {
+    pub fn code_points(&self) -> impl DoubleEndedIterator<Item = u32> + '_ {
         PythonCodePoints { bytes: &self.0 }
     }
 
