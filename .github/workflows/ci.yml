@@ -332,7 +332,9 @@ jobs:
           wasi: "true"
 
       - name: Install pinned executable Luau proof runner
-        run: cargo install lune --version 0.10.5 --locked
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: python3 -m molt.tool_releases provision lune --github-path "$GITHUB_PATH"
 
       - name: Execute selected Rust partitions
         run: python3 tools/proof_plan.py --run-family rust --receipt proof-receipts/rust.json

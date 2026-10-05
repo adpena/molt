@@ -41,6 +41,31 @@ def test_repository_manifest_pins_every_host_asset_of_wasm_tools() -> None:
     assert release.provenance.kind == tool_releases.PROVENANCE_GITHUB_RELEASE
 
 
+def test_repository_manifest_pins_lune_for_every_ci_host() -> None:
+    release = tool_releases.tool_release("lune", ROOT)
+    assert release.version == "0.10.5"
+    assert release.executable == "lune"
+    assert release.provenance.kind == tool_releases.PROVENANCE_GITHUB_RELEASE
+    assert release.provenance.release_id == 348167792
+    assert release.provenance.url == (
+        "https://api.github.com/repos/lune-org/lune/releases/tags/v0.10.5"
+    )
+    assert set(release.assets) == {
+        f"{architecture}-{system}"
+        for architecture in ("x86_64", "aarch64")
+        for system in ("windows", "linux", "macos")
+    }
+    for key, asset in release.assets.items():
+        architecture, system = key.split("-", 1)
+        assert asset.url == (
+            "https://github.com/lune-org/lune/releases/download/v0.10.5/"
+            f"lune-0.10.5-{system}-{architecture}.zip"
+        )
+        assert asset.archive_member == ("lune.exe" if system == "windows" else "lune")
+        assert asset.size > 0
+        assert len(asset.sha256) == 64
+
+
 def test_repository_manifest_pins_node_from_the_official_distribution() -> None:
     release = tool_releases.load_tool_releases(ROOT)["node"]
     assert release.provenance.kind == tool_releases.PROVENANCE_CHECKSUM_MANIFEST
