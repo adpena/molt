@@ -90,6 +90,36 @@ def _build_luau(src_path: Path, out_dir: Path) -> str | None:
 # ------------------------------------------------------------------
 
 
+def test_hello_compiles_through_luau_validator(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(SRC_DIR)
+    env.setdefault("MOLT_BACKEND_DAEMON", "0")
+    output = tmp_path / "hello.luau"
+    result = run_native_test_process(
+        [
+            sys.executable,
+            "-m",
+            "molt.cli",
+            "build",
+            str(ROOT / "examples" / "hello.py"),
+            "--profile",
+            "dev",
+            "--target",
+            "luau",
+            "--output",
+            str(output),
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert output.is_file()
+    assert "-- Entry point" in output.read_text(encoding="utf-8")
+
+
 class TestLuauArithmeticPatterns:
     """Verify that arithmetic expressions produce expected Luau patterns."""
 
