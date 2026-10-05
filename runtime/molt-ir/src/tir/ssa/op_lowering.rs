@@ -10,6 +10,7 @@ use super::super::op_kinds_generated::{
     simpleir_kind_may_carry_async_work_poll_marker, simpleir_kind_preserves_original_kind_for_ssa,
 };
 use super::super::ops::{ASYNC_WORK_POLL_ATTR, AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use super::super::simple_def_use::{SimpleIrResultField, visit_simple_ir_results};
 use super::super::types::TirType;
 use super::super::values::ValueId;
 use super::variables::{
@@ -216,23 +217,39 @@ impl<'a> SsaContext<'a> {
         if let Some(ref out) = op.out {
             attrs.insert("_simple_out".into(), AttrValue::Str(out.clone()));
         }
-        // Every named SSA result slot keeps its authored SimpleIR spelling,
-        // including trailing-argument results such as `unpack_sequence`
-        // outputs. Re-lifts recover these as source names, and the synthetic
-        // `_v{N}` allocator only avoids spellings it knows; an unrecorded
-        // output name could otherwise be reissued to an unrelated value and
-        // inherit that value's raw-carrier representation. A sole `out`
-        // result is already named by `_simple_out`.
-        visit_simple_ir_ssa_result_slots(op, |name, index| {
-            if let Some(name) = name
-                && !(result_count == 1 && op.out.as_deref() == Some(name))
-            {
+        let mut positional_results = false;
+        visit_simple_ir_results(op, |result| {
+            positional_results |= result.field == SimpleIrResultField::Var;
+            if positional_results && let Some(name) = result.name {
+                let index = match result.field {
+                    SimpleIrResultField::Var => 0,
+                    SimpleIrResultField::Out => 1,
+                    SimpleIrResultField::Arg(_) => {
+                        unreachable!("fixed results cannot carry trailing outputs")
+                    }
+                };
                 attrs.insert(
                     format!("_simple_result_{index}"),
                     AttrValue::Str(name.to_string()),
                 );
             }
         });
+        // Trailing-argument results (e.g. `unpack_sequence` outputs) are SSA
+        // values with authored names, unlike binding destinations, which name
+        // mutable storage. Record them so re-lifts recover them as source
+        // names: the synthetic `_v{N}` allocator only avoids spellings it
+        // knows, and an unrecorded output name could be reissued to an
+        // unrelated value and inherit its raw-carrier representation.
+        if simpleir_first_trailing_result_arg_table(op.kind.as_str()).is_some() {
+            visit_simple_ir_ssa_result_slots(op, |name, index| {
+                if let Some(name) = name {
+                    attrs.insert(
+                        format!("_simple_result_{index}"),
+                        AttrValue::Str(name.to_string()),
+                    );
+                }
+            });
+        }
         // Preserve only the structural class-id hint needed by object
         // allocation round-trips. Scalar `fast_int` / `fast_float` flags are
         // SimpleIR transport metadata and must not become TIR attributes; TIR
