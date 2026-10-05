@@ -147,21 +147,26 @@ runs:
       shell: bash
       run: python3 tools/ci_cargo_cache.py
 
+    # actions/cache is GitHub-owned, so the repository's Actions policy allows
+    # it; third-party cache actions are rejected before any job step runs.
     - name: Cache Cargo builds and source downloads
       if: steps.inputs.outputs.cache-cargo == 'true'
-      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
-        workspaces: . -> ${{ steps.cargo-cache.outputs.target-dir }}
-        cache-targets: "true"
-        cache-all-crates: "true"
-        cache-workspace-crates: "true"
-        cache-bin: "false"
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ${{ steps.cargo-cache.outputs.target-dir }}
         key: >-
-          ${{ steps.inputs.outputs.cache-namespace }}-${{
-          steps.inputs.outputs.rust-cache-token }}-${{
+          cargo-${{ steps.inputs.outputs.cache-namespace }}-${{ runner.os }}-${{
+          runner.arch }}-${{ steps.inputs.outputs.rust-cache-token }}-${{
           hashFiles('rust-toolchain.toml',
           'Cargo.lock', '**/Cargo.toml', '.cargo/config.toml', 'tools/proof_plan.toml',
           'config/llvm_toolchain_releases.toml', 'config/llvm_toolchain_arches.toml') }}
+        restore-keys: >-
+          cargo-${{ steps.inputs.outputs.cache-namespace }}-${{ runner.os }}-${{
+          runner.arch }}-${{ steps.inputs.outputs.rust-cache-token }}-
 
     - name: Cache Lean lake artifacts
       if: steps.inputs.outputs.cache-lean == 'true'
