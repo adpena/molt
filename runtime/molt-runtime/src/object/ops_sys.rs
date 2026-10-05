@@ -2189,7 +2189,9 @@ pub extern "C" fn molt_sys_implementation_payload() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_flags_payload() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let keys_and_values: [(&[u8], i64); 19] = [
+        // The sequence fields plus every named non-sequence field any supported
+        // target exposes; sys.py publishes the extras by target version.
+        let keys_and_values: [(&[u8], i64); 21] = [
             (b"debug", env_flag_bool("PYTHONDEBUG").unwrap_or(0)),
             (b"inspect", env_flag_bool("PYTHONINSPECT").unwrap_or(0)),
             (b"interactive", 0),
@@ -2222,6 +2224,16 @@ pub extern "C" fn molt_sys_flags_payload() -> u64 {
                     .unwrap_or(DEFAULT_SYS_FLAGS_INT_MAX_STR_DIGITS),
             ),
             (b"gil", 1),
+            // CPython 3.14 GIL builds default both to 0; the environment
+            // variables mirror their -X options.
+            (
+                b"context_aware_warnings",
+                env_flag_bool("PYTHON_CONTEXT_AWARE_WARNINGS").unwrap_or(0),
+            ),
+            (
+                b"thread_inherit_context",
+                env_flag_bool("PYTHON_THREAD_INHERIT_CONTEXT").unwrap_or(0),
+            ),
         ];
         let mut pairs: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
         for (key, value) in keys_and_values {
