@@ -21,32 +21,18 @@ use crate::{
     object_class_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64, type_of_bits,
 };
 
-const FUNCTOOLS_OBJECT_SLOT_COUNT: usize = 23;
+/// The runtime-owned functools objects: the keyword marker and the five
+/// native classes. Their methods are published by the class specs, so no
+/// per-method slot exists here.
+const FUNCTOOLS_OBJECT_SLOT_COUNT: usize = 6;
 
 pub(crate) struct FunctoolsRuntimeState {
     kwd_mark_bits: AtomicU64,
     partial_class: AtomicU64,
-    partial_call_fn: AtomicU64,
-    partial_repr_fn: AtomicU64,
     cmpkey_class: AtomicU64,
-    cmpkey_lt_fn: AtomicU64,
-    cmpkey_le_fn: AtomicU64,
-    cmpkey_gt_fn: AtomicU64,
-    cmpkey_ge_fn: AtomicU64,
-    cmpkey_eq_fn: AtomicU64,
-    cmpkey_ne_fn: AtomicU64,
     lru_wrapper_class: AtomicU64,
     lru_factory_class: AtomicU64,
     cacheinfo_class: AtomicU64,
-    lru_call_fn: AtomicU64,
-    lru_cache_info_fn: AtomicU64,
-    lru_cache_clear_fn: AtomicU64,
-    lru_cache_params_fn: AtomicU64,
-    lru_descriptor_get_fn: AtomicU64,
-    lru_factory_call_fn: AtomicU64,
-    cacheinfo_iter_fn: AtomicU64,
-    cacheinfo_repr_fn: AtomicU64,
-    cacheinfo_getattr_fn: AtomicU64,
     next_singledispatch_handle: AtomicI64,
     singledispatch_registry: Mutex<HashMap<i64, SingleDispatchState>>,
 }
@@ -56,27 +42,10 @@ impl FunctoolsRuntimeState {
         Self {
             kwd_mark_bits: AtomicU64::new(0),
             partial_class: AtomicU64::new(0),
-            partial_call_fn: AtomicU64::new(0),
-            partial_repr_fn: AtomicU64::new(0),
             cmpkey_class: AtomicU64::new(0),
-            cmpkey_lt_fn: AtomicU64::new(0),
-            cmpkey_le_fn: AtomicU64::new(0),
-            cmpkey_gt_fn: AtomicU64::new(0),
-            cmpkey_ge_fn: AtomicU64::new(0),
-            cmpkey_eq_fn: AtomicU64::new(0),
-            cmpkey_ne_fn: AtomicU64::new(0),
             lru_wrapper_class: AtomicU64::new(0),
             lru_factory_class: AtomicU64::new(0),
             cacheinfo_class: AtomicU64::new(0),
-            lru_call_fn: AtomicU64::new(0),
-            lru_cache_info_fn: AtomicU64::new(0),
-            lru_cache_clear_fn: AtomicU64::new(0),
-            lru_cache_params_fn: AtomicU64::new(0),
-            lru_descriptor_get_fn: AtomicU64::new(0),
-            lru_factory_call_fn: AtomicU64::new(0),
-            cacheinfo_iter_fn: AtomicU64::new(0),
-            cacheinfo_repr_fn: AtomicU64::new(0),
-            cacheinfo_getattr_fn: AtomicU64::new(0),
             next_singledispatch_handle: AtomicI64::new(1),
             singledispatch_registry: Mutex::new(HashMap::new()),
         }
@@ -86,27 +55,10 @@ impl FunctoolsRuntimeState {
         [
             &self.kwd_mark_bits,
             &self.partial_class,
-            &self.partial_call_fn,
-            &self.partial_repr_fn,
             &self.cmpkey_class,
-            &self.cmpkey_lt_fn,
-            &self.cmpkey_le_fn,
-            &self.cmpkey_gt_fn,
-            &self.cmpkey_ge_fn,
-            &self.cmpkey_eq_fn,
-            &self.cmpkey_ne_fn,
             &self.lru_wrapper_class,
             &self.lru_factory_class,
             &self.cacheinfo_class,
-            &self.lru_call_fn,
-            &self.lru_cache_info_fn,
-            &self.lru_cache_clear_fn,
-            &self.lru_cache_params_fn,
-            &self.lru_descriptor_get_fn,
-            &self.lru_factory_call_fn,
-            &self.cacheinfo_iter_fn,
-            &self.cacheinfo_repr_fn,
-            &self.cacheinfo_getattr_fn,
         ]
     }
 }

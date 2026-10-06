@@ -10,6 +10,9 @@ use crate::object::builders::{alloc_code_obj, alloc_tuple};
 use crate::state::runtime_state::PythonVersionInfo;
 use crate::{alloc_string, dict_get_in_place};
 
+/// Allocate a string value. Tests that count a bound value's references pass
+/// text that is not identifier-like: `alloc_string` interns identifiers as
+/// immortal singletons, whose reference count never moves.
 fn string(py: &PyToken<'_>, text: &[u8]) -> u64 {
     MoltObject::from_ptr(alloc_string(py, text)).bits()
 }
@@ -164,7 +167,7 @@ fn compiled_home_reads_and_moves_follow_the_home_kind() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let code = slot_code(py, &[b"plain", b"raw", b"unbound", b"shared"], &[b"shared"]);
-        let value = string(py, b"binding");
+        let value = string(py, b"binding value");
         let cell = MoltObject::from_ptr(crate::object::cells::alloc_cell(py, value)).bits();
         let (homes, _) = enter_frame(py, code, 4);
         unsafe {
@@ -221,7 +224,7 @@ fn argument_zero_is_read_from_the_first_home_when_asked() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let code = slot_code(py, &[b"receiver"], &[b"receiver"]);
-        let first = string(py, b"receiver");
+        let first = string(py, b"receiver value");
         let second = string(py, b"rebound receiver");
         let (homes, _) = enter_frame(py, code, 1);
         assert_eq!(
@@ -479,7 +482,7 @@ fn an_unshared_exit_releases_every_binding_its_homes_own() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let code = slot_code(py, &[b"only", b"shared"], &[b"shared"]);
-        let value = string(py, b"binding");
+        let value = string(py, b"binding value");
         let contents = string(py, b"cell contents");
         let cell = MoltObject::from_ptr(crate::object::cells::alloc_cell(py, contents)).bits();
         let (homes, index) = enter_frame(py, code, 2);
@@ -610,7 +613,7 @@ fn a_malformed_home_retires_as_malformed_and_is_reported() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let code = slot_code(py, &[b"broken", b"fine"], &[]);
-        let value = string(py, b"binding");
+        let value = string(py, b"binding value");
         let (homes, index) = enter_frame(py, code, 2);
         unsafe {
             set_home(homes, 0, 9, value);
@@ -723,7 +726,10 @@ fn from_314_the_frame_object_keeps_what_proxy_writes_displace() {
                 dec_ref_bits(py, bits);
             }
             dec_ref_bits(py, payload);
-            for bits in [x, original, first, second, code] {
+            // The name is an interned identifier: immortal, so no owner to count.
+            assert_eq!(refs(x), molt_codegen_abi::IMMORTAL_REFCOUNT);
+            dec_ref_bits(py, x);
+            for bits in [original, first, second, code] {
                 assert_eq!(refs(bits), 1);
                 dec_ref_bits(py, bits);
             }
