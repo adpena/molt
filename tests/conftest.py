@@ -25,6 +25,23 @@ def isolated_molt_cache(tmp_path_factory, monkeypatch) -> Path:
 
 
 @pytest.fixture
+def admitted_build_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admit build-capacity probes for tests whose Cargo runs are fakes.
+
+    Real admission samples host free space against the 25 GiB default. A test
+    that writes no real build output must not pass or fail with the host disk;
+    tests of admission itself patch the probe explicitly after this fixture.
+    """
+    from molt import disk_capacity
+
+    monkeypatch.setattr(
+        disk_capacity,
+        "_default_measure_free_bytes",
+        lambda _path: disk_capacity.DEFAULT_MINIMUM_HEADROOM_BYTES + 1,
+    )
+
+
+@pytest.fixture
 def runtime_fixture_root(tmp_path: Path) -> RuntimeFixtureRoot:
     """Separate writable synthetic runtime tools from compiler source custody."""
     from tests.runtime_build_identity_helper import RuntimeFixtureRoot

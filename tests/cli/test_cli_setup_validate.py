@@ -23,7 +23,6 @@ ROOT = Path(__file__).resolve().parents[2]
 COMPILER_METADATA = importlib.import_module("molt.cli.compiler_metadata")
 COMMAND_RUNTIME = importlib.import_module("molt.cli.command_runtime")
 CARGO_EXECUTION = importlib.import_module("molt.cli.cargo_execution")
-DISK_CAPACITY = importlib.import_module("molt.disk_capacity")
 NATIVE_TOOLCHAIN = importlib.import_module("molt.cli.native_toolchain")
 SETUP_READINESS = importlib.import_module("molt.cli.setup_readiness")
 TOOLCHAIN_VALIDATION = importlib.import_module("molt.cli.toolchain_validation")
@@ -476,6 +475,7 @@ def test_cli_guard_preserves_operator_limits_for_sanitized_env(
 
 def test_cli_cargo_build_helper_uses_default_memory_guard(
     monkeypatch: pytest.MonkeyPatch,
+    admitted_build_capacity: None,
 ) -> None:
     from molt import cli
 
@@ -494,11 +494,6 @@ def test_cli_cargo_build_helper_uses_default_memory_guard(
         raise AssertionError("cargo helper used raw subprocess.run")
 
     monkeypatch.setenv("MOLT_BUILD_MAX_PROCESS_RSS_GB", "0.25")
-    monkeypatch.setattr(
-        DISK_CAPACITY,
-        "_default_measure_free_bytes",
-        lambda _path: DISK_CAPACITY.DEFAULT_MINIMUM_HEADROOM_BYTES + 1,
-    )
     monkeypatch.setattr(COMMAND_RUNTIME.subprocess, "run", fail_raw_subprocess_run)
     _patch_memory_guard_loader(
         monkeypatch,
