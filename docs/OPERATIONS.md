@@ -330,7 +330,7 @@ PY
 
 `stdlib intrinsics lint failed: unknown intrinsic names`
 ```bash
-python3 tools/gen_intrinsics.py
+python3 tools/gen_intrinsics.py --write
 python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
 ```
 
@@ -459,7 +459,7 @@ PY
 
 `stdlib intrinsics lint failed: full-coverage intrinsic contract references unknown intrinsics`
 ```bash
-python3 tools/gen_intrinsics.py
+python3 tools/gen_intrinsics.py --write
 python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
 ```
 
@@ -481,7 +481,7 @@ python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only
 
 `stdlib intrinsics lint failed: ...` (dynamic message, e.g. baseline invalid/missing)
 ```bash
-python3 tools/gen_stdlib_module_union.py
+python3 tools/gen_stdlib_module_union.py --write
 python3 tools/sync_stdlib_top_level_stubs.py --write
 python3 tools/sync_stdlib_submodule_stubs.py --write
 python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only

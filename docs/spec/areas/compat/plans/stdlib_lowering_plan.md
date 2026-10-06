@@ -83,7 +83,7 @@ Required constraints:
 Any PR that worsens the scoreboard must include explicit exception sign-off and rollback plan.
 
 ## Update Workflow (Python Release Advance or Major Sweep)
-1. `python3 tools/gen_stdlib_module_union.py`
+1. `python3 tools/gen_stdlib_module_union.py --write`
 2. `python3 tools/sync_stdlib_top_level_stubs.py --write`
 3. `python3 tools/sync_stdlib_submodule_stubs.py --write`
 4. `python3 tools/check_stdlib_intrinsics.py --update-doc`

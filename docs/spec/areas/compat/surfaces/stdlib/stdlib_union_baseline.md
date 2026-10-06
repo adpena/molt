@@ -75,8 +75,9 @@ Failure of any invariant is a hard CI failure.
 
 ### 5.2 Add A New CPython Version (Example: 3.15)
 1. Ensure interpreter is available to `uv`.
-2. Regenerate baseline with explicit versions:
-   - `python3 tools/gen_stdlib_module_union.py --python 3.12 --python 3.13 --python 3.14 --python 3.15`
+2. Add the version to the target-Python authority (`src/molt/target_python.py`;
+   `tools/check_table_drift.py` requires the baseline versions to equal it), then regenerate:
+   - `python3 tools/gen_stdlib_module_union.py --write`
 3. Materialize missing top-level entries:
    - `python3 tools/sync_stdlib_top_level_stubs.py --write`
    - `python3 tools/sync_stdlib_submodule_stubs.py --write`
@@ -91,8 +92,8 @@ Failure of any invariant is a hard CI failure.
    - `docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md`
    - this file (`0027`) if workflow semantics changed.
 
-### 5.3 Regenerate Baseline To Alternate Path (Dry/Inspection)
-- `python3 tools/gen_stdlib_module_union.py --output /tmp/stdlib_module_union.py`
+### 5.3 Inspect The Baseline Without Writing
+- `python3 tools/gen_stdlib_module_union.py --check` names every stale output.
 
 ## 6. Stub Policy (Non-Negotiable)
 When `sync_stdlib_top_level_stubs.py --write` or

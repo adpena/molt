@@ -34,7 +34,7 @@ For stdlib surfaces, coverage rows should include or clearly document:
 - Intrinsic status and differential evidence.
 
 ## Update Commands
-- `python3 tools/gen_stdlib_module_union.py`
+- `python3 tools/gen_stdlib_module_union.py --write`
 - `python3 tools/sync_stdlib_top_level_stubs.py --write`
 - `python3 tools/sync_stdlib_submodule_stubs.py --write`
 - `python3 tools/check_stdlib_intrinsics.py --update-doc`

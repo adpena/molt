@@ -60,17 +60,17 @@ infinities and overflow. No memoryview-local float codec was introduced.
 
 ## Replaying the proof
 
-Regenerate projections with `python tools/compatibility_error_protocol.py`;
+Regenerate projections with `python tools/compatibility_error_protocol.py --write`;
 validate them with `--check`. The Rust source is emitted in canonical rustfmt
 form. `tools/generator_io.py` supplies publication and byte-exact comparison;
 only checkout newline differences are normalized. There is no protocol-local
 token equivalence or diagnostic whitespace normalization.
 
 `tools/generator_manifest.toml` owns the two output paths and the
-`CompatibilityError` closed domain. The existing `repository_policy` proof
-family runs `repository.python-compatibility-errors.generated` from
-`tools/proof_plan.toml`. After changing that plan, regenerate its existing
-projections with `python tools/gen_proof_plan.py`. The structural audit performs
+`CompatibilityError` closed domain. CI checks it with every other manifest
+generator through the single `repository.generators` proof command
+(`tools/generators.py check`); `python3 tools/molt_dev.py fix` rewrites it
+together with the proof-plan projections. The structural audit performs
 the same compatibility validation as part of its existing probes. Existing
 proof consumers are:
 

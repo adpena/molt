@@ -165,7 +165,7 @@ Both root `Cargo.toml` and `runtime/Cargo.toml` include
 
 **Critical constraint:** The `INTRINSICS` constant stays in `generated.rs` for existing parser-facing tools (`src/molt/frontend/_types.py`, `src/molt/_wasm_runtime_exports.py`) and for registry iteration. Resolver address-taking lives in `generated_resolvers/`, so test/WASM `resolve_symbol` behavior stays intact while resolver implementation edits stop churning the manifest table.
 
-**Tool change:** `tools/gen_intrinsics.py` always emits the split resolver tree, emits resolver arms in rustfmt-stable form, skips exact-content no-op writes before invoking rustfmt, lazy-loads memory-guard formatting custody only when a changed Rust file needs formatting, and formats changed generated Rust files through `MOLT_GENERATOR` custody. The guarded no-op generator path now avoids resolver-file mtime churn, avoids per-file rustfmt subprocesses, and measured at 0.65s on 2026-06-20 after the lazy guard-import cut.
+**Tool change:** `tools/gen_intrinsics.py` always emits the split resolver tree and follows the `tools/generator_io.py` contract: it renders every output in memory, then formats all generated Rust sources in one guarded, batched rustfmt call, so the render is a pure function of its inputs rather than of what is already committed (`--check` and `--write` compare or publish that render). Measured on 2026-10-06 on a loaded Windows host: `--check` 11.5-16.4 s, of which ~3 s is rustfmt and ~7 s is the memory-guard import and sampling; the earlier 0.65 s no-op path skipped rustfmt by comparing against the committed files.
 
 **Impact:** resolver-body edits are localized to the touched category module. New manifest entries still update the canonical `INTRINSICS` table until the per-crate manifest composition step lands, but the address-taking resolver hub is no longer one source file.
 
@@ -252,7 +252,7 @@ Add `MOLT_TIR_DUMP` and `MOLT_VERIFY_ANALYSIS` to `DAEMON_REQUEST_ENV_KEYS` at l
 **Phase 4 — generated.rs split:**
 - `cargo test -p molt-runtime` must pass with 0 new warnings.
 - New test in `runtime/molt-runtime/tests/`: assert that each `resolve_X_symbol` function only references symbols from its own feature domain (e.g., `resolve_crypto_symbol` only address-takes `molt_hash_*`, `molt_hmac_*` etc.).
-- `python3 tools/gen_intrinsics.py` must produce identical `INTRINSICS` slice contents (same symbols, same order) when compared against the pre-split generated.rs.
+- `python3 tools/gen_intrinsics.py --write` must produce identical `INTRINSICS` slice contents (same symbols, same order) when compared against the pre-split generated.rs.
 
 ### Differential Test Shapes
 
@@ -500,7 +500,7 @@ Each phase is a complete structural piece that can land independently and leave 
 
 - [x] Modify `tools/gen_intrinsics.py` to generate per-category resolver files under `runtime/molt-runtime/src/intrinsics/generated_resolvers/`.
 - [x] Keep `generated.rs` as the canonical `INTRINSICS` manifest table plus thin resolver re-export, preserving existing parser-facing tools.
-- [x] Run `uv run python tools/guarded_exec.py --prefix MOLT_GENERATOR --timeout 300 -- uv run python tools/gen_intrinsics.py`.
+- [x] Run `uv run python tools/guarded_exec.py --prefix MOLT_GENERATOR --timeout 300 -- uv run python tools/gen_intrinsics.py --write`.
 - [x] Run `cargo check --manifest-path runtime/Cargo.toml -p molt-runtime --lib`.
 - [x] Run `cargo check --manifest-path runtime/Cargo.toml -p molt-runtime --lib --no-default-features --features stdlib_micro`.
 - [x] Run `cargo check -p molt-backend --profile dev-fast`.

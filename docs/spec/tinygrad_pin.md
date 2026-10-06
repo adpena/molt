@@ -60,7 +60,7 @@ edit, because every derived parity fact is a function of the pin. To bump
 2. **Update this pin** (`docs/spec/tinygrad_pin.md`): change the pinned version string and
    record any new authority-file paths (e.g. if upstream relocates `code_for_op`).
 3. **Regenerate every `gpu_*_contract` fact** from the new source:
-   `python3 tools/gen_gpu_op_contract.py` (and, when they land, the API-contract
+   `python3 tools/gen_gpu_op_contract.py --write` (and, when they land, the API-contract
    generator). Re-run each `--check` to confirm idempotence.
 4. **Reconcile every new divergence the generator surfaces** in the contract itself
    (a new upstream `Ops` member, a changed `code_for_op` C-pattern, a relocated rewrite):
