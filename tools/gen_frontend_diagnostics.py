@@ -3,16 +3,14 @@
 
 from __future__ import annotations
 
-import argparse
 import ast
 from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
-import sys
 import tomllib
 
-from generator_io import generated_file_matches, write_generated_text
+from generator_io import generator_main
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -214,20 +212,15 @@ def validate_consumers(
     return total, dict(sorted(used.items()))
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true")
-    args = parser.parse_args(argv)
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
     diagnostics = load_diagnostics()
     validate_consumers(diagnostics)
-    expected = render(diagnostics)
-    if args.check:
-        if not generated_file_matches(OUTPUT, expected):
-            print(f"stale generated frontend diagnostics: {OUTPUT}", file=sys.stderr)
-            return 1
-        return 0
-    write_generated_text(OUTPUT, expected)
-    return 0
+    return {OUTPUT: render(diagnostics)}
+
+
+def main(argv: list[str] | None = None) -> int:
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":

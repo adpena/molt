@@ -46,7 +46,7 @@ def test_generated_outputs_are_byte_exact() -> None:
     rendered = gen.render_all(gen.load_table())
     for path, expected in rendered.items():
         assert path.read_bytes() == expected.encode("utf-8"), (
-            f"{path.relative_to(ROOT)} is stale; run `python tools/gen_heap_kinds.py`"
+            f"{path.relative_to(ROOT)} is stale; run `python tools/gen_heap_kinds.py --write`"
         )
 
 

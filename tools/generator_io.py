@@ -1,9 +1,23 @@
-"""Canonical newline and publication primitives for generated authorities."""
+"""The generator contract: one command line and one publication path.
+
+Every generator in ``tools/generator_manifest.toml`` defines
+``generated_outputs() -> {output path: exact text}`` and a one-line ``main``
+that hands it to :func:`generator_main`. Checking and writing are the same
+mapping compared or published, so no generator re-implements either, and
+``tools/generators.py`` can render every generator in one interpreter.
+"""
 
 from __future__ import annotations
 
+import argparse
+import sys
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Mapping
+
+ROOT = Path(__file__).resolve().parents[1]
+
+GeneratedOutputs = Mapping[Path, str]
+Render = Callable[[], GeneratedOutputs]
 
 
 def canonical_generated_bytes(payload: bytes) -> bytes:
@@ -55,3 +69,63 @@ def write_generated_texts(outputs: Mapping[Path, str]) -> tuple[Path, ...]:
     finally:
         for staged, _final in pairs:
             discard_staged_output(staged)
+
+
+def stale_outputs(outputs: GeneratedOutputs) -> list[Path]:
+    """Outputs whose committed bytes differ from the rendered text."""
+
+    return [
+        path for path, text in outputs.items() if not generated_file_matches(path, text)
+    ]
+
+
+def write_outputs(outputs: GeneratedOutputs) -> list[Path]:
+    """Publish every stale output; returns the paths that changed."""
+
+    changed = stale_outputs(outputs)
+    if changed:
+        write_generated_texts({path: outputs[path] for path in changed})
+    return changed
+
+
+def display_path(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def generator_main(
+    render: Render,
+    argv: Sequence[str] | None = None,
+    *,
+    description: str | None = None,
+) -> int:
+    """The one generator command line: exactly one of ``--check`` or ``--write``.
+
+    ``--check`` exits 1 and names each stale output on stderr; ``--write``
+    publishes stale outputs and leaves current ones untouched.
+    """
+
+    parser = argparse.ArgumentParser(
+        description=description, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--check", action="store_true", help="exit 1 if any output is stale"
+    )
+    mode.add_argument("--write", action="store_true", help="rewrite stale outputs")
+    args = parser.parse_args(argv)
+    outputs = render()
+    if args.check:
+        stale = stale_outputs(outputs)
+        for path in stale:
+            print(f"stale: {display_path(path)}", file=sys.stderr)
+        if stale:
+            print("regenerate with --write", file=sys.stderr)
+            return 1
+        print(f"{len(outputs)} generated output(s) current")
+        return 0
+    for path in write_outputs(outputs):
+        print(f"wrote {display_path(path)}")
+    return 0

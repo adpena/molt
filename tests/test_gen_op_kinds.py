@@ -270,7 +270,7 @@ def test_generated_rs_is_in_sync() -> None:
     checked_in = OUT_RS.read_bytes()
     assert checked_in == rendered.encode("utf-8"), (
         f"{OUT_RS.relative_to(ROOT)} is stale — run "
-        "`python3 tools/gen_op_kinds.py` to regenerate from op_kinds.toml."
+        "`python3 tools/gen_op_kinds.py --write` to regenerate from op_kinds.toml."
     )
 
 
@@ -317,7 +317,7 @@ def test_generated_py_is_in_sync() -> None:
     checked_in = OUT_PY.read_bytes()
     assert checked_in == rendered.encode("utf-8"), (
         f"{OUT_PY.relative_to(ROOT)} is stale — run "
-        "`python3 tools/gen_op_kinds.py` to regenerate from op_kinds.toml."
+        "`python3 tools/gen_op_kinds.py --write` to regenerate from op_kinds.toml."
     )
 
 

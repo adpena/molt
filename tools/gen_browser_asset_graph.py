@@ -1,18 +1,29 @@
 #!/usr/bin/env python3
+"""Generate the browser asset graph from the declared wasm loader assets.
+
+Single source of truth: ``src/molt/browser_asset_graph.toml`` plus the declared
+assets under ``wasm/``. One Node process (``tools/browser_asset_graph/scan.mjs``)
+scans every declared JavaScript asset; ``wasm/browser_asset_graph.generated.json``
+records each asset's role, content hash, and resolved references.
+
+Usage::
+
+    python3 tools/gen_browser_asset_graph.py --write
+    python3 tools/gen_browser_asset_graph.py --check
+"""
+
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import shutil
-import sys
 import tomllib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from generator_io import generated_file_matches, write_generated_text
+from generator_io import generator_main
 
 from molt.browser_asset_closure import (
     canonical_text_bytes,
@@ -363,26 +374,13 @@ def generate(
     return generated
 
 
-def generated_output_is_current(output: Path, generated: bytes) -> bool:
-    return generated_file_matches(output, generated)
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    return {OUTPUT: generate().decode("utf-8")}
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--check", action="store_true")
-    args = parser.parse_args()
-    generated = generate()
-    if args.check:
-        if generated_output_is_current(OUTPUT, generated):
-            return 0
-        print(
-            f"browser asset graph is stale: {OUTPUT}; "
-            "run tools/gen_browser_asset_graph.py",
-            file=sys.stderr,
-        )
-        return 1
-    write_generated_text(OUTPUT, generated.decode("utf-8"))
-    return 0
+def main(argv: list[str] | None = None) -> int:
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":

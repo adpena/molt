@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import tomllib
 from collections import Counter
 from pathlib import Path
 
-from generator_io import generated_file_matches, write_generated_text
+from generator_io import generator_main
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "config" / "cpython_coverage.toml"
@@ -320,28 +319,13 @@ def _outputs(config: dict[str, object] | None = None) -> dict[Path, str]:
     }
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--check", action="store_true")
-    args = parser.parse_args()
-    outputs = _outputs()
-    stale = [
-        path
-        for path, content in outputs.items()
-        if not generated_file_matches(path, content)
-    ]
-    if args.check:
-        if stale:
-            print(
-                "stale CPython coverage outputs: "
-                + ", ".join(str(path.relative_to(ROOT)) for path in stale)
-            )
-            return 1
-        print("CPython coverage outputs are synchronized")
-        return 0
-    for path, content in outputs.items():
-        write_generated_text(path, content)
-    return 0
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    return dict(_outputs())
+
+
+def main(argv: list[str] | None = None) -> int:
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":

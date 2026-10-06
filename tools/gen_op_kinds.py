@@ -32,7 +32,7 @@ test failure (the ``tests/test_gen_intrinsics.py`` pattern).
 
 Usage::
 
-    python3 tools/gen_op_kinds.py            # (re)write the generated files
+    python3 tools/gen_op_kinds.py --write    # rewrite stale generated files
     python3 tools/gen_op_kinds.py --check    # exit 1 if a generated file is stale
 """
 
@@ -43,7 +43,6 @@ Usage::
 
 from __future__ import annotations
 
-import argparse
 import sys
 from pathlib import Path
 
@@ -55,10 +54,7 @@ from tools.op_kinds import render_python as _render_python  # noqa: E402
 from tools.op_kinds import render_rust as _render_rust  # noqa: E402
 from tools.op_kinds import schema as _schema  # noqa: E402
 from tools.op_kinds import validate as _validate  # noqa: E402
-from tools.generator_io import (  # noqa: E402
-    generated_file_matches,
-    write_generated_text,
-)
+from tools.generator_io import generator_main  # noqa: E402
 from tools.op_kinds.paths import (  # noqa: E402
     OUT_PY,
     OUT_RS,
@@ -98,48 +94,15 @@ def render_py(data: dict) -> str:
     return _render_python.render_py(data)
 
 
-def _check(path: Path, rendered: str) -> bool:
-    """Return True if *path* is in sync with *rendered* (prints a diff hint)."""
-    if not path.exists():
-        print(f"MISSING generated file: {path}", file=sys.stderr)
-        return False
-    if not generated_file_matches(path, rendered):
-        print(
-            f"STALE generated file: {path}\n"
-            f"  run `python3 tools/gen_op_kinds.py` to regenerate from "
-            f"{TABLE.relative_to(ROOT)}",
-            file=sys.stderr,
-        )
-        return False
-    return True
-
-
-def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument(
-        "--check",
-        action="store_true",
-        help="exit 1 if a generated file is stale (CI mode); do not write",
-    )
-    args = ap.parse_args(argv)
-
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
     data = load_table()
-    rs = render_rs(data)
-    py = render_py(data)
+    return {OUT_RS: render_rs(data), OUT_PY: render_py(data)}
 
-    if args.check:
-        ok = _check(OUT_RS, rs)
-        ok = _check(OUT_PY, py) and ok
-        if ok:
-            print("op-kind generated files: in sync")
-        return 0 if ok else 1
 
-    write_generated_text(OUT_RS, rs)
-    write_generated_text(OUT_PY, py)
-    print(f"wrote {OUT_RS.relative_to(ROOT)}")
-    print(f"wrote {OUT_PY.relative_to(ROOT)}")
-    return 0
+def main(argv: list[str] | None = None) -> int:
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(main())

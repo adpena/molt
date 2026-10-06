@@ -61,18 +61,15 @@ Usage
 -----
     python tools/gen_cpython_abi_layout.py --check    # gate: fail on drift
     python tools/gen_cpython_abi_layout.py --write    # regenerate the artifact
-    python tools/gen_cpython_abi_layout.py --print-authority   # debug dump
 """
 
 from __future__ import annotations
 
-import argparse
 import re
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from generator_io import generated_file_matches, write_generated_text
+from generator_io import generator_main
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AUTHORITY_RS = REPO_ROOT / "runtime/molt-cpython-abi/src/abi_types.rs"
@@ -664,51 +661,13 @@ def build() -> str:
     return emit_header(authority)
 
 
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    return {GENERATED_H: build()}
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    g = parser.add_mutually_exclusive_group(required=True)
-    g.add_argument(
-        "--check", action="store_true", help="fail if generated artifact is stale"
-    )
-    g.add_argument("--write", action="store_true", help="regenerate the artifact")
-    g.add_argument(
-        "--print-authority", action="store_true", help="dump parsed Rust authority"
-    )
-    args = parser.parse_args(argv)
-
-    if args.print_authority:
-        authority = parse_rust_authority(AUTHORITY_RS.read_text(encoding="utf-8"))
-        for name, st in authority.items():
-            print(f"{name}:")
-            for f in st.fields:
-                print(f"    {f.name}: {f.category}")
-        return 0
-
-    generated = build()
-
-    if args.write:
-        write_generated_text(GENERATED_H, generated)
-        print(f"wrote {GENERATED_H.relative_to(REPO_ROOT).as_posix()}")
-        return 0
-
-    # --check
-    if not GENERATED_H.exists():
-        print(
-            f"MISSING generated header {GENERATED_H.relative_to(REPO_ROOT).as_posix()};"
-            " run: python tools/gen_cpython_abi_layout.py --write",
-            file=sys.stderr,
-        )
-        return 1
-    if not generated_file_matches(GENERATED_H, generated):
-        print(
-            f"STALE generated header {GENERATED_H.relative_to(REPO_ROOT).as_posix()} —"
-            " abi_types.rs changed but the checked-in layout artifact was not "
-            "regenerated. Run: python tools/gen_cpython_abi_layout.py --write",
-            file=sys.stderr,
-        )
-        return 1
-    print("cpython-abi layout artifact is in sync with abi_types.rs authority")
-    return 0
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":

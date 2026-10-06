@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Generate intrinsics registry artifacts from the canonical manifest."""
+"""Generate intrinsics registry artifacts from the canonical manifest.
+
+Usage::
+
+    python tools/gen_intrinsics.py --write
+    python tools/gen_intrinsics.py --check
+"""
 
 from __future__ import annotations
 
-import argparse
 from collections import OrderedDict
-import difflib
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 import re
 import sys
@@ -23,7 +28,7 @@ if str(ROOT) not in sys.path:
 from tools.wasm_abi_gen.intrinsic_availability import (  # noqa: E402
     load_intrinsic_availability,
 )
-from tools.generator_io import generated_file_matches, write_generated_text  # noqa: E402
+from tools.generator_io import display_path, generator_main  # noqa: E402
 
 MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
 CATEGORIES_TOML = ROOT / "runtime/molt-runtime/src/intrinsics/categories.toml"
@@ -309,12 +314,14 @@ LEAF_RESOLVER_REGISTRIES = {
         ),
     },
 }
-OUT_BACKEND_OVERRIDES_RS = (
-    ROOT / "runtime/molt-backend/src/intrinsic_symbol_overrides.rs"
-)
+# Outputs this generator once rendered and no longer does. Retirement is part of
+# the authority: rendering fails closed while any of them (or an orphaned
+# ``*_resolver.rs`` in a directory whose resolvers this generator owns) exists.
+RETIRED_OUTPUTS = (ROOT / "runtime/molt-backend/src/intrinsic_symbol_overrides.rs",)
+# Formatting runs one guarded rustfmt per batch of scratch files; keep each
+# command line well inside the 32,767-character Windows limit.
+_RUSTFMT_ARGV_CHAR_BUDGET = 16_000
 _HARNESS_MEMORY_GUARD = None
-_CHECK_MODE = False
-_CHECK_DIFFS: list[str] = []
 
 
 def _load_harness_memory_guard():
@@ -775,9 +782,9 @@ def _classify_symbol(
     return "core"
 
 
-def _rustfmt(path: Path) -> None:
+def _rustfmt(paths: Sequence[Path]) -> None:
     result = _load_harness_memory_guard().guarded_completed_process(
-        ["rustfmt", "--config", "skip_children=true", str(path)],
+        ["rustfmt", "--config", "skip_children=true", *(str(path) for path in paths)],
         prefix="MOLT_GENERATOR",
         cwd=ROOT,
         capture_output=True,
@@ -785,65 +792,51 @@ def _rustfmt(path: Path) -> None:
         timeout=60.0,
     )
     if result.returncode != 0:
+        rendered_paths = ", ".join(str(path) for path in paths)
         raise RuntimeError(
             "rustfmt failed for "
-            f"{path}:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            f"{rendered_paths}:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
 
 
-def _write_text_if_changed(path: Path, text: str) -> bool:
-    if generated_file_matches(path, text):
-        return False
-    if _CHECK_MODE:
-        _record_check_diff(
-            path, path.read_text(encoding="utf-8") if path.exists() else "", text
-        )
-        return True
-    write_generated_text(path, text)
-    return True
+def _rustfmt_batches(paths: Sequence[Path]) -> Iterator[list[Path]]:
+    batch: list[Path] = []
+    used = 0
+    for path in paths:
+        cost = len(str(path)) + 3
+        if batch and used + cost > _RUSTFMT_ARGV_CHAR_BUDGET:
+            yield batch
+            batch, used = [], 0
+        batch.append(path)
+        used += cost
+    if batch:
+        yield batch
 
 
-def _write_rust_if_changed(path: Path, text: str) -> bool:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if generated_file_matches(path, text):
-        return False
-    # Repository-policy generator checks run concurrently while the proof DAG
-    # continuously attests that the source tree is clean.  Formatting scratch
-    # inside ``path.parent`` makes an otherwise read-only ``--check`` invocation
-    # transiently dirty and can falsely fail an unrelated sibling command.
-    # Keep all formatting scratch outside the checkout; only the final
-    # non-check publication may replace the generated authority below.
+def _format_rust_sources(sources: Mapping[Path, str]) -> dict[Path, str]:
+    """Return the rustfmt-formatted text of every generated Rust source.
+
+    Each source is formatted in its own scratch directory, so a ``mod`` or
+    ``#[path]`` declaration never resolves to a sibling output and every file
+    formats exactly as it would alone. Scratch lives outside the checkout:
+    generator checks run concurrently with proof steps that attest the source
+    tree is clean, and in-tree scratch would make a read-only ``--check``
+    transiently dirty.
+    """
+    if not sources:
+        return {}
     with tempfile.TemporaryDirectory(prefix="molt-intrinsics-rustfmt-") as raw_tmp:
-        tmp = Path(raw_tmp) / path.name
-        tmp.write_text(text, encoding="utf-8", newline="\n")
-        _rustfmt(tmp)
-        formatted = tmp.read_text(encoding="utf-8")
-        if generated_file_matches(path, formatted):
-            return False
-        if _CHECK_MODE:
-            _record_check_diff(
-                path,
-                path.read_text(encoding="utf-8") if path.exists() else "",
-                formatted,
-            )
-            return True
-        write_generated_text(path, formatted)
-        return True
-
-
-def _record_check_diff(path: Path, current: str, expected: str) -> None:
-    try:
-        label = str(path.relative_to(ROOT))
-    except ValueError:
-        label = str(path)
-    _CHECK_DIFFS.extend(
-        difflib.unified_diff(
-            current.splitlines(keepends=True),
-            expected.splitlines(keepends=True),
-            fromfile=label,
-            tofile=f"{label} (generated)",
-        )
-    )
+        scratch: dict[Path, Path] = {}
+        for index, (output, text) in enumerate(sources.items()):
+            path = Path(raw_tmp) / str(index) / output.name
+            path.parent.mkdir()
+            path.write_text(text, encoding="utf-8", newline="\n")
+            scratch[output] = path
+        for batch in _rustfmt_batches(list(scratch.values())):
+            _rustfmt(batch)
+        return {
+            output: path.read_text(encoding="utf-8") for output, path in scratch.items()
+        }
 
 
 def _resolver_module_name(module_name: str) -> str:
@@ -924,14 +917,18 @@ def _leaf_resolver_paths_for_symbol(
     return best[1], best[2]
 
 
-def _write_leaf_resolver_module(
+def _leaf_resolver_output(mod_name: str, leaf: dict[str, object]) -> Path:
+    output = leaf["output"]
+    if not isinstance(output, Path):
+        raise TypeError(f"leaf resolver output for {mod_name!r} must be a Path")
+    return output
+
+
+def _render_leaf_resolver_module(
     mod_name: str,
     symbols: list[str],
     leaf: dict[str, object],
-) -> None:
-    output = leaf["output"]
-    if not isinstance(output, Path):
-        raise TypeError(f"leaf resolver output for {mod_name} must be a Path")
+) -> str:
     lines: list[str] = []
     lines.append("// @generated by tools/gen_intrinsics.py. DO NOT EDIT.\n")
     lines.append("#[inline(never)]\n")
@@ -954,14 +951,13 @@ def _write_leaf_resolver_module(
     lines.append("        _ => None,\n")
     lines.append("    }\n")
     lines.append("}\n")
-    _write_rust_if_changed(output, "".join(lines))
+    return "".join(lines)
 
 
-def _write_leaf_facade_resolver_module(
-    mod_name: str,
+def _render_leaf_facade_resolver_module(
     leaf: dict[str, object],
     cfg_gate: str,
-) -> None:
+) -> str:
     crate_path = str(leaf["crate_path"])
     resolver_path = str(
         leaf.get("crate_resolver_path", f"{crate_path}::intrinsics_generated")
@@ -984,29 +980,22 @@ def _write_leaf_facade_resolver_module(
     lines.append("        None\n")
     lines.append("    }\n")
     lines.append("}\n")
-    _write_rust_if_changed(
-        OUT_RS_RESOLVERS_DIR / _resolver_file_name(mod_name),
-        "".join(lines),
-    )
+    return "".join(lines)
 
 
-def _write_leaf_resolver_indexes(indexes: dict[Path, set[str]]) -> None:
-    for index_path, modules in indexes.items():
-        module_dir = (
-            index_path.parent
-            if index_path.name == "mod.rs"
-            else index_path.parent / index_path.stem
-        )
-        module_dir.mkdir(parents=True, exist_ok=True)
-        expected_files = {f"{module}.rs" for module in modules}
-        for stale in module_dir.glob("*_resolver.rs"):
-            if stale.name not in expected_files:
-                stale.unlink()
-        lines: list[str] = []
-        lines.append("// @generated by tools/gen_intrinsics.py. DO NOT EDIT.\n")
-        for module in sorted(modules):
-            lines.append(f"pub mod {module};\n")
-        _write_rust_if_changed(index_path, "".join(lines))
+def _leaf_index_module_dir(index_path: Path) -> Path:
+    """The directory holding the resolver modules a leaf index declares."""
+    if index_path.name == "mod.rs":
+        return index_path.parent
+    return index_path.parent / index_path.stem
+
+
+def _render_leaf_resolver_index(modules: set[str]) -> str:
+    lines: list[str] = []
+    lines.append("// @generated by tools/gen_intrinsics.py. DO NOT EDIT.\n")
+    for module in sorted(modules):
+        lines.append(f"pub mod {module};\n")
+    return "".join(lines)
 
 
 def _leaf_resolver_feature_gate(mod_name: str, symbols: list[str]) -> str:
@@ -1041,16 +1030,16 @@ def _leaf_resolver_cfg_gate(mod_name: str, symbols: list[str]) -> str:
     )
 
 
-def _write_resolver_modules(
+def _render_resolver_modules(
     module_symbols: OrderedDict[str, list[str]],
-) -> None:
-    OUT_RS_RESOLVERS_DIR.mkdir(parents=True, exist_ok=True)
-    leaf_indexes: dict[Path, set[str]] = {}
+) -> tuple[dict[Path, str], tuple[Path, ...]]:
+    """Render every resolver module as unformatted Rust.
 
-    module_file_names = {_resolver_file_name(mod_name) for mod_name in module_symbols}
-    for stale in OUT_RS_RESOLVERS_DIR.glob("*_resolver.rs"):
-        if stale.name != "mod.rs" and stale.name not in module_file_names:
-            stale.unlink()
+    Returns the sources keyed by output path, plus the directories whose
+    ``*_resolver.rs`` files this generator owns outright.
+    """
+    sources: dict[Path, str] = {}
+    leaf_indexes: dict[Path, set[str]] = {}
 
     mod_lines: list[str] = []
     mod_lines.append("// @generated by tools/gen_intrinsics.py. DO NOT EDIT.\n")
@@ -1072,15 +1061,13 @@ def _write_resolver_modules(
         leaf = LEAF_RESOLVER_REGISTRIES.get(mod_name)
         if leaf is not None:
             cfg_gate = _leaf_resolver_cfg_gate(mod_name, symbols)
-            _write_leaf_resolver_module(mod_name, symbols, leaf)
-            _write_leaf_facade_resolver_module(mod_name, leaf, cfg_gate)
+            output = _leaf_resolver_output(mod_name, leaf)
+            sources[output] = _render_leaf_resolver_module(mod_name, symbols, leaf)
+            sources[OUT_RS_RESOLVERS_DIR / _resolver_file_name(mod_name)] = (
+                _render_leaf_facade_resolver_module(leaf, cfg_gate)
+            )
             module_index = leaf.get("module_index")
             if isinstance(module_index, Path):
-                output = leaf["output"]
-                if not isinstance(output, Path):
-                    raise TypeError(
-                        f"leaf resolver output for {mod_name!r} must be a Path"
-                    )
                 leaf_indexes.setdefault(module_index, set()).add(output.stem)
             continue
 
@@ -1105,14 +1092,25 @@ def _write_resolver_modules(
         lines.append("        _ => None,\n")
         lines.append("    }\n")
         lines.append("}\n")
-        _write_rust_if_changed(
-            OUT_RS_RESOLVERS_DIR / _resolver_file_name(mod_name), "".join(lines)
-        )
-    _write_rust_if_changed(OUT_RS_RESOLVERS_DIR / "mod.rs", "".join(mod_lines))
-    _write_leaf_resolver_indexes(leaf_indexes)
+        sources[OUT_RS_RESOLVERS_DIR / _resolver_file_name(mod_name)] = "".join(lines)
+    sources[OUT_RS_RESOLVERS_DIR / "mod.rs"] = "".join(mod_lines)
+    for index_path, modules in leaf_indexes.items():
+        sources[index_path] = _render_leaf_resolver_index(modules)
+    owned_dirs = (
+        OUT_RS_RESOLVERS_DIR,
+        *(_leaf_index_module_dir(index_path) for index_path in leaf_indexes),
+    )
+    return sources, owned_dirs
 
 
-def _write_generated_rs(entries: list[IntrinsicEntry]) -> None:
+def _render_generated_rs(
+    entries: list[IntrinsicEntry],
+) -> tuple[dict[Path, str], tuple[Path, ...]]:
+    """Render ``generated.rs`` and its resolver tree as unformatted Rust.
+
+    Returns the sources keyed by output path and the resolver directories this
+    generator owns (see :func:`_render_resolver_modules`).
+    """
     builtin_symbols, internal_prefixes, stdlib_modules = _load_categories()
 
     # Classify every unique symbol into a module bucket
@@ -1129,7 +1127,7 @@ def _write_generated_rs(entries: list[IntrinsicEntry]) -> None:
         module_symbols.setdefault(mod, []).append(symbol)
 
     module_symbols = OrderedDict(sorted(module_symbols.items()))
-    _write_resolver_modules(module_symbols)
+    sources, owned_dirs = _render_resolver_modules(module_symbols)
 
     lines: list[str] = []
     lines.append("// @generated by tools/gen_intrinsics.py. DO NOT EDIT.\n")
@@ -1161,19 +1159,20 @@ def _write_generated_rs(entries: list[IntrinsicEntry]) -> None:
         lines.append("    },\n")
     lines.append("];\n")
 
-    _write_rust_if_changed(OUT_RS, "".join(lines))
+    sources[OUT_RS] = "".join(lines)
+    return sources, owned_dirs
 
 
-def _write_pyi(raw_manifest: str) -> None:
+def _render_pyi(raw_manifest: str) -> str:
     body = _strip_manifest_header(raw_manifest)
     header = (
         "# @generated by tools/gen_intrinsics.py from "
         "runtime/molt-runtime/src/intrinsics/manifest.pyi\n"
     )
-    _write_text_if_changed(OUT_PYI, header + body)
+    return header + body
 
 
-def _write_intrinsic_symbols_py(entries: list[IntrinsicEntry]) -> None:
+def _render_intrinsic_symbols_py(entries: list[IntrinsicEntry]) -> str:
     lines: list[str] = []
     lines.append(
         "# @generated by tools/gen_intrinsics.py from "
@@ -1187,10 +1186,10 @@ def _write_intrinsic_symbols_py(entries: list[IntrinsicEntry]) -> None:
     lines.append("}\n\n\n")
     lines.append("def intrinsic_runtime_symbol_name(name: str) -> str:\n")
     lines.append("    return INTRINSIC_SYMBOL_NAMES.get(name, name)\n")
-    _write_text_if_changed(OUT_INTRINSIC_SYMBOLS_PY, "".join(lines))
+    return "".join(lines)
 
 
-def _write_runtime_feature_gates_py() -> None:
+def _render_runtime_feature_gates_py() -> str:
     link_affecting = _mechanically_derived_link_affecting_features(
         _SYMBOL_FEATURE_GATES
     )
@@ -1305,43 +1304,50 @@ def _write_runtime_feature_gates_py() -> None:
     lines.append("    if feature is None or feature not in LINK_AFFECTING_FEATURES:\n")
     lines.append("        return None\n")
     lines.append("    return feature\n")
-    _write_text_if_changed(OUT_RUNTIME_FEATURE_GATES_PY, "".join(lines))
+    return "".join(lines)
 
 
-def _remove_backend_overrides_rs() -> None:
-    if _CHECK_MODE and OUT_BACKEND_OVERRIDES_RS.exists():
-        _record_check_diff(
-            OUT_BACKEND_OVERRIDES_RS,
-            OUT_BACKEND_OVERRIDES_RS.read_text(encoding="utf-8"),
-            "",
+def _stale_generated_files(
+    rendered: Mapping[Path, str], owned_dirs: Sequence[Path]
+) -> list[Path]:
+    """Files this generator owns that the current render no longer produces."""
+    stale = [path for path in RETIRED_OUTPUTS if path.exists()]
+    for directory in owned_dirs:
+        stale.extend(
+            path
+            for path in sorted(directory.glob("*_resolver.rs"))
+            if path not in rendered
         )
-        return
-    OUT_BACKEND_OVERRIDES_RS.unlink(missing_ok=True)
+    return stale
+
+
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text.
+
+    A file this generator owns but no longer renders (a retired output, or a
+    resolver module whose category disappeared) is part of the authority too:
+    rendering raises while one exists, so ``--check`` and ``--write`` both
+    fail closed naming the files to delete.
+    """
+    raw, entries = _load_manifest()
+    _validate_symbols(entries)
+    rust_sources, owned_dirs = _render_generated_rs(entries)
+    stale = _stale_generated_files(rust_sources, owned_dirs)
+    if stale:
+        raise RuntimeError(
+            "delete generated files that tools/gen_intrinsics.py no longer "
+            "renders: " + ", ".join(display_path(path) for path in stale)
+        )
+    outputs = _format_rust_sources(rust_sources)
+    outputs[OUT_RUNTIME_FEATURE_GATES_PY] = _render_runtime_feature_gates_py()
+    outputs[OUT_PYI] = _render_pyi(raw)
+    outputs[OUT_INTRINSIC_SYMBOLS_PY] = _render_intrinsic_symbols_py(entries)
+    return outputs
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true", help="check without writing")
-    args = parser.parse_args(argv)
-
-    global _CHECK_MODE, _CHECK_DIFFS
-    _CHECK_MODE = args.check
-    _CHECK_DIFFS = []
-
-    raw, entries = _load_manifest()
-    _validate_symbols(entries)
-    _write_runtime_feature_gates_py()
-    _write_generated_rs(entries)
-    _write_pyi(raw)
-    _write_intrinsic_symbols_py(entries)
-    _remove_backend_overrides_rs()
-    if args.check:
-        if _CHECK_DIFFS:
-            sys.stderr.writelines(_CHECK_DIFFS)
-            return 1
-        print("intrinsics registry: in sync")
-    return 0
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

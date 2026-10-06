@@ -30,5 +30,5 @@ def test_generated_stringprep_tables_are_in_sync() -> None:
 
     assert checked_in == rendered, (
         f"{OUT.relative_to(ROOT)} is stale; run "
-        "`python3 tools/gen_stringprep_tables.py`."
+        "`python3 tools/gen_stringprep_tables.py --write`."
     )

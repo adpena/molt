@@ -79,7 +79,7 @@ def _load_verified_graph(
         if expected_hash != actual_hash:
             raise ValueError(
                 f"browser asset graph hash drift for {name}: "
-                f"expected {expected_hash}, got {actual_hash}; run tools/gen_browser_asset_graph.py"
+                f"expected {expected_hash}, got {actual_hash}; run tools/gen_browser_asset_graph.py --write"
             )
         role = facts.get("role")
         references = facts.get("references")

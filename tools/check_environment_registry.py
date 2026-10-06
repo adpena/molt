@@ -2455,7 +2455,7 @@ def main(argv: list[str] | None = None) -> int:
                 "",
                 "src/molt/_environment_registry.py",
                 0,
-                "generated projection or doc is stale; run python3 tools/gen_environment_registry.py",
+                "generated projection or doc is stale; run python3 tools/gen_environment_registry.py --write",
             ),
         )
     if args.json:

@@ -128,13 +128,16 @@ def test_workflows_name_rust_toolchain_roles_not_versions() -> None:
 def _installation_fixture(tmp_path, monkeypatch):
     tool = _load_check_rust_toolchain()
     (tmp_path / "config").mkdir()
-    (tmp_path / "config/rust_nightly_toolchain.txt").write_text("nightly-2026-10-01\n")
+    (tmp_path / "config/rust_nightly_toolchain.txt").write_text(
+        "nightly-2026-10-01\n", encoding="utf-8"
+    )
     (tmp_path / "rust-toolchain.toml").write_text(
         '[toolchain]\nchannel = "1.2.3"\ncomponents = ["clippy", "rustfmt"]\n'
-        'targets = ["wasm32-wasip1"]\n'
+        'targets = ["wasm32-wasip1"]\n',
+        encoding="utf-8",
     )
     (tmp_path / "Cargo.toml").write_text(
-        '[workspace.package]\nrust-version = "1.0.0"\n'
+        '[workspace.package]\nrust-version = "1.0.0"\n', encoding="utf-8"
     )
     monkeypatch.setattr(tool, "ROOT", tmp_path)
     return tool
@@ -174,7 +177,8 @@ def test_installation_plan_rejects_malformed_manifest_before_commands(
 ):
     tool = _installation_fixture(tmp_path, monkeypatch)
     (tmp_path / "rust-toolchain.toml").write_text(
-        '[toolchain]\nchannel = "1.2.3"\ntargets = []\n' + fragment + "\n"
+        '[toolchain]\nchannel = "1.2.3"\ntargets = []\n' + fragment + "\n",
+        encoding="utf-8",
     )
     monkeypatch.setattr(
         tool, "_run", lambda *_a, **_kw: pytest.fail("malformed plan executed a tool")
@@ -485,7 +489,7 @@ def test_rust_setup_rejects_unadmitted_python_before_repository_import(
     provisioner = _load_provisioner()
     monkeypatch.setattr(provisioner, "ROOT", tmp_path)
     (tmp_path / ".python-version").write_text(
-        "3.12\n" if failure == "pin" else "3.12.15\n"
+        "3.12\n" if failure == "pin" else "3.12.15\n", encoding="utf-8"
     )
     monkeypatch.setattr(
         provisioner.platform,
@@ -498,7 +502,7 @@ def test_rust_setup_rejects_unadmitted_python_before_repository_import(
         lambda: "3.12.14" if failure == "version" else "3.12.15",
     )
     other = tmp_path / "other-interpreter"
-    other.write_text("not selected")
+    other.write_text("not selected", encoding="utf-8")
     monkeypatch.setenv(
         "UV_PYTHON", str(other) if failure == "selected" else sys.executable
     )

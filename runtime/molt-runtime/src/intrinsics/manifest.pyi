@@ -1,7 +1,7 @@
 # NOTE: Canonical intrinsics manifest (Rust-owned).
 # Generated files: src/molt/_intrinsics.pyi, runtime/molt-runtime/src/intrinsics/generated.rs,
 # and runtime/molt-runtime/src/intrinsics/generated_resolvers/*.rs
-# Update via: python3 tools/gen_intrinsics.py
+# Update via: python3 tools/gen_intrinsics.py --write
 
 from typing import Any, Iterator
 

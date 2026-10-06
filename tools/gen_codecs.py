@@ -3,15 +3,13 @@
 
 from __future__ import annotations
 
-import argparse
 import ast
 import re
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from generator_io import generated_file_matches, write_generated_text
+from generator_io import generator_main
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "runtime/molt-stdlib-text/src/codec_registry.rs"
@@ -503,37 +501,13 @@ def render() -> str:
     )
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--check", action="store_true", help="fail if generated output is stale"
-    )
-    args = parser.parse_args()
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    return {OUT_RS: render(), OUT_ALIASES_RS: render_aliases()}
 
-    outputs = (
-        (OUT_RS, render()),
-        (OUT_ALIASES_RS, render_aliases()),
-    )
-    if args.check:
-        for path, rendered in outputs:
-            if not path.exists():
-                print(
-                    f"missing generated file: {path.relative_to(ROOT)}", file=sys.stderr
-                )
-                return 1
-            if not generated_file_matches(path, rendered):
-                print(
-                    f"stale generated file: {path.relative_to(ROOT)}\n"
-                    "  run `python tools/gen_codecs.py` to regenerate.",
-                    file=sys.stderr,
-                )
-                return 1
-        return 0
 
-    for path, rendered in outputs:
-        write_generated_text(path, rendered)
-        print(f"generated {path.relative_to(ROOT)}")
-    return 0
+def main(argv: list[str] | None = None) -> int:
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":

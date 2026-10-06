@@ -3,13 +3,12 @@
 
 Usage::
 
-    python tools/gen_native_callable_abi.py
+    python tools/gen_native_callable_abi.py --write
     python tools/gen_native_callable_abi.py --check
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import shutil
@@ -19,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from generator_io import generated_file_matches, write_generated_text
+from generator_io import generator_main
 
 try:
     from tools.command_execution import CommandExecutor
@@ -840,23 +839,13 @@ def render_all(schema: Schema) -> dict[Path, str]:
     }
 
 
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    return render_all(load_schema())
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--check", action="store_true", help="fail if generated outputs are stale"
-    )
-    args = parser.parse_args(argv)
-    stale = False
-    for path, source in render_all(load_schema()).items():
-        if args.check:
-            if not generated_file_matches(path, source):
-                print(
-                    f"STALE generated file: {path.relative_to(ROOT)}", file=sys.stderr
-                )
-                stale = True
-        else:
-            write_generated_text(path, source)
-    return int(stale)
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":

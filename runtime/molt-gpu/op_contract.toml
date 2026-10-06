@@ -4,7 +4,7 @@
 # The GPU op-contract FACT (doc 67 Phase 1, fact family `gpu_op_contract`):
 # per molt PrimitiveOp, its disposition against the pinned upstream Ops set +
 # code_for_op renderer contract. Regenerate with
-#   python3 tools/gen_gpu_op_contract.py
+#   python3 tools/gen_gpu_op_contract.py --write
 # and verify in CI with
 #   python3 tools/gen_gpu_op_contract.py --check
 # A mis-mapping, a changed upstream C-pattern, or a new upstream ALU op turns

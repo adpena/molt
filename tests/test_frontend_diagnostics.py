@@ -54,15 +54,15 @@ def test_frontend_diagnostic_generator_is_registered_and_ci_gated() -> None:
     assert row["outputs"] == ["src/molt/frontend/frontend_diagnostics_generated.py"]
     assert row["check_command"] == "tools/gen_frontend_diagnostics.py --check"
     assert row["sync_test"] == "tests/test_frontend_diagnostics.py"
+    assert row.get("ci_checkable", True)
+    # CI gates every CI-checkable manifest generator through one runner command.
     proof_plan = tomllib.loads(
         (ROOT / "tools/proof_plan.toml").read_text(encoding="utf-8")
     )
-    command = next(
-        command
+    assert any(
+        command["argv"][-2:] == ["tools/generators.py", "check"]
         for command in proof_plan["command"]
-        if command["id"] == "repository.frontend-diagnostics.generated"
     )
-    assert command["argv"][-2:] == ["tools/gen_frontend_diagnostics.py", "--check"]
 
 
 def test_frontend_diagnostic_codes_are_unique_contiguous_and_complete() -> None:

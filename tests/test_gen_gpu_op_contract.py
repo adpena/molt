@@ -54,7 +54,7 @@ def test_op_contract_is_in_sync() -> None:
     rendered = gen.render_toml(model)
     checked_in = OUT.read_text(encoding="utf-8")
     assert checked_in == rendered, (
-        f"{OUT.relative_to(ROOT)} is stale; run `python3 tools/gen_gpu_op_contract.py`."
+        f"{OUT.relative_to(ROOT)} is stale; run `python3 tools/gen_gpu_op_contract.py --write`."
     )
 
 

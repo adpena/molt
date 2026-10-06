@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import sys
@@ -17,10 +16,7 @@ for _import_root in (ROOT, ROOT / "src"):
     if str(_import_root) not in sys.path:
         sys.path.insert(0, str(_import_root))
 
-from tools.generator_io import (  # noqa: E402
-    generated_file_matches,
-    write_generated_text,
-)
+from tools.generator_io import generator_main  # noqa: E402
 from molt.target_python import (  # noqa: E402
     SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
 )
@@ -195,17 +191,13 @@ def render_release_matrix(authority: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--check", action="store_true")
-    args = parser.parse_args()
-    rendered = render_release_matrix(load_release_target_authority())
-    if args.check:
-        if not generated_file_matches(OUTPUT, rendered):
-            raise SystemExit("generated release matrix is stale")
-        return 0
-    write_generated_text(OUTPUT, rendered)
-    return 0
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    return {OUTPUT: render_release_matrix(load_release_target_authority())}
+
+
+def main(argv: list[str] | None = None) -> int:
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":

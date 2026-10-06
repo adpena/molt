@@ -7,11 +7,11 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import sys
+from pathlib import Path
 
 from proof_plan import DEFAULT_MANIFEST, ProofPlan, _authority_sha256
-from generator_io import generated_file_matches, write_generated_texts
+from generator_io import generator_main, write_generated_texts
 from molt.cargo_execution_policy import (
     PROOF_COMMAND_TIMEOUT_ENV,
     load_ci_cargo_policy,
@@ -111,7 +111,7 @@ def _index_projection(*, manifest: Path, check: bool) -> int:
         if check:
             argv.append("--check")
         else:
-            argv.extend(("--output-root", str(output_root)))
+            argv.extend(("--write", "--output-root", str(output_root)))
         completed = commands.run(
             argv,
             cwd=staged_root,
@@ -562,60 +562,43 @@ def _markdown_projection(plan: ProofPlan) -> str:
     return "\n".join(lines)
 
 
-def _check_projections(outputs: dict[Path, str], *, root: Path) -> bool:
-    ok = True
-    for path, content in outputs.items():
-        if not generated_file_matches(path, content):
-            print(
-                f"proof-plan projection stale: {path.relative_to(root)}",
-                file=sys.stderr,
-            )
-            ok = False
-    return ok
+def generated_outputs(
+    manifest: Path = DEFAULT_MANIFEST, output_root: Path = ROOT
+) -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    plan = ProofPlan.load(manifest)
+    return {
+        output_root / JSON_OUTPUT.relative_to(ROOT): _json_projection(plan),
+        output_root / DOC_OUTPUT.relative_to(ROOT): _markdown_projection(plan),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true")
-    parser.add_argument(
-        "--from-index",
-        action="store_true",
-        help="use the staged generator and its complete staged source inputs",
-    )
+    # The pre-commit hook projects the git index (--from-index), which reruns
+    # the staged copy of this file against its staged manifest and publishes
+    # into a scratch root; those options are this generator's own.
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--from-index", action="store_true")
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    parser.add_argument(
-        "--output-root",
-        type=Path,
-        default=ROOT,
-        help="publish the generated family separately from its source tree",
-    )
-    args = parser.parse_args(argv)
-    if args.from_index:
-        if args.output_root != ROOT:
+    parser.add_argument("--output-root", type=Path, default=ROOT)
+    staged, rest = parser.parse_known_args(argv)
+    if staged.from_index:
+        if staged.output_root != ROOT:
             parser.error("--from-index owns publication into its repository")
+        if rest not in (["--check"], ["--write"]):
+            parser.error("--from-index takes exactly one of --check or --write")
         try:
-            return _index_projection(manifest=args.manifest, check=args.check)
+            return _index_projection(
+                manifest=staged.manifest, check=rest == ["--check"]
+            )
         except (OSError, UnicodeError, ValueError) as exc:
             print(f"proof-plan staged projection rejected: {exc}", file=sys.stderr)
             return 2
-    plan = ProofPlan.load(args.manifest)
-    outputs = {
-        args.output_root / JSON_OUTPUT.relative_to(ROOT): _json_projection(plan),
-        args.output_root / DOC_OUTPUT.relative_to(ROOT): _markdown_projection(plan),
-    }
-    if args.check:
-        ok = _check_projections(outputs, root=args.output_root)
-    else:
-        write_generated_texts(outputs)
-        ok = True
-    if ok:
-        mode = "verified" if args.check else "generated"
-        print(
-            f"proof-plan: {mode} families={len(plan.families)} "
-            f"commands={len(plan.commands)} cells={len(plan.matrix_cells)} "
-            f"local_rules={len(plan.local_rules)}"
-        )
-    return 0 if ok else 1
+    return generator_main(
+        lambda: generated_outputs(staged.manifest, staged.output_root),
+        rest,
+        description=__doc__,
+    )
 
 
 if __name__ == "__main__":

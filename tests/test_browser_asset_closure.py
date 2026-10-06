@@ -29,9 +29,9 @@ from tools import gen_browser_asset_graph as asset_graph_tool
 from tools.gen_browser_asset_graph import (
     AssetSource,
     generate,
-    generated_output_is_current,
     scan_sources,
 )
+from tools.generator_io import stale_outputs
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,12 +118,12 @@ def test_generated_output_check_accepts_git_platform_line_endings(
     tmp_path: Path,
 ) -> None:
     output = tmp_path / "graph.json"
-    generated = b'{\n  "schema_version": 2\n}\n'
-    output.write_bytes(generated.replace(b"\n", b"\r\n"))
-    assert generated_output_is_current(output, generated)
+    generated = '{\n  "schema_version": 2\n}\n'
+    output.write_bytes(generated.replace("\n", "\r\n").encode("utf-8"))
+    assert stale_outputs({output: generated}) == []
 
     output.write_bytes(output.read_bytes().replace(b"2", b"3"))
-    assert not generated_output_is_current(output, generated)
+    assert stale_outputs({output: generated}) == [output]
 
 
 def test_canonical_text_bytes_make_generator_dependency_hashes_host_invariant(

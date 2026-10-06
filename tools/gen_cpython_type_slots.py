@@ -3,11 +3,10 @@
 
 from __future__ import annotations
 
-import argparse
 import re
 from pathlib import Path
 
-from generator_io import generated_file_matches, write_generated_text
+from generator_io import generator_main
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,18 +62,13 @@ def render(slots: tuple[tuple[str, int], ...]) -> str:
     return "\n".join(lines)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--check", action="store_true")
-    args = parser.parse_args()
-    rendered = render(load_slots())
-    if args.check:
-        if not generated_file_matches(OUTPUT, rendered):
-            print(f"out of date: {OUTPUT.relative_to(ROOT)}")
-            return 1
-        return 0
-    write_generated_text(OUTPUT, rendered)
-    return 0
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    return {OUTPUT: render(load_slots())}
+
+
+def main(argv: list[str] | None = None) -> int:
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":
