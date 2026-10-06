@@ -142,13 +142,19 @@ def test_class_shaped_attribute_authority_is_generated_not_type_listed() -> None
     assert "fn class_instance_layout_attr_allowed" in attr
     assert "class_instance_layout_attr_allowed(_py, class_ptr, attr_bits)" in attr
     # Default lookup delegates to the same raw object authority as explicit
-    # object.__getattribute__; the retired result IC must not duplicate it.
-    assert "return classed_default_attr_lookup(_py, obj_ptr, attr_bits)" in attributes
-    assert "object_attr_lookup_raw(_py, obj_ptr, attr_bits)" in attributes
+    # object.__getattribute__; the retired result IC and the classed-default
+    # shim (whose coroutine members are now type-dictionary descriptors) must
+    # not duplicate it.
+    assert (
+        "if crate::object::heap_kind_has_class_shape(type_id) {\n"
+        "            return crate::builtins::attr::object_attr_lookup_with_policy("
+    ) in attributes
+    assert "object_attr_lookup_with_policy(_py, obj_ptr, attr_bits, false)" in attr
+    assert "classed_default_attr_lookup" not in attributes
     assert "class_instance_layout_attr_allowed" not in attributes
     assert "attr_ic_class_key" not in accessors
-    assert "super::heap_kind_has_class_shape((*header).type_id)" in accessors
-    assert "!crate::object::heap_kind_has_class_shape(type_id)" in attr
+    assert "super::object_has_class_shape(obj_ptr)" in accessors
+    assert "!crate::object::object_has_class_shape(obj_ptr)" in attr
 
 
 def test_callback_descriptor_is_published_once_in_reference_type_dictionary() -> None:
