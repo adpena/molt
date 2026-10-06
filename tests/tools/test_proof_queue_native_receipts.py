@@ -1,7 +1,9 @@
 """Real supervisor execution/verification; never selected by the pure unit lane."""
 
 from functools import lru_cache, partial
+import os
 from pathlib import Path
+import tempfile
 
 import pytest
 
@@ -12,8 +14,55 @@ from tests.proof_queue_custody_test_support import (
     publish_receipt_custody,
 )
 from tools.proof_queue_pkg import supervisor_custody, supervisor_generation
+from tools.proof_queue_pkg import toolchain_capture
+from molt.toolchain_identity import find_executable
 
 pytestmark = pytest.mark.slow
+
+
+def test_rust_link_capture_owns_workspace_inside_owner_selected_scratch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real Cargo must accept both probe crates below an enclosing workspace."""
+    tmp_path = proof_queue_owned_roots.native_case_path(
+        tmp_path,
+        source=Path(__file__),
+        nodeid="rust-link-capture-workspace",
+    )
+    workspace = tmp_path / "workspace"
+    scratch = workspace / "scratch"
+    scratch.mkdir(parents=True)
+    manifest = workspace / "Cargo.toml"
+    original = '[workspace]\nmembers=[]\nresolver="3"\n'
+    manifest.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    env = dict(os.environ)
+    rustc = find_executable("rustc", environment=env)
+    cargo = find_executable("cargo", environment=env)
+    assert rustc is not None and cargo is not None, "native proof requires Rust tools"
+
+    images, telemetry = toolchain_capture.capture_rust_link_process_images(
+        rustc=rustc,
+        cargo=cargo,
+        cwd=workspace,
+        env=env,
+        target=None,
+        command_argv=["cargo", "build", "--release"],
+    )
+
+    assert {row["role"] for row in images} >= {"rust-linker"}
+    assert [unit["unit"] for unit in telemetry["units"]] == [
+        "target",
+        "host-proc-macro",
+    ]
+    assert all(
+        Path(unit["compiler_cwd"]).is_relative_to(scratch)
+        and unit["metadata_probe_count"] == 1
+        and unit["selection_probe_count"] == 1
+        for unit in telemetry["units"]
+    )
+    assert manifest.read_text(encoding="utf-8") == original
+    assert not list(scratch.iterdir()), "probe scratch must be released after capture"
 
 
 @lru_cache(maxsize=1)

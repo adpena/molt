@@ -1055,7 +1055,14 @@ def test_rust_capture_failure_retains_complete_phase_transcript_without_environm
     assert failed["cwd"] == str(tmp_path) and failed["compiler_cwd"] == str(tmp_path)
     assert failed["stdout"] == raw_stdout and failed["stderr"] == raw_stderr
     assert "do-not-record-this-environment-value" not in json.dumps(diagnostic)
-    assert "raw-start" not in str(caught.value) and len(str(caught.value)) < 300
+    assert caught.value.returncode == failed["returncode"]
+    assert caught.value.stderr == raw_stderr
+    assert "raw-start" not in str(caught.value)
+    if failed["returncode"] != 0:
+        assert f"exit status {failed['returncode']}" in str(caught.value)
+        assert raw_stderr in str(caught.value)
+    else:
+        assert len(str(caught.value)) < 300
 
 
 @pytest.mark.parametrize("feature", ["link-args", "sysroot"])
