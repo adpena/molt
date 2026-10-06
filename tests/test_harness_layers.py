@@ -10,6 +10,8 @@ import pytest
 sys.path.insert(0, "src")
 
 import molt.dx as molt_dx
+from molt import custody_layout
+from molt.source_root import compiler_source_root
 from molt.harness_layers import (
     LAYERS,
     get_layers_for_profile,
@@ -133,7 +135,11 @@ def test_run_cmd_uses_harness_memory_guard(monkeypatch, tmp_path: Path):
             call["env"],
         )
     )
-    assert call["env"]["TMPDIR"] == str(artifact_root / "tmp")
+    # Scratch is <artifact root>/tmp, or out of tree when that would sit inside
+    # the checkout (a standalone clone is its own artifact root).
+    assert call["env"]["TMPDIR"] == str(
+        custody_layout.scratch_root(artifact_root, compiler_source_root())
+    )
 
 
 def test_harness_repo_sentinel_uses_canonical_artifact_root(
