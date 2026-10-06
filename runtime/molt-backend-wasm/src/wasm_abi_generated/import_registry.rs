@@ -805,6 +805,11 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         type_idx: 0,
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::GpuKernelLaunch,
+        name: "gpu_kernel_launch",
+        type_idx: 7,
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::RequireIntrinsicRuntime,
         name: "require_intrinsic_runtime",
         type_idx: 3,
@@ -15288,6 +15293,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_gpu_grid_dim" => Some(WasmRuntimeImport::GpuGridDim),
         "gpu_barrier" => Some(WasmRuntimeImport::GpuBarrier),
         "molt_gpu_barrier" => Some(WasmRuntimeImport::GpuBarrier),
+        "gpu_kernel_launch" => Some(WasmRuntimeImport::GpuKernelLaunch),
+        "molt_gpu_kernel_launch" => Some(WasmRuntimeImport::GpuKernelLaunch),
         "require_intrinsic_runtime" => Some(WasmRuntimeImport::RequireIntrinsicRuntime),
         "molt_require_intrinsic_runtime" => Some(WasmRuntimeImport::RequireIntrinsicRuntime),
         "load_intrinsic_runtime" => Some(WasmRuntimeImport::LoadIntrinsicRuntime),

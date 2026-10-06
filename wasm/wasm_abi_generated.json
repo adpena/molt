@@ -3548,6 +3548,7 @@
     "gpu_grid_dim": "molt_gpu_grid_dim",
     "gpu_interop_decode_bf16_bytes_to_f32": "molt_gpu_interop_decode_bf16_bytes_to_f32",
     "gpu_interop_decode_f16_bytes_to_f32": "molt_gpu_interop_decode_f16_bytes_to_f32",
+    "gpu_kernel_launch": "molt_gpu_kernel_launch",
     "gpu_linear_contiguous": "molt_gpu_linear_contiguous",
     "gpu_linear_split_last_dim_contiguous": "molt_gpu_linear_split_last_dim_contiguous",
     "gpu_linear_squared_relu_gate_interleaved_contiguous": "molt_gpu_linear_squared_relu_gate_interleaved_contiguous",

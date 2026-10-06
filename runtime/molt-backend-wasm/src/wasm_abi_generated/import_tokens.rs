@@ -163,6 +163,7 @@ pub(crate) enum WasmRuntimeImport {
     GpuBlockDim,
     GpuGridDim,
     GpuBarrier,
+    GpuKernelLaunch,
     RequireIntrinsicRuntime,
     LoadIntrinsicRuntime,
     SetAppCallableResolver,
