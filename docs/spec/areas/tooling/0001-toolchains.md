@@ -28,6 +28,32 @@
 - Cargo-hosted DX helpers: `wasm-tools`, `wasm-pack`, and `cargo-edit`
   (`cargo-upgrade`) for dependency sweeps.
 
+## Python tooling source ownership
+
+`src/molt/cli/python_source_closure.toml` declares the compiler/tooling graph's
+ordered Python search roots separately from its admitted source roots. The
+repository namespace search location supports qualified `tools.*` imports;
+it does not admit temporary trees, build artifacts, tests, or other repository
+directories as tooling source. `LocalPythonModuleResolver` enforces the same
+canonical source boundary for named imports, seed identities, namespace portions,
+and complete inventories needed by unknown relative import anchors. Symlink
+aliases outside that boundary are not local sources. Cycles and enumeration
+failures inside the admitted domain remain errors, never partial coverage.
+The manifest bytes and resolved inventory topology participate in closure
+identity, so changing root order or source ownership invalidates dependent caches.
+
+## Host temporary-directory custody
+
+Guard scratch and WASM tool stages share `molt.temporary_artifacts` directory
+allocation. POSIX allocations retain private `0700` permissions. Windows
+allocations inherit the admitted parent's ACL instead of installing CPython's
+user-only `0700` DACL, which excludes restricted child tokens. Pytest's numbered
+and xdist-provided base directories use the same Windows mode projection.
+`OwnedTemporaryDirectory` fences cleanup to the directory generation it created;
+replacement directories are not cleanup authority. Linker staging, optimizer
+transactions, facts-scanner snapshots, and WASM profiling/pipeline helpers use
+this owner rather than independent host-default temporary-directory lanes.
+
 ## macOS
 - Install Xcode CLT: `xcode-select --install`
 - Homebrew recommended: `brew install llvm mlir cmake ninja pkg-config`

@@ -5,7 +5,7 @@ from __future__ import annotations
 from wasm_link_fact_provider import WasmFactsProvider
 
 import os
-import tempfile
+from molt.temporary_artifacts import OwnedTemporaryDirectory
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -411,7 +411,7 @@ def _split_runtime_data_alias_object(
     *,
     native_link_requirements: SourceExtensionLinkRequirements,
     deploy_runtime: Path,
-    temp_dir: tempfile.TemporaryDirectory,
+    temp_dir: OwnedTemporaryDirectory,
     reloc_runtime: Path | None = None,
     facts_provider: WasmFactsProvider,
 ) -> SplitRuntimeDataAliasPlan | None:

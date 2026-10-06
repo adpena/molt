@@ -23,6 +23,11 @@ from molt.cli.runtime_identity_schema import (
 )
 from molt.exact_json import canonical_json_sha256
 from molt import rust_toolchain
+from tests.executable_test_support import write_mock_executable
+from tests.rustc_test_support import (
+    rustc_target_metadata_output,
+    rustc_target_metadata_stdout as _metadata_stdout,
+)
 from tests.runtime_build_identity_helper import (
     native_runtime_staticlib_identity,
     runtime_build_identity,
@@ -160,13 +165,24 @@ def plan_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
             return Path(value)
         path = tmp_path / str(value).replace("/", "_").replace("\\", "_")
         if not path.exists():
-            path.write_bytes(b"MZ" + str(value).encode())
+            write_mock_executable(path, b"MZ" + str(value).encode())
         return path
 
     monkeypatch.setattr(plans, "resolve_executable", executable)
     monkeypatch.setattr(
         plans.shutil, "which", lambda value, **kwargs: str(tmp_path / value)
     )
+
+    def metadata_command(command, **kwargs):
+        assert "--print=file-names" in command
+        assert kwargs["input"] == ""
+        target = (
+            command[command.index("--target") + 1] if "--target" in command else None
+        )
+        stdout, stderr = rustc_target_metadata_output(tmp_path, target=target)
+        return subprocess.CompletedProcess(command, 0, stdout, stderr)
+
+    monkeypatch.setattr(plans.process_guard, "run_completed_command", metadata_command)
     resources = tmp_path / "rust-resources"
     resources.mkdir()
     (resources / "libcore.rlib").write_bytes(b"rust-core")
@@ -176,23 +192,6 @@ def plan_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         lambda *args, **kwargs: (plans.CargoResourceRoot("rust/test", resources),),
     )
     return tmp_path
-
-
-def _metadata_stdout(sysroot: Path, cfg: str = "unix\nselected\n") -> str:
-    return "\n".join(
-        (
-            "___",
-            "lib___.rlib",
-            "lib___.so",
-            "lib___.so",
-            "lib___.a",
-            "lib___.so",
-            str(sysroot),
-            "off",
-            "___",
-            cfg,
-        )
-    )
 
 
 def _metadata(sysroot: Path, cfg: str = "unix\nselected\n"):
@@ -328,7 +327,7 @@ def test_cfg_probe_retains_selected_compiler_and_reports_failure(
     failure: str,
 ) -> None:
     rustc = plan_root / "cfg-rustc"
-    rustc.write_bytes(b"compiler-before")
+    write_mock_executable(rustc, b"compiler-before")
     expected = [
         str(rustc),
         *plans.cargo_target_query_arguments("wasm32-wasip1", ("--cfg", "selected")),
@@ -1059,11 +1058,9 @@ def test_rustup_proxy_is_pinned_but_custom_compiler_is_preserved(
     proxy = tmp_path / ("rustup" + suffix)
     selector = tmp_path / ("rustc" + suffix)
     compiler = tmp_path / ("selected-rustc" + suffix)
-    proxy.write_bytes(b"MZrustup")
-    selector.write_bytes(proxy.read_bytes())
-    compiler.write_bytes(b"MZcompiler")
-    for path in (proxy, selector, compiler):
-        path.chmod(0o755)
+    write_mock_executable(proxy, b"MZrustup")
+    write_mock_executable(selector, proxy.read_bytes())
+    write_mock_executable(compiler, b"MZcompiler")
     calls = []
 
     def run(command, **kwargs):
@@ -1282,7 +1279,7 @@ def test_rust_linker_scripts_cannot_enter_executable_custody(
     plan_root: Path, final: bool, content: bytes
 ) -> None:
     linker = plan_root / "script-linker"
-    linker.write_bytes(content)
+    write_mock_executable(linker, content)
     selector = ("-C", "linker=" + str(linker))
     with pytest.raises(ValueError, match="native executable, not a script"):
         _plan(
@@ -1343,7 +1340,7 @@ def test_selected_sysroot_supplies_target_resources_not_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wrapped: bool
 ) -> None:
     compiler = tmp_path / "rustc"
-    compiler.write_bytes(b"MZcompiler")
+    write_mock_executable(compiler, b"MZcompiler")
     installed, selected = tmp_path / "installed", tmp_path / "selected"
     (installed / "lib" / "rustlib" / "host" / "lib").mkdir(parents=True)
     selected_lib = selected / "lib" / "rustlib" / "target" / "lib"
@@ -1352,7 +1349,7 @@ def test_selected_sysroot_supplies_target_resources_not_default(
     if wrapped:
         for role in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
             wrapper = tmp_path / role
-            wrapper.write_bytes(b"MZwrapper")
+            write_mock_executable(wrapper, b"MZwrapper")
             wrappers[role] = wrapper
     expected_prefix = [*wrappers.values(), compiler]
 
@@ -1400,11 +1397,11 @@ def test_cfg_probe_uses_and_fences_nested_cargo_wrappers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutated: str | None
 ) -> None:
     rustc = tmp_path / "rustc"
-    rustc.write_bytes(b"MZcompiler")
+    write_mock_executable(rustc, b"MZcompiler")
     wrappers = {}
     for role in ("RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"):
         path = tmp_path / role
-        path.write_bytes(b"MZwrapper")
+        write_mock_executable(path, b"MZwrapper")
         wrappers[role] = path
 
     def run(command, **kwargs):

@@ -66,7 +66,6 @@ import shutil
 import socketserver
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -780,6 +779,8 @@ def _run_browser(
     *,
     limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> RunResult:
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+
     driver = _detect_browser_driver(limits=limits)
     if driver is None:
         return RunResult(
@@ -808,7 +809,7 @@ def _run_browser(
         )
 
     kind, _pkg = driver
-    with tempfile.TemporaryDirectory(prefix="molt-wasm-matrix-") as tmp:
+    with OwnedTemporaryDirectory(prefix="molt-wasm-matrix-") as tmp:
         site = Path(tmp)
         _stage_browser_static_assets(site)
         try:

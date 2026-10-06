@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from molt.temporary_artifacts import OwnedTemporaryDirectory
 import time
 
 from command_execution import CommandExecutor
@@ -229,7 +230,7 @@ def _find_output_call_indirect_symbol(
 def _inject_call_indirect_alias(
     output: Path,
     runtime: Path,
-    temp_dir: tempfile.TemporaryDirectory[str],
+    temp_dir: OwnedTemporaryDirectory,
     *,
     facts_provider: WasmFactsProvider,
 ) -> Path:

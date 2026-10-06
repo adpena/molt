@@ -519,9 +519,11 @@ def analyze_hotspots(
     skip_profile: bool = False,
 ) -> HotspotResult:
     """Compile, analyze, and (optionally) profile a single program."""
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+
     program_name = src.stem
 
-    with tempfile.TemporaryDirectory(prefix=f"molt-hotspot-{program_name}-") as tmpdir:
+    with OwnedTemporaryDirectory(prefix=f"molt-hotspot-{program_name}-") as tmpdir:
         work = Path(tmpdir)
 
         # Step 1: Compile

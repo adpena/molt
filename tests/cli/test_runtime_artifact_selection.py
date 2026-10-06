@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -88,4 +89,12 @@ def test_default_rlib_build_script_has_no_retired_native_cdylib_link_lane() -> N
     )
 
     assert "cargo:rustc-cdylib-link-arg" not in build_script
-    assert "cargo:rustc-link-arg-tests" in build_script
+    assert "cargo:rustc-link-arg" not in build_script
+    with (ROOT / "runtime" / "molt-runtime" / "Cargo.toml").open("rb") as manifest_file:
+        manifest = tomllib.load(manifest_file)
+    assert manifest["lib"]["crate-type"] == ["rlib"]
+    host_example = next(
+        example for example in manifest["example"] if example["name"] == "cext_host"
+    )
+    assert host_example["crate-type"] == ["cdylib"]
+    assert host_example["required-features"] == ["cext_loader"]
