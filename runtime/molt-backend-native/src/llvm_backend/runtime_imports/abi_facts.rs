@@ -103,6 +103,12 @@ pub(crate) fn runtime_import_return_abi(
                 .filter(|abi| abi.arity == param_count)
                 .map(|_| RuntimeReturnAbi::I64)
         })
+        .or_else(|| {
+            // Raw-bits entrypoints with an all-word machine signature: the
+            // result is a word without an owner, never a boxed object.
+            molt_ir::runtime_raw_abi_generated::runtime_raw_abi(name, param_count)
+                .map(|_| RuntimeReturnAbi::I64)
+        })
 }
 
 #[cfg(feature = "llvm")]

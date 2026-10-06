@@ -920,6 +920,45 @@ def runtime_import_return_specs(data: dict) -> dict[str, str]:
     return contracts
 
 
+def runtime_raw_abi_specs(data: dict) -> list[dict]:
+    """Project compiler-only raw direct calls declared with raw_call.
+
+    Generated IR may call such an entry directly; its raw result carries no
+    ownership, so a native backend binds the word as-is and never releases it.
+    The opt-in is explicit, like boxed_call: raw machine helpers whose operands
+    or results are not Python values (integer carriers, pointers) never become
+    generic call targets. A raw_call row must return raw_bits through an all-i64
+    word signature; wasm32 pointer words prove no native signature.
+    """
+    contracts = runtime_import_return_specs(data)
+    specs: dict[str, dict] = {}
+    for entry in data["import"]:
+        raw_call = entry.get("raw_call", False)
+        if not isinstance(raw_call, bool):
+            raise WasmAbiManifestError(f"import {entry['name']!r} has invalid raw_call")
+        if not raw_call:
+            continue
+        signature = data["static_type"][entry["type"]]
+        if (
+            contracts.get(entry["name"]) != "raw_bits"
+            or any(param != "i64" for param in signature["params"])
+            or signature["results"] != ["i64"]
+        ):
+            raise WasmAbiManifestError(
+                f"import {entry['name']!r} raw_call requires a raw_bits return and "
+                "i64 word parameters"
+            )
+        symbol = runtime_export_name(entry)
+        if symbol is None:
+            raise WasmAbiManifestError(
+                f"import {entry['name']!r} raw_call requires a runtime export"
+            )
+        if symbol in specs:
+            raise WasmAbiManifestError(f"duplicate raw runtime symbol {symbol!r}")
+        specs[symbol] = {"runtime_name": symbol, "arity": len(signature["params"])}
+    return [specs[symbol] for symbol in sorted(specs)]
+
+
 def runtime_operation_return_specs(data: dict) -> dict[str, str]:
     """Project runtime returns onto exact operation spellings.
 
@@ -2201,6 +2240,8 @@ def validate_loaded_manifest(
     data["op_loop_runtime_call"] = op_loop_runtime_calls
     data.pop("op_loop_runtime_call_group", None)
     return_contracts = runtime_import_return_specs(data)
+    # Raw-bits direct-call rows share this validated return authority.
+    data["runtime_raw_abi"] = runtime_raw_abi_specs(data)
     for required, kinds in (
         ("dec_ref_obj", {"owned_object", "poll_result"}),
         ("inc_ref_obj", {"borrowed_object"}),

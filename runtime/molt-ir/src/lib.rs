@@ -26,6 +26,7 @@ pub mod repr;
 pub mod runtime_boxed_abi_generated;
 pub mod runtime_callable_abi_generated;
 pub mod runtime_callable_symbols;
+pub mod runtime_raw_abi_generated;
 pub mod simple_verify;
 pub mod stdlib_module_symbols;
 pub mod tir;

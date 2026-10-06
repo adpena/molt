@@ -1851,6 +1851,9 @@ return_contract = "borrowed_object"
 [[import]]
 name = "runtime_init"
 return_contract = "raw_bits"
+# The generated host init calls this entry directly on every target; its raw
+# status word is bound without an owner. See raw_call in the generator.
+raw_call = true
 type = 0
 runtime_name = "molt_runtime_init"
 

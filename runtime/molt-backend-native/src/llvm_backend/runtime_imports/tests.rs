@@ -251,6 +251,34 @@ fn generated_callable_contracts_supply_machine_abis_without_native_whitelists() 
 }
 
 #[test]
+fn generated_raw_contracts_supply_machine_abis_without_native_whitelists() {
+    use molt_ir::runtime_boxed_abi_generated::runtime_boxed_abi;
+    use molt_ir::runtime_callable_abi_generated::runtime_callable_abi;
+    use molt_ir::runtime_raw_abi_generated::{RUNTIME_RAW_ABIS, runtime_raw_abi};
+
+    for abi in RUNTIME_RAW_ABIS {
+        assert_eq!(
+            runtime_import_return_abi(abi.symbol, abi.arity),
+            Some(RuntimeReturnAbi::I64),
+            "{}",
+            abi.symbol
+        );
+        assert!(
+            runtime_boxed_abi(abi.symbol, abi.arity).is_none()
+                && runtime_callable_abi(abi.symbol).is_none(),
+            "{} raw bits must not also claim object semantics",
+            abi.symbol
+        );
+    }
+    // The host init entry the CLI calls directly: zero words in, raw bits out.
+    assert_eq!(
+        runtime_raw_abi("molt_runtime_init", 0).map(|abi| abi.arity),
+        Some(0)
+    );
+    assert!(runtime_raw_abi("molt_runtime_init", 1).is_none());
+}
+
+#[test]
 fn raw_integer_carriers_do_not_authorize_boxed_calls() {
     use molt_ir::runtime_boxed_abi_generated::runtime_boxed_abi;
 

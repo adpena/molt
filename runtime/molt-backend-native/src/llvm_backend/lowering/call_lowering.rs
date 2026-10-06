@@ -631,6 +631,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     self.emit_boxed_runtime_call(op, abi);
                     return;
                 }
+                if runtime_role
+                    && let Some(abi) = runtime_raw_abi(target_name, direct_operands.len())
+                {
+                    self.emit_raw_runtime_call(op, abi);
+                    return;
+                }
                 self.record_fatal(format!(
                     "direct call target `{target_name}` has no exact native linkage ABI; refusing to invent an i64 signature"
                 ));

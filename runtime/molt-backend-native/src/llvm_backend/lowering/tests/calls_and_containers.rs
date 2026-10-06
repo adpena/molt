@@ -57,6 +57,56 @@ fn direct_runtime_calls_use_classified_boxed_abi() {
 }
 
 #[test]
+fn direct_raw_runtime_calls_bind_words_without_owners() {
+    // The CLI's generated host init calls molt_runtime_init directly; its
+    // manifest return is raw bits, so the word is bound as-is and never
+    // released, with no boxed-call or call_bind indirection.
+    let ctx = Context::create();
+    let mut backend = make_backend(&ctx);
+    backend
+        .runtime_callable_symbols
+        .insert("molt_runtime_init".into());
+    let mut func = TirFunction::new(
+        "host_init".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let result = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Call,
+        operands: vec![],
+        results: vec![result],
+        attrs: [
+            ("_original_kind".into(), AttrValue::Str("call".into())),
+            ("s_value".into(), AttrValue::Str("molt_runtime_init".into())),
+        ]
+        .into_iter()
+        .collect(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result],
+    };
+    let lowered = lower_tir_to_llvm(&func, &backend);
+    backend.module.verify().expect("raw runtime call ABI");
+    let ir = lowered.print_to_string().to_string();
+    assert!(ir.contains("call i64 @molt_runtime_init()"), "{ir}");
+    assert!(!ir.contains("molt_dec_ref"), "raw bits own nothing: {ir}");
+    assert!(!ir.contains("@molt_call_bind"), "{ir}");
+    assert_eq!(
+        backend
+            .module
+            .get_function("molt_runtime_init")
+            .unwrap()
+            .count_params(),
+        0
+    );
+}
+
+#[test]
 fn direct_boxed_runtime_calls_preserve_void_result_contracts() {
     for (symbol, arity) in [("molt_print_newline", 0)] {
         for with_result in [false, true] {
