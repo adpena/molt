@@ -10,7 +10,6 @@ mod support;
 use molt_cpython_abi::abi_types::{Py_buffer, PyObject, PyTypeObject};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
-use molt_lang_obj_model::MoltObject;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::Mutex;

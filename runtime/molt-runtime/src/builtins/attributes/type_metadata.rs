@@ -465,9 +465,9 @@ pub(crate) unsafe fn read_type_annotations(
             molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, result));
             return None;
         }
-        if !obj_from_bits(result)
+        if obj_from_bits(result)
             .as_ptr()
-            .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_DICT)
+            .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_DICT)
         {
             let message = format!(
                 "__annotate__ returned non-dict of type '{}'",
@@ -596,9 +596,9 @@ pub(crate) unsafe fn write_type_metadata(
             );
         };
         if field == Field::Bases {
-            if !obj_from_bits(value)
+            if obj_from_bits(value)
                 .as_ptr()
-                .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_TUPLE)
+                .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_TUPLE)
             {
                 return raise_exception::<_>(
                     py,
@@ -608,9 +608,9 @@ pub(crate) unsafe fn write_type_metadata(
             }
             return molt_class_set_base(class_bits, value);
         }
-        if !obj_from_bits(value)
+        if obj_from_bits(value)
             .as_ptr()
-            .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_STRING)
+            .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_STRING)
         {
             return raise_exception::<_>(
                 py,

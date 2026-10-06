@@ -58,19 +58,18 @@ impl<'a, 'py> ModuleRetirement<'a, 'py> {
             self.namespaces.push((bits, 1));
         }
         for (name, phase) in [("sys", 1), ("builtins", 2)] {
-            if phase > self.phase {
-                if let Some(bits) =
+            if phase > self.phase
+                && let Some(bits) =
                     crate::builtins::module_table::retain_shutdown_namespace(self.py, state, name)
+            {
+                if self
+                    .namespaces
+                    .iter()
+                    .any(|&(old, rank)| old == bits && rank == phase)
                 {
-                    if self
-                        .namespaces
-                        .iter()
-                        .any(|&(old, rank)| old == bits && rank == phase)
-                    {
-                        dec_ref_bits(self.py, bits);
-                    } else {
-                        self.namespaces.push((bits, phase));
-                    }
+                    dec_ref_bits(self.py, bits);
+                } else {
+                    self.namespaces.push((bits, phase));
                 }
             }
         }
@@ -80,16 +79,15 @@ impl<'a, 'py> ModuleRetirement<'a, 'py> {
                 if phase <= self.phase {
                     continue;
                 }
-                if let Some(&bits) = cache.get(name) {
-                    if !self
+                if let Some(&bits) = cache.get(name)
+                    && !self
                         .namespaces
                         .iter()
                         .any(|&(old, rank)| old == bits && rank == phase)
-                    {
-                        self.namespaces.reserve(1);
-                        inc_ref_bits(self.py, bits);
-                        self.namespaces.push((bits, phase));
-                    }
+                {
+                    self.namespaces.reserve(1);
+                    inc_ref_bits(self.py, bits);
+                    self.namespaces.push((bits, phase));
                 }
             }
         }

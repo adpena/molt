@@ -195,9 +195,9 @@ pub(crate) unsafe fn write_public(
         let bits = value.unwrap_or(MoltObject::none().bits());
         match field {
             Field::Name | Field::QualName => {
-                if !obj_from_bits(bits)
+                if obj_from_bits(bits)
                     .as_ptr()
-                    .is_some_and(|p| object_type_id(p) == TYPE_ID_STRING)
+                    .is_none_or(|p| object_type_id(p) != TYPE_ID_STRING)
                 {
                     return raise_exception::<_>(
                         py,
@@ -213,9 +213,9 @@ pub(crate) unsafe fn write_public(
                     TYPE_ID_DICT
                 };
                 if !obj_from_bits(bits).is_none()
-                    && !obj_from_bits(bits)
+                    && obj_from_bits(bits)
                         .as_ptr()
-                        .is_some_and(|p| object_type_id(p) == expected)
+                        .is_none_or(|p| object_type_id(p) != expected)
                 {
                     let label = if field == Field::Defaults {
                         "tuple"

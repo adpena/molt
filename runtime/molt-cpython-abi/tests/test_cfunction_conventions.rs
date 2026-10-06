@@ -7,7 +7,6 @@ use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::api::{
     cfunction::CFunctionConvention, errors, mapping, numbers, object, refcount, sequences, strings,
 };
-use molt_lang_obj_model::MoltObject;
 use std::cell::Cell;
 use std::ptr;
 use std::sync::Mutex;
@@ -614,9 +613,11 @@ fn cfunction_temporary_cleanup_preserves_exact_callee_exception_during_reentry()
             fails_after_releasing_external_owner as *const (),
             ptr::null_mut(),
             ptr::null_mut(),
-            &[argument],
-            1,
-            ptr::null_mut(),
+            molt_cpython_abi::api::cfunction::VectorcallArguments {
+                values: &[argument],
+                positional_count: 1,
+                kwnames: ptr::null_mut(),
+            },
             || "cleanup_probe".to_owned(),
         );
         assert!(result.is_null());

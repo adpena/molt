@@ -711,7 +711,7 @@ pub unsafe extern "C" fn PyUnicode_WriteChar(
         };
         return -1;
     }
-    if !GLOBAL_BRIDGE.unicode_write(op, index as usize, code) {
+    if !unsafe { GLOBAL_BRIDGE.unicode_write(op, index as usize, code) } {
         unsafe {
             set_exc(
                 (&raw mut crate::abi_types::PyExc_ValueError).cast(),

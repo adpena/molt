@@ -211,7 +211,7 @@ pub(super) unsafe fn builtin_call_binding(
                             eprintln!("{:?}", std::backtrace::Backtrace::force_capture());
                         }
                     }
-                    return bind_builtin_type_new_init(_py, args, _storage);
+                    bind_builtin_type_new_init(_py, args, _storage)
                 },
             ));
         }
@@ -754,8 +754,8 @@ fn bind_builtin_exception_init_owned(
         return raise_exception::<_>(_py, "TypeError", "missing required arguments");
     }
     let positional = alloc_tuple(_py, &args.pos[1..]);
-    let keyword_names = alloc_tuple(_py, &args.kw_names);
-    let keyword_values = alloc_tuple(_py, &args.kw_values);
+    let keyword_names = alloc_tuple(_py, args.kw_names);
+    let keyword_values = alloc_tuple(_py, args.kw_values);
     if positional.is_null() || keyword_names.is_null() || keyword_values.is_null() {
         for ptr in [positional, keyword_names, keyword_values] {
             if !ptr.is_null() {

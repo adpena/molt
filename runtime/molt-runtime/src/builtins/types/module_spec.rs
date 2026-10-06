@@ -21,10 +21,12 @@ fn module_spec_class(py: &PyToken<'_>) -> u64 {
         py,
         &state.module_spec_class,
         "ModuleSpec",
-        ClassSemanticPolicy::heap(false, true),
-        8,
-        None,
-        None,
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::heap(false, true),
+            layout_size: 8,
+            instance_shape: None,
+            native_slots: None,
+        },
         |class_bits, dict_ptr| configure_module_spec_class(py, state, class_bits, dict_ptr),
     )
 }

@@ -30,11 +30,14 @@ struct SliceFields<'a, 'py> {
 impl SequenceCompareContext for SliceFields<'_, '_> {
     type Item = u64;
     type Value = u64;
-    type Error = ();
-    fn lengths(&self) -> Result<(usize, usize), ()> {
+    type Error = molt_runtime_core::ErrorIndicatorSet;
+    fn lengths(&self) -> Result<(usize, usize), molt_runtime_core::ErrorIndicatorSet> {
         Ok((3, 3))
     }
-    fn pin_pair(&self, index: usize) -> Result<Option<(u64, u64)>, ()> {
+    fn pin_pair(
+        &self,
+        index: usize,
+    ) -> Result<Option<(u64, u64)>, molt_runtime_core::ErrorIndicatorSet> {
         // Both immutable slice owners are pinned by the declaring contract.
         Ok(self
             .left
@@ -42,10 +45,15 @@ impl SequenceCompareContext for SliceFields<'_, '_> {
             .zip(self.right.get(index))
             .map(|(&l, &r)| (l, r)))
     }
-    fn equal(&self, left: &u64, right: &u64) -> Result<bool, ()> {
+    fn equal(&self, left: &u64, right: &u64) -> Result<bool, molt_runtime_core::ErrorIndicatorSet> {
         element_equal(self.py, *left, *right)
     }
-    fn order(&self, left: &u64, right: &u64, op: RichCompareOp) -> Result<u64, ()> {
+    fn order(
+        &self,
+        left: &u64,
+        right: &u64,
+        op: RichCompareOp,
+    ) -> Result<u64, molt_runtime_core::ErrorIndicatorSet> {
         let op = match op {
             RichCompareOp::Lt => CompareOp::Lt,
             RichCompareOp::Le => CompareOp::Le,
@@ -56,7 +64,7 @@ impl SequenceCompareContext for SliceFields<'_, '_> {
         match compare_object_value_for_op(self.py, obj_from_bits(*left), obj_from_bits(*right), op)
         {
             CompareValueOutcome::Value(value) => Ok(value),
-            _ => Err(()),
+            _ => Err(molt_runtime_core::ErrorIndicatorSet),
         }
     }
     fn boolean(&self, value: bool) -> u64 {
@@ -93,7 +101,7 @@ pub(super) fn slice(
     };
     match compare_sequences(&ctx, SequenceKind::Tuple, op) {
         Ok(value) => CompareValueOutcome::Value(value),
-        Err(()) => CompareValueOutcome::Error,
+        Err(molt_runtime_core::ErrorIndicatorSet) => CompareValueOutcome::Error,
     }
 }
 
@@ -121,7 +129,7 @@ pub(super) fn generic_alias(
             generic_alias_origin_bits(right),
         ) {
             Ok(false) => return equality(Ok(false), op),
-            Err(()) => return CompareValueOutcome::Error,
+            Err(molt_runtime_core::ErrorIndicatorSet) => return CompareValueOutcome::Error,
             Ok(true) => {}
         }
         // GenericAlias retains tuple subclasses supplied as args, so their

@@ -307,10 +307,10 @@ impl<'a, 'py> TupleStorage<'a, 'py> {
             let tuple = self.project(self.bits)?;
             let other = self.project(other)?;
             self.result(unsafe {
-                ((*(&raw const PyTuple_Type))
-                    .tp_richcompare
-                    .expect("tuple comparison slot"))(
-                    tuple.as_ptr(), other.as_ptr(), op as i32
+                (PyTuple_Type.tp_richcompare.expect("tuple comparison slot"))(
+                    tuple.as_ptr(),
+                    other.as_ptr(),
+                    op as i32,
                 )
             })
         };

@@ -119,17 +119,16 @@ pub(crate) fn alloc_itertools_class(
             return discard_itertools_class(py, class_bits);
         }
     }
-    if let Some((callback, arity, defaults)) = constructor {
-        if crate::builtins::methods::builtin_func_bits_with_defaults_tuple(
+    if let Some((callback, arity, defaults)) = constructor
+        && crate::builtins::methods::builtin_func_bits_with_defaults_tuple(
             py,
             NativeCallableSpec::constructor(class_bits),
             callback,
             arity,
             defaults,
         ) == 0
-        {
-            return discard_itertools_class(py, class_bits);
-        }
+    {
+        return discard_itertools_class(py, class_bits);
     }
     if exception_pending(py)
         || unsafe { crate::object::class_finish_definition(py, class_ptr) }.is_err()

@@ -815,10 +815,10 @@ fn iter_impl(iter_bits: u64, builtin_only: bool) -> u64 {
                         || type_id == TYPE_ID_RANGE
                         || type_id == TYPE_ID_MEMORYVIEW
                     {
-                        if type_id == TYPE_ID_MEMORYVIEW {
-                            if memoryview_prepare_iter(_py, ptr).is_none() {
-                                return MoltObject::none().bits();
-                            }
+                        if type_id == TYPE_ID_MEMORYVIEW
+                            && memoryview_prepare_iter(_py, ptr).is_none()
+                        {
+                            return MoltObject::none().bits();
                         }
                         let total = std::mem::size_of::<MoltHeader>()
                             + std::mem::size_of::<u64>()
@@ -1018,27 +1018,26 @@ unsafe fn cached_pair_return(
     unsafe {
         let cached = *slot_ptr;
 
-        if !cached.is_null() {
-            if let Some((old0, old1)) =
+        if !cached.is_null()
+            && let Some((old0, old1)) =
                 crate::object::seq_access::replace_unique_pair(_py, cached, elem0, elem1)
-            {
-                // Publish the caller's owner before releasing old elements.
-                // Their finalizers can clear or replace this same cache slot;
-                // rc=2 also prevents nested next() from mutating our result.
-                inc_ref_ptr(_py, cached);
-                dec_ref_bits(_py, old0);
-                dec_ref_bits(_py, old1);
-                if owns_elem0 {
-                    dec_ref_bits(_py, elem0);
-                }
-                if owns_elem1 {
-                    dec_ref_bits(_py, elem1);
-                }
-                return MoltObject::from_ptr(cached).bits();
+        {
+            // Publish the caller's owner before releasing old elements.
+            // Their finalizers can clear or replace this same cache slot;
+            // rc=2 also prevents nested next() from mutating our result.
+            inc_ref_ptr(_py, cached);
+            dec_ref_bits(_py, old0);
+            dec_ref_bits(_py, old1);
+            if owns_elem0 {
+                dec_ref_bits(_py, elem0);
             }
-            // Shared or ABI-observed tuples cannot be mutated. Keep the old
-            // owner alive until the replacement owns its inputs and is visible.
+            if owns_elem1 {
+                dec_ref_bits(_py, elem1);
+            }
+            return MoltObject::from_ptr(cached).bits();
         }
+        // Shared or ABI-observed tuples cannot be mutated. Keep the old
+        // owner alive until the replacement owns its inputs and is visible.
 
         // Allocate a fresh tuple and cache it.
         let tuple_ptr = alloc_tuple(_py, &[elem0, elem1]);

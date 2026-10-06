@@ -277,9 +277,9 @@ pub(crate) unsafe fn object_init_frame_context_unpublished(
         }
         if !globals_valid
             || (code_bits != 0
-                && !crate::obj_from_bits(code_bits)
+                && crate::obj_from_bits(code_bits)
                     .as_ptr()
-                    .is_some_and(|code_ptr| super::object_type_id(code_ptr) == crate::TYPE_ID_CODE))
+                    .is_none_or(|code_ptr| super::object_type_id(code_ptr) != crate::TYPE_ID_CODE))
         {
             crate::raise_exception::<u64>(py, "SystemError", "invalid suspended frame context");
             return false;

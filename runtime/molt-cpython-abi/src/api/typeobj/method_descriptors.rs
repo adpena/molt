@@ -236,9 +236,11 @@ unsafe extern "C" fn method_vectorcall(
             target as *const (),
             values[0],
             defining_class,
-            &values[1..],
-            positional - 1,
-            kwnames,
+            crate::api::cfunction::VectorcallArguments {
+                values: &values[1..],
+                positional_count: positional - 1,
+                kwnames,
+            },
             || descriptor_name(descr),
         )
     };

@@ -120,7 +120,7 @@ pub(super) unsafe extern "C" fn get(
 ) -> c_int {
     unsafe {
         let exporter_owner = OwnedPyObject::from_borrowed(exporter);
-        let flags = OwnedPyObject::from_owned(numbers::PyLong_FromLong(flags.into()));
+        let flags = OwnedPyObject::from_owned(numbers::PyLong_FromLongLong(i64::from(flags)));
         if flags.as_ptr().is_null() {
             return -1;
         }

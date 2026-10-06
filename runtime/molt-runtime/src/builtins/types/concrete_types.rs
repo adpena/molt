@@ -178,10 +178,12 @@ pub(crate) fn mappingproxy_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &state.mappingproxy_class,
         "mappingproxy",
-        ClassSemanticPolicy::static_type(false),
-        16,
-        Some(crate::object::ObjectShapeId::TypesMappingProxy),
-        Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::static_type(false),
+            layout_size: 16,
+            instance_shape: Some(crate::object::ObjectShapeId::TypesMappingProxy),
+            native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        },
         |class_bits, dict_ptr| {
             use molt_cpython_abi::hooks::NativeProtocolSlot as P;
             unsafe {
@@ -410,10 +412,12 @@ pub(crate) fn frame_locals_proxy_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &state.frame_locals_proxy_class,
         "FrameLocalsProxy",
-        ClassSemanticPolicy::static_type(false),
-        16,
-        Some(crate::object::ObjectShapeId::TypesFrameLocalsProxy),
-        Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::static_type(false),
+            layout_size: 16,
+            instance_shape: Some(crate::object::ObjectShapeId::TypesFrameLocalsProxy),
+            native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        },
         |class_bits, dict_ptr| {
             use molt_cpython_abi::hooks::NativeProtocolSlot as P;
             unsafe {
@@ -453,12 +457,14 @@ pub(crate) fn method_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &state.method_class,
         "method",
-        ClassSemanticPolicy::static_type(false),
-        16,
-        None,
-        Some(crate::object::class_storage::ClassSlotPolicy::native(
-            crate::TYPE_ID_BOUND_METHOD,
-        )),
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::static_type(false),
+            layout_size: 16,
+            instance_shape: None,
+            native_slots: Some(crate::object::class_storage::ClassSlotPolicy::native(
+                crate::TYPE_ID_BOUND_METHOD,
+            )),
+        },
         &methods,
     )
 }
@@ -490,14 +496,16 @@ pub(crate) fn simplenamespace_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &state.simplenamespace_class,
         "SimpleNamespace",
-        ClassSemanticPolicy::static_type(true),
-        8,
-        None,
-        Some(crate::object::class_storage::ClassSlotPolicy {
-            allows_dict: true,
-            allows_weakref: false,
-            variable_sized: false,
-        }),
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::static_type(true),
+            layout_size: 8,
+            instance_shape: None,
+            native_slots: Some(crate::object::class_storage::ClassSlotPolicy {
+                allows_dict: true,
+                allows_weakref: false,
+                variable_sized: false,
+            }),
+        },
         &methods,
     )
 }
@@ -514,10 +522,12 @@ pub(crate) fn capsule_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &state.capsule_class,
         "capsule",
-        ClassSemanticPolicy::static_type(false),
-        8,
-        None,
-        Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::static_type(false),
+            layout_size: 8,
+            instance_shape: None,
+            native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        },
         &methods,
     )
 }
@@ -573,10 +583,12 @@ pub(crate) fn cell_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &state.cell_class,
         "cell",
-        ClassSemanticPolicy::static_type(false),
-        8,
-        None,
-        Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::static_type(false),
+            layout_size: 8,
+            instance_shape: None,
+            native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        },
         |class_bits, dict_ptr| {
             if !configure_runtime_class_methods(_py, class_bits, dict_ptr, &methods)
                 || !set_class_method(_py, dict_ptr, "__hash__", MoltObject::none().bits())

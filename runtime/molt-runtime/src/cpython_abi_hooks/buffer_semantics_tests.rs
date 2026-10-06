@@ -375,8 +375,10 @@ fn memoryview_snapshot_rejects_null_outputs_and_clears_terminal_geometry() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     crate::concurrency::gil::with_gil(|py| unsafe {
         for null_output in 0..5 {
-            let mut descriptor = molt_cpython_abi::hooks::MoltBufferView::default();
-            descriptor.len = 123;
+            let mut descriptor = molt_cpython_abi::hooks::MoltBufferView {
+                len: 123,
+                ..Default::default()
+            };
             let mut base = std::ptr::dangling_mut::<PyObject>();
             let mut format = std::ptr::dangling::<u8>();
             let mut format_len = 123;
@@ -772,7 +774,7 @@ fn native_memoryview_slice_family_retains_lease_until_last_release() {
                     refcount::Py_DECREF(result);
                     bits
                 }
-                5 | 6 | 7 => {
+                5..=7 => {
                     SLICE_CALLBACK_PARENT.store(source, Ordering::SeqCst);
                     SLICE_CALLBACK_FAILURE.store(usize::from(path >= 6), Ordering::SeqCst);
                     EXPORT_RELEASE_ERROR.store(usize::from(path >= 6), Ordering::SeqCst);

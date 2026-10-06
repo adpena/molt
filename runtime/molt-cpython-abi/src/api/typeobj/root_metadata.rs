@@ -417,7 +417,7 @@ unsafe fn native_type_namespace_mutation(
         }
         let slots = match super::native_slot_mutation::prepare(tp, name) {
             Ok(slots) => slots,
-            Err(()) => return -1,
+            Err(crate::ErrorIndicatorSet) => return -1,
         };
         struct Publication<'a> {
             tp: *mut PyTypeObject,

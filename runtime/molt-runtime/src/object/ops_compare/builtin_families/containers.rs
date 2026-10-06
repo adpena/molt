@@ -18,7 +18,7 @@ pub(super) fn dict(
     };
     let left = left.as_ptr().unwrap();
     let right = right.as_ptr().unwrap();
-    let compare = || -> Result<bool, ()> {
+    let compare = || -> Result<bool, molt_runtime_core::ErrorIndicatorSet> {
         unsafe {
             if dict_len(left) != dict_len(right) {
                 return Ok(false);
@@ -32,7 +32,7 @@ pub(super) fn dict(
                 let hash = dict_hashes(left)[index];
                 let found = dict_find_entry_with_hash(py, right, key.bits, hash);
                 if exception_pending(py) {
-                    return Err(());
+                    return Err(molt_runtime_core::ErrorIndicatorSet);
                 }
                 let Some(found) = found else {
                     return Ok(false);
@@ -43,7 +43,7 @@ pub(super) fn dict(
                 drop(value);
                 drop(key);
                 if exception_pending(py) {
-                    return Err(());
+                    return Err(molt_runtime_core::ErrorIndicatorSet);
                 }
                 if !equal {
                     return Ok(false);
@@ -58,14 +58,18 @@ pub(super) fn dict(
 
 // Declaring set slots use stored hashes and physical storage. Dict views use
 // the observable size, iteration and membership protocols below instead.
-fn set_contained(py: &PyToken<'_>, left: *mut u8, right: *mut u8) -> Result<bool, ()> {
+fn set_contained(
+    py: &PyToken<'_>,
+    left: *mut u8,
+    right: *mut u8,
+) -> Result<bool, molt_runtime_core::ErrorIndicatorSet> {
     unsafe {
         let mut index = 0;
         while let Some(entry) = crate::object::ops::set_pin_entry(py, left, index) {
             let found = set_find_entry_in_place_with_hash(py, right, entry.bits(), entry.hash());
             drop(entry);
             if exception_pending(py) {
-                return Err(());
+                return Err(molt_runtime_core::ErrorIndicatorSet);
             }
             if found.is_none() {
                 return Ok(false);
@@ -76,19 +80,24 @@ fn set_contained(py: &PyToken<'_>, left: *mut u8, right: *mut u8) -> Result<bool
     }
 }
 
-fn view_contained(py: &PyToken<'_>, left: u64, right: u64) -> Result<bool, ()> {
-    let mut iter = crate::object::iterable::OwnedIterator::new(py, left).ok_or(())?;
+fn view_contained(
+    py: &PyToken<'_>,
+    left: u64,
+    right: u64,
+) -> Result<bool, molt_runtime_core::ErrorIndicatorSet> {
+    let mut iter = crate::object::iterable::OwnedIterator::new(py, left)
+        .ok_or(molt_runtime_core::ErrorIndicatorSet)?;
     while let Some(item) = iter.next()? {
         let item = Pin::adopt(py, item);
         let result = Pin::adopt(py, molt_contains(right, item.bits));
         if exception_pending(py) {
-            return Err(());
+            return Err(molt_runtime_core::ErrorIndicatorSet);
         }
         let found = is_truthy(py, obj_from_bits(result.bits));
         drop(result);
         drop(item);
         if exception_pending(py) {
-            return Err(());
+            return Err(molt_runtime_core::ErrorIndicatorSet);
         }
         if !found {
             return Ok(false);
@@ -97,12 +106,16 @@ fn view_contained(py: &PyToken<'_>, left: u64, right: u64) -> Result<bool, ()> {
     Ok(true)
 }
 
-fn protocol_size(py: &PyToken<'_>, value: u64) -> Result<i64, ()> {
+fn protocol_size(
+    py: &PyToken<'_>,
+    value: u64,
+) -> Result<i64, molt_runtime_core::ErrorIndicatorSet> {
     let result = Pin::adopt(py, molt_len(value));
     if exception_pending(py) {
-        return Err(());
+        return Err(molt_runtime_core::ErrorIndicatorSet);
     }
-    crate::builtins::numbers::index_i64_integral_bits(result.bits).ok_or(())
+    crate::builtins::numbers::index_i64_integral_bits(result.bits)
+        .ok_or(molt_runtime_core::ErrorIndicatorSet)
 }
 
 pub(super) fn set_like(
@@ -117,12 +130,12 @@ pub(super) fn set_like(
         BuiltinComparison::DictKeys | BuiltinComparison::DictItems
     );
     let right_type = physical_type(right);
-    if !matches!(right_type, Some(TYPE_ID_SET | TYPE_ID_FROZENSET))
-        && !(view
+    if !(matches!(right_type, Some(TYPE_ID_SET | TYPE_ID_FROZENSET))
+        || (view
             && matches!(
                 right_type,
                 Some(TYPE_ID_DICT_KEYS_VIEW | TYPE_ID_DICT_ITEMS_VIEW)
-            ))
+            )))
     {
         return CompareValueOutcome::NotComparable;
     }
@@ -132,7 +145,7 @@ pub(super) fn set_like(
     ) else {
         return CompareValueOutcome::Error;
     };
-    let result = (|| -> Result<bool, ()> {
+    let result = (|| -> Result<bool, molt_runtime_core::ErrorIndicatorSet> {
         let (lhs, rhs) = if view {
             (
                 protocol_size(py, left.bits())?,
@@ -177,18 +190,18 @@ pub(super) fn view_contains(
     family: BuiltinComparison,
     view: u64,
     item: u64,
-) -> Result<bool, ()> {
+) -> Result<bool, molt_runtime_core::ErrorIndicatorSet> {
     let _view = Pin::borrow(py, view);
     let _item = Pin::borrow(py, item);
     unsafe {
         let dict = obj_from_bits(dict_view_dict_bits(obj_from_bits(view).as_ptr().unwrap()))
             .as_ptr()
-            .ok_or(())?;
+            .ok_or(molt_runtime_core::ErrorIndicatorSet)?;
         let _dict = Pin::borrow(py, MoltObject::from_ptr(dict).bits());
         if family == BuiltinComparison::DictKeys {
             let found = crate::object::ops::dict_find_entry(py, dict, item);
             return if exception_pending(py) {
-                Err(())
+                Err(molt_runtime_core::ErrorIndicatorSet)
             } else {
                 Ok(found.is_some())
             };
@@ -210,7 +223,7 @@ pub(super) fn view_contains(
         let value = Pin::borrow(py, value);
         let found = crate::object::ops::dict_find_entry(py, dict, key.bits);
         if exception_pending(py) {
-            return Err(());
+            return Err(molt_runtime_core::ErrorIndicatorSet);
         }
         let Some(found) = found else {
             return Ok(false);

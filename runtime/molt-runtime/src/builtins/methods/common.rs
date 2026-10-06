@@ -336,7 +336,7 @@ pub(crate) fn init_native_callable(
         return 0;
     }
     if let Some(slot) = spec.cache {
-        return init_atomic_bits(py, slot, || initialize());
+        return init_atomic_bits(py, slot, initialize);
     }
     let Some(owner) = spec.owner.and_then(|bits| obj_from_bits(bits).as_ptr()) else {
         raise_exception::<u64>(py, "SystemError", "cached callable has no owner");

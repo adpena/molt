@@ -698,7 +698,7 @@ pub(crate) unsafe fn ready_type(
     // namespace, including native method declarations, before any READY exit.
     let runtime_projection = match unsafe { bridge.expose_runtime_type_dictionary(tp) } {
         Ok(projection) => projection,
-        Err(()) => return -1,
+        Err(crate::ErrorIndicatorSet) => return -1,
     };
     if bridge.molt_handle_for_pyobj(tp.cast()) != binding {
         return unsafe { reject_type_readiness(c"type binding changed during namespace exposure") };
@@ -1325,14 +1325,12 @@ unsafe fn add_operators_to_dict(tp: *mut PyTypeObject) -> c_int {
             if let Some(spec) = crate::abi_types::exc_singleton_name(tp.cast())
                 .and_then(|name| name.strip_prefix("PyExc_"))
                 .and_then(molt_lang_obj_model::builtin_exception_spec)
-            {
-                if (matches!(def.slot, SlotWrapper::Direct(DirectSlot::Repr))
+                && ((matches!(def.slot, SlotWrapper::Direct(DirectSlot::Repr))
                     && !spec.declares_repr())
                     || (matches!(def.slot, SlotWrapper::Direct(DirectSlot::Str))
-                        && spec.declared_str_slot().is_none())
-                {
-                    continue;
-                }
+                        && spec.declared_str_slot().is_none()))
+            {
+                continue;
             }
             let wrapped = slot_wrapper_ptr(tp, def.slot);
             if wrapped.is_null() || wrapped == def.base.function {
@@ -2079,7 +2077,7 @@ unsafe fn type_from_spec_impl(
             return ptr::null_mut();
         }
         if let Some(new) = (*metaclass).tp_new
-            && (*(&raw mut crate::abi_types::PyType_Type))
+            && crate::abi_types::PyType_Type
                 .tp_new
                 .is_none_or(|canonical| !ptr::fn_addr_eq(new, canonical))
         {
@@ -2352,7 +2350,8 @@ unsafe fn type_from_spec_impl(
                 };
                 if position.is_none_or(|position| {
                     position < std::mem::size_of::<PyObject>() as isize
-                        || position as usize % std::mem::align_of::<*mut PyObject>() != 0
+                        || !(position as usize)
+                            .is_multiple_of(std::mem::align_of::<*mut PyObject>())
                         || (position as usize)
                             .checked_add(std::mem::size_of::<*mut PyObject>())
                             .is_none_or(|end| end > size)
@@ -3715,7 +3714,7 @@ unsafe extern "C" fn type_getattro(o: *mut PyObject, name: *mut PyObject) -> *mu
     let meta_attribute = meta_owner.as_ptr();
     let is_data = match unsafe { descriptor::is_data(meta_attribute) } {
         Ok(value) => value,
-        Err(()) => return ptr::null_mut(),
+        Err(crate::ErrorIndicatorSet) => return ptr::null_mut(),
     };
     if is_data && let Some(result) = unsafe { descriptor::get(meta_attribute, o, metatype.cast()) }
     {

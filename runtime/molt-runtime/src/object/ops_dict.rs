@@ -215,7 +215,7 @@ pub(crate) unsafe fn dict_update_apply(
             let item = match iter.next() {
                 Ok(Some(item)) => item,
                 Ok(None) => return MoltObject::none().bits(),
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             let pair = dict_pair_from_item(_py, item);
             dec_ref_bits(_py, item);
@@ -840,12 +840,12 @@ fn count_elements_dict_storage(
                 right: &Option<CountElementOwned<'_, '_>>| {
         matches!((left, right), (Some(left), Some(right)) if left.bits == right.bits)
     };
-    if same(&mapping_get, &dict_get) && same(&mapping_setitem, &dict_setitem) {
-        if let Some(ptr) = obj_from_bits(mapping).as_ptr()
-            && unsafe { object_type_id(ptr) == TYPE_ID_DICT }
-        {
-            return Ok(Some(ptr));
-        }
+    if same(&mapping_get, &dict_get)
+        && same(&mapping_setitem, &dict_setitem)
+        && let Some(ptr) = obj_from_bits(mapping).as_ptr()
+        && unsafe { object_type_id(ptr) == TYPE_ID_DICT }
+    {
+        return Ok(Some(ptr));
     }
     Ok(None)
 }
@@ -890,7 +890,7 @@ pub extern "C" fn molt_dict_count_elements(mapping: u64, iterable: u64) -> u64 {
         loop {
             custody.key = match custody.iter.as_mut().unwrap().next() {
                 Ok(Some(key)) => Some(CountElementOwned::adopt(py, key)),
-                Ok(None) | Err(()) => break,
+                Ok(None) | Err(molt_runtime_core::ErrorIndicatorSet) => break,
             };
             let key = custody.key.as_ref().unwrap().bits;
             if let Some(dict) = storage {

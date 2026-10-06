@@ -1213,7 +1213,7 @@ unsafe fn python_text_transport_cases() {
         assert_eq!(named_type.ready(), 0);
         // A malformed external C name exercises diagnostic decoding only;
         // inherited slots and namespace ownership were admitted while valid.
-        named_type.tp_name = b"pkg.High\xed\xa0\x80Error\0".as_ptr().cast();
+        named_type.tp_name = c"pkg.High\xed\xa0\x80Error".as_ptr();
         let named = exception(&raw mut *named_type, &[]);
         assert_eq!(
             take_raw(errors::molt_native_exception_repr(named.as_ptr())),

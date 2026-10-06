@@ -77,12 +77,15 @@ pub(super) unsafe fn prepare_new(tp: *mut PyTypeObject, managed: bool) {
     }
 }
 
-unsafe fn own_name(tp: *mut PyTypeObject, name: &std::ffi::CStr) -> Result<bool, ()> {
+unsafe fn own_name(
+    tp: *mut PyTypeObject,
+    name: &std::ffi::CStr,
+) -> Result<bool, crate::ErrorIndicatorSet> {
     let value = unsafe {
         crate::api::mapping::_PyDict_GetItemStringWithError((*tp).tp_dict, name.as_ptr())
     };
     if descriptors::pending() {
-        Err(())
+        Err(crate::ErrorIndicatorSet)
     } else {
         Ok(!value.is_null())
     }
@@ -110,11 +113,11 @@ pub(super) unsafe fn finish(tp: *mut PyTypeObject, admit_namespace: bool) -> c_i
             return -1;
         }
         let overrides_hash = match own_name(tp, c"__eq__") {
-            Err(()) => return -1,
+            Err(crate::ErrorIndicatorSet) => return -1,
             Ok(true) => true,
             Ok(false) => match own_name(tp, c"__hash__") {
                 Ok(value) => value,
-                Err(()) => return -1,
+                Err(crate::ErrorIndicatorSet) => return -1,
             },
         };
         for index in 1..count {
@@ -224,7 +227,7 @@ pub(super) unsafe fn finish(tp: *mut PyTypeObject, admit_namespace: bool) -> c_i
         }
         if admit_namespace && (*tp).tp_hash.is_none() {
             match own_name(tp, c"__hash__") {
-                Err(()) => return -1,
+                Err(crate::ErrorIndicatorSet) => return -1,
                 Ok(true) => {}
                 Ok(false) => {
                     if crate::api::mapping::PyDict_SetItemString(

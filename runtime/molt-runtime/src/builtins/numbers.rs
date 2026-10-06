@@ -1554,7 +1554,8 @@ mod float_conversion_tests {
     fn float_conversion_contract_binary_subtype_dispatch_and_declined_slots() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let operations: [(&[u8], &[u8], extern "C" fn(u64, u64) -> u64); 8] = [
+            type BinaryOperation = (&'static [u8], &'static [u8], extern "C" fn(u64, u64) -> u64);
+            let operations: [BinaryOperation; 8] = [
                 (b"__add__", b"__radd__", crate::molt_add),
                 (b"__sub__", b"__rsub__", crate::molt_sub),
                 (b"__mul__", b"__rmul__", crate::molt_mul),

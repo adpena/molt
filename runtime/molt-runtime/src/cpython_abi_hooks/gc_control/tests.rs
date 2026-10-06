@@ -84,8 +84,10 @@ fn builtin_gc_slots_share_runtime_edges_and_keep_raw_carriers_unadmitted() {
             assert!(!errors::PyErr_Occurred().is_null());
             errors::PyErr_Clear();
         }
-        assert!((*(&raw const PyFrozenSet_Type)).tp_clear.is_none());
-        assert!((*(&raw const PyTraceBack_Type)).tp_clear.is_none());
+        let frozenset_clear = PyFrozenSet_Type.tp_clear;
+        let traceback_clear = PyTraceBack_Type.tp_clear;
+        assert!(frozenset_clear.is_none());
+        assert!(traceback_clear.is_none());
         let mut slots = [
             PyType_Slot {
                 slot: molt_cpython_abi::type_slots::Py_tp_base,
@@ -104,7 +106,7 @@ fn builtin_gc_slots_share_runtime_edges_and_keep_raw_carriers_unadmitted() {
             name: c"gc.NativeListSubtype".as_ptr(),
             basicsize: std::mem::size_of::<PyListObject>() as c_int,
             itemsize: 0,
-            flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC) as u32,
+            flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC),
             slots: slots.as_mut_ptr(),
         };
         let subtype = molt_cpython_abi::api::typeobj::PyType_FromSpec(&raw mut spec);

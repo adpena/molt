@@ -24,6 +24,12 @@ pub enum CFunctionConvention {
     Method,
 }
 
+pub struct VectorcallArguments<'a> {
+    pub values: &'a [*mut PyObject],
+    pub positional_count: usize,
+    pub kwnames: *mut PyObject,
+}
+
 impl CFunctionConvention {
     pub fn from_flags(flags: c_int) -> Option<Self> {
         if flags & (METH_CLASS | METH_STATIC) == (METH_CLASS | METH_STATIC) {
@@ -62,16 +68,19 @@ impl CFunctionConvention {
         meth_target: *const (),
         self_obj: *mut PyObject,
         defining_class: *mut PyTypeObject,
-        args: &[*mut PyObject],
-        positional_count: usize,
-        kwnames: *mut PyObject,
+        arguments: VectorcallArguments<'_>,
         name: impl Fn() -> String,
     ) -> *mut PyObject {
+        let VectorcallArguments {
+            values: args,
+            positional_count,
+            kwnames,
+        } = arguments;
         let Some(keyword_count) = (unsafe { validate_arguments(args, positional_count, kwnames) })
         else {
             return ptr::null_mut();
         };
-        if meth_target.is_null() || (self == Self::Method) != !defining_class.is_null() {
+        if meth_target.is_null() || (self == Self::Method) == defining_class.is_null() {
             unsafe { crate::api::errors::PyErr_BadInternalCall() };
             return ptr::null_mut();
         }
@@ -147,13 +156,7 @@ impl CFunctionConvention {
                 }
                 Self::Method => {
                     let call: PyCMethod = std::mem::transmute(meth_target);
-                    call(
-                        self_obj,
-                        defining_class,
-                        args_ptr,
-                        positional_count as usize,
-                        names,
-                    )
+                    call(self_obj, defining_class, args_ptr, positional_count, names)
                 }
             }
         }

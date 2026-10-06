@@ -356,7 +356,9 @@ pub extern "C" fn molt_list_extend(list_bits: u64, other_bits: u64) -> u64 {
                             }
                         }
                         Ok(None) => break,
-                        Err(()) => return MoltObject::none().bits(),
+                        Err(molt_runtime_core::ErrorIndicatorSet) => {
+                            return MoltObject::none().bits();
+                        }
                     }
                 }
                 return MoltObject::none().bits();

@@ -97,7 +97,7 @@ pub(crate) fn bytes_contains_builtin(py: &PyToken<'_>, container: u64, needle: u
         let lease =
             match MemoryViewLease::acquire(object.as_ptr(), PyBUF_SIMPLE, PyObject_GetBuffer) {
                 Ok(lease) => lease,
-                Err(()) => {
+                Err(molt_cpython_abi::ErrorIndicatorSet) => {
                     crate::cpython_abi_hooks::propagate_native_failure(
                         py,
                         "membership buffer acquisition",
@@ -1536,10 +1536,7 @@ fn collect_byte_items(
     if out.try_reserve(capacity).is_err() {
         return raise_exception::<_>(_py, "MemoryError", "bytes allocation failed");
     }
-    loop {
-        let Some(byte) = next()? else {
-            break;
-        };
+    while let Some(byte) = next()? {
         if out.try_reserve(1).is_err() {
             return raise_exception::<_>(_py, "MemoryError", "bytes allocation failed");
         }
@@ -1726,7 +1723,7 @@ pub(in crate::object) fn byte_buffer(
         } {
             Ok(Some(bytes)) => Some((bytes, None)),
             Ok(None) => None, // The runtime collector set its own error.
-            Err(()) => {
+            Err(molt_cpython_abi::ErrorIndicatorSet) => {
                 crate::cpython_abi_hooks::propagate_native_failure(
                     py,
                     "native byte buffer acquisition",
@@ -2015,11 +2012,7 @@ pub(crate) fn bytearray_init_from_arguments(
     let Some(mut iter) = bytes_constructor_iter(py, source, BytesCtorKind::Bytearray) else {
         return MoltObject::none().bits();
     };
-    loop {
-        let item = match iter.next() {
-            Ok(Some(item)) => item,
-            Ok(None) | Err(()) => break,
-        };
+    while let Ok(Some(item)) = iter.next() {
         let value = bytes_item_to_u8(py, item, BytesCtorKind::Bytearray);
         dec_ref_bits(py, item);
         let Some(value) = value else {

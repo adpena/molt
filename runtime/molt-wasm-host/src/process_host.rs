@@ -61,7 +61,7 @@ impl Read for HostPipeReader {
                 return Err(std::io::ErrorKind::WouldBlock.into());
             }
             let len = buf.len().min(available as usize);
-            return self.0.read(&mut buf[..len]);
+            self.0.read(&mut buf[..len])
         }
         #[cfg(not(windows))]
         self.0.read(buf)
@@ -204,14 +204,13 @@ fn stop_owned_child(child: &mut Child) -> Result<()> {
     {
         // The runtime already performed its semantic termination. The finite
         // host is the final backing-resource owner, including failed teardown.
-        if let Err(err) = child.kill() {
-            if child
+        if let Err(err) = child.kill()
+            && child
                 .try_wait()
                 .context("query child after kill failure")?
                 .is_none()
-            {
-                return Err(err).context("stop owned child during host close");
-            }
+        {
+            return Err(err).context("stop owned child during host close");
         }
     }
     Ok(())
@@ -819,10 +818,10 @@ pub(super) fn define_process_host(
                 }
             }
 
-            if out_handle_ptr != 0 {
-                if write_u64(&mut caller, &memory, out_handle_ptr, handle).is_err() {
-                    return -libc::EFAULT;
-                }
+            if out_handle_ptr != 0
+                && write_u64(&mut caller, &memory, out_handle_ptr, handle).is_err()
+            {
+                return -libc::EFAULT;
             }
             0
         },

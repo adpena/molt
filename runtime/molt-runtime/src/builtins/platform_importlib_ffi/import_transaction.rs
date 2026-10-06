@@ -488,13 +488,12 @@ pub(super) fn importlib_import_resolved_transaction(
         dec_ref_bits(_py, leaf_bits);
         return Err(MoltObject::none().bits());
     }
-    if is_truthy(_py, obj_from_bits(has_path)) {
-        if let Err(err) =
+    if is_truthy(_py, obj_from_bits(has_path))
+        && let Err(err) =
             importlib_transaction_prepare_fromlist(_py, resolved, leaf_bits, fromlist_bits)
-        {
-            dec_ref_bits(_py, leaf_bits);
-            return Err(err);
-        }
+    {
+        dec_ref_bits(_py, leaf_bits);
+        return Err(err);
     }
     Ok(leaf_bits)
 }

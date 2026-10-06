@@ -244,12 +244,11 @@ pub(crate) unsafe fn configure_native_callable(
             );
             return false;
         }
-        if let Some(owner) = spec.owner {
-            if spec.kind.is_descriptor()
-                && !function_set_attr_name(py, pointer, b"__objclass__", owner)
-            {
-                return false;
-            }
+        if let Some(owner) = spec.owner
+            && spec.kind.is_descriptor()
+            && !function_set_attr_name(py, pointer, b"__objclass__", owner)
+        {
+            return false;
         }
         if let Some(name) = spec.name {
             let Some(name_bits) = attr_name_bits_from_bytes(py, name.as_bytes()) else {

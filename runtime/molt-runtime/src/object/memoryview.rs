@@ -432,10 +432,9 @@ impl TypedStridedStorage {
         self.strides[0] = stride;
         // Geometry validation cannot reenter. Restore the descriptor before
         // raising on failure; inline formats and ownership never move.
-        let geometry = memoryview_checked_nbytes(&self.shape, self.itemsize).and_then(|len| {
-            memoryview_strided_bounds(&self.shape, &self.strides, self.itemsize)
-                .map(|bounds| (len, bounds))
-        });
+        let geometry = memoryview_checked_nbytes(&self.shape, self.itemsize).zip(
+            memoryview_strided_bounds(&self.shape, &self.strides, self.itemsize),
+        );
         let Some((len, bounds)) = geometry else {
             self.shape[0] = old_len;
             self.strides[0] = base_stride;
@@ -1451,16 +1450,14 @@ unsafe fn memoryview_borrowed_storage(
         }
         if let Some(base) = obj_from_bits(memoryview_base_bits(ptr)).as_ptr()
             && let Some(bytes) = bytes_like_slice_raw(base)
-        {
-            if !memoryview_bounds_fit_base(
+            && (!memoryview_bounds_fit_base(
                 offset,
                 bounds.min_offset,
                 bounds.max_end_offset,
                 bytes.len(),
-            ) || bytes.as_ptr().add(offset as usize).cast_mut() != data
-            {
-                return Err(BytesLikeSliceError::NotBytesLike);
-            }
+            ) || bytes.as_ptr().add(offset as usize).cast_mut() != data)
+        {
+            return Err(BytesLikeSliceError::NotBytesLike);
         }
         Ok(BorrowedMemoryView {
             data,
@@ -1502,6 +1499,68 @@ pub(crate) unsafe fn bytes_like_slice_checked(
 
 pub(crate) unsafe fn bytes_like_slice(ptr: *mut u8) -> Option<&'static [u8]> {
     unsafe { bytes_like_slice_checked(ptr).ok() }
+}
+
+/// Import an ABI descriptor into the ordinary runtime MemoryView. Format text
+/// stays a full runtime string; the fixed-size transport format is never the
+/// authority for a native memoryview's Python format or C export.
+pub(crate) unsafe fn from_native_descriptor(
+    py: &PyToken<'_>,
+    descriptor: &molt_cpython_abi::hooks::MoltBufferView,
+    format: *const std::ffi::c_char,
+    lease: Option<molt_cpython_abi::api::memory::MemoryViewLease>,
+) -> u64 {
+    let rank = descriptor.ndim as usize;
+    if rank > MOLT_BUFFER_MAX_NDIM
+        || descriptor.itemsize == 0
+        || descriptor.itemsize > isize::MAX as u64
+        || descriptor.readonly > 1
+        || (descriptor.len != 0 && descriptor.data.is_null())
+    {
+        return raise_exception(py, "BufferError", "invalid memoryview buffer descriptor");
+    }
+    let bytes = if format.is_null() {
+        b"B".as_slice()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(format) }.to_bytes()
+    };
+    let format_ptr = crate::alloc_string(py, bytes);
+    if format_ptr.is_null() {
+        return MoltObject::none().bits();
+    }
+    let format_bits = MoltObject::from_ptr(format_ptr).bits();
+    let storage = TypedStridedStorage::new(
+        descriptor.data,
+        descriptor.readonly != 0,
+        descriptor.itemsize as usize,
+        0,
+        0,
+        format_bits,
+        descriptor.shape[..rank].to_vec(),
+        descriptor.strides[..rank].to_vec(),
+    );
+    let output = match storage {
+        Some(mut storage) if storage.len as u64 == descriptor.len => {
+            // Offset measures index zero from the lowest addressed backing byte.
+            storage.offset = match storage.min_offset.checked_neg() {
+                Some(offset) => offset,
+                None => {
+                    crate::dec_ref_bits(py, format_bits);
+                    return raise_exception(py, "BufferError", "memoryview span overflow");
+                }
+            };
+            crate::alloc_memoryview_from_storage(py, storage.with_native_lease(lease))
+        }
+        _ => std::ptr::null_mut(),
+    };
+    crate::dec_ref_bits(py, format_bits);
+    if output.is_null() {
+        if crate::exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        return raise_exception(py, "BufferError", "invalid memoryview buffer geometry");
+    }
+    MoltObject::from_ptr(output).bits()
 }
 
 #[cfg(test)]
@@ -2150,66 +2209,4 @@ mod split_buffer_contract_tests {
             assert!(!exception_pending(py));
         });
     }
-}
-
-/// Import an ABI descriptor into the ordinary runtime MemoryView. Format text
-/// stays a full runtime string; the fixed-size transport format is never the
-/// authority for a native memoryview's Python format or C export.
-pub(crate) unsafe fn from_native_descriptor(
-    py: &PyToken<'_>,
-    descriptor: &molt_cpython_abi::hooks::MoltBufferView,
-    format: *const std::ffi::c_char,
-    lease: Option<molt_cpython_abi::api::memory::MemoryViewLease>,
-) -> u64 {
-    let rank = descriptor.ndim as usize;
-    if rank > MOLT_BUFFER_MAX_NDIM
-        || descriptor.itemsize == 0
-        || descriptor.itemsize > isize::MAX as u64
-        || descriptor.readonly > 1
-        || (descriptor.len != 0 && descriptor.data.is_null())
-    {
-        return raise_exception(py, "BufferError", "invalid memoryview buffer descriptor");
-    }
-    let bytes = if format.is_null() {
-        b"B".as_slice()
-    } else {
-        unsafe { std::ffi::CStr::from_ptr(format) }.to_bytes()
-    };
-    let format_ptr = crate::alloc_string(py, bytes);
-    if format_ptr.is_null() {
-        return MoltObject::none().bits();
-    }
-    let format_bits = MoltObject::from_ptr(format_ptr).bits();
-    let storage = TypedStridedStorage::new(
-        descriptor.data,
-        descriptor.readonly != 0,
-        descriptor.itemsize as usize,
-        0,
-        0,
-        format_bits,
-        descriptor.shape[..rank].to_vec(),
-        descriptor.strides[..rank].to_vec(),
-    );
-    let output = match storage {
-        Some(mut storage) if storage.len as u64 == descriptor.len => {
-            // Offset measures index zero from the lowest addressed backing byte.
-            storage.offset = match storage.min_offset.checked_neg() {
-                Some(offset) => offset,
-                None => {
-                    crate::dec_ref_bits(py, format_bits);
-                    return raise_exception(py, "BufferError", "memoryview span overflow");
-                }
-            };
-            crate::alloc_memoryview_from_storage(py, storage.with_native_lease(lease))
-        }
-        _ => std::ptr::null_mut(),
-    };
-    crate::dec_ref_bits(py, format_bits);
-    if output.is_null() {
-        if crate::exception_pending(py) {
-            return MoltObject::none().bits();
-        }
-        return raise_exception(py, "BufferError", "invalid memoryview buffer geometry");
-    }
-    MoltObject::from_ptr(output).bits()
 }

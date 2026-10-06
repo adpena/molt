@@ -93,6 +93,10 @@ pub mod loader;
 #[cfg(test)]
 mod buffer_export_bench;
 
+/// A Python operation failed; its error indicator is owned by the calling boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ErrorIndicatorSet;
+
 pub use abi_types::{Py_ssize_t, PyObject, PyTypeObject};
 pub use api::memory::{
     NativeGcEdge, NativeGcEdgeKind, NativeGcVisitProc, native_gc_node_clear, native_gc_node_decref,

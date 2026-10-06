@@ -15,7 +15,7 @@ unsafe fn lookup_current(
     tp: *mut PyTypeObject,
     key: *mut PyObject,
     owners: &mut Vec<OwnedPyObject>,
-) -> Result<(*mut PyObject, *mut PyTypeObject), ()> {
+) -> Result<(*mut PyObject, *mut PyTypeObject), crate::ErrorIndicatorSet> {
     unsafe {
         let mro = (*tp).tp_mro;
         if mro.is_null() {
@@ -23,21 +23,21 @@ unsafe fn lookup_current(
                 (&raw mut PyExc_SystemError).cast(),
                 c"native slot mutation requires a ready type MRO".as_ptr(),
             );
-            return Err(());
+            return Err(crate::ErrorIndicatorSet);
         }
         owners.push(OwnedPyObject::from_borrowed(mro));
         let count = sequences::PyTuple_Size(mro);
         if count < 0 {
-            return Err(());
+            return Err(crate::ErrorIndicatorSet);
         }
         for index in 0..count {
             let base = sequences::PyTuple_GetItem(mro, index).cast::<PyTypeObject>();
             if base.is_null() {
-                return Err(());
+                return Err(crate::ErrorIndicatorSet);
             }
             let value = type_namespace_lookup_with_bridge(bridge, base, key);
             if descriptors::pending() {
-                return Err(());
+                return Err(crate::ErrorIndicatorSet);
             }
             if !value.is_null() {
                 owners.push(OwnedPyObject::from_borrowed(value));
@@ -97,7 +97,7 @@ unsafe fn runtime_builtin_slot(
 unsafe fn native_protocols(
     bridge: &crate::bridge::ObjectBridge,
     tp: *mut PyTypeObject,
-) -> Result<Option<u64>, ()> {
+) -> Result<Option<u64>, crate::ErrorIndicatorSet> {
     if !bridge.type_uses_runtime_slots(tp) {
         return Ok(None);
     }
@@ -114,7 +114,7 @@ unsafe fn native_protocols(
             crate::hooks::DecodedHandleResult::Missing => Ok(None),
             crate::hooks::DecodedHandleResult::Error => {
                 errors::check_native_status(-1, "native protocol declarations");
-                Err(())
+                Err(crate::ErrorIndicatorSet)
             }
             crate::hooks::DecodedHandleResult::Ok(bits) => {
                 let value = molt_lang_obj_model::MoltObject::from_bits(bits).as_int();
@@ -128,7 +128,7 @@ unsafe fn native_protocols(
                     }
                     _ => {
                         errors::check_native_status(-1, "invalid native protocol declarations");
-                        Err(())
+                        Err(crate::ErrorIndicatorSet)
                     }
                 }
             }
@@ -187,9 +187,14 @@ unsafe fn unique_existing_slot(tp: *mut PyTypeObject, name: *const c_char) -> Op
 
 /// Allocate canonical declaration names before dictionary commit. The actual
 /// hierarchy and bindings must be read AFTER callback-capable key comparison.
-pub(crate) unsafe fn prepare(tp: *mut PyTypeObject, name: *mut PyObject) -> Result<Mutation, ()> {
+pub(crate) unsafe fn prepare(
+    tp: *mut PyTypeObject,
+    name: *mut PyObject,
+) -> Result<Mutation, crate::ErrorIndicatorSet> {
     unsafe {
-        let bytes = strings::unicode_bytes(name).ok_or(())?.to_vec();
+        let bytes = strings::unicode_bytes(name)
+            .ok_or(crate::ErrorIndicatorSet)?
+            .to_vec();
         let mut slots = Vec::new();
         for declaration in declarations_for_name(&bytes) {
             if !slots.contains(&declaration.slot) {
@@ -216,7 +221,7 @@ pub(crate) unsafe fn initialize(
         }
         let mutation = match prepare_slots(tp, ptr::null_mut(), slots) {
             Ok(mutation) => mutation,
-            Err(()) => return -1,
+            Err(crate::ErrorIndicatorSet) => return -1,
         };
         let class = bridge
             .molt_handle_for_pyobj(tp.cast())
@@ -229,7 +234,7 @@ unsafe fn prepare_slots(
     tp: *mut PyTypeObject,
     name: *mut PyObject,
     slots: Vec<SlotWrapper>,
-) -> Result<Mutation, ()> {
+) -> Result<Mutation, crate::ErrorIndicatorSet> {
     unsafe {
         let root = OwnedPyObject::from_borrowed(tp.cast());
         let changed = OwnedPyObject::from_borrowed(name);
@@ -241,7 +246,7 @@ unsafe fn prepare_slots(
                     let key =
                         OwnedPyObject::from_owned(strings::PyUnicode_FromString(row.base.name));
                     if key.as_ptr().is_null() {
-                        return Err(());
+                        return Err(crate::ErrorIndicatorSet);
                     }
                     declarations.push((index, key));
                 }
@@ -327,7 +332,7 @@ impl Mutation {
                 }
                 let protocols = match native_protocols(bridge, current) {
                     Ok(protocols) => protocols,
-                    Err(()) => return -1,
+                    Err(crate::ErrorIndicatorSet) => return -1,
                 };
                 if !self.root_is_bound(bridge, class) {
                     return 0;
@@ -354,7 +359,7 @@ impl Mutation {
                         let (descriptor, declaring_type) =
                             match lookup_current(bridge, current, key.as_ptr(), &mut owners) {
                                 Ok(value) => value,
-                                Err(()) => {
+                                Err(crate::ErrorIndicatorSet) => {
                                     errors::PyErr_Clear();
                                     (ptr::null_mut(), ptr::null_mut())
                                 }

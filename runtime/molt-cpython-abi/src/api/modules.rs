@@ -659,17 +659,26 @@ unsafe fn register_module_capi(
                 traverse: if (*def).m_traverse.is_null() {
                     None
                 } else {
-                    Some(std::mem::transmute((*def).m_traverse))
+                    Some(std::mem::transmute::<
+                        *mut c_void,
+                        unsafe extern "C" fn(*mut PyObject, *mut c_void, *mut c_void) -> c_int,
+                    >((*def).m_traverse))
                 },
                 clear: if (*def).m_clear.is_null() {
                     None
                 } else {
-                    Some(std::mem::transmute((*def).m_clear))
+                    Some(std::mem::transmute::<
+                        *mut c_void,
+                        unsafe extern "C" fn(*mut PyObject) -> c_int,
+                    >((*def).m_clear))
                 },
                 free: if (*def).m_free.is_null() {
                     None
                 } else {
-                    Some(std::mem::transmute((*def).m_free))
+                    Some(std::mem::transmute::<
+                        *mut c_void,
+                        unsafe extern "C" fn(*mut c_void) -> c_int,
+                    >((*def).m_free))
                 },
             },
         )

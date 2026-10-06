@@ -765,6 +765,10 @@ impl Drop for OwnedRuntimeValue<'_> {
     }
 }
 
+/// A runtime operation failed with its Python error indicator set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ErrorIndicatorSet;
+
 /// The common owned projection of the runtime's unboxed iterator protocol.
 /// Pending errors never advance input; values, exhaustion payloads and error
 /// results are released or transferred exactly once. The caller owns the
@@ -773,23 +777,23 @@ impl Drop for OwnedRuntimeValue<'_> {
 pub fn iter_next_owned<'py>(
     py: &'py PyToken,
     iterator: &OwnedRuntimeValue<'_>,
-) -> Result<Option<OwnedRuntimeValue<'py>>, ()> {
+) -> Result<Option<OwnedRuntimeValue<'py>>, ErrorIndicatorSet> {
     if rt_exception_pending() {
-        return Err(());
+        return Err(ErrorIndicatorSet);
     }
     let mut bits = MoltObject::none().bits();
     let done =
         unsafe { ffi::molt_iter_next_unboxed(iterator.bits(), (&raw mut bits) as usize as u64) };
     let value = unsafe { OwnedRuntimeValue::from_owned_bits(py, bits) };
     if rt_exception_pending() {
-        return Err(());
+        return Err(ErrorIndicatorSet);
     }
     match obj_from_bits(done).as_bool() {
         Some(false) => Ok(Some(value)),
         Some(true) => Ok(None),
         None => {
             rt_raise_str("SystemError", "invalid iterator completion result");
-            Err(())
+            Err(ErrorIndicatorSet)
         }
     }
 }

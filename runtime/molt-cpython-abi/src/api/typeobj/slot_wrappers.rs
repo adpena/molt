@@ -745,22 +745,20 @@ unsafe fn raw_call(
         return ptr::null_mut();
     };
     let keywords = unsafe { (*base).flags } & PyWrapperFlag_KEYWORDS != 0;
-    if !keywords {
-        if !kwargs.is_null() {
-            let is_dictionary = unsafe { mapping::PyDict_Check(kwargs) };
-            if descriptors::pending() {
-                return ptr::null_mut();
-            }
-            if is_dictionary == 0 {
-                return unsafe { type_error("slot wrapper keywords must be a dictionary") };
-            }
-            let count = unsafe { mapping::PyDict_Size(kwargs) };
-            if count < 0 || descriptors::pending() {
-                return ptr::null_mut();
-            }
-            if count != 0 {
-                return unsafe { type_error("slot wrapper takes no keyword arguments") };
-            }
+    if !keywords && !kwargs.is_null() {
+        let is_dictionary = unsafe { mapping::PyDict_Check(kwargs) };
+        if descriptors::pending() {
+            return ptr::null_mut();
+        }
+        if is_dictionary == 0 {
+            return unsafe { type_error("slot wrapper keywords must be a dictionary") };
+        }
+        let count = unsafe { mapping::PyDict_Size(kwargs) };
+        if count < 0 || descriptors::pending() {
+            return ptr::null_mut();
+        }
+        if count != 0 {
+            return unsafe { type_error("slot wrapper takes no keyword arguments") };
         }
     }
     let Some(operands) = (unsafe {

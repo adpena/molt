@@ -141,7 +141,7 @@ struct Payload {
 
 unsafe extern "C" fn getter(object: *mut PyObject, _: *mut c_void) -> *mut PyObject {
     CALLS.with(|calls| calls.set(calls.get() + 1));
-    unsafe { numbers::PyLong_FromLong((*object.cast::<Payload>()).value.into()) }
+    unsafe { numbers::PyLong_FromLong((*object.cast::<Payload>()).value) }
 }
 unsafe extern "C" fn setter(_: *mut PyObject, value: *mut PyObject, _: *mut c_void) -> c_int {
     CALLS.with(|calls| calls.set(calls.get() + 1));

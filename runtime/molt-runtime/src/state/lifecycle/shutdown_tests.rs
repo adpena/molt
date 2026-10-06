@@ -119,7 +119,7 @@ fn prepare_native_type_cycles(py: &PyToken<'_>) -> [usize; 2] {
             name: c"shutdown.UnrootedType".as_ptr(),
             basicsize: std::mem::size_of::<PyObject>() as i32,
             itemsize: 0,
-            flags: Py_TPFLAGS_DEFAULT as u32,
+            flags: Py_TPFLAGS_DEFAULT,
             slots: slots.as_mut_ptr(),
         };
         let unrooted = OwnedPyObject::from_owned(typeobj::PyType_FromSpec(&mut spec));

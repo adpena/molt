@@ -60,10 +60,12 @@ fn cached_class_mutability_is_independent_of_identical_native_slots() {
                 py,
                 &slot,
                 "ExplicitClassPolicy",
-                policy,
-                8,
-                None,
-                Some(ClassSlotPolicy::default()),
+                crate::builtins::types::RuntimeClassLayout {
+                    semantics: policy,
+                    layout_size: 8,
+                    instance_shape: None,
+                    native_slots: Some(ClassSlotPolicy::default()),
+                },
                 |class, _namespace| {
                     assert_eq!(slot.load(AtomicOrdering::Acquire), 0);
                     assert!(!unsafe {
@@ -287,10 +289,12 @@ fn annotations_admit_immutable_heap_types_but_reject_static_types() {
             py,
             &slot,
             "ImmutableHeapAnnotations",
-            ClassSemanticPolicy::heap(true, true),
-            0,
-            None,
-            None,
+            crate::builtins::types::RuntimeClassLayout {
+                semantics: ClassSemanticPolicy::heap(true, true),
+                layout_size: 0,
+                instance_shape: None,
+                native_slots: None,
+            },
             |_, _| true,
         );
         let field = attr_name_bits_from_bytes(py, b"__annotations__").unwrap();
@@ -365,10 +369,12 @@ fn immutable_heap_evaluator_and_cache_follow_target_annotation_semantics() {
                 py,
                 &slot,
                 "ImmutableHeapEvaluator",
-                ClassSemanticPolicy::heap(true, true),
-                0,
-                None,
-                None,
+                crate::builtins::types::RuntimeClassLayout {
+                    semantics: ClassSemanticPolicy::heap(true, true),
+                    layout_size: 0,
+                    instance_shape: None,
+                    native_slots: None,
+                },
                 |_, namespace| {
                     let name = attr_name_bits_from_bytes(py, b"__annotate__").unwrap();
                     let function = crate::builtins::functions::alloc_runtime_function_obj(

@@ -3033,9 +3033,9 @@ unsafe extern "C" fn hook_type_metadata(
                 } else {
                     crate::class_mro_bits(class)
                 };
-                if !crate::obj_from_bits(tuple)
+                if crate::obj_from_bits(tuple)
                     .as_ptr()
-                    .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_TUPLE)
+                    .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_TUPLE)
                 {
                     crate::raise_exception::<u64>(
                         &py,
@@ -3105,9 +3105,9 @@ unsafe extern "C" fn hook_type_dict_borrowed(type_bits: u64) -> BorrowedHandleRe
             return BorrowedHandleResult::error();
         }
         let dict = crate::class_dict_bits(class);
-        if !crate::obj_from_bits(dict)
+        if crate::obj_from_bits(dict)
             .as_ptr()
-            .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_DICT)
+            .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_DICT)
         {
             crate::raise_exception::<u64>(&py, "SystemError", "runtime type has no namespace");
             return BorrowedHandleResult::error();
@@ -4133,9 +4133,11 @@ fn call_cext_context(
             entry.meth_target,
             self_obj,
             defining_class,
-            ingress.arguments(prefix_len),
-            args.len(),
-            kwnames,
+            molt_cpython_abi::api::cfunction::VectorcallArguments {
+                values: ingress.arguments(prefix_len),
+                positional_count: args.len(),
+                kwnames,
+            },
             || {
                 crate::string_obj_to_owned(MoltObject::from_bits(context.name))
                     .unwrap_or_else(|| "<C extension>".to_owned())
@@ -5515,7 +5517,8 @@ mod tests {
                 refcount::Py_DECREF(observed_name);
                 refcount::Py_DECREF(observed_qualname);
             }
-            for raw in [b"prefix.Renamed".as_slice()] {
+            {
+                let raw = b"prefix.Renamed".as_slice();
                 let renamed = MoltObject::from_ptr(alloc_string(py, raw)).bits();
                 assert!(unsafe { crate::class_set_name_bits(py, class, renamed) });
                 assert_eq!(

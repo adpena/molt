@@ -1046,10 +1046,11 @@ pub(crate) unsafe fn function_publish_entry_custody(
 pub(crate) unsafe fn function_execution_closure_bits(ptr: *mut u8) -> u64 {
     unsafe {
         let bits = function_closure_bits(ptr);
-        function_call_abi(ptr)
-            .requires_context()
-            .then_some(bits)
-            .unwrap_or(0)
+        if function_call_abi(ptr).requires_context() {
+            bits
+        } else {
+            0
+        }
     }
 }
 
@@ -2758,6 +2759,25 @@ pub(crate) fn range_len_i64(start: i64, stop: i64, step: i64) -> i64 {
     1 + span / step_abs
 }
 
+pub(crate) const DICT_SUBCLASS_RESERVED_TAIL: usize = 2 * std::mem::size_of::<u64>();
+
+/// The DictSubclass shape owns its backing dictionary immediately before the
+/// ordinary instance dictionary. Allocation, seal, access and lifecycle share
+/// this one tail extent; there is no side-table representation for small objects.
+pub(crate) unsafe fn dict_subclass_storage_slot(ptr: *mut u8) -> Option<*mut u64> {
+    unsafe {
+        if super::object_shape_id(ptr) != super::ObjectShapeId::DictSubclass {
+            return None;
+        }
+        let payload = super::object_payload_size(ptr);
+        assert!(
+            payload >= DICT_SUBCLASS_RESERVED_TAIL,
+            "dict subclass lacks its sealed tail"
+        );
+        Some(ptr.add(payload - DICT_SUBCLASS_RESERVED_TAIL).cast())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -3198,24 +3218,5 @@ mod tests {
                 }
             }
         });
-    }
-}
-
-pub(crate) const DICT_SUBCLASS_RESERVED_TAIL: usize = 2 * std::mem::size_of::<u64>();
-
-/// The DictSubclass shape owns its backing dictionary immediately before the
-/// ordinary instance dictionary. Allocation, seal, access and lifecycle share
-/// this one tail extent; there is no side-table representation for small objects.
-pub(crate) unsafe fn dict_subclass_storage_slot(ptr: *mut u8) -> Option<*mut u64> {
-    unsafe {
-        if super::object_shape_id(ptr) != super::ObjectShapeId::DictSubclass {
-            return None;
-        }
-        let payload = super::object_payload_size(ptr);
-        assert!(
-            payload >= DICT_SUBCLASS_RESERVED_TAIL,
-            "dict subclass lacks its sealed tail"
-        );
-        Some(ptr.add(payload - DICT_SUBCLASS_RESERVED_TAIL).cast())
     }
 }

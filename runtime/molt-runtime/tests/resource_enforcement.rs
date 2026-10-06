@@ -9,8 +9,8 @@ molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavail
 
 use molt_runtime::resource::{
     LimitedTracker, ResourceLimits, ResourceTracker, UnlimitedTracker,
-    clear_global_tracker_factory, install_memory_backstop, memory_backstop_budget,
-    parse_human_size, set_tracker, with_tracker,
+    clear_global_tracker_factory, install_memory_backstop, parse_human_size, set_tracker,
+    with_tracker,
 };
 
 unsafe extern "C" {
@@ -278,7 +278,9 @@ fn memory_backstop_installs_on_linux() {
     let _restore = OsBackstopRestore::capture();
     let installed = install_memory_backstop(1usize << 40);
     assert!(
-        installed.is_some_and(|bytes| bytes > memory_backstop_budget(1usize << 40)),
+        installed.is_some_and(
+            |bytes| bytes > molt_runtime::resource::memory_backstop_budget(1usize << 40)
+        ),
         "RLIMIT_DATA backstop should install above the live footprint on Linux"
     );
 }

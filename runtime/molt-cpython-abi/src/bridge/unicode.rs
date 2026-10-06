@@ -148,7 +148,7 @@ impl ObjectBridge {
         true
     }
 
-    pub fn unicode_write(&self, op: *mut PyObject, index: usize, code: u32) -> bool {
+    pub unsafe fn unicode_write(&self, op: *mut PyObject, index: usize, code: u32) -> bool {
         let Some(bits) = self.molt_handle_for_pyobj(op).map(MoltValueHandle::bits) else {
             return false;
         };

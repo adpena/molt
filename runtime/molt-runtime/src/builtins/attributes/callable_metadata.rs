@@ -26,51 +26,53 @@ pub(crate) unsafe fn read(_py: &PyToken<'_>, public_ptr: *mut u8, field: Field) 
             inc_ref_bits(_py, value);
             return Some(value);
         }
-        if field == Field::SelfValue && public_ptr == obj_ptr {
-            if let Some(value) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+        if field == Field::SelfValue
+            && public_ptr == obj_ptr
+            && let Some(value) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
                 .cfunction_self(MoltObject::from_ptr(obj_ptr).bits())
-            {
-                return match value {
-                    Ok(bits) => Some(bits),
-                    Err(()) => {
-                        crate::cpython_abi_hooks::propagate_native_failure(
-                            _py,
-                            "native callable __self__",
-                        );
-                        None
-                    }
-                };
-            }
+        {
+            return match value {
+                Ok(bits) => Some(bits),
+                Err(molt_cpython_abi::ErrorIndicatorSet) => {
+                    crate::cpython_abi_hooks::propagate_native_failure(
+                        _py,
+                        "native callable __self__",
+                    );
+                    None
+                }
+            };
         }
-        if (field == Field::Doc || field == Field::TextSignature) && public_ptr == obj_ptr {
-            if let Some(documentation) = molt_cpython_abi::bridge::GLOBAL_BRIDGE.cfunction_metadata(
+        if (field == Field::Doc || field == Field::TextSignature)
+            && public_ptr == obj_ptr
+            && let Some(documentation) = molt_cpython_abi::bridge::GLOBAL_BRIDGE.cfunction_metadata(
                 MoltObject::from_ptr(obj_ptr).bits(),
                 field == Field::TextSignature,
-            ) {
-                return documentation.map_or_else(
-                    || Some(MoltObject::none().bits()),
-                    |text| {
-                        let ptr = alloc_string(_py, &text);
-                        (!ptr.is_null()).then(|| MoltObject::from_ptr(ptr).bits())
-                    },
-                );
-            }
+            )
+        {
+            return documentation.map_or_else(
+                || Some(MoltObject::none().bits()),
+                |text| {
+                    let ptr = alloc_string(_py, &text);
+                    (!ptr.is_null()).then(|| MoltObject::from_ptr(ptr).bits())
+                },
+            );
         }
-        if field == Field::Module && kind.has_module() && public_ptr == obj_ptr {
-            if let Some(result) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+        if field == Field::Module
+            && kind.has_module()
+            && public_ptr == obj_ptr
+            && let Some(result) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
                 .cfunction_module(MoltObject::from_ptr(obj_ptr).bits())
-            {
-                return match result {
-                    Ok(bits) => Some(bits),
-                    Err(()) => {
-                        crate::cpython_abi_hooks::propagate_native_failure(
-                            _py,
-                            "native callable __module__",
-                        );
-                        None
-                    }
-                };
-            }
+        {
+            return match result {
+                Ok(bits) => Some(bits),
+                Err(molt_cpython_abi::ErrorIndicatorSet) => {
+                    crate::cpython_abi_hooks::propagate_native_failure(
+                        _py,
+                        "native callable __module__",
+                    );
+                    None
+                }
+            };
         }
         let value =
             crate::call::function::function_metadata_bits(_py, obj_ptr, field.name().as_bytes());

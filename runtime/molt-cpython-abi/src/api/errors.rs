@@ -1036,7 +1036,7 @@ unsafe extern "C" fn native_exception_args_get(
                 crate::api::object::Py_NewRef(&raw mut crate::abi_types::Py_None)
             },
             Ok(value) => value,
-            Err(()) => ptr::null_mut(),
+            Err(crate::ErrorIndicatorSet) => ptr::null_mut(),
         };
     }
     let Some(base) = foreign_exception_layout(op) else {
@@ -3406,7 +3406,7 @@ unsafe fn managed_exception_set_field(
 unsafe fn managed_exception_get_field(
     exc: *mut PyObject,
     field: crate::hooks::ExceptionField,
-) -> Option<Result<*mut PyObject, ()>> {
+) -> Option<Result<*mut PyObject, crate::ErrorIndicatorSet>> {
     let exception = GLOBAL_BRIDGE.observed_handle_for_pyobj(exc)?;
     let result = unsafe {
         (crate::hooks::hooks_or_stubs().exception_get_field)(exception.bits(), field as u32)
@@ -3418,7 +3418,7 @@ unsafe fn managed_exception_get_field(
         }
         crate::hooks::DecodedHandleResult::Error => {
             let _ = transfer_runtime_pending_to_current();
-            Err(())
+            Err(crate::ErrorIndicatorSet)
         }
     })
 }
@@ -3495,7 +3495,7 @@ pub unsafe extern "C" fn PyException_GetContext(exc: *mut PyObject) -> *mut PyOb
     {
         return match result {
             Ok(value) => value,
-            Err(()) => {
+            Err(crate::ErrorIndicatorSet) => {
                 unsafe {
                     set_exception_field_type_error(
                         c"PyException_GetContext: expected an exception instance",
@@ -3574,7 +3574,7 @@ pub unsafe extern "C" fn PyException_GetCause(exc: *mut PyObject) -> *mut PyObje
     {
         return match result {
             Ok(value) => value,
-            Err(()) => {
+            Err(crate::ErrorIndicatorSet) => {
                 unsafe {
                     set_exception_field_type_error(
                         c"PyException_GetCause: expected an exception instance",
@@ -3630,7 +3630,7 @@ pub unsafe extern "C" fn PyException_GetArgs(exc: *mut PyObject) -> *mut PyObjec
     {
         return match result {
             Ok(value) => value,
-            Err(()) => {
+            Err(crate::ErrorIndicatorSet) => {
                 unsafe {
                     set_exception_field_type_error(
                         c"PyException_GetArgs: expected an exception instance",

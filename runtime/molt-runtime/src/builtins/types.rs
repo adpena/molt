@@ -197,16 +197,26 @@ pub(crate) use crate::object::class_storage::ClassSemanticPolicy;
 /// The `types`, `functools`, and `operator` factory callers use this authority
 /// so base, layout, namespace, callable, definition-finalization, and mutation
 /// policy failures cannot cache a partially initialized class.
+pub(crate) struct RuntimeClassLayout {
+    pub semantics: ClassSemanticPolicy,
+    pub layout_size: i64,
+    pub instance_shape: Option<crate::object::ObjectShapeId>,
+    pub native_slots: Option<crate::object::class_storage::ClassSlotPolicy>,
+}
+
 fn init_cached_runtime_class_configured(
     _py: &PyToken<'_>,
     slot: &AtomicU64,
     name: &str,
-    semantics: ClassSemanticPolicy,
-    layout_size: i64,
-    instance_shape: Option<crate::object::ObjectShapeId>,
-    native_slots: Option<crate::object::class_storage::ClassSlotPolicy>,
+    layout: RuntimeClassLayout,
     configure: impl FnOnce(u64, *mut u8) -> bool,
 ) -> u64 {
+    let RuntimeClassLayout {
+        semantics,
+        layout_size,
+        instance_shape,
+        native_slots,
+    } = layout;
     if exception_pending(_py) {
         return 0;
     }
@@ -355,22 +365,12 @@ pub(crate) fn init_cached_runtime_class(
     _py: &PyToken<'_>,
     slot: &AtomicU64,
     name: &str,
-    semantics: ClassSemanticPolicy,
-    layout_size: i64,
-    instance_shape: Option<crate::object::ObjectShapeId>,
-    native_slots: Option<crate::object::class_storage::ClassSlotPolicy>,
+    layout: RuntimeClassLayout,
     methods: &[RuntimeClassMethodSpec<'_>],
 ) -> u64 {
-    init_cached_runtime_class_configured(
-        _py,
-        slot,
-        name,
-        semantics,
-        layout_size,
-        instance_shape,
-        native_slots,
-        |class_bits, dict_ptr| configure_runtime_class_methods(_py, class_bits, dict_ptr, methods),
-    )
+    init_cached_runtime_class_configured(_py, slot, name, layout, |class_bits, dict_ptr| {
+        configure_runtime_class_methods(_py, class_bits, dict_ptr, methods)
+    })
 }
 
 pub(crate) fn configure_runtime_class_methods(
@@ -955,10 +955,12 @@ mod tests {
                 _py,
                 &slot,
                 "FailureAtomicClass",
-                ClassSemanticPolicy::heap(true, true),
-                0,
-                None,
-                None,
+                crate::builtins::types::RuntimeClassLayout {
+                    semantics: ClassSemanticPolicy::heap(true, true),
+                    layout_size: 0,
+                    instance_shape: None,
+                    native_slots: None,
+                },
                 |_class, _dict| false,
             );
             assert_eq!(class_bits, 0);

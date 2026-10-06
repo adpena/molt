@@ -41,25 +41,27 @@ fn scalar<'a, 'py>(
     view: &MoltBufferView,
     mut index: usize,
     fmt: MemoryViewFormat,
-) -> Result<Pin<'a, 'py>, ()> {
+) -> Result<Pin<'a, 'py>, molt_runtime_core::ErrorIndicatorSet> {
     let mut offset = 0isize;
     for axis in (0..view.ndim as usize).rev() {
-        let dim = usize::try_from(view.shape[axis]).map_err(|_| ())?;
+        let dim =
+            usize::try_from(view.shape[axis]).map_err(|_| molt_runtime_core::ErrorIndicatorSet)?;
         if dim == 0 {
-            return Err(());
+            return Err(molt_runtime_core::ErrorIndicatorSet);
         }
-        let coordinate = isize::try_from(index % dim).map_err(|_| ())?;
+        let coordinate =
+            isize::try_from(index % dim).map_err(|_| molt_runtime_core::ErrorIndicatorSet)?;
         index /= dim;
         offset = coordinate
             .checked_mul(view.strides[axis])
             .and_then(|delta| offset.checked_add(delta))
-            .ok_or(())?;
+            .ok_or(molt_runtime_core::ErrorIndicatorSet)?;
     }
     // The counted lease and geometry validation prove the address. Copy the
     // scalar to the stack before decoding can allocate or invoke finalizers.
     let mut bytes = [0u8; 8];
     if fmt.itemsize > bytes.len() {
-        return Err(());
+        return Err(molt_runtime_core::ErrorIndicatorSet);
     }
     unsafe {
         std::ptr::copy_nonoverlapping(
@@ -67,10 +69,11 @@ fn scalar<'a, 'py>(
             bytes.as_mut_ptr(),
             fmt.itemsize,
         );
-        let bits = memoryview_read_scalar(py, &bytes[..fmt.itemsize], 0, fmt).ok_or(())?;
+        let bits = memoryview_read_scalar(py, &bytes[..fmt.itemsize], 0, fmt)
+            .ok_or(molt_runtime_core::ErrorIndicatorSet)?;
         let value = Pin::adopt(py, bits);
         if exception_pending(py) {
-            Err(())
+            Err(molt_runtime_core::ErrorIndicatorSet)
         } else {
             Ok(value)
         }
@@ -115,15 +118,15 @@ pub(super) fn compare(
         }
         Err(BufferAccessError::Invalid) => return CompareValueOutcome::NotComparable,
     };
-    let compare = || -> Result<bool, ()> {
+    let compare = || -> Result<bool, molt_runtime_core::ErrorIndicatorSet> {
         let (left, right) = (left.view(), right.view());
         let Some(lcount) = element_count(left) else {
             raise_exception::<()>(py, "BufferError", "invalid comparison buffer geometry");
-            return Err(());
+            return Err(molt_runtime_core::ErrorIndicatorSet);
         };
         let Some(rcount) = element_count(right) else {
             raise_exception::<()>(py, "BufferError", "invalid comparison buffer geometry");
-            return Err(());
+            return Err(molt_runtime_core::ErrorIndicatorSet);
         };
         if left.ndim != right.ndim || lcount != rcount {
             return Ok(false);
@@ -154,12 +157,12 @@ pub(super) fn compare(
             drop(lhs);
             drop(rhs);
             if exception_pending(py) {
-                return Err(());
+                return Err(molt_runtime_core::ErrorIndicatorSet);
             }
             match equal {
                 CompareBoolOutcome::True => {}
                 CompareBoolOutcome::False => return Ok(false),
-                _ => return Err(()),
+                _ => return Err(molt_runtime_core::ErrorIndicatorSet),
             }
         }
         Ok(true)

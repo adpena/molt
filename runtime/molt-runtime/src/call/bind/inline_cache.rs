@@ -1919,16 +1919,24 @@ pub extern "C" fn molt_call_method_ic_owned(
 /// # Safety
 /// `self_bits` must be live; `name_ptr`/`name_len` valid UTF-8; `args` readable.
 /// GIL acquired by the caller.
+struct SuperMethodTarget {
+    start_class_bits: u64,
+    self_bits: u64,
+}
+
 unsafe fn call_super_method_ic_dispatch(
     _py: &PyToken<'_>,
     site_bits: u64,
-    start_class_bits: u64,
-    self_bits: u64,
+    target: SuperMethodTarget,
     name_ptr: *const u8,
     name_len_bits: u64,
     args: &[u64],
     transfer: ArgumentTransfer,
 ) -> u64 {
+    let SuperMethodTarget {
+        start_class_bits,
+        self_bits,
+    } = target;
     unsafe {
         // The moved lane's inputs until a callee or an argument vector takes
         // them over; every other exit ends them as the instruction's cleanup.
@@ -2107,8 +2115,10 @@ pub extern "C" fn molt_call_super_method_ic0(
             call_super_method_ic_dispatch(
                 _py,
                 site_bits,
-                start_class_bits,
-                self_bits,
+                SuperMethodTarget {
+                    start_class_bits,
+                    self_bits,
+                },
                 name_ptr,
                 name_len_bits,
                 &[],
@@ -2136,8 +2146,10 @@ pub extern "C" fn molt_call_super_method_ic1(
             call_super_method_ic_dispatch(
                 _py,
                 site_bits,
-                start_class_bits,
-                self_bits,
+                SuperMethodTarget {
+                    start_class_bits,
+                    self_bits,
+                },
                 name_ptr,
                 name_len_bits,
                 &[a0],
@@ -2166,8 +2178,10 @@ pub extern "C" fn molt_call_super_method_ic2(
             call_super_method_ic_dispatch(
                 _py,
                 site_bits,
-                start_class_bits,
-                self_bits,
+                SuperMethodTarget {
+                    start_class_bits,
+                    self_bits,
+                },
                 name_ptr,
                 name_len_bits,
                 &[a0, a1],
@@ -2197,8 +2211,10 @@ pub extern "C" fn molt_call_super_method_ic3(
             call_super_method_ic_dispatch(
                 _py,
                 site_bits,
-                start_class_bits,
-                self_bits,
+                SuperMethodTarget {
+                    start_class_bits,
+                    self_bits,
+                },
                 name_ptr,
                 name_len_bits,
                 &[a0, a1, a2],
@@ -2229,8 +2245,10 @@ pub extern "C" fn molt_call_super_method_ic4(
             call_super_method_ic_dispatch(
                 _py,
                 site_bits,
-                start_class_bits,
-                self_bits,
+                SuperMethodTarget {
+                    start_class_bits,
+                    self_bits,
+                },
                 name_ptr,
                 name_len_bits,
                 &[a0, a1, a2, a3],
@@ -2271,8 +2289,10 @@ pub extern "C" fn molt_call_super_method_ic_owned(
             call_super_method_ic_dispatch(
                 _py,
                 site_bits,
-                start_class_bits,
-                self_bits,
+                SuperMethodTarget {
+                    start_class_bits,
+                    self_bits,
+                },
                 name_ptr,
                 name_len_bits,
                 args.as_slice(),
@@ -2565,8 +2585,10 @@ mod super_cache_tests {
                             call_super_method_ic_dispatch(
                                 py,
                                 site,
-                                leaf,
-                                receiver,
+                                SuperMethodTarget {
+                                    start_class_bits: leaf,
+                                    self_bits: receiver,
+                                },
                                 b"value".as_ptr(),
                                 5,
                                 args,

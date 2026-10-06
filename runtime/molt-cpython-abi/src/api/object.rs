@@ -437,15 +437,15 @@ pub unsafe extern "C" fn PyObject_GetOptionalAttrString(
 unsafe fn lookup_optional_special(
     o: *mut PyObject,
     name: *const c_char,
-) -> Result<Option<crate::api::refcount::OwnedPyObject>, ()> {
+) -> Result<Option<crate::api::refcount::OwnedPyObject>, crate::ErrorIndicatorSet> {
     use crate::api::refcount::OwnedPyObject;
     if name.is_null() {
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
-        return Err(());
+        return Err(crate::ErrorIndicatorSet);
     }
     let name = unsafe { crate::api::strings::PyUnicode_FromString(name) };
     if name.is_null() {
-        return Err(());
+        return Err(crate::ErrorIndicatorSet);
     }
     let name = unsafe { OwnedPyObject::from_owned(name) };
     unsafe { lookup_type_special(o, name.as_ptr()) }
@@ -456,7 +456,7 @@ unsafe fn lookup_optional_special(
 pub unsafe fn lookup_type_special(
     o: *mut PyObject,
     name: *mut PyObject,
-) -> Result<Option<crate::api::refcount::OwnedPyObject>, ()> {
+) -> Result<Option<crate::api::refcount::OwnedPyObject>, crate::ErrorIndicatorSet> {
     use crate::api::refcount::OwnedPyObject;
     let Some(lookup) = (unsafe { lookup_type_special_descriptor(o, name) })? else {
         return Ok(None);
@@ -469,7 +469,7 @@ pub unsafe fn lookup_type_special(
         )
     } {
         None => Ok(Some(lookup.descriptor)),
-        Some(bound) if bound.is_null() => Err(()),
+        Some(bound) if bound.is_null() => Err(crate::ErrorIndicatorSet),
         Some(bound) => Ok(Some(unsafe { OwnedPyObject::from_owned(bound) })),
     }
 }
@@ -482,18 +482,21 @@ struct TypeSpecialDescriptor {
 }
 
 /// Probe the same type MRO without binding or executing a descriptor.
-pub unsafe fn has_type_special(o: *mut PyObject, name: *mut PyObject) -> Result<bool, ()> {
+pub unsafe fn has_type_special(
+    o: *mut PyObject,
+    name: *mut PyObject,
+) -> Result<bool, crate::ErrorIndicatorSet> {
     Ok(unsafe { lookup_type_special_descriptor(o, name) }?.is_some())
 }
 
 unsafe fn lookup_type_special_descriptor(
     o: *mut PyObject,
     name: *mut PyObject,
-) -> Result<Option<TypeSpecialDescriptor>, ()> {
+) -> Result<Option<TypeSpecialDescriptor>, crate::ErrorIndicatorSet> {
     use crate::api::refcount::OwnedPyObject;
     if o.is_null() || name.is_null() {
         unsafe { crate::api::errors::PyErr_BadInternalCall() };
-        return Err(());
+        return Err(crate::ErrorIndicatorSet);
     }
     let receiver = unsafe { OwnedPyObject::from_borrowed(o) };
     let tp = unsafe { crate::bridge::semantic_type(o) };
@@ -501,13 +504,13 @@ unsafe fn lookup_type_special_descriptor(
         if !exception_already_pending() {
             unsafe { crate::api::errors::PyErr_BadInternalCall() };
         }
-        return Err(());
+        return Err(crate::ErrorIndicatorSet);
     }
     let owner = unsafe { OwnedPyObject::from_borrowed(tp.cast()) };
     let descriptor = unsafe { crate::api::typeobj::_PyType_Lookup(tp, name) };
     if descriptor.is_null() {
         return if exception_already_pending() {
-            Err(())
+            Err(crate::ErrorIndicatorSet)
         } else {
             Ok(None)
         };
@@ -524,13 +527,13 @@ unsafe fn lookup_type_special_descriptor(
 pub(crate) unsafe fn call_optional_special_noargs(
     o: *mut PyObject,
     name: *const c_char,
-) -> Result<Option<*mut PyObject>, ()> {
+) -> Result<Option<*mut PyObject>, crate::ErrorIndicatorSet> {
     match unsafe { lookup_optional_special(o, name) }? {
         None => Ok(None),
         Some(method) => {
             let result = unsafe { PyObject_CallNoArgs(method.as_ptr()) };
             if result.is_null() {
-                Err(())
+                Err(crate::ErrorIndicatorSet)
             } else {
                 Ok(Some(result))
             }
@@ -666,7 +669,7 @@ unsafe fn generic_getattr_with_optional_dict(
     let descr = descr_owner.as_ptr();
     let is_data = match unsafe { crate::api::descriptor::is_data(descr) } {
         Ok(value) => value,
-        Err(()) => return ptr::null_mut(),
+        Err(crate::ErrorIndicatorSet) => return ptr::null_mut(),
     };
     if is_data && let Some(result) = unsafe { crate::api::descriptor::get(descr, o, tp.cast()) } {
         unsafe { crate::api::descriptor::suppress_attribute_error(suppress, result) };
@@ -1469,7 +1472,7 @@ pub unsafe extern "C" fn PyObject_Format(
         crate::bridge::ResolvedPyObject::Foreign => {
             match unsafe { lookup_optional_special(o, c"__format__".as_ptr()) } {
                 Ok(Some(method)) => unsafe { PyObject_CallOneArg(method.as_ptr(), spec) },
-                Err(()) => ptr::null_mut(),
+                Err(crate::ErrorIndicatorSet) => ptr::null_mut(),
                 Ok(None) => {
                     let name =
                         unsafe { crate::api::typeobj::object_type_name_with_precision(o, 100) };
@@ -1646,7 +1649,7 @@ pub unsafe extern "C" fn PyObject_LengthHint(
     let method = match unsafe { lookup_optional_special(o, c"__length_hint__".as_ptr()) } {
         Ok(Some(method)) => method,
         Ok(None) => return defaultvalue,
-        Err(()) => return -1,
+        Err(crate::ErrorIndicatorSet) => return -1,
     };
     let result = unsafe { PyObject_CallNoArgs(method.as_ptr()) };
     drop(method);
@@ -1754,16 +1757,16 @@ unsafe fn item_type_error_int(o: *mut PyObject, capi_name: &str, message: String
 /// exactly as CPython's `PyObject_GetItem`/`PyObject_SetItem` sequence path
 /// (`_PyIndex_Check` → `PyNumber_AsSsize_t(key, PyExc_IndexError)`), then apply
 /// the negative-index adjustment `PySequence_GetItem`/`SetItem` performs via the
-/// object's own `sq_length`. Returns `Ok(index)`, or `Err(())` when the key is
+/// object's own `sq_length`. Returns `Ok(index)`, or `Err(crate::ErrorIndicatorSet)` when the key is
 /// not index-like or the conversion raised (a pending exception is set, or the
 /// caller must raise the "sequence index must be integer" `TypeError`).
 unsafe fn sequence_index_from_key(
     o: *mut PyObject,
     key: *mut PyObject,
     seq: *mut crate::abi_types::PySequenceMethods,
-) -> Result<Py_ssize_t, ()> {
+) -> Result<Py_ssize_t, crate::ErrorIndicatorSet> {
     if unsafe { crate::api::abstract_number::PyIndex_Check(key) } == 0 {
-        return Err(());
+        return Err(crate::ErrorIndicatorSet);
     }
     let mut idx = unsafe {
         crate::api::abstract_number::PyNumber_AsSsize_t(
@@ -1772,7 +1775,7 @@ unsafe fn sequence_index_from_key(
         )
     };
     if idx == -1 && !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
-        return Err(());
+        return Err(crate::ErrorIndicatorSet);
     }
     // Negative-index adjustment via sq_length (CPython PySequence_GetItem/SetItem).
     if idx < 0 {
@@ -1783,7 +1786,7 @@ unsafe fn sequence_index_from_key(
             let l = unsafe { lf(o) };
             if l < 0 {
                 // sq_length raised — propagate its exception, not a synthetic one.
-                return Err(());
+                return Err(crate::ErrorIndicatorSet);
             }
             idx += l;
         }
@@ -1825,7 +1828,7 @@ unsafe fn foreign_get_item(o: *mut PyObject, key: *mut PyObject) -> *mut PyObjec
         if !sq_item.is_null() {
             let idx = match unsafe { sequence_index_from_key(o, key, seq) } {
                 Ok(i) => i,
-                Err(()) => {
+                Err(crate::ErrorIndicatorSet) => {
                     // A pending exception (conversion / sq_length) is the real
                     // error; otherwise the key is not index-like.
                     if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
@@ -1885,7 +1888,7 @@ unsafe fn foreign_set_item(o: *mut PyObject, key: *mut PyObject, v: *mut PyObjec
         if !sq_ass.is_null() {
             let idx = match unsafe { sequence_index_from_key(o, key, seq) } {
                 Ok(i) => i,
-                Err(()) => {
+                Err(crate::ErrorIndicatorSet) => {
                     if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
                         return -1;
                     }
@@ -2041,7 +2044,7 @@ unsafe fn foreign_del_item(o: *mut PyObject, key: *mut PyObject) -> c_int {
             if !sq_ass.is_null() {
                 let idx = match unsafe { sequence_index_from_key(o, key, seq) } {
                     Ok(i) => i,
-                    Err(()) => {
+                    Err(crate::ErrorIndicatorSet) => {
                         if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
                             return -1;
                         }
@@ -3573,9 +3576,11 @@ pub unsafe extern "C" fn molt_cfunction_vectorcall(
             target as *const (),
             self_,
             class,
-            values,
-            vectorcall_nargs(nargsf) as usize,
-            kwnames,
+            crate::api::cfunction::VectorcallArguments {
+                values,
+                positional_count: vectorcall_nargs(nargsf) as usize,
+                kwnames,
+            },
             || cfunction_name(cfunc),
         )
     };
@@ -3729,7 +3734,7 @@ pub unsafe extern "C" fn PyCMethod_New(
             )
         };
     };
-    if (convention == crate::api::cfunction::CFunctionConvention::Method) != !cls.is_null() {
+    if (convention == crate::api::cfunction::CFunctionConvention::Method) == cls.is_null() {
         return unsafe {
             cfunction_error(
                 (&raw mut crate::abi_types::PyExc_SystemError).cast(),
@@ -5161,7 +5166,7 @@ pub unsafe extern "C" fn PyObject_Bytes(o: *mut PyObject) -> *mut PyObject {
         return unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result) };
     }
     match unsafe { call_optional_special_noargs(o, c"__bytes__".as_ptr()) } {
-        Err(()) => return ptr::null_mut(),
+        Err(crate::ErrorIndicatorSet) => return ptr::null_mut(),
         Ok(Some(result)) => {
             if unsafe { crate::api::strings::PyBytes_Check(result) } != 0 {
                 return result;

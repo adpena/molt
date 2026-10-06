@@ -885,13 +885,13 @@ impl MemoryViewLease {
         object: *mut PyObject,
         flags: c_int,
         get: unsafe extern "C" fn(*mut PyObject, *mut Py_buffer, c_int) -> c_int,
-    ) -> Result<Self, ()> {
+    ) -> Result<Self, crate::ErrorIndicatorSet> {
         let owner = unsafe { crate::api::refcount::OwnedPyObject::from_borrowed(object) };
         let pointer = unsafe { PyMem_Calloc(1, std::mem::size_of::<MemoryViewExport>()) }
             .cast::<MemoryViewExport>();
         let Some(pointer) = std::ptr::NonNull::new(pointer) else {
             unsafe { crate::api::errors::PyErr_NoMemory() };
-            return Err(());
+            return Err(crate::ErrorIndicatorSet);
         };
         unsafe {
             (&raw mut (*pointer.as_ptr()).references).write(std::sync::atomic::AtomicUsize::new(1))
@@ -903,7 +903,7 @@ impl MemoryViewLease {
             if status < 0 {
                 unsafe { (&raw mut (*pointer.as_ptr()).master).write(std::mem::zeroed()) };
             }
-            return Err(());
+            return Err(crate::ErrorIndicatorSet);
         }
         Ok(lease)
     }
@@ -962,7 +962,7 @@ unsafe fn runtime_memoryview_from_descriptor(
 ) -> *mut PyObject {
     let descriptor = match unsafe { crate::api::buffer::descriptor_from_pybuffer(info) } {
         Ok(view) => view,
-        Err(()) => {
+        Err(crate::api::buffer::InvalidBufferDescriptor) => {
             unsafe {
                 crate::api::errors::PyErr_SetString(
                     (&raw mut crate::abi_types::PyExc_BufferError).cast(),

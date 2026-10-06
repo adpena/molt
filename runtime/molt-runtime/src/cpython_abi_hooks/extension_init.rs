@@ -102,12 +102,14 @@ unsafe fn run_extension_init(
     initialize_result(
         py,
         result,
-        name_bits,
-        origin_bits,
-        spec_bits,
-        create_only,
-        Some(&identity),
-        previous.is_some(),
+        ExtensionInitialization {
+            name_bits,
+            origin_bits,
+            supplied_spec: spec_bits,
+            create_only,
+            import_identity: Some(&identity),
+            reload: previous.is_some(),
+        },
     )
 }
 
@@ -252,35 +254,42 @@ impl ModulePublication {
 impl Drop for ModulePublication {
     fn drop(&mut self) {
         with_preserved_error(|| {
-            if !self.committed {
-                if self.published {
-                    if let Some(own) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                        .molt_handle_for_pyobj(self.object)
-                        .map(|value| value.bits())
-                    {
-                        let _ = crate::builtins::modules::module_cache_remove(
-                            self.name_bits,
-                            Some(own),
-                        );
-                    }
-                }
+            if !self.committed
+                && self.published
+                && let Some(own) = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .molt_handle_for_pyobj(self.object)
+                    .map(|value| value.bits())
+            {
+                let _ = crate::builtins::modules::module_cache_remove(self.name_bits, Some(own));
             }
             unsafe { molt_cpython_abi::api::refcount::Py_DECREF(self.object) };
         });
     }
 }
 
+struct ModuleResultContext<'a> {
+    name_bits: u64,
+    name: &'a str,
+    spec: *mut PyObject,
+    origin_bits: u64,
+    phase: ExtensionPhase,
+    import_identity: Option<&'a crate::c_api::ExtensionImportIdentity>,
+}
+
 unsafe fn module_result_to_bits(
     py: &crate::PyToken<'_>,
     object: *mut PyObject,
     def: *mut PyModuleDef,
-    name_bits: u64,
-    name: &str,
-    spec: *mut PyObject,
-    origin_bits: u64,
-    phase: ExtensionPhase,
-    import_identity: Option<&crate::c_api::ExtensionImportIdentity>,
+    context: ModuleResultContext<'_>,
 ) -> Result<u64, String> {
+    let ModuleResultContext {
+        name_bits,
+        name,
+        spec,
+        origin_bits,
+        phase,
+        import_identity,
+    } = context;
     let single_phase = !matches!(phase, ExtensionPhase::MultiPhase { .. });
     let mut publication = ModulePublication {
         object,
@@ -477,12 +486,14 @@ fn restore_legacy_extension(
             py,
             object,
             def,
-            name_bits,
-            name,
-            spec,
-            origin_bits,
-            ExtensionPhase::LegacyReplay,
-            None,
+            ModuleResultContext {
+                name_bits,
+                name,
+                spec,
+                origin_bits,
+                phase: ExtensionPhase::LegacyReplay,
+                import_identity: None,
+            },
         )
     };
     with_preserved_error(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(spec) });
@@ -545,16 +556,28 @@ fn initialization_contract_violation(_py: &crate::PyToken<'_>, message: &str) ->
     MoltObject::none().bits()
 }
 
-fn initialize_result(
-    py: &crate::PyToken<'_>,
-    result: *mut PyObject,
+struct ExtensionInitialization<'a> {
     name_bits: u64,
     origin_bits: u64,
     supplied_spec: u64,
     create_only: bool,
-    import_identity: Option<&crate::c_api::ExtensionImportIdentity>,
+    import_identity: Option<&'a crate::c_api::ExtensionImportIdentity>,
     reload: bool,
+}
+
+fn initialize_result(
+    py: &crate::PyToken<'_>,
+    result: *mut PyObject,
+    initialization: ExtensionInitialization<'_>,
 ) -> u64 {
+    let ExtensionInitialization {
+        name_bits,
+        origin_bits,
+        supplied_spec,
+        create_only,
+        import_identity,
+        reload,
+    } = initialization;
     let has_error = cpython_error_is_pending();
     if result.is_null() {
         if has_error {
@@ -668,18 +691,20 @@ fn initialize_result(
             py,
             module,
             def,
-            name_bits,
-            &name,
-            spec,
-            origin_bits,
-            if definition {
-                ExtensionPhase::MultiPhase {
-                    execute: !create_only,
-                }
-            } else {
-                ExtensionPhase::SinglePhase { reload }
+            ModuleResultContext {
+                name_bits,
+                name: &name,
+                spec,
+                origin_bits,
+                phase: if definition {
+                    ExtensionPhase::MultiPhase {
+                        execute: !create_only,
+                    }
+                } else {
+                    ExtensionPhase::SinglePhase { reload }
+                },
+                import_identity,
             },
-            import_identity,
         )
     };
     with_preserved_error(|| unsafe { molt_cpython_abi::api::refcount::Py_DECREF(spec) });
@@ -707,12 +732,14 @@ pub(super) fn molt_cpython_abi_pyinit_module_to_bits(
         initialize_result(
             &py,
             result_pyobj as *mut PyObject,
-            module_name_bits,
-            MoltObject::none().bits(),
-            MoltObject::none().bits(),
-            false,
-            None,
-            false,
+            ExtensionInitialization {
+                name_bits: module_name_bits,
+                origin_bits: MoltObject::none().bits(),
+                supplied_spec: MoltObject::none().bits(),
+                create_only: false,
+                import_identity: None,
+                reload: false,
+            },
         )
     })
 }
@@ -1939,12 +1966,14 @@ mod tests {
                 let bits = initialize_result(
                     &py,
                     (&raw mut def).cast(),
-                    name_bits,
-                    MoltObject::none().bits(),
-                    spec_bits,
-                    true,
-                    None,
-                    false,
+                    ExtensionInitialization {
+                        name_bits,
+                        origin_bits: MoltObject::none().bits(),
+                        supplied_spec: spec_bits,
+                        create_only: true,
+                        import_identity: None,
+                        reload: false,
+                    },
                 );
                 assert!(!crate::exception_pending(&py));
                 assert_eq!(

@@ -207,9 +207,9 @@ pub(crate) fn alloc_native_descriptor(py: &PyToken<'_>, spec: NativeDescriptorSp
     }
     let doc = obj_from_bits(spec.doc);
     if !doc.is_none()
-        && !doc
+        && doc
             .as_ptr()
-            .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_STRING)
+            .is_none_or(|ptr| unsafe { object_type_id(ptr) } != TYPE_ID_STRING)
     {
         return raise_exception::<_>(
             py,
@@ -246,14 +246,16 @@ pub(crate) fn alloc_native_descriptor(py: &PyToken<'_>, spec: NativeDescriptorSp
     let ptr = crate::object::builders::alloc_native_descriptor_obj(
         py,
         class,
-        spec.flavor,
-        spec.operation,
-        spec.owner,
-        spec.name,
-        spec.doc,
-        spec.getter,
-        spec.setter,
-        spec.deleter,
+        crate::builtins::types::NativeDescriptorSpec {
+            flavor: spec.flavor,
+            operation: spec.operation,
+            owner: spec.owner,
+            name: spec.name,
+            doc: spec.doc,
+            getter: spec.getter,
+            setter: spec.setter,
+            deleter: spec.deleter,
+        },
     );
     if ptr.is_null() {
         if !exception_pending(py) {
@@ -1450,14 +1452,16 @@ mod tests {
             let corrupt_ptr = crate::object::builders::alloc_native_descriptor_obj(
                 py,
                 member_descriptor_class(py),
-                NativeDescriptorFlavor::GetSet,
-                0,
-                owner,
-                name,
-                none,
-                callback,
-                none,
-                none,
+                crate::builtins::types::NativeDescriptorSpec {
+                    flavor: NativeDescriptorFlavor::GetSet,
+                    operation: 0,
+                    owner,
+                    name,
+                    doc: none,
+                    getter: callback,
+                    setter: none,
+                    deleter: none,
+                },
             );
             assert!(!corrupt_ptr.is_null());
             let corrupt = MoltObject::from_ptr(corrupt_ptr).bits();
