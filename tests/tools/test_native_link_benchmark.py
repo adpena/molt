@@ -24,6 +24,7 @@ from molt.cli.native_link_plan import (
     NativeTargetSpec,
 )
 from tools import native_link_benchmark as benchmark
+from tests.process_guard_common import install_module_os_view
 
 
 def _plan(tmp_path: Path) -> NativeLinkPlan:
@@ -276,10 +277,9 @@ def test_windows_measurement_fails_closed_without_job_commit(
         returncode=0,
         timed_out=False,
     )
-    # Simulate Windows for the module under test only. Setting the process-wide
-    # os.name would make pathlib (and pytest's own failure reporting) build
-    # WindowsPath objects, which cannot be instantiated on a POSIX host.
-    monkeypatch.setattr(benchmark, "os", SimpleNamespace(name="nt"))
+    # Simulate Windows for the module under test only: a process-wide os.name
+    # makes pathlib (and pytest's own failure reporting) build WindowsPath.
+    install_module_os_view(monkeypatch, benchmark, name="nt")
     monkeypatch.setattr(
         benchmark.harness_memory_guard,
         "guarded_completed_process",
@@ -307,7 +307,7 @@ def test_non_windows_measurement_records_unavailable_job_commit(
         returncode=0,
         timed_out=False,
     )
-    monkeypatch.setattr(benchmark, "os", SimpleNamespace(name="posix"))
+    install_module_os_view(monkeypatch, benchmark, name="posix")
     monkeypatch.setattr(
         benchmark.harness_memory_guard,
         "guarded_completed_process",

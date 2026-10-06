@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from tests.process_guard_common import install_module_os_view
 import sys
 
 from molt import backend_daemon_custody as custody
@@ -80,7 +81,7 @@ def test_molt_diff_legacy_pid_cleanup_unlinks_without_signaling(
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha-session")
     monkeypatch.setattr(module, "_diff_backend_daemon_root", lambda: daemon_root)
     monkeypatch.setattr(module, "_list_backend_daemon_processes", lambda: [])
-    monkeypatch.setattr(module.os, "name", "posix", raising=False)
+    install_module_os_view(monkeypatch, module, name="posix")
     monkeypatch.setattr(
         module.daemon_custody,
         "terminate_backend_daemon_identity",
@@ -114,7 +115,7 @@ def test_molt_diff_missing_socket_daemon_without_identity_is_not_killed(
     monkeypatch.setattr(module, "_diff_backend_daemon_root", lambda: daemon_root)
     monkeypatch.setattr(module, "_list_backend_daemon_processes", lambda: [process])
     monkeypatch.setattr(module, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(module.os, "name", "posix", raising=False)
+    install_module_os_view(monkeypatch, module, name="posix")
 
     def fake_terminate(identity, **kwargs) -> bool:
         terminated.append(identity.pid)
@@ -273,7 +274,7 @@ def test_molt_diff_verified_missing_socket_daemon_terminates_through_custody(
     monkeypatch.setattr(module, "_diff_backend_daemon_root", lambda: daemon_root)
     monkeypatch.setattr(module, "_list_backend_daemon_processes", lambda: [process])
     monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == identity.pid)
-    monkeypatch.setattr(module.os, "name", "posix", raising=False)
+    install_module_os_view(monkeypatch, module, name="posix")
     monkeypatch.setattr(
         module,
         "_verified_backend_daemon_record",
@@ -316,7 +317,7 @@ def test_molt_diff_rss_threshold_skips_unverified_daemon(
     monkeypatch.setattr(module, "_diff_backend_daemon_root", lambda: daemon_root)
     monkeypatch.setattr(module, "_list_backend_daemon_processes", lambda: [process])
     monkeypatch.setattr(module, "_pid_alive", lambda pid: True)
-    monkeypatch.setattr(module.os, "name", "posix", raising=False)
+    install_module_os_view(monkeypatch, module, name="posix")
     monkeypatch.setattr(
         module,
         "_pid_rss_age",

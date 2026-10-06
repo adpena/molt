@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from tests.process_guard_common import install_module_os_view
 
 from molt import dx
 from tools import uv_project_env
@@ -98,7 +99,7 @@ def test_run_command_waits_for_child_on_windows(monkeypatch) -> None:
         calls.append((command, env))
         return 7
 
-    monkeypatch.setattr(uv_project_env.os, "name", "nt")
+    install_module_os_view(monkeypatch, uv_project_env, name="nt")
     monkeypatch.setattr(uv_project_env.subprocess, "call", fake_call)
 
     assert uv_project_env.run_command(["uv", "--version"], env={"X": "1"}) == 7
