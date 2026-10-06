@@ -2099,16 +2099,18 @@ def test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_c
             facts_provider=_facts_provider,
         )
 
-    stripped = wasm_link_export_contract._strip_app_export_identity_markers(
-        metadata_free,
-        identity_exports=identity_exports,
-        preserve_exports={"probe__f0", "probe__f1"},
-        facts_provider=_facts_provider,
-    )
-    assert not (
-        set(identity_exports)
-        & wasm_link_format._collect_function_exports(stripped).keys()
-    )
+    # The monolithic keep set names only public exports; the split-app keep
+    # set also names the identity roots it carried through the optimizer.
+    for keep in (set(), set(identity_exports)):
+        stripped = wasm_link_export_contract._strip_app_export_identity_markers(
+            metadata_free,
+            identity_exports=identity_exports,
+            preserve_exports={"probe__f0", "probe__f1", *keep},
+            facts_provider=_facts_provider,
+        )
+        exports = wasm_link_format._collect_function_exports(stripped).keys()
+        assert not set(identity_exports) & exports
+        assert {"probe__f0", "probe__f1"} <= exports
 
 
 def test_app_export_adapters_have_no_ownership_import_dependency(
