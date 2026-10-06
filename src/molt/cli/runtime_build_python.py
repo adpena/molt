@@ -31,6 +31,11 @@ if TYPE_CHECKING:
 
 
 _RESPONSE_TIMEOUT = 30.0
+# The admission response content-hashes the whole interpreter installation, so
+# its cost scales with the install, not the protocol: 3.5k files / 63 MB take
+# 5 s on a Windows workstation, while a hosted Linux CPython (test suite
+# included) is several times larger and shares its runner with compiler builds.
+_ADMISSION_TIMEOUT = 300.0
 _RESPONSE_LIMIT = 64 * 1024 * 1024
 
 
@@ -141,11 +146,13 @@ class BuildPythonAdmission:
                 raise
             self._report_cleanup_failure(cleanup, primary)
 
-    def _read_response(self) -> str:
+    def _read_response(self, timeout: float = _RESPONSE_TIMEOUT) -> str:
         try:
-            response = self._responses.get(timeout=_RESPONSE_TIMEOUT)
+            response = self._responses.get(timeout=timeout)
         except queue.Empty as exc:
-            raise ValueError("runtime build Python session response timed out") from exc
+            raise ValueError(
+                f"runtime build Python session response timed out after {timeout:g} s"
+            ) from exc
         if self._protocol_failure is not None:
             raise ValueError(
                 "runtime build Python session emitted unsolicited output"
@@ -219,7 +226,7 @@ class BuildPythonAdmission:
         )
         self._reader.start()
         try:
-            payload = loads_exact(self._read_response())
+            payload = loads_exact(self._read_response(_ADMISSION_TIMEOUT))
             if not isinstance(payload, dict) or set(payload) != {
                 "runtime",
                 "startup_selection",
