@@ -98,6 +98,7 @@ def _run_rust_link_probe(
             capture_output=True,
             text=True,
             timeout=timeout,
+            encoding="utf-8",
         )
     except Exception as exc:
         for stream in ("stdout", "stderr"):
@@ -978,7 +979,11 @@ def _capture_rust_link_unit(
             probes=probes,
         )
         if metadata.returncode != 0:
-            raise ValueError("selected Rust sysroot metadata command failed")
+            tail = (metadata.stderr or metadata.stdout or "").strip().splitlines()[-6:]
+            raise ValueError(
+                "selected Rust sysroot metadata command failed "
+                f"(exit {metadata.returncode}): " + " | ".join(tail)
+            )
         if cargo is not None:
             reported = metadata.stdout.strip()
             if reported and not Path(reported).is_absolute():
