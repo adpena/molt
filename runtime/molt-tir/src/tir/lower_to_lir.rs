@@ -144,7 +144,15 @@ fn lower_prepared_function_to_lir(
     let return_types = lir_return_types(&refined);
 
     let label_id_map = refined.label_id_map.clone();
+    let container_storage = match repr {
+        LirReprSource::Proven(proven) => {
+            crate::representation_plan::tir_container_storage_facts(&refined, proven)
+        }
+        // Scalar fact extraction must not recursively request scalar proof.
+        LirReprSource::AnalysisFloor => HashMap::new(),
+    };
     LirFunction {
+        container_storage,
         name: refined.name,
         param_names,
         param_types: entry_param_types,
@@ -916,8 +924,20 @@ mod tests {
                 id: entry,
                 args: vec![],
                 ops: vec![
-                    make_op(OpCode::ConstInt, vec![], vec![ValueId(0)]),
-                    make_op(OpCode::ConstInt, vec![], vec![ValueId(1)]),
+                    TirOp {
+                        attrs: AttrDict::from([(
+                            "value".into(),
+                            molt_ir::tir::ops::AttrValue::Int(41),
+                        )]),
+                        ..make_op(OpCode::ConstInt, vec![], vec![ValueId(0)])
+                    },
+                    TirOp {
+                        attrs: AttrDict::from([(
+                            "value".into(),
+                            molt_ir::tir::ops::AttrValue::Int(42),
+                        )]),
+                        ..make_op(OpCode::ConstInt, vec![], vec![ValueId(1)])
+                    },
                     make_op(OpCode::Add, vec![ValueId(0), ValueId(1)], vec![ValueId(2)]),
                 ],
                 terminator: Terminator::Return {
@@ -1102,7 +1122,13 @@ mod tests {
             TirBlock {
                 id: entry,
                 args: vec![],
-                ops: vec![make_op(OpCode::ConstInt, vec![], vec![i_init])],
+                ops: vec![TirOp {
+                    attrs: AttrDict::from([(
+                        "value".into(),
+                        molt_ir::tir::ops::AttrValue::Int(43),
+                    )]),
+                    ..make_op(OpCode::ConstInt, vec![], vec![i_init])
+                }],
                 terminator: Terminator::Branch {
                     target: header,
                     args: vec![i_init],

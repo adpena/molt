@@ -95,16 +95,14 @@ The verify-first pass (CLAUDE.md, charter §"RECON") found that the substrate is
 
 ### 1.2 The runtime traceback formatter is real and CPython-shaped (strong base)
 
-- `runtime/molt-runtime/src/builtins/exceptions.rs` (7,229 lines) contains the
-  formatter: `format_exception_with_traceback` (3966), which handles **chained
-  exceptions** ("direct cause" / "during handling", 3978/3988) recursively;
-  `format_single_exception` (3997), which emits `Traceback (most recent call last):`,
-  `  File "{file}", line {line}, in {name}`, the trimmed source line, and a PEP-657
-  caret via `traceback_format_caret_line_native` (4020, in
-  `object/ops_sys.rs`) — gated on `col >= 0 && end_col >= 0` with **no heuristic
-  fallback** (4013–4016, the correct CPython behavior).
-- `frame_stack_top_info` (4007) and `read_source_line` (4009) already exist; the tb
-  object carries `tb_frame`/`tb_lineno` (4218–4252).
+- `runtime/molt-runtime/src/builtins/exceptions/exception_payload.rs` formats
+  exception chains through the same captured-frame renderer used by stack and
+  traceback formatting in `object/ops_sys_traceback.rs`. One entry owns its
+  header, captured source and target-version caret text. Missing positions do
+  not trigger guessed columns. The standalone inference/caret intrinsics have
+  been retired; diagnostics must consume this shared renderer.
+- `frame_stack_top_info` and the capability-aware internal source reader feed
+  this payload authority; traceback objects carry `tb_frame`/`tb_lineno`.
 - Per-exception message specializations already exist (UnicodeDecode/Encode, HTTPError,
   URLError, ExceptionGroup — 4044–4081), i.e. the message channel is already
   per-class-specialized.
@@ -487,9 +485,10 @@ tests/test_gen_diagnostics.py                # sync pin (mirror of test_gen_op_k
 
 ### 5.4 Touch points in existing files (consumers, by phase)
 
-- P1: `runtime/molt-runtime/src/builtins/exceptions.rs` (3952–4081 region → build
-  `Diagnostic`); `runtime/molt-runtime/src/object/ops_sys.rs`
-  (`traceback_format_caret_line_native` → feed the renderer, not inline strings).
+- P1: `runtime/molt-runtime/src/builtins/exceptions/exception_payload.rs`
+  (exception payload → `Diagnostic`);
+  `runtime/molt-runtime/src/object/ops_sys_traceback.rs`
+  (`traceback_payload_format_frame` → shared renderer, not inline strings).
 - P2: `src/molt/frontend/lowering/serialization.py` (4405 post-pass → full span);
   `runtime/molt-ir/src/tir/op_kinds.toml` (`carries_span` column); the four backend
   lowerings (`native_backend/`, `llvm_backend/lowering.rs`, `wasm.rs`, `luau.rs` — debug

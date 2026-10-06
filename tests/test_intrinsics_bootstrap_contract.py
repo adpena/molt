@@ -71,8 +71,6 @@ def test_builtins_facade_only_acquires_its_wrapper_dependencies(
     loader = _load_stdlib_intrinsics("_molt_test_facade_intrinsics")
     marked = []
     registry = {
-        "molt_pow": builtins.pow,
-        "molt_pow_mod": builtins.pow,
         "molt_function_set_builtin": marked.append,
     }
     monkeypatch.setattr(builtins, "_molt_intrinsics", registry, raising=False)
@@ -95,8 +93,9 @@ def test_builtins_facade_only_acquires_its_wrapper_dependencies(
         "breakpoint",
         "eval",
         "exec",
-        "pow",
     }
+    # Runtime publication owns pow; the facade neither reacquires nor wraps it.
+    assert namespace["pow"] is builtins.pow
     assert namespace["pow"](2, 5) == builtins.pow(2, 5)
     assert namespace["pow"](2, 5, 7) == builtins.pow(2, 5, 7)
     assert "_molt_asyncgen_hooks_get" not in namespace

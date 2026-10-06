@@ -1070,3 +1070,143 @@ fn validate_structured_if_markers_rejects_orphan_else() {
     let err = validate_structured_if_markers(&ops).expect_err("must reject orphan else");
     assert!(err.contains("orphan else"), "{err}");
 }
+
+#[test]
+fn terminal_structured_if_roundtrips_without_a_fabricated_return() {
+    let mut func = TirFunction::new(
+        "two_terminal_arms".into(),
+        vec![TirType::Bool, TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    func.param_names = vec!["condition".into(), "left".into(), "right".into()];
+    let entry = func.entry_block;
+    let then_block = func.fresh_block();
+    let else_block = func.fresh_block();
+    let parameters: Vec<_> = func.blocks[&entry].args.iter().map(|arg| arg.id).collect();
+    func.blocks.get_mut(&entry).unwrap().terminator = Terminator::CondBranch {
+        cond: parameters[0],
+        then_block,
+        then_args: vec![],
+        else_block,
+        else_args: vec![],
+    };
+    for (id, value) in [(then_block, parameters[1]), (else_block, parameters[2])] {
+        func.blocks.insert(
+            id,
+            TirBlock {
+                id,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![value],
+                },
+            },
+        );
+    }
+    let ops = lower_to_simple_ir(&func);
+    assert_eq!(ops.last().unwrap().kind, "end_if", "{ops:?}");
+    assert_eq!(ops.iter().filter(|op| op.kind == "ret").count(), 2);
+    assert!(!ops.iter().any(|op| op.kind == "ret_void"));
+    let document = molt_ir::SimpleIR {
+        functions: vec![FunctionIR {
+            name: func.name.clone(),
+            params: func.param_names.clone(),
+            return_abi: func.return_abi,
+            ops,
+            ..FunctionIR::default()
+        }],
+        profile: None,
+    };
+    molt_ir::validate_simple_ir(&document).expect("lowered wire contract");
+    let report = molt_ir::verify_simple_ir(&document);
+    assert!(report.is_ok(), "{report:?}");
+    let lifted = lower_to_tir(&document.functions[0]);
+    let entry = &lifted.blocks[&lifted.entry_block];
+    let Terminator::CondBranch {
+        cond,
+        then_block,
+        else_block,
+        ..
+    } = entry.terminator
+    else {
+        panic!("expected preserved branch: {:?}", entry.terminator);
+    };
+    assert_eq!(cond, entry.args[0].id);
+    for (id, parameter) in [(then_block, 1), (else_block, 2)] {
+        let Terminator::Return { ref values } = lifted.blocks[&id].terminator else {
+            panic!("expected preserved arm return");
+        };
+        assert_eq!(
+            values,
+            &[entry.args[parameter].id],
+            "branch polarity selects its original parameter"
+        );
+    }
+}
+
+#[test]
+fn structured_terminal_arms_preserve_generic_unreachable_emission() {
+    for suspend in [false, true] {
+        let mut func = TirFunction::new(
+            "terminal_arm".into(),
+            vec![TirType::Bool, TirType::DynBox],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
+        let entry = func.entry_block;
+        let then_block = func.fresh_block();
+        let else_block = func.fresh_block();
+        let flag = func.blocks[&entry].args[0].id;
+        let value = func.blocks[&entry].args[1].id;
+        func.blocks.get_mut(&entry).unwrap().terminator = Terminator::CondBranch {
+            cond: flag,
+            then_block,
+            then_args: vec![],
+            else_block,
+            else_args: vec![],
+        };
+        func.blocks.insert(
+            then_block,
+            TirBlock {
+                id: then_block,
+                args: vec![],
+                ops: if suspend {
+                    vec![TirOp {
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::StateYield,
+                        operands: vec![value],
+                        results: vec![],
+                        attrs: AttrDict::from([("value".into(), AttrValue::Int(7))]),
+                        source_span: None,
+                    }]
+                } else {
+                    vec![]
+                },
+                terminator: Terminator::Unreachable,
+            },
+        );
+        func.blocks.insert(
+            else_block,
+            TirBlock {
+                id: else_block,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        let ops = lower_to_simple_ir(&func);
+        assert_eq!(ops.last().unwrap().kind, "end_if");
+        assert_eq!(
+            ops.iter().filter(|op| op.kind == "unreachable").count(),
+            usize::from(!suspend)
+        );
+        assert_eq!(
+            ops.iter().filter(|op| op.kind == "state_yield").count(),
+            usize::from(suspend)
+        );
+        assert_eq!(ops.iter().filter(|op| op.kind == "ret_void").count(), 1);
+        // This asserts transport preservation only. An unreachable opcode is
+        // not thereby admitted as a supported terminal on every backend.
+    }
+}

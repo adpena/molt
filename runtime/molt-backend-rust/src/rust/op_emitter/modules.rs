@@ -19,16 +19,6 @@ impl RustBackend {
         ));
     }
 
-    pub(super) fn emit_op_class_new(&mut self, op: &OpIR) {
-        self.emit_unsupported_op(
-            op,
-            format!(
-                "{} requires a Rust backend object/type representation",
-                op.kind
-            ),
-        );
-    }
-
     pub(super) fn emit_op_bound_method_new(&mut self, op: &OpIR) {
         let out = || out_var(op);
         let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
@@ -56,51 +46,6 @@ impl RustBackend {
         }
     }
 
-    pub(super) fn emit_op_alloc_class(&mut self, op: &OpIR) {
-        self.emit_unsupported_op(
-            op,
-            format!(
-                "{} requires a Rust backend class instance representation",
-                op.kind
-            ),
-        );
-    }
-
-    pub(super) fn emit_op_object_set_class(&mut self, op: &OpIR) {
-        self.emit_unsupported_op(
-            op,
-            "object_set_class requires a Rust backend object/type representation",
-        );
-    }
-
-    pub(super) fn emit_op_class_set_base(&mut self, op: &OpIR) {
-        self.emit_unsupported_op(
-            op,
-            "class_set_base requires a Rust backend class representation",
-        );
-    }
-
-    pub(super) fn emit_op_class_set_layout_version(&mut self, op: &OpIR) {
-        self.emit_unsupported_op(
-            op,
-            "class_set_layout_version requires a Rust backend class representation",
-        );
-    }
-
-    pub(super) fn emit_op_class_merge_layout(&mut self, op: &OpIR) {
-        self.emit_unsupported_op(
-            op,
-            "class_merge_layout requires a Rust backend class representation",
-        );
-    }
-
-    pub(super) fn emit_op_class_apply_set_name(&mut self, op: &OpIR) {
-        self.emit_unsupported_op(
-            op,
-            format!("{} requires a Rust backend class representation", op.kind),
-        );
-    }
-
     pub(super) fn emit_op_module_cache_get(&mut self, op: &OpIR) {
         let out = || out_var(op);
         let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
@@ -118,9 +63,9 @@ impl RustBackend {
             .and_then(|args| args.first())
             .map(|name| rust_value(name))
             .or_else(|| {
-                op.s_value.as_deref().map(|name| {
-                    format!("MoltValue::Str({}.to_string())", rust_string_literal(name))
-                })
+                op.s_value
+                    .as_deref()
+                    .map(|name| format!("MoltValue::Str({}.into())", rust_string_literal(name)))
             })
             .unwrap_or_else(|| "MoltValue::None".to_string());
         if o != "_" && o != "none" && !o.is_empty() {
@@ -201,7 +146,7 @@ impl RustBackend {
             self.emit_line(&declare(
                 &o,
                 &format!(
-                    "molt_get_attr_name(&{module}, &MoltValue::Str({}.to_string()))",
+                    "molt_get_attr_name(&{module}, &MoltValue::Str({}.into()))",
                     rust_string_literal(attr_str)
                 ),
                 &self.hoisted_vars.clone(),

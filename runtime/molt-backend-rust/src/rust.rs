@@ -18,7 +18,7 @@
 
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::{FunctionIR, SimpleIR};
-use molt_tir::target_admission::validate_target_contract_with_representation_plan;
+use molt_tir::target_admission::{AdmittedTargetProgram, admit_target_program};
 use molt_tir::tir::TargetInfo;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -86,17 +86,18 @@ impl RustBackend {
         }
     }
 
-    /// Emit source into a private buffer. Public callers must enter through
-    /// `compile_checked`, which owns the Result contract and never publishes a
-    /// partial program.
-    fn emit_source(
+    /// Consume shared admission before private source assembly. Publication
+    /// additionally checks the refusal accumulator in `compile_checked`.
+    fn emit_source(&mut self, admitted: &AdmittedTargetProgram<'_>) -> String {
+        self.unsupported_ops.clear();
+        self.assemble_source(admitted.ir(), Some(admitted.representation_plans()))
+    }
+
+    fn assemble_source(
         &mut self,
         ir: &SimpleIR,
         plans: Option<&BTreeMap<String, ScalarRepresentationPlan>>,
     ) -> String {
-        // Reset the fail-closed accumulator for this compilation so a reused
-        // backend instance does not carry unsupported-op records across runs.
-        self.unsupported_ops.clear();
         // Phase 1: emit all function bodies into a temporary buffer so we
         // can scan which runtime helpers are actually referenced.
         let mut func_body = String::with_capacity(16384);
@@ -129,24 +130,17 @@ impl RustBackend {
 
     #[cfg(test)]
     fn compile(&mut self, ir: &SimpleIR) -> String {
-        self.emit_source(ir, None)
+        self.unsupported_ops.clear();
+        self.assemble_source(ir, None)
     }
 
     /// Compile and reject any op the dispatch could not lower.
     ///
-    /// Dispatch records are the sole authority; unsupported operations emit no
-    /// source and this Result boundary never publishes a partial program.
+    /// Shared target admission owns supported semantic domains. Dispatch records
+    /// retain any admitted lowering obligation and prevent partial publication.
     pub fn compile_checked(&mut self, ir: &SimpleIR) -> Result<String, String> {
-        let mut plans = BTreeMap::new();
-        validate_target_contract_with_representation_plan(
-            ir,
-            &TargetInfo::rust_release_fast(),
-            |func, plan| {
-                plans.insert(func.name.clone(), plan.clone());
-                Ok(())
-            },
-        )?;
-        let source = self.emit_source(ir, Some(&plans));
+        let admitted = admit_target_program(ir, &TargetInfo::rust_release_fast())?;
+        let source = self.emit_source(&admitted);
         if !self.unsupported_ops.is_empty() {
             return Err(format!(
                 "rust backend refuses to emit fail-open codegen for unsupported op(s): {} \
@@ -385,6 +379,31 @@ impl RustBackend {
         }
         for v in &closure_slots {
             self.emit_line(&format!("let mut {v}: MoltValue = MoltValue::None;"));
+        }
+        // A synchronous Python frame's binding homes: one function-level
+        // variable per code slot the body addresses.
+        let mut frame_home_slots: Vec<i64> = ops
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op.kind.as_str(),
+                    "frame_home_store"
+                        | "frame_home_cell"
+                        | "frame_home_private_cell"
+                        | "frame_home_load"
+                        | "frame_home_take"
+                        | "frame_home_clear"
+                )
+            })
+            .filter_map(|op| op.value)
+            .filter(|slot| *slot >= 0)
+            .collect();
+        frame_home_slots.sort_unstable();
+        frame_home_slots.dedup();
+        for slot in frame_home_slots {
+            self.emit_line(&format!(
+                "let mut __molt_home_{slot}: MoltValue = MoltValue::None;"
+            ));
         }
         for v in &named_storage_vars {
             let initial = self

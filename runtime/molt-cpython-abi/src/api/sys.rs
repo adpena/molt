@@ -13,10 +13,17 @@ pub unsafe extern "C" fn PySys_GetObject(name: *const c_char) -> *mut PyObject {
         return ptr::null_mut();
     }
     let name_bytes = unsafe { CStr::from_ptr(name) }.to_bytes();
-    let result = unsafe {
-        (hooks_or_stubs().sys_get_object_borrowed)(name_bytes.as_ptr(), name_bytes.len())
-    };
-    unsafe { GLOBAL_BRIDGE.borrowed_result_to_borrowed_pyobj(result) }
+    // CPython preserves the exact incoming indicator and suppresses lookup
+    // errors. Conversion belongs inside the same boundary: it must not
+    // see a restored exception alongside a successful borrowed result.
+    crate::api::errors::with_preserved_error(|| unsafe {
+        let result = (hooks_or_stubs().sys_get_object_borrowed)(
+            name_bytes.as_ptr(),
+            name_bytes.len(),
+            crate::hooks::SysLookupPolicy::PySysGetObject,
+        );
+        GLOBAL_BRIDGE.borrowed_result_to_borrowed_pyobj(result)
+    })
 }
 
 #[unsafe(no_mangle)]

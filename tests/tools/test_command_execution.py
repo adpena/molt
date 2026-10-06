@@ -173,17 +173,19 @@ def test_executor_loads_process_guard_without_repo_package_importable(
     assert "ModuleNotFoundError" not in completed.stderr
 
 
-def test_process_guard_direct_loader_has_one_sibling_policy_authority() -> None:
-    source = (ROOT / "tools" / "command_execution.py").read_text(encoding="utf-8")
-    process_guard_source = (ROOT / "src" / "molt" / "process_guard.py").read_text(
-        encoding="utf-8"
+def test_process_guard_direct_loader_uses_owning_policy_and_source_authority() -> None:
+    authority = command_execution._process_guard_authority(str(ROOT))
+    policy = sys.modules[authority.cargo_subprocess_environment.__module__]
+    source = sys.modules[authority.compiler_source_root.__module__]
+    assert (
+        Path(policy.__file__).resolve()
+        == (ROOT / "src" / "molt" / "cargo_execution_policy.py").resolve()
     )
-
-    assert "load_sibling_package_module_from_path" in source
-    assert "spec_from_file_location" not in source
-    assert "from .cargo_execution_policy import cargo_subprocess_environment" in (
-        process_guard_source
+    assert (
+        Path(source.__file__).resolve()
+        == (ROOT / "src" / "molt" / "source_root.py").resolve()
     )
+    assert authority.compiler_source_root() == ROOT.resolve()
 
 
 def test_process_guard_authority_is_isolated_per_worktree(tmp_path: Path) -> None:
@@ -216,3 +218,217 @@ def test_process_guard_authority_is_isolated_per_worktree(tmp_path: Path) -> Non
                     f"{package_name}."
                 ):
                     sys.modules.pop(module_name, None)
+
+
+def _interactive_guard_fixture(tmp_path, process):
+    import json
+
+    launch_id = "a" * 32
+    startup = {
+        "launch_id": launch_id,
+        "guard_pid": 144,
+        "command": ["child"],
+        "child_process": {
+            "pid": 145,
+            "pgid": None,
+            "sid": None,
+            "command": ["child"],
+            "started_at": "fixture-start",
+        },
+    }
+    startup_path = tmp_path / "startup.json"
+    startup_path.write_text(json.dumps(startup), encoding="utf-8")
+    terminal = {**startup, "descendants_closed": True, "child_returncode": 0}
+    summary = tmp_path / "summary.json"
+    summary.write_text(json.dumps(terminal), encoding="utf-8")
+    owned = command_execution.GuardedCommand(
+        process,
+        tmp_path / "cancel",
+        summary,
+        tmp_path / "custody.json",
+        launch_id,
+        startup_path,
+        ("child",),
+    )
+    return owned, startup, terminal
+
+
+@pytest.mark.parametrize("finishes", [True, False])
+def test_guarded_timeout_requests_owner_without_killing_guard(tmp_path, finishes):
+    calls = []
+
+    class Process:
+        # Portable delegation fixture: launch PID differs from actual worker.
+        pid = 42
+        returncode = None
+
+        def wait(self, timeout=None):
+            calls.append(timeout)
+            if len(calls) == 1 or not finishes:
+                raise subprocess.TimeoutExpired(["guard"], timeout)
+            self.returncode = 137
+            return self.returncode
+
+        def terminate(self):
+            pytest.fail("must never terminate a guard with live child custody")
+
+        def kill(self):
+            pytest.fail("must never kill a guard with live child custody")
+
+    owned, _startup, _terminal = _interactive_guard_fixture(tmp_path, Process())
+    executor = command_execution.CommandExecutor(prefix="TEST", repo_root=ROOT)
+    with pytest.raises(subprocess.TimeoutExpired) as caught:
+        executor.wait_owned(owned, timeout=0.1, terminate_timeout=0.2)
+    assert owned.cancellation_path.is_file()
+    assert owned.terminal is finishes
+    assert calls == [0.1, 0.2]
+    if finishes:
+        assert owned.pid == 42
+        assert owned.guard_pid == 144
+        assert owned.child_identity["pid"] == 145
+    else:
+        assert caught.value.guard_command is owned
+        assert isinstance(caught.value.cleanup_error, subprocess.TimeoutExpired)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing-startup",
+        "missing-startup-token",
+        "startup-token",
+        "missing-terminal-token",
+        "terminal-token",
+        "terminal-worker",
+        "terminal-child",
+        "terminal-command",
+        "unclosed-tree",
+        "changed-worker",
+    ],
+)
+def test_guard_summary_rejects_unbound_or_changed_launch_custody(tmp_path, change):
+    import json
+
+    process = SimpleNamespace(pid=42, wait=lambda **_kwargs: 0)
+    owned, startup, terminal = _interactive_guard_fixture(tmp_path, process)
+    if change == "missing-startup-token":
+        startup.pop("launch_id")
+    elif change == "startup-token":
+        startup["launch_id"] = "b" * 32
+    elif change == "missing-terminal-token":
+        terminal.pop("launch_id")
+    elif change == "terminal-token":
+        terminal["launch_id"] = "b" * 32
+    elif change == "terminal-worker":
+        terminal["guard_pid"] = 146
+    elif change == "terminal-child":
+        terminal["child_process"] = {**startup["child_process"], "pid": 146}
+    elif change == "terminal-command":
+        terminal["command"] = ["other-child"]
+    elif change == "unclosed-tree":
+        terminal["descendants_closed"] = False
+    elif change == "changed-worker":
+        assert owned.wait(timeout=0.1) == 0
+        startup["guard_pid"] = 146
+        terminal["guard_pid"] = 146
+    owned.startup_path.write_text(json.dumps(startup), encoding="utf-8")
+    owned.summary_path.write_text(json.dumps(terminal), encoding="utf-8")
+    if change == "missing-startup":
+        owned.startup_path.unlink()
+    with pytest.raises(RuntimeError, match="child custody"):
+        owned.wait(timeout=0.1)
+    assert not owned.terminal
+    assert owned.process is process
+
+
+def test_interactive_launch_capability_is_stripped_before_child_spawn(tmp_path):
+    from tools import memory_guard
+
+    environment = memory_guard._worker_env(
+        {"OTHER": "retained"},
+        ["child"],
+        launch_id="a" * 32,
+        startup_json=str(tmp_path / "startup.json"),
+    )
+    child = memory_guard._child_env_without_internal_keys(environment)
+    assert child == {"OTHER": "retained"}
+
+
+def test_interactive_guard_cancels_actual_child_tree_and_closes_streams(tmp_path):
+    import json
+    import tempfile
+    import time
+
+    from tools import memory_guard
+
+    pidfile = tmp_path / "children.json"
+    child_script = tmp_path / "interactive_child.py"
+    child_script.write_text(
+        "import json,os,pathlib,subprocess,sys,time\n"
+        "assert sys.stdin.readline() == 'start\\n'\n"
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time; time.sleep(60)'])\n"
+        "pids = {'child': os.getpid(), 'grandchild': child.pid}\n"
+        "pathlib.Path(sys.argv[1]).write_text(json.dumps(pids), encoding='utf-8')\n"
+        "print('interactive child ready', flush=True)\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    env = dict(os.environ)
+    env["MOLT_MEMORY_GUARD_STATE_ROOT"] = str(tmp_path / "guard-state")
+    executor = command_execution.CommandExecutor(
+        prefix="MOLT_TEST_INTERACTIVE_GUARD", repo_root=ROOT
+    )
+    with tempfile.TemporaryFile(mode="w+b") as stderr:
+        owned = executor.start_guarded(
+            [sys.executable, "-B", str(child_script), str(pidfile)],
+            cwd=ROOT,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr,
+            text=True,
+            encoding="utf-8",
+            timeout=15.0,
+        )
+        try:
+            assert owned.stdin is not None
+            owned.stdin.write("start\n")
+            owned.stdin.flush()
+            deadline = time.monotonic() + 10.0
+            while not pidfile.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert pidfile.exists(), str(owned.evidence_path)
+            pids = json.loads(pidfile.read_text(encoding="utf-8"))
+            before = memory_guard.sample_processes()
+            assert pids["child"] in before
+            assert pids["grandchild"] in before
+            with pytest.raises(subprocess.TimeoutExpired):
+                executor.wait_owned(owned, timeout=0.05, terminate_timeout=10.0)
+            assert owned.terminal, str(owned.evidence_path)
+            assert owned.poll() is not None
+            summary = json.loads(owned.summary_path.read_text(encoding="utf-8"))
+            startup = json.loads(owned.startup_path.read_text(encoding="utf-8"))
+            assert summary["launch_id"] == startup["launch_id"] == owned.launch_id
+            assert summary["guard_pid"] == startup["guard_pid"] == owned.guard_pid
+            assert (
+                summary["child_process"]
+                == startup["child_process"]
+                == owned.child_identity
+            )
+            assert summary["descendants_closed"] is True
+            assert summary["cancelled"] is True
+            after = memory_guard.sample_processes()
+            assert pids["child"] not in after
+            assert pids["grandchild"] not in after
+            assert owned.child_identity["pid"] not in after
+            # Exact terminal tree custody proves no descendant can retain the
+            # pipe; reading EOF here also exercises inherited stream ownership.
+            assert owned.stdout.read() == "interactive child ready\n"
+        finally:
+            if not owned.terminal:
+                owned.request_cancel()
+                executor.wait_owned(owned, timeout=10.0)
+            if owned.terminal:
+                owned.stdin.close()
+                owned.stdout.close()

@@ -27,6 +27,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }
     }
@@ -70,6 +71,33 @@ mod tests {
         }
     }
 
+    fn int_literal(out: &str, value: i64) -> OpIR {
+        OpIR {
+            value: Some(value),
+            ..op_out("const", out)
+        }
+    }
+
+    fn str_literal(out: &str, value: &str) -> OpIR {
+        OpIR {
+            s_value: Some(value.to_string()),
+            ..op_out("const_str", out)
+        }
+    }
+
+    fn bool_literal(out: &str, value: bool) -> OpIR {
+        OpIR {
+            value: Some(i64::from(value)),
+            ..op_out("const_bool", out)
+        }
+    }
+
+    fn roundtrip_parameterized(ops: Vec<OpIR>, params: &[&str]) -> Vec<OpIR> {
+        let mut function = make_function(ops);
+        function.params = params.iter().map(|name| (*name).to_string()).collect();
+        roundtrip_function(function)
+    }
+
     fn op_args(kind: &str, args: &[&str]) -> OpIR {
         OpIR {
             kind: kind.to_string(),
@@ -87,6 +115,15 @@ mod tests {
         }
     }
 
+    /// A side-effecting direct call; the TIR verifier requires a named callee.
+    fn call_out(out: &str, callee: &str, args: &[&str]) -> OpIR {
+        OpIR {
+            s_value: Some(callee.to_string()),
+            value: Some(0),
+            ..op_out_args("call", out, args)
+        }
+    }
+
     // ---------------------------------------------------------------------------
     // Test 1: Straight-line arithmetic
     // ---------------------------------------------------------------------------
@@ -94,8 +131,8 @@ mod tests {
     #[test]
     fn roundtrip_straight_line() {
         let ops = vec![
-            op_out("const", "x"),
-            op_out("const", "y"),
+            int_literal("x", 7),
+            int_literal("y", 11),
             op_out_args("add", "z", &["x", "y"]),
             op_args("ret", &["z"]),
         ];
@@ -148,15 +185,14 @@ mod tests {
     #[test]
     fn roundtrip_if_else() {
         let ops = vec![
-            op_out("const", "cond"),
             op_args("if", &["cond"]),
-            op_out("const", "a"),
+            int_literal("a", 2),
             op("else"),
-            op_out("const", "b"),
+            int_literal("b", 3),
             op("end_if"),
             op("ret_void"),
         ];
-        let result = roundtrip(ops);
+        let result = roundtrip_parameterized(ops, &["cond"]);
         assert!(!result.is_empty());
     }
 
@@ -167,7 +203,7 @@ mod tests {
     #[test]
     fn roundtrip_loop() {
         let ops = vec![
-            op_out("const", "i"),
+            int_literal("i", 0),
             op("loop_start"),
             op_out_args("add", "i2", &["i", "i"]),
             op("loop_end"),
@@ -184,16 +220,15 @@ mod tests {
     #[test]
     fn roundtrip_nested_if_in_loop() {
         let ops = vec![
-            op_out("const", "i"),
+            int_literal("i", 0),
             op("loop_start"),
-            op_out("const", "cond"),
             op_args("if", &["cond"]),
             op_out_args("add", "i2", &["i", "i"]),
             op("end_if"),
             op("loop_end"),
             op("ret_void"),
         ];
-        let result = roundtrip(ops);
+        let result = roundtrip_parameterized(ops, &["cond"]);
         assert!(!result.is_empty());
     }
 
@@ -221,15 +256,15 @@ mod tests {
                 ..OpIR::default()
             },
             op_args("if", &["not_iterable"]),
-            op_out("const_str", "msg"),
-            op_out("const_str", "etype"),
+            str_literal("msg", "not iterable"),
+            str_literal("etype", "TypeError"),
             op_out_args("tuple_new", "emsg", &["msg"]),
             op_out_args("exception_new", "exc", &["etype", "emsg"]),
             op_args("raise", &["exc"]),
             op("end_if"),
-            op_out("const", "idx0"),
-            op_out("const", "idx1"),
-            op_out("const_bool", "ret_true"),
+            int_literal("idx0", 0),
+            int_literal("idx1", 1),
+            bool_literal("ret_true", true),
             op("loop_start"),
             OpIR {
                 kind: "iter_next".to_string(),
@@ -262,7 +297,7 @@ mod tests {
             op("end_if"),
             op("loop_continue"),
             op("loop_end"),
-            op_out("const_bool", "ret_false"),
+            bool_literal("ret_false", false),
             OpIR {
                 kind: "ret".to_string(),
                 args: Some(vec!["ret_false".to_string()]),
@@ -278,6 +313,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         };
 
@@ -313,16 +349,15 @@ mod tests {
     #[test]
     fn roundtrip_multiple_returns() {
         let ops = vec![
-            op_out("const", "cond"),
             op_args("if", &["cond"]),
-            op_out("const", "a"),
+            int_literal("a", 2),
             op_args("ret", &["a"]),
             op("else"),
-            op_out("const", "b"),
+            int_literal("b", 3),
             op_args("ret", &["b"]),
             op("end_if"),
         ];
-        let result = roundtrip(ops);
+        let result = roundtrip_parameterized(ops, &["cond"]);
         assert!(!result.is_empty());
     }
 
@@ -350,8 +385,8 @@ mod tests {
         let mut add_op = op_out_args("add", "z", &["x", "y"]);
         add_op.fast_int = Some(true);
         let ops = vec![
-            op_out("const", "x"),
-            op_out("const", "y"),
+            int_literal("x", 7),
+            int_literal("y", 11),
             add_op,
             op_args("ret", &["z"]),
         ];
@@ -367,9 +402,9 @@ mod tests {
     fn roundtrip_jump_label() {
         // jump to label 1; dead const; label 1; ret x
         let ops = vec![
-            op_out("const", "x"),
+            int_literal("x", 7),
             op_val("jump", 1),
-            op_out("const", "dead"),
+            int_literal("dead", 99),
             op_val("label", 1),
             op_args("ret", &["x"]),
         ];
@@ -384,7 +419,7 @@ mod tests {
     #[test]
     fn tir_verifier_passes_after_pipeline() {
         let ops = vec![
-            op_out("const", "x"),
+            int_literal("x", 7),
             op_out_args("add", "y", &["x", "x"]),
             op_args("ret", &["y"]),
         ];
@@ -419,6 +454,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         };
         let target = TargetInfo::native_release_fast();
@@ -445,7 +481,7 @@ mod tests {
             name: "typed_params".to_string(),
             params: vec!["n".to_string()],
             ops: vec![
-                op_out("const", "one"),
+                int_literal("one", 1),
                 op_out_args("add", "result", &["n", "one"]),
                 op_args("ret", &["result"]),
             ],
@@ -453,6 +489,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         };
         let target = TargetInfo::native_release_fast();
@@ -471,9 +508,9 @@ mod tests {
     #[test]
     fn roundtrip_chained_arithmetic() {
         let ops = vec![
-            op_out("const", "a"),
-            op_out("const", "b"),
-            op_out("const", "c"),
+            int_literal("a", 2),
+            int_literal("b", 3),
+            int_literal("c", 5),
             op_out_args("add", "ab", &["a", "b"]),
             op_out_args("add", "abc", &["ab", "c"]),
             op_out_args("mul", "result", &["ab", "abc"]),
@@ -490,20 +527,18 @@ mod tests {
     #[test]
     fn roundtrip_nested_if_else() {
         let ops = vec![
-            op_out("const", "c1"),
-            op_out("const", "c2"),
             op_args("if", &["c1"]),
             op_args("if", &["c2"]),
-            op_out("const", "aa"),
+            int_literal("aa", 2),
             op("else"),
-            op_out("const", "ab"),
+            int_literal("ab", 3),
             op("end_if"),
             op("else"),
-            op_out("const", "ba"),
+            int_literal("ba", 5),
             op("end_if"),
             op("ret_void"),
         ];
-        let result = roundtrip(ops);
+        let result = roundtrip_parameterized(ops, &["c1", "c2"]);
         assert!(!result.is_empty());
     }
 
@@ -524,7 +559,7 @@ mod tests {
 
     #[test]
     fn roundtrip_output_has_terminator() {
-        let ops = vec![op_out("const", "x"), op_args("ret", &["x"])];
+        let ops = vec![int_literal("x", 7), op_args("ret", &["x"])];
         let result = roundtrip(ops);
         let has_term = result.iter().any(|op| {
             crate::tir::op_kinds_generated::simpleir_kind_is_return_terminator(op.kind.as_str())
@@ -540,7 +575,6 @@ mod tests {
     #[test]
     fn roundtrip_unpack_sequence_preserves_output_vars() {
         let ops = vec![
-            op_out("const", "seq"),
             OpIR {
                 kind: "unpack_sequence".to_string(),
                 args: Some(vec!["seq".to_string(), "a".to_string(), "b".to_string()]),
@@ -549,7 +583,7 @@ mod tests {
             },
             op_args("ret", &["a"]),
         ];
-        let result = roundtrip(ops);
+        let result = roundtrip_parameterized(ops, &["seq"]);
         let unpack = result
             .iter()
             .find(|op| op.kind == "unpack_sequence")
@@ -1486,13 +1520,13 @@ mod tests {
         // Simulate: for i in range(3): call print(i)
         // The "call" op inside the loop must survive the TIR roundtrip.
         let ops = vec![
-            op_out("const", "stop"), // stop = 3
-            op_out("const", "idx"),  // idx = 0
+            int_literal("stop", 3), // stop = 3
+            int_literal("idx", 0),  // idx = 0
             op("loop_start"),
             // Loop body: a call that must NOT be eliminated
-            op_out_args("call", "result", &["idx"]),
+            call_out("result", "observe", &["idx"]),
             // Increment
-            op_out("const", "one"),
+            int_literal("one", 1),
             op_out_args("add", "idx2", &["idx", "one"]),
             op("loop_end"),
             op("ret_void"),
@@ -1514,11 +1548,11 @@ mod tests {
     fn loop_body_ops_survive_no_opt() {
         // Same test without optimization — should always pass.
         let ops = vec![
-            op_out("const", "stop"),
-            op_out("const", "idx"),
+            int_literal("stop", 3),
+            int_literal("idx", 0),
             op("loop_start"),
-            op_out_args("call", "result", &["idx"]),
-            op_out("const", "one"),
+            call_out("result", "observe", &["idx"]),
+            int_literal("one", 1),
             op_out_args("add", "idx2", &["idx", "one"]),
             op("loop_end"),
             op("ret_void"),

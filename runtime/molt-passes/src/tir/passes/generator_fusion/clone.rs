@@ -1,10 +1,10 @@
 //! Poll-body cloning and rewrite for generator fusion.
 //!
 //! Deep-clones a fusable generator `_poll` body into the caller's value/block
-//! space (fresh SSA ids, remapped labels, frame slots promoted to phis) so the
-//! splice in [`super::apply_fusion`] can weave it into the consumer loop. Split
-//! out of `generator_fusion.rs` as a move-only decomposition; the recognition
-//! and orchestration live in [`super`], the CFG surgery in [`super::wire`].
+//! space (fresh SSA ids, remapped labels, frame slots promoted to SSA values by
+//! the slot plan) so the splice in [`super::apply_fusion`] can weave it into
+//! the consumer loop. The recognition and orchestration live in [`super`], the
+//! CFG surgery in [`super::wire`].
 
 use std::collections::{HashMap, HashSet};
 
@@ -14,55 +14,12 @@ use crate::tir::clone_support::{
 };
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use crate::tir::passes::ownership_lattice_min::Replacements;
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
 
-use super::{GEN_CONTROL_BYTES, SlotInfo, attr_original_kind, attr_value_int};
-
-/// A local slot's entry-init constant.
-pub(super) enum LocalInit {
-    Int(i64),
-    None_,
-}
-
-/// Resolve a LOCAL slot's entry init: the value the poll's entry block stores
-/// into `offset` before the loop. Phase 1 supports a `ConstInt` init or a
-/// `None`/`missing` init (the unbound-local sentinel). Returns `None` for any
-/// other (non-trivially-promotable) init.
-pub(super) fn local_slot_init_const(poll: &TirFunction, offset: i64) -> Option<LocalInit> {
-    let entry = poll.blocks.get(&poll.entry_block)?;
-    // The LAST entry-block store to this slot is the effective init (a `missing`
-    // sentinel store is typically followed by the real `= 0` store).
-    let mut result: Option<LocalInit> = None;
-    for op in &entry.ops {
-        if op.opcode == OpCode::ClosureStore && attr_value_int(op) == Some(offset) {
-            let &stored = op.operands.get(1)?;
-            let loc = def_location(poll, stored)?;
-            let def = &poll.blocks[&loc.0].ops[loc.1];
-            result = if def.opcode == OpCode::ConstInt {
-                Some(LocalInit::Int(attr_value_int(def)?))
-            } else if def.opcode == OpCode::ConstNone || attr_original_kind(def) == Some("missing")
-            {
-                Some(LocalInit::None_)
-            } else {
-                return None;
-            };
-        }
-    }
-    result
-}
-
-/// Locate the (block, op_idx) defining `v` (single-result ops).
-fn def_location(func: &TirFunction, v: ValueId) -> Option<(BlockId, usize)> {
-    for (&bid, block) in &func.blocks {
-        for (i, op) in block.ops.iter().enumerate() {
-            if op.results.first() == Some(&v) {
-                return Some((bid, i));
-            }
-        }
-    }
-    None
-}
+use super::attr_original_kind;
+use super::slots::{SlotDef, SlotPlan};
 
 pub(super) fn const_int_op(result: ValueId, value: i64) -> TirOp {
     let mut a = AttrDict::new();
@@ -96,8 +53,6 @@ pub(super) fn const_none_op(result: ValueId) -> TirOp {
 pub(super) struct ClonedPoll {
     /// Fresh entry block id of the cloned body (the preheader spine).
     pub(super) entry: BlockId,
-    /// Every fresh cloned block id (deterministic order).
-    pub(super) cloned_blocks: Vec<BlockId>,
     /// The cloned block + op index holding the (single) `state_yield`.
     pub(super) yield_block: BlockId,
     pub(super) yield_idx: usize,
@@ -105,19 +60,12 @@ pub(super) struct ClonedPoll {
     pub(super) yield_pair: ValueId,
     /// Cloned blocks terminating in `Return` (the exhausted / normal exits).
     pub(super) return_blocks: Vec<BlockId>,
-    /// Slot phi value per user slot (index-aligned with the `slot_infos` passed
-    /// to [`clone_and_rewrite_poll`]).
-    pub(super) slot_phis: Vec<ValueId>,
-    /// Per slot, the value flowing on the loop back-edge (the cloned in-loop
-    /// store value), or `None` for a loop-invariant slot (no in-loop store →
-    /// thread the phi unchanged).
-    pub(super) slot_backedge: Vec<Option<ValueId>>,
 }
 
 /// True if `op` is a generator-frame bookkeeping op the splice drops: trace
 /// slots, exception-stack save/restore, source-line markers. These are frame
 /// activation/teardown overhead with no fused-loop meaning.
-fn is_bookkeeping_op(op: &TirOp) -> bool {
+pub(super) fn is_bookkeeping_op(op: &TirOp) -> bool {
     matches!(
         attr_original_kind(op),
         Some(
@@ -132,75 +80,16 @@ fn is_bookkeeping_op(op: &TirOp) -> bool {
     )
 }
 
-/// Clone the poll body into the caller with fresh ids, applying the frame-slot
-/// promotion + control-slot elimination rewrites. Returns `None` (bail) on any
-/// unpromotable shape (a user slot stored in more than one in-loop site, an
-/// `IncRef`/`DecRef` of the frame pointer, etc.).
-pub(super) fn clone_and_rewrite_poll(
-    poll: &TirFunction,
-    caller: &mut TirFunction,
-    slot_infos: &[SlotInfo],
-) -> Option<ClonedPoll> {
-    // Map each user slot offset -> a fresh slot phi value, and -> its index.
-    let slot_phis: Vec<ValueId> = slot_infos
-        .iter()
-        .map(|_| {
-            let v = caller.fresh_value();
-            caller.value_types.entry(v).or_insert(TirType::DynBox);
-            v
-        })
-        .collect();
-    let slot_index: HashMap<i64, usize> = slot_infos
-        .iter()
-        .enumerate()
-        .map(|(i, s)| (s.offset, i))
-        .collect();
-
-    // Fresh exception-label remap (mirrors the inliner): the poll body's
-    // per-function SimpleIR labels must not collide with the caller's.
-    let label_remap = build_label_remap(poll, caller);
-
-    // Value remap: poll ValueId -> caller ValueId. Pre-seed user-slot loads to
-    // the slot phi and control-slot loads to a shared `None`.
-    let mut value_map: HashMap<ValueId, ValueId> = HashMap::new();
-
-    // A single cloned `None` (for send/throw slot reads) materialized in the
-    // cloned entry block.
-    let none_for_control = caller.fresh_value();
-    caller
-        .value_types
-        .entry(none_for_control)
-        .or_insert(TirType::None);
-
-    // Pre-seed: every `closure_load(self, off)` result.
-    for block in poll.blocks.values() {
-        for op in &block.ops {
-            if op.opcode == OpCode::ClosureLoad
-                && let Some(off) = attr_value_int(op)
-                && let Some(&res) = op.results.first()
-            {
-                if off >= GEN_CONTROL_BYTES {
-                    let Some(&idx) = slot_index.get(&off) else {
-                        return None; // load of a slot we didn't plan — bail.
-                    };
-                    value_map.insert(res, slot_phis[idx]);
-                } else {
-                    // Control slot (send=0 / throw=8 / others): reads `None`.
-                    value_map.insert(res, none_for_control);
-                }
-            }
-        }
-    }
-
-    // The generator's exception-stack save/restore values: the results of the
-    // prologue `exception_stack_enter` / `exception_stack_depth` ops. These ops
-    // are bookkeeping (dropped), so their result values vanish. The body
-    // restores them before every `check_exception` via a `Copy(exc_val, exc_val)`
-    // (the SimpleIR `exception_stack_set_depth`/restore idiom captured as a Copy)
-    // and passes the copies as `CheckException` operands. After fusion the
-    // generator exception stack does not exist: we DROP those restore-copies and
-    // CLEAR the `CheckException` operands (the consumer's own `CheckException`
-    // carries no operands either — it reads the runtime pending flag directly).
+/// The generator's exception-stack save/restore values: the results of the
+/// prologue `exception_stack_enter` / `exception_stack_depth` ops. These ops are
+/// bookkeeping (dropped), so their result values vanish. The body restores them
+/// before every `check_exception` via a `Copy(exc_val, exc_val)` (the SimpleIR
+/// `exception_stack_set_depth`/restore idiom captured as a Copy) and passes the
+/// copies as `CheckException` operands. After fusion the generator exception
+/// stack does not exist: the splice DROPS those restore-copies and CLEARS the
+/// `CheckException` operands (the consumer's own `CheckException` carries no
+/// operands either — it reads the runtime pending flag directly).
+pub(super) fn exception_stack_values(poll: &TirFunction) -> HashSet<ValueId> {
     let exc_stack_vals: HashSet<ValueId> = poll
         .blocks
         .values()
@@ -215,7 +104,7 @@ pub(super) fn clone_and_rewrite_poll(
         .collect();
     // Transitively include the restore-copies' results (a Copy of an exc value is
     // itself an exc-derived value that later copies/checks consume).
-    let mut exc_derived = exc_stack_vals.clone();
+    let mut exc_derived = exc_stack_vals;
     let mut changed = true;
     while changed {
         changed = false;
@@ -234,31 +123,95 @@ pub(super) fn clone_and_rewrite_poll(
     }
     // The poll's exception-EXIT block (the `CheckException` handler/exit target)
     // receives the saved exc-stack values as BLOCK ARGS on the implicit exception
-    // edge. Those args are exc-stack-derived too: fold them into `exc_derived` so
-    // the clone strips them (the post-fusion exception edge carries no args).
-    // The exit block is found via the inverse of `label_id_map`: the block whose
-    // label is a `CheckException` `value` target.
-    {
-        let mut exc_target_labels: HashSet<i64> = HashSet::new();
-        for block in poll.blocks.values() {
-            for op in &block.ops {
-                if op.opcode == OpCode::CheckException
-                    && let Some(AttrValue::Int(l)) = op.attrs.get("value")
-                {
-                    exc_target_labels.insert(*l);
-                }
-            }
-        }
-        for (&block_u32, &label) in &poll.label_id_map {
-            if exc_target_labels.contains(&label)
-                && let Some(b) = poll.blocks.get(&BlockId(block_u32))
+    // edge. Those args are exc-stack-derived too: fold them in so the clone
+    // strips them (the post-fusion exception edge carries no args). The exit
+    // block is found via the inverse of `label_id_map`: the block whose label is
+    // a `CheckException` `value` target.
+    let mut exc_target_labels: HashSet<i64> = HashSet::new();
+    for block in poll.blocks.values() {
+        for op in &block.ops {
+            if op.opcode == OpCode::CheckException
+                && let Some(AttrValue::Int(l)) = op.attrs.get("value")
             {
-                for arg in &b.args {
-                    exc_derived.insert(arg.id);
-                }
+                exc_target_labels.insert(*l);
             }
         }
     }
+    for (&block_u32, &label) in &poll.label_id_map {
+        if exc_target_labels.contains(&label)
+            && let Some(b) = poll.blocks.get(&BlockId(block_u32))
+        {
+            for arg in &b.args {
+                exc_derived.insert(arg.id);
+            }
+        }
+    }
+    exc_derived
+}
+
+/// Clone the poll body into the caller with fresh ids, promoting the frame's
+/// user slots by `plan` and eliminating its control slots. A promoted store
+/// becomes a copy of its value that keeps the reference the frame took, and a
+/// promoted read a copy of its reaching definition that keeps the reference the
+/// `ClosureLoad` returned (`owners`, design 20 §1.2). `arguments` holds the
+/// caller value for each argument position the plan reads. Returns `None`
+/// (bail) on a malformed poll: no `state_yield`, or one without its pair.
+pub(super) fn clone_and_rewrite_poll(
+    poll: &TirFunction,
+    caller: &mut TirFunction,
+    plan: &SlotPlan,
+    arguments: &HashMap<usize, ValueId>,
+    owners: &mut Replacements,
+) -> Option<ClonedPoll> {
+    // Fresh exception-label remap (mirrors the inliner): the poll body's
+    // per-function SimpleIR labels must not collide with the caller's.
+    let label_remap = build_label_remap(poll, caller);
+
+    // Value remap: poll ValueId -> caller ValueId. A frame read the plan does
+    // not promote (a control slot, or a read in a block the poll never enters)
+    // is pre-seeded to a shared `None`.
+    let mut value_map: HashMap<ValueId, ValueId> = HashMap::new();
+
+    // A single cloned `None` (for send/throw slot reads) materialized in the
+    // cloned entry block.
+    let none_for_control = caller.fresh_value();
+    caller
+        .value_types
+        .entry(none_for_control)
+        .or_insert(TirType::None);
+
+    for block in poll.blocks.values() {
+        for op in &block.ops {
+            if op.opcode == OpCode::ClosureLoad
+                && op.operands.first() == Some(&plan.frame)
+                && let Some(&res) = op.results.first()
+                && !plan.reads.contains_key(&res)
+            {
+                value_map.insert(res, none_for_control);
+            }
+        }
+    }
+
+    // The argument each join takes for each slot it merges.
+    let mut join_args: HashMap<(BlockId, usize), ValueId> = HashMap::new();
+    for (&block, slots) in &plan.joins {
+        for &slot in slots {
+            let arg = caller.fresh_value();
+            caller.value_types.insert(arg, TirType::DynBox);
+            join_args.insert((block, slot), arg);
+        }
+    }
+    // The frame's reference each promoted store takes, per poll store.
+    let mut held: HashMap<(BlockId, usize), ValueId> = HashMap::new();
+    for &store in &plan.stores {
+        let value = caller.fresh_value();
+        caller.value_types.insert(value, TirType::DynBox);
+        held.insert(store, value);
+    }
+
+    // The generator's exception-stack save/restore values, which the splice
+    // drops along with the ops that define and restore them.
+    let exc_derived = exception_stack_values(poll);
     // Block remap: poll BlockId -> fresh caller BlockId (deterministic order).
     let mut poll_block_ids: Vec<BlockId> = poll.blocks.keys().copied().collect();
     poll_block_ids.sort_by_key(|b| b.0);
@@ -301,20 +254,27 @@ pub(super) fn clone_and_rewrite_poll(
             .unwrap_or_else(|| panic!("generator_fusion: poll block {b} has no remap"))
     };
 
-    // Per-slot back-edge value: the LAST user-slot store's (remapped) value.
-    // A slot stored in >1 distinct block (conditional store) bails — the simple
-    // single-reaching-def threading would be unsound.
-    let mut slot_store_blocks: Vec<Option<BlockId>> = vec![None; slot_infos.len()];
-    let mut slot_backedge: Vec<Option<ValueId>> = vec![None; slot_infos.len()];
+    // Each promoted definition's caller value.
+    let resolve = |def: SlotDef| -> ValueId {
+        match def {
+            SlotDef::Argument(position) => arguments[&position],
+            SlotDef::Stored { block, index } => held[&(block, index)],
+            SlotDef::Join { block, slot } => join_args[&(block, slot)],
+        }
+    };
+    // Each join's cloned block, back to its poll block.
+    let join_of: HashMap<BlockId, BlockId> = plan
+        .joins
+        .keys()
+        .map(|&block| (remap_block(block), block))
+        .collect();
 
-    let mut cloned_blocks: Vec<BlockId> = Vec::with_capacity(poll_block_ids.len());
     let mut yield_block_idx: Option<(BlockId, usize, ValueId)> = None;
     let mut return_blocks: Vec<BlockId> = Vec::new();
 
     for &bid in &poll_block_ids {
         let src = &poll.blocks[&bid];
         let new_bid = remap_block(bid);
-        cloned_blocks.push(new_bid);
 
         // Cloned block args (entry stays arg-less — the poll's `self` param is
         // eliminated; no other block in a well-formed poll carries args except
@@ -328,7 +288,7 @@ pub(super) fn clone_and_rewrite_poll(
         // edge ("predecessor … branches with 0 argument(s) but phi … required").
         // The ops that consumed those args were the dropped exc-stack-restore
         // copies, so the args are dead and safely removed.
-        let new_args: Vec<TirValue> = if bid == poll.entry_block {
+        let mut new_args: Vec<TirValue> = if bid == poll.entry_block {
             Vec::new()
         } else {
             src.args
@@ -340,36 +300,65 @@ pub(super) fn clone_and_rewrite_poll(
                 })
                 .collect()
         };
+        // A join takes each promoted slot it merges as a trailing argument.
+        for &slot in plan.joins.get(&bid).into_iter().flatten() {
+            new_args.push(TirValue {
+                id: join_args[&(bid, slot)],
+                ty: TirType::DynBox,
+            });
+        }
 
-        let mut new_ops: Vec<TirOp> = Vec::with_capacity(src.ops.len());
-        for op in src.ops.iter() {
+        let mut new_ops: Vec<TirOp> = Vec::with_capacity(src.ops.len() + 1);
+        // Materialize the control-slot value before recording any split point.
+        // When entry itself yields, a later prepend would move the pair's
+        // definition across the recorded yield boundary into the continuation.
+        if bid == poll.entry_block {
+            new_ops.push(const_none_op(none_for_control));
+        }
+        for (op_index, op) in src.ops.iter().enumerate() {
             // Drop bookkeeping + the lone state_switch.
             if op.opcode == OpCode::StateSwitch || is_bookkeeping_op(op) {
                 continue;
             }
-            // Drop closure_load (its result was pre-seeded to a phi/None).
-            if op.opcode == OpCode::ClosureLoad {
-                continue;
-            }
-            // closure_store: control slot -> drop; user slot -> record back-edge.
-            if op.opcode == OpCode::ClosureStore {
-                let off = attr_value_int(op).unwrap_or(-1);
-                if off >= GEN_CONTROL_BYTES {
-                    let &idx = slot_index.get(&off)?;
-                    let &stored = op.operands.get(1)?;
-                    // Entry-block stores are the init (handled in the preheader),
-                    // not the back-edge. Only record stores OUTSIDE the entry.
-                    if bid != poll.entry_block {
-                        if let Some(prev) = slot_store_blocks[idx]
-                            && prev != bid
-                        {
-                            return None; // conditional/multi-block store — bail.
-                        }
-                        slot_store_blocks[idx] = Some(bid);
-                        slot_backedge[idx] = Some(remap(stored, &value_map));
+            // Frame accesses. A promoted store becomes a copy of its value that
+            // keeps the reference the frame took, and a promoted read a copy of
+            // its reaching definition that keeps the reference the load
+            // returned. Any other frame read was pre-seeded to `None`, and any
+            // other store goes.
+            if op.operands.first() == Some(&plan.frame) {
+                if op.opcode == OpCode::ClosureStore {
+                    if let Some(&value) = held.get(&(bid, op_index)) {
+                        owners.record_held(value);
+                        new_ops.push(TirOp {
+                            dialect: op.dialect,
+                            opcode: OpCode::Copy,
+                            operands: vec![remap(op.operands[1], &value_map)],
+                            results: vec![value],
+                            attrs: AttrDict::new(),
+                            source_span: op.source_span,
+                        });
                     }
+                    continue;
                 }
-                continue;
+                if op.opcode == OpCode::ClosureLoad {
+                    if let Some(&def) = plan.reads.get(&op.results[0]) {
+                        let load = TirOp {
+                            dialect: op.dialect,
+                            opcode: op.opcode,
+                            operands: Vec::new(),
+                            results: vec![remap(op.results[0], &value_map)],
+                            attrs: AttrDict::new(),
+                            source_span: op.source_span,
+                        };
+                        owners.record(&load);
+                        new_ops.push(TirOp {
+                            opcode: OpCode::Copy,
+                            operands: vec![resolve(def)],
+                            ..load
+                        });
+                    }
+                    continue;
+                }
             }
             // state_yield: keep a marker copy (rewritten in wire_fused_loop). We
             // record its location and pair operand, and DROP it from the op
@@ -408,7 +397,24 @@ pub(super) fn clone_and_rewrite_poll(
             });
         }
 
-        let new_term = remap_terminator(&src.terminator, &value_map, &block_map, &poll.name);
+        let mut new_term = remap_terminator(&src.terminator, &value_map, &block_map, &poll.name);
+        // Each edge into a join passes the definition of each slot it merges. A
+        // block the poll never enters has none, and passes `None` until the
+        // splice prunes it.
+        let exit = plan.exits.get(&bid);
+        new_term.for_each_edge_mut(|target, args| {
+            let Some(join) = join_of.get(target) else {
+                return;
+            };
+            for &slot in &plan.joins[join] {
+                args.push(match exit {
+                    Some(state) => {
+                        resolve(state[slot].expect("a slot plan defines every slot a join merges"))
+                    }
+                    None => none_for_control,
+                });
+            }
+        });
         if matches!(new_term, Terminator::Return { .. }) {
             return_blocks.push(new_bid);
         }
@@ -424,15 +430,7 @@ pub(super) fn clone_and_rewrite_poll(
         );
     }
 
-    // Materialize the shared `None` for control-slot reads at the top of the
-    // cloned entry block (dominates every use).
     let entry_clone = remap_block(poll.entry_block);
-    caller
-        .blocks
-        .get_mut(&entry_clone)
-        .unwrap()
-        .ops
-        .insert(0, const_none_op(none_for_control));
 
     // Transfer the poll's value_types for cloned values (remapped keys).
     let poll_param_ids: HashSet<ValueId> = poll.blocks[&poll.entry_block]
@@ -463,13 +461,10 @@ pub(super) fn clone_and_rewrite_poll(
 
     Some(ClonedPoll {
         entry: entry_clone,
-        cloned_blocks,
         yield_block,
         yield_idx,
         yield_pair,
         return_blocks,
-        slot_phis,
-        slot_backedge,
     })
 }
 

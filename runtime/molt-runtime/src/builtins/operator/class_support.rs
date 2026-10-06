@@ -1,7 +1,8 @@
 use crate::PyToken;
+use crate::builtins::functions::native_callable::NativeCallableKind;
 use crate::builtins::types::{
-    RuntimeClassMethodSpec, RuntimeMethodSignature, SELF_NAME_RUNTIME_ARGUMENT_NAMES,
-    SELF_RUNTIME_ARGUMENT_NAMES, init_cached_runtime_class,
+    ClassSemanticPolicy, RuntimeClassMethodSpec, RuntimeMethodSignature,
+    SELF_NAME_RUNTIME_ARGUMENT_NAMES, SELF_RUNTIME_ARGUMENT_NAMES, init_cached_runtime_class,
 };
 
 pub(super) fn itemgetter_class(_py: &PyToken<'_>) -> u64 {
@@ -9,13 +10,13 @@ pub(super) fn itemgetter_class(_py: &PyToken<'_>) -> u64 {
     let methods = [
         RuntimeClassMethodSpec::fixed(
             "__call__",
-            &operator.itemgetter_call,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_operator_itemgetter_call as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::with_signature(
             "__init__",
-            &operator.itemgetter_init,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_operator_itemgetter_init as *const () as usize as u64,
             2,
             RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, false),
@@ -25,8 +26,12 @@ pub(super) fn itemgetter_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &operator.itemgetter_class,
         "itemgetter",
-        16,
-        Some(crate::object::ObjectShapeId::OperatorItemGetter),
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::heap(true, false),
+            layout_size: 16,
+            instance_shape: Some(crate::object::ObjectShapeId::OperatorItemGetter),
+            native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        },
         &methods,
     )
 }
@@ -36,13 +41,13 @@ pub(super) fn attrgetter_class(_py: &PyToken<'_>) -> u64 {
     let methods = [
         RuntimeClassMethodSpec::fixed(
             "__call__",
-            &operator.attrgetter_call,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_operator_attrgetter_call as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::with_signature(
             "__init__",
-            &operator.attrgetter_init,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_operator_attrgetter_init as *const () as usize as u64,
             2,
             RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, false),
@@ -52,8 +57,12 @@ pub(super) fn attrgetter_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &operator.attrgetter_class,
         "attrgetter",
-        16,
-        Some(crate::object::ObjectShapeId::OperatorAttrGetter),
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::heap(true, false),
+            layout_size: 16,
+            instance_shape: Some(crate::object::ObjectShapeId::OperatorAttrGetter),
+            native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        },
         &methods,
     )
 }
@@ -63,13 +72,13 @@ pub(super) fn methodcaller_class(_py: &PyToken<'_>) -> u64 {
     let methods = [
         RuntimeClassMethodSpec::fixed(
             "__call__",
-            &operator.methodcaller_call,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_operator_methodcaller_call as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::with_signature(
             "__init__",
-            &operator.methodcaller_init,
+            NativeCallableKind::WrapperDescriptor,
             crate::molt_operator_methodcaller_init as *const () as usize as u64,
             4,
             RuntimeMethodSignature::new(SELF_NAME_RUNTIME_ARGUMENT_NAMES, true, true),
@@ -79,8 +88,12 @@ pub(super) fn methodcaller_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &operator.methodcaller_class,
         "methodcaller",
-        32,
-        Some(crate::object::ObjectShapeId::OperatorMethodCaller),
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::heap(true, false),
+            layout_size: 32,
+            instance_shape: Some(crate::object::ObjectShapeId::OperatorMethodCaller),
+            native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        },
         &methods,
     )
 }

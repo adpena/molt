@@ -20,6 +20,10 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from tools import guarded_entrypoints, memory_guard  # noqa: E402
+from tools.memory_guard_core.process_model import (  # noqa: E402
+    birth_fenced_descendants,
+    process_identity_has_creation_marker,
+)
 
 
 DEFAULT_MAX_PROCESS_RSS_GB = memory_guard.DEFAULT_MAX_RSS_GB
@@ -403,13 +407,16 @@ def _propagate_ownership_to_descendants(
     samples: Mapping[int, memory_guard.ProcessSample],
     owned: set[int],
 ) -> set[int]:
-    changed = True
-    while changed:
-        changed = False
-        for sample in samples.values():
-            if sample.pid not in owned and sample.ppid in owned:
-                owned.add(sample.pid)
-                changed = True
+    # Explicit roots keep their existing admission; only live, ordered births
+    # can extend their custody to another process instance.
+    observed = {
+        pid: sample.started_at_ns
+        for pid in owned
+        if (sample := samples.get(pid)) is not None
+        and type(sample.started_at_ns) is int
+    }
+    descendants, _unresolved = birth_fenced_descendants(samples, observed)
+    owned.update(descendants)
     return owned
 
 
@@ -481,17 +488,10 @@ def _explicitly_owned_molt_process_ids(
             and memory_guard.process_identity(sample) == known_identity
         ) or is_molt_process(sample, root=root, self_pid=self_pid):
             roots.add(pid)
-    owned = set(roots)
-    changed = True
-    while changed:
-        changed = False
-        for sample in samples.values():
-            if sample.pid in owned or sample.pid not in owned_pids:
-                continue
-            if sample.ppid in owned:
-                owned.add(sample.pid)
-                changed = True
-    return owned
+    return _propagate_ownership_to_descendants(
+        {pid: sample for pid, sample in samples.items() if pid in owned_pids},
+        roots,
+    )
 
 
 def _windows_snapshot_helper_tree_ids(
@@ -507,6 +507,7 @@ def _windows_snapshot_helper_tree_ids(
     }
     if not helper_pids:
         return set()
+    # Protection includes uncertain descendants; it never admits cleanup custody.
     blocked = set(helper_pids)
     changed = True
     while changed:
@@ -1062,6 +1063,43 @@ def terminate_group(
         )
         return
     if expected_identities is None:
+        return
+    leader = samples.get(pgid)
+    leader_identity = expected_identities.get(pgid)
+    live_owned_leader = (
+        leader is not None
+        and leader.pgid == pgid
+        and leader_identity is not None
+        and memory_guard.process_identity(leader) == leader_identity
+        and process_identity_has_creation_marker(leader_identity)
+    )
+    if not live_owned_leader:
+        # Historical members are PID/birth capabilities, not authority over
+        # future members of a dead or reused leader's numeric process group.
+        owned = {
+            pid: identity
+            for pid, identity in expected_identities.items()
+            if (member := samples.get(pid)) is not None
+            and member.pgid == pgid
+            and memory_guard.process_identity(member) == identity
+            and process_identity_has_creation_marker(identity)
+        }
+        if report_only_enabled():
+            _emit_report_only(pgid, "")
+            return
+        for pid, identity in owned.items():
+            memory_guard._send_pid_signal_if_identity_action(
+                pid, identity, signal.SIGTERM, sampler=sample_processes_for_sentinel
+            )
+        if owned:
+            time.sleep(max(0.0, grace))
+        for pid, identity in owned.items():
+            memory_guard._send_pid_signal_if_identity_action(
+                pid,
+                identity,
+                memory_guard.fallback_kill_signal(),
+                sampler=sample_processes_for_sentinel,
+            )
         return
     if report_only_enabled():
         member = samples.get(pgid)

@@ -159,7 +159,118 @@ _INTRINSIC_OWNER = (
 )
 
 
-def test_private_facade_uses_explicit_owner_not_fromlist_candidate(
+def test_public_wrapper_uses_exact_top_level_native_provider(tmp_path: Path) -> None:
+    classification = _classify_sources(
+        tmp_path,
+        {
+            "stream": "import _stream\nclass Stream(_stream.Value): pass\n",
+            "_stream": _INTRINSIC_OWNER,
+        },
+    )
+
+    assert classification.statuses["stream"] == STATUS_INTRINSIC
+    assert classification.import_evidence["stream"].proven_modules == {"_stream"}
+    assert classification.import_evidence["stream"].facade is None
+
+
+@pytest.mark.parametrize(
+    "provider_source",
+    [
+        None,
+        "class Value: pass\n",
+        "raise ImportError('not supported')\n",
+        "from _intrinsics import require_intrinsic\n"
+        "Value = require_intrinsic('molt_stdlib_probe')\n",
+        "import stream\nclass Value: pass\n",
+    ],
+    ids=["missing", "python", "policy", "probe", "cycle"],
+)
+def test_public_wrapper_requires_independently_backed_native_provider(
+    tmp_path: Path, provider_source: str | None
+) -> None:
+    sources = {"stream": "import _stream\nclass Stream(_stream.Value): pass\n"}
+    if provider_source is not None:
+        sources["_stream"] = provider_source
+    classification = _classify_sources(tmp_path, sources)
+
+    assert classification.statuses["stream"] == STATUS_PYTHON_ONLY
+
+
+@pytest.mark.parametrize(
+    "wrapper,provider",
+    [
+        ("stream", "_stream_extra"),
+        ("stream", "__stream"),
+        ("stream", "_stream.child"),
+        ("stream", "other._stream"),
+        ("_stream", "__stream"),
+        ("_stream", "stream"),
+        ("pkg.stream", "_pkg"),
+    ],
+)
+def test_private_provider_relationship_is_exact_and_directed(
+    tmp_path: Path, wrapper: str, provider: str
+) -> None:
+    classification = _classify_sources(
+        tmp_path,
+        {
+            wrapper: f"import {provider} as owner\nclass Stream(owner.Value): pass\n",
+            provider: _INTRINSIC_OWNER,
+        },
+    )
+
+    assert classification.statuses[wrapper] == STATUS_PYTHON_ONLY
+
+
+def test_private_provider_requires_a_proved_import_edge(tmp_path: Path) -> None:
+    classification = _classify_sources(
+        tmp_path,
+        {
+            "stream": (
+                "__package__ = choose_package()\nfrom . import _stream\n"
+                "class Stream(_stream.Value): pass\n"
+            ),
+            "_stream": _INTRINSIC_OWNER,
+        },
+    )
+
+    assert classification.statuses["stream"] == STATUS_PYTHON_ONLY
+    assert "_stream" not in classification.import_evidence["stream"].proven_modules
+    assert classification.unresolved_imports_payload()
+
+
+def test_private_provider_cannot_bypass_pure_facade_all_owner_proof(
+    tmp_path: Path,
+) -> None:
+    classification = _classify_sources(
+        tmp_path,
+        {
+            "stream": "from _stream import Value\nfrom other import Other\n",
+            "_stream": _INTRINSIC_OWNER,
+            "other": "class Other: pass\n",
+        },
+    )
+
+    assert classification.statuses["stream"] == STATUS_PYTHON_ONLY
+    assert classification.import_evidence["stream"].facade.owners == {
+        "_stream",
+        "other",
+    }
+
+
+def test_real_io_abc_wrapper_inherits_native_provider_backing() -> None:
+    stdlib = Path(__file__).resolve().parents[1] / "src" / "molt" / "stdlib"
+    classification = classify_stdlib_module_statuses(
+        {name: stdlib / f"{name}.py" for name in ("io", "_io", "abc")},
+        target_python=_DEFAULT_TARGET_PYTHON_VERSION,
+    )
+
+    assert classification.statuses["io"] == STATUS_INTRINSIC
+    assert classification.statuses["_io"] == STATUS_INTRINSIC
+    assert "_io" in classification.import_evidence["io"].proven_modules
+
+
+def test_facade_uses_explicit_owner_not_fromlist_candidate(
     tmp_path: Path,
 ) -> None:
     classification = _classify_sources(
@@ -177,15 +288,15 @@ def test_private_facade_uses_explicit_owner_not_fromlist_candidate(
     assert classification.statuses["_facade"] == STATUS_INTRINSIC_SUPPORT
     evidence = classification.import_evidence["_facade"]
     assert "owner.Value" in evidence.proven_modules
-    facade = evidence.private_facade
+    facade = evidence.facade
     assert facade is not None and facade.resolved
     assert facade.owners == frozenset({"owner"})
-    assert classification.private_facades_payload() == [
+    assert classification.facades_payload() == [
         {
             "module": "_facade",
             "path": str(tmp_path / "_facade.py"),
             "status": STATUS_INTRINSIC_SUPPORT,
-            "reason": "pure-private-reexport",
+            "reason": "pure-reexport",
             "resolved": True,
             "owners": ["owner"],
             "bindings": [
@@ -212,7 +323,7 @@ def test_private_facade_uses_explicit_owner_not_fromlist_candidate(
         facade.bindings = ()  # type: ignore[misc]
     with pytest.raises(TypeError):
         classification.import_evidence["_facade"] = evidence  # type: ignore[index]
-    payload = classification.private_facades_payload()
+    payload = classification.facades_payload()
     payload_owners = payload[0]["owners"]
     assert isinstance(payload_owners, list)
     payload_owners.append("invented")
@@ -249,19 +360,19 @@ def test_real_imported_child_is_required_alongside_explicit_owner(
         },
     )
     assert classification.statuses["owner._facade"] == expected
-    facade = classification.import_evidence["owner._facade"].private_facade
+    facade = classification.import_evidence["owner._facade"].facade
     assert facade is not None
     assert facade.owners == {"owner", "owner.Value"}
     assert facade.bindings[0].owner_module == "owner"
     assert facade.bindings[0].imported_module == "owner.Value"
-    row = classification.private_facades_payload()[0]
+    row = classification.facades_payload()[0]
     assert row["owners"] == ["owner", "owner.Value"]
     assert row["reason"] == (
-        "pure-private-reexport" if expected == STATUS_INTRINSIC_SUPPORT else None
+        "pure-reexport" if expected == STATUS_INTRINSIC_SUPPORT else None
     )
 
 
-def test_private_facade_waits_for_real_child_support_closure(tmp_path: Path) -> None:
+def test_facade_waits_for_real_child_support_closure(tmp_path: Path) -> None:
     classification = _classify_sources(
         tmp_path,
         {
@@ -273,7 +384,7 @@ def test_private_facade_waits_for_real_child_support_closure(tmp_path: Path) -> 
     )
     assert classification.statuses["_facade"] == STATUS_INTRINSIC_SUPPORT
     assert classification.statuses["owner._child"] == STATUS_INTRINSIC_SUPPORT
-    facade = classification.import_evidence["_facade"].private_facade
+    facade = classification.import_evidence["_facade"].facade
     assert facade is not None and facade.owners == {"owner", "owner._child"}
 
 
@@ -295,7 +406,7 @@ def test_real_child_without_python_status_cannot_establish_facade_support(
     )
     assert "owner.Value" not in classification.statuses
     assert classification.statuses["_facade"] == STATUS_PYTHON_ONLY
-    facade = classification.import_evidence["_facade"].private_facade
+    facade = classification.import_evidence["_facade"].facade
     assert facade is not None and facade.owners == {"owner", "owner.Value"}
 
 
@@ -314,7 +425,7 @@ def test_real_child_facade_cycle_cannot_use_intrinsic_parent_as_anchor(
     assert classification.statuses["owner._child"] == STATUS_PYTHON_ONLY
 
 
-def test_private_facade_chains_close_independent_of_graph_order(tmp_path: Path) -> None:
+def test_facade_chains_close_independent_of_graph_order(tmp_path: Path) -> None:
     sources = {
         "_outer": "from _inner import PublicValue\n__all__ = ['PublicValue']\n",
         "_inner": "from owner import Value as PublicValue\n__all__ = ['PublicValue']\n",
@@ -329,7 +440,7 @@ def test_private_facade_chains_close_independent_of_graph_order(tmp_path: Path) 
         }
 
 
-def test_private_facade_accepts_multiple_intrinsic_owners(tmp_path: Path) -> None:
+def test_facade_accepts_multiple_intrinsic_owners(tmp_path: Path) -> None:
     classification = _classify_sources(
         tmp_path,
         {
@@ -343,7 +454,7 @@ def test_private_facade_accepts_multiple_intrinsic_owners(tmp_path: Path) -> Non
         },
     )
     assert classification.statuses["_facade"] == STATUS_INTRINSIC_SUPPORT
-    facade = classification.import_evidence["_facade"].private_facade
+    facade = classification.import_evidence["_facade"].facade
     assert facade is not None
     assert facade.owners == {"first", "second"}
 
@@ -358,7 +469,7 @@ def test_private_facade_accepts_multiple_intrinsic_owners(tmp_path: Path) -> Non
     ],
 )
 @pytest.mark.parametrize("prefix", ["", "pkg."])
-def test_private_facade_mixed_owners_fail_closed_even_in_same_package(
+def test_facade_mixed_owners_fail_closed_even_in_same_package(
     tmp_path: Path, source: str | None, status: str | None, prefix: str
 ) -> None:
     sources = {
@@ -374,11 +485,11 @@ def test_private_facade_mixed_owners_fail_closed_even_in_same_package(
     classification = _classify_sources(tmp_path, sources)
     assert classification.statuses[f"{prefix}_facade"] == STATUS_PYTHON_ONLY
     assert classification.statuses.get(f"{prefix}other") == status
-    assert classification.private_facades_payload()[0]["reason"] is None
+    assert classification.facades_payload()[0]["reason"] is None
 
 
 @pytest.mark.parametrize("prefix", ["", "pkg."])
-def test_private_facade_cycle_cannot_seed_itself_or_use_reverse_support(
+def test_facade_cycle_cannot_seed_itself_or_use_reverse_support(
     tmp_path: Path, prefix: str
 ) -> None:
     classification = _classify_sources(
@@ -416,7 +527,7 @@ def test_intrinsic_fromlist_candidate_cannot_replace_missing_or_python_owner(
     assert classification.statuses["_facade"] == STATUS_PYTHON_ONLY
 
 
-def test_private_facade_relative_owner_uses_shared_import_context(
+def test_facade_relative_owner_uses_shared_import_context(
     tmp_path: Path,
 ) -> None:
     classification = _classify_sources(
@@ -427,30 +538,50 @@ def test_private_facade_relative_owner_uses_shared_import_context(
         },
     )
     assert classification.statuses["pkg._facade"] == STATUS_INTRINSIC_SUPPORT
-    facade = classification.import_evidence["pkg._facade"].private_facade
+    facade = classification.import_evidence["pkg._facade"].facade
     assert facade is not None and facade.owners == {"pkg.owner"}
     assert classification.unresolved_imports_payload() == []
 
 
+@pytest.mark.parametrize(
+    ("source", "owners", "error"),
+    [
+        pytest.param(
+            "from .owner import Value\n"
+            "from ...other import Other\n"
+            "__all__ = ['Value', 'Other']\n",
+            ("pkg.owner", None),
+            "unknown_package",
+            id="prior-import-taints-package",
+        ),
+        pytest.param(
+            "from ...other import Other\n"
+            "from pkg.owner import Value\n"
+            "__all__ = ['Value', 'Other']\n",
+            (None, "pkg.owner"),
+            "beyond_top",
+            id="known-package-beyond-top",
+        ),
+    ],
+)
 def test_unresolved_facade_owner_does_not_fall_through_to_resolved_sibling(
-    tmp_path: Path,
+    tmp_path: Path, source: str, owners: tuple[str | None, ...], error: str
 ) -> None:
+    # A prior import can mutate package metadata, so uncertainty precedes the
+    # depth check. With no prior import, the known package proves beyond_top.
+    # The absolute sibling in that case stays resolved despite import effects.
     classification = _classify_sources(
         tmp_path,
         {
-            "pkg._facade": (
-                "from .owner import Value\n"
-                "from ...other import Other\n"
-                "__all__ = ['Value', 'Other']\n"
-            ),
+            "pkg._facade": source,
             "pkg.owner": _INTRINSIC_OWNER,
         },
     )
     assert classification.statuses["pkg._facade"] == STATUS_PYTHON_ONLY
-    facade = classification.import_evidence["pkg._facade"].private_facade
+    facade = classification.import_evidence["pkg._facade"].facade
     assert facade is not None and not facade.resolved
-    assert facade.bindings[1].owner_module is None
-    assert classification.unresolved_imports_payload()[0]["errors"] == ["beyond_top"]
+    assert tuple(binding.owner_module for binding in facade.bindings) == owners
+    assert classification.unresolved_imports_payload()[0]["errors"] == [error]
 
 
 @pytest.mark.parametrize(
@@ -458,7 +589,6 @@ def test_unresolved_facade_owner_does_not_fall_through_to_resolved_sibling(
     [
         "from owner import *\n__all__ = ['Value']\n",
         "import owner\n__all__ = ['owner']\n",
-        "from owner import Value\n",
         "from owner import Value\n__all__ = []\n",
         "from owner import Value\n__all__ = ['Value', 'Value']\n",
         "from owner import Value, Hidden\n__all__ = ['Value']\n",
@@ -504,19 +634,61 @@ def test_executable_or_incomplete_facade_shapes_are_not_private_forwarding(
         tmp_path, {"_facade": source, "owner": _INTRINSIC_OWNER}
     )
     assert classification.statuses["_facade"] == STATUS_PYTHON_ONLY
-    assert classification.import_evidence["_facade"].private_facade is None
-    assert classification.private_facades_payload() == []
+    assert classification.import_evidence["_facade"].facade is None
+    assert classification.facades_payload() == []
 
 
-def test_public_cross_root_facade_does_not_inherit_private_support(
+@pytest.mark.parametrize("name", ["facade", "_facade"])
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from owner import Value\n",
+        "from owner import Value\n__all__ = ['Value']\n",
+        "from owner import *\nfrom owner import __all__ as __all__\n",
+    ],
+)
+def test_cross_root_facade_uses_all_owner_proof_independent_of_spelling(
     tmp_path: Path,
+    name: str,
+    source: str,
 ) -> None:
     classification = _classify_sources(
         tmp_path,
         {
-            "facade": "from owner import Value\n__all__ = ['Value']\n",
+            name: source,
             "owner": _INTRINSIC_OWNER,
         },
     )
-    assert classification.statuses["facade"] == STATUS_PYTHON_ONLY
-    assert classification.import_evidence["facade"].private_facade is None
+    assert classification.statuses[name] == STATUS_INTRINSIC_SUPPORT
+    assert classification.import_evidence[name].facade.owners == {"owner"}
+
+
+@pytest.mark.parametrize("other_source", [None, "class Other: pass\n"])
+def test_import_only_forwarding_cannot_hide_an_unproved_owner(tmp_path, other_source):
+    sources = {
+        "public": "from owner import *\nfrom other import __all__\n",
+        "owner": _INTRINSIC_OWNER,
+    }
+    if other_source is not None:
+        sources["other"] = other_source
+    classification = _classify_sources(tmp_path, sources)
+    assert classification.statuses["public"] == STATUS_PYTHON_ONLY
+    assert classification.import_evidence["public"].facade.owners == {"owner", "other"}
+
+
+def test_star_facade_cannot_prove_a_later_relative_owner(tmp_path: Path) -> None:
+    classification = _classify_sources(
+        tmp_path,
+        {
+            "pkg.facade": "from owner import *\nfrom .child import Value\n",
+            "owner": _INTRINSIC_OWNER
+            + "__package__ = 'other'\n__all__ = ['__package__']\n",
+            "pkg.child": _INTRINSIC_OWNER,
+            "other.child": "Value = 1\n",
+        },
+    )
+    assert classification.statuses["pkg.facade"] == STATUS_PYTHON_ONLY
+    evidence = classification.import_evidence["pkg.facade"]
+    assert "pkg.child" not in evidence.proven_modules
+    assert evidence.unresolved_sites
+    assert evidence.facade is not None and not evidence.facade.resolved

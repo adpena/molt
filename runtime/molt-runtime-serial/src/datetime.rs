@@ -7,9 +7,14 @@
 //! algorithms.  Time and hash functions are pure Rust, with
 //! `cfg(target_arch = "wasm32")` stubs for platform-specific syscalls.
 
+use molt_runtime_core::numeric_error_policy_generated::{
+    NumericErrorContext, python_integer_divmod,
+};
+use num_traits::{ToPrimitive, Zero};
 use std::fmt::Write as _;
 
 use crate::bridge::*;
+use molt_obj_model::hash_policy::{hash_i128, hash_int};
 use molt_runtime_core::prelude::*;
 
 #[cfg(windows)]
@@ -2085,70 +2090,13 @@ pub extern "C" fn molt_datetime_local_utcoffset() -> u64 {
 }
 
 // ===========================================================================
-// 6. Hashing — deterministic, matches CPython datetime hash behaviour
+// 6. Hashing
 //
-// CPython uses Python's built-in hash() on the tuple of components for
-// most datetime types, but for compatibility we implement a simple
-// FNV-1a–inspired mix that is stable and deterministic.
-//
-// CPython datetime hash algorithm (simplified):
-//   date.__hash__  = hash(ymd ordinal)
-//   time.__hash__  = hash((h, mi, s, us, utcoff_minutes))
-//   datetime.__hash__ = combined
-//   timedelta.__hash__ = hash(total_seconds * 1e6)
-//
-// We reproduce CPython's exact integer hash behaviour using the same
-// formulae to ensure differential test correctness.
+// Datetime's existing ordinal and normalized-microsecond projections use the
+// shared target integer hash policy. They do not define another modulus,
+// integer-sign convention, or tuple mixing algorithm. This representation
+// choice is distinct from CPython's salted hashes for naive date/time values.
 // ===========================================================================
-
-/// CPython hash for a single Python int n.
-///
-/// CPython uses the integer value modulo `sys.hash_info.modulus`
-/// (which is `2^61 - 1` on 64-bit) with the special case -1 → -2.
-const HASH_MOD: i64 = 2_305_843_009_213_693_951; // 2^61 - 1
-
-fn py_hash_int(n: i64) -> i64 {
-    let h = n.rem_euclid(HASH_MOD);
-    if h == -1 { -2 } else { h }
-}
-
-fn py_hash_i128(n: i128) -> i64 {
-    let m = HASH_MOD as i128;
-    let h = n.rem_euclid(m) as i64;
-    if h == -1 { -2 } else { h }
-}
-
-/// Combine hashes the way CPython combines a tuple of ints:
-/// uses `hash_tuple` from CPython which mixes with xxHash-like operations.
-///
-/// CPython tuple hash (simplified for small tuples):
-///   acc = 0x27D4EB2F165667C5 ^ (len * multiplier)
-///   for each item:
-///       acc = acc * multiplier ^ lane_hash(item)
-#[allow(dead_code)]
-fn cpython_tuple_hash(values: &[i64]) -> i64 {
-    // Port of CPython's tuplehash from Objects/tupleobject.c
-    // xxHash constants
-    const XXPRIME_1: u64 = 11400714785074694791;
-    const XXPRIME_2: u64 = 14029467366897019727;
-    const XXPRIME_5: u64 = 2870177450012600261;
-
-    let n = values.len() as u64;
-    let mut acc: u64 = XXPRIME_5.wrapping_add(n.wrapping_mul(XXPRIME_1));
-
-    for &v in values {
-        // CPython lane hash for int: same as py_hash_int converted to u64
-        let vh = py_hash_int(v);
-        let lane = vh as u64;
-        acc = acc.wrapping_add(lane.wrapping_mul(XXPRIME_2));
-        acc = acc.rotate_left(31);
-        acc = acc.wrapping_mul(XXPRIME_1);
-    }
-
-    acc = acc.wrapping_add(n ^ XXPRIME_5 ^ 3_527_539);
-    let result = acc as i64;
-    if result == -1 { -2 } else { result }
-}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_datetime_hash_date(y_bits: u64, m_bits: u64, d_bits: u64) -> u64 {
@@ -2165,11 +2113,11 @@ pub extern "C" fn molt_datetime_hash_date(y_bits: u64, m_bits: u64, d_bits: u64)
             Ok(v) => v,
             Err(e) => return e,
         };
-        // CPython: date.__hash__ = hash(ordinal)
+        // Hash the existing date ordinal projection.
         let ord = ymd_to_ordinal(y as i32, m as i32, d as i32);
         // The ordinal is bounded (1..=3_652_059 for year 1..=9999), so its hash
         // always lands in the inline window — `from_int` is exact here.
-        MoltObject::from_int(py_hash_int(ord)).bits()
+        MoltObject::from_int(hash_int(ord)).bits()
     })
 }
 
@@ -2199,7 +2147,7 @@ pub extern "C" fn molt_datetime_hash_time(
             Err(e) => return e,
         };
         let utcoff_obj = obj_from_bits(utcoff_bits);
-        // CPython time.__hash__: hash a combined seconds+us value adjusted for tzinfo.
+        // Hash the existing combined seconds+us projection adjusted for tzinfo.
         // Total microseconds from midnight, then adjust for UTC offset.
         let total_us: i64 = (h * 3600 + mi * 60 + sec) * 1_000_000 + us;
         let utcoff_us: i64 = if utcoff_obj.is_none() {
@@ -2209,8 +2157,8 @@ pub extern "C" fn molt_datetime_hash_time(
         };
         let adjusted = total_us - utcoff_us;
         // Hash as if it's the integer value of total microseconds
-        let h_val = py_hash_i128(adjusted as i128);
-        // A tz-adjusted (negative) time reduces mod (2**61 - 1) to a value far
+        let h_val = hash_i128(adjusted as i128);
+        // A target-width numeric hash can produce a value far
         // outside the inline window; box the full Python hash, never `from_int`.
         int_bits_from_i64(_py, h_val)
     })
@@ -2272,10 +2220,9 @@ pub extern "C" fn molt_datetime_hash_datetime(
             to_i64(utcoff_obj).unwrap_or(0) as i128 * 1_000_000
         };
         let adjusted = total_us - utcoff_us;
-        let h_val = py_hash_i128(adjusted);
-        // `py_hash_i128` returns the Python hash reduced mod (2**61 - 1), which
-        // routinely exceeds the 47-bit inline window; box the full value rather
-        // than truncating it through `from_int`.
+        let h_val = hash_i128(adjusted);
+        // The target numeric hash can exceed the inline window. Preserve its
+        // full signed value through the existing owned integer constructor.
         int_bits_from_i64(_py, h_val)
     })
 }
@@ -2299,13 +2246,12 @@ pub extern "C" fn molt_datetime_hash_timedelta(
             Ok(v) => v,
             Err(e) => return e,
         };
-        // CPython: timedelta.__hash__ = hash(total_seconds * 1e6) — but
-        // more precisely it hashes the tuple (days, secs, us) after normalization.
+        // Hash the existing normalized total-microsecond projection.
         let total_us: i128 =
             days as i128 * 86_400 * 1_000_000 + secs as i128 * 1_000_000 + us as i128;
-        // Large timedeltas reduce mod (2**61 - 1) well past the inline window;
-        // box the full Python hash, never `from_int`.
-        int_bits_from_i64(_py, py_hash_i128(total_us))
+        // Publish the full target numeric hash, including negative values and
+        // values outside the inline window.
+        int_bits_from_i64(_py, hash_i128(total_us))
     })
 }
 
@@ -2546,6 +2492,29 @@ pub extern "C" fn molt_date_fromisocalendar(
 
 // ─── timedelta arithmetic ───────────────────────────────────────────────────
 
+fn numeric_zero_error(py: &PyToken, context: NumericErrorContext) -> u64 {
+    let minor = if !molt_runtime_core::rt_target_at_least(3, 12)
+        || molt_runtime_core::rt_target_at_least(3, 15)
+    {
+        return raise_exception::<u64>(
+            py,
+            "RuntimeError",
+            "unsupported numeric exception target version",
+        );
+    } else if molt_runtime_core::rt_target_at_least(3, 14) {
+        14
+    } else if molt_runtime_core::rt_target_at_least(3, 13) {
+        13
+    } else {
+        12
+    };
+    raise_exception::<u64>(
+        py,
+        context.error_class(),
+        context.message(3, minor).expect("admitted target"),
+    )
+}
+
 /// timedelta / scalar (int or float) -> timedelta (days, seconds, us) tuple
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_timedelta_truediv_scalar(
@@ -2569,7 +2538,7 @@ pub extern "C" fn molt_timedelta_truediv_scalar(
         };
         let divisor = to_f64(obj_from_bits(divisor_bits)).unwrap_or(0.0);
         if divisor == 0.0 {
-            return raise_exception::<u64>(_py, "ZeroDivisionError", "division by zero");
+            return numeric_zero_error(_py, NumericErrorContext::IntegerFloorDivision);
         }
         let total_us = (days as f64) * 86_400_000_000.0 + (secs as f64) * 1_000_000.0 + (us as f64);
         let result_us = (total_us / divisor).round() as i64;
@@ -2609,12 +2578,23 @@ pub extern "C" fn molt_timedelta_floordiv_td(
     b_us: u64,
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let a_total = td_total_us(a_days, a_secs, a_us) as i64;
-        let b_total = td_total_us(b_days, b_secs, b_us) as i64;
+        let a_total = match td_total_us_exact(_py, a_days, a_secs, a_us) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
+        let b_total = match td_total_us_exact(_py, b_days, b_secs, b_us) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
         if b_total == 0 {
-            return raise_exception::<u64>(_py, "ZeroDivisionError", "integer division by zero");
+            return numeric_zero_error(_py, NumericErrorContext::IntegerFloorDivision);
         }
-        MoltObject::from_int(a_total.div_euclid(b_total)).bits()
+        int_bits_from_i128(
+            _py,
+            python_integer_divmod(a_total, b_total)
+                .expect("timedelta totals fit i128")
+                .0,
+        )
     })
 }
 
@@ -2629,17 +2609,27 @@ pub extern "C" fn molt_timedelta_mod_td(
     b_us: u64,
 ) -> u64 {
     molt_runtime_core::with_gil_entry!(_py, {
-        let a_total = td_total_us(a_days, a_secs, a_us) as i64;
-        let b_total = td_total_us(b_days, b_secs, b_us) as i64;
+        let a_total = match td_total_us_exact(_py, a_days, a_secs, a_us) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
+        let b_total = match td_total_us_exact(_py, b_days, b_secs, b_us) {
+            Ok(value) => value,
+            Err(error) => return error,
+        };
         if b_total == 0 {
+            return numeric_zero_error(_py, NumericErrorContext::IntegerModulo);
+        }
+        let rem = python_integer_divmod(a_total, b_total)
+            .expect("timedelta totals fit i128")
+            .1;
+        let Some((rd, rs, ru)) = normalize_timedelta_us_exact(rem) else {
             return raise_exception::<u64>(
                 _py,
-                "ZeroDivisionError",
-                "integer division or modulo by zero",
+                "OverflowError",
+                "timedelta days must have magnitude <= 999999999",
             );
-        }
-        let rem = a_total.rem_euclid(b_total);
-        let (rd, rs, ru) = normalize_timedelta_us(rem);
+        };
         timedelta_tuple(_py, rd, rs, ru)
     })
 }
@@ -2665,13 +2655,36 @@ pub extern "C" fn molt_timedelta_floordiv_scalar(
             Ok(v) => v,
             Err(e) => return e,
         };
-        let divisor = obj_from_bits(divisor_bits).as_int().unwrap_or(0);
-        if divisor == 0 {
-            return raise_exception::<u64>(_py, "ZeroDivisionError", "integer division by zero");
+        let Some(divisor) = to_bigint(obj_from_bits(divisor_bits)) else {
+            return raise_exception::<u64>(
+                _py,
+                "TypeError",
+                "timedelta floor divisor must be an integer",
+            );
+        };
+        if divisor.is_zero() {
+            return numeric_zero_error(_py, NumericErrorContext::IntegerFloorDivision);
         }
-        let total_us = days * 86_400_000_000 + secs * 1_000_000 + us;
-        let result_us = total_us.div_euclid(divisor);
-        let (rd, rs, ru) = normalize_timedelta_us(result_us);
+        let total_us =
+            i128::from(days) * 86_400_000_000 + i128::from(secs) * 1_000_000 + i128::from(us);
+        let numerator = num_bigint::BigInt::from(total_us);
+        let mut result = &numerator / &divisor;
+        let remainder = &numerator % &divisor;
+        if !remainder.is_zero()
+            && (remainder < num_bigint::BigInt::from(0)) != (divisor < num_bigint::BigInt::from(0))
+        {
+            result -= 1;
+        }
+        let result_us = result
+            .to_i128()
+            .expect("division cannot enlarge timedelta beyond i128");
+        let Some((rd, rs, ru)) = normalize_timedelta_us_exact(result_us) else {
+            return raise_exception::<u64>(
+                _py,
+                "OverflowError",
+                "timedelta days must have magnitude <= 999999999",
+            );
+        };
         timedelta_tuple(_py, rd, rs, ru)
     })
 }
@@ -2699,6 +2712,33 @@ pub extern "C" fn molt_timedelta_abs(days_bits: u64, secs_bits: u64, us_bits: u6
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+fn td_total_us_exact(
+    py: &PyToken,
+    days_bits: u64,
+    secs_bits: u64,
+    us_bits: u64,
+) -> Result<i128, u64> {
+    let days = unpack_i64(py, days_bits, "days")?;
+    let secs = unpack_i64(py, secs_bits, "seconds")?;
+    let us = unpack_i64(py, us_bits, "microseconds")?;
+    Ok(i128::from(days) * 86_400_000_000 + i128::from(secs) * 1_000_000 + i128::from(us))
+}
+
+fn normalize_timedelta_us_exact(total_us: i128) -> Option<(i64, i64, i64)> {
+    const DAY_US: i128 = 86_400_000_000;
+    if !(-999_999_999 * DAY_US..=(1_000_000_000 * DAY_US - 1)).contains(&total_us) {
+        return None;
+    }
+    let us = total_us.rem_euclid(1_000_000);
+    let total_secs = (total_us - us) / 1_000_000;
+    let secs = total_secs.rem_euclid(86_400);
+    let days = (total_secs - secs) / 86_400;
+    if !(-999_999_999..=999_999_999).contains(&days) {
+        return None;
+    }
+    Some((days as i64, secs as i64, us as i64))
+}
 
 fn td_total_us(days_bits: u64, secs_bits: u64, us_bits: u64) -> f64 {
     let days = obj_from_bits(days_bits).as_int().unwrap_or(0);

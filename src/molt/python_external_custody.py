@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import _thread
 import ast
+from molt.python_private_names import python_import_binding
 from collections.abc import Mapping, Sequence
 import hashlib
 import importlib.machinery as machinery
@@ -333,7 +334,7 @@ def _verify_code_owner(
     for item in body:
         if isinstance(item, ast.Import):
             for alias in item.names:
-                local = alias.asname or alias.name.split(".")[0]
+                local = python_import_binding(alias)
                 if members.get(local) is not sys.modules.get(alias.name):
                     raise PythonEnvironmentIdentityError(
                         f"reviewed startup import binding differs: {local}"

@@ -667,6 +667,26 @@ def test_custody_cas_recursively_fsyncs_new_directories(
     [
         ('"/usr/bin/cc" "-o" "probe"\n', ""),
         ("", 'note: emitted on stderr\n"/usr/bin/cc" "-o" "probe"\n'),
+        ('LC_ALL="C" PATH="/rust/lib:/usr/bin" "/usr/bin/cc" "-o" "probe"\n', ""),
+        ("", 'LC_ALL="C" PATH="/rust/lib:/usr/bin" "/usr/bin/cc" "-o" "probe"\n'),
+        (
+            'RUST_EMPTY="" RUST_FLAGS="value with spaces" "/usr/bin/cc" "-o" "probe"\n',
+            "",
+        ),
+        (
+            'RUST_FLAGS="escaped \\"quote\\" and \\\\path" "/usr/bin/cc" "-o" "probe"\n',
+            "",
+        ),
+        # rustc strips Apple deployment targets with env_remove, which
+        # std::process::Command's Debug form prints as an `env -u` prefix.
+        (
+            "env -u IPHONEOS_DEPLOYMENT_TARGET -u TVOS_DEPLOYMENT_TARGET "
+            'LC_ALL="C" PATH="/rust/lib:/usr/bin" "/usr/bin/cc" "-o" "probe"\n',
+            "",
+        ),
+        ('env -i PATH="/usr/bin" "/usr/bin/cc" "-o" "probe"\n', ""),
+        ('cd "/work dir" && env -u SDKROOT "/usr/bin/cc" "-o" "probe"\n', ""),
+        ('["/usr/bin/cc"] "cc-display-name" "-o" "probe"\n', ""),
     ],
 )
 def test_rust_link_selection_accepts_exactly_one_command_from_either_channel(
@@ -683,6 +703,17 @@ def test_rust_link_selection_accepts_exactly_one_command_from_either_channel(
     ("stdout", "stderr", "count"),
     [
         ("selection emitted no quoted command\n", "", 0),
+        ('LC_ALL="C" PATH="/usr/bin"\n', "", 0),
+        ('LC_ALL="C" not a command\n', "", 0),
+        ('LC_ALL="C""/usr/bin/cc" "-o" "probe"\n', "", 0),
+        ('env -u SDKROOT PATH="/usr/bin"\n', "", 0),
+        ('cd "/work" "/usr/bin/cc" "-o" "probe"\n', "", 0),
+        ('["/usr/bin/cc" "cc" "-o" "probe"\n', "", 0),
+        (
+            'LC_ALL="C" "/usr/bin/cc" "one"\n',
+            'PATH="/usr/bin" "/usr/bin/ld" "two"\n',
+            2,
+        ),
         (
             '"/usr/bin/cc" "one"\n',
             '"/usr/bin/ld" "two"\n',
@@ -695,6 +726,67 @@ def test_rust_link_selection_fails_closed_on_zero_or_multiple_commands(
 ) -> None:
     with pytest.raises(ValueError, match=rf"returned {count} commands"):
         toolchain_capture._selected_rust_link_command(stdout, stderr)
+
+
+# Shapes from GitHub's runners: gcc 13 quotes only arguments with characters
+# outside [A-Za-z0-9_./-]; Apple clang quotes every argument. Both escape a
+# double quote, backslash, or dollar sign inside quotes.
+_GCC_DRY_RUN = (
+    "Using built-in specs.\n"
+    "COLLECT_GCC=cc\n"
+    "Target: x86_64-linux-gnu\n"
+    "COLLECT_GCC_OPTIONS='-m64' '-o' '/tmp/probe'\n"
+    " /usr/libexec/gcc/x86_64-linux-gnu/13/collect2 -plugin"
+    ' "-plugin-opt=-fresolution=/tmp/cc.res" --build-id -o /tmp/probe'
+    ' "" "quote\\"slash\\\\dollar\\$"\n'
+)
+_CLANG_DRY_RUN = (
+    "Apple clang version 21.0.0 (clang-2100.1.1.101)\n"
+    "Target: arm64-apple-darwin25.6.0\n"
+    "InstalledDir: /Applications/Xcode.app/usr/bin\n"
+    ' "/Applications/Xcode.app/usr/bin/ld" "-demangle" "-arch" "arm64"'
+    ' "-o" "/Users/runner/probe"\n'
+)
+
+
+def test_driver_dry_run_reports_gcc_and_clang_helper_commands() -> None:
+    assert toolchain_capture._driver_command_lines(_GCC_DRY_RUN) == [
+        [
+            "/usr/libexec/gcc/x86_64-linux-gnu/13/collect2",
+            "-plugin",
+            "-plugin-opt=-fresolution=/tmp/cc.res",
+            "--build-id",
+            "-o",
+            "/tmp/probe",
+            "",
+            'quote"slash\\dollar$',
+        ]
+    ]
+    assert toolchain_capture._driver_command_lines(_CLANG_DRY_RUN) == [
+        [
+            "/Applications/Xcode.app/usr/bin/ld",
+            "-demangle",
+            "-arch",
+            "arm64",
+            "-o",
+            "/Users/runner/probe",
+        ]
+    ]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        ' "unterminated',
+        ' "unknown \\n escape"',
+        ' "joined""argument"',
+        ' bare"quote',
+        "  doubly-indented banner",
+        "Target: column-zero banner",
+    ],
+)
+def test_driver_dry_run_skips_malformed_or_banner_lines(line: str) -> None:
+    assert toolchain_capture._driver_command_lines(line + "\n") == []
 
 
 def _rust_metadata_probe(command, root: Path):
@@ -731,8 +823,11 @@ def _rust_metadata_probe(command, root: Path):
     return None
 
 
+@pytest.mark.parametrize(
+    "command_prefix", ["", 'LC_ALL="C" PATH="/rust/lib:/usr/bin" ']
+)
 def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command_prefix: str
 ) -> None:
     cargo = tmp_path / ("cargo.exe" if os.name == "nt" else "cargo")
     rustc = tmp_path / ("rustc.exe" if os.name == "nt" else "rustc")
@@ -768,7 +863,7 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
         return subprocess.CompletedProcess(
             argv,
             0,
-            json.dumps(str(linker)) + ' "--exact-probe-argument"\n',
+            command_prefix + json.dumps(str(linker)) + ' "--exact-probe-argument"\n',
             "",
         )
 
@@ -859,9 +954,12 @@ def test_rust_link_capture_uses_exact_target_environment_and_selected_image(
         )
 
 
+@pytest.mark.parametrize(
+    "command_prefix", ["", 'LC_ALL="C" PATH="/rust/lib:/usr/bin" ']
+)
 @pytest.mark.parametrize("cargo_mode", [False, True])
 def test_rust_capture_metadata_and_link_prints_are_disjoint_real_rustc_phases(
-    tmp_path, monkeypatch, cargo_mode
+    tmp_path, monkeypatch, cargo_mode, command_prefix
 ):
     linker = tmp_path / ("linker.exe" if os.name == "nt" else "linker")
     linker.write_bytes(b"linker")
@@ -883,7 +981,7 @@ def test_rust_capture_metadata_and_link_prints_are_disjoint_real_rustc_phases(
             "rustc links only after metadata early-exit requests are removed"
         )
         return subprocess.CompletedProcess(
-            command, 0, json.dumps(str(linker)) + "\n", ""
+            command, 0, command_prefix + json.dumps(str(linker)) + "\n", ""
         )
 
     monkeypatch.setattr(toolchain_capture, "_COMMANDS", SimpleNamespace(run=run))
@@ -993,9 +1091,9 @@ def test_rust_cargo_legal_feature_names_are_not_print_argument_positions(
     )
     assert len(probes) == 4
     for metadata, selection in zip(probes[::2], probes[1::2], strict=True):
-        assert metadata[:-2] == selection[:-2]
+        assert metadata[:-2] == selection[:-4]
         assert metadata[-2:] == ["--print", "sysroot"]
-        assert selection[-2:] == ["--print", "link-args"]
+        assert selection[-4:] == ["-C", "save-temps", "--print", "link-args"]
 
 
 @pytest.mark.parametrize("cargo_mode", [False, True])
@@ -1283,9 +1381,9 @@ def test_rust_driver_alias_preserves_invocation_and_revalidates_selection(
             assert command[0] == str(alias), "driver role must not become llvm-driver"
             assert kwargs["cwd"] == tmp_path
             dry_runs.append(command)
-            return subprocess.CompletedProcess(
-                command, 0, "", json.dumps(str(helper)) + "\n"
-            )
+            # Drivers print each helper command indented one space, quoted.
+            quoted = str(helper).replace("\\", "\\\\")
+            return subprocess.CompletedProcess(command, 0, "", f' "{quoted}"\n')
         return subprocess.CompletedProcess(
             command, 0, json.dumps(str(alias)) + "\n", ""
         )

@@ -59,7 +59,6 @@ define_interned_names! {
     write_name,
     flush_name,
     readline_name,
-    sys_name,
     sys_version_info,
     sys_version,
     stdout_name,
@@ -121,7 +120,6 @@ define_interned_names! {
     molt_bind_kind,
     defaults_name,
     kwdefaults_name,
-    abstractmethods_name,
     lt_name,
     le_name,
     gt_name,
@@ -201,406 +199,6 @@ macro_rules! define_method_cache {
 }
 
 define_method_cache! {
-    dict_keys,
-    dict_values,
-    dict_items,
-    dict_get,
-    dict_pop,
-    dict_clear,
-    dict_copy,
-    dict_popitem,
-    dict_setdefault,
-    dict_update,
-    dict_fromkeys,
-    dict_getitem,
-    dict_setitem,
-    dict_delitem,
-    dict_iter,
-    dict_len,
-    dict_contains,
-    dict_reversed,
-    set_add,
-    set_discard,
-    set_remove,
-    set_pop,
-    set_clear,
-    set_update,
-    set_union,
-    set_intersection,
-    set_difference,
-    set_symdiff,
-    set_intersection_update,
-    set_difference_update,
-    set_symdiff_update,
-    set_isdisjoint,
-    set_issubset,
-    set_issuperset,
-    set_copy,
-    set_iter,
-    set_len,
-    set_contains,
-    frozenset_union,
-    frozenset_intersection,
-    frozenset_difference,
-    frozenset_symdiff,
-    frozenset_isdisjoint,
-    frozenset_issubset,
-    frozenset_issuperset,
-    frozenset_copy,
-    frozenset_iter,
-    frozenset_len,
-    frozenset_contains,
-    tuple_new,
-    tuple_count,
-    tuple_index,
-    tuple_iter,
-    tuple_len,
-    tuple_getitem,
-    tuple_contains,
-    list_append,
-    list_extend,
-    list_insert,
-    list_remove,
-    list_pop,
-    list_clear,
-    list_init,
-    list_copy,
-    list_reverse,
-    list_count,
-    list_index,
-    list_sort,
-    list_add,
-    list_mul,
-    list_rmul,
-    list_iadd,
-    list_imul,
-    list_getitem,
-    list_setitem,
-    list_delitem,
-    list_iter,
-    list_len,
-    list_contains,
-    list_reversed,
-    str_iter,
-    str_hash,
-    str_len,
-    str_str,
-    str_contains,
-    str_count,
-    str_startswith,
-    str_endswith,
-    str_find,
-    str_rfind,
-    str_index,
-    str_rindex,
-    str_capitalize,
-    str_title,
-    str_format,
-    str_format_map,
-    str_isidentifier,
-    str_isdigit,
-    str_isdecimal,
-    str_isnumeric,
-    str_isspace,
-    str_isalpha,
-    str_isalnum,
-    str_islower,
-    str_isupper,
-    str_isascii,
-    str_istitle,
-    str_isprintable,
-    str_upper,
-    str_lower,
-    str_casefold,
-    str_swapcase,
-    str_strip,
-    str_lstrip,
-    str_rstrip,
-    str_split,
-    str_rsplit,
-    str_splitlines,
-    str_partition,
-    str_rpartition,
-    str_replace,
-    str_removeprefix,
-    str_removesuffix,
-    str_zfill,
-    str_center,
-    str_ljust,
-    str_rjust,
-    str_expandtabs,
-    str_join,
-    str_translate,
-    str_maketrans,
-    str_encode,
-    bytes_iter,
-    bytes_len,
-    bytes_contains,
-    bytes_count,
-    bytes_startswith,
-    bytes_endswith,
-    bytes_find,
-    bytes_rfind,
-    bytes_split,
-    bytes_rsplit,
-    bytes_reversed,
-    bytes_strip,
-    bytes_lstrip,
-    bytes_rstrip,
-    bytes_splitlines,
-    bytes_partition,
-    bytes_rpartition,
-    bytes_replace,
-    bytes_join,
-    bytes_upper,
-    bytes_lower,
-    bytes_hex,
-    bytes_decode,
-    bytes_translate,
-    bytes_maketrans,
-    bytearray_iter,
-    bytearray_len,
-    bytearray_contains,
-    bytearray_extend,
-    bytearray_clear,
-    bytearray_count,
-    bytearray_startswith,
-    bytearray_endswith,
-    bytearray_find,
-    bytearray_rfind,
-    bytearray_split,
-    bytearray_rsplit,
-    bytearray_reversed,
-    bytearray_strip,
-    bytearray_lstrip,
-    bytearray_rstrip,
-    bytearray_splitlines,
-    bytearray_partition,
-    bytearray_rpartition,
-    bytearray_replace,
-    bytearray_append,
-    bytearray_hex,
-    bytearray_decode,
-    bytearray_translate,
-    bytearray_maketrans,
-    bytearray_setitem,
-    bytearray_delitem,
-    int_new,
-    int_hash,
-    int_int,
-    int_index,
-    int_bit_length,
-    int_to_bytes,
-    int_from_bytes,
-    slice_indices,
-    slice_hash,
-    slice_eq,
-    slice_reduce,
-    slice_reduce_ex,
-    memoryview_tobytes,
-    memoryview_tolist,
-    memoryview_cast,
-    memoryview_setitem,
-    memoryview_delitem,
-    file_read,
-    file_readline,
-    file_readlines,
-    file_read1,
-    file_readall,
-    file_readinto,
-    file_readinto1,
-    file_write,
-    file_writelines,
-    file_flush,
-    file_close,
-    file_detach,
-    file_reconfigure,
-    file_seek,
-    file_tell,
-    file_fileno,
-    file_truncate,
-    file_readable,
-    file_writable,
-    file_seekable,
-    file_isatty,
-    file_iter,
-    file_next,
-    file_enter,
-    file_exit,
-    file_peek,
-    file_getvalue,
-    file_getbuffer,
-    file_io_new,
-    file_io_init,
-    buffered_new,
-    buffered_init,
-    text_io_wrapper_new,
-    text_io_wrapper_init,
-    bytes_io_new,
-    bytes_io_init,
-    string_io_new,
-    string_io_init,
-    generator_iter,
-    generator_next,
-    generator_send,
-    generator_throw,
-    generator_close,
-    coroutine_close,
-    asyncgen_aiter,
-    asyncgen_anext,
-    asyncgen_asend,
-    asyncgen_athrow,
-    asyncgen_aclose,
-    staticmethod_type_new,
-    staticmethod_init,
-    staticmethod_get,
-    staticmethod_call,
-    classmethod_type_new,
-    classmethod_init,
-    classmethod_get,
-    property_type_new,
-    property_init,
-    property_get,
-    property_set,
-    property_delete,
-    property_set_name,
-    property_getter,
-    property_setter,
-    property_deleter,
-    complex_conjugate,
-    object_getattribute,
-    object_new,
-    object_init,
-    object_init_subclass,
-    object_setattr,
-    object_delattr,
-    object_eq,
-    object_ne,
-    object_repr,
-    object_str,
-    type_getattribute,
-    type_call,
-    type_new,
-    type_init,
-    type_prepare,
-    type_mro,
-    type_instancecheck,
-    type_subclasscheck,
-    exception_init,
-    exception_init_base_exception_group,
-    exception_init_syntax_error,
-    exception_init_import_error,
-    exception_init_unicode_decode_error,
-    exception_init_unicode_encode_error,
-    exception_init_unicode_translate_error,
-    exception_init_system_exit,
-    exception_init_os_error,
-    exception_init_stop_iteration,
-    exception_init_name_error,
-    exception_init_attribute_error,
-    exception_new,
-    exception_add_note,
-    exception_group_init,
-    exception_group_new,
-    exception_group_subgroup,
-    exception_group_split,
-    exception_group_derive,
-    generic_alias_new,
-    generic_alias_class_getitem,
-    weakref_new,
-    weakref_init,
-    weakref_call,
-    weakref_eq,
-    weakref_ne,
-    weakref_repr,
-    weakref_hash,
-    object_dir,
-    object_format,
-    object_hash,
-    object_getstate,
-    object_lt,
-    object_le,
-    object_gt,
-    object_ge,
-    int_abs,
-    int_add,
-    int_and,
-    int_bool,
-    int_ceil,
-    int_divmod,
-    str_add,
-    str_getitem,
-    bytes_index,
-    bytes_rindex,
-    bytes_removeprefix,
-    bytes_removesuffix,
-    bytes_capitalize,
-    bytes_swapcase,
-    bytes_title,
-    bytes_isalpha,
-    bytes_isalnum,
-    bytes_isdigit,
-    bytes_isspace,
-    bytes_islower,
-    bytes_isupper,
-    bytes_istitle,
-    bytes_isascii,
-    bytes_zfill,
-    bytes_center,
-    bytes_ljust,
-    bytes_rjust,
-    bytes_expandtabs,
-    bytearray_insert,
-    bytearray_pop,
-    bytearray_remove,
-    bytearray_reverse,
-    bytearray_resize,
-    bytearray_copy,
-    bytearray_index,
-    bytearray_rindex,
-    bytearray_removeprefix,
-    bytearray_removesuffix,
-    bytearray_join,
-    bytearray_capitalize,
-    bytearray_upper,
-    bytearray_lower,
-    bytearray_swapcase,
-    bytearray_title,
-    bytearray_isalpha,
-    bytearray_isalnum,
-    bytearray_isdigit,
-    bytearray_isspace,
-    bytearray_islower,
-    bytearray_isupper,
-    bytearray_istitle,
-    bytearray_isascii,
-    bytearray_zfill,
-    bytearray_center,
-    bytearray_ljust,
-    bytearray_rjust,
-    bytearray_expandtabs,
-    int_bit_count,
-    int_as_integer_ratio,
-    int_conjugate,
-    int_is_integer,
-    float_new,
-    float_hash,
-    float_float,
-    float_as_integer_ratio,
-    float_conjugate,
-    float_hex,
-    float_is_integer,
-    float_fromhex,
-    float_from_number,
-    complex_from_number,
-    memoryview_from_flags,
-    memoryview_count,
-    memoryview_index,
-    memoryview_hex,
-    memoryview_release,
-    memoryview_toreadonly,
-    range_count,
-    range_index,
     function_descriptor_get,
 }
 
@@ -661,6 +259,7 @@ define_runtime_static_names! {
     dunder_package_name => b"__package__",
     dunder_path_name => b"__path__",
     dunder_spec_name => b"__spec__",
+    initializing_name => b"_initializing",
     dunder_suppress_context_name => b"__suppress_context__",
     exec_module_name => b"exec_module",
     exists_name => b"exists",
@@ -818,6 +417,40 @@ pub(crate) fn intern_bridge_write_name(_py: &PyToken<'_>, key: &[u8]) -> Result<
     }
 }
 
+/// Allocate one owned keyword-marker object for a runtime cache publication.
+/// Zero is the cache initialization failure value; Python None is never a
+/// marker candidate. Both itertools bridge profiles and functools use this
+/// allocator, preserving the original allocation error and leaving retry open.
+pub(crate) fn alloc_kwd_mark(py: &PyToken<'_>) -> u64 {
+    if crate::exception_pending(py) {
+        return 0;
+    }
+    let ptr = crate::alloc_object(
+        py,
+        std::mem::size_of::<crate::MoltHeader>(),
+        crate::TYPE_ID_OBJECT,
+    );
+    if ptr.is_null() {
+        0
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+/// Give a Python-callable result its own reference to a borrowed cached handle.
+/// Cache initialization transfers an owner to the slot; neither a cache hit nor
+/// its first publication transfers that owner to the caller. A zero handle is
+/// failed initialization: return None without replacing the pending exception.
+/// Retaining tuple/dict publication already owns borrowed inputs and does not
+/// use this result boundary.
+pub(crate) fn retain_cached_result(py: &PyToken<'_>, bits: u64) -> u64 {
+    if bits == 0 {
+        return MoltObject::none().bits();
+    }
+    crate::inc_ref_bits(py, bits);
+    bits
+}
+
 fn release_atomic_cache_owner(_py: &PyToken<'_>, bits: u64) {
     if bits != 0 {
         dec_ref_bits(_py, bits);
@@ -826,11 +459,9 @@ fn release_atomic_cache_owner(_py: &PyToken<'_>, bits: u64) {
 
 /// Return whether a populated slot was detached, including interned values
 /// whose physical lifetime remains owned by the shutdown singleton authority.
+#[cfg(test)]
 pub(crate) fn clear_atomic_bits(_py: &PyToken<'_>, slot: &AtomicU64) -> bool {
-    crate::gil_assert();
-    let bits = slot.swap(0, AtomicOrdering::AcqRel);
-    release_atomic_cache_owner(_py, bits);
-    bits != 0
+    clear_atomic_slots(_py, &[slot])
 }
 
 pub(crate) fn clear_atomic_slots(_py: &PyToken<'_>, slots: &[&AtomicU64]) -> bool {
@@ -850,6 +481,34 @@ pub(crate) fn clear_atomic_slots(_py: &PyToken<'_>, slots: &[&AtomicU64]) -> boo
         release_atomic_cache_owner(_py, bits);
     }
     changed
+}
+
+/// Enumerate canonical class anchors only from declared runtime cache owners.
+/// Heap immutability alone is never permission to retire an arbitrary class.
+pub(crate) fn cached_runtime_class_roots(py: &PyToken<'_>, slots: &[&AtomicU64]) -> Vec<u64> {
+    crate::gil_assert();
+    slots
+        .iter()
+        .map(|slot| slot.load(AtomicOrdering::Acquire))
+        .filter(|bits| crate::object::class_storage::is_canonical_runtime_class(py, *bits))
+        .collect()
+}
+
+/// Keep canonical class anchors live through the shared retirement transaction;
+/// detach every other cache owner before any callback-capable reference release.
+pub(crate) fn clear_cached_runtime_callbacks(py: &PyToken<'_>, slots: &[&AtomicU64]) -> bool {
+    crate::gil_assert();
+    let callbacks: Vec<_> = slots
+        .iter()
+        .copied()
+        .filter(|slot| {
+            !crate::object::class_storage::is_canonical_runtime_class(
+                py,
+                slot.load(AtomicOrdering::Acquire),
+            )
+        })
+        .collect();
+    clear_atomic_slots(py, &callbacks)
 }
 
 pub(crate) fn clear_method_cache(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
@@ -957,45 +616,18 @@ mod tests {
     }
 
     #[test]
-    fn clear_method_cache_clears_previously_omitted_slots() {
+    fn clear_method_cache_releases_every_remaining_private_callback() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let state = runtime_state(_py);
             clear_method_cache(_py, state);
-
-            let sentinels: [(&AtomicU64, &'static [u8]); 15] = [
-                (&state.method_cache.set_clear, b"method-cache-set-clear"),
-                (&state.method_cache.set_union, b"method-cache-set-union"),
-                (
-                    &state.method_cache.frozenset_union,
-                    b"method-cache-frozenset-union",
-                ),
-                (&state.method_cache.tuple_new, b"method-cache-tuple-new"),
-                (&state.method_cache.list_init, b"method-cache-list-init"),
-                (&state.method_cache.list_add, b"method-cache-list-add"),
-                (&state.method_cache.str_str, b"method-cache-str-str"),
-                (&state.method_cache.str_find, b"method-cache-str-find"),
-                (&state.method_cache.str_rfind, b"method-cache-str-rfind"),
-                (&state.method_cache.str_index, b"method-cache-str-index"),
-                (&state.method_cache.object_dir, b"method-cache-object-dir"),
-                (&state.method_cache.int_abs, b"method-cache-int-abs"),
-                (&state.method_cache.str_add, b"method-cache-str-add"),
-                (&state.method_cache.bytes_index, b"method-cache-bytes-index"),
-                (
-                    &state.method_cache.bytearray_upper,
-                    b"method-cache-bytearray-upper",
-                ),
-            ];
-
-            for (slot, name) in sentinels {
-                let ptr = alloc_string(_py, name);
+            for slot in state.method_cache.slots() {
+                let ptr = alloc_string(_py, b"private callback cache sentinel");
                 assert!(!ptr.is_null());
                 slot.store(MoltObject::from_ptr(ptr).bits(), Ordering::Release);
             }
-
             clear_method_cache(_py, state);
-
-            for (slot, _) in sentinels {
+            for slot in state.method_cache.slots() {
                 assert_eq!(slot.load(Ordering::Acquire), 0);
             }
         });

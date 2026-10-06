@@ -16,32 +16,22 @@ use std::ptr;
 
 pub(crate) const WEAKREF_HASH_UNSET: i64 = -1;
 
-/// Single fail-closed weakrefability authority for runtime registration.
-/// Internal/builders and unlisted builtins are rejected even when heap-backed.
+/// Registration projects the sealed class admission record for every public
+/// object. Generated heap facts are native-constructor inputs, never a second
+/// builtin-vs-user registration policy. Missing construction metadata denies.
 pub(crate) fn object_supports_weakrefs(_py: &PyToken<'_>, target_bits: u64) -> bool {
-    let Some(target_ptr) = obj_from_bits(target_bits).as_ptr() else {
+    if obj_from_bits(target_bits).as_ptr().is_none() {
         return false;
-    };
-    let type_id = unsafe { crate::object_type_id(target_ptr) };
-    let policy = crate::object::heap_weakref_policy(type_id)
-        .unwrap_or(crate::object::HeapWeakrefPolicy::Deny);
+    }
     let class_bits = crate::type_of_bits(_py, target_bits);
     let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
-        return policy == crate::object::HeapWeakrefPolicy::Allow;
+        return false;
     };
-    if unsafe { crate::object_type_id(class_ptr) } == crate::TYPE_ID_TYPE
-        && !crate::is_builtin_class_bits(_py, class_bits)
-    {
-        return unsafe { crate::builtins::attr::class_slots_info(_py, class_ptr) }
-            .is_none_or(|info| info.allows_weakref);
+    unsafe {
+        crate::object_type_id(class_ptr) == crate::TYPE_ID_TYPE
+            && crate::builtins::attr::class_slots_info(_py, class_ptr)
+                .is_some_and(|info| info.allows_weakref)
     }
-    if type_id == crate::TYPE_ID_BOUND_METHOD {
-        let func_bits = unsafe { crate::bound_method_func_bits(target_ptr) };
-        let func_class = crate::type_of_bits(_py, func_bits);
-        return !crate::builtins::classes::builtin_classes(_py)
-            .is_builtin_callable_class(func_class);
-    }
-    policy == crate::object::HeapWeakrefPolicy::Allow
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -61,6 +51,116 @@ impl WeakContainerCookie {
     #[inline]
     pub(crate) fn state_bits(self) -> u64 {
         self.state_bits.get()
+    }
+}
+
+/// A non-owning observation of one allocation lifetime. The caller owns the
+/// target while registering; the token never postpones finalizers or weakrefs.
+/// The existing registry mutex and checked live retain govern every upgrade.
+/// A generation prevents a freed address reused by another object from matching.
+pub(crate) struct WeakBorrow<'a, 'py> {
+    py: &'a PyToken<'py>,
+    bits: u64,
+    generation: Option<u64>,
+}
+
+impl<'a, 'py> WeakBorrow<'a, 'py> {
+    pub(crate) fn new(py: &'a PyToken<'py>, bits: u64) -> Result<Self, u64> {
+        let mut observation = Self {
+            py,
+            bits,
+            generation: None,
+        };
+        let Some(pointer) = obj_from_bits(bits).as_ptr() else {
+            return Ok(observation);
+        };
+        let header = unsafe { header_from_obj_ptr(pointer) };
+        if unsafe { (*header).load_synchronized_flags() } & super::HEADER_FLAG_IMMORTAL != 0 {
+            return Ok(observation);
+        }
+        let slot = PtrSlot(pointer);
+        let mut registry = runtime_state(py).weakrefs.lock().unwrap();
+        let generation = if let Some(entry) = registry.borrowed_targets.get_mut(&slot) {
+            let Some(borrowers) = entry.borrowers.checked_add(1) else {
+                drop(registry);
+                return Err(raise_exception(
+                    py,
+                    "OverflowError",
+                    "weak borrow count exhausted",
+                ));
+            };
+            entry.borrowers = borrowers;
+            entry.generation
+        } else {
+            let generation = registry.next_borrow_generation;
+            let Some(next) = generation.checked_add(1) else {
+                drop(registry);
+                return Err(raise_exception(
+                    py,
+                    "OverflowError",
+                    "weak borrow generation exhausted",
+                ));
+            };
+            if registry.borrowed_targets.try_reserve(1).is_err() {
+                drop(registry);
+                return Err(raise_exception(
+                    py,
+                    "MemoryError",
+                    "weak borrow registration failed",
+                ));
+            }
+            registry.borrowed_targets.insert(
+                slot,
+                crate::state::runtime_state::WeakBorrowEntry {
+                    generation,
+                    borrowers: 1,
+                },
+            );
+            registry.next_borrow_generation = next;
+            generation
+        };
+        // Reuse the ordinary weak-link terminal-death path even for values
+        // whose public Python weakref policy is Deny. This flag is sticky.
+        unsafe {
+            (*header).fetch_or_flags(super::HEADER_FLAG_HAS_WEAKREF);
+        }
+        observation.generation = Some(generation);
+        Ok(observation)
+    }
+
+    pub(crate) fn upgrade_owned(&self) -> Option<u64> {
+        let Some(generation) = self.generation else {
+            inc_ref_bits(self.py, self.bits);
+            return Some(self.bits);
+        };
+        let pointer = obj_from_bits(self.bits).as_ptr()?;
+        let registry = runtime_state(self.py).weakrefs.lock().unwrap();
+        if registry.borrowed_targets.get(&PtrSlot(pointer))?.generation != generation {
+            return None;
+        }
+        try_retain_registered_ptr(&registry, pointer)
+    }
+}
+
+impl Drop for WeakBorrow<'_, '_> {
+    fn drop(&mut self) {
+        let Some(generation) = self.generation else {
+            return;
+        };
+        let slot = PtrSlot(
+            obj_from_bits(self.bits)
+                .as_ptr()
+                .expect("borrowed heap target"),
+        );
+        let mut registry = runtime_state(self.py).weakrefs.lock().unwrap();
+        if let Some(entry) = registry.borrowed_targets.get_mut(&slot)
+            && entry.generation == generation
+        {
+            entry.borrowers -= 1;
+            if entry.borrowers == 0 {
+                registry.borrowed_targets.remove(&slot);
+            }
+        }
     }
 }
 
@@ -236,13 +336,14 @@ pub(crate) fn weakref_clear_for_ptr(_py: &PyToken<'_>, target_ptr: *mut u8) {
         return;
     }
     let target_slot = PtrSlot(target_ptr);
-    let capacity = runtime_state(_py)
-        .weakrefs
-        .lock()
-        .unwrap()
-        .by_target
-        .get(&target_slot)
-        .map_or(0, Vec::len);
+    let capacity = {
+        let mut registry = runtime_state(_py).weakrefs.lock().unwrap();
+        // This entrypoint is called only after committed death, after any
+        // resurrection opportunity. GC's early Python-weakref clearing does
+        // not retire internal observations of still-live allocations.
+        registry.borrowed_targets.remove(&target_slot);
+        registry.by_target.get(&target_slot).map_or(0, Vec::len)
+    };
     let mut deaths: Vec<PendingWeakDeath> = Vec::new();
     if deaths.try_reserve_exact(capacity).is_err() {
         weakref_clear_for_ptr_noqueue(_py, target_slot);
@@ -1146,6 +1247,144 @@ mod tests {
     };
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    #[test]
+    fn internal_borrow_tracks_lifetime_without_owning_or_exposing_weakrefs() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let baseline = crate::runtime_state(py)
+                .weakrefs
+                .lock()
+                .unwrap()
+                .borrowed_targets
+                .len();
+            let immediate = crate::MoltObject::from_int(19).bits();
+            // Builtin classes are runtime-owned heap objects, not necessarily
+            // immortal. Exercise the immortal path with a canonical string
+            // and establish its actual lifetime flag before borrowing it.
+            let immortal_ptr = crate::object::builders::alloc_interned_string(
+                py,
+                b"internal_borrow_immortal_fixture",
+            );
+            assert!(!immortal_ptr.is_null());
+            assert_ne!(
+                unsafe { (*crate::header_from_obj_ptr(immortal_ptr)).load_synchronized_flags() }
+                    & crate::object::HEADER_FLAG_IMMORTAL,
+                0,
+            );
+            let immortal = crate::MoltObject::from_ptr(immortal_ptr).bits();
+            for bits in [immediate, immortal] {
+                let borrowed = super::WeakBorrow::new(py, bits).unwrap();
+                assert!(borrowed.generation.is_none());
+                assert_eq!(borrowed.upgrade_owned(), Some(bits));
+                crate::dec_ref_bits(py, bits);
+            }
+            assert_eq!(
+                crate::runtime_state(py)
+                    .weakrefs
+                    .lock()
+                    .unwrap()
+                    .borrowed_targets
+                    .len(),
+                baseline
+            );
+            // Exact str is deliberately not public-weakrefable.
+            let pointer =
+                crate::object::builders::alloc_string_nointern(py, b"internal-lifetime-borrow");
+            assert!(!pointer.is_null());
+            let bits = crate::MoltObject::from_ptr(pointer).bits();
+            assert!(!super::object_supports_weakrefs(py, bits));
+            let owners = unsafe { (*crate::header_from_obj_ptr(pointer)).ref_count_snapshot() };
+            assert_eq!(owners, 1, "the fixture must own a fresh mortal allocation");
+            let first = super::WeakBorrow::new(py, bits).unwrap();
+            let second = super::WeakBorrow::new(py, bits).unwrap();
+            assert!(first.generation.is_some());
+            assert_eq!(first.generation, second.generation);
+            assert_eq!(
+                unsafe { (*crate::header_from_obj_ptr(pointer)).ref_count_snapshot() },
+                owners
+            );
+            assert_eq!(
+                super::molt_weakref_count(bits),
+                crate::MoltObject::from_int(0).bits()
+            );
+            assert_eq!(first.upgrade_owned(), Some(bits));
+            crate::dec_ref_bits(py, bits);
+            drop(second);
+            assert_eq!(
+                crate::runtime_state(py)
+                    .weakrefs
+                    .lock()
+                    .unwrap()
+                    .borrowed_targets
+                    .len(),
+                baseline + 1
+            );
+            crate::dec_ref_bits(py, bits);
+            assert!(first.upgrade_owned().is_none());
+            assert_eq!(
+                crate::runtime_state(py)
+                    .weakrefs
+                    .lock()
+                    .unwrap()
+                    .borrowed_targets
+                    .len(),
+                baseline
+            );
+            // A subsequent allocation receives a different generation even if
+            // the allocator recycles this address. Dropping the old token must
+            // not remove any new registration.
+            let replacement =
+                crate::object::builders::alloc_string_nointern(py, b"internal-lifetime-borrow");
+            assert!(!replacement.is_null());
+            let replacement_bits = crate::MoltObject::from_ptr(replacement).bits();
+            let fresh = super::WeakBorrow::new(py, replacement_bits).unwrap();
+            assert_ne!(fresh.generation, first.generation);
+            assert!(first.upgrade_owned().is_none());
+            drop(first);
+            assert_eq!(fresh.upgrade_owned(), Some(replacement_bits));
+            crate::dec_ref_bits(py, replacement_bits);
+            drop(fresh);
+            assert_eq!(
+                crate::runtime_state(py)
+                    .weakrefs
+                    .lock()
+                    .unwrap()
+                    .borrowed_targets
+                    .len(),
+                baseline
+            );
+            crate::dec_ref_bits(py, replacement_bits);
+            assert!(!crate::exception_pending(py));
+        });
+    }
+
+    #[test]
+    fn internal_borrow_is_nonrooting_and_retires_after_cycle_collection() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+        crate::with_gil_entry_nopanic!(py, {
+            let pointer = crate::alloc_list(py, &[]);
+            assert!(!pointer.is_null());
+            let bits = crate::MoltObject::from_ptr(pointer).bits();
+            let borrowed = super::WeakBorrow::new(py, bits).unwrap();
+            crate::molt_list_append(bits, bits);
+            crate::dec_ref_bits(py, bits);
+            assert_eq!(
+                unsafe { crate::object::gc::collect_cycles(py) }.collected,
+                1
+            );
+            assert!(borrowed.upgrade_owned().is_none());
+            assert!(
+                !crate::runtime_state(py)
+                    .weakrefs
+                    .lock()
+                    .unwrap()
+                    .borrowed_targets
+                    .contains_key(&crate::PtrSlot(pointer))
+            );
+            assert!(!crate::exception_pending(py));
+        });
+    }
+
     static RETIRING_TARGET: AtomicU64 = AtomicU64::new(0);
     static RETIRING_RETRY_WEAK: AtomicU64 = AtomicU64::new(0);
     static RETIRING_CALLBACK: AtomicU64 = AtomicU64::new(0);
@@ -1634,7 +1873,6 @@ mod tests {
         }
         for type_id in [
             crate::TYPE_ID_STRING,
-            crate::TYPE_ID_LIST,
             crate::TYPE_ID_DICT,
             crate::TYPE_ID_TUPLE,
             crate::TYPE_ID_BYTES,
@@ -1659,6 +1897,7 @@ mod tests {
         // prefix alone must not categorically deny subclass weakrefs.
         for type_id in [
             crate::TYPE_ID_OBJECT,
+            crate::TYPE_ID_LIST,
             crate::TYPE_ID_FOREIGN,
             crate::TYPE_ID_PROPERTY,
             crate::TYPE_ID_STATICMETHOD,

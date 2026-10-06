@@ -16,7 +16,7 @@ def _sha256_bytes(data: bytes) -> str:
 
 
 @lru_cache(maxsize=1)
-def _windows_change_time_api() -> tuple[Any, Any, Any] | None:
+def _windows_file_api() -> tuple[Any, Any, Any] | None:
     if os.name != "nt":
         return None
     try:
@@ -57,8 +57,49 @@ def _windows_change_time_api() -> tuple[Any, Any, Any] | None:
         return None
 
 
+def open_stable_read_descriptor(path: Path) -> int:
+    """Open the shared direct-file reader, excluding Windows writes/deletion.
+
+    Windows ChangeTime is not a unique write sequence: distinct writes can
+    share one clock tick. Keep the admitted file under read-only sharing until
+    its caller closes the descriptor. POSIX keeps its no-follow open and native
+    before/after mutation checks in the owning stable-file transaction.
+    """
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOINHERIT", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    if os.name != "nt":
+        return os.open(path, flags)
+    api = _windows_file_api()
+    if api is None:
+        raise OSError("Windows direct-file handle API is unavailable")
+    import msvcrt
+
+    ctypes, kernel32, _file_basic_info = api
+    handle = kernel32.CreateFileW(
+        str(path),
+        0x80000000,  # GENERIC_READ
+        0x00000001,  # FILE_SHARE_READ; writes and deletion remain excluded.
+        None,
+        3,  # OPEN_EXISTING
+        0x00200000,  # FILE_FLAG_OPEN_REPARSE_POINT; never follow a swapped link.
+        None,
+    )
+    if handle in (None, ctypes.c_void_p(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        # Ownership transfers to the CRT descriptor only after this succeeds.
+        return msvcrt.open_osfhandle(handle, flags)
+    except BaseException:
+        kernel32.CloseHandle(handle)
+        raise
+
+
 def _windows_change_time_ns(path: Path) -> int | None:
-    api = _windows_change_time_api()
+    api = _windows_file_api()
     if api is None:
         return None
     ctypes, kernel32, file_basic_info = api
@@ -93,7 +134,7 @@ def content_change_time_ns(path: Path, stat: os.stat_result) -> int | None:
 
 
 def _windows_handle_change_time_ns(handle: Any) -> int | None:
-    api = _windows_change_time_api()
+    api = _windows_file_api()
     if api is None:
         return None
     ctypes, kernel32, file_basic_info = api

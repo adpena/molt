@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from molt.cli.atomic_io import _atomic_copy_file
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.runtime_wasm_cache import (
     _shared_runtime_wasm_cache_root,
     hydrate_runtime_wasm_pair_from_shared_cache,
@@ -20,6 +20,7 @@ from molt.cli.runtime_wasm_generation import (
     read_runtime_wasm_generation,
 )
 from molt.cli.runtime_wasm_validation import (
+    runtime_wasm_generation_admission,
     _is_valid_runtime_wasm_artifact,
     _is_valid_shared_runtime_wasm_artifact,
 )
@@ -125,10 +126,11 @@ def _run_sample(
             dest_reloc=dest_reloc,
             shared_identity=shared_identity,
             reloc_identity=reloc_identity,
-            is_valid_shared=_is_valid_shared_runtime_wasm_artifact,
-            is_valid_reloc=_is_valid_runtime_wasm_artifact,
         )
-        ok = generation is not None
+        ok = (
+            generation is not None
+            and runtime_wasm_generation_admission(generation, None).accepted
+        )
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     hydrated_shared = dest_shared if mode == "before" else generation.shared
     hydrated_reloc = dest_reloc if mode == "before" else generation.reloc

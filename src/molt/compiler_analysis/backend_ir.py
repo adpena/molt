@@ -52,6 +52,8 @@ def backend_ir_allocation_categories(op: Mapping[str, Any]) -> list[str]:
     categories: list[str] = []
     if kind in op_kind_facts.BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS:
         categories.append("heap_alloc_root")
+    if kind in op_kind_facts.BINARY_IMAGE_OWNED_VALUE_ROOT_KINDS:
+        categories.append("owned_value_root")
     if kind in op_kind_facts.BINARY_IMAGE_STACK_ALLOC_ROOT_KINDS:
         categories.append("stack_alloc_root")
     if kind in op_kind_facts.BINARY_IMAGE_REF_RETAIN_KINDS:
@@ -282,6 +284,9 @@ def backend_ir_binary_image_analysis_authority_hash() -> str:
             "canonical_kind": dict(sorted(op_kind_facts.CANONICAL_KIND.items())),
             "heap_alloc_root_kinds": _sorted_strings(
                 op_kind_facts.BINARY_IMAGE_HEAP_ALLOC_ROOT_KINDS
+            ),
+            "owned_value_root_kinds": _sorted_strings(
+                op_kind_facts.BINARY_IMAGE_OWNED_VALUE_ROOT_KINDS
             ),
             "stack_alloc_root_kinds": _sorted_strings(
                 op_kind_facts.BINARY_IMAGE_STACK_ALLOC_ROOT_KINDS

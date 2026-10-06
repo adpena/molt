@@ -135,54 +135,89 @@ fn run_inliner_preserves_typed_execution_context_boundaries() {
 }
 
 #[test]
-fn run_inliner_inlines_add_call_with_args() {
-    // g(p, q) { return addfn(p, q) }, addfn(a, b) = a + b.
-    let callee = add_callee();
-    let mut g = TirFunction::new(
-        "g".into(),
-        vec![TirType::I64, TirType::I64],
-        TirType::I64,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let p = ValueId(0);
-    let q = ValueId(1);
-    let res = g.fresh_value();
-    let entry = g.entry_block;
-    let mut call_attrs = AttrDict::new();
-    call_attrs.insert("s_value".into(), AttrValue::Str("addfn".into()));
-    let block = g.blocks.get_mut(&entry).unwrap();
-    block.ops.push(TirOp {
-        dialect: Dialect::Molt,
-        opcode: OpCode::Call,
-        operands: vec![p, q],
-        results: vec![res],
-        attrs: call_attrs,
-        source_span: None,
-    });
-    block.terminator = Terminator::Return { values: vec![res] };
-
-    let mut m = module(vec![g, callee]);
-    let (cg, sm) = analysis(&m);
-    let tti = TargetInfo::native_release_fast();
-    let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::new());
-    assert_eq!(stats.sites_inlined, 1);
-    let g = m.functions.iter().find(|f| f.name == "g").unwrap();
-    let calls: usize = g
-        .blocks
-        .values()
-        .flat_map(|b| b.ops.iter())
-        .filter(|op| op.opcode == OpCode::Call)
-        .count();
-    assert_eq!(calls, 0, "addfn call eliminated");
-    crate::tir::verify::verify_function(g).unwrap_or_else(|e| panic!("g invalid: {e:?}"));
-    // The inlined body's Add (a+b with a=p, b=q) is present and uses the
-    // caller's params directly.
-    let add_uses_params = g.blocks.values().any(|b| {
-        b.ops
+fn run_inliner_preserves_generic_add_and_inlines_identity_with_args() {
+    // Both cases retain the same two-parameter call boundary. Generic Add
+    // may dispatch Python; Is is callback-free for every possible argument.
+    for (callee, inlines) in [(add_callee(), false), (identity_callee(), true)] {
+        let callee_name = callee.name.clone();
+        let mut g = TirFunction::new(
+            "g".into(),
+            vec![TirType::I64, TirType::I64],
+            callee.return_type.clone(),
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let p = ValueId(0);
+        let q = ValueId(1);
+        let res = g.fresh_value();
+        g.value_types.insert(res, callee.return_type.clone());
+        let entry = g.entry_block;
+        let mut call_attrs = AttrDict::new();
+        call_attrs.insert("s_value".into(), AttrValue::Str(callee_name.clone()));
+        let block = g.blocks.get_mut(&entry).unwrap();
+        block.ops.push(TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::Call,
+            operands: vec![p, q],
+            results: vec![res],
+            attrs: call_attrs,
+            source_span: None,
+        });
+        block.terminator = Terminator::Return { values: vec![res] };
+        let mut m = module(vec![g, callee]);
+        for function in &m.functions {
+            crate::tir::verify::verify_function(function).unwrap();
+        }
+        let before: Vec<_> = m
+            .functions
             .iter()
-            .any(|op| op.opcode == OpCode::Add && op.operands == vec![p, q])
-    });
-    assert!(add_uses_params, "inlined add uses caller params directly");
+            .map(crate::tir::printer::print_function)
+            .collect();
+        let (cg, sm) = analysis(&m);
+        assert_eq!(cg.has_opaque_call(&callee_name), !inlines);
+        let tti = TargetInfo::native_release_fast();
+        assert_eq!(
+            classify_inline_eligibility(&m.functions[1], &cg, &sm, &tti),
+            if inlines {
+                crate::tir::call_facts::InlineEligibility::Eligible
+            } else {
+                crate::tir::call_facts::InlineEligibility::WhyNot(
+                    crate::tir::call_facts::InlineWhyNot::Recursive,
+                )
+            }
+        );
+        let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::new());
+        assert_eq!(stats.sites_inlined, usize::from(inlines));
+        assert_eq!(stats.functions_changed, usize::from(inlines));
+        let g = m.functions.iter().find(|f| f.name == "g").unwrap();
+        let calls: Vec<_> = g
+            .blocks
+            .values()
+            .flat_map(|b| &b.ops)
+            .filter(|op| op.opcode == OpCode::Call)
+            .collect();
+        assert_eq!(calls.len(), usize::from(!inlines));
+        crate::tir::verify::verify_function(g).unwrap_or_else(|e| panic!("g invalid: {e:?}"));
+        if inlines {
+            assert!(
+                g.blocks
+                    .values()
+                    .flat_map(|b| &b.ops)
+                    .any(|op| op.opcode == OpCode::Is && op.operands == vec![p, q]),
+                "inlined identity uses the caller's two parameters directly"
+            );
+        } else {
+            assert_eq!(calls[0].operands, vec![p, q]);
+            assert_eq!(calls[0].results, vec![res]);
+            assert_eq!(
+                m.functions
+                    .iter()
+                    .map(crate::tir::printer::print_function)
+                    .collect::<Vec<_>>(),
+                before,
+                "generic arithmetic refusal must preserve both complete source bodies"
+            );
+        }
+    }
 }
 
 #[test]

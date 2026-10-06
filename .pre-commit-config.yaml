@@ -12,6 +12,12 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      - id: numeric-error-policy-freshness
+        name: numeric exception policy freshness
+        entry: uv run python3 tools/gen_python_numeric_errors.py --check
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: ruff
         name: ruff
         # --force-exclude: the hook passes staged paths explicitly, and ruff only

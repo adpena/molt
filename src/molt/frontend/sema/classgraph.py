@@ -10,6 +10,7 @@ and are unit-testable on bare facts (the doc 44 §5.5 testability win).
 from __future__ import annotations
 
 import ast
+from molt.python_private_names import python_import_binding
 
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -218,7 +219,7 @@ def build_class_facts(node: ast.Module) -> ClassFacts:
                 continue
             if isinstance(item, (ast.Import, ast.ImportFrom)):
                 for alias in item.names:
-                    bind_attr(members, alias.asname or alias.name.split(".", 1)[0])
+                    bind_attr(members, python_import_binding(alias))
                 continue
             if isinstance(item, ast.Delete):
                 for target in item.targets:

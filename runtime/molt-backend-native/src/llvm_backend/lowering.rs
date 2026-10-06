@@ -73,6 +73,7 @@ fn require_function_linkage_abi<'a>(
                 returns_value,
                 execution_context: func.execution_context,
             },
+            parameter_custody: Vec::new(),
             param_types: crate::representation_plan::native_linkage_param_types(func),
             return_type: returns_value.then(|| func.return_type.clone()),
         })
@@ -104,6 +105,8 @@ mod runtime_helpers;
 mod state_machine_ops;
 #[cfg(feature = "llvm")]
 mod value_materialization;
+#[cfg(feature = "llvm")]
+use value_materialization::{BorrowedOperands, RuntimeArg, RuntimeResultCustody};
 
 #[cfg(feature = "llvm")]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,16 +169,81 @@ fn ensure_i64_with_builder<'ctx>(
     }
 }
 
+/// Whether a raw signed `i64` fits the 47-bit inline integer payload.
+#[cfg(feature = "llvm")]
+fn inline_int_fits_with_builder<'ctx>(
+    builder: &inkwell::builder::Builder<'ctx>,
+    context: &'ctx inkwell::context::Context,
+    raw: inkwell::values::IntValue<'ctx>,
+) -> inkwell::values::IntValue<'ctx> {
+    let i64_ty = context.i64_type();
+    let bias = i64_ty.const_int(nanbox::INLINE_INT_BIAS as u64, false);
+    let biased = builder.build_int_add(raw, bias, "int_inline_bias").unwrap();
+    let limit = i64_ty.const_int(nanbox::INLINE_INT_LIMIT as u64, false);
+    builder
+        .build_int_compare(inkwell::IntPredicate::ULT, biased, limit, "int_fits_inline")
+        .unwrap()
+}
+
+/// The inline NaN-box of a raw `i64` that fits the payload window.
+#[cfg(feature = "llvm")]
+fn inline_int_box_with_builder<'ctx>(
+    builder: &inkwell::builder::Builder<'ctx>,
+    context: &'ctx inkwell::context::Context,
+    raw: inkwell::values::IntValue<'ctx>,
+) -> inkwell::values::IntValue<'ctx> {
+    let i64_ty = context.i64_type();
+    let masked = builder
+        .build_and(raw, i64_ty.const_int(nanbox::INT_MASK, false), "mask")
+        .unwrap();
+    builder
+        .build_or(
+            masked,
+            i64_ty.const_int(nanbox::QNAN | nanbox::TAG_INT, false),
+            "box_i64",
+        )
+        .unwrap()
+}
+
+/// Full-range runtime integer boxing (`molt_int_from_i64`): the inline box when
+/// the value fits, otherwise one fresh heap BigInt owner, or None with
+/// MemoryError pending when that allocation fails.
+#[cfg(feature = "llvm")]
+fn heap_int_box_with_builder<'ctx>(
+    builder: &inkwell::builder::Builder<'ctx>,
+    context: &'ctx inkwell::context::Context,
+    module: &inkwell::module::Module<'ctx>,
+    raw: inkwell::values::IntValue<'ctx>,
+) -> inkwell::values::IntValue<'ctx> {
+    let i64_ty = context.i64_type();
+    let from_i64_fn = module.get_function("molt_int_from_i64").unwrap_or_else(|| {
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
+        module.add_function(
+            "molt_int_from_i64",
+            fn_ty,
+            Some(inkwell::module::Linkage::External),
+        )
+    });
+    builder
+        .build_call(from_i64_fn, &[raw.into()], "molt_int_from_i64")
+        .unwrap()
+        .try_as_basic_value()
+        .unwrap_basic()
+        .into_int_value()
+}
+
 /// NaN-box a raw signed `i64`, promoting to a heap BigInt when the value does
 /// not fit the 47-bit inline payload.
 ///
 /// Shared, builder-parameterized implementation of the overflow-safe integer
-/// box used by both the in-function lowering path
-/// ([`FunctionLowering::box_i64_overflow_safe`]) and the trampoline / direct
-/// call return-boxing path ([`materialize_dynbox_bits_with_builder`]). It emits
-/// a single fits-inline range check; the inline (hot) path tags the 47-bit
-/// payload, the cold path calls `molt_int_from_i64`. See the method wrapper for
-/// the full rationale.
+/// box used by the trampoline / direct-call return-boxing path
+/// ([`materialize_dynbox_bits_with_builder`]) and every in-function owned or
+/// immediate materialization. It emits a single fits-inline range check; the
+/// inline (hot) path tags the 47-bit payload, the cold path calls
+/// `molt_int_from_i64`. A borrowing consumer must not box through this
+/// directly, because the heap box it may mint has no owner: borrowed operands
+/// go through the operation-local custody in `value_materialization.rs`, which
+/// shares these helpers and records that owner.
 #[cfg(feature = "llvm")]
 fn box_i64_overflow_safe_with_builder<'ctx>(
     builder: &inkwell::builder::Builder<'ctx>,
@@ -185,13 +253,7 @@ fn box_i64_overflow_safe_with_builder<'ctx>(
     raw: inkwell::values::IntValue<'ctx>,
 ) -> inkwell::values::IntValue<'ctx> {
     let i64_ty = context.i64_type();
-
-    let bias = i64_ty.const_int(nanbox::INLINE_INT_BIAS as u64, false);
-    let biased = builder.build_int_add(raw, bias, "int_inline_bias").unwrap();
-    let limit = i64_ty.const_int(nanbox::INLINE_INT_LIMIT as u64, false);
-    let fits = builder
-        .build_int_compare(inkwell::IntPredicate::ULT, biased, limit, "int_fits_inline")
-        .unwrap();
+    let fits = inline_int_fits_with_builder(builder, context, raw);
 
     let inline_bb = context.append_basic_block(current_fn, "box_int_inline");
     let bigint_bb = context.append_basic_block(current_fn, "box_int_bigint");
@@ -201,33 +263,11 @@ fn box_i64_overflow_safe_with_builder<'ctx>(
         .unwrap();
 
     builder.position_at_end(inline_bb);
-    let masked = builder
-        .build_and(raw, i64_ty.const_int(nanbox::INT_MASK, false), "mask")
-        .unwrap();
-    let inline_boxed = builder
-        .build_or(
-            masked,
-            i64_ty.const_int(nanbox::QNAN | nanbox::TAG_INT, false),
-            "box_i64",
-        )
-        .unwrap();
+    let inline_boxed = inline_int_box_with_builder(builder, context, raw);
     builder.build_unconditional_branch(merge_bb).unwrap();
 
     builder.position_at_end(bigint_bb);
-    let from_i64_fn = module.get_function("molt_int_from_i64").unwrap_or_else(|| {
-        let fn_ty = i64_ty.fn_type(&[i64_ty.into()], false);
-        module.add_function(
-            "molt_int_from_i64",
-            fn_ty,
-            Some(inkwell::module::Linkage::External),
-        )
-    });
-    let bigint_boxed = builder
-        .build_call(from_i64_fn, &[raw.into()], "molt_int_from_i64")
-        .unwrap()
-        .try_as_basic_value()
-        .unwrap_basic()
-        .into_int_value();
+    let bigint_boxed = heap_int_box_with_builder(builder, context, module, raw);
     builder.build_unconditional_branch(merge_bb).unwrap();
 
     builder.position_at_end(merge_bb);
@@ -422,7 +462,6 @@ struct FunctionLowering<'ctx, 'func> {
     /// Counter for synthetic block names introduced during lowering.
     synthetic_block_counter: usize,
     /// Synthetic or explicit resume blocks keyed by generator/coroutine state id.
-    state_resume_blocks: HashMap<i64, BasicBlock<'ctx>>,
     /// All LLVM basic blocks created during lowering (including synthetic ones),
     /// used for the final unterminated-block sweep.
     all_llvm_blocks: Vec<BasicBlock<'ctx>>,
@@ -440,6 +479,11 @@ struct FunctionLowering<'ctx, 'func> {
     /// container dispatch decisions so the LLVM backend reads the same typed
     /// facts as the native/WASM/Luau backends instead of trusting `TirType`.
     repr_facts: crate::representation_plan::LlvmReprFacts,
+    /// The entry slot holding the base address of the binding homes that own
+    /// a synchronous Python frame's bindings, once `molt_frame_homes` lent it.
+    frame_homes: Option<inkwell::values::PointerValue<'ctx>>,
+    guard_facts: molt_tir::passes::SsaRuntimeGuardFacts,
+    guard_profile_flag: Option<inkwell::values::IntValue<'ctx>>,
 }
 
 #[cfg(feature = "llvm")]
@@ -531,12 +575,14 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         pgo_weight_index: 0,
         const_str_counter: 0,
         synthetic_block_counter: 0,
-        state_resume_blocks: HashMap::new(),
         all_llvm_blocks: Vec::new(),
         llvm_pred_map: HashMap::new(),
         call_site_counter: 0,
         diagnostics: RefCell::new(Vec::new()),
         repr_facts,
+        frame_homes: None,
+        guard_facts: molt_tir::passes::SsaRuntimeGuardFacts::for_function(func),
+        guard_profile_flag: None,
     };
 
     // 2. Create LLVM basic blocks for each TIR block.
@@ -588,7 +634,6 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
     }
 
     // 2c. Create synthetic resume blocks for stateful generator/coroutine ops.
-    lowering.initialize_state_resume_blocks();
 
     // 3. Compute reverse-post-order (RPO) ordering of the CFG.
     //    RPO emits each block before its non-back-edge successors, which is
@@ -908,6 +953,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.value_types.insert(arg.id, effective_ty);
                 self.pending_phis.push((block_id, i, phi));
             }
+        }
+
+        if block_id == self.func.entry_block {
+            // A split chunk borrows its frame's homes before its first op.
+            self.lend_chunk_frame_homes();
         }
 
         // Lower each operation.

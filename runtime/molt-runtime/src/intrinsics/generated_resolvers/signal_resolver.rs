@@ -4,11 +4,6 @@
 pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
     match symbol {
         #[cfg(feature = "stdlib_signal")]
-        "molt_signal_raise" => Some(crate::builtins::functions::runtime_fn_addr(
-            "crate::molt_signal_raise",
-            crate::molt_signal_raise as *const (),
-        )),
-        #[cfg(feature = "stdlib_signal")]
         "molt_signal_alarm" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_signal_alarm",
             crate::molt_signal_alarm as *const (),
@@ -47,6 +42,11 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
         "molt_signal_raise_signal" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_signal_raise_signal",
             crate::molt_signal_raise_signal as *const (),
+        )),
+        #[cfg(feature = "stdlib_signal")]
+        "molt_signal_set_interrupt" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_signal_set_interrupt",
+            crate::molt_signal_set_interrupt as *const (),
         )),
         #[cfg(feature = "stdlib_signal")]
         "molt_signal_set_wakeup_fd" => Some(crate::builtins::functions::runtime_fn_addr(

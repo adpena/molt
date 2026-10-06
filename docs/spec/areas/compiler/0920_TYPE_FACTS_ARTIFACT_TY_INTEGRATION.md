@@ -65,6 +65,13 @@ A deterministic artifact emitted by `molt check`:
 - `molt build --type-facts <path>` loads TFA facts for specialization.
 - `--type-hints=check` consumes `guarded` or `trusted` facts with runtime guards.
 - `--type-hints=trust` consumes only `trusted` facts (no guards).
+- Without an explicit artifact, source annotations are lowered in their lexical
+  context by the frontend. Ordinary `check` and `ignore` builds do not invoke a
+  type checker, synthesize a TFA, or inspect a type-checker's environment.
+- An explicit `trust` build without an artifact validates the source first and
+  fails if validation fails or cannot complete. The result is not cached across
+  builds: a source-only key cannot identify the checker's configuration and
+  dependency environment.
 
 ## Trust Model
 - **Advisory:** hints only, no semantic changes
@@ -84,6 +91,17 @@ A deterministic artifact emitted by `molt check`:
 - cacheable and reproducible
 - when `ty` is available, `molt check` runs it as a validator before trusting facts
 - current `ty` CLI does not expose inferred types; TFA is sourced from annotations
+
+The checker is Molt's installed dependency, executed by the same interpreter in
+isolated mode. Neither compilation nor `molt check` runs `uv` to resolve, install,
+or synchronize the user's project. Explicit validation reads the target project's
+configuration and dependencies. A failed non-strict check reports diagnostics and
+exports guarded annotations; strict failure never publishes trusted facts.
+
+Literal assignments are not annotations. The artifact exporter does not infer a
+scope-wide type from an assignment, including assignments in conditional branches
+or before a rebinding. Flow-sensitive inference and optimization legality belong
+to the compiler's shared analysis, independent of whether validation succeeds.
 
 ## Non-Goals
 - Full soundness of Python typing

@@ -63,13 +63,13 @@ fn int_attr(val: i64) -> AttrDict {
 
 fn float_attr(val: f64) -> AttrDict {
     let mut m = AttrDict::new();
-    m.insert("value".into(), AttrValue::Float(val));
+    m.insert("f_value".into(), AttrValue::Float(val));
     m
 }
 
 fn str_attr(val: &str) -> AttrDict {
     let mut m = AttrDict::new();
-    m.insert("value".into(), AttrValue::Str(val.into()));
+    m.insert("s_value".into(), AttrValue::Str(val.into()));
     m
 }
 

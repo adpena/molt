@@ -75,6 +75,8 @@ fn used_in_both_branches_is_live_out() {
         molt_ir::FunctionReturnAbi::Value,
     );
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let x = func.fresh_value();
     let r1 = func.fresh_value();
     let r2 = func.fresh_value();
@@ -88,7 +90,7 @@ fn used_in_both_branches_is_live_out() {
     {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(const_str(x));
-        b.ops.push(op(OpCode::ConstBool, vec![], vec![cond]));
+        b.ops.push(op(OpCode::Copy, vec![cond_input], vec![cond]));
         b.terminator = Terminator::CondBranch {
             cond,
             then_block: then_b,
@@ -138,6 +140,8 @@ fn loop_carried_block_arg_live() {
     let acc0 = func.fresh_value();
     let acc_phi = func.fresh_value();
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let acc_next = func.fresh_value();
     for v in [acc0, acc_phi, acc_next] {
         func.value_types.insert(v, TirType::Str);
@@ -160,7 +164,7 @@ fn loop_carried_block_arg_live() {
                 id: acc_phi,
                 ty: TirType::Str,
             }],
-            ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+            ops: vec![op(OpCode::Copy, vec![cond_input], vec![cond])],
             terminator: Terminator::CondBranch {
                 cond,
                 then_block: body,
@@ -269,7 +273,10 @@ fn bool_excluded_from_live_sets() {
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops.push(op(OpCode::ConstBool, vec![], vec![c]));
+        b.ops.push(TirOp {
+            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
+            ..op(OpCode::ConstBool, vec![], vec![c])
+        });
         b.terminator = Terminator::Return { values: vec![c] };
     }
     let res = compute_liveness(&func);

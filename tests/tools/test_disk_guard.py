@@ -17,6 +17,7 @@ Proves (M05 -- a gate that cannot fail certifies nothing):
 from __future__ import annotations
 
 import io
+import json
 import os
 import sys
 import tokenize
@@ -31,6 +32,26 @@ if str(ROOT) not in sys.path:
 import tools.disk_guard as dg  # noqa: E402
 
 _GB = 1024**3
+
+
+def _guard_marker(markers: Path, pid: int, status: str) -> Path:
+    token = f"{pid:032x}"
+    marker = markers / f"guard-{pid}-{token}.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "pid": pid,
+                "token": token,
+                "status": status,
+                "guard_process": {"pid": pid, "started_at_ns": pid * 100},
+                "child_launch_state": "recorded",
+                "child_process": {"pid": pid + 1000, "started_at_ns": pid * 100 + 1},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return marker
 
 
 # --- helpers ----------------------------------------------------------------
@@ -296,8 +317,7 @@ def test_live_guard_protects_its_worktree_but_terminal_marker_does_not(tmp_path)
     }
     markers = linked / "tmp" / "memory_guard" / "active"
     markers.mkdir(parents=True)
-    marker = markers / "guard-1-token.json"
-    marker.write_text('{"status":"child_running"}\n', encoding="utf-8")
+    _guard_marker(markers, 1, "child_running")
 
     result = dg.ensure_free(
         root=main,
@@ -311,7 +331,7 @@ def test_live_guard_protects_its_worktree_but_terminal_marker_does_not(tmp_path)
     reasons = {Path(item["path"]): item["reason"] for item in result.skipped}
     assert reasons[linked_session.resolve()] == "active-guard"
 
-    marker.write_text('{"status":"completed"}\n', encoding="utf-8")
+    _guard_marker(markers, 1, "completed")
     result = dg.ensure_free(
         root=main,
         config=_cfg(),
@@ -325,20 +345,18 @@ def test_live_guard_protects_its_worktree_but_terminal_marker_does_not(tmp_path)
     }
 
 
-def test_terminal_parent_custody_retires_nested_nonterminal_marker(tmp_path):
+def test_terminal_parent_watched_pid_cannot_retire_nested_marker(tmp_path):
     markers = tmp_path / "tmp" / "memory_guard" / "active"
     markers.mkdir(parents=True)
-    nested = markers / "guard-7-nested.json"
-    nested.write_text('{"pid":7,"status":"child_running"}\n', encoding="utf-8")
+    nested = _guard_marker(markers, 7, "child_running")
     os.utime(nested, (100.0, 100.0))
-    parent = markers / "guard-1-parent.json"
-    parent.write_text(
-        '{"pid":1,"status":"completed","termination_reports":[{"watched_pids":[7]}]}\n',
-        encoding="utf-8",
-    )
+    parent = _guard_marker(markers, 1, "completed")
+    payload = json.loads(parent.read_text(encoding="utf-8"))
+    payload["termination_reports"] = [{"watched_pids": [7]}]
+    parent.write_text(json.dumps(payload), encoding="utf-8")
     os.utime(parent, (200.0, 200.0))
 
-    assert dg._has_active_guard(tmp_path) is False
+    assert dg._has_active_guard(tmp_path) is True
 
 
 def test_incident_capsules_in_active_directory_do_not_claim_guard_custody(tmp_path):

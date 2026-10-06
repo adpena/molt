@@ -327,3 +327,49 @@ def test_wasm_harness_implements_private_thread_intrinsic_family() -> None:
     assert "thread_current_ident: () => boxInt(mainThreadIdent)" in harness
     assert "thread_current_native_id: () => boxInt(mainThreadIdent)" in harness
     assert harness.count("threads are unavailable in wasm") >= 2
+
+
+def test_unlinked_guard_imports_instantiate_and_preserve_source(tmp_path: Path) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("node is required for wasm harness test")
+
+    # Export the actual imported functions so V8 checks their WASM ABI as well
+    # as the harness implementation. No compiler or runtime rebuild is needed.
+    types = b"\x02\x60\x00\x01\x7e\x60\x02\x7e\x7e\x01\x7e"
+    imports = b"\x02" + b"".join(
+        _encode_str("molt_runtime") + _encode_str(name) + b"\x00" + _encode_u32(index)
+        for index, name in enumerate(("profile_enabled", "guard_type"))
+    )
+    exports = b"\x02" + b"".join(
+        _encode_str(name) + b"\x00" + _encode_u32(index)
+        for index, name in enumerate(("profile_enabled", "guard_type"))
+    )
+    wasm = b"\x00asm\x01\x00\x00\x00" + b"".join(
+        bytes((section,)) + _encode_u32(len(payload)) + payload
+        for section, payload in ((1, types), (2, imports), (7, exports))
+    )
+    wasm_path = tmp_path / "guard_imports.wasm"
+    wasm_path.write_bytes(wasm)
+    runner = tmp_path / "guard_imports.js"
+    runner.write_text(
+        BASE_PREAMBLE
+        + "\nconst baseImports = {\n"
+        + BASE_IMPORTS
+        + "\n};\n"
+        + "WebAssembly.instantiate(wasmBuffer, { molt_runtime: baseImports })"
+        + ".then(({ instance }) => {\n"
+        + "if (instance.exports.profile_enabled() !== 0n) throw Error('profiling');\n"
+        + "for (const source of [0n, 17n, -5n, 0x7ff8000000001234n]) {\n"
+        + "  if (instance.exports.guard_type(source, 1n) !== source) "
+        + "throw Error('guard changed source');\n}\n"
+        + "console.log('guard imports pass');\n"
+        + "}).catch(error => { console.error(error); process.exitCode = 1; });\n"
+    )
+    run = _run_wasm_test_process(
+        ["node", str(runner), str(wasm_path)],
+        cwd=ROOT,
+        env=os.environ,
+        timeout=30,
+    )
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == "guard imports pass"

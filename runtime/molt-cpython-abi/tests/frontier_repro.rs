@@ -63,8 +63,13 @@ unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
 fn install_min_hooks() -> support::AbiTestThreadStateTransaction {
     let mut hooks: RuntimeHooks = support::stub_runtime_hooks();
     support::fake_strings::wire(&mut hooks);
+    support::fake_runtime::wire_class_identity(&mut hooks);
     hooks.classify_heap = fake_classify_heap;
-    support::AbiTestThreadStateTransaction::new(hooks)
+    hooks.object_richcompare_builtin = support::fake_numbers::compare_builtin;
+    hooks.object_richcompare = support::fake_runtime::richcompare;
+    let transaction = support::AbiTestThreadStateTransaction::new(hooks);
+    support::fake_runtime::prepare_class_bindings();
+    transaction
 }
 
 /// Read a bridge-minted `str` PyObject back to an owned `String`.

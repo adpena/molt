@@ -262,6 +262,7 @@ fn shared_stdlib_partition_manifest_tracks_names_and_bodies() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let func_b = FunctionIR {
@@ -277,6 +278,7 @@ fn shared_stdlib_partition_manifest_tracks_names_and_bodies() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let mut changed = func_b.clone();
@@ -346,6 +348,7 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let copy_init = FunctionIR {
@@ -362,6 +365,7 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let copy_chunk = FunctionIR {
@@ -376,6 +380,7 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let copy_copy = FunctionIR {
@@ -391,6 +396,7 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let valid_partition = vec![
@@ -524,6 +530,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -535,6 +542,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -546,6 +554,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -557,6 +566,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -568,6 +578,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -606,6 +617,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -617,6 +629,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -628,6 +641,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -639,6 +653,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -650,6 +665,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -690,6 +706,7 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -704,6 +721,7 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -718,6 +736,7 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -764,6 +783,7 @@ fn compile_stdlib_cache_archive_emits_parseable_empty_member() {
         None,
         "MOLT_BACKEND(test)",
         molt_backend::NativeBackendModuleContext::default(),
+        None,
     )
     .expect("empty stdlib cache must emit an object");
 
@@ -779,7 +799,8 @@ fn compile_stdlib_cache_archive_emits_parseable_empty_member() {
 
 #[test]
 fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
-    let _env_guard = TestEnvGuard::clear(DAEMON_REQUEST_ENV_KEYS);
+    const MANIFEST: &str = r#"{"schema":"stdlib-manifest-v2-archive","artifact_kind":"archive","cache_key":"daemon-empty-key","cache_variant":"profile=test;codegen_env=test","compiler_fingerprint":"test","target_triple":null}"#;
+    let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     let tmp_dir = std::env::temp_dir().join(format!(
         "molt-daemon-empty-stdlib-cache-{}-{}",
         std::process::id(),
@@ -798,9 +819,13 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
         std::env::set_var("MOLT_ENTRY_MODULE", "demo");
         std::env::set_var("MOLT_STDLIB_OBJ", &stdlib);
         std::env::set_var("MOLT_STDLIB_CACHE_KEY", "daemon-empty-key");
-        std::env::set_var("MOLT_STDLIB_CACHE_MANIFEST", "daemon-empty-manifest");
+        std::env::set_var("MOLT_STDLIB_CACHE_MANIFEST", MANIFEST);
         std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", "[\"sys\"]");
         std::env::set_var("MOLT_RUNTIME_CALLABLE_SYMBOLS", &runtime_symbols);
+        std::env::set_var(
+            "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256",
+            "43680cea8aab2362ef31a1c5bda58907d8dfcf0c1b1d79a15b41942f7230dd71",
+        );
     }
 
     let job = DaemonJobRequest {
@@ -836,6 +861,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         source_file: None,
                         is_extern: false,
                         codegen_partition: false,
+                        parameter_custody: Vec::new(),
                         execution_context: Default::default(),
                     },
                     FunctionIR {
@@ -850,6 +876,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         source_file: None,
                         is_extern: false,
                         codegen_partition: false,
+                        parameter_custody: Vec::new(),
                         execution_context: Default::default(),
                     },
                     FunctionIR {
@@ -864,6 +891,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         source_file: None,
                         is_extern: false,
                         codegen_partition: false,
+                        parameter_custody: Vec::new(),
                         execution_context: Default::default(),
                     },
                     FunctionIR {
@@ -878,6 +906,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         source_file: None,
                         is_extern: false,
                         codegen_partition: false,
+                        parameter_custody: Vec::new(),
                         execution_context: Default::default(),
                     },
                 ],
@@ -912,7 +941,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
     );
     assert_eq!(
         read_stdlib_cache_manifest(&stdlib).as_deref(),
-        Some("daemon-empty-manifest")
+        Some(MANIFEST)
     );
     let partition_manifest =
         std::fs::read_to_string(stdlib_cache_partition_manifest_sidecar_path(&stdlib))
@@ -940,6 +969,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -954,6 +984,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -968,6 +999,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -982,6 +1014,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],

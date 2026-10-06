@@ -210,7 +210,7 @@ fn load_admission_distinguishes_zero_missing_presence_and_extent() {
                         if value_kind == "heap" {
                             producer
                                 .attrs
-                                .insert("value".into(), AttrValue::Str("owned".into()));
+                                .insert("s_value".into(), AttrValue::Str("owned".into()));
                         } else if value_kind == "missing" {
                             producer
                                 .attrs

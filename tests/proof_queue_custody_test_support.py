@@ -8,11 +8,13 @@ custody digests remain real. These inputs are never product/native proof receipt
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from functools import partial
+from functools import partial, wraps
+import inspect
 import hashlib
 import json
 from pathlib import Path
 import subprocess
+import sqlite3
 import sys
 from types import SimpleNamespace
 from typing import Protocol
@@ -32,6 +34,11 @@ from tools.proof_queue_pkg import (
     command_admission,
     command_identity,
     custody_cas,
+    cargo_output_layout,
+    cli,
+    guarded_execution,
+    supervisor_generation,
+    state,
     execution_custody,
     execution_environment,
     execution_receipt_details,
@@ -40,6 +47,141 @@ from tools.proof_queue_pkg import (
     supervisor_custody,
     toolchain_capture,
 )
+
+
+class _VerifiedSupervisorRefusal(Exception):
+    """The unavailable branch has proved its complete prelaunch contract."""
+
+
+def assert_supervisor_refusal(
+    returncode: int, result_path: Path, *, queue_terminal: bool = False
+) -> bool:
+    """Recognize only a typed native refusal, never unrelated launch failures."""
+    record = json.loads(result_path.read_text(encoding="utf-8"))
+    capability = record.get("supervisor_capability")
+    if capability is None:
+        return False
+    envelope = record["envelope"]
+    mode = (
+        "leaf"
+        if envelope["process_closure"]["descendants"] == "forbidden"
+        else "declared-tree"
+    )
+    with pytest.raises(supervisor_custody.SupervisorCapabilityUnavailable) as refusal:
+        supervisor_custody.decode_supervisor_capability(capability, mode=mode)
+    assert returncode == 2
+    assert record["phase"] == "failed"
+    assert record["command_started"] is False
+    assert record["error"] == f"SupervisorCapabilityUnavailable: {refusal.value}"
+    assert capability["available"] is False
+    assert isinstance(capability["reason"], str) and capability["reason"]
+    if queue_terminal:
+        context = record["receipt_context"]
+        assert context["schema"] == state.UNATTESTED_RECEIPT_CONTEXT_SCHEMA
+        assert context["status"] == "non-evidence"
+        assert context["queue_terminal"]["status"] == "failed"
+        assert context["queue_terminal"]["command_returncode"] is None
+        assert context["queue_terminal"]["execution_error"] == record["error"]
+        assert "terminal_evidence_sha256" not in context
+        assert "execution_custody_sha256" not in context
+        assert "process_supervisor" not in context
+        assert "command_transcript" not in context
+    else:
+        assert "receipt_context" not in record
+    assert "command_returncode" not in record
+    assert "live_command_transcript" not in record
+    assert "cargo_cache_publication" not in record
+    for path in (
+        *command_identity.execution_transcript_paths(result_path).values(),
+        result_path.with_suffix(".supervisor-policy.json"),
+        result_path.with_suffix(".supervisor-receipt.json"),
+    ):
+        assert not path.exists(), path
+    assert not list(result_path.parent.glob("*.events.*.jsonl"))
+    return True
+
+
+@pytest.fixture
+def proof_queue_execution_capability(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep real execution; adapt only the test's post-call expectation.
+
+    Refusal replaces success-only assertions with the shared refusal contract.
+    Queue calls finish terminal publication before inspection. No host-name
+    selection or successful synthetic execution is involved.
+    """
+    execute = guarded_execution.execute_guarded_request
+    queue_main = cli.main
+    queue_depth = 0
+
+    def execute_request(request_path: Path) -> int:
+        returncode = execute(request_path)
+        if queue_depth == 0:
+            request = json.loads(request_path.read_text(encoding="utf-8"))
+            if assert_supervisor_refusal(returncode, Path(request["result_path"])):
+                raise _VerifiedSupervisorRefusal
+        return returncode
+
+    def queue_call(argv: list[str]) -> int:
+        nonlocal queue_depth
+        queue_depth += 1
+        try:
+            returncode = queue_main(argv)
+        finally:
+            queue_depth -= 1
+        if "--db" not in argv:
+            return returncode
+        database = Path(argv[argv.index("--db") + 1])
+        if not database.exists():
+            return returncode
+        with sqlite3.connect(database) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = list(connection.execute("SELECT * FROM proof_runs"))
+        refused = False
+        for row in rows:
+            _, result_path = command_identity.execution_record_paths(
+                Path(row["log_path"])
+            )
+            if not result_path.exists():
+                continue
+            if assert_supervisor_refusal(
+                row["returncode"], result_path, queue_terminal=True
+            ):
+                assert returncode == 2
+                assert row["status"] == "failed"
+                context = json.loads(row["receipt_context_json"])
+                record = json.loads(result_path.read_text(encoding="utf-8"))
+                assert context == record["receipt_context"]
+                refused = True
+        if refused:
+            assert all(row["status"] != "passed" for row in rows)
+            raise _VerifiedSupervisorRefusal
+        return returncode
+
+    monkeypatch.setattr(guarded_execution, "execute_guarded_request", execute_request)
+    monkeypatch.setattr(cli, "main", queue_call)
+
+
+def capability_aware_proof_execution(test: Callable) -> Callable:
+    """Preserve the original body on available hosts; prove refusals otherwise."""
+
+    @wraps(test)
+    def run_test(*args: object, **kwargs: object) -> None:
+        kwargs.pop("proof_queue_execution_capability")
+        try:
+            test(*args, **kwargs)
+        except _VerifiedSupervisorRefusal:
+            return
+
+    signature = inspect.signature(test)
+    run_test.__signature__ = signature.replace(
+        parameters=[
+            *signature.parameters.values(),
+            inspect.Parameter(
+                "proof_queue_execution_capability", inspect.Parameter.KEYWORD_ONLY
+            ),
+        ]
+    )
+    return run_test
 
 
 class ReceiptCustodyFactory(Protocol):
@@ -111,16 +253,20 @@ def synthetic_receipt_custody(
         assert command[1:3] == ["run", "--policy"] and command[4] == "--receipt"
         policy_path, receipt_path = Path(command[3]), Path(command[5])
         policy = json.loads(policy_path.read_text(encoding="utf-8"))
-        event_path = receipt_path.with_suffix(".events.jsonl")
         events = b'{"kind":"synthetic-test-event"}\n'
+        event_digest = hashlib.sha256(events).hexdigest()
+        event_path = receipt_path.with_name(
+            f"{receipt_path.name}.events.{event_digest}.jsonl"
+        )
         event_path.write_bytes(events)
         receipt = {
-            "schema": "molt.proof-process-closure-receipt.v3",
+            "schema": supervisor_custody.SUPERVISOR_RECEIPT_SCHEMA,
             "complete": True,
             "state": "COMPLETE",
             "root_exit_code": 0,
             "nonce_sha256": hashlib.sha256(policy["nonce"].encode()).hexdigest(),
             "event_log": {
+                "schema": supervisor_custody.SUPERVISOR_EVENT_LOG_SCHEMA,
                 "file": event_path.name,
                 "count": 1,
                 "bytes": len(events),
@@ -149,7 +295,7 @@ def synthetic_receipt_custody(
         )
         policy = json.loads(policy_bytes)
         capability = {
-            "schema": "molt.proof-supervisor-capability.v2",
+            "schema": supervisor_custody.SUPERVISOR_CAPABILITY_SCHEMA,
             "platform": {"win32": "windows", "darwin": "macos"}.get(
                 sys.platform, sys.platform
             ),
@@ -157,6 +303,7 @@ def synthetic_receipt_custody(
             "backend": "synthetic-test-backend",
             "available": True,
             "pre_entry_exec_authority": True,
+            "pre_entry_process_create_authority": True,
             "recursive_descendant_authority": True,
             "reason": None,
             "required_environment": required_environment,
@@ -250,6 +397,23 @@ def publish_receipt_custody(
         "verification_identity_sha256": verification["identity_sha256"],
         "identical": True,
     }
+    provision_target = cargo_output_layout.CargoOutputLayout.create(
+        result_root=directory
+    ).supervisor_target
+    generation_inputs = {"profile": "release", "synthetic_fixture": True}
+    generation = {
+        "schema": custody_cas.ARTIFACT_SCHEMA,
+        "kind": supervisor_generation.GENERATION_SCHEMA,
+        "inputs": generation_inputs,
+        "input_sha256": canonical_json_sha256(generation_inputs),
+        "build_target_dir": str(provision_target),
+        "binary": {
+            "sha256": binary_artifact["sha256"],
+            "size_bytes": binary_artifact["size_bytes"],
+            "name": binary.name,
+        },
+        "freshness_authority": "cargo-build-locked",
+    }
     supervisor = {
         "schema": "molt.proof-process-supervision.v1",
         "binary": command_identity._file_identity(binary),
@@ -260,6 +424,15 @@ def publish_receipt_custody(
         "event_artifact": event_artifact,
         "supervisor_returncode": 0,
         "required_environment": dict(required_environment or {}),
+        "provision_telemetry": {
+            "schema": supervisor_generation.PROVISION_SCHEMA,
+            "build_target_dir": str(provision_target),
+            "build_output_sha256": binary_artifact["sha256"],
+            "build_output_size_bytes": binary_artifact["size_bytes"],
+            "generation_artifact": custody_cas.put_json(
+                directory / "custody-cas", generation
+            ).as_dict(),
+        },
     }
     return summaries, toolchain_custody, {"capture": capture, "supervisor": supervisor}
 

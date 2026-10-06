@@ -63,34 +63,29 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             if op.operands.len() > 2 {
                 return false;
             }
-            let delay_bits = op
-                .operands
-                .first()
-                .map(|&id| self.materialize_dynbox_operand(id))
-                .unwrap_or_else(|| {
-                    let zero: BasicValueEnum<'ctx> =
-                        self.backend.context.f64_type().const_float(0.0).into();
-                    self.materialize_dynbox_bits(zero, &TirType::F64)
-                });
-            let result_bits = op
-                .operands
-                .get(1)
-                .map(|&id| self.materialize_dynbox_operand(id))
-                .unwrap_or_else(|| i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false));
+            // The sleep future retains its delay and result. Absent operands
+            // default to the float 0.0 and None, whose words own nothing.
+            let defaults = [
+                i64_ty.const_int(0.0_f64.to_bits(), false),
+                i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false),
+            ];
+            let args: Vec<RuntimeArg<'ctx>> = defaults
+                .iter()
+                .enumerate()
+                .map(|(idx, &default)| match op.operands.get(idx) {
+                    Some(&operand) => RuntimeArg::Operand(operand),
+                    None => RuntimeArg::Word(default.into()),
+                })
+                .collect();
             let sleep_fn = self.ensure_runtime_i64_fn("molt_async_sleep", 2);
-            let result = self
-                .backend
-                .builder
-                .build_call(
-                    sleep_fn,
-                    &[delay_bits.into(), result_bits.into()],
-                    "call_async_sleep",
-                )
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic();
-            self.values.insert(result_id, result);
-            self.value_types.insert(result_id, TirType::DynBox);
+            self.emit_borrowed_runtime_call(
+                op,
+                sleep_fn,
+                &args,
+                Self::canonical_boxed_return("molt_async_sleep", 2),
+                "async_sleep",
+                "call_async_sleep",
+            );
             return true;
         }
 
@@ -133,9 +128,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         );
     }
 
+    /// `molt_closure_load` / `molt_closure_store` address the owner's payload
+    /// directly: their first word is an object address, not a boxed operand. A
+    /// boxed pointer is unboxed, and a poll frame's raw `self` is unchanged.
+    fn closure_owner_address(&self, owner: ValueId) -> inkwell::values::IntValue<'ctx> {
+        let owner_bits = self.ensure_i64(self.resolve(owner));
+        self.unbox_ptr_bits(owner_bits)
+    }
+
     pub(super) fn emit_closure_load(&mut self, op: &TirOp) {
-        let result_id = op.results[0];
-        let self_bits = self.materialize_dynbox_operand(op.operands[0]);
+        let owner_bits = self.closure_owner_address(op.operands[0]);
         let offset = op
             .attrs
             .get("value")
@@ -145,13 +147,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             })
             .unwrap_or(0);
         let load_fn = self.ensure_runtime_i64_fn("molt_closure_load", 2);
+        // The loaded slot value is returned retained.
         let result = self
             .backend
             .builder
             .build_call(
                 load_fn,
                 &[
-                    self_bits.into(),
+                    owner_bits.into(),
                     self.backend
                         .context
                         .i64_type()
@@ -163,13 +166,29 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic();
-        self.values.insert(result_id, result);
-        self.value_types.insert(result_id, TirType::DynBox);
+        self.bind_owned_runtime_result(op, result);
+    }
+
+    pub(super) fn emit_frame_context_set(&mut self, op: &TirOp) {
+        let publish = self.ensure_runtime_i64_fn("molt_frame_context_set", 3);
+        let args: Vec<RuntimeArg<'ctx>> = op.operands[..3]
+            .iter()
+            .map(|&operand| RuntimeArg::Operand(operand))
+            .collect();
+        // Its canonical borrowed None needs no retirement; exception transfer
+        // remains explicit in TIR.
+        self.emit_borrowed_runtime_call(
+            op,
+            publish,
+            &args,
+            Self::canonical_boxed_return("molt_frame_context_set", 3),
+            "frame_context_set",
+            "frame_context_set",
+        );
     }
 
     pub(super) fn emit_closure_store(&mut self, op: &TirOp) {
-        let self_bits = self.materialize_dynbox_operand(op.operands[0]);
-        let val_bits = self.materialize_dynbox_operand(op.operands[1]);
+        let owner_bits = self.closure_owner_address(op.operands[0]);
         let offset = op
             .attrs
             .get("value")
@@ -178,168 +197,104 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 _ => None,
             })
             .unwrap_or(0);
+        let offset_bits = self
+            .backend
+            .context
+            .i64_type()
+            .const_int(offset as u64, true);
         let store_fn = self.ensure_runtime_i64_fn("molt_closure_store", 3);
-        let result = self
-            .backend
-            .builder
-            .build_call(
-                store_fn,
-                &[
-                    self_bits.into(),
-                    self.backend
-                        .context
-                        .i64_type()
-                        .const_int(offset as u64, true)
-                        .into(),
-                    val_bits.into(),
-                ],
-                "closure_store",
-            )
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic();
-        if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, result);
-            self.value_types.insert(result_id, TirType::DynBox);
-        }
+        // The payload retains the borrowed value; the runtime returns None.
+        self.emit_borrowed_runtime_call(
+            op,
+            store_fn,
+            &[
+                RuntimeArg::Word(owner_bits.into()),
+                RuntimeArg::Word(offset_bits.into()),
+                RuntimeArg::Operand(op.operands[1]),
+            ],
+            RuntimeResultCustody::Unowned,
+            "closure_store",
+            "closure_store",
+        );
     }
 
-    pub(super) fn emit_state_yield(&mut self, op: &TirOp) {
-        let next_state_id = op
-            .attrs
-            .get("value")
-            .and_then(|v| match v {
-                AttrValue::Int(v) => Some(*v),
-                _ => None,
-            })
-            .unwrap_or(0);
-        let self_bits = self.generator_self_bits();
-        let pair_bits = self.materialize_dynbox_operand(op.operands[0]);
-        let set_state_fn = self.ensure_runtime_void_fn("molt_obj_set_state", 2);
-        let _ = self
-            .backend
-            .builder
-            .build_call(
-                set_state_fn,
-                &[
-                    self_bits.into(),
-                    self.backend
-                        .context
-                        .i64_type()
-                        .const_int(next_state_id as u64, true)
-                        .into(),
-                ],
-                "state_yield_set_state",
-            )
-            .unwrap();
-        let inc_fn = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
-        let _ = self
-            .backend
-            .builder
-            .build_call(inc_fn, &[pair_bits.into()], "state_yield_inc_ref")
-            .unwrap();
-        // The suspend `ret`s the yielded pair.  This `build_return`
-        // terminates the suspend block; the main lowering loop detects
-        // the terminator and moves on to the NEXT TIR block (the real
-        // post-yield resume continuation, which the `StateDispatch`
-        // terminator dispatches to).  We do NOT `position_at_end` into a
-        // synthetic resume block — the continuation is a first-class TIR
-        // block reached via the dispatch, and its phis were placed by the
-        // SSA pass on the real `state_resume_edges`.
-        self.backend.builder.build_return(Some(&pair_bits)).unwrap();
-        let _ = next_state_id;
-    }
-
-    pub(super) fn emit_state_transition(&mut self, op: &TirOp) {
-        let (slot_id, pending_state_operand) = match op.operands.as_slice() {
-            [_, pending_state] => (None, *pending_state),
-            [_, slot, pending_state] => (Some(*slot), *pending_state),
-            other => panic!(
-                "state_transition expected 2 or 3 operands in {}: {:?}",
-                self.func.name, other
-            ),
+    /// Save the state named by the transition through the poll frame
+    /// parameter. Saving neither suspends nor returns; a ready wait saves its
+    /// running state, which no StateDispatch case resumes.
+    pub(super) fn emit_state_set(&mut self, op: &TirOp) {
+        let Some(AttrValue::Int(state)) = op.attrs.get("value") else {
+            panic!("state_set in '{}' requires its state", self.func.name);
         };
-        let pending_state_id = self.const_i64_operand(pending_state_operand);
-        let next_state_id = op
-            .attrs
-            .get("value")
-            .and_then(|v| match v {
-                AttrValue::Int(v) => Some(*v),
-                _ => None,
-            })
-            .unwrap_or(0);
-        let pending_bb = self.resume_block_for_state(pending_state_id);
-        let current_bb = self
-            .backend
-            .builder
-            .get_insert_block()
-            .expect("state_transition must be inside a block");
-        if current_bb != pending_bb {
-            self.record_llvm_edge(current_bb, pending_bb);
-            self.backend
-                .builder
-                .build_unconditional_branch(pending_bb)
-                .unwrap();
-            self.backend.builder.position_at_end(pending_bb);
-        }
-        let i64_ty = self.backend.context.i64_type();
+        let state = *state;
         let self_bits = self.generator_self_bits();
-        let future_bits = self.materialize_dynbox_operand(op.operands[0]);
-        let pending_state_bits = i64_ty.const_int(pending_state_id as u64, true);
+        let state_bits = self
+            .backend
+            .context
+            .i64_type()
+            .const_int(state as u64, true);
         let set_state_fn = self.ensure_runtime_void_fn("molt_obj_set_state", 2);
-        let _ = self
-            .backend
+        self.backend
             .builder
-            .build_call(
-                set_state_fn,
-                &[self_bits.into(), pending_state_bits.into()],
-                "state_transition_set_pending",
-            )
+            .build_call(set_state_fn, &[self_bits.into(), state_bits.into()], "")
             .unwrap();
-        let poll_fn = self.ensure_runtime_i64_fn("molt_future_poll", 1);
-        let res = self
+    }
+
+    /// The scheduler sentinel is one exact word: compare it, with no
+    /// truthiness, callback or owner.
+    pub(super) fn emit_is_pending(&mut self, op: &TirOp) {
+        let &[poll] = op.operands.as_slice() else {
+            panic!("is_pending in '{}' expects one poll result", self.func.name);
+        };
+        let word = self.activation_object_word(poll, "is_pending");
+        let pending = self
             .backend
-            .builder
-            .build_call(poll_fn, &[future_bits.into()], "state_transition_poll")
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic()
-            .into_int_value();
-        let pending_const = i64_ty.const_int(molt_codegen_abi::pending_bits() as u64, true);
+            .context
+            .i64_type()
+            .const_int(molt_codegen_abi::pending_bits() as u64, true);
         let is_pending = self
             .backend
             .builder
-            .build_int_compare(
-                inkwell::IntPredicate::EQ,
-                res,
-                pending_const,
-                "state_transition_is_pending",
-            )
+            .build_int_compare(inkwell::IntPredicate::EQ, word, pending, "is_pending")
             .unwrap();
-        let pending_path = self.backend.context.append_basic_block(
-            self.llvm_fn,
-            &format!("state_transition_pending{}", self.synthetic_block_counter),
+        if let Some(&result_id) = op.results.first() {
+            self.values.insert(result_id, is_pending.into());
+            self.value_types.insert(result_id, TirType::Bool);
+        }
+    }
+
+    /// Register this activation to wake when the future completes. Nothing is
+    /// retained or returned: explicit TIR still owns the future.
+    pub(super) fn emit_task_wait(&mut self, op: &TirOp) {
+        let &[future] = op.operands.as_slice() else {
+            panic!("task_wait in '{}' expects one future", self.func.name);
+        };
+        let future_bits = self.activation_object_word(future, "task_wait");
+        self.emit_sleep_register(future_bits);
+    }
+
+    /// Poll results and awaited futures are objects. A raw scalar carrier could
+    /// alias the sentinel's bits and would need a box that nothing owns.
+    fn activation_object_word(
+        &self,
+        operand: ValueId,
+        kind: &str,
+    ) -> inkwell::values::IntValue<'ctx> {
+        let ty = self
+            .value_types
+            .get(&operand)
+            .cloned()
+            .unwrap_or(TirType::DynBox);
+        assert!(
+            Self::tir_type_is_dynbox_like(&ty),
+            "{kind} in '{}' requires an object carrier, found {ty:?}",
+            self.func.name
         );
-        self.synthetic_block_counter += 1;
-        let ready_path = self.backend.context.append_basic_block(
-            self.llvm_fn,
-            &format!("state_transition_ready{}", self.synthetic_block_counter),
-        );
-        self.synthetic_block_counter += 1;
-        self.all_llvm_blocks.push(pending_path);
-        self.all_llvm_blocks.push(ready_path);
-        let branch_from_bb = self
-            .backend
-            .builder
-            .get_insert_block()
-            .expect("state_transition branch must be in block");
-        self.record_llvm_edge(branch_from_bb, pending_path);
-        self.record_llvm_edge(branch_from_bb, ready_path);
-        self.backend
-            .builder
-            .build_conditional_branch(is_pending, pending_path, ready_path)
-            .unwrap();
-        self.backend.builder.position_at_end(pending_path);
+        self.ensure_i64(self.resolve(operand))
+    }
+
+    /// `molt_sleep_register` takes object addresses, not boxed words: the poll
+    /// frame parameter and the future's unboxed pointer.
+    fn emit_sleep_register(&self, future_bits: inkwell::values::IntValue<'ctx>) {
         let i64_ty = self.backend.context.i64_type();
         let ptr_ty = self
             .backend
@@ -353,68 +308,25 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         )
         .unwrap_or_else(|| panic!("molt_sleep_register must be a fixed LLVM runtime import"));
         let sleep_fn = require_llvm_function_type("molt_sleep_register", sleep_fn, fn_ty);
-        let self_ptr = self
+        let frame_ptr = self
             .backend
             .builder
-            .build_int_to_ptr(self_bits, ptr_ty, "sleep_task_ptr")
+            .build_int_to_ptr(self.generator_self_bits(), ptr_ty, "task_wait_frame")
             .unwrap();
+        let future_address = self.unbox_ptr_bits(future_bits);
         let future_ptr = self
             .backend
             .builder
-            .build_int_to_ptr(future_bits, ptr_ty, "sleep_future_ptr")
+            .build_int_to_ptr(future_address, ptr_ty, "task_wait_future")
             .unwrap();
-        let _ = self
-            .backend
+        self.backend
             .builder
             .build_call(
                 sleep_fn,
-                &[self_ptr.into(), future_ptr.into()],
-                "state_transition_sleep",
+                &[frame_ptr.into(), future_ptr.into()],
+                "task_wait",
             )
             .unwrap();
-        self.backend
-            .builder
-            .build_return(Some(&pending_const))
-            .unwrap();
-        self.backend.builder.position_at_end(ready_path);
-        if let Some(slot_id) = slot_id {
-            let slot_bits = self.raw_i64_operand(slot_id, ready_path);
-            let store_fn = self.ensure_runtime_i64_fn("molt_closure_store", 3);
-            let _ = self
-                .backend
-                .builder
-                .build_call(
-                    store_fn,
-                    &[self_bits.into(), slot_bits.into(), res.into()],
-                    "state_transition_store",
-                )
-                .unwrap();
-        } else if let Some(&result_id) = op.results.first() {
-            self.values.insert(result_id, res.into());
-            self.value_types.insert(result_id, TirType::DynBox);
-        }
-        let next_state_bits = i64_ty.const_int(next_state_id as u64, true);
-        let _ = self
-            .backend
-            .builder
-            .build_call(
-                set_state_fn,
-                &[self_bits.into(), next_state_bits.into()],
-                "state_transition_set_next",
-            )
-            .unwrap();
-        let next_bb = self.resume_block_for_state(next_state_id);
-        let ready_from_bb = self
-            .backend
-            .builder
-            .get_insert_block()
-            .expect("state_transition ready must be in block");
-        self.record_llvm_edge(ready_from_bb, next_bb);
-        self.backend
-            .builder
-            .build_unconditional_branch(next_bb)
-            .unwrap();
-        self.backend.builder.position_at_end(next_bb);
     }
 
     pub(super) fn emit_yield(&mut self, op: &TirOp) {

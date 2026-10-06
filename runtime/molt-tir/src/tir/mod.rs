@@ -8,8 +8,8 @@ pub mod verify_lir;
 pub mod verify_lir_repr;
 pub use molt_ir::tir::{
     blocks, call_targets, cfg, cfg_liveness, clone_support, dominators, function, numeric_facts,
-    op_kinds_generated, ops, printer, serialize, simple_def_use, ssa, target_info, types,
-    value_range, values, verify,
+    op_kinds_generated, op_semantics, ops, printer, serialize, simple_def_use, ssa, target_info,
+    types, value_range, values, verify,
 };
 pub use molt_passes::tir::{
     analysis, bolt, cache, call_facts, call_graph, drop_phase, exception_regions, fact_graph,

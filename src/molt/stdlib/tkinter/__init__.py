@@ -9,6 +9,7 @@ if sys.platform in ("emscripten", "wasi"):
     raise ImportError("No module named '_tkinter'")
 
 from _intrinsics import require_intrinsic as _require_intrinsic
+from tkinter._support import _require_tk_callable
 from .constants import *  # noqa: F403
 
 import enum as _enum
@@ -28,13 +29,6 @@ def _tk_runtime_export(name):
         return getattr(_tk_runtime, name)(*args, **kwargs)
 
     return _call
-
-
-def _require_tk_callable(attr):
-    candidate = getattr(_tk_runtime, attr, None)
-    if not callable(candidate):
-        raise RuntimeError(f"tkinter runtime callable unavailable: {attr}")
-    return candidate
 
 
 _MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")
@@ -139,16 +133,8 @@ _TK_CALL = _require_tk_callable("call")
 _MOLT_TK_CALL = _require_intrinsic("molt_tk_call")
 _TK_BIND_REGISTER = _require_tk_callable("bind_register")
 _TK_BIND_UNREGISTER = _require_tk_callable("bind_unregister")
-_TK_WIDGET_BIND_REGISTER = _require_tk_callable("widget_bind_register")
-_TK_WIDGET_BIND_UNREGISTER = _require_tk_callable("widget_bind_unregister")
-_TK_TEXT_TAG_BIND_REGISTER = _require_tk_callable("text_tag_bind_register")
-_TK_TEXT_TAG_BIND_UNREGISTER = _require_tk_callable("text_tag_bind_unregister")
 _TK_DESTROY_WIDGET = _require_tk_callable("destroy_widget")
 _TK_LAST_ERROR = _require_tk_callable("last_error")
-_TK_TRACE_ADD = _require_tk_callable("trace_add")
-_TK_TRACE_REMOVE = _require_tk_callable("trace_remove")
-_TK_TRACE_CLEAR = _require_tk_callable("trace_clear")
-_TK_TRACE_INFO = _require_tk_callable("trace_info")
 _TK_WAIT_VARIABLE = _require_tk_callable("wait_variable")
 _TK_WAIT_WINDOW = _require_tk_callable("wait_window")
 _TK_WAIT_VISIBILITY = _require_tk_callable("wait_visibility")

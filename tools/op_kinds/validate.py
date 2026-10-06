@@ -15,7 +15,6 @@ from .schema import (
     _ALIAS_MEMORY_REGION_SETS,
     _ALIAS_SLOT_OBSERVATION_SETS,
     _ALIAS_TRANSPARENT_ALIAS_ROLE_SETS,
-    _CALL_OPCODE_ROLES,
     _CANONICALIZE_BINARY_ACTIONS,
     _CANONICALIZE_BINARY_PREDICATES,
     _CANONICALIZE_BINARY_TYPE_GUARDS,
@@ -154,6 +153,13 @@ def load_table(table_path: Path = TABLE) -> dict:
         if purity != "impure" and arbitrary_heap:
             raise OpKindTableError(
                 f"opcode {name}: exact pure effects cannot access arbitrary heap memory"
+            )
+        may_call = row.get("may_call_python")
+        if type(may_call) is not bool:
+            raise OpKindTableError(f"opcode {name}: 'may_call_python' must be a bool")
+        if may_call and (purity != "impure" or not arbitrary_heap):
+            raise OpKindTableError(
+                f"opcode {name}: Python callbacks require impure arbitrary-heap effects"
             )
         result_arity = row.get("result_arity")
         if result_arity not in _RESULT_ARITY_VALUES:
@@ -349,10 +355,14 @@ def load_table(table_path: Path = TABLE) -> dict:
                 "are mutually exclusive result-side ownership facts"
             )
 
-    prefixes = data.get("classifier_fresh_value_prefixes", [])
-    if not isinstance(prefixes, list) or not all(isinstance(p, str) for p in prefixes):
+    if "classifier_fresh_value" in data or "classifier_fresh_value_prefixes" in data:
         raise OpKindTableError(
-            "classifier_fresh_value_prefixes must be a list of strings"
+            "fresh-value ownership keys are retired; use exact classifier_owned_value rows"
+        )
+
+    if "classifier_owned_value_prefixes" in data:
+        raise OpKindTableError(
+            "classifier_owned_value_prefixes is retired; declare exact canonical result ownership"
         )
 
     for key in _CLASSIFIER_SETS:
@@ -363,6 +373,29 @@ def load_table(table_path: Path = TABLE) -> dict:
             raise OpKindTableError(f"{key} must be a list of strings")
         if len(set(members)) != len(members):
             raise OpKindTableError(f"{key} has duplicate members")
+
+    # Result custody is a partition. Binding views and exception-creation
+    # refinements intentionally overlap their parent class; pure-move identity
+    # is independent, but cannot coexist with an owned or inert result class.
+    custody_members: dict[str, str] = {}
+    for key in (
+        "classifier_owned_value",
+        "classifier_owned_alias",
+        "classifier_inert_marker",
+        "classifier_transparent_alias",
+    ):
+        for member in data.get(key, []):
+            prior = custody_members.setdefault(member, key)
+            if prior != key:
+                raise OpKindTableError(
+                    f"Copy result custody {member!r} appears in both {prior} and {key}"
+                )
+    for member in data.get("classifier_no_heap_move", []):
+        bucket = custody_members.get(member)
+        if bucket not in (None, "classifier_transparent_alias"):
+            raise OpKindTableError(
+                f"Copy result custody {member!r} in {bucket} contradicts no-heap-move"
+            )
 
     integer_semantic_members: dict[str, str] = {}
     for key in _SIMPLEIR_INTEGER_SEMANTIC_FACT_SETS:
@@ -661,34 +694,7 @@ def load_table(table_path: Path = TABLE) -> dict:
             "simpleir_defined_function_reference_s_value_kinds has duplicate members"
         )
 
-    var_field_members: dict[str, str] = {}
-    for key in _SIMPLEIR_FIELD_ROLE_FACT_SETS:
-        members = data.get(key, [])
-        if not isinstance(members, list) or not all(
-            isinstance(member, str) and member for member in members
-        ):
-            raise OpKindTableError(f"{key} must be a list of non-empty strings")
-        if len(set(members)) != len(members):
-            raise OpKindTableError(f"{key} has duplicate members")
-        if key == "simpleir_out_metadata_kinds":
-            continue
-        for member in members:
-            prior = var_field_members.setdefault(member, key)
-            if prior != key:
-                raise OpKindTableError(
-                    f"SimpleIR var field kind {member!r} appears in both {prior} and {key}"
-                )
-    return_terminators = {
-        row["kind"]
-        for row in data.get("simpleir_control_kind", [])
-        if row.get("return_shape") is not None
-    }
-    conflicting_return_roles = return_terminators.intersection(var_field_members)
-    if conflicting_return_roles:
-        raise OpKindTableError(
-            "SimpleIR return terminators cannot declare another var field role: "
-            + ", ".join(sorted(conflicting_return_roles))
-        )
+    _validate_simpleir_field_roles(data)
 
     trailing_result_kinds: set[str] = set()
     for row in data.get("simpleir_trailing_arg_result", []):
@@ -837,7 +843,6 @@ def load_table(table_path: Path = TABLE) -> dict:
         "SCEV expression rule",
     )
     _validate_exception_region_nesting_roles(data, seen_opcodes)
-    _validate_call_opcode_roles(data, seen_opcodes)
     _validate_pass_delta_opcode_facts(data)
     _validate_disjoint_opcode_role_sets(
         data, _ALIAS_TRANSPARENT_ALIAS_ROLE_SETS, "alias transparent-alias role"
@@ -861,6 +866,7 @@ def load_table(table_path: Path = TABLE) -> dict:
     owner: dict[str, str] = {}
     mapper_opcode_by_spelling: dict[str, str] = {}
     seen_canon: set[str] = set()
+    backend_services: dict[str, str] = {}
     for row in kinds:
         canon = row.get("canonical")
         if not isinstance(canon, str) or not canon:
@@ -910,6 +916,22 @@ def load_table(table_path: Path = TABLE) -> dict:
             raise OpKindTableError(
                 f"kind {canon}: mapper_opcode {mapper!r} is not a known OpCode"
             )
+        service = row.get("backend_service_symbol")
+        if service is not None:
+            if (
+                not isinstance(service, str)
+                or not service.startswith("molt_")
+                or not service.isidentifier()
+            ):
+                raise OpKindTableError(
+                    f"kind {canon}: backend_service_symbol requires an exact runtime symbol"
+                )
+            if service in backend_services:
+                raise OpKindTableError(
+                    f"kind {canon}: backend_service_symbol {service!r} already belongs to "
+                    f"{backend_services[service]}"
+                )
+            backend_services[service] = canon
         for spelling in [canon, *aliases]:
             if spelling in owner:
                 raise OpKindTableError(
@@ -919,7 +941,22 @@ def load_table(table_path: Path = TABLE) -> dict:
             owner[spelling] = canon
             mapper_opcode_by_spelling[spelling] = mapper
 
-    _validate_call_graph_user_call_kinds(data, mapper_opcode_by_spelling)
+    _validate_async_work_poll_after_kinds(data, mapper_opcode_by_spelling)
+    callback_free = data.get("callback_free_copy_kinds")
+    registered = set(mapper_opcode_by_spelling)
+    for classifier in _CLASSIFIER_SETS:
+        registered.update(data.get(classifier, []))
+    if (
+        not isinstance(callback_free, list)
+        or any(
+            not isinstance(kind, str) or kind not in registered
+            for kind in callback_free
+        )
+        or len(set(callback_free)) != len(callback_free)
+    ):
+        raise OpKindTableError(
+            "callback_free_copy_kinds requires unique registered spellings"
+        )
     _validate_ssa_attr_transport(data, seen_opcodes, mapper_opcode_by_spelling)
     # -- [[consuming_kind]] operand-ownership overrides per wire-kind spelling --
     # Each row names a wire-kind SPELLING (canonical OR alias of a [[kind]] row)
@@ -927,7 +964,9 @@ def load_table(table_path: Path = TABLE) -> dict:
     # mapper spellings; a row naming an unknown spelling is a hard error (the
     # structural kill for a typo'd consume override silently doing nothing — the
     # very C6 double-free this column retires).
+    _validate_binding_views(data)
     _validate_consuming_kinds(data, owner)
+    _validate_source_call_kinds(data, owner)
     _validate_absorbing_kinds(data, owner)
     _validate_absorbing_operand_kinds(data)
     _validate_result_finalizer_source_kinds(data)
@@ -1053,17 +1092,8 @@ def _validate_fuzz_tir_opcode_shapes(data: dict, opcodes: dict[str, dict]) -> No
 
 
 def _validate_operand_ownership(name: str, value: object) -> None:
-    """Validate one opcode's ``operand_ownership`` (fail-loud).
-
-    Accepts a uniform shorthand (``"all_borrowed"`` / ``"all_consumed"``) or a
-    per-position list of the leaf values (``"borrowed"`` / ``"consumed"`` /
-    ``"interior_borrow_keepalive"``). ``interior_borrow_keepalive`` is list-only:
-    it marks the operand whose backing store the op's result interior-borrows (the
-    borrow-of edge, design 27 §1.5), and an op that interior-borrows one operand
-    still merely borrows the rest, so it cannot be a uniform shorthand. Any other
-    shape is a hard error — a missing/typo'd classification must never silently
-    degrade to a borrow assumption (leak), a consume assumption (double-free), or
-    a dropped keepalive (the round-6 interior-borrow UAF).
+    """Validate explicit operand custody. Container absorption is per-position;
+    a malformed classification must not silently become a borrow or a consume.
     """
     if value is None:
         raise OpKindTableError(
@@ -1732,42 +1762,6 @@ def _validate_vectorize_opcode_facts(data: dict, opcodes: set[str]) -> None:
             )
 
 
-def _validate_call_opcode_roles(data: dict, opcodes: set[str]) -> None:
-    rows = data.get("call_opcode_roles", [])
-    if not isinstance(rows, list) or not rows:
-        raise OpKindTableError("call_opcode_roles must be a non-empty array of tables")
-    seen: set[str] = set()
-    for row in rows:
-        if not isinstance(row, dict):
-            raise OpKindTableError("call_opcode_roles rows must be inline tables")
-        unknown = set(row) - {"opcode", "role"}
-        if unknown:
-            raise OpKindTableError(
-                f"call_opcode_roles row has unknown fields {sorted(unknown)}: {row}"
-            )
-        opcode = row.get("opcode")
-        if not isinstance(opcode, str) or not opcode:
-            raise OpKindTableError(f"call_opcode_roles row missing opcode: {row}")
-        if opcode not in opcodes:
-            raise OpKindTableError(
-                f"call_opcode_roles opcode {opcode!r} is not a known OpCode"
-            )
-        if opcode in seen:
-            raise OpKindTableError(f"duplicate call_opcode_roles opcode: {opcode}")
-        seen.add(opcode)
-        role = row.get("role")
-        if role not in _CALL_OPCODE_ROLES or role == "not_call":
-            allowed = sorted(k for k in _CALL_OPCODE_ROLES if k != "not_call")
-            raise OpKindTableError(
-                f"call_opcode_roles {opcode}: role must be one of {allowed}, "
-                f"got {role!r}"
-            )
-        if role == "copy_original_kind" and opcode != "Copy":
-            raise OpKindTableError(
-                "call_opcode_roles copy_original_kind is reserved for OpCode::Copy"
-            )
-
-
 def _validate_ssa_attr_transport(
     data: dict,
     opcodes: set[str],
@@ -1989,31 +1983,90 @@ def _validate_exception_region_nesting_roles(data: dict, opcodes: set[str]) -> N
             )
 
 
-def _validate_call_graph_user_call_kinds(
+def _validate_async_work_poll_after_kinds(
     data: dict, mapper_opcode_by_spelling: dict[str, str]
 ) -> None:
-    members = data.get("call_graph_user_call_kinds", [])
+    members = data.get("async_work_poll_after_kinds", [])
     if not isinstance(members, list) or not members:
         raise OpKindTableError(
-            "call_graph_user_call_kinds must be a non-empty array of strings"
+            "async_work_poll_after_kinds must be a non-empty array of strings"
         )
     if not all(isinstance(kind, str) and kind for kind in members):
         raise OpKindTableError(
-            "call_graph_user_call_kinds must contain only non-empty strings"
+            "async_work_poll_after_kinds must contain only non-empty strings"
         )
     if len(set(members)) != len(members):
-        raise OpKindTableError("call_graph_user_call_kinds has duplicate members")
+        raise OpKindTableError("async_work_poll_after_kinds has duplicate members")
     for kind in members:
         opcode = mapper_opcode_by_spelling.get(kind)
+        # An explicitly registered owned Copy result may acquire its value
+        # through Python callbacks (for example builtin namespace lookup).
+        # This table places its call-return async-work observation.
+        if opcode is None and kind in data.get("classifier_owned_value", []):
+            continue
         if opcode is None:
             raise OpKindTableError(
-                f"call_graph_user_call_kinds kind {kind!r} is not a known kind spelling"
+                f"async_work_poll_after_kinds kind {kind!r} is not a known kind spelling"
             )
         if opcode not in {"Call", "CallMethod"}:
             raise OpKindTableError(
-                f"call_graph_user_call_kinds {kind!r} maps to OpCode::{opcode}; "
-                "user-call Copy fallbacks may only map to Call or CallMethod"
+                f"async_work_poll_after_kinds {kind!r} maps to OpCode::{opcode}; "
+                "call-return Copy observations may only map to Call or CallMethod"
             )
+
+
+def _simpleir_var_forbidden_spellings(data: dict) -> list[str]:
+    kinds = {row["canonical"]: row for row in data.get("kind", [])}
+    # Preserved Copy operations have canonical shapes without mapper rows.
+    # Their explicit classifier registrations own those wire spellings.
+    preserved = {member for table in _CLASSIFIER_SETS for member in data.get(table, [])}
+    shaped = {
+        row.get("kind")
+        for row in data.get("simpleir_op_shape", [])
+        if isinstance(row, dict) and isinstance(row.get("kind"), str)
+    }
+    spellings: list[str] = []
+    for member in data.get("simpleir_var_forbidden_kinds", []):
+        if (member not in kinds and member not in preserved) or member not in shaped:
+            raise OpKindTableError(
+                "simpleir_var_forbidden_kinds requires a canonical shaped kind: "
+                f"{member!r}"
+            )
+        spellings.extend((member, *kinds.get(member, {}).get("aliases", [])))
+    return spellings
+
+
+def _validate_simpleir_field_roles(data: dict) -> None:
+    var_field_members: dict[str, str] = {}
+    for key in _SIMPLEIR_FIELD_ROLE_FACT_SETS:
+        members = data.get(key, [])
+        if not isinstance(members, list) or not all(
+            isinstance(member, str) and member for member in members
+        ):
+            raise OpKindTableError(f"{key} must be a list of non-empty strings")
+        if len(set(members)) != len(members):
+            raise OpKindTableError(f"{key} has duplicate members")
+        if key == "simpleir_out_metadata_kinds":
+            continue
+        if key == "simpleir_var_forbidden_kinds":
+            members = _simpleir_var_forbidden_spellings(data)
+        for member in members:
+            prior = var_field_members.setdefault(member, key)
+            if prior != key:
+                raise OpKindTableError(
+                    f"SimpleIR var field kind {member!r} appears in both {prior} and {key}"
+                )
+    return_terminators = {
+        row["kind"]
+        for row in data.get("simpleir_control_kind", [])
+        if row.get("return_shape") is not None
+    }
+    conflicting_return_roles = return_terminators.intersection(var_field_members)
+    if conflicting_return_roles:
+        raise OpKindTableError(
+            "SimpleIR return terminators cannot declare another var field role: "
+            + ", ".join(sorted(conflicting_return_roles))
+        )
 
 
 def _validate_simpleir_op_shapes(data: dict) -> None:
@@ -2026,6 +2079,8 @@ def _validate_simpleir_op_shapes(data: dict) -> None:
     aliases = {
         alias for row in data.get("kind", []) for alias in row.get("aliases", [])
     }
+    kinds = {row["canonical"]: row for row in data.get("kind", [])}
+    opcodes = {row["name"]: row for row in data.get("opcode", [])}
     seen: set[str] = set()
     for row in rows:
         if not isinstance(row, dict) or set(row) != {
@@ -2052,6 +2107,15 @@ def _validate_simpleir_op_shapes(data: dict) -> None:
         if type(row["operands"]) is not int or row["operands"] < 0:
             raise OpKindTableError(
                 f"simpleir_op_shape {kind}: operands must be a nonnegative integer"
+            )
+        # Fixed TIR arity owns the count for directly mapped operations. Copy
+        # fallbacks and variable-arity opcodes can have separate wire shapes.
+        opcode = kinds.get(kind, {}).get("mapper_opcode")
+        arity = opcodes.get(opcode, {}).get("operand_arity")
+        if type(arity) is int and row["operands"] != arity:
+            raise OpKindTableError(
+                f"simpleir_op_shape {kind}: operands must match "
+                f"OpCode::{opcode} operand_arity {arity}"
             )
         if (
             not isinstance(row["value_rule"], str)
@@ -2270,14 +2334,65 @@ def _validate_alias_memory_region_sets(data: dict) -> None:
             owners[opcode] = key
 
 
+def _validate_binding_views(data: dict) -> None:
+    """Structurally validate ``classifier_binding_view`` (fail-loud). A binding
+    view spelling (a frame home store, cell store or load) returns a view of a
+    frame binding: the object its home holds, valid until the next write to its
+    slot, with no reference of its own. ``OwnershipRootFacts`` never releases
+    one and joins views through block arguments, and ``copy_kind_mints_*``
+    must agree: the spelling sits in the explicit transparent-alias bucket and
+    in no bucket that mints, moves or marks a reference."""
+    transparent = set(data.get("classifier_transparent_alias", []))
+    for view in data.get("classifier_binding_view", []):
+        if view not in transparent:
+            raise OpKindTableError(
+                f"classifier_binding_view {view!r} must also be in "
+                "classifier_transparent_alias: a binding view's result holds no "
+                "reference of its own"
+            )
+        for bucket in (
+            "classifier_owned_value",
+            "classifier_owned_alias",
+            "classifier_exception_creation_ref",
+            "classifier_inert_marker",
+            "classifier_no_heap_move",
+        ):
+            if view in data.get(bucket, []):
+                raise OpKindTableError(
+                    f"classifier_binding_view {view!r} is also in {bucket}: a "
+                    "binding view neither mints, moves nor marks a reference"
+                )
+
+
 def _validate_consuming_kinds(data: dict, valid_spellings: dict[str, str]) -> None:
     """Structurally validate the ``[[consuming_kind]]`` operand-ownership
-    overrides (fail-loud). Each row pins one wire-kind SPELLING to a consumed
-    operand position; the spelling must be a known mapper spelling and the
-    consumed-operand selector must be ``"last"`` or a non-negative integer."""
+    overrides (fail-loud). Each row pins one wire-kind SPELLING to the operand
+    position its operation consumes, read through ``kind_consumed_operand_table``
+    by the one taking query (``op_transferred_operands``).
+
+    The spelling is a known ``[[kind]]`` mapper spelling (canonical or alias), or
+    a Copy-lifted spelling whose operation moves the operand's reference into
+    storage it owns: an inert marker with no surviving result, a binding view
+    (``classifier_binding_view``, a frame home store whose result views the home
+    it stored into), or a fresh value that takes it into its own result. Any
+    other transparent, no-heap or owned-alias Copy names the operand's object in
+    its result without declaring storage that owns it, so it cannot consume it.
+    The selector is ``"last"`` or a non-negative integer, and it names an operand
+    of the spelling's ``[[simpleir_op_shape]]`` where one is declared.
+    """
     rows = data.get("consuming_kind", [])
     if not isinstance(rows, list):
         raise OpKindTableError("[[consuming_kind]] must be an array of tables")
+    consuming_copies = (
+        set(data.get("classifier_inert_marker", []))
+        | set(data.get("classifier_binding_view", []))
+        | set(data.get("classifier_owned_value", []))
+    )
+    declared_operands = {
+        row["kind"]: row["operands"]
+        for row in data.get("simpleir_op_shape", [])
+        if isinstance(row, dict) and type(row.get("operands")) is int
+    }
     seen: set[str] = set()
     for row in rows:
         kind = row.get("kind")
@@ -2286,20 +2401,75 @@ def _validate_consuming_kinds(data: dict, valid_spellings: dict[str, str]) -> No
         if kind in seen:
             raise OpKindTableError(f"duplicate consuming_kind: {kind}")
         seen.add(kind)
-        if kind not in valid_spellings:
+        if kind not in valid_spellings and kind not in consuming_copies:
             raise OpKindTableError(
-                f"consuming_kind {kind!r} is not a known [[kind]] mapper spelling "
-                "(canonical or alias) — a consume override on an unknown spelling "
-                "would silently never fire (the C6 double-free it must retire)"
+                f"consuming_kind {kind!r} is neither a known [[kind]] mapper "
+                "spelling (canonical or alias) nor a Copy-lifted inert-marker, "
+                "binding-view or fresh-value spelling — a consume override on an "
+                "unknown or aliasing spelling would silently never fire, or take a "
+                "reference no declared storage owns (the C6 double-free it must "
+                "retire)"
             )
         sel = row.get("consumed_operand")
-        if sel == "last":
-            continue
-        if isinstance(sel, bool) or not isinstance(sel, int) or sel < 0:
+        if sel != "last" and (
+            isinstance(sel, bool) or not isinstance(sel, int) or sel < 0
+        ):
             raise OpKindTableError(
                 f"consuming_kind {kind}: 'consumed_operand' must be \"last\" or a "
                 f"non-negative operand index, got {sel!r}"
             )
+        operands = declared_operands.get(kind)
+        if operands is not None and (
+            operands == 0 if sel == "last" else sel >= operands
+        ):
+            raise OpKindTableError(
+                f"consuming_kind {kind}: 'consumed_operand' {sel!r} names no operand "
+                f"of its {operands}-operand [[simpleir_op_shape]]"
+            )
+
+
+def _validate_source_call_kinds(data: dict, valid_spellings: dict[str, str]) -> None:
+    """Structurally validate the ``[[source_call_kind]]`` rows (fail-loud).
+
+    Each row admits typed ``argument_custody`` on one source Python call
+    spelling from ``first_adopted_operand`` on. The spelling must be a known
+    mapper spelling, and the position must be 0 or 1: only a ``super()`` class
+    operand may precede the adoptable ones. An optional ``callable_operand``
+    names the callable, which an ordinary call adopts, so it must be 0 and
+    inside the adoptable range.
+    """
+    rows = data.get("source_call_kind", [])
+    if not isinstance(rows, list):
+        raise OpKindTableError("[[source_call_kind]] must be an array of tables")
+    seen: set[str] = set()
+    for row in rows:
+        kind = row.get("kind")
+        if not isinstance(kind, str) or not kind:
+            raise OpKindTableError(f"[[source_call_kind]] row missing 'kind': {row}")
+        if kind in seen:
+            raise OpKindTableError(f"duplicate source_call_kind: {kind}")
+        seen.add(kind)
+        if kind not in valid_spellings:
+            raise OpKindTableError(
+                f"source_call_kind {kind!r} is not a known [[kind]] mapper spelling"
+            )
+        first = row.get("first_adopted_operand")
+        if isinstance(first, bool) or first not in (0, 1):
+            raise OpKindTableError(
+                f"source_call_kind {kind}: 'first_adopted_operand' must be 0 or 1, "
+                f"got {first!r}"
+            )
+        if "callable_operand" in row:
+            callable_operand = row["callable_operand"]
+            if (
+                isinstance(callable_operand, bool)
+                or callable_operand != 0
+                or callable_operand < first
+            ):
+                raise OpKindTableError(
+                    f"source_call_kind {kind}: 'callable_operand' must be 0 and not "
+                    f"before 'first_adopted_operand', got {callable_operand!r}"
+                )
 
 
 def _validate_absorbing_kinds(data: dict, mapper_spellings: dict[str, str]) -> None:
@@ -2313,7 +2483,7 @@ def _validate_absorbing_kinds(data: dict, mapper_spellings: dict[str, str]) -> N
     rows = data.get("absorbing_kind", [])
     if not isinstance(rows, list):
         raise OpKindTableError("[[absorbing_kind]] must be an array of tables")
-    fresh_members = set(data.get("classifier_fresh_value", []))
+    fresh_members = set(data.get("classifier_owned_value", []))
     seen: set[str] = set()
     for row in rows:
         kind = row.get("kind")
@@ -2329,7 +2499,7 @@ def _validate_absorbing_kinds(data: dict, mapper_spellings: dict[str, str]) -> N
             )
         if kind not in fresh_members:
             raise OpKindTableError(
-                f"absorbing_kind {kind!r} must also be in classifier_fresh_value "
+                f"absorbing_kind {kind!r} must also be in classifier_owned_value "
                 "(a result cannot absorb operand ownership unless it mints a fresh "
                 "owned container result)"
             )
@@ -2374,7 +2544,7 @@ def _validate_result_finalizer_source_kinds(data: dict) -> None:
         raise OpKindTableError(
             "[[result_finalizer_source_kind]] must be an array of tables"
         )
-    fresh_members = set(data.get("classifier_fresh_value", []))
+    fresh_members = set(data.get("classifier_owned_value", []))
     seen: set[str] = set()
     for row in rows:
         kind = row.get("kind")
@@ -2388,7 +2558,7 @@ def _validate_result_finalizer_source_kinds(data: dict) -> None:
         if kind not in fresh_members:
             raise OpKindTableError(
                 f"result_finalizer_source_kind {kind!r} must also be in "
-                "classifier_fresh_value (the result must carry its own owned ref)"
+                "classifier_owned_value (the result must carry its own owned ref)"
             )
         sel = row.get("source_operand")
         if sel == "last":

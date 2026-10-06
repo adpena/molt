@@ -154,39 +154,13 @@ pub extern "C" fn molt_slice_hash(slice_bits: u64) -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_slice_eq(slice_bits: u64, other_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(slice_ptr) = obj_from_bits(slice_bits).as_ptr() else {
-            return not_implemented_bits(_py);
-        };
-        let Some(other_ptr) = obj_from_bits(other_bits).as_ptr() else {
-            return not_implemented_bits(_py);
-        };
-        unsafe {
-            if object_type_id(slice_ptr) != TYPE_ID_SLICE {
-                return not_implemented_bits(_py);
-            }
-            if object_type_id(other_ptr) != TYPE_ID_SLICE {
-                return not_implemented_bits(_py);
-            }
-            for (left, right) in [
-                (slice_start_bits(slice_ptr), slice_start_bits(other_ptr)),
-                (slice_stop_bits(slice_ptr), slice_stop_bits(other_ptr)),
-                (slice_step_bits(slice_ptr), slice_step_bits(other_ptr)),
-            ] {
-                match crate::object::ops_compare::compare_object_eq_bool(
-                    _py,
-                    obj_from_bits(left),
-                    obj_from_bits(right),
-                ) {
-                    crate::object::ops_compare::CompareBoolOutcome::True => {}
-                    crate::object::ops_compare::CompareBoolOutcome::False => {
-                        return MoltObject::from_bool(false).bits();
-                    }
-                    _ => return MoltObject::none().bits(),
-                }
-            }
-            MoltObject::from_bool(true).bits()
-        }
+    crate::with_gil_entry_nopanic!(py, {
+        crate::object::ops_compare::builtin_families::BuiltinComparison::Slice.invoke(
+            py,
+            slice_bits,
+            other_bits,
+            molt_obj_model::sequence_compare::RichCompareOp::Eq,
+        )
     })
 }
 
@@ -245,19 +219,10 @@ pub unsafe extern "C" fn molt_dataclass_new_from_values(
 ) -> u64 {
     unsafe {
         crate::with_gil_entry_nopanic!(_py, {
-            let Some(values_ptr) = crate::provenance::abi::const_ptr::<u64>(values_ptr_bits) else {
-                return raise_exception::<_>(
-                    _py,
-                    "MemoryError",
-                    "dataclass values address exceeds the active address space",
-                );
-            };
-            let Some(values) = crate::provenance::abi::slice(values_ptr, len) else {
-                return raise_exception::<_>(
-                    _py,
-                    "RuntimeError",
-                    "dataclass values range is invalid for the active target",
-                );
+            let Some(values) =
+                super::builders::borrowed_constructor_values(_py, values_ptr_bits, len)
+            else {
+                return MoltObject::none().bits();
             };
             dataclass_new_from_value_slice(_py, name_bits, field_names_bits, values, flags_bits)
         })
@@ -292,7 +257,6 @@ fn dataclass_new_from_value_slice(
     }
     let flags = to_i64(obj_from_bits(flags_bits)).unwrap_or(0) as u64;
     let frozen = (flags & 0x1) != 0;
-    let eq = (flags & 0x2) != 0;
     let repr = (flags & 0x4) != 0;
     let slots = (flags & 0x8) != 0;
     let allows_dict = !slots;
@@ -308,11 +272,9 @@ fn dataclass_new_from_value_slice(
     let desc = Box::new(DataclassDesc {
         name,
         field_names,
-        field_keys: Vec::new(),
-        declared_slots: Vec::new(),
+        field_layout: Vec::new(),
         field_name_to_index,
         frozen,
-        eq,
         repr,
         slots,
         allows_dict,
@@ -369,7 +331,12 @@ pub extern "C" fn molt_dataclass_get(obj_bits: u64, index_bits: u64) -> u64 {
                     return MoltObject::none().bits();
                 }
                 let fields = dataclass_fields_ptr(ptr);
-                if idx < 0 || fields.is_null() || idx as usize >= (*fields).len() {
+                let desc = dataclass_desc_ptr(ptr);
+                if idx < 0
+                    || fields.is_null()
+                    || desc.is_null()
+                    || idx as usize >= (*desc).field_names.len()
+                {
                     return raise_exception::<_>(
                         _py,
                         "TypeError",
@@ -438,7 +405,12 @@ pub extern "C" fn molt_dataclass_set(obj_bits: u64, index_bits: u64, val_bits: u
                     );
                 }
                 let fields = dataclass_fields_ptr(ptr);
-                if idx < 0 || fields.is_null() || idx as usize >= (*fields).len() {
+                let desc = dataclass_desc_ptr(ptr);
+                if idx < 0
+                    || fields.is_null()
+                    || desc.is_null()
+                    || idx as usize >= (*desc).field_names.len()
+                {
                     return raise_exception::<_>(
                         _py,
                         "TypeError",
@@ -563,32 +535,58 @@ unsafe fn prepare_dataclass_class_metadata(
         if exception_pending(py) || obj_from_bits(empty).as_ptr().is_none() {
             return Err(());
         }
-        for index in 0..(*desc).field_names.len() {
-            let key = if let Some(&key) = (&(*desc).field_keys).get(index) {
-                key
-            } else {
-                let name = (&(*desc).field_names)[index].as_bytes();
-                let key = attr_name_bits_from_bytes(py, name).ok_or(())?;
-                (*desc).field_keys.push(key);
-                key
-            };
-            let declared = (*desc).slots
-                || class_mro_view(py, class).iter().copied().any(|base| {
-                    obj_from_bits(base).as_ptr().is_some_and(|base| {
-                        object_type_id(base) == TYPE_ID_TYPE
-                            && crate::builtins::attr::class_own_slot_field_offset(py, base, key)
-                                .is_some()
-                    })
-                });
-            if let Some(slot) = (&mut (*desc).declared_slots).get_mut(index) {
-                *slot = declared;
-            } else {
-                (*desc).declared_slots.push(declared);
-            }
+        let logical_len = (*desc).field_names.len();
+        let fields = dataclass_fields_ptr(ptr);
+        if fields.is_null() || (*fields).len() < logical_len {
+            raise_exception::<()>(py, "SystemError", "dataclass backing is incomplete");
+            return Err(());
         }
-        (*desc).allows_dict = !(*desc).slots
-            || crate::builtins::attr::class_slots_info(py, class)
-                .is_some_and(|info| info.allows_dict);
+        let mut projection = Vec::new();
+        let mut projection_owners = Vec::new();
+        for index in 0..logical_len {
+            let name = (&(*desc).field_names)[index].as_bytes();
+            let key = attr_name_bits_from_bytes(py, name).ok_or(())?;
+            projection_owners.push(crate::PtrDropGuard::new(
+                obj_from_bits(key).as_ptr().unwrap(),
+            ));
+            // Namespace visibility selects the logical field's row. A class
+            // variable shadowing an inherited slot remains a dictionary field;
+            // the hidden physical slot is appended independently below.
+            let declared = class_attr_lookup_raw_mro(py, class, key)
+                .and_then(|descriptor| crate::builtins::types::managed_slot_field(py, descriptor));
+            if exception_pending(py) {
+                return Err(());
+            }
+            projection.push(crate::object::DataclassField {
+                name: key,
+                kind: declared.map_or(
+                    crate::object::class_layout::ClassFieldKind::Inferred,
+                    |field| field.kind,
+                ),
+                slot_offset: declared.map(|field| field.offset),
+            });
+        }
+        crate::object::class_layout::for_each_field(py, class, &mut |field| {
+            if !field.kind.is_declared_slot()
+                || projection
+                    .iter()
+                    .any(|entry| entry.slot_offset == Some(field.offset))
+            {
+                return;
+            }
+            inc_ref_bits(py, field.name);
+            projection_owners.push(crate::PtrDropGuard::new(
+                obj_from_bits(field.name).as_ptr().unwrap(),
+            ));
+            projection.push(crate::object::DataclassField {
+                name: field.name,
+                kind: field.kind,
+                slot_offset: Some(field.offset),
+            });
+        });
+        (*desc).allows_dict = crate::builtins::attr::class_slots_info(py, class)
+            .ok_or(())?
+            .allows_dict;
         // Reset the private projection on retry with a different validated class.
         (*desc).field_flags.clear();
         (*desc).hash_mode = 0;
@@ -623,10 +621,44 @@ unsafe fn prepare_dataclass_class_metadata(
         }
         dec_ref_bits(py, hash_name);
         if exception_pending(py) {
-            Err(())
-        } else {
-            Ok(())
+            return Err(());
         }
+        let mut detached_values = Vec::new();
+        if detached_values
+            .try_reserve_exact((*fields).len() - logical_len)
+            .is_err()
+            || !crate::object::backing::tracked_vec_reserve_or_raise(
+                py,
+                fields,
+                projection.len(),
+                "dataclass slot projection allocation failed",
+            )
+        {
+            if !exception_pending(py) {
+                raise_exception::<()>(
+                    py,
+                    "MemoryError",
+                    "dataclass slot projection allocation failed",
+                );
+            }
+            return Err(());
+        }
+        // Publish the complete vector/projection before releasing any old
+        // owners. Retry replaces only hidden backing, preserving logical input.
+        detached_values.extend_from_slice(&(&*fields)[logical_len..]);
+        (*fields).truncate(logical_len);
+        (*fields).resize(projection.len(), empty);
+        let previous = std::mem::replace(&mut (*desc).field_layout, projection);
+        for owner in &mut projection_owners {
+            owner.release();
+        }
+        for field in previous {
+            dec_ref_bits(py, field.name);
+        }
+        for value in detached_values {
+            dec_ref_bits(py, value);
+        }
+        Ok(())
     }
 }
 

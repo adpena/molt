@@ -59,10 +59,6 @@ fn emit_try_end(context: &mut ControlOpContext<'_>, func: &mut Function) {
 
 fn emit_check_exception(context: &ControlOpContext<'_>, func: &mut Function, op: &OpIR) {
     let async_work_poll = op.is_async_work_poll();
-    if !async_work_poll && context.native_eh_enabled {
-        return;
-    }
-
     // The observer is semantically independent of exception-region nesting.
     // A poll outside `try` must still run, then transfer to the explicit
     // function-level exception label carried by the SimpleIR op.  Silently
@@ -129,6 +125,7 @@ mod tests {
         let mut body = Function::new([]);
         body.instruction(&Instruction::Block(BlockType::Empty));
         let mut context = ControlOpContext {
+            return_depth: 0,
             func_ir: &func_ir,
             import_ids: &import_ids,
             locals: &locals,

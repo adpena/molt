@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import queue
 import subprocess
 import sys
@@ -11,11 +12,30 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from dataclasses import dataclass
 
 try:
     from tools import harness_memory_guard
 except ModuleNotFoundError:  # pragma: no cover - direct import from tools/
     import harness_memory_guard  # type: ignore
+
+
+@dataclass(frozen=True, slots=True)
+class BatchCompileRequestCustody:
+    child_process: harness_memory_guard.memory_guard.GuardedChildProcess
+    request_started_at_ns: int
+    returncode: int
+    owned_process_identities: tuple = ()
+
+
+class BatchCompileResponse(dict[str, object]):
+    """Protocol response carrying the immutable local request observation."""
+
+    def __init__(
+        self, response: dict[str, object], custody: BatchCompileRequestCustody
+    ):
+        super().__init__(response)
+        self.custody = custody
 
 
 def _bounded_protocol_text(value: str, *, limit: int = 512) -> str:
@@ -117,6 +137,23 @@ class BatchCompileServerClient:
             if self._guard_sentinel is not None:
                 self._guard_sentinel.__exit__(*sys.exc_info())
             raise
+        # Capture the launch birth before any poll can reap a fast server exit.
+        guard = harness_memory_guard.memory_guard
+        self.child_process = guard.GuardedChildProcess(
+            pid=self._proc.pid,
+            pgid=guard._safe_getpgid(self._proc.pid),
+            sid=guard._safe_getsid(self._proc.pid),
+            command=tuple(cmd),
+            started_at=guard._utc_timestamp(),
+            started_at_ns=(
+                guard.windows_process_handle_started_at_ns(
+                    getattr(self._proc, "_handle", None)
+                )
+                if os.name == "nt"
+                else guard._process_model.process_started_at_ns(self._proc.pid)
+            ),
+        )
+        self._request_lock = threading.Lock()
         self._next_id = 1
         self._poisoned = False
         self._response_queue: queue.Queue[str | BaseException | None] = queue.Queue()
@@ -169,6 +206,34 @@ class BatchCompileServerClient:
             return item
 
     def request(
+        self,
+        op: str,
+        *,
+        params: dict[str, object] | None = None,
+        timeout: float,
+    ) -> BatchCompileResponse:
+        with self._request_lock:
+            # One persistent server, one active request. This boundary also
+            # excludes suite evidence published for an earlier request.
+            request_started_at_ns = time.monotonic_ns()
+            try:
+                response = self._request(op, params=params, timeout=timeout)
+            except Exception as exc:
+                exc.batch_request_custody = BatchCompileRequestCustody(
+                    self.child_process, request_started_at_ns, 127
+                )
+                raise
+            returncode = response.get("returncode")
+            if type(returncode) is not int:
+                returncode = 0 if response.get("ok") else 1
+            return BatchCompileResponse(
+                response,
+                BatchCompileRequestCustody(
+                    self.child_process, request_started_at_ns, returncode
+                ),
+            )
+
+    def _request(
         self,
         op: str,
         *,

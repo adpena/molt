@@ -498,12 +498,14 @@ mod tests {
         let bb2 = func.fresh_block();
         let bb3 = func.fresh_block();
         let cond = func.fresh_value();
+        // Keep both CFG paths executable; this fixture condition is not a literal.
+        let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops.push(TirOp {
                 dialect: Dialect::Molt,
-                opcode: OpCode::ConstBool,
-                operands: vec![],
+                opcode: OpCode::Copy,
+                operands: vec![cond_input],
                 results: vec![cond],
                 attrs: AttrDict::new(),
                 source_span: None,
@@ -553,6 +555,8 @@ mod tests {
         let header = func.fresh_block();
         let exit = func.fresh_block();
         let cond = func.fresh_value();
+        // Keep both CFG paths executable; this fixture condition is not a literal.
+        let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
         func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
             target: header,
             args: vec![],
@@ -564,8 +568,8 @@ mod tests {
                 args: vec![],
                 ops: vec![TirOp {
                     dialect: Dialect::Molt,
-                    opcode: OpCode::ConstBool,
-                    operands: vec![],
+                    opcode: OpCode::Copy,
+                    operands: vec![cond_input],
                     results: vec![cond],
                     attrs: AttrDict::new(),
                     source_span: None,
@@ -761,7 +765,7 @@ mod tests {
                 opcode: OpCode::ConstInt,
                 operands: vec![],
                 results: vec![v],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(7))]),
                 source_span: None,
             });
             entry.terminator = Terminator::Return { values: vec![] };

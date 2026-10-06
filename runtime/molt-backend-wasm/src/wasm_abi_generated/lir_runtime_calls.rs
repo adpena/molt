@@ -7,6 +7,8 @@ use super::import_tokens::WasmRuntimeImport;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LirRuntimeCall {
+    ProfileEnabled,
+    GuardType,
     Add,
     InplaceAdd,
     Sub,
@@ -60,10 +62,8 @@ pub(crate) enum LirRuntimeCall {
     ScratchAlloc,
     ScratchFree,
     UnpackSequence,
-    ListBuilderNew,
-    ListBuilderAppend,
-    ListBuilderFinish,
-    TupleBuilderFinish,
+    TupleFromValues,
+    ListFromValues,
     DictNew,
     DictSet,
     SetNew,
@@ -103,6 +103,7 @@ pub(crate) enum LirRuntimeCall {
     ContextClosing,
     ObjectNewBound,
     ClosureLoad,
+    FrameContextSet,
     ClosureStore,
     ModuleCacheGet,
     ModuleCacheSet,
@@ -123,6 +124,8 @@ pub(crate) enum LirRuntimeCall {
 impl LirRuntimeCall {
     #[cfg(test)]
     pub(crate) const ALL: &'static [Self] = &[
+        Self::ProfileEnabled,
+        Self::GuardType,
         Self::Add,
         Self::InplaceAdd,
         Self::Sub,
@@ -176,10 +179,8 @@ impl LirRuntimeCall {
         Self::ScratchAlloc,
         Self::ScratchFree,
         Self::UnpackSequence,
-        Self::ListBuilderNew,
-        Self::ListBuilderAppend,
-        Self::ListBuilderFinish,
-        Self::TupleBuilderFinish,
+        Self::TupleFromValues,
+        Self::ListFromValues,
         Self::DictNew,
         Self::DictSet,
         Self::SetNew,
@@ -219,6 +220,7 @@ impl LirRuntimeCall {
         Self::ContextClosing,
         Self::ObjectNewBound,
         Self::ClosureLoad,
+        Self::FrameContextSet,
         Self::ClosureStore,
         Self::ModuleCacheGet,
         Self::ModuleCacheSet,
@@ -238,6 +240,8 @@ impl LirRuntimeCall {
 
     pub(crate) const fn import(self) -> WasmRuntimeImport {
         match self {
+            Self::ProfileEnabled => WasmRuntimeImport::ProfileEnabled,
+            Self::GuardType => WasmRuntimeImport::GuardType,
             Self::Add => WasmRuntimeImport::Add,
             Self::InplaceAdd => WasmRuntimeImport::InplaceAdd,
             Self::Sub => WasmRuntimeImport::Sub,
@@ -291,10 +295,8 @@ impl LirRuntimeCall {
             Self::ScratchAlloc => WasmRuntimeImport::ScratchAlloc,
             Self::ScratchFree => WasmRuntimeImport::ScratchFree,
             Self::UnpackSequence => WasmRuntimeImport::UnpackSequence,
-            Self::ListBuilderNew => WasmRuntimeImport::ListBuilderNew,
-            Self::ListBuilderAppend => WasmRuntimeImport::ListBuilderAppend,
-            Self::ListBuilderFinish => WasmRuntimeImport::ListBuilderFinish,
-            Self::TupleBuilderFinish => WasmRuntimeImport::TupleBuilderFinish,
+            Self::TupleFromValues => WasmRuntimeImport::TupleFromValues,
+            Self::ListFromValues => WasmRuntimeImport::ListFromValues,
             Self::DictNew => WasmRuntimeImport::DictNew,
             Self::DictSet => WasmRuntimeImport::DictSet,
             Self::SetNew => WasmRuntimeImport::SetNew,
@@ -334,6 +336,7 @@ impl LirRuntimeCall {
             Self::ContextClosing => WasmRuntimeImport::ContextClosing,
             Self::ObjectNewBound => WasmRuntimeImport::ObjectNewBound,
             Self::ClosureLoad => WasmRuntimeImport::ClosureLoad,
+            Self::FrameContextSet => WasmRuntimeImport::FrameContextSet,
             Self::ClosureStore => WasmRuntimeImport::ClosureStore,
             Self::ModuleCacheGet => WasmRuntimeImport::ModuleCacheGet,
             Self::ModuleCacheSet => WasmRuntimeImport::ModuleCacheSet,
@@ -354,6 +357,7 @@ impl LirRuntimeCall {
 
     pub(crate) const fn boxed_operand_count(self) -> Option<usize> {
         match self {
+            Self::GuardType => Some(2),
             Self::Add => Some(2),
             Self::InplaceAdd => Some(2),
             Self::Sub => Some(2),
@@ -428,6 +432,10 @@ pub(crate) struct LirFixedRuntimeCall {
 #[inline]
 pub(crate) fn lir_fixed_runtime_call(kind: &str) -> Option<LirFixedRuntimeCall> {
     match kind {
+        "guard_type" => Some(LirFixedRuntimeCall {
+            call: LirRuntimeCall::GuardType,
+            operand_count: 2,
+        }),
         "import" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleImport,
             operand_count: 1,
@@ -463,6 +471,10 @@ pub(crate) fn lir_fixed_runtime_call(kind: &str) -> Option<LirFixedRuntimeCall> 
         "module_import_from" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleImportFrom,
             operand_count: 2,
+        }),
+        "frame_context_set" => Some(LirFixedRuntimeCall {
+            call: LirRuntimeCall::FrameContextSet,
+            operand_count: 3,
         }),
         "module_get_global" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ModuleGetGlobal,
@@ -515,6 +527,10 @@ pub(crate) fn lir_fixed_runtime_call(kind: &str) -> Option<LirFixedRuntimeCall> 
         "context_closing" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::ContextClosing,
             operand_count: 1,
+        }),
+        "guard_tag" => Some(LirFixedRuntimeCall {
+            call: LirRuntimeCall::GuardType,
+            operand_count: 2,
         }),
         "add" => Some(LirFixedRuntimeCall {
             call: LirRuntimeCall::Add,
@@ -815,6 +831,16 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ModuleImportFrom],
             discard_result: false,
         }),
+        "frame_context_set" => Some(OpLoopRuntimeCallSpec {
+            import: WasmRuntimeImport::FrameContextSet,
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+            ],
+            required_imports: &[WasmRuntimeImport::FrameContextSet],
+            discard_result: false,
+        }),
         "module_get_global" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ModuleGetGlobal,
             args: &[
@@ -943,7 +969,22 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
                 OpLoopRuntimeArgSpec::Local(0),
                 OpLoopRuntimeArgSpec::Local(1),
             ],
-            required_imports: &[WasmRuntimeImport::GuardType],
+            required_imports: &[
+                WasmRuntimeImport::GuardType,
+                WasmRuntimeImport::ProfileEnabled,
+            ],
+            discard_result: false,
+        }),
+        "guard_type" => Some(OpLoopRuntimeCallSpec {
+            import: WasmRuntimeImport::GuardType,
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+            ],
+            required_imports: &[
+                WasmRuntimeImport::GuardType,
+                WasmRuntimeImport::ProfileEnabled,
+            ],
             discard_result: false,
         }),
         "string_format" => Some(OpLoopRuntimeCallSpec {
@@ -1048,9 +1089,8 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
                 WasmRuntimeImport::AsyncgenHooksGet,
                 WasmRuntimeImport::AsyncgenHooksSet,
                 WasmRuntimeImport::AsyncgenLocals,
-                WasmRuntimeImport::AsyncgenLocalsRegister,
                 WasmRuntimeImport::AsyncgenNew,
-                WasmRuntimeImport::AsyncgenShutdown,
+                WasmRuntimeImport::StatefulLocalsRegister,
             ],
             discard_result: false,
         }),
@@ -1582,15 +1622,6 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::ExceptiongroupMatch],
             discard_result: false,
         }),
-        "exception_set_cause" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::ExceptionSetCause,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-            ],
-            required_imports: &[WasmRuntimeImport::ExceptionSetCause],
-            discard_result: false,
-        }),
         "exception_set_value" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::ExceptionSetValue,
             args: &[
@@ -1658,16 +1689,6 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
                 OpLoopRuntimeArgSpec::Local(2),
             ],
             required_imports: &[WasmRuntimeImport::DictGet],
-            discard_result: false,
-        }),
-        "dict_inc" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::DictInc,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-                OpLoopRuntimeArgSpec::Local(2),
-            ],
-            required_imports: &[WasmRuntimeImport::DictInc],
             discard_result: false,
         }),
         "dict_str_int_inc" => Some(OpLoopRuntimeCallSpec {
@@ -1791,6 +1812,12 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::Chr],
             discard_result: false,
         }),
+        "operator_index" => Some(OpLoopRuntimeCallSpec {
+            import: WasmRuntimeImport::OperatorIndex,
+            args: &[OpLoopRuntimeArgSpec::Local(0)],
+            required_imports: &[WasmRuntimeImport::OperatorIndex],
+            discard_result: false,
+        }),
         "string_lower" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringLower,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
@@ -1825,24 +1852,6 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             import: WasmRuntimeImport::FloatFromObj,
             args: &[OpLoopRuntimeArgSpec::Local(0)],
             required_imports: &[WasmRuntimeImport::FloatFromObj],
-            discard_result: false,
-        }),
-        "intarray_from_seq" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::IntarrayFromSeq,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::IntarrayFromSeq],
-            discard_result: false,
-        }),
-        "memoryview_new" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::MemoryviewNew,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::MemoryviewNew],
-            discard_result: false,
-        }),
-        "memoryview_tobytes" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::MemoryviewTobytes,
-            args: &[OpLoopRuntimeArgSpec::Local(0)],
-            required_imports: &[WasmRuntimeImport::MemoryviewTobytes],
             discard_result: false,
         }),
         "str_from_obj" => Some(OpLoopRuntimeCallSpec {
@@ -2181,26 +2190,6 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::Buffer2dGet],
             discard_result: false,
         }),
-        "string_split_ws_dict_inc" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::StringSplitWsDictInc,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-                OpLoopRuntimeArgSpec::Local(2),
-            ],
-            required_imports: &[WasmRuntimeImport::StringSplitWsDictInc],
-            discard_result: false,
-        }),
-        "taq_ingest_line" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::TaqIngestLine,
-            args: &[
-                OpLoopRuntimeArgSpec::Local(0),
-                OpLoopRuntimeArgSpec::Local(1),
-                OpLoopRuntimeArgSpec::Local(2),
-            ],
-            required_imports: &[WasmRuntimeImport::TaqIngestLine],
-            discard_result: false,
-        }),
         "string_split_field_start" => Some(OpLoopRuntimeCallSpec {
             import: WasmRuntimeImport::StringSplitFieldStart,
             args: &[
@@ -2318,15 +2307,15 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
             required_imports: &[WasmRuntimeImport::MemoryviewCast],
             discard_result: false,
         }),
-        "string_split_sep_dict_inc" => Some(OpLoopRuntimeCallSpec {
-            import: WasmRuntimeImport::StringSplitSepDictInc,
+        "string_split_ws_dict_inc" => Some(OpLoopRuntimeCallSpec {
+            import: WasmRuntimeImport::StringSplitWsDictInc,
             args: &[
                 OpLoopRuntimeArgSpec::Local(0),
                 OpLoopRuntimeArgSpec::Local(1),
                 OpLoopRuntimeArgSpec::Local(2),
                 OpLoopRuntimeArgSpec::Local(3),
             ],
-            required_imports: &[WasmRuntimeImport::StringSplitSepDictInc],
+            required_imports: &[WasmRuntimeImport::StringSplitWsDictInc],
             discard_result: false,
         }),
         "bytearray_fill_range" => Some(OpLoopRuntimeCallSpec {
@@ -2374,6 +2363,18 @@ pub(crate) fn op_loop_runtime_call(kind: &str, marked: bool) -> Option<OpLoopRun
                 OpLoopRuntimeArgSpec::Local(4),
             ],
             required_imports: &[WasmRuntimeImport::StatisticsStdevSlice],
+            discard_result: false,
+        }),
+        "string_split_sep_dict_inc" => Some(OpLoopRuntimeCallSpec {
+            import: WasmRuntimeImport::StringSplitSepDictInc,
+            args: &[
+                OpLoopRuntimeArgSpec::Local(0),
+                OpLoopRuntimeArgSpec::Local(1),
+                OpLoopRuntimeArgSpec::Local(2),
+                OpLoopRuntimeArgSpec::Local(3),
+                OpLoopRuntimeArgSpec::Local(4),
+            ],
+            required_imports: &[WasmRuntimeImport::StringSplitSepDictInc],
             discard_result: false,
         }),
         "bytes_find_slice" => Some(OpLoopRuntimeCallSpec {

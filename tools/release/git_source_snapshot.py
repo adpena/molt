@@ -17,6 +17,7 @@ from molt.file_publication import (
 from molt.portable_paths import portable_path_identity, portable_relative_path
 from molt.compiler_distribution import verify_source_inventory
 from tools.git_identity import require_git_object_id
+from tools.command_execution import CommandExecutor
 
 
 GIT_SOURCE_SNAPSHOT_SCHEMA = "molt.git-source-snapshot.v1"
@@ -24,6 +25,19 @@ _REGULAR_GIT_MODES = frozenset({0o100644, 0o100755})
 _OBJECT_FORMAT_LENGTHS = {"sha1": 40, "sha256": 64}
 _CAPTURE_TIMEOUT_SECONDS = 120
 _BlobResult = TypeVar("_BlobResult")
+_COMMANDS = CommandExecutor.for_file(__file__)
+
+
+def immutable_git_environment(environment: Mapping[str, str]) -> dict[str, str]:
+    """A recorded object ID always denotes its original immutable Git object."""
+    return {
+        **{
+            key: value
+            for key, value in environment.items()
+            if key.upper() != "GIT_NO_REPLACE_OBJECTS"
+        },
+        "GIT_NO_REPLACE_OBJECTS": "1",
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,10 +113,10 @@ def _run_git_text(
     *arguments: str,
 ) -> str:
     try:
-        completed = subprocess.run(
+        completed = _COMMANDS.run(
             [str(git), *arguments],
             cwd=repo_root,
-            env=dict(environment),
+            env=immutable_git_environment(environment),
             check=True,
             capture_output=True,
             text=True,
@@ -125,42 +139,45 @@ def _map_git_blobs(
     # Spool the batch once: bounded subprocess lifetime, no pipe deadlock, and
     # no whole-source bytes retained in memory while constructing the inventory.
     request = "".join(f"{row[2]}\n" for row in rows).encode("ascii")
-    with tempfile.TemporaryFile() as output:
-        subprocess.run(
+    with tempfile.TemporaryDirectory(prefix="molt-git-blobs-") as temporary:
+        spool = Path(temporary) / "blobs"
+        _COMMANDS.run(
             [str(git), "cat-file", "--batch"],
             cwd=repo_root,
-            env=dict(environment),
+            env=immutable_git_environment(environment),
             input=request,
-            stdout=output,
-            stderr=subprocess.PIPE,
+            capture_output=True,
+            stdout_capture_path=spool,
+            stderr_capture_path=Path(temporary) / "stderr",
+            capture_tail_bytes=64 * 1024,
             check=True,
             timeout=_CAPTURE_TIMEOUT_SECONDS,
         )
-        output.seek(0)
-        results: list[_BlobResult] = []
-        for relative, mode, blob_oid, declared_size in rows:
-            header = output.readline().rstrip(b"\n").split()
-            if header != [
-                blob_oid.encode("ascii"),
-                b"blob",
-                str(declared_size).encode("ascii"),
-            ]:
-                raise ValueError(
-                    f"Git source snapshot blob header is invalid: {relative}"
+        with spool.open("rb") as output:
+            results: list[_BlobResult] = []
+            for relative, mode, blob_oid, declared_size in rows:
+                header = output.readline().rstrip(b"\n").split()
+                if header != [
+                    blob_oid.encode("ascii"),
+                    b"blob",
+                    str(declared_size).encode("ascii"),
+                ]:
+                    raise ValueError(
+                        f"Git source snapshot blob header is invalid: {relative}"
+                    )
+                data = output.read(declared_size)
+                if len(data) != declared_size or output.read(1) != b"\n":
+                    raise ValueError(
+                        f"Git source snapshot blob framing is invalid: {relative}"
+                    )
+                results.append(
+                    consume(
+                        relative, mode, blob_oid, data, hashlib.sha256(data).hexdigest()
+                    )
                 )
-            data = output.read(declared_size)
-            if len(data) != declared_size or output.read(1) != b"\n":
-                raise ValueError(
-                    f"Git source snapshot blob framing is invalid: {relative}"
-                )
-            results.append(
-                consume(
-                    relative, mode, blob_oid, data, hashlib.sha256(data).hexdigest()
-                )
-            )
-        if output.read(1):
-            raise ValueError("Git source snapshot has trailing blob data")
-        return tuple(results)
+            if output.read(1):
+                raise ValueError("Git source snapshot has trailing blob data")
+            return tuple(results)
 
 
 def _hash_git_blobs(
@@ -182,6 +199,46 @@ def _hash_git_blobs(
             sha256=digest,
         ),
     )
+
+
+def read_git_source_file(
+    snapshot: GitSourceSnapshot,
+    relative: str,
+    *,
+    repo_root: Path,
+    git: Path,
+    environment: Mapping[str, str],
+    max_bytes: int,
+) -> bytes:
+    """Read one bounded original blob and rebind it to the captured inventory."""
+    entry = next(
+        (item for item in snapshot.files if item.relative.as_posix() == relative), None
+    )
+    if entry is None or entry.size > max_bytes:
+        raise ValueError(
+            f"Git source snapshot file is absent or exceeds limit: {relative}"
+        )
+
+    def admit(
+        path: PurePosixPath, mode: int, oid: str, data: bytes, digest: str
+    ) -> bytes:
+        if (path, mode, oid, len(data), digest) != (
+            entry.relative,
+            entry.mode,
+            entry.blob_oid,
+            entry.size,
+            entry.sha256,
+        ):
+            raise ValueError(f"Git source snapshot file changed: {relative}")
+        return data
+
+    return _map_git_blobs(
+        git,
+        repo_root,
+        environment,
+        ((entry.relative, entry.mode, entry.blob_oid, entry.size),),
+        admit,
+    )[0]
 
 
 def capture_git_source_snapshot(
@@ -246,10 +303,10 @@ def capture_git_source_snapshot(
     if normalized_pathspecs:
         command.extend(("--", *normalized_pathspecs))
     try:
-        listing = subprocess.run(
+        listing = _COMMANDS.run(
             command,
             cwd=resolved_repo,
-            env=dict(environment),
+            env=immutable_git_environment(environment),
             check=True,
             capture_output=True,
             timeout=_CAPTURE_TIMEOUT_SECONDS,

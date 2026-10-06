@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping, TextIO
 
 from molt.frontend import MoltValue
 
@@ -236,8 +236,45 @@ def _ir_top_level_extras_digest(ir: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+# The compact backend IR JSON projection. In-memory text and streamed lease
+# writes share this encoder, so both produce identical bytes.
+_BACKEND_IR_JSON_ENCODER = json.JSONEncoder(
+    separators=(",", ":"), default=_json_ir_default
+)
+
+
 def _backend_ir_text(ir: Mapping[str, Any]) -> str:
-    return json.dumps(ir, separators=(",", ":"), default=_json_ir_default)
+    return _BACKEND_IR_JSON_ENCODER.encode(ir)
+
+
+def _write_backend_ir_text(handle: TextIO, ir: Mapping[str, Any]) -> None:
+    """Write ``_backend_ir_text(ir)`` without holding the whole document.
+
+    ``json.dump`` always takes CPython's pure-Python encoder and writes once per
+    token. Here the C encoder encodes each top-level member, and each element of
+    a top-level array, so only one element's text is resident at a time.
+    """
+    if not isinstance(ir, dict):
+        raise TypeError(f"Object of type {type(ir).__name__} is not JSON serializable")
+    encode = _BACKEND_IR_JSON_ENCODER.encode
+    handle.write("{")
+    for position, (key, value) in enumerate(ir.items()):
+        if not isinstance(key, str):
+            raise TypeError(f"backend IR keys must be str, not {type(key).__name__}")
+        if position:
+            handle.write(",")
+        handle.write(encode(key))
+        handle.write(":")
+        if isinstance(value, list):
+            handle.write("[")
+            for index, item in enumerate(value):
+                if index:
+                    handle.write(",")
+                handle.write(encode(item))
+            handle.write("]")
+        else:
+            handle.write(encode(value))
+    handle.write("}")
 
 
 def _backend_ir_bytes(ir: Mapping[str, Any]) -> bytes:

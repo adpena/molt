@@ -7,15 +7,54 @@ fn repo_root() -> PathBuf {
         .expect("canonical repository root")
 }
 
+fn header_with_shared_exports(root: &std::path::Path, relative: &str) -> String {
+    fn read(
+        root: &std::path::Path,
+        path: &std::path::Path,
+        seen: &mut std::collections::HashSet<PathBuf>,
+    ) -> String {
+        if !seen.insert(path.to_path_buf()) {
+            return String::new();
+        }
+        let mut source = std::fs::read_to_string(path)
+            .expect("read C header authority")
+            .replace("\r\n", "\n");
+        let includes: Vec<_> = source
+            .lines()
+            .filter_map(|line| {
+                let include = line
+                    .trim()
+                    .strip_prefix("#include ")?
+                    .trim_matches(['"', '<', '>']);
+                (include.starts_with("shared/") || include.starts_with('_')).then(|| {
+                    let sibling = path.parent().expect("header directory").join(include);
+                    if sibling.is_file() {
+                        sibling
+                    } else {
+                        root.join("include/molt/shared")
+                            .join(include.strip_prefix("shared/").unwrap_or(include))
+                    }
+                })
+            })
+            .collect();
+        for include in includes {
+            source.push_str(&read(root, &include, seen));
+        }
+        source
+    }
+    read(
+        root,
+        &root.join(relative),
+        &mut std::collections::HashSet::new(),
+    )
+}
+
 #[test]
 fn numeric_scalar_layout_has_one_header_authority() {
     let root = repo_root();
-    let source_header = std::fs::read_to_string(root.join("include/molt/Python.h"))
-        .expect("read source transport header")
-        .replace("\r\n", "\n");
+    let source_header = header_with_shared_exports(&root, "include/molt/Python.h");
     let linked_header =
-        std::fs::read_to_string(root.join("runtime/molt-cpython-abi/include/Python.h"))
-            .expect("read linked ABI header");
+        header_with_shared_exports(&root, "runtime/molt-cpython-abi/include/Python.h");
     let authority = std::fs::read_to_string(root.join("include/molt/shared/_numeric_scalar_abi.h"))
         .expect("read scalar layout authority");
 
@@ -55,14 +94,10 @@ fn numeric_scalar_layout_has_one_header_authority() {
     assert!(!linked_header.contains("#define Py_TYPE(ob)     (((PyObject *)(ob))->ob_type)"));
     assert!(!linked_header.contains("#define Py_SET_TYPE(ob, type) (Py_TYPE(ob) = (type))"));
     for header in [&source_header, &linked_header] {
-        assert!(
-            header.contains("obj->ob_type != &MoltManaged_Type"),
-            "Py_TYPE lost its physical fast path"
-        );
         for forbidden in [
-            "#define PyByteArray_CheckExact",
-            "#define PySet_CheckExact",
-            "#define PyFrozenSet_CheckExact",
+            "#define PyByteArray_CheckExact(",
+            "#define PySet_CheckExact(",
+            "#define PyFrozenSet_CheckExact(",
             "static inline int PyBytes_CheckExact",
             "static inline int PySet_CheckExact",
             "static inline int PyByteArray_CheckExact",
@@ -73,8 +108,15 @@ fn numeric_scalar_layout_has_one_header_authority() {
             );
         }
     }
-    assert!(linked_header.contains("#define PyTuple_SET_ITEM(op, i, v) ((void)PyTuple_SetItem"));
-    assert!(!linked_header.contains("PyTuple_SET_ITEM(op, i, v) (((PyTupleObject"));
+    for header in [&source_header, &linked_header] {
+        assert!(header.contains(
+            "extern void PyTuple_SET_ITEM(PyObject *op, Py_ssize_t index, PyObject *value);"
+        ));
+        assert!(header.contains("#define PyTuple_SET_ITEM(op, index, value) (PyTuple_SET_ITEM)"));
+        assert!(header.contains("_molt_host_abi_symbol(\"PyTuple_SET_ITEM\")"));
+        assert!(!header.contains("PyTuple_SET_ITEM(op, i, v) (((PyTupleObject"));
+        assert!(!header.contains("PyTuple_SET_ITEM(op, index, value) (((PyTupleObject"));
+    }
     for required in [
         "struct _object",
         "struct _longobject",
@@ -179,10 +221,8 @@ fn module_and_cfunction_headers_have_one_linked_authority() {
 #[test]
 fn external_c_api_data_uses_one_shared_linkage_policy() {
     let root = repo_root();
-    let source = std::fs::read_to_string(root.join("include/molt/Python.h"))
-        .expect("read source transport header");
-    let linked = std::fs::read_to_string(root.join("runtime/molt-cpython-abi/include/Python.h"))
-        .expect("read linked ABI header");
+    let source = header_with_shared_exports(&root, "include/molt/Python.h");
+    let linked = header_with_shared_exports(&root, "runtime/molt-cpython-abi/include/Python.h");
     let exports =
         std::fs::read_to_string(root.join("include/molt/shared/_module_callable_exports.h"))
             .expect("read shared module export header");
@@ -293,8 +333,9 @@ fn scalar_results_and_lifetime_use_single_provenance_authorities() {
             .expect("read numeric protocol authority");
     assert!(!protocol.contains("left.bits() == right.bits()"));
     assert!(protocol.contains("a == b"));
-    let bridge = std::fs::read_to_string(root.join("runtime/molt-cpython-abi/src/bridge.rs"))
-        .expect("read bridge lifetime authority");
+    let bridge =
+        std::fs::read_to_string(root.join("runtime/molt-cpython-abi/src/bridge/lifecycle.rs"))
+            .expect("read bridge lifetime authority");
     for required in [
         "transition_runtime_owner_add",
         "transition_runtime_owner_release",

@@ -18,6 +18,11 @@ deliberately does **not** live in this module.
 from __future__ import annotations
 
 import ast
+from molt.compiler_analysis.python_lexical_scope import (
+    expression_contains_yield,
+    function_contains_yield,
+)
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -211,6 +216,54 @@ class StatefulFunctionFramePlan:
     def function_type_hint(self, closure_size: int) -> str:
         return f"{self.function_tag}:{self.poll_symbol}:{closure_size}"
 
+    def public_locals_layout(
+        self,
+        *,
+        public_slots: Iterable[tuple[str, int]],
+        parameter_names: Sequence[str],
+        cell_names: Sequence[str],
+        free_vars: Sequence[str],
+    ) -> StatefulLocalsLayout:
+        """Project the finished typed frame onto its Python-visible bindings.
+
+        Parameters are the constructor-bound payload prefix that callable
+        trampolines store before the first poll; every other public slot is a
+        body local. ``cell_names`` are public slots whose compiled prologue
+        publishes a closure cell, and ``free_vars`` is co_freevars order, which
+        is also the closure-tuple order.
+        """
+        if len(parameter_names) != self.param_count:
+            raise ValueError("stateful locals parameters must match the frame plan")
+        cell_ordinals = {name: index for index, name in enumerate(cell_names)}
+        ordered = sorted(public_slots, key=lambda entry: entry[1])
+        if len(ordered) < self.param_count:
+            raise ValueError("stateful parameters must own public frame slots")
+        slots: list[StatefulLocalSlot] = []
+        for index, (name, offset) in enumerate(ordered):
+            parameter = index < self.param_count
+            if parameter and (
+                name != parameter_names[index]
+                or offset != self.async_locals_base + index * 8
+            ):
+                raise ValueError(
+                    "stateful parameter slots must match the constructor payload"
+                )
+            slots.append(
+                StatefulLocalSlot(
+                    name=name,
+                    offset=offset,
+                    parameter=parameter,
+                    cell=cell_ordinals.get(name, -1),
+                )
+            )
+        if free_vars and not self.has_closure:
+            raise ValueError("stateful free variables require a closure slot")
+        return StatefulLocalsLayout(
+            slots=tuple(slots),
+            free_vars=tuple(free_vars),
+            closure_offset=self.async_closure_offset if free_vars else None,
+        )
+
 
 def stateful_function_frame_plan(
     *,
@@ -229,73 +282,79 @@ def stateful_function_frame_plan(
     )
 
 
-def _push_arg_annotations(stack: list[ast.AST], args: ast.arguments) -> None:
-    for arg in (
-        args.posonlyargs
-        + args.args
-        + args.kwonlyargs
-        + ([] if args.vararg is None else [args.vararg])
-        + ([] if args.kwarg is None else [args.kwarg])
-    ):
-        if arg.annotation is not None:
-            stack.append(arg.annotation)
+@dataclass(frozen=True)
+class StatefulLocalSlot:
+    """One Python-visible binding stored in a typed stateful frame slot."""
 
+    name: str
+    offset: int
+    parameter: bool
+    cell: int
 
-def expression_contains_yield(node: ast.AST) -> bool:
-    class YieldVisitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.found = False
-
-        def visit_Yield(self, node: ast.Yield) -> None:
-            self.found = True
-
-        def visit_YieldFrom(self, node: ast.YieldFrom) -> None:
-            self.found = True
-
-        def visit_Lambda(self, node: ast.Lambda) -> None:
-            return
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            return
-
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            return
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            return
-
-    visitor = YieldVisitor()
-    visitor.visit(node)
-    return visitor.found
-
-
-def function_contains_yield(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> bool:
-    stack: list[ast.AST] = list(node.body)
-    while stack:
-        current = stack.pop()
-        if isinstance(current, (ast.Yield, ast.YieldFrom)):
-            return True
-        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            stack.extend(current.decorator_list)
-            stack.extend(current.args.defaults)
-            stack.extend(
-                default for default in current.args.kw_defaults if default is not None
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("stateful local slots require a name")
+        if self.offset < 0 or self.offset % 8 != 0:
+            raise ValueError(
+                "stateful local slot offset must be nonnegative and aligned"
             )
-            _push_arg_annotations(stack, current.args)
-            if current.returns is not None:
-                stack.append(current.returns)
-            continue
-        if isinstance(current, ast.ClassDef):
-            stack.extend(current.decorator_list)
-            stack.extend(current.bases)
-            stack.extend(keyword.value for keyword in current.keywords)
-            continue
-        if isinstance(current, ast.Lambda):
-            continue
-        stack.extend(ast.iter_child_nodes(current))
-    return False
+
+
+@dataclass(frozen=True)
+class StatefulLocalsLayout:
+    """The single public-locals authority of one stateful activation.
+
+    The runtime ABI (``stateful_locals_register``) carries two tuples:
+    ``wire_names()`` lists slot bindings in slot order followed by co_freevars
+    in closure-tuple order, and ``wire_layout()`` is
+    ``(parameter_count, slot_offsets, slot_cells, closure_offset)``. The
+    runtime validates exactly this schema; no other table describes it.
+    """
+
+    slots: tuple[StatefulLocalSlot, ...]
+    free_vars: tuple[str, ...]
+    closure_offset: int | None
+
+    def __post_init__(self) -> None:
+        names = [slot.name for slot in self.slots] + list(self.free_vars)
+        if len(set(names)) != len(names):
+            raise ValueError("stateful locals names must be unique")
+        offsets = [slot.offset for slot in self.slots]
+        if offsets != sorted(set(offsets)):
+            raise ValueError("stateful local slots must have increasing offsets")
+        cells = sorted(slot.cell for slot in self.slots if slot.cell >= 0)
+        if cells != list(range(len(cells))):
+            raise ValueError("stateful cell ordinals must be unique and contiguous")
+        body_seen = False
+        for slot in self.slots:
+            if slot.parameter and body_seen:
+                raise ValueError("stateful parameters must be the slot prefix")
+            body_seen = body_seen or not slot.parameter
+        if (self.closure_offset is None) != (not self.free_vars):
+            raise ValueError("stateful free variables and closure slot must agree")
+        if self.closure_offset is not None and (
+            self.closure_offset < 0
+            or self.closure_offset % 8 != 0
+            or self.closure_offset in offsets
+        ):
+            raise ValueError("stateful closure slot must be aligned and distinct")
+
+    @property
+    def parameter_count(self) -> int:
+        return sum(1 for slot in self.slots if slot.parameter)
+
+    def wire_names(self) -> tuple[str, ...]:
+        return tuple(slot.name for slot in self.slots) + self.free_vars
+
+    def wire_layout(
+        self,
+    ) -> tuple[int, tuple[int, ...], tuple[int, ...], int | None]:
+        return (
+            self.parameter_count,
+            tuple(slot.offset for slot in self.slots),
+            tuple(slot.cell for slot in self.slots),
+            self.closure_offset,
+        )
 
 
 def async_generator_contains_yield_from(node: ast.AsyncFunctionDef) -> bool:

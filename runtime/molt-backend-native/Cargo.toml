@@ -21,8 +21,10 @@ cranelift-frontend = { version = "0.133.1", optional = true }
 cranelift-module = { version = "0.133.1", optional = true }
 cranelift-object = { version = "0.133.1", optional = true }
 cranelift-native = { version = "0.133.1", optional = true }
+target-lexicon = { version = "0.13.5", optional = true }
 rayon = "1.12"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = { workspace = true }
 inkwell = { version = "0.9", default-features = false, features = [
     "llvm22-1",
     "target-webassembly",
@@ -31,7 +33,6 @@ inkwell = { version = "0.9", default-features = false, features = [
 [dev-dependencies]
 molt-tir = { path = "../molt-tir", features = ["test-util"] }
 object = { version = "0.39", default-features = false, features = ["read", "std"] }
-serde_json = { workspace = true }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 inkwell = { version = "0.9", default-features = false, features = ["target-aarch64"], optional = true }
@@ -75,6 +76,7 @@ native-backend = [
     "dep:cranelift-module",
     "dep:cranelift-object",
     "dep:cranelift-native",
+    "dep:target-lexicon",
     "molt-ir/native-backend",
     "molt-tir/native-backend",
 ]

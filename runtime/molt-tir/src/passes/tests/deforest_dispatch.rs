@@ -49,6 +49,7 @@ fn split_field_deforestation_preserves_source_site() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -98,6 +99,7 @@ fn fuse_method_dispatch_rewrites_getattr_call_idiom() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     func.ops[4].source_line = Some(44);
@@ -147,6 +149,7 @@ fn fuse_method_dispatch_skips_multi_use_getattr() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let before: Vec<String> = func.ops.iter().map(|o| o.kind.clone()).collect();
@@ -175,6 +178,7 @@ fn fuse_method_dispatch_rewrites_super_idiom() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     fuse_method_dispatch(&mut func);
@@ -216,6 +220,7 @@ fn fuse_method_dispatch_disabled_by_env() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     fuse_method_dispatch_inner(&mut func, true);
@@ -223,4 +228,237 @@ fn fuse_method_dispatch_disabled_by_env() {
         func.ops.iter().all(|o| o.kind != "call_method_ic"),
         "fusion must be a no-op when disabled by env"
     );
+}
+
+fn method_call_across(lookup: Vec<OpIR>, between: Vec<OpIR>, call: &str) -> FunctionIR {
+    let mut ops = lookup;
+    ops.extend(between);
+    ops.extend([
+        op_with("callargs_new", Some("ca"), None, &[]),
+        op_with("callargs_push_pos", Some("_p"), None, &["ca", "x"]),
+        op_with(call, Some("r"), None, &["t", "ca"]),
+    ]);
+    FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
+        name: "f".to_string(),
+        params: vec!["recv".to_string(), "c".to_string(), "x".to_string()],
+        ops,
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+        codegen_partition: false,
+        parameter_custody: Vec::new(),
+        execution_context: Default::default(),
+    }
+}
+
+#[test]
+fn fuse_method_dispatch_preserves_expanded_call_custody() {
+    let method = vec![op_with(
+        "get_attr_generic_ptr",
+        Some("t"),
+        Some("compute"),
+        &["recv"],
+    )];
+    let super_method = vec![
+        op_with("super_new", Some("sup"), None, &["cls", "self"]),
+        op_with("get_attr_generic_obj", Some("t"), Some("compute"), &["sup"]),
+    ];
+    for (lookup, call) in [(method, "call_bind"), (super_method, "call_indirect")] {
+        let mut func = method_call_across(lookup, vec![], call);
+        let builder = func
+            .ops
+            .iter_mut()
+            .find(|op| op.kind == "callargs_new")
+            .unwrap();
+        builder.s_value = Some("expanded".into());
+        let before = serde_json::to_value(&func).unwrap();
+        fuse_method_dispatch_inner(&mut func, false);
+        assert_eq!(
+            serde_json::to_value(&func).unwrap(),
+            before,
+            "ordinary fused-call ABI cannot erase expanded-container custody"
+        );
+    }
+}
+
+#[test]
+fn fuse_method_dispatch_moves_a_lookup_only_across_inert_operations() {
+    // The frontend creates the builder at its first push, so argument
+    // evaluation sits between the method lookup and the builder. The fused op
+    // looks the method up at the call: a branch, an operation that can raise
+    // or run Python code, or a local store (its release of the replaced
+    // binding can run a finalizer) keeps the original lookup before it. A
+    // constant or the lookup's own exception check does not.
+    let method = vec![op_with(
+        "get_attr_generic_ptr",
+        Some("t"),
+        Some("compute"),
+        &["recv"],
+    )];
+    let super_method = vec![
+        op_with("super_new", Some("sup"), None, &["cls", "self"]),
+        op_with("get_attr_generic_obj", Some("t"), Some("compute"), &["sup"]),
+    ];
+    let store_local = OpIR {
+        kind: "store_var".to_string(),
+        var: Some("y".to_string()),
+        args: Some(vec!["v".to_string()]),
+        ..Default::default()
+    };
+    for (lookup, call, fused) in [
+        (method, "call_bind", "call_method_ic"),
+        (super_method, "call_indirect", "call_super_method_ic"),
+    ] {
+        for (between, fuses) in [
+            (
+                vec![
+                    op_with("if", None, None, &["c"]),
+                    op_with("else", None, None, &[]),
+                    op_with("end_if", None, None, &[]),
+                ],
+                false,
+            ),
+            (vec![op_with("call_func", Some("v"), None, &["c"])], false),
+            (
+                vec![op_with("const", Some("v"), None, &[]), store_local.clone()],
+                false,
+            ),
+            (vec![op_with("check_exception", None, None, &[])], true),
+            (vec![op_with("const", Some("v"), None, &[])], true),
+        ] {
+            let mut func = method_call_across(lookup.clone(), between, call);
+            let before: Vec<String> = func.ops.iter().map(|o| o.kind.clone()).collect();
+            fuse_method_dispatch_inner(&mut func, false);
+            let after: Vec<String> = func.ops.iter().map(|o| o.kind.clone()).collect();
+            if fuses {
+                assert!(
+                    after.iter().any(|kind| kind == fused),
+                    "{call}: {before:?} must fuse"
+                );
+            } else {
+                assert_eq!(before, after, "{call}: the original lookup must stay");
+            }
+        }
+    }
+}
+
+// Fusion rewrites source calls before RC placement. An ordinary source call
+// adopts its bound method, which carries the receiver into the callee's `self`,
+// so the fused call adopts its receiver or `self` and every argument, never a
+// `super()` class. An unmarked call stays borrowed, and a body whose RC is
+// already placed is left as placed.
+#[test]
+fn fuse_method_dispatch_projects_source_call_adoption() {
+    use molt_ir::ParameterCustody::{Borrowed, Transferred};
+    let method = vec![op_with(
+        "get_attr_generic_ptr",
+        Some("t"),
+        Some("compute"),
+        &["recv"],
+    )];
+    let super_method = vec![
+        op_with("super_new", Some("sup"), None, &["cls", "self"]),
+        op_with("get_attr_generic_obj", Some("t"), Some("compute"), &["sup"]),
+    ];
+    for (lookup, call, fused, adopted) in [
+        (
+            method,
+            "call_bind",
+            "call_method_ic",
+            vec![Transferred, Transferred],
+        ),
+        (
+            super_method,
+            "call_indirect",
+            "call_super_method_ic",
+            vec![Borrowed, Transferred, Transferred],
+        ),
+    ] {
+        for source in [true, false] {
+            let mut func = method_call_across(lookup.clone(), vec![], call);
+            if source {
+                func.ops.last_mut().unwrap().argument_custody =
+                    Some(vec![Transferred, Transferred]);
+            }
+            fuse_method_dispatch_inner(&mut func, false);
+            let ic = func
+                .ops
+                .iter()
+                .find(|op| op.kind == fused)
+                .unwrap_or_else(|| panic!("{call} must fuse"));
+            assert_eq!(
+                ic.argument_custody,
+                source.then(|| adopted.clone()),
+                "{call}: source={source}"
+            );
+        }
+        let mut placed = method_call_across(lookup, vec![], call);
+        placed.ops.insert(
+            0,
+            op_with(
+                crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR,
+                None,
+                None,
+                &[],
+            ),
+        );
+        let before = serde_json::to_value(&placed).unwrap();
+        fuse_method_dispatch_inner(&mut placed, false);
+        assert_eq!(
+            serde_json::to_value(&placed).unwrap(),
+            before,
+            "{call}: RC placement already balanced the unfused calls"
+        );
+    }
+}
+
+#[test]
+fn split_field_guards_require_matching_tags_and_no_observed_alias() {
+    for kind in ["guard_tag", "guard_type"] {
+        for (tag, output, removable) in
+            [(5, None, true), (1, None, false), (5, Some("alias"), false)]
+        {
+            let mut check = op_with("check_exception", None, None, &[]);
+            check.value = Some(9);
+            let mut handler = op_with("label", None, None, &[]);
+            handler.value = Some(9);
+            let mut func = FunctionIR {
+                name: "split_field_guard".into(),
+                params: vec!["hay".into(), "sep".into(), "idx".into()],
+                ops: vec![
+                    make_const_int("tag", tag),
+                    op_with(
+                        "string_split_field",
+                        Some("field"),
+                        None,
+                        &["hay", "sep", "idx"],
+                    ),
+                    check,
+                    op_with(kind, output, None, &["field", "tag"]),
+                    op_with("len", Some("n"), None, &["field"]),
+                    op_with("ret_void", None, None, &[]),
+                    handler,
+                    op_with("ret_void", None, None, &[]),
+                ],
+                return_abi: molt_ir::FunctionReturnAbi::Void,
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                codegen_partition: false,
+                parameter_custody: vec![],
+                execution_context: Default::default(),
+            };
+            deforest_split_field_reads(&mut func);
+            assert_eq!(
+                func.ops.iter().any(|op| op.kind == kind),
+                !removable,
+                "{kind}/{tag}/{output:?}"
+            );
+            assert_eq!(
+                func.ops.iter().any(|op| op.kind == "string_split_field"),
+                !removable
+            );
+        }
+    }
 }

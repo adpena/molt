@@ -19,6 +19,9 @@ from tools.proof_queue_pkg import (
 )
 
 
+pytestmark = pytest.mark.usefixtures("cargo_output_implementation_source")
+
+
 @pytest.fixture(autouse=True)
 def source_admission(monkeypatch):
     monkeypatch.setattr(
@@ -1058,7 +1061,7 @@ def test_output_membership_is_fenced_during_hashing(tmp_path, monkeypatch, mutat
     root.mkdir()
     (root / "artifact").write_bytes(b"artifact")
     (root / "empty").mkdir()
-    bind = PythonFileCaptureContext.bind
+    bind = PythonFileCaptureContext.bind_many
 
     def mutate(self, *args, **kwargs):
         result = bind(self, *args, **kwargs)
@@ -1068,7 +1071,7 @@ def test_output_membership_is_fenced_during_hashing(tmp_path, monkeypatch, mutat
             (root / "empty").rmdir()
         return result
 
-    monkeypatch.setattr(PythonFileCaptureContext, "bind", mutate)
+    monkeypatch.setattr(PythonFileCaptureContext, "bind_many", mutate)
     with pytest.raises(ValueError, match="changed during inventory"):
         command_identity._directory_manifest_identity(
             root, label="test output", strict_owned=True

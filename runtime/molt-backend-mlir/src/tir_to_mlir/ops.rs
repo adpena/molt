@@ -431,8 +431,12 @@ pub(super) fn emit_tir_op<'c, 'a>(
             | OpCode::StateSwitch
             | OpCode::StateTransition
             | OpCode::StateYield
+            | OpCode::StateSet
+            | OpCode::IsPending
+            | OpCode::TaskWait
             | OpCode::ClosureLoad
             | OpCode::ClosureStore
+            | OpCode::FrameContextSet
             | OpCode::Yield
             | OpCode::YieldFrom,
         ) => {

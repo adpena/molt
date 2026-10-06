@@ -5,7 +5,15 @@ import json
 import mmap
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Collection, Iterable, Literal, Mapping, Sequence
+from typing import (
+    TYPE_CHECKING,
+    Collection,
+    Iterable,
+    Literal,
+    Mapping,
+    Sequence,
+    TypedDict,
+)
 
 from molt._wasm_abi_generated import (
     WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE,
@@ -17,6 +25,7 @@ from molt._wasm_abi_generated import (
 )
 
 if TYPE_CHECKING:
+    from molt.toolchain_identity import StableRegularFileIdentity
     from molt.wasm_linking_symbols import WasmLinkingSymbolTable
 
 WASM_HEADER = b"\x00asm\x01\x00\x00\x00"
@@ -902,7 +911,12 @@ def _read_wasm_ref_func_expr(data: bytes, offset: int) -> tuple[int, int | None]
 
 
 def _collect_wasm_active_table_function_slots(data: bytes) -> dict[int, int]:
-    sections = parse_wasm_sections(data)
+    return _wasm_active_table_function_slots_from_sections(parse_wasm_sections(data))
+
+
+def _wasm_active_table_function_slots_from_sections(
+    sections: Sequence[tuple[int, bytes]],
+) -> dict[int, int]:
     slots: dict[int, int] = {}
     for section_id, payload in sections:
         if section_id != 9:
@@ -1014,9 +1028,17 @@ def _collect_wasm_export_names(path: Path) -> set[str]:
 
 
 def _wasm_import_minima(path: Path) -> tuple[int | None, int | None]:
+    return _wasm_import_minima_from_imports(
+        _iter_wasm_imports(_parse_wasm_file_sections(path))
+    )
+
+
+def _wasm_import_minima_from_imports(
+    imports: Iterable[WasmImport],
+) -> tuple[int | None, int | None]:
     memory_min: int | None = None
     table_min: int | None = None
-    for wasm_import in _iter_wasm_imports(_parse_wasm_file_sections(path)):
+    for wasm_import in imports:
         if (
             wasm_import.kind == 1
             and wasm_import.module == "env"
@@ -1035,8 +1057,8 @@ def _wasm_import_minima(path: Path) -> tuple[int | None, int | None]:
 def _read_wasm_varint(data: bytes, offset: int, bits: int) -> tuple[int, int]:
     result = 0
     shift = 0
-    byte = 0
-    while True:
+    maximum_bytes = (bits + 6) // 7
+    for byte_index in range(maximum_bytes):
         if offset >= len(data):
             raise ValueError("Unexpected EOF while reading varint")
         byte = data[offset]
@@ -1045,10 +1067,16 @@ def _read_wasm_varint(data: bytes, offset: int, bits: int) -> tuple[int, int]:
         shift += 7
         if byte & 0x80 == 0:
             break
-        if shift > bits + 7:
+        if byte_index + 1 == maximum_bytes:
             raise ValueError("varint too large")
-    if shift < bits and (byte & 0x40):
+    else:  # pragma: no cover - the continuation-bit case raises in the loop
+        raise ValueError("varint too large")
+    if byte & 0x40:
         result |= -1 << shift
+    minimum = -(1 << (bits - 1))
+    maximum = (1 << (bits - 1)) - 1
+    if not minimum <= result <= maximum:
+        raise ValueError(f"signed {bits}-bit integer is out of range")
     return result, offset
 
 
@@ -1120,15 +1148,24 @@ def read_wasm_split_runtime_callable_layout(
 ) -> WasmSplitRuntimeCallableLayout:
     try:
         data = path.read_bytes()
-        table_boundary = _wasm_table_min_from_sections(parse_wasm_sections(data))
+        sections = parse_wasm_sections(data)
+        table_boundary = _wasm_table_min_from_sections(sections)
     except (OSError, ValueError) as exc:
         raise ValueError(f"invalid split runtime wasm: {exc}") from exc
+    return _wasm_split_runtime_callable_layout(
+        table_boundary,
+        frozenset(_wasm_active_table_function_slots_from_sections(sections)),
+    )
+
+
+def _wasm_split_runtime_callable_layout(
+    table_boundary: int | None, slots: frozenset[int]
+) -> WasmSplitRuntimeCallableLayout:
     if table_boundary is None:
         raise ValueError("split runtime must import the shared callable table")
     # The admitted runtime generation is bound before backend layout selection.
     # Final import validation and deployment consume that same physical pair;
     # an app may not silently switch to a runtime with different table entries.
-    slots = set(_collect_wasm_active_table_function_slots(data))
     if not slots:
         raise ValueError("split runtime active callable-table layout is empty")
     first_active_slot = min(slots)
@@ -1168,6 +1205,10 @@ def _read_wasm_data_end(path: Path) -> int | None:
         sections = _parse_wasm_file_sections(path)
     except (OSError, ValueError):
         return None
+    return _wasm_data_end_from_sections(sections)
+
+
+def _wasm_data_end_from_sections(sections: Sequence[tuple[int, bytes]]) -> int | None:
     max_end = None
     try:
         for section_id, payload in sections:
@@ -1206,6 +1247,12 @@ def _read_wasm_memory_min_bytes(path: Path) -> int | None:
         sections = _parse_wasm_file_sections(path)
     except (OSError, ValueError):
         return None
+    return _wasm_memory_min_bytes_from_sections(sections)
+
+
+def _wasm_memory_min_bytes_from_sections(
+    sections: Sequence[tuple[int, bytes]],
+) -> int | None:
     memory_pages: int | None = None
     try:
         for wasm_import in _iter_wasm_imports(sections):
@@ -1837,6 +1884,7 @@ def parse_wasm_relocatable_object_interface(
     signature_import_names: Collection[str] | None = (),
 ) -> WasmRelocatableObjectInterface:
     """Parse one relocatable artifact once for all closure consumers."""
+    from molt.wasm_linking_symbols import parse_wasm_linking_symbols
 
     spans = tuple(parse_wasm_section_spans(data))
     sections = _wasm_sections_from_spans(data, spans)
@@ -1844,7 +1892,6 @@ def parse_wasm_relocatable_object_interface(
         sections,
         signature_import_names=signature_import_names,
     )
-    from molt.wasm_linking_symbols import parse_wasm_linking_symbols
 
     linking_symbols = parse_wasm_linking_symbols(
         data,
@@ -2152,18 +2199,35 @@ def _read_wasm_function_export_map(
     }
 
 
+class WasmExportSignature(TypedDict):
+    params: list[str]
+    result: str
+
+
 def _wasm_export_function_signatures(
     path: Path,
     *,
     export_name_prefix: str | None = None,
     export_names: Iterable[str] | None = None,
-) -> dict[str, dict[str, object]]:
+) -> dict[str, WasmExportSignature]:
+    return _wasm_export_function_signatures_from_sections(
+        _parse_wasm_file_sections(path),
+        export_name_prefix=export_name_prefix,
+        export_names=export_names,
+    )
+
+
+def _wasm_export_function_signatures_from_sections(
+    sections: Sequence[tuple[int, bytes]],
+    *,
+    export_name_prefix: str | None = None,
+    export_names: Iterable[str] | None = None,
+) -> dict[str, WasmExportSignature]:
     if (export_name_prefix is None) == (export_names is None):
         raise ValueError(
             "exactly one of export_name_prefix or export_names must be provided"
         )
     export_name_set = set(export_names or ())
-    sections = _parse_wasm_file_sections(path)
     type_signatures = _read_wasm_type_signatures(sections)
     imports, _ = _read_wasm_import_function_type_indices(sections)
     function_type_indices = _read_wasm_function_type_indices(
@@ -2171,7 +2235,7 @@ def _wasm_export_function_signatures(
     )
     exports = _read_wasm_function_export_map(sections)
 
-    export_signatures: dict[str, dict[str, object]] = {}
+    export_signatures: dict[str, WasmExportSignature] = {}
     for export_name, function_index in exports.items():
         if export_name_prefix is not None and not export_name.startswith(
             export_name_prefix
@@ -2195,3 +2259,84 @@ def _wasm_export_function_signatures(
             "result": result_kind,
         }
     return export_signatures
+
+
+@dataclass(frozen=True, slots=True)
+class WasmRuntimeFacts:
+    """Compact immutable runtime semantics; no file bytes or section buffers survive."""
+
+    exports: tuple[WasmExport, ...]
+    globals: tuple[WasmGlobal, ...]
+    function_signatures: tuple[tuple[str, tuple[str, ...], str], ...]
+    data_end: int | None
+    memory_min_bytes: int | None
+    table_min: int | None
+    shared_import_abi: bool
+    code_functions: int
+    active_table_slots: frozenset[int]
+    active_table_error: str | None
+
+    def split_callable_layout(self) -> WasmSplitRuntimeCallableLayout:
+        if self.active_table_error is not None:
+            raise ValueError(self.active_table_error)
+        return _wasm_split_runtime_callable_layout(
+            self.table_min, self.active_table_slots
+        )
+
+
+def read_wasm_runtime_facts(
+    identity: StableRegularFileIdentity, *, relocatable: bool
+) -> WasmRuntimeFacts:
+    """Parse one admitted physical generation, through its bound stable reader."""
+    from molt.toolchain_identity import read_stable_regular_file
+
+    data = read_stable_regular_file(identity, label="runtime WASM semantic observation")
+    spans = parse_wasm_section_spans(data)
+    # Never copy code/debug/linking sections into a semantic snapshot. A reloc
+    # layout needs no type/export/global parser; those sections may use valid
+    # extended-const features irrelevant to layout and export admission.
+    needed = {2, 5, 11} if relocatable else {1, 2, 3, 5, 6, 7, 9, 11}
+    sections = _wasm_sections_from_spans(
+        data, [span for span in spans if span.id in needed]
+    )
+    imports = tuple(_iter_wasm_imports(sections))
+    import_memory, import_table = _wasm_import_minima_from_imports(imports)
+    signatures = (
+        {}
+        if relocatable
+        else _wasm_export_function_signatures_from_sections(
+            sections, export_name_prefix=""
+        )
+    )
+    code_functions = 0
+    for span in spans:
+        if span.id == 10:
+            # The count is a bounded u32 prefix; function bodies are not layout.
+            code_functions, _ = _read_wasm_varuint(
+                data[span.offset : span.offset + min(span.size, 5)], 0
+            )
+    active_slots = frozenset()
+    active_table_error = None
+    if not relocatable:
+        try:
+            active_slots = frozenset(
+                _wasm_active_table_function_slots_from_sections(sections)
+            )
+        except ValueError as exc:
+            # Only split codegen requires the active callable prefix.
+            active_table_error = str(exc)
+    return WasmRuntimeFacts(
+        tuple(_iter_wasm_exports(sections)),
+        tuple(_iter_wasm_defined_globals(sections)),
+        tuple(
+            (name, tuple(value["params"]), value["result"])
+            for name, value in signatures.items()
+        ),
+        _wasm_data_end_from_sections(sections),
+        _wasm_memory_min_bytes_from_sections(sections),
+        _wasm_table_min_from_sections(sections),
+        import_memory is not None and import_table is not None,
+        code_functions,
+        active_slots,
+        active_table_error,
+    )

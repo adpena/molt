@@ -1,4 +1,5 @@
 use crate::PyToken;
+use crate::builtins::functions::native_callable::{NativeCallableSpec, configure_native_callable};
 use crate::*;
 use std::sync::atomic::AtomicU64;
 
@@ -256,6 +257,7 @@ unsafe fn configure_builtin_function(
 /// takes this reference; borrowed cache reads never need an immortal payload.
 fn alloc_builtin_function_with_metadata(
     py: &PyToken<'_>,
+    spec: NativeCallableSpec<'_>,
     fn_ptr: u64,
     arity: u64,
     metadata: BuiltinFunctionMetadata<'_>,
@@ -272,18 +274,9 @@ fn alloc_builtin_function_with_metadata(
     }
     let bits = MoltObject::from_ptr(ptr).bits();
     unsafe {
-        let initialized =
-            configure_builtin_function(py, ptr, metadata) && !exception_pending(py) && {
-                let class = builtin_classes(py).builtin_function_or_method;
-                !exception_pending(py)
-                    && (object_class_bits(ptr) == class
-                        || crate::object::object_init_class_edge_unpublished(
-                            py,
-                            ptr,
-                            class,
-                            ClassEdgeOwnership::Owned,
-                        ))
-            };
+        let initialized = configure_builtin_function(py, ptr, metadata)
+            && !exception_pending(py)
+            && configure_native_callable(py, ptr, spec);
         if !initialized {
             dec_ref_bits(py, bits);
             if !exception_pending(py) {
@@ -297,7 +290,13 @@ fn alloc_builtin_function_with_metadata(
 
 /// Allocate one owned builtin callable without creating a cache slot.
 pub(crate) fn alloc_builtin_function(py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> u64 {
-    alloc_builtin_function_with_metadata(py, fn_ptr, arity, BuiltinFunctionMetadata::None)
+    alloc_builtin_function_with_metadata(
+        py,
+        NativeCallableSpec::uncached_function(),
+        fn_ptr,
+        arity,
+        BuiltinFunctionMetadata::None,
+    )
 }
 
 /// Allocate one owned builtin callable with retained positional defaults.
@@ -309,6 +308,7 @@ pub(crate) fn alloc_builtin_function_with_defaults(
 ) -> u64 {
     alloc_builtin_function_with_metadata(
         py,
+        NativeCallableSpec::uncached_function(),
         fn_ptr,
         arity,
         BuiltinFunctionMetadata::Defaults(defaults),
@@ -317,34 +317,87 @@ pub(crate) fn alloc_builtin_function_with_defaults(
 
 fn builtin_func_bits_with_metadata(
     py: &PyToken<'_>,
-    slot: &AtomicU64,
+    spec: NativeCallableSpec<'_>,
     fn_ptr: u64,
     arity: u64,
     metadata: BuiltinFunctionMetadata<'_>,
 ) -> u64 {
-    init_atomic_bits(py, slot, || {
-        alloc_builtin_function_with_metadata(py, fn_ptr, arity, metadata)
+    init_native_callable(py, spec, || {
+        alloc_builtin_function_with_metadata(py, spec, fn_ptr, arity, metadata)
     })
 }
 
+pub(crate) fn init_native_callable(
+    py: &PyToken<'_>,
+    spec: NativeCallableSpec<'_>,
+    initialize: impl FnOnce() -> u64,
+) -> u64 {
+    if exception_pending(py) {
+        return 0;
+    }
+    if let Some(slot) = spec.cache {
+        return init_atomic_bits(py, slot, initialize);
+    }
+    let Some(owner) = spec.owner.and_then(|bits| obj_from_bits(bits).as_ptr()) else {
+        raise_exception::<u64>(py, "SystemError", "cached callable has no owner");
+        return 0;
+    };
+    let Some(name) = spec.name else {
+        raise_exception::<u64>(py, "SystemError", "declared callable has no name");
+        return 0;
+    };
+    let Some(key) = attr_name_bits_from_bytes(py, name.as_bytes()) else {
+        return 0;
+    };
+    unsafe {
+        let Some(dict) = obj_from_bits(class_dict_bits(owner)).as_ptr() else {
+            dec_ref_bits(py, key);
+            raise_exception::<u64>(
+                py,
+                "SystemError",
+                "declared callable owner has no namespace",
+            );
+            return 0;
+        };
+        if let Some(existing) = dict_get_in_place(py, dict, key) {
+            dec_ref_bits(py, key);
+            return existing;
+        }
+        if crate::object::class_storage::class_declares(
+            owner,
+            crate::object::class_storage::ClassDeclaration::NativeNamespacePublished,
+        ) {
+            dec_ref_bits(py, key);
+            return MoltObject::none().bits();
+        }
+        let function = initialize();
+        if function == 0 {
+            dec_ref_bits(py, key);
+            return 0;
+        }
+        dict_set_in_place(py, dict, key, function);
+        dec_ref_bits(py, key);
+        dec_ref_bits(py, function);
+        if exception_pending(py) {
+            return 0;
+        }
+        class_bump_layout_version(owner);
+        function
+    }
+}
+
 pub(super) fn runtime_python_at_least(_py: &PyToken<'_>, major: i64, minor: i64) -> bool {
-    let state = runtime_state(_py);
-    let guard = state.sys_version_info.lock().unwrap();
-    let (runtime_major, runtime_minor) = guard
-        .as_ref()
-        .map(|info| (info.major, info.minor))
-        .unwrap_or((3, 12));
-    runtime_major > major || (runtime_major == major && runtime_minor >= minor)
+    crate::object::ops_sys::runtime_target_at_least(_py, major, minor)
 }
 
 /// Create and cache a builtin function object with no optional args.
 pub(crate) fn builtin_func_bits(
     _py: &PyToken<'_>,
-    slot: &AtomicU64,
+    spec: NativeCallableSpec<'_>,
     fn_ptr: u64,
     arity: u64,
 ) -> u64 {
-    builtin_func_bits_with_metadata(_py, slot, fn_ptr, arity, BuiltinFunctionMetadata::None)
+    builtin_func_bits_with_metadata(_py, spec, fn_ptr, arity, BuiltinFunctionMetadata::None)
 }
 
 /// Create and cache a builtin whose Rust ABI is not directly positional-callable.
@@ -356,14 +409,14 @@ pub(crate) fn builtin_func_bits(
 /// keep caching the resolved method while routing every hit through the binder.
 pub(crate) fn builtin_func_bits_with_bind_kind(
     _py: &PyToken<'_>,
-    slot: &AtomicU64,
+    spec: NativeCallableSpec<'_>,
     fn_ptr: u64,
     arity: u64,
     bind_kind: i64,
 ) -> u64 {
     builtin_func_bits_with_metadata(
         _py,
-        slot,
+        spec,
         fn_ptr,
         arity,
         BuiltinFunctionMetadata::BindKind(bind_kind),
@@ -376,14 +429,14 @@ pub(crate) fn builtin_func_bits_with_bind_kind(
 /// bind path reads missing values from the end of the tuple.
 pub(crate) fn builtin_func_bits_with_defaults_tuple(
     _py: &PyToken<'_>,
-    slot: &AtomicU64,
+    spec: NativeCallableSpec<'_>,
     fn_ptr: u64,
     arity: u64,
     defaults: &[u64],
 ) -> u64 {
     builtin_func_bits_with_metadata(
         _py,
-        slot,
+        spec,
         fn_ptr,
         arity,
         BuiltinFunctionMetadata::Defaults(defaults),
@@ -392,15 +445,19 @@ pub(crate) fn builtin_func_bits_with_defaults_tuple(
 
 /// Create and cache a builtin whose Python signature is `(*args, **kwargs)`.
 /// The runtime trampoline receives the binder's `(args_tuple, kwargs_dict)` ABI.
-pub(crate) fn builtin_variadic_func_bits(_py: &PyToken<'_>, slot: &AtomicU64, fn_ptr: u64) -> u64 {
-    builtin_func_bits_with_metadata(_py, slot, fn_ptr, 2, BuiltinFunctionMetadata::Variadic)
+pub(crate) fn builtin_variadic_func_bits(
+    _py: &PyToken<'_>,
+    spec: NativeCallableSpec<'_>,
+    fn_ptr: u64,
+) -> u64 {
+    builtin_func_bits_with_metadata(_py, spec, fn_ptr, 2, BuiltinFunctionMetadata::Variadic)
 }
 
 /// Cache a callable only after its complete positional/variadic signature is ready.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn builtin_func_bits_with_signature(
     py: &PyToken<'_>,
-    slot: &AtomicU64,
+    spec: NativeCallableSpec<'_>,
     fn_ptr: u64,
     arity: u64,
     arg_names: &[&[u8]],
@@ -409,7 +466,7 @@ pub(crate) fn builtin_func_bits_with_signature(
 ) -> u64 {
     builtin_func_bits_with_metadata(
         py,
-        slot,
+        spec,
         fn_ptr,
         arity,
         BuiltinFunctionMetadata::Signature {
@@ -417,57 +474,6 @@ pub(crate) fn builtin_func_bits_with_signature(
             has_vararg,
             has_varkw,
         },
-    )
-}
-
-fn builtin_classmethod_bits_with_metadata(
-    py: &PyToken<'_>,
-    slot: &AtomicU64,
-    fn_ptr: u64,
-    arity: u64,
-    metadata: BuiltinFunctionMetadata<'_>,
-) -> u64 {
-    init_atomic_bits(py, slot, || {
-        let function = alloc_builtin_function_with_metadata(py, fn_ptr, arity, metadata);
-        if function == 0 {
-            return 0;
-        }
-        let wrapper = alloc_classmethod_obj(py, function);
-        dec_ref_bits(py, function);
-        if wrapper.is_null() {
-            if !exception_pending(py) {
-                raise_exception::<u64>(py, "MemoryError", "builtin classmethod allocation failed");
-            }
-            0
-        } else {
-            MoltObject::from_ptr(wrapper).bits()
-        }
-    })
-}
-
-pub(crate) fn builtin_classmethod_bits(
-    py: &PyToken<'_>,
-    slot: &AtomicU64,
-    fn_ptr: u64,
-    arity: u64,
-) -> u64 {
-    builtin_classmethod_bits_with_metadata(py, slot, fn_ptr, arity, BuiltinFunctionMetadata::None)
-}
-
-/// Classmethod defaults use exactly the same retained metadata as plain methods.
-pub(crate) fn builtin_classmethod_bits_with_defaults_tuple(
-    py: &PyToken<'_>,
-    slot: &AtomicU64,
-    fn_ptr: u64,
-    arity: u64,
-    defaults: &[u64],
-) -> u64 {
-    builtin_classmethod_bits_with_metadata(
-        py,
-        slot,
-        fn_ptr,
-        arity,
-        BuiltinFunctionMetadata::Defaults(defaults),
     )
 }
 
@@ -492,7 +498,7 @@ mod tests {
                 "descriptor_cache_identity",
                 identity as *const (),
             );
-            let function = builtin_func_bits(py, &slot, address, 1);
+            let function = builtin_func_bits(py, NativeCallableSpec::function(&slot), address, 1);
             assert!(!exception_pending(py));
             let ptr = obj_from_bits(function).as_ptr().unwrap();
             let header = unsafe { &*header_from_obj_ptr(ptr) };
@@ -501,7 +507,10 @@ mod tests {
                 0
             );
             assert_eq!(header.ref_count_snapshot(), 1);
-            assert_eq!(builtin_func_bits(py, &slot, address, 1), function);
+            assert_eq!(
+                builtin_func_bits(py, NativeCallableSpec::function(&slot), address, 1),
+                function
+            );
             assert_eq!(header.ref_count_snapshot(), 1);
             inc_ref_bits(py, function);
             crate::state::cache::clear_atomic_bits(py, &slot);
@@ -530,8 +539,13 @@ mod tests {
                 "descriptor_defaults_identity",
                 identity as *const (),
             );
-            let wrapper =
-                builtin_classmethod_bits_with_defaults_tuple(py, &slot, address, 1, &[default]);
+            let wrapper = builtin_func_bits_with_defaults_tuple(
+                py,
+                NativeCallableSpec::function(&slot),
+                address,
+                1,
+                &[default],
+            );
             assert!(!exception_pending(py));
             assert!(obj_from_bits(wrapper).as_ptr().is_some());
             assert_eq!(header.ref_count_snapshot(), initial + 1);
@@ -564,7 +578,10 @@ mod tests {
                 ..Default::default()
             })));
             let reset = RestoreTracker;
-            assert_eq!(builtin_func_bits(py, &function_slot, address, 1), 0);
+            assert_eq!(
+                builtin_func_bits(py, NativeCallableSpec::function(&function_slot), address, 1),
+                0
+            );
             assert!(exception_pending(py));
             assert_eq!(function_slot.load(Ordering::Acquire), 0);
             let _ = molt_exception_clear();
@@ -580,7 +597,10 @@ mod tests {
             assert_eq!(name_slot.load(Ordering::Acquire), 0);
             drop(reset);
             let _ = molt_exception_clear();
-            assert_ne!(builtin_func_bits(py, &function_slot, address, 1), 0);
+            assert_ne!(
+                builtin_func_bits(py, NativeCallableSpec::function(&function_slot), address, 1),
+                0
+            );
             let name = intern_static_name(
                 py,
                 &name_slot,

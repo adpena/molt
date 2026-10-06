@@ -114,6 +114,12 @@ self-commits or invents an external scheduling authority.
 - `tools/memory_guard.py` / `tools/process_sentinel.py` — process custody; the
   classifier authority is `tools/memory_guard_core/process_model.py` (Codex/Claude/
   host-control-plane are NEVER kill targets). Never name/tree-kill.
+- `tools/memory_guard_custody.py --json` — inspect active-marker custody; dry-run
+  by default, with explicit `--apply` to record birth-identified stale custody.
+  `tools/memory_guard_core/active_custody.py` owns parsing, locked publication,
+  and terminal projection for the producer, disk guard, pytest bootstrap,
+  proof-queue diagnostics, and final runtime-WASM preflight. It never signals
+  processes or prunes evidence; PID-only parent reports confer no authority.
 
 ### Durable design authorities (read before re-designing)
 - `docs/design/meta_bug_taxonomy.md` — the meta-bug fix queue (proxy-measurement class).

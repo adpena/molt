@@ -8,6 +8,10 @@ call, function, class, and module visitors.
 
 from __future__ import annotations
 
+from molt.compiler_analysis.python_lexical_scope import (
+    expression_contains_yield,
+)
+
 import ast
 import json
 from dataclasses import dataclass
@@ -17,13 +21,13 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
     BUILTIN_FUNC_SPECS,
     GEN_CONTROL_SIZE,
+    CodeSlotDeclaration,
     MoltOp,
     MoltValue,
     _builtin_func_abi_arity,
 )
 from molt.frontend.sema import (
     FunctionKind,
-    expression_contains_yield,
     normalize_function_kind,
     stateful_function_frame_plan,
 )
@@ -53,7 +57,6 @@ class MaterializedFunctionMetadata:
     code_symbol: str | None
     trace_filename: str
     trace_lineno: int
-    trace_name: str
     varnames: tuple[str, ...]
     code_names: tuple[str, ...]
     freevars: tuple[str, ...]
@@ -185,7 +188,6 @@ def emit_materialized_function_metadata(
     if metadata.code_symbol is not None:
         filename = emitter.const_str(metadata.trace_filename)
         trace_lineno = emitter.const_int(metadata.trace_lineno)
-        trace_name = emitter.const_str(metadata.trace_name)
         linetable = emitter.const_none()
         varnames = emitter.tuple_new(
             [emitter.const_str(name) for name in metadata.varnames]
@@ -196,7 +198,7 @@ def emit_materialized_function_metadata(
         code = emitter.code_new(
             [
                 filename,
-                trace_name,
+                name_value,
                 trace_lineno,
                 linetable,
                 varnames,
@@ -208,7 +210,6 @@ def emit_materialized_function_metadata(
                 emitter.const_int(len(metadata.kwonly_params)),
             ]
         )
-        emitter.code_slot_set(metadata.code_symbol, code)
 
     execution_kind = {
         FunctionKind.SYNC: 0,
@@ -237,6 +238,10 @@ def emit_materialized_function_metadata(
         )
     )
     emitter.init_metadata(function, metadata_tuple, code, bind_kind)
+    if metadata.code_symbol is not None:
+        # Slot publication freezes the runtime frame plan. Signature, lexical
+        # slots and execution flags must be complete before it is derived.
+        emitter.code_slot_set(metadata.code_symbol, code)
 
 
 class _FrontendFunctionMetadataEmitter(FunctionMetadataEmitter[MoltValue]):
@@ -413,7 +418,6 @@ class FunctionMetadataMixin(GeneratorMixinBase):
         qualname: str,
         trace_filename: str | None = None,
         trace_lineno: int | None = None,
-        trace_name: str | None = None,
         posonly_params: list[str],
         pos_or_kw_params: list[str],
         kwonly_params: list[str],
@@ -429,16 +433,18 @@ class FunctionMetadataMixin(GeneratorMixinBase):
         code_names: list[str] | None = None,
         freevars: Sequence[str] = (),
         cellvars: Sequence[str] = (),
-    ) -> None:
-        varnames_list = varnames
-        if varnames_list is None:
-            varnames_list = self._varnames_from_params(
-                posonly_params=posonly_params,
-                pos_or_kw_params=pos_or_kw_params,
-                kwonly_params=kwonly_params,
-                vararg=vararg,
-                varkw=varkw,
-            )
+    ) -> CodeSlotDeclaration | None:
+        """Emit the function object's metadata and, for compiled code, its
+        code object. Returns that code object's slot declaration (None
+        without one): the layout of its synchronous frames' homes."""
+        parameters = self._varnames_from_params(
+            posonly_params=posonly_params,
+            pos_or_kw_params=pos_or_kw_params,
+            kwonly_params=kwonly_params,
+            vararg=vararg,
+            varkw=varkw,
+        )
+        varnames_list = parameters if varnames is None else varnames
         emit_materialized_function_metadata(
             _FrontendFunctionMetadataEmitter(self),
             function=func_val,
@@ -463,12 +469,19 @@ class FunctionMetadataMixin(GeneratorMixinBase):
                 code_symbol=code_symbol,
                 trace_filename=trace_filename or self.source_path or "<unknown>",
                 trace_lineno=int(trace_lineno or 0),
-                trace_name=trace_name or qualname or name,
                 varnames=tuple(varnames_list),
                 code_names=tuple(code_names or ()),
                 freevars=tuple(freevars),
                 cellvars=tuple(cellvars),
             ),
+        )
+        if code_symbol is None:
+            return None
+        return CodeSlotDeclaration(
+            parameters=tuple(parameters),
+            varnames=tuple(varnames_list),
+            cellvars=tuple(cellvars),
+            freevars=tuple(freevars),
         )
 
     def _build_gpu_kernel_descriptor_json(
@@ -551,12 +564,87 @@ class FunctionMetadataMixin(GeneratorMixinBase):
             if not func_symbol.startswith(symbol_prefix):
                 continue
             func_id = func_symbol[len(symbol_prefix) :]
-            if (
-                self._lookup_func_defaults(module_name, func_id) is not None
-                or self._lookup_func_kind(module_name, func_id) is not None
-            ):
+            if self._is_linkable_module_function_symbol(module_name, func_id):
                 return module_name, func_id
         return None
+
+    def _known_function_kind(
+        self, module_name: str, func_id: str
+    ) -> FunctionKind | None:
+        """The declared execution kind of a linkable module function: its
+        module's kind table, else its recorded default specification. None
+        when neither declares one; no kind is ever inferred."""
+        info = self._lookup_func_defaults(module_name, func_id)
+        info_kind = self._normalize_func_kind(info.get("kind")) if info else None
+        return self._lookup_func_kind(module_name, func_id) or info_kind
+
+    def _entry_adopts_symbol(self, symbol: str) -> bool:
+        """Whether a statically named call target's direct entry adopts.
+
+        A function of this module answers by the predicate that gave it homes
+        (`_function_binds_homes`). A linkable function of another module
+        adopts when its declared kind is synchronous, by the same rule in its
+        own module. Any other target, including one whose kind is undeclared,
+        borrows. Backends check each direct call's custody against the
+        callee's own declaration and fail closed on a disagreement.
+        """
+        if symbol in self.funcs_map:
+            return self._function_binds_homes(symbol)
+        target = self._known_function_symbol_target(symbol)
+        return (
+            target is not None
+            and self._known_function_kind(*target) is FunctionKind.SYNC
+        )
+
+    def _mark_source_call(self, value: object) -> None:
+        """Record the instruction that evaluates a source call expression.
+
+        CPython's CALL moves its value-stack operands into the call however
+        the callee is found, and ends them once a borrowing callee returns;
+        CALL_FUNCTION_EX keeps its callable through the invocation. The dynamic
+        call that produced the expression's value is that instruction, and its
+        ``argument_custody`` records every operand it adopts. A call the
+        compiler synthesizes stays unmarked and borrows, and so does a call of
+        an explicit runtime executable. A public builtin-name lookup may return
+        a replacement Python callable and keeps ordinary source-call custody.
+        """
+        if not isinstance(value, MoltValue):
+            return
+        producer = self._op_by_result.get(value.name)
+        if producer is None or producer.kind not in {
+            "CALL_FUNC",
+            "CALL_GUARDED",
+            "CALL_METHOD",
+            "CALL_BIND",
+            "CALL_INDIRECT",
+        }:
+            return
+        callee = producer.args[0]
+        callee_producer = (
+            self._op_by_result.get(callee.name)
+            if isinstance(callee, MoltValue)
+            else None
+        )
+        if callee_producer is not None and callee_producer.kind == "BUILTIN_FUNC":
+            builtin_name = (callee_producer.metadata or {}).get("builtin_name")
+            if builtin_name not in BUILTIN_FUNC_SPECS:
+                return
+        custody = ["transferred"] * len(producer.args)
+        if producer.kind in {"CALL_BIND", "CALL_INDIRECT"}:
+            builder = self._op_by_result.get(producer.args[1].name)
+            form = (
+                (builder.metadata or {}).get("call_form")
+                if builder is not None and builder.kind == "CALLARGS_NEW"
+                else None
+            )
+            if form is None:
+                # Only a source call's argument schedule records its form.
+                return
+            if form == "expanded":
+                custody[0] = "borrowed"
+        if producer.metadata is None:
+            producer.metadata = {}
+        producer.metadata["argument_custody"] = custody
 
     def _known_module_function_type_hint(
         self, module_name: str | None, func_id: str
@@ -566,14 +654,15 @@ class FunctionMetadataMixin(GeneratorMixinBase):
         normalized = self._normalize_allowlist_module(module_name)
         if normalized is not None:
             module_name = normalized
-        info = self._lookup_func_defaults(module_name, func_id)
-        info_kind = self._normalize_func_kind(info.get("kind")) if info else None
-        kind = self._lookup_func_kind(module_name, func_id) or info_kind
-        if info is None and kind is None:
+        if not self._is_linkable_module_function_symbol(module_name, func_id):
             return None
+        info = self._lookup_func_defaults(module_name, func_id)
         if info is not None and info.get("has_decorators"):
             return None
-        kind = kind or FunctionKind.SYNC
+        # A static callable identity requires the target's declared kind.
+        kind = self._known_function_kind(module_name, func_id)
+        if kind is None:
+            return None
         func_symbol = f"{self._sanitize_module_name(module_name)}__{func_id}"
         if kind == FunctionKind.SYNC:
             return f"Func:{func_symbol}"
@@ -599,7 +688,9 @@ class FunctionMetadataMixin(GeneratorMixinBase):
         arity = _builtin_func_abi_arity(spec)
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[func_id], result=name_val))
-        func_val = MoltValue(self.next_var(), type_hint="function")
+        # This operation acquires a mutable public binding. It may have been
+        # replaced with any Python object; publication already owns metadata.
+        func_val = MoltValue(self.next_var(), type_hint="Any")
         self.emit(
             MoltOp(
                 kind="BUILTIN_FUNC",
@@ -614,23 +705,5 @@ class FunctionMetadataMixin(GeneratorMixinBase):
                     ),
                 },
             )
-        )
-        self._emit_function_metadata(
-            func_val,
-            code_symbol=None,
-            name=func_id,
-            qualname=func_id,
-            posonly_params=list(spec.params),
-            pos_or_kw_params=list(spec.pos_or_kw_params),
-            kwonly_params=list(spec.kwonly_params),
-            vararg=spec.vararg,
-            varkw=None,
-            default_exprs=list(spec.defaults),
-            kw_default_exprs=list(spec.kw_defaults),
-            docstring=None,
-            bind_kind=spec.bind_kind,
-            module_override=spec.module,
-            freevars=(),
-            cellvars=(),
         )
         return func_val

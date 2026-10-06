@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.opcode_literal_payloads import LITERAL_PAYLOAD_KINDS as _LITERAL_PAYLOAD_KINDS
+
 # Valid enum values and structural fact vocabularies for op_kinds.toml.
 _PURITY_VALUES = {"pure", "pure_may_throw", "impure"}
 _FRONTEND_EFFECT_VALUES = {"pure", "reads_heap", "writes_heap", "control"}
@@ -60,20 +62,15 @@ _VARIABLE_RESULT_ARITY_OPCODES = {
 # a per-position list of the leaf values. molt's "callee borrows all args" ABI
 # (design 20 §1.2) makes "all_borrowed" the universal default; "consumed" is the
 # rare op-frees-it case (the CallArgs builder, the C6 double-free class);
-# "interior_borrow_keepalive" is the borrow-of-edge case (design 27 §1.5): the op
-# borrows the operand (frees nothing) AND its result holds an INTERIOR reference
-# into that operand's backing store, so the operand's drop is deferred to the
-# result's last use (the `LoadAttr`/`Index` source — the round-6 `Counter._handle`
-# UAF). "container_absorb" is the existing-container store boundary: the op
+# "container_absorb" is the existing-container store boundary: the op
 # borrows the operand while retaining its own container/storage reference, so the
 # caller-owned producer ref still drops at the statement. These refinements are
 # per-position only. A value outside this set is a hard error (a typo must never
 # silently degrade to a borrow assumption, a consume assumption that double-frees,
-# or a missing keepalive/release-boundary fact).
+# or a missing release-boundary fact).
 _OPERAND_OWNERSHIP_LEAVES = {
     "borrowed",
     "consumed",
-    "interior_borrow_keepalive",
     "container_absorb",
 }
 _OPERAND_OWNERSHIP_UNIFORM = {"all_borrowed", "all_consumed"}
@@ -87,7 +84,7 @@ _OPERAND_OWNERSHIP_UNIFORM = {"all_borrowed", "all_consumed"}
 # terminator (nothing frees a terminator operand internally), so it is excluded.
 _TERMINATOR_OWNERSHIP_LEAVES = {"borrowed", "transferred", "none"}
 _RESULT_VALIDITY_VALUES = {"conditional_valid_only_on_edge"}
-_LITERAL_PAYLOAD_KINDS = {"int": "Int", "bool": "Bool"}
+
 _GVN_VALUE_KEY_KINDS = {
     "i64_attr": "I64Attr",
     "bool_attr": "BoolAttr",
@@ -103,7 +100,6 @@ _BOXED_ALLOCATION_LAYOUT_RULES = {
 _TYPE_REFINE_ATTR_RESULT_TYPE_RULES = {
     "object_type_hint": "ObjectTypeHint",
     "call_return_type": "CallReturnType",
-    "call_builtin_return_type": "CallBuiltinReturnType",
     "type_guard": "TypeGuard",
     "copy_original_kind": "CopyOriginalKind",
 }
@@ -282,13 +278,6 @@ _SCEV_EXPR_RULES = {
     "sub": "Sub",
     "mul": "Mul",
 }
-_CALL_OPCODE_ROLES = {
-    "not_call": "NotCall",
-    "user_call": "UserCall",
-    "dynamic_method": "DynamicMethod",
-    "runtime_builtin": "RuntimeBuiltin",
-    "copy_original_kind": "CopyOriginalKind",
-}
 _SSA_S_VALUE_ATTR_KEYS = {"module", "name", "method"}
 _EXCEPTION_REGION_NESTING_ROLES = {
     "none": "None",
@@ -367,12 +356,13 @@ _CLASSIFIER_SETS = (
     "async_work_poll_kinds",
     "async_work_poll_marker_kinds",
     "simpleir_luau_ordered_mapping_kinds",
-    "classifier_fresh_value",
+    "classifier_owned_value",
     "classifier_exception_creation_ref",
     "classifier_owned_alias",
     "classifier_inert_marker",
     "classifier_transparent_alias",
     "classifier_no_heap_move",
+    "classifier_binding_view",
 )
 _SIMPLEIR_INTEGER_SEMANTIC_FACT_SETS = (
     "simpleir_dynamic_add_semantics_kinds",
@@ -410,6 +400,7 @@ _SIMPLEIR_FIELD_ROLE_FACT_SETS = (
     "simpleir_var_definition_kinds",
     "simpleir_var_result_kinds",
     "simpleir_var_metadata_when_args_kinds",
+    "simpleir_var_forbidden_kinds",
 )
 _SIMPLEIR_VERIFIER_CONTROL_FACT_FIELDS = (
     "verifier_label_definition",
@@ -458,7 +449,6 @@ _OPCODE_FACT_SETS = (
     "refcount_balance_dec_opcodes",
     "lowered_state_machine_body_opcodes",
     "boxed_runtime_inplace_dispatch_opcodes",
-    "drop_insertion_suspension_point_opcodes",
     "drop_insertion_return_deferral_barrier_opcodes",
     "generator_fusion_poll_required_yield_opcodes",
     "generator_fusion_poll_reject_opcodes",
@@ -518,7 +508,6 @@ __all__ = (
     "_ALIAS_MEMORY_REGION_SETS",
     "_ALIAS_SLOT_OBSERVATION_SETS",
     "_ALIAS_TRANSPARENT_ALIAS_ROLE_SETS",
-    "_CALL_OPCODE_ROLES",
     "_CANONICALIZE_BINARY_ACTIONS",
     "_CANONICALIZE_BINARY_PREDICATES",
     "_CANONICALIZE_BINARY_TYPE_GUARDS",

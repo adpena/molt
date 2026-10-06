@@ -34,8 +34,11 @@ from molt.toolchain_identity import StableRegularFileIdentity
 if TYPE_CHECKING:
     from molt.cli.backend_artifact_contract import BackendArtifactContract
     from molt.capability_manifest import ResolvedRuntimePolicy
-    from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+    from molt.cli.runtime_build_python import BuildPythonAdmission
+    from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
     from molt.cli.runtime_wasm_generation import RuntimeWasmCodegenBinding
+    from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
+    from molt.cli.installed_runtime_contract import InstalledNativeAdmission
     from molt.cli.module_graph import ModuleSyntaxErrorInfo
     from molt.cli.module_resolution import _ModuleResolutionCache
     from molt.cli.module_source import _ModuleSourceCatalog, PythonSourceSnapshot
@@ -196,6 +199,8 @@ class _ImportScanRequests(NamedTuple):
     star_modules: tuple[str, ...] = ()
     dynamic_relative_import_candidates: tuple[str, ...] = ()
     requires_runtime_package_anchor: bool = False
+    # Keep call-star discovery distinct even when its base is also imported.
+    dynamic_star_modules: tuple[str, ...] = ()
 
 
 class _CompleteImportScan(NamedTuple):
@@ -211,6 +216,8 @@ class _ImportDiscoveryProjection(NamedTuple):
     imports: tuple[str, ...]
     dynamic_relative_import_candidates: tuple[str, ...] = ()
     requires_runtime_package_anchor: bool = False
+    star_modules: tuple[str, ...] = ()
+    dynamic_star_modules: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -846,9 +853,20 @@ class _RuntimeArtifactState:
     runtime_wasm_codegen_binding: RuntimeWasmCodegenBinding | None = None
     extra_runtime_features: tuple[str, ...] = ()
     native_runtime_build_identity: RuntimeBuildIdentity | None = None
+    native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None
+    # One build operation's installed-cell admission; codegen and final link
+    # reuse it through its fences. None for source-checkout runtimes.
+    installed_native_admission: InstalledNativeAdmission | None = None
     native_runtime_build_failure: _NativeRuntimeBuildFailure | None = None
     runtime_wasm_build_failure: _RuntimeWasmBuildFailure | None = None
     runtime_lib_ready_future: Future[bool] | None = None
+    build_python_admission: BuildPythonAdmission | None = None
+
+    def revoke_native_runtime_admission(self) -> None:
+        """Revoke all authority to use this operation's native generation."""
+        self.native_runtime_codegen_binding = None
+        self.native_runtime_build_identity = None
+        self.installed_native_admission = None
 
 
 _SharedStdlibCacheValidationToken = tuple[str, tuple[StableRegularFileIdentity, ...]]
@@ -933,6 +951,7 @@ class _SupportModuleAugmentation:
 class _ModuleGraphAugmentation:
     spawn_enabled: bool
     explicit_imports: set[str]
+    runtime_import_dispatch_roots: set[str]
     stub_parents: set[str]
 
 
@@ -1883,6 +1902,7 @@ class _PreparedEntryModuleGraph:
     runtime_import_scan_custody: _RuntimeImportScanCustody | None = None
     project_root: Path | None = None
     capability_config_digest: str = ""
+    intrinsic_source_operation_counts: Mapping[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

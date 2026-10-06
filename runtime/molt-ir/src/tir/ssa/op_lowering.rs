@@ -15,7 +15,7 @@ use super::super::types::TirType;
 use super::super::values::ValueId;
 use super::variables::{
     is_variable, simple_ir_ssa_result_count, simple_var_field_is_transport_fact,
-    simple_var_field_is_value_operand,
+    simple_var_field_is_value_operand, visit_simple_ir_ssa_result_slots,
 };
 use super::*;
 
@@ -234,6 +234,22 @@ impl<'a> SsaContext<'a> {
                 );
             }
         });
+        // Trailing-argument results (e.g. `unpack_sequence` outputs) are SSA
+        // values with authored names, unlike binding destinations, which name
+        // mutable storage. Record them so re-lifts recover them as source
+        // names: the synthetic `_v{N}` allocator only avoids spellings it
+        // knows, and an unrecorded output name could be reissued to an
+        // unrelated value and inherit its raw-carrier representation.
+        if simpleir_first_trailing_result_arg_table(op.kind.as_str()).is_some() {
+            visit_simple_ir_ssa_result_slots(op, |name, index| {
+                if let Some(name) = name {
+                    attrs.insert(
+                        format!("_simple_result_{index}"),
+                        AttrValue::Str(name.to_string()),
+                    );
+                }
+            });
+        }
         // Preserve only the structural class-id hint needed by object
         // allocation round-trips. Scalar `fast_int` / `fast_float` flags are
         // SimpleIR transport metadata and must not become TIR attributes; TIR
@@ -348,6 +364,11 @@ impl<'a> SsaContext<'a> {
             attrs,
             source_span: None,
         };
+        // A source call's typed operand custody is aligned with `args`,
+        // which are exactly the call's operands.
+        if let Some(custody) = &op.argument_custody {
+            tir_op.set_argument_custody(custody);
+        }
         self.stamp_source_identity(&mut tir_op, op_idx);
         tir_op
     }
@@ -438,6 +459,44 @@ mod positional_result_tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn trailing_argument_results_keep_their_authored_names() {
+        let ops = vec![
+            OpIR {
+                kind: "const_none".into(),
+                out: Some("pair".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "unpack_sequence".into(),
+                args: Some(vec!["pair".into(), "first".into(), "second".into()]),
+                value: Some(2),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["second".into()]),
+                ..OpIR::default()
+            },
+        ];
+        let cfg = CFG::build(&ops);
+        let output = super::super::convert_to_ssa(&cfg, &ops);
+        let unpack = output
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .find(|op| op.opcode == OpCode::UnpackSequence)
+            .expect("unpack_sequence lifts to a first-class opcode");
+        assert_eq!(unpack.results.len(), 2);
+        for (index, name) in ["first", "second"].into_iter().enumerate() {
+            assert_eq!(
+                unpack.attrs.get(&format!("_simple_result_{index}")),
+                Some(&AttrValue::Str(name.into())),
+                "unpack output {index} must keep its authored name"
+            );
         }
     }
 }

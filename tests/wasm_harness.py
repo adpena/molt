@@ -429,6 +429,9 @@ const allocRaw = (payload) => {
   new Uint8Array(memory.buffer, addr, bytes).fill(0);
   return addr + HEADER_SIZE;
 };
+// Scratch word ranges are private to one runtime call; freed ranges are reused
+// by size, and a live range is never handed out twice.
+const scratchRegions = new Map();
 const isNone = (val) => isTag(val, TAG_NONE);
 const SLICE_INDEX_ERR =
   'slice indices must be integers or None or have an __index__ method';
@@ -1559,87 +1562,6 @@ const memoryviewReadScalar = (data, offset, fmt) => {
     return boxIntOrBigint(value);
   }
   return null;
-};
-const memoryviewWriteScalar = (data, offset, fmt, valBits) => {
-  if (offset < 0 || offset + fmt.itemsize > data.length) return null;
-  if (fmt.kind === 'char') {
-    const bytes = getBytes(valBits);
-    if (!bytes) {
-      throw new Error(`TypeError: memoryview: invalid type for format '${fmt.code}'`);
-    }
-    if (bytes.data.length !== 1) {
-      throw new Error(`ValueError: memoryview: invalid value for format '${fmt.code}'`);
-    }
-    data[offset] = bytes.data[0];
-    return true;
-  }
-  if (fmt.kind === 'bool') {
-    data[offset] = isTruthyBits(valBits) ? 1 : 0;
-    return true;
-  }
-  if (fmt.kind === 'float') {
-    let num = numberFromVal(valBits);
-    if (num === null) {
-      const obj = getObj(valBits);
-      if (obj && obj.type === 'bigint') {
-        num = Number(obj.value);
-      }
-    }
-    if (num === null) {
-      throw new Error(`TypeError: memoryview: invalid type for format '${fmt.code}'`);
-    }
-    const buf = new ArrayBuffer(fmt.itemsize);
-    const view = new DataView(buf);
-    if (fmt.itemsize === 4) view.setFloat32(0, num, true);
-    else if (fmt.itemsize === 8) view.setFloat64(0, num, true);
-    else return null;
-    for (let i = 0; i < fmt.itemsize; i += 1) {
-      data[offset + i] = view.getUint8(i);
-    }
-    return true;
-  }
-  const errMsg = `memoryview: invalid type for format '${fmt.code}'`;
-  const value = indexBigIntFromBits(valBits, errMsg);
-  if (value === null) return null;
-  const bits = BigInt(fmt.itemsize * 8);
-  let min = 0n;
-  let max = 0n;
-  if (fmt.kind === 'signed') {
-    const limit = 1n << (bits - 1n);
-    min = -limit;
-    max = limit - 1n;
-  } else if (fmt.kind === 'unsigned') {
-    min = 0n;
-    max = (1n << bits) - 1n;
-  } else {
-    return null;
-  }
-  if (value < min || value > max) {
-    throw new Error(`ValueError: memoryview: invalid value for format '${fmt.code}'`);
-  }
-  const buf = new ArrayBuffer(fmt.itemsize);
-  const view = new DataView(buf);
-  if (fmt.kind === 'signed') {
-    if (fmt.itemsize === 1) view.setInt8(0, Number(value));
-    else if (fmt.itemsize === 2) view.setInt16(0, Number(value), true);
-    else if (fmt.itemsize === 4) view.setInt32(0, Number(value), true);
-    else if (fmt.itemsize === 8) view.setBigInt64(0, value, true);
-    else return null;
-  } else if (fmt.itemsize === 1) {
-    view.setUint8(0, Number(value));
-  } else if (fmt.itemsize === 2) {
-    view.setUint16(0, Number(value), true);
-  } else if (fmt.itemsize === 4) {
-    view.setUint32(0, Number(value), true);
-  } else if (fmt.itemsize === 8) {
-    view.setBigUint64(0, value, true);
-  } else {
-    return null;
-  }
-  for (let i = 0; i < fmt.itemsize; i += 1) {
-    data[offset + i] = view.getUint8(i);
-  }
-  return true;
 };
 const collectBytearrayAssignBytes = (bits) => {
   const bytes = getBytes(bits);
@@ -2871,6 +2793,18 @@ const getCallArgs = (val) => {
   return obj;
 };
 const listFromArray = (items) => boxPtr({ type: 'list', items });
+function sequenceFromValues(ptr, len, construct) {
+  if (exceptionPending() !== 0n) return boxNone();
+  const count = Number(len);
+  if (count === 0) return construct([]);
+  const addr = expectPtrAddr(ptr, 'sequence_from_values');
+  const view = memView();
+  const items = [];
+  for (let index = 0; index < count; index += 1) {
+    items.push(view.getBigInt64(addr + 8 * index, true));
+  }
+  return construct(items);
+}
 const tupleFromArray = (items) => boxPtr({ type: 'tuple', items });
 const iterNextInternal = (val) => {
   if (isGenerator(val)) {
@@ -4162,16 +4096,6 @@ const exceptionMatchBuiltin = (excBits, tagBits) => {
   }
   return boxBool(isSubclass(typeOfBits(excBits), getExceptionClassForName(name)));
 };
-const exceptionSetCause = (excBits, causeBits) => {
-  const exc = getException(excBits);
-  if (!exc) return boxNone();
-  if (!isNone(causeBits) && !getException(causeBits)) {
-    throw new Error('TypeError: exception cause must be an exception or None');
-  }
-  exc.causeBits = causeBits;
-  exc.suppressBits = boxBool(true);
-  return boxNone();
-};
 const exceptionSetValue = (excBits, valueBits) => {
   const exc = getException(excBits);
   if (!exc) return boxNone();
@@ -4489,7 +4413,7 @@ const formatTraceback = (traceBits) => {
   }
   return out;
 };
-const raiseException = (excBits) => {
+const normalizeRaiseOperand = (excBits, cause = false) => {
   let exc = getException(excBits);
   if (!exc) {
     const cls = getClass(excBits);
@@ -4499,12 +4423,12 @@ const raiseException = (excBits) => {
         exceptionArgs(
           boxPtr({
             type: 'str',
-            value: 'exceptions must derive from BaseException',
+            value: cause ? 'exception causes must derive from BaseException' : 'exceptions must derive from BaseException',
           }),
         ),
       );
-      excBits = errExc;
-      exc = getException(excBits);
+      raiseException(errExc);
+      return null;
     } else {
       const instBits = exceptionNewFromClass(excBits, tupleFromArray([]));
       if (!isNone(instBits)) {
@@ -4516,13 +4440,31 @@ const raiseException = (excBits) => {
             args.pos.unshift(instBits);
           }
           baseImports.call_bind(initBits, builder);
-          if (exceptionPending() !== 0n) return boxNone();
+          if (exceptionPending() !== 0n) return null;
         }
         excBits = instBits;
         exc = getException(excBits);
       }
     }
   }
+  return exc ? excBits : null;
+};
+const exceptionPrepareRaise = (excBits, causeBits) => {
+  const instance = normalizeRaiseOperand(excBits);
+  if (instance === null) return boxNone();
+  if (causeBits !== missingSentinel()) {
+    const cause = isNone(causeBits) ? causeBits : normalizeRaiseOperand(causeBits, true);
+    if (cause === null) return boxNone();
+    const exc = getException(instance);
+    exc.causeBits = cause;
+    exc.suppressBits = boxBool(true);
+  }
+  return instance;
+};
+const raiseException = (excBits) => {
+  excBits = normalizeRaiseOperand(excBits);
+  if (excBits === null) return boxNone();
+  const exc = getException(excBits);
   if (exc) {
     const traceBits = frameStackTraceBits();
     exc.traceBits = traceBits === null ? boxNone() : traceBits;
@@ -5777,7 +5719,6 @@ const hashBitsSigned = (bits) => {
       obj.type === 'set' ||
       obj.type === 'bytearray' ||
       obj.type === 'memoryview' ||
-      obj.type === 'list_builder' ||
       obj.type === 'dict_builder' ||
       obj.type === 'set_builder' ||
       obj.type === 'dict_keys' ||
@@ -7277,16 +7218,10 @@ BASE_IMPORTS = """\
     }
     return baseImports.add(a, b);
   },
-  vec_sum_int: () => boxNone(),
-  vec_sum_int_trusted: () => boxNone(),
-  vec_sum_int_range: () => boxNone(),
-  vec_sum_int_range_trusted: () => boxNone(),
-  vec_sum_float: () => boxNone(),
-  vec_sum_float_trusted: () => boxNone(),
-  vec_sum_float_range: () => boxNone(),
-  vec_sum_float_range_trusted: () => boxNone(),
-  vec_sum_float_range_iter: () => boxNone(),
-  vec_sum_float_range_iter_trusted: () => boxNone(),
+  vec_sum: () => tupleFromArray([boxNone(), boxNone(), boxInt(0), boxBool(false)]),
+  vec_prod: () => tupleFromArray([boxNone(), boxNone(), boxInt(0), boxBool(false)]),
+  vec_min: () => tupleFromArray([boxNone(), boxNone(), boxInt(0), boxBool(false)]),
+  vec_max: () => tupleFromArray([boxNone(), boxNone(), boxInt(0), boxBool(false)]),
   statistics_mean_slice: (seqBits, startBits, endBits, hasStartBits, hasEndBits) => {
     const list = getList(seqBits);
     const tuple = getTuple(seqBits);
@@ -7359,18 +7294,6 @@ BASE_IMPORTS = """\
     const variance = m2 / (count - 1);
     return boxFloat(Math.sqrt(variance));
   },
-  vec_prod_int: () => boxNone(),
-  vec_prod_int_trusted: () => boxNone(),
-  vec_prod_int_range: () => boxNone(),
-  vec_prod_int_range_trusted: () => boxNone(),
-  vec_min_int: () => boxNone(),
-  vec_min_int_trusted: () => boxNone(),
-  vec_min_int_range: () => boxNone(),
-  vec_min_int_range_trusted: () => boxNone(),
-  vec_max_int: () => boxNone(),
-  vec_max_int_trusted: () => boxNone(),
-  vec_max_int_range: () => boxNone(),
-  vec_max_int_range_trusted: () => boxNone(),
   sub: (a, b) => {
     if (isIntLike(a) && isIntLike(b)) {
       return boxInt(unboxIntLike(a) - unboxIntLike(b));
@@ -8160,6 +8083,7 @@ BASE_IMPORTS = """\
     if (setLike) return boxBool(setLike.items.has(item));
     return boxBool(false);
   },
+  profile_enabled: () => 0n,
   guard_type: (val, expected) => val,
   guard_layout: (obj, classBits, expected) => {
     if (!isTag(obj, TAG_PTR)) return boxBool(false);
@@ -9452,38 +9376,33 @@ BASE_IMPORTS = """\
     }
     return listFromArray(out);
   },
-  list_builder_new: () => boxPtr({ type: 'list_builder', items: [] }),
-  list_builder_append: (builder, val) => {
-    if (exceptionPending() !== 0n) return 1;
-    const obj = getObj(builder);
-    if (obj && obj.type === 'list_builder') {
-      obj.items.push(val);
-      return 0;
+  scratch_alloc: (size) => {
+    const bytes = Number(size);
+    const reusable = scratchRegions.get(bytes);
+    if (reusable && reusable.length > 0) return BigInt(reusable.pop());
+    const addr = allocRaw(Math.max(bytes, 1));
+    if (!addr) {
+      const exc = exceptionNew(
+        boxPtr({ type: 'str', value: 'MemoryError' }),
+        exceptionArgs(boxPtr({ type: 'str', value: 'scratch allocation failed' })),
+      );
+      raiseException(exc);
+      return 0n;
     }
-    return 1;
+    return BigInt(addr);
   },
-  list_builder_finish: (builder) => {
-    const obj = getObj(builder);
-    if (obj && obj.type === 'list_builder') {
-      const items = obj.items;
-      obj.items = [];
-      obj.type = 'consumed_builder';
-      if (exceptionPending() !== 0n) return boxNone();
-      return listFromArray(items);
+  scratch_free: (ptr, size) => {
+    if (ptr === 0n) return;
+    const bytes = Number(size);
+    let regions = scratchRegions.get(bytes);
+    if (!regions) {
+      regions = [];
+      scratchRegions.set(bytes, regions);
     }
-    return boxNone();
+    regions.push(Number(ptr));
   },
-  tuple_builder_finish: (builder) => {
-    const obj = getObj(builder);
-    if (obj && obj.type === 'list_builder') {
-      const items = obj.items;
-      obj.items = [];
-      obj.type = 'consumed_builder';
-      if (exceptionPending() !== 0n) return boxNone();
-      return tupleFromArray(items);
-    }
-    return boxNone();
-  },
+  tuple_from_values: (ptr, len) => sequenceFromValues(ptr, len, tupleFromArray),
+  list_from_values: (ptr, len) => sequenceFromValues(ptr, len, listFromArray),
   list_append: (listBits, valBits) => {
     const list = getList(listBits);
     if (!list) return boxNone();
@@ -9576,40 +9495,8 @@ BASE_IMPORTS = """\
     list.items.reverse();
     return boxNone();
   },
-  list_sort: (listBits, keyBits, reverseBits) => {
-    const list = getList(listBits);
-    if (!list) return boxNone();
-    const useKey = !isNone(keyBits);
-    const reverse = isTruthyBits(reverseBits);
-    const items = [];
-    for (const valBits of list.items) {
-      const keyVal = useKey ? callCallable1(keyBits, valBits) : valBits;
-      if (useKey && exceptionPending() !== 0n) return boxNone();
-      items.push({ key: keyVal, val: valBits, idx: items.length });
-    }
-    let error = null;
-    items.sort((left, right) => {
-      if (error) return 0;
-      const outcome = compareObjects(left.key, right.key);
-      if (outcome.kind === 'ordered') {
-        if (outcome.ordering !== 0) {
-          return reverse ? -outcome.ordering : outcome.ordering;
-        }
-      } else if (outcome.kind === 'notComparable') {
-        error = { kind: 'notComparable', left: left.key, right: right.key };
-        return 0;
-      } else if (outcome.kind === 'error') {
-        error = { kind: 'exception' };
-        return 0;
-      }
-      return left.idx - right.idx;
-    });
-    if (error) {
-      if (error.kind === 'exception') return boxNone();
-      compareTypeError('<', error.left, error.right);
-    }
-    list.items = items.map((item) => item.val);
-    return boxNone();
+  list_sort: () => {
+    throw new Error('Unsupported: list.sort() requires the linked Molt runtime');
   },
   list_count: (listBits, valBits) => {
     const list = getList(listBits);
@@ -9751,135 +9638,9 @@ BASE_IMPORTS = """\
     const val = dictGetValue(dict, keyBits);
     return val === null ? defaultBits : val;
   },
-  dict_inc: (dictBits, keyBits, deltaBits) => {
-    const dict = getDict(dictBits);
-    if (!dict) return boxNone();
-    const current = dictGetValue(dict, keyBits) ?? boxInt(0);
-    let next;
-    if (isIntLike(current) && isIntLike(deltaBits)) {
-      next = boxInt(unboxIntLike(current) + unboxIntLike(deltaBits));
-    } else {
-      next = baseImports.add(current, deltaBits);
-      if (exceptionPending() !== 0n) return boxNone();
-    }
-    dictSetValue(dict, keyBits, next);
-    return boxNone();
-  },
-  dict_str_int_inc: (dictBits, keyBits, deltaBits) =>
-    baseImports.dict_inc(dictBits, keyBits, deltaBits),
-  string_split_ws_dict_inc: (lineBits, dictBits, deltaBits) => {
-    const dict = getDict(dictBits);
-    if (!dict) return boxNone();
-    const line = getStrObj(lineBits);
-    if (line === null) return boxNone();
-    let lastBits = boxNone();
-    let hadAny = false;
-    const parts = stringSplitWhitespaceMax(line, -1);
-    for (const part of parts) {
-      const keyBits = boxPtr({ type: 'str', value: part });
-      const current = dictGetValue(dict, keyBits) ?? boxInt(0);
-      let next;
-      if (isIntLike(current) && isIntLike(deltaBits)) {
-        next = boxInt(unboxIntLike(current) + unboxIntLike(deltaBits));
-      } else {
-        next = baseImports.add(current, deltaBits);
-        if (exceptionPending() !== 0n) return boxNone();
-      }
-      dictSetValue(dict, keyBits, next);
-      lastBits = keyBits;
-      hadAny = true;
-    }
-    return tupleFromArray([lastBits, boxBool(hadAny)]);
-  },
-  string_split_sep_dict_inc: (lineBits, sepBits, dictBits, deltaBits) => {
-    const dict = getDict(dictBits);
-    if (!dict) return boxNone();
-    const line = getStrObj(lineBits);
-    if (line === null) return boxNone();
-    const sep = getStrObj(sepBits);
-    if (sep === null) return boxNone();
-    if (sep.length === 0) {
-      throw new Error('ValueError: empty separator');
-    }
-    let lastBits = boxNone();
-    let hadAny = false;
-    const parts = stringSplitSepMax(line, sep, -1);
-    for (const part of parts) {
-      const keyBits = boxPtr({ type: 'str', value: part });
-      const current = dictGetValue(dict, keyBits) ?? boxInt(0);
-      let next;
-      if (isIntLike(current) && isIntLike(deltaBits)) {
-        next = boxInt(unboxIntLike(current) + unboxIntLike(deltaBits));
-      } else {
-        next = baseImports.add(current, deltaBits);
-        if (exceptionPending() !== 0n) return boxNone();
-      }
-      dictSetValue(dict, keyBits, next);
-      lastBits = keyBits;
-      hadAny = true;
-    }
-    return tupleFromArray([lastBits, boxBool(hadAny)]);
-  },
-  taq_ingest_line: (dictBits, lineBits, bucketSizeBits) => {
-    const dict = getDict(dictBits);
-    if (!dict) {
-      throw new Error('TypeError: TAQ ingest expects dict');
-    }
-    const line = getStrObj(lineBits);
-    if (line === null) {
-      throw new Error('TypeError: TAQ ingest expects str');
-    }
-    if (!isIntLike(bucketSizeBits)) {
-      throw new Error('TypeError: TAQ ingest expects integer bucket size');
-    }
-    const bucketSize = unboxIntLike(bucketSizeBits);
-    if (bucketSize === 0n) {
-      throw new Error('ZeroDivisionError: integer division or modulo by zero');
-    }
-    const fields = line.split('|');
-    if (fields.length <= 4) {
-      throw new Error('IndexError: list index out of range');
-    }
-    const tsRaw = fields[0];
-    const symRaw = fields[2];
-    const volRaw = fields[4];
-    if (tsRaw === 'END' || volRaw === 'ENDP') {
-      return boxBool(false);
-    }
-    const parseI64Field = (raw) => {
-      const trimmed = raw.trim();
-      if (!/^[+-]?\\d+$/.test(trimmed)) {
-        throw new Error(`ValueError: invalid literal for int() with base 10: '${trimmed}'`);
-      }
-      const value = BigInt(trimmed);
-      const min = -(1n << 63n);
-      const max = (1n << 63n) - 1n;
-      if (value < min || value > max) {
-        throw new Error(`ValueError: invalid literal for int() with base 10: '${trimmed}'`);
-      }
-      return value;
-    };
-    const divEuclid = (a, b) => {
-      let q = a / b;
-      const r = a % b;
-      if (r < 0n) q += b > 0n ? -1n : 1n;
-      return q;
-    };
-    const ts = parseI64Field(tsRaw);
-    const vol = parseI64Field(volRaw);
-    const keyBits = boxPtr({ type: 'str', value: symRaw });
-    let seriesBits = dictGetValue(dict, keyBits);
-    if (seriesBits === null) {
-      seriesBits = boxPtr({ type: 'list', items: [] });
-      dictSetValue(dict, keyBits, seriesBits);
-    }
-    const series = getList(seriesBits);
-    if (!series) {
-      throw new Error('TypeError: TAQ ingest bucket must be list');
-    }
-    series.items.push(tupleFromArray([boxIntOrBigint(divEuclid(ts, bucketSize)), boxIntOrBigint(vol)]));
-    return boxBool(true);
-  },
+  dict_str_int_inc: () => boxBool(false),
+  string_split_ws_dict_inc: () => tupleFromArray([boxNone(), boxBool(false)]),
+  string_split_sep_dict_inc: () => tupleFromArray([boxNone(), boxBool(false)]),
   dict_pop: (dictBits, keyBits, defaultBits, hasDefaultBits) => {
     const dict = getDict(dictBits);
     if (!dict) return boxNone();
@@ -10442,6 +10203,9 @@ BASE_IMPORTS = """\
   },
   callargs_new: (_posCap, _kwCap) =>
     boxPtr({ type: 'callargs', pos: [], kwNames: [], kwValues: [] }),
+  // The mock runtime models no argument ownership, so both call forms share
+  // one builder.
+  callargs_new_expanded: (posCap, kwCap) => baseImports.callargs_new(posCap, kwCap),
   callargs_push_pos: (builder, val) => {
     const args = getCallArgs(builder);
     if (!args) return boxNone();
@@ -11130,172 +10894,8 @@ BASE_IMPORTS = """\
       bytearray.data[i] = Number(value);
       return seq;
     }
-    const view = getMemoryview(seq);
-    if (view) {
-      if (view.readonly) {
-        throw new Error('TypeError: cannot modify read-only memory');
-      }
-      const owner = getBytearray(view.ownerBits);
-      if (!owner) {
-        throw new Error('TypeError: memoryview is not writable');
-      }
-      const fmt = memoryviewFormatFromBits(view.formatBits);
-      if (!fmt) return boxNone();
-      const data = owner.data;
-      const shape = memoryviewShape(view);
-      const strides = memoryviewStrides(view);
-      const ndim = shape.length;
-      if (ndim === 0) {
-        const tup = getTuple(idxBits);
-        if (tup && tup.items.length === 0) {
-          const ok = memoryviewWriteScalar(data, view.offset, fmt, val);
-          return ok ? seq : boxNone();
-        }
-        throw new Error('TypeError: invalid indexing of 0-dim memory');
-      }
-      const tup = getTuple(idxBits);
-      if (tup) {
-        let hasSlice = false;
-        let allSlice = true;
-        for (const elem of tup.items) {
-          const slice = getSlice(elem);
-          if (slice) {
-            hasSlice = true;
-          } else {
-            allSlice = false;
-          }
-        }
-        if (hasSlice) {
-          if (allSlice) {
-            throw new Error(
-              'NotImplementedError: memoryview slice assignments are currently restricted to ndim = 1',
-            );
-          }
-          throw new Error('TypeError: memoryview: invalid slice key');
-        }
-        const indices = [];
-        for (const elem of tup.items) {
-          const idx = indexFromBitsWithOverflow(elem, 'memoryview: invalid slice key', null);
-          if (idx === null) return boxNone();
-          indices.push(idx);
-        }
-        if (indices.length < ndim) {
-          throw new Error('NotImplementedError: sub-views are not implemented');
-        }
-        if (indices.length > ndim) {
-          throw new Error(
-            `TypeError: cannot index ${ndim}-dimension view with ${indices.length}-element tuple`,
-          );
-        }
-        if (shape.length !== strides.length) return boxNone();
-        let pos = view.offset;
-        for (let dim = 0; dim < indices.length; dim += 1) {
-          let i = indices[dim];
-          const dimLen = shape[dim];
-          if (i < 0) i += dimLen;
-          if (i < 0 || i >= dimLen) {
-            throw new Error(`IndexError: index out of bounds on dimension ${dim + 1}`);
-          }
-          pos += i * strides[dim];
-        }
-        if (pos < 0 || pos + fmt.itemsize > data.length) {
-          throw new Error('IndexError: index out of bounds on dimension 1');
-        }
-        const ok = memoryviewWriteScalar(data, pos, fmt, val);
-        return ok ? seq : boxNone();
-      }
-      const sliceObj = getSlice(idxBits);
-      if (sliceObj) {
-        if (ndim !== 1) {
-          throw new Error(
-            'NotImplementedError: memoryview slice assignments are currently restricted to ndim = 1',
-          );
-        }
-        if (shape.length === 0) {
-          throw new Error('TypeError: invalid indexing of 0-dim memory');
-        }
-        const indices = normalizeSliceIndices(
-          shape[0],
-          sliceObj.start,
-          sliceObj.stop,
-          sliceObj.step,
-        );
-        if (indices === null) return boxNone();
-        const sliceIndices = collectSliceIndices(
-          indices.start,
-          indices.stop,
-          indices.step,
-        );
-        const elemCount = sliceIndices.length;
-        let srcBytes = null;
-        const bytes = getBytes(val);
-        const bytearray = getBytearray(val);
-        const srcView = getMemoryview(val);
-        if (bytes || bytearray) {
-          if (fmt.code !== 'B') {
-            throw new Error(
-              'ValueError: memoryview assignment: lvalue and rvalue have different structures',
-            );
-          }
-          srcBytes = Array.from(bytes ? bytes.data : bytearray.data);
-        } else if (srcView) {
-          const srcFmt = memoryviewFormatFromBits(srcView.formatBits);
-          if (!srcFmt) return boxNone();
-          const srcShape = memoryviewShape(srcView);
-          if (srcFmt.code !== fmt.code || srcShape.length !== 1 || srcShape[0] !== elemCount) {
-            throw new Error(
-              'ValueError: memoryview assignment: lvalue and rvalue have different structures',
-            );
-          }
-          const buf = memoryviewCollectBytes(srcView);
-          if (buf === null) return boxNone();
-          srcBytes = buf;
-        } else {
-          throw new Error(
-            `TypeError: a bytes-like object is required, not '${typeName(val)}'`,
-          );
-        }
-        const expected = elemCount * fmt.itemsize;
-        if (srcBytes.length !== expected) {
-          throw new Error(
-            'ValueError: memoryview assignment: lvalue and rvalue have different structures',
-          );
-        }
-        let pos = view.offset + indices.start * strides[0];
-        const stepStride = strides[0] * indices.step;
-        for (let i = 0; i < srcBytes.length; i += fmt.itemsize) {
-          if (pos < 0 || pos + fmt.itemsize > data.length) return boxNone();
-          for (let j = 0; j < fmt.itemsize; j += 1) {
-            data[pos + j] = srcBytes[i + j];
-          }
-          pos += stepStride;
-        }
-        return seq;
-      }
-      const idx = indexFromBitsWithOverflow(
-        idxBits,
-        'memoryview: invalid slice key',
-        null,
-      );
-      if (idx === null) return boxNone();
-      if (ndim !== 1) {
-        throw new Error('NotImplementedError: sub-views are not implemented');
-      }
-      if (shape.length === 0) {
-        throw new Error('TypeError: invalid indexing of 0-dim memory');
-      }
-      let i = idx;
-      const len = shape[0];
-      if (i < 0) i += len;
-      if (i < 0 || i >= len) {
-        throw new Error('IndexError: index out of bounds on dimension 1');
-      }
-      const pos = view.offset + i * strides[0];
-      if (pos < 0 || pos + fmt.itemsize > data.length) {
-        throw new Error('IndexError: index out of bounds on dimension 1');
-      }
-      const ok = memoryviewWriteScalar(data, pos, fmt, val);
-      return ok ? seq : boxNone();
+    if (getMemoryview(seq)) {
+      throw new Error('Unsupported: memoryview assignment requires the linked Molt runtime');
     }
     return boxNone();
   },
@@ -12605,12 +12205,12 @@ BASE_IMPORTS = """\
     if (!obj) return boxNone();
     return boxPtr({ type: 'bytearray', data: Uint8Array.from(obj.data) });
   },
-  intarray_from_seq: () => boxNone(),
   buffer2d_new: () => boxNone(),
   buffer2d_get: () => boxNone(),
   buffer2d_set: () => boxNone(),
   buffer2d_matmul: () => boxNone(),
   dataclass_new: () => boxNone(),
+  dataclass_new_from_values: () => boxNone(),
   dataclass_get: () => boxNone(),
   dataclass_set: () => boxNone(),
   dataclass_set_class: () => boxNone(),
@@ -12838,6 +12438,12 @@ BASE_IMPORTS = """\
     if (exceptionPending() !== 0n) return boxNone();
     return boxIntOrBigint(hash);
   },
+  operator_index: (val) => {
+    if (isIntLike(val)) {
+      return boxInt(unboxIntLike(val));
+    }
+    throw new Error('Unsupported: operator.index() requires the linked Molt runtime');
+  },
   ord: (val) => {
     const str = getStrObj(val);
     if (str !== null) {
@@ -13044,6 +12650,79 @@ BASE_IMPORTS = """\
     frameStackPop();
     return boxNone();
   },
+  // Frame binding homes: a (kind, bits) word pair per code slot in linear
+  // memory, taken by each frame on first use and kept while it runs. The mock
+  // runtime keeps no reference counts and has no frame proxy: a home owns
+  // nothing, and only its own frame and locals() read it.
+  frame_homes: (minCountBits) => {
+    const entry = frameStack[frameStack.length - 1];
+    if (!entry) return 0n;
+    const count = Math.max(Number(minCountBits), 1);
+    if (entry.homes === undefined || entry.homeCount < count) {
+      const homes = allocRaw(count * 16);
+      if (entry.homes !== undefined) {
+        new Uint8Array(memory.buffer).copyWithin(
+          homes,
+          entry.homes,
+          entry.homes + entry.homeCount * 16,
+        );
+      }
+      entry.homes = homes;
+      entry.homeCount = count;
+    }
+    return BigInt(entry.homes);
+  },
+  ...(() => {
+    // A plain binding (1) or a raw integer (2); an unbound home (0) reads as
+    // the missing sentinel. Cells (3, 5) need the linked runtime.
+    const read = (homeBits, take) => {
+      const addr = Number(homeBits);
+      if (!addr) {
+        throw new Error('SystemError: compiled frame used a binding home it was never lent');
+      }
+      const view = new DataView(memory.buffer);
+      const kind = view.getBigInt64(addr, true);
+      const bits = view.getBigUint64(addr + 8, true);
+      if (kind === 0n) return missingSentinel();
+      let value;
+      if (kind === 1n) {
+        value = bits;
+      } else if (kind === 2n) {
+        value = boxInt(BigInt.asIntN(64, bits));
+      } else {
+        throw new Error('SystemError: frame binding home holds no plain binding');
+      }
+      view.setBigInt64(addr, take ? 0n : 1n, true);
+      view.setBigUint64(addr + 8, take ? 0n : value, true);
+      return value;
+    };
+    return {
+      frame_home_load: (homeBits) => read(homeBits, false),
+      frame_home_take: (homeBits) => read(homeBits, true),
+      locals_builtin: () => {
+        const entry = frameStack[frameStack.length - 1];
+        const dict = { type: 'dict', entries: [], lookup: new Map() };
+        const code = entry ? getCode(entry.codeBits) : null;
+        if (code && entry.homes !== undefined) {
+          const names = getTuple(code.varnamesBits)?.items ?? [];
+          names.forEach((nameBits, slot) => {
+            if (slot >= entry.homeCount) return;
+            const home = entry.homes + slot * 16;
+            const kind = new DataView(memory.buffer).getBigInt64(home, true);
+            if (kind !== 1n && kind !== 2n) return;
+            const value = read(BigInt(home), false);
+            if (value !== missingSentinel()) dictSetValue(dict, nameBits, value);
+          });
+        }
+        return boxPtr(dict);
+      },
+    };
+  })(),
+  // Reference counts are unobservable in the mock runtime.
+  dec_ref_obj: (_val) => {},
+  call_inputs_release: (_callableBits, _argsPtr, _count) => boxNone(),
+  call_bind_ic_owned: (_siteBits, callBits, builderBits) =>
+    baseImports.call_bind(callBits, builderBits),
   code_slots_init: (countBits) => {
     if (codeSlots !== null) return boxNone();
     const count = Number(countBits);
@@ -13469,206 +13148,17 @@ BASE_IMPORTS = """\
       boxInt(0),
     );
   },
-  sum_builtin: (iterableBits, startBits) => {
-    const iterBits = baseImports.iter(iterableBits);
-    if (isTag(iterBits, TAG_NONE)) {
-      throw new Error(`TypeError: '${typeName(iterableBits)}' object is not iterable`);
-    }
-    let total = startBits;
-    while (true) {
-      const pairBits = baseImports.iter_next(iterBits);
-      const pair = getTuple(pairBits);
-      if (!pair || pair.items.length < 2) {
-        throw new Error('TypeError: object is not an iterator');
-      }
-      const doneBits = pair.items[1];
-      if (isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n) {
-        return total;
-      }
-      total = baseImports.add(total, pair.items[0]);
-    }
+  sum_builtin: () => {
+    throw new Error('Unsupported: builtin sum() requires the linked Molt runtime');
   },
-  min_builtin: (argsBits, keyBits, defaultBits) => {
-    const args = getTuple(argsBits);
-    if (!args || args.items.length === 0) {
-      throw new Error('TypeError: min expected at least 1 argument, got 0');
-    }
-    const missing = missingSentinel();
-    const hasDefault = defaultBits !== missing;
-    if (args.items.length > 1 && hasDefault) {
-      throw new Error(
-        'TypeError: Cannot specify a default for min() with multiple positional arguments',
-      );
-    }
-    const useKey = !isTag(keyBits, TAG_NONE);
-    if (args.items.length === 1) {
-      const iterBits = baseImports.iter(args.items[0]);
-      if (isTag(iterBits, TAG_NONE)) {
-        throw new Error(`TypeError: '${typeName(args.items[0])}' object is not iterable`);
-      }
-      let best = null;
-      let bestKey = null;
-      while (true) {
-        const pairBits = baseImports.iter_next(iterBits);
-        const pair = getTuple(pairBits);
-        if (!pair || pair.items.length < 2) {
-          throw new Error('TypeError: object is not an iterator');
-        }
-        const doneBits = pair.items[1];
-        if (isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n) {
-          if (best === null) {
-            if (hasDefault) {
-              return defaultBits;
-            }
-            throw new Error('ValueError: min() arg is an empty sequence');
-          }
-          return best;
-        }
-        const valBits = pair.items[0];
-        if (best === null) {
-          best = valBits;
-          bestKey = useKey ? callCallable1(keyBits, valBits) : valBits;
-          if (useKey && exceptionPending() !== 0n) return boxNone();
-          continue;
-        }
-        const candKey = useKey ? callCallable1(keyBits, valBits) : valBits;
-        if (useKey && exceptionPending() !== 0n) return boxNone();
-        const cmp = compareKeys(candKey, bestKey, '<');
-        if (cmp === null) return boxNone();
-        if (cmp < 0) {
-          best = valBits;
-          bestKey = candKey;
-        }
-      }
-    }
-    let best = args.items[0];
-    let bestKey = useKey ? callCallable1(keyBits, best) : best;
-    if (useKey && exceptionPending() !== 0n) return boxNone();
-    for (const valBits of args.items.slice(1)) {
-      const candKey = useKey ? callCallable1(keyBits, valBits) : valBits;
-      if (useKey && exceptionPending() !== 0n) return boxNone();
-      const cmp = compareKeys(candKey, bestKey, '<');
-      if (cmp === null) return boxNone();
-      if (cmp < 0) {
-        best = valBits;
-        bestKey = candKey;
-      }
-    }
-    return best;
+  min_builtin: () => {
+    throw new Error('Unsupported: builtin min() requires the linked Molt runtime');
   },
-  max_builtin: (argsBits, keyBits, defaultBits) => {
-    const args = getTuple(argsBits);
-    if (!args || args.items.length === 0) {
-      throw new Error('TypeError: max expected at least 1 argument, got 0');
-    }
-    const missing = missingSentinel();
-    const hasDefault = defaultBits !== missing;
-    if (args.items.length > 1 && hasDefault) {
-      throw new Error(
-        'TypeError: Cannot specify a default for max() with multiple positional arguments',
-      );
-    }
-    const useKey = !isTag(keyBits, TAG_NONE);
-    if (args.items.length === 1) {
-      const iterBits = baseImports.iter(args.items[0]);
-      if (isTag(iterBits, TAG_NONE)) {
-        throw new Error(`TypeError: '${typeName(args.items[0])}' object is not iterable`);
-      }
-      let best = null;
-      let bestKey = null;
-      while (true) {
-        const pairBits = baseImports.iter_next(iterBits);
-        const pair = getTuple(pairBits);
-        if (!pair || pair.items.length < 2) {
-          throw new Error('TypeError: object is not an iterator');
-        }
-        const doneBits = pair.items[1];
-        if (isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n) {
-          if (best === null) {
-            if (hasDefault) {
-              return defaultBits;
-            }
-            throw new Error('ValueError: max() arg is an empty sequence');
-          }
-          return best;
-        }
-        const valBits = pair.items[0];
-        if (best === null) {
-          best = valBits;
-          bestKey = useKey ? callCallable1(keyBits, valBits) : valBits;
-          if (useKey && exceptionPending() !== 0n) return boxNone();
-          continue;
-        }
-        const candKey = useKey ? callCallable1(keyBits, valBits) : valBits;
-        if (useKey && exceptionPending() !== 0n) return boxNone();
-        const cmp = compareKeys(candKey, bestKey, '>');
-        if (cmp === null) return boxNone();
-        if (cmp > 0) {
-          best = valBits;
-          bestKey = candKey;
-        }
-      }
-    }
-    let best = args.items[0];
-    let bestKey = useKey ? callCallable1(keyBits, best) : best;
-    if (useKey && exceptionPending() !== 0n) return boxNone();
-    for (const valBits of args.items.slice(1)) {
-      const candKey = useKey ? callCallable1(keyBits, valBits) : valBits;
-      if (useKey && exceptionPending() !== 0n) return boxNone();
-      const cmp = compareKeys(candKey, bestKey, '>');
-      if (cmp === null) return boxNone();
-      if (cmp > 0) {
-        best = valBits;
-        bestKey = candKey;
-      }
-    }
-    return best;
+  max_builtin: () => {
+    throw new Error('Unsupported: builtin max() requires the linked Molt runtime');
   },
-  sorted_builtin: (iterBits, keyBits, reverseBits) => {
-    const iterObj = baseImports.iter(iterBits);
-    if (isTag(iterObj, TAG_NONE)) {
-      throw new Error(`TypeError: '${typeName(iterBits)}' object is not iterable`);
-    }
-    const useKey = !isTag(keyBits, TAG_NONE);
-    const reverse = isTruthyBits(reverseBits);
-    const items = [];
-    while (true) {
-      const pairBits = baseImports.iter_next(iterObj);
-      const pair = getTuple(pairBits);
-      if (!pair || pair.items.length < 2) {
-        throw new Error('TypeError: object is not an iterator');
-      }
-      const doneBits = pair.items[1];
-      if (isTag(doneBits, TAG_BOOL) && (doneBits & 1n) === 1n) {
-        break;
-      }
-      const valBits = pair.items[0];
-      const keyVal = useKey ? callCallable1(keyBits, valBits) : valBits;
-      if (useKey && exceptionPending() !== 0n) return boxNone();
-      items.push({ key: keyVal, val: valBits, idx: items.length });
-    }
-    let error = null;
-    items.sort((left, right) => {
-      if (error) return 0;
-      const outcome = compareObjects(left.key, right.key);
-      if (outcome.kind === 'ordered') {
-        if (outcome.ordering !== 0) {
-          return reverse ? -outcome.ordering : outcome.ordering;
-        }
-      } else if (outcome.kind === 'notComparable') {
-        error = { kind: 'notComparable', left: left.key, right: right.key };
-        return 0;
-      } else if (outcome.kind === 'error') {
-        error = { kind: 'exception' };
-        return 0;
-      }
-      return left.idx - right.idx;
-    });
-    if (error) {
-      if (error.kind === 'exception') return boxNone();
-      compareTypeError('<', error.left, error.right);
-    }
-    return listFromArray(items.map((item) => item.val));
+  sorted_builtin: () => {
+    throw new Error('Unsupported: builtin sorted() requires the linked Molt runtime');
   },
   map_builtin: (funcBits, iterablesBits) => {
     const iterables = getTuple(iterablesBits);
@@ -14205,7 +13695,9 @@ BASE_IMPORTS = """\
   exception_pending: () => exceptionPending(),
   exception_kind: (exc) => exceptionKind(exc),
   exception_message: (exc) => exceptionMessage(exc),
-  exception_set_cause: (exc, cause) => exceptionSetCause(exc, cause),
+  exception_prepare_raise: (exc, cause) => {
+    return exceptionPrepareRaise(exc, cause);
+  },
   exception_set_value: (exc, value) => exceptionSetValue(exc, value),
   exception_context_set: (exc) => exceptionContextSet(exc),
   exception_set_last: (exc) => exceptionSetLast(exc),
@@ -14761,6 +14253,9 @@ BASE_IMPORTS = """\
     return boxPtr({ type: 'str', value: '0.0.0' });
   },
   sys_platform: () => boxPtr({ type: 'str', value: 'wasm' }),
+  sys_audit: (_event, _args) => {
+    throw new Error('sys_audit requires the linked Molt runtime');
+  },
   sys_executable: () => boxNone(),
   sys_stdin: () => boxNone(),
   sys_stdout: () => boxNone(),
@@ -14898,12 +14393,15 @@ BASE_IMPORTS = """\
     return boxNone();
   },
   function_set_builtin: (_funcBits) => boxNone(),
-  asyncgen_hooks_get: () => boxNone(),
-  asyncgen_hooks_set: (_hooks, _finalizer) => boxNone(),
+  asyncgen_hooks_get: () => {
+    throw new Error('asyncgen_hooks_get requires the linked Molt runtime');
+  },
+  asyncgen_hooks_set: (_firstiter, _finalizer, _omitted) => {
+    throw new Error('asyncgen_hooks_set requires the linked Molt runtime');
+  },
   asyncgen_locals: (_obj) => boxNone(),
-  asyncgen_locals_register: (_obj, _names, _offsets) => boxNone(),
   gen_locals: (_obj) => boxNone(),
-  gen_locals_register: (_obj, _names, _offsets) => boxNone(),
+  stateful_locals_register: (_obj, _names, _layout) => boxNone(),
   exception_stack_clear: () => boxNone(),
   exceptiongroup_match: (_exc, _handler) => boxNone(),
   exceptiongroup_combine: (_exc) => boxNone(),

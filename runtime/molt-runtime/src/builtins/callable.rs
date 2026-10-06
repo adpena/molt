@@ -5,15 +5,16 @@ use crate::call::{has_type_call_attr, is_exact_staticmethod_wrapper};
 use crate::object::layout::CodeExecutionKind;
 use crate::{
     TYPE_ID_BOUND_METHOD, TYPE_ID_FOREIGN, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS, TYPE_ID_TYPE,
-    function_closure_bits, function_dict_bits, maybe_ptr_from_bits, obj_from_bits, object_type_id,
-    raise_exception,
+    function_closure_bits, maybe_ptr_from_bits, obj_from_bits, object_type_id, raise_exception,
 };
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_is_bound_method(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let is_bound = maybe_ptr_from_bits(obj_bits)
-            .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_BOUND_METHOD });
+        let is_bound = maybe_ptr_from_bits(obj_bits).is_some_and(|ptr| unsafe {
+            object_type_id(ptr) == TYPE_ID_BOUND_METHOD
+                && crate::object_class_bits(ptr) == crate::builtins::types::method_class(_py)
+        });
         MoltObject::from_bool(is_bound).bits()
     })
 }
@@ -131,23 +132,11 @@ pub extern "C" fn molt_is_callable_bool(obj_bits: u64) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_function_default_kind(func_bits: u64) -> i64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(func_bits);
-        let Some(ptr) = obj.as_ptr() else {
-            return 0;
-        };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_FUNCTION {
-                return 0;
-            }
-            let dict_bits = function_dict_bits(ptr);
-            if dict_bits == 0 {
-                return 0;
-            }
-            obj_from_bits(dict_bits).as_int().unwrap_or(0)
-        }
-    })
+pub extern "C" fn molt_function_default_kind(_func_bits: u64) -> i64 {
+    // This legacy ABI query has no Rust default-kind field. Runtime binding
+    // reads typed defaults and BindKind; BindKind is a different tag space.
+    // A valid function dictionary was never an integer default-kind tag.
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -178,8 +167,9 @@ pub extern "C" fn molt_call_arity_error(expected: i64, got: i64) -> u64 {
 mod execution_kind_tests {
     use super::*;
     use crate::builtins::inspect::{
-        molt_inspect_isasyncgenfunction, molt_inspect_isawaitable, molt_inspect_iscoroutine,
+        molt_inspect_isasyncgenfunction, molt_inspect_iscoroutine,
         molt_inspect_iscoroutinefunction, molt_inspect_isgeneratorfunction,
+        molt_inspect_isnativeawaitable,
     };
     use crate::object::layout::{code_publish_execution_kind, function_set_code_bits};
 
@@ -228,7 +218,7 @@ mod execution_kind_tests {
                         b"__molt_is_async_generator__".as_slice(),
                     ] {
                         let key = crate::attr_name_bits_from_bytes(py, marker).unwrap();
-                        let result = crate::molt_object_setattr(
+                        let result = crate::molt_set_attr_name(
                             bits,
                             key,
                             MoltObject::from_bool(marker_value).bits(),
@@ -267,7 +257,7 @@ mod execution_kind_tests {
                         Some(false)
                     );
                     assert_eq!(
-                        obj_from_bits(molt_inspect_isawaitable(bits)).as_bool(),
+                        obj_from_bits(molt_inspect_isnativeawaitable(bits)).as_bool(),
                         Some(false)
                     );
                     crate::dec_ref_bits(py, bound_bits);

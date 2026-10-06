@@ -1,10 +1,21 @@
-//! Wrapper members are ordinary native member/getset descriptors published in
-//! the canonical builtin namespaces. There is no wrapper-specific lookup lane.
+//! One staged publication authority for versioned builtin namespace members.
+//! Native members use the ordinary descriptor lookup lane.
 use super::*;
+use crate::builtins::functions::native_callable::NativeCallableSpec;
 use crate::builtins::types::{
     NativeDescriptorFlavor, NativeDescriptorSpec, alloc_native_descriptor,
 };
 use crate::object::layout::{self, WrapperKind};
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum MemberOwner {
+    Staticmethod,
+    Classmethod,
+    Property,
+    Type,
+    Super,
+    Coroutine,
+}
 
 #[derive(Clone, Copy)]
 enum MemberOperation {
@@ -13,22 +24,128 @@ enum MemberOperation {
     Abstract,
     Dictionary,
     LazyMetadata,
+    SuperReference(usize),
+    CoroutineRunning,
+    CoroutineFrame,
+    CoroutineCode,
+    CoroutineAwait,
+    RootMetadata(molt_cpython_abi::api::typeobj::TypeAttributeField),
+}
+
+impl MemberOperation {
+    const fn tag(self) -> u32 {
+        match self {
+            Self::Reference(index) => index as u32 + 1,
+            Self::Name => 5,
+            Self::Abstract => 6,
+            Self::Dictionary => 7,
+            Self::LazyMetadata => 8,
+            Self::SuperReference(index) => 9 + index as u32,
+            Self::CoroutineRunning => 12,
+            Self::CoroutineFrame => 13,
+            Self::CoroutineCode => 14,
+            Self::CoroutineAwait => 15,
+            Self::RootMetadata(field) => field as u32,
+        }
+    }
+
+    fn from_tag(tag: u32) -> Option<Self> {
+        Some(match tag {
+            1..=4 => Self::Reference((tag - 1) as usize),
+            5 => Self::Name,
+            6 => Self::Abstract,
+            7 => Self::Dictionary,
+            8 => Self::LazyMetadata,
+            9..=11 => Self::SuperReference((tag - 9) as usize),
+            12 => Self::CoroutineRunning,
+            13 => Self::CoroutineFrame,
+            14 => Self::CoroutineCode,
+            15 => Self::CoroutineAwait,
+            _ => return None,
+        })
+    }
 }
 
 struct WrapperMember {
     name: &'static str,
-    owners: &'static [WrapperKind],
+    owners: &'static [MemberOwner],
     flavor: NativeDescriptorFlavor,
     writable: bool,
     minimum_minor: i64,
     operation: MemberOperation,
 }
 
-const FUNCTION_WRAPPERS: &[WrapperKind] = &[WrapperKind::Staticmethod, WrapperKind::Classmethod];
-const PROPERTY_WRAPPER: &[WrapperKind] = &[WrapperKind::Property];
+const FUNCTION_WRAPPERS: &[MemberOwner] = &[MemberOwner::Staticmethod, MemberOwner::Classmethod];
+const PROPERTY_WRAPPER: &[MemberOwner] = &[MemberOwner::Property];
 
 // One authority for publication, mutability, target gating and callback meaning.
 const WRAPPER_MEMBERS: &[WrapperMember] = &[
+    WrapperMember {
+        name: "__thisclass__",
+        owners: &[MemberOwner::Super],
+        flavor: NativeDescriptorFlavor::Member,
+        writable: false,
+        minimum_minor: 0,
+        operation: MemberOperation::SuperReference(0),
+    },
+    WrapperMember {
+        name: "__self__",
+        owners: &[MemberOwner::Super],
+        flavor: NativeDescriptorFlavor::Member,
+        writable: false,
+        minimum_minor: 0,
+        operation: MemberOperation::SuperReference(1),
+    },
+    WrapperMember {
+        name: "__self_class__",
+        owners: &[MemberOwner::Super],
+        flavor: NativeDescriptorFlavor::Member,
+        writable: false,
+        minimum_minor: 0,
+        operation: MemberOperation::SuperReference(2),
+    },
+    WrapperMember {
+        name: "cr_running",
+        owners: &[MemberOwner::Coroutine],
+        flavor: NativeDescriptorFlavor::GetSet,
+        writable: false,
+        minimum_minor: 0,
+        operation: MemberOperation::CoroutineRunning,
+    },
+    WrapperMember {
+        name: "cr_frame",
+        owners: &[MemberOwner::Coroutine],
+        flavor: NativeDescriptorFlavor::GetSet,
+        writable: false,
+        minimum_minor: 0,
+        operation: MemberOperation::CoroutineFrame,
+    },
+    WrapperMember {
+        name: "cr_code",
+        owners: &[MemberOwner::Coroutine],
+        flavor: NativeDescriptorFlavor::Member,
+        writable: false,
+        minimum_minor: 0,
+        operation: MemberOperation::CoroutineCode,
+    },
+    WrapperMember {
+        name: "cr_await",
+        owners: &[MemberOwner::Coroutine],
+        flavor: NativeDescriptorFlavor::GetSet,
+        writable: false,
+        minimum_minor: 0,
+        operation: MemberOperation::CoroutineAwait,
+    },
+    WrapperMember {
+        name: "__annotate__",
+        owners: &[MemberOwner::Type],
+        flavor: NativeDescriptorFlavor::RootMetadata,
+        writable: true,
+        minimum_minor: 14,
+        operation: MemberOperation::RootMetadata(
+            molt_cpython_abi::api::typeobj::TypeAttributeField::Annotate,
+        ),
+    },
     WrapperMember {
         name: "__func__",
         owners: FUNCTION_WRAPPERS,
@@ -218,7 +335,12 @@ pub(crate) fn prepare_wrapper_members(
         .into_iter()
         .enumerate()
         {
-            let bits = crate::builtins::types::builtin_func_bits(py, slot, symbol, arity);
+            let bits = crate::builtins::types::builtin_func_bits(
+                py,
+                NativeCallableSpec::function(slot),
+                symbol,
+                arity,
+            );
             if exception_pending(py) || obj_from_bits(bits).as_ptr().is_none() {
                 if !exception_pending(py) {
                     raise_exception::<()>(
@@ -235,17 +357,18 @@ pub(crate) fn prepare_wrapper_members(
         let mut staged_owners = Vec::new();
         let mut publications = Vec::new();
         for (kind, class_bits) in [
-            (WrapperKind::Staticmethod, builtins.staticmethod),
-            (WrapperKind::Classmethod, builtins.classmethod),
-            (WrapperKind::Property, builtins.property),
+            (MemberOwner::Staticmethod, builtins.staticmethod),
+            (MemberOwner::Classmethod, builtins.classmethod),
+            (MemberOwner::Property, builtins.property),
+            (MemberOwner::Type, builtins.type_obj),
+            (MemberOwner::Super, builtins.super_type),
+            (MemberOwner::Coroutine, builtins.coroutine),
         ] {
             let class = obj_from_bits(class_bits).as_ptr().unwrap();
             let dictionary = class_dict_bits(class);
             let live = obj_from_bits(dictionary).as_ptr().unwrap();
             let staged_bits = crate::object::ops_dict::molt_dict_copy(dictionary);
-            let Some(staged) = obj_from_bits(staged_bits).as_ptr() else {
-                return None;
-            };
+            let staged = obj_from_bits(staged_bits).as_ptr()?;
             staged_owners.push(PtrDropGuard::new(staged));
             if exception_pending(py) {
                 return None;
@@ -259,15 +382,21 @@ pub(crate) fn prepare_wrapper_members(
                 if previous_version != 0 && member.minimum_minor == 0 {
                     continue;
                 }
-                let Some(name_bits) = attr_name_bits_from_bytes(py, member.name.as_bytes()) else {
-                    return None;
-                };
+                let name_bits = attr_name_bits_from_bytes(py, member.name.as_bytes())?;
                 let _name_owner = PtrDropGuard::new(obj_from_bits(name_bits).as_ptr().unwrap());
+                let (getter, setter, deleter) =
+                    if matches!(member.operation, MemberOperation::RootMetadata(_)) {
+                        let none = MoltObject::none().bits();
+                        (none, none, none)
+                    } else {
+                        (getter, setter, deleter)
+                    };
                 let enabled = member.enabled(major, minor);
                 if !enabled {
                     if let Some(existing) = dict_get_in_place(py, staged, name_bits)
                         && let Some(ptr) = obj_from_bits(existing).as_ptr()
-                        && layout::native_descriptor_flavor(ptr).is_some()
+                        && layout::native_descriptor_flavor(ptr) == Some(member.flavor)
+                        && layout::native_descriptor_operation(ptr) == Some(member.operation.tag())
                         && layout::native_descriptor_owner_bits(ptr) == class_bits
                         && layout::native_descriptor_getter_bits(ptr) == getter
                     {
@@ -283,7 +412,8 @@ pub(crate) fn prepare_wrapper_members(
                 if previous_version != 0
                     && let Some(existing) = dict_get_in_place(py, staged, name_bits)
                     && let Some(ptr) = obj_from_bits(existing).as_ptr()
-                    && layout::native_descriptor_flavor(ptr).is_some()
+                    && layout::native_descriptor_flavor(ptr) == Some(member.flavor)
+                    && layout::native_descriptor_operation(ptr) == Some(member.operation.tag())
                     && layout::native_descriptor_owner_bits(ptr) == class_bits
                     && layout::native_descriptor_getter_bits(ptr) == getter
                 {
@@ -296,6 +426,7 @@ pub(crate) fn prepare_wrapper_members(
                     py,
                     NativeDescriptorSpec {
                         flavor: member.flavor,
+                        operation: member.operation.tag(),
                         owner: class_bits,
                         name: name_bits,
                         doc: MoltObject::none().bits(),
@@ -312,9 +443,7 @@ pub(crate) fn prepare_wrapper_members(
                         },
                     },
                 );
-                let Some(descriptor_ptr) = obj_from_bits(descriptor).as_ptr() else {
-                    return None;
-                };
+                let descriptor_ptr = obj_from_bits(descriptor).as_ptr()?;
                 let _descriptor_owner = PtrDropGuard::new(descriptor_ptr);
                 if exception_pending(py) {
                     return None;
@@ -355,24 +484,105 @@ pub(crate) fn wrapper_publish_members(py: &PyToken<'_>) -> bool {
     !exception_pending(py)
 }
 
-/// The generic descriptor protocol validates the retained owner before this
-/// callback. Resolve the operation from that same publication table; no MRO or
-/// instance-storage precedence policy belongs here.
+/// Publication seals the typed operation into the descriptor's control word.
+/// Its name remains metadata or the key of a lazy attribute, never dispatch.
 unsafe fn callback_member(
+    py: &PyToken<'_>,
     descriptor: u64,
     instance: u64,
-) -> Option<(&'static WrapperMember, *mut u8, u64)> {
+) -> Option<(MemberOperation, *mut u8, u64)> {
     unsafe {
         let descriptor = obj_from_bits(descriptor).as_ptr()?;
         layout::native_descriptor_flavor(descriptor)?;
-        let instance = obj_from_bits(instance).as_ptr()?;
-        let kind = WrapperKind::from_type_id(object_type_id(instance))?;
-        let name_bits = layout::native_descriptor_name_bits(descriptor);
-        let name = string_obj_to_owned(obj_from_bits(name_bits))?;
-        let member = WRAPPER_MEMBERS
-            .iter()
-            .find(|member| member.name == name && member.owners.contains(&kind))?;
-        Some((member, instance, name_bits))
+        let operation =
+            MemberOperation::from_tag(layout::native_descriptor_operation(descriptor)?)?;
+        let getter = obj_from_bits(layout::native_descriptor_getter_bits(descriptor)).as_ptr()?;
+        if object_type_id(getter) != TYPE_ID_FUNCTION
+            || function_fn_ptr(getter)
+                != crate::builtins::functions::runtime_fn_key(
+                    "molt_wrapper_member_get",
+                    molt_wrapper_member_get as *const (),
+                )
+        {
+            return None;
+        }
+        let object = obj_from_bits(instance).as_ptr()?;
+        let valid_shape = match operation {
+            MemberOperation::SuperReference(_) => object_type_id(object) == TYPE_ID_SUPER,
+            MemberOperation::CoroutineRunning
+            | MemberOperation::CoroutineFrame
+            | MemberOperation::CoroutineCode
+            | MemberOperation::CoroutineAwait => {
+                crate::async_rt::generators::is_native_coroutine_bits(instance)
+            }
+            _ => WrapperKind::from_type_id(object_type_id(object)).is_some(),
+        };
+        if !valid_shape {
+            return None;
+        }
+        if !crate::object::class_layout::is_real_subtype(
+            py,
+            type_of_bits(py, instance),
+            layout::native_descriptor_owner_bits(descriptor),
+        ) {
+            return None;
+        }
+        Some((
+            operation,
+            object,
+            layout::native_descriptor_name_bits(descriptor),
+        ))
+    }
+}
+
+unsafe fn coroutine_member_value(
+    py: &PyToken<'_>,
+    object: *mut u8,
+    operation: MemberOperation,
+) -> Option<u64> {
+    unsafe {
+        let header = header_from_obj_ptr(object);
+        match operation {
+            MemberOperation::CoroutineRunning => {
+                let running = ((*header).load_synchronized_flags() & HEADER_FLAG_GEN_RUNNING) != 0;
+                Some(MoltObject::from_bool(running).bits())
+            }
+            MemberOperation::CoroutineFrame => {
+                if crate::object::object_poll_fn(object) == 0
+                    || ((*header).load_synchronized_flags() & HEADER_FLAG_TASK_DONE) != 0
+                {
+                    return Some(MoltObject::none().bits());
+                }
+                let lasti = if crate::object::object_state(object) == 0 {
+                    -1
+                } else {
+                    0
+                };
+                Some(suspended_frame_bits(py, object, lasti))
+            }
+            MemberOperation::CoroutineCode => {
+                let code_bits = crate::object::aux_header::object_frame_code_bits(object);
+                if code_bits != 0 {
+                    inc_ref_bits(py, code_bits);
+                    return Some(code_bits);
+                }
+                Some(MoltObject::none().bits())
+            }
+            MemberOperation::CoroutineAwait => {
+                if (*header).load_synchronized_flags()
+                    & (HEADER_FLAG_GEN_RUNNING | HEADER_FLAG_TASK_DONE)
+                    != 0
+                {
+                    return Some(MoltObject::none().bits());
+                }
+                let bits = crate::object::aux_header::object_frame_awaited_bits(object);
+                if bits != 0 {
+                    return Some(crate::async_rt::awaitable::python_awaited_bits(py, bits));
+                }
+                Some(MoltObject::none().bits())
+            }
+            _ => unreachable!("non-coroutine member operation"),
+        }
     }
 }
 
@@ -380,10 +590,24 @@ unsafe fn callback_member(
 pub extern "C" fn molt_wrapper_member_get(descriptor: u64, instance: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let Some((member, object, name)) = callback_member(descriptor, instance) else {
+            let Some((operation, object, name)) = callback_member(py, descriptor, instance) else {
                 return raise_exception::<u64>(py, "TypeError", "invalid wrapper member receiver");
             };
-            let result = match member.operation {
+            let result = match operation {
+                MemberOperation::SuperReference(index) => {
+                    let value = match index {
+                        0 => super_type_bits(object),
+                        1 => super_obj_bits(object),
+                        2 => layout::super_receiver_class_bits(object),
+                        _ => unreachable!("invalid super member selector"),
+                    };
+                    inc_ref_bits(py, value);
+                    Some(value)
+                }
+                MemberOperation::CoroutineRunning
+                | MemberOperation::CoroutineFrame
+                | MemberOperation::CoroutineCode
+                | MemberOperation::CoroutineAwait => coroutine_member_value(py, object, operation),
                 MemberOperation::Reference(index) => {
                     let bits = layout::wrapper_reference_bits(object, index);
                     let bits = if is_missing_bits(py, bits) {
@@ -401,12 +625,14 @@ pub extern "C" fn molt_wrapper_member_get(descriptor: u64, instance: u64) -> u64
                     WrapperKind::from_type_id(object_type_id(object)).unwrap(),
                 ),
                 MemberOperation::Dictionary => {
-                    crate::object::field_storage::materialize(py, object).map(|bits| {
+                    crate::object::field_storage::materialize(py, object).inspect(|&bits| {
                         inc_ref_bits(py, bits);
-                        bits
                     })
                 }
                 MemberOperation::LazyMetadata => lazy_wrapped_attribute(py, object, name),
+                MemberOperation::RootMetadata(_) => {
+                    unreachable!("root metadata has no wrapper callback")
+                }
             };
             result.unwrap_or_else(|| {
                 if !exception_pending(py) {
@@ -416,7 +642,7 @@ pub extern "C" fn molt_wrapper_member_get(descriptor: u64, instance: u64) -> u64
                         &format!(
                             "'{}' object has no attribute '{}'",
                             class_name_for_error(object_class_bits(object)),
-                            member.name
+                            string_obj_to_owned(obj_from_bits(name)).unwrap_or_default()
                         ),
                     );
                 }
@@ -433,13 +659,19 @@ unsafe fn mutate_member(
     value: Option<u64>,
 ) -> u64 {
     unsafe {
-        let Some((member, object, name)) = callback_member(descriptor, instance) else {
+        let Some((operation, object, name)) = callback_member(py, descriptor, instance) else {
             return raise_exception::<u64>(py, "TypeError", "invalid wrapper member receiver");
         };
-        if !member.writable {
+        let descriptor = obj_from_bits(descriptor).as_ptr().unwrap();
+        let callback = if value.is_some() {
+            layout::native_descriptor_setter_bits(descriptor)
+        } else {
+            layout::native_descriptor_deleter_bits(descriptor)
+        };
+        if obj_from_bits(callback).is_none() {
             return raise_exception::<u64>(py, "AttributeError", "readonly attribute");
         }
-        match member.operation {
+        match operation {
             MemberOperation::Reference(3) => {
                 if !layout::property_replace_doc_bits(
                     py,
@@ -483,7 +715,7 @@ unsafe fn mutate_member(
                                 &format!(
                                     "'{}' object has no attribute '{}'",
                                     class_name_for_error(object_class_bits(object)),
-                                    member.name
+                                    string_obj_to_owned(obj_from_bits(name)).unwrap_or_default()
                                 ),
                             );
                         }
@@ -673,6 +905,122 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compiler_version_publication_admits_type_annotate_without_environment() {
+        struct RestoreEnvironment(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl Drop for RestoreEnvironment {
+            fn drop(&mut self) {
+                for (key, value) in &self.0 {
+                    unsafe {
+                        match value {
+                            Some(value) => std::env::set_var(key, value),
+                            None => std::env::remove_var(key),
+                        }
+                    }
+                }
+            }
+        }
+        // Every epoch starts cold, so both receipt reset and the real compiler
+        // startup order (builtins first, compiled version second) are exercised.
+        for minor in [12, 14, 12, 14] {
+            crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
+                let _environment = RestoreEnvironment(
+                    [
+                        "MOLT_PYTHON_VERSION",
+                        "MOLT_SYS_VERSION_INFO",
+                        "MOLT_SYS_VERSION",
+                    ]
+                    .into_iter()
+                    .map(|key| (key, std::env::var_os(key)))
+                    .collect(),
+                );
+                for (key, _) in &_environment.0 {
+                    unsafe {
+                        std::env::remove_var(key);
+                    }
+                }
+                assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);
+                crate::with_gil_entry_nopanic!(py, {
+                    unsafe {
+                        let classes = builtin_classes(py);
+                        let root = obj_from_bits(classes.type_obj).as_ptr().unwrap();
+                        let namespace = class_dict_bits(root);
+                        let dictionary = obj_from_bits(namespace).as_ptr().unwrap();
+                        let name = attr_name_bits_from_bytes(py, b"__annotate__").unwrap();
+                        let release = attr_name_bits_from_bytes(py, b"final").unwrap();
+                        let version =
+                            attr_name_bits_from_bytes(py, format!("3.{minor}.0").as_bytes())
+                                .unwrap();
+                        assert!(dict_get_in_place(py, dictionary, name).is_none());
+                        let publish = || {
+                            crate::object::ops_sys::molt_sys_set_version_info(
+                                MoltObject::from_int(3).bits(),
+                                MoltObject::from_int(minor).bits(),
+                                MoltObject::from_int(0).bits(),
+                                release,
+                                MoltObject::from_int(0).bits(),
+                                version,
+                            )
+                        };
+                        publish();
+                        assert!(!exception_pending(py));
+                        let descriptor = dict_get_in_place(py, dictionary, name);
+                        assert_eq!(descriptor.is_some(), minor >= 14);
+                        assert_eq!(
+                            crate::object::ops_sys::runtime_target_python_info(runtime_state(py))
+                                .minor,
+                            minor
+                        );
+                        let epoch = class_layout_version_bits(root);
+                        let receipt = runtime_state(py)
+                            .attributes
+                            .wrapper_members_version
+                            .load(Ordering::Acquire);
+                        publish();
+                        assert!(!exception_pending(py));
+                        assert_eq!(class_dict_bits(root), namespace);
+                        assert_eq!(class_layout_version_bits(root), epoch);
+                        assert_eq!(dict_get_in_place(py, dictionary, name), descriptor);
+                        assert_eq!(
+                            runtime_state(py)
+                                .attributes
+                                .wrapper_members_version
+                                .load(Ordering::Acquire),
+                            receipt
+                        );
+                        // A rejected startup update cannot publish staged root
+                        // descriptors or advance the version receipt.
+                        let conflicting =
+                            attr_name_bits_from_bytes(py, b"conflicting version").unwrap();
+                        crate::object::ops_sys::molt_sys_set_version_info(
+                            MoltObject::from_int(3).bits(),
+                            MoltObject::from_int(13).bits(),
+                            MoltObject::from_int(0).bits(),
+                            release,
+                            MoltObject::from_int(0).bits(),
+                            conflicting,
+                        );
+                        assert!(exception_pending(py));
+                        molt_exception_clear();
+                        assert_eq!(class_dict_bits(root), namespace);
+                        assert_eq!(class_layout_version_bits(root), epoch);
+                        assert_eq!(dict_get_in_place(py, dictionary, name), descriptor);
+                        assert_eq!(
+                            runtime_state(py)
+                                .attributes
+                                .wrapper_members_version
+                                .load(Ordering::Acquire),
+                            receipt
+                        );
+                        for value in [conflicting, version, release, name] {
+                            dec_ref_bits(py, value);
+                        }
+                    }
+                });
+            });
+        }
+    }
+
+    #[test]
     fn publication_is_staged_versioned_and_preserves_namespace_identity() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
@@ -716,21 +1064,33 @@ mod tests {
                 dec_ref_bits(py, MoltObject::from_ptr(wrapper).bits());
                 dec_ref_bits(py, member_name);
                 dec_ref_bits(py, object_class_name);
+                let root = obj_from_bits(classes.type_obj).as_ptr().unwrap();
+                let root_namespace = class_dict_bits(root);
+                let root_dictionary = obj_from_bits(root_namespace).as_ptr().unwrap();
+                let root_name = attr_name_bits_from_bytes(py, b"__annotate__").unwrap();
+                let root_version = class_layout_version_bits(root);
                 let original_version = class_layout_version_bits(class);
                 let staged = prepare_wrapper_members(py, 3, 14).unwrap();
                 assert_eq!(class_dict_bits(class), dictionary);
                 assert_eq!(class_layout_version_bits(class), original_version);
                 assert!(dict_get_in_place(py, pointer, annotations_name).is_none());
+                assert!(dict_get_in_place(py, root_dictionary, root_name).is_none());
+                assert_eq!(class_layout_version_bits(root), root_version);
                 drop(staged);
+                assert_eq!(class_layout_version_bits(root), root_version);
+                assert_eq!(class_dict_bits(root), root_namespace);
                 assert_eq!(class_layout_version_bits(class), original_version);
                 for minor in [14, 13, 12, 14] {
                     prepare_wrapper_members(py, 3, minor).unwrap().commit(py);
                     assert_eq!(class_dict_bits(class), dictionary);
                     assert_eq!(dict_get_in_place(py, pointer, func_name), Some(func));
                     for (kind, owner) in [
-                        (WrapperKind::Staticmethod, classes.staticmethod),
-                        (WrapperKind::Classmethod, classes.classmethod),
-                        (WrapperKind::Property, classes.property),
+                        (MemberOwner::Staticmethod, classes.staticmethod),
+                        (MemberOwner::Classmethod, classes.classmethod),
+                        (MemberOwner::Property, classes.property),
+                        (MemberOwner::Type, classes.type_obj),
+                        (MemberOwner::Super, classes.super_type),
+                        (MemberOwner::Coroutine, classes.coroutine),
                     ] {
                         let namespace =
                             obj_from_bits(class_dict_bits(obj_from_bits(owner).as_ptr().unwrap()))
@@ -758,6 +1118,7 @@ mod tests {
                                     ))
                                     .is_none(),
                                     member.writable
+                                        && member.flavor != NativeDescriptorFlavor::RootMetadata
                                 );
                             } else {
                                 assert!(descriptor.is_none());
@@ -769,6 +1130,7 @@ mod tests {
                     prepare_wrapper_members(py, 3, minor).unwrap().commit(py);
                     assert_eq!(class_layout_version_bits(class), version);
                 }
+                dec_ref_bits(py, root_name);
                 dec_ref_bits(py, annotations_name);
                 dec_ref_bits(py, func_name);
                 assert!(!exception_pending(py));

@@ -15,6 +15,7 @@ fn test_list_and_string_get_item_emit_index_error_guards() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -64,6 +65,7 @@ fn test_string_get_item_uses_utf8_codepoint_offsets() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -107,6 +109,7 @@ fn test_ord_at_emits_utf8_codepoint_helper() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -129,7 +132,7 @@ fn test_ord_at_emits_utf8_codepoint_helper() {
     let mut backend = LuauBackend::new();
     let output = backend.compile(&ir);
     assert!(
-        output.contains("local function molt_ord_at")
+        output.contains("function molt_ord_at")
             && output.contains("molt_ord_at(s, i)")
             && output.contains("utf8.codepoint(obj, byte_idx)")
             && output.contains("molt_str_codepoint_len(obj)"),
@@ -152,6 +155,7 @@ fn test_list_set_and_delete_emit_index_error_guards() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -200,6 +204,7 @@ fn test_list_pop_and_index_emit_python_error_guards() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -250,6 +255,7 @@ fn test_call_method_list_pop_uses_python_error_guards() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -304,6 +310,7 @@ fn test_call_method_list_count_and_index_use_collection_authority() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -423,6 +430,7 @@ fn test_list_index_range_honors_start_stop_bounds() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -471,6 +479,7 @@ fn test_dict_popitem_emits_empty_dict_key_error_guard() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -510,6 +519,7 @@ fn test_list_insert_clamps_python_index_bounds() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -548,6 +558,7 @@ fn test_list_extend_uses_table_move_fast_path() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -588,6 +599,7 @@ fn test_retired_range_repeat_is_rejected_before_luau_emission() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![
                     OpIR {
@@ -636,6 +648,7 @@ fn test_string_slice_opcode_aliases_use_range_lowering() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {

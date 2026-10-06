@@ -35,7 +35,32 @@ function instantiate(path) {
     obj_get_state(task) {
       ensure(state.expectsTask && task === 64n, 'unexpected task state read');
       state.taskReads++;
-      return 0n; // Initial resume state; state_switch maps it to its real body.
+      return BigInt(state.resumeState ?? 0);
+    },
+    obj_set_state(task, resume) {
+      ensure(state.expectsTask && (task & 0xffffffffn) === 64n, 'wrong suspended task');
+      ensure(state.depth === state.initialDepth + 1, 'suspension outside owned frame');
+      state.resumeState = Number(resume);
+    },
+    future_poll(future) {
+      ensure(future === boxedNone && state.depth === state.initialDepth + 1,
+             'await poll outside owned frame');
+      return state.activationIndex === 0 ? BigInt(config.boxed_pending) : boxedNone;
+    },
+    handle_resolve(future) {
+      ensure(future === boxedNone, 'unexpected fixture future');
+      return 128;
+    },
+    sleep_register(task, future) {
+      ensure(task === 64 && future === 128, 'wrong await registration');
+      return boxedNone;
+    },
+    raise(exception) {
+      ensure(exception === boxedTrue && state.depth === state.initialDepth + 1,
+             'exception capture lost the caller frame');
+      if (state.foreignException) throw state.foreignException;
+      state.pending = true;
+      return boxedNone;
     },
     trace_enter_slot(slot) {
       ensure(state.depth === state.initialDepth && state.enters === 0,
@@ -60,7 +85,7 @@ function instantiate(path) {
       state.exits++; return boxedNone;
     },
     trace_set_line(line) {
-      ensure(!state.failEntry && state.depth === 1,
+      ensure(!state.failEntry && state.depth === state.initialDepth + Number(state.enters !== 0),
              'line update outside the executing frame');
       state.lines.push(Number(line)); return boxedNone;
     },
@@ -160,6 +185,34 @@ for (const test of config.return_modules) {
   assert.equal(state.taskReads, test.stateful ? 1 : 0, state.label);
   ensure(state.enters === 0 && state.exits === 0, 'frame-free return changed lifecycle');
 }
+for (const test of config.activation_modules) {
+  const app = instantiate(test.module);
+  let resumeState = 0;
+  for (const [index, expected] of test.expected.entries()) {
+    reset('owned activation ' + test.lane + ' step=' + index, true);
+    state.activationIndex = index;
+    state.expectsTask = test.stateful;
+    state.resumeState = resumeState;
+    const result = test.stateful ? app.molt_main(64n) : app.molt_main();
+    assert.equal(result, BigInt(expected), state.label);
+    ensure(state.depth === state.initialDepth && state.enters === 1 && state.exits === 1
+           && state.attempts.length === 0, 'activation leaked or consumed caller frame');
+    assert.deepEqual(state.lines, [index + 1], state.label + ': resumed body');
+    resumeState = state.resumeState;
+  }
+}
+reset('Python exception returns through framed caller ABI', true);
+const unwindApp = instantiate(config.unwind_module);
+assert.equal(unwindApp.molt_main(), boxedNone);
+ensure(state.pending && state.depth === state.initialDepth && state.enters === 1
+       && state.exits === 1 && state.attempts.length === 0,
+       'callee exception bypassed activation cleanup');
+reset('foreign WASM exception retains identity through activation cleanup', true);
+const foreign = new WebAssembly.Exception(new WebAssembly.Tag({parameters: []}), []);
+state.foreignException = foreign;
+assert.throws(() => unwindApp.molt_main(), error => error === foreign);
+ensure(!state.pending && state.depth === state.initialDepth && state.enters === 1
+       && state.exits === 1, 'foreign exception bypassed activation cleanup');
 console.log('split-frame execution: checked/failed entry, actual chunks, normal/exceptional owner, status edges, negative controls passed');
 "#;
 
@@ -276,6 +329,38 @@ fn malformed_frame_module() -> Vec<u8> {
 
 #[test]
 fn wasm_compiles_split_local_frame_with_inherited_chunks() {
+    // The optimized LIR lane must preserve lifecycle operations or decline the
+    // function through its existing typed unsupported-operation admission.
+    let mut local_fast_candidate = wasm_test_function(
+        "probe____molt_globals_builtin__owned",
+        vec![],
+        None,
+        vec![
+            OpIR {
+                kind: "trace_enter_slot".into(),
+                value: Some(5),
+                ..OpIR::default()
+            },
+            wasm_test_op("trace_exit", None, vec![]),
+            wasm_test_op("ret_void", None, vec![]),
+        ],
+    );
+    local_fast_candidate.execution_context = ExecutionContextPolicy::Local;
+    let candidate_name = local_fast_candidate.name.clone();
+    let plans = crate::wasm::lir_fast::compute_lir_wasm_lowering_plans_from_final_ir_with_escaped(
+        &SimpleIR {
+            functions: vec![local_fast_candidate],
+            profile: None,
+        },
+        &BTreeSet::new(),
+    );
+    assert!(
+        matches!(
+            plans[&candidate_name],
+            crate::wasm::lir_fast::WasmFunctionLoweringPlan::Generic { .. }
+        ),
+        "the LIR lane must not erase Python frame ownership"
+    );
     let node = real_execution_tool(
         PathBuf::from("node"),
         "MOLT_REQUIRE_REAL_NODE_TESTS",
@@ -396,7 +481,10 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
                     ..OpIR::default()
                 }));
             } else if mode == "stateful" {
-                ops.push(wasm_test_op("state_switch", None, vec![]));
+                ops.push(OpIR {
+                    state_targets: Some(vec![]),
+                    ..wasm_test_op("state_switch", None, vec![])
+                });
             }
             if payload {
                 ops.push(OpIR {
@@ -435,6 +523,183 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
                 .push(json!({"lane": lane, "module": module, "expected": expected.to_string(), "stateful": mode == "stateful"}));
         }
     }
+    let mut activation_modules = Vec::new();
+    for mode in ["ordinary", "dispatch", "stateful", "yield", "await"] {
+        let stateful = matches!(mode, "stateful" | "yield" | "await");
+        let mut ops = vec![OpIR {
+            kind: "trace_enter_slot".into(),
+            value: Some(5),
+            ..OpIR::default()
+        }];
+        if stateful {
+            ops.push(OpIR {
+                state_targets: (mode == "stateful").then(Vec::new),
+                ..wasm_test_op("state_switch", None, vec![])
+            });
+        } else if mode == "dispatch" {
+            ops.extend(["jump", "label"].map(|kind| OpIR {
+                kind: kind.into(),
+                value: Some(7),
+                ..OpIR::default()
+            }));
+        }
+        ops.push(OpIR {
+            kind: "line".into(),
+            value: Some(1),
+            ..OpIR::default()
+        });
+        let mut expected = Vec::new();
+        if mode == "yield" {
+            ops.extend([
+                OpIR {
+                    kind: "const_bool".into(),
+                    value: Some(1),
+                    out: Some("yielded".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "state_yield".into(),
+                    value: Some(1),
+                    args: Some(vec!["yielded".into()]),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "line".into(),
+                    value: Some(2),
+                    ..OpIR::default()
+                },
+            ]);
+            expected.push(molt_codegen_abi::box_bool_bits(1).to_string());
+        }
+        if mode == "await" {
+            ops.extend([
+                OpIR {
+                    kind: "state_label".into(),
+                    value: Some(1),
+                    ..OpIR::default()
+                },
+                wasm_test_op("const_none", Some("future"), vec![]),
+                OpIR {
+                    kind: "const".into(),
+                    value: Some(1),
+                    out: Some("resume".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "state_transition".into(),
+                    value: Some(1),
+                    args: Some(vec!["future".into(), "resume".into()]),
+                    out: Some("awaited".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "line".into(),
+                    value: Some(2),
+                    ..OpIR::default()
+                },
+            ]);
+            expected.push(molt_codegen_abi::box_pending_bits().to_string());
+        }
+        ops.extend([
+            wasm_test_op("trace_exit", None, vec![]),
+            wasm_test_op("ret_void", None, vec![]),
+        ]);
+        expected.push(molt_codegen_abi::box_none_bits().to_string());
+        let mut function = wasm_test_function(
+            "molt_main",
+            if stateful { vec!["task"] } else { vec![] },
+            None,
+            ops,
+        );
+        function.execution_context = ExecutionContextPolicy::Local;
+        let ir = SimpleIR {
+            functions: vec![function],
+            profile: None,
+        };
+        crate::validate_simple_ir(&ir).unwrap();
+        let output = if matches!(mode, "yield" | "await") {
+            wasm_compile_activation_fixture(ir)
+        } else {
+            wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(ir)
+        };
+        wasmparser::Validator::new()
+            .validate_all(&output.wasm)
+            .unwrap();
+        let (pages, entries) = wasm_import_minimums(&output.wasm);
+        memory_pages = memory_pages.max(pages);
+        table_entries = table_entries.max(entries);
+        let module = temp.join(format!("activation_{mode}.wasm"));
+        fs::write(&module, output.wasm).expect("write owned activation module");
+        activation_modules.push(
+            json!({"lane": mode, "module": module, "expected": expected, "stateful": stateful}),
+        );
+    }
+    // A Python throw from an inherited callee returns pending state across
+    // the call ABI, so the caller retires its activation and call guards.
+    let mut unwind_owner = wasm_test_function(
+        "molt_main",
+        vec![],
+        None,
+        vec![
+            OpIR {
+                kind: "trace_enter_slot".into(),
+                value: Some(5),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "call_internal".into(),
+                s_value: Some("throwing_callee".into()),
+                args: Some(vec![]),
+                passes_execution_context: true,
+                ..OpIR::default()
+            },
+            wasm_test_op("trace_exit", None, vec![]),
+            wasm_test_op("ret_void", None, vec![]),
+        ],
+    );
+    unwind_owner.execution_context = ExecutionContextPolicy::Local;
+    let mut throwing_callee = wasm_test_function(
+        "throwing_callee",
+        vec![],
+        None,
+        vec![
+            OpIR {
+                kind: "const_bool".into(),
+                value: Some(1),
+                out: Some("exception".into()),
+                ..OpIR::default()
+            },
+            wasm_test_op("raise", None, vec!["exception"]),
+            wasm_test_op("unreachable", None, vec![]),
+        ],
+    );
+    throwing_callee.execution_context = ExecutionContextPolicy::Inherited;
+    let unwind_ir = SimpleIR {
+        functions: vec![unwind_owner, throwing_callee],
+        profile: None,
+    };
+    crate::validate_simple_ir(&unwind_ir).unwrap();
+    let trampolines = crate::wasm::trampoline_analysis::analyze_wasm_trampolines(&unwind_ir);
+    let unwind = WasmBackend::with_options(WasmCompileOptions {
+        native_eh_enabled: true,
+        reloc_enabled: false,
+        wasm_profile: WasmProfile::Auto,
+        ..WasmCompileOptions::default()
+    })
+    .emit_wasm_module(
+        &unwind_ir,
+        BTreeMap::new(),
+        trampolines,
+        crate::wasm_plan::WasmStageAudit::from_environment(),
+    );
+    wasmparser::Validator::new()
+        .validate_all(&unwind.wasm)
+        .unwrap();
+    let (pages, entries) = wasm_import_minimums(&unwind.wasm);
+    memory_pages = memory_pages.max(pages);
+    table_entries = table_entries.max(entries);
+    let unwind_path = temp.join("unwind_frame.wasm");
+    fs::write(&unwind_path, unwind.wasm).expect("write frame unwind module");
     let negative = malformed_frame_module();
     wasmparser::Validator::new()
         .validate_all(&negative)
@@ -451,8 +716,11 @@ fn wasm_compiles_split_local_frame_with_inherited_chunks() {
             "boxed_none": molt_codegen_abi::box_none_bits().to_string(),
             "boxed_false": molt_codegen_abi::box_bool_bits(0).to_string(),
             "boxed_true": molt_codegen_abi::box_bool_bits(1).to_string(),
+            "boxed_pending": molt_codegen_abi::box_pending_bits().to_string(),
             "cases": cases,
             "return_modules": return_modules,
+            "activation_modules": activation_modules,
+            "unwind_module": unwind_path,
         }))
         .unwrap(),
     )

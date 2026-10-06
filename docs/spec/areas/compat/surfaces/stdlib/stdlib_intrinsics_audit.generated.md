@@ -7,14 +7,14 @@
 - Compiled binaries must not execute Python stdlib implementations.
 - Every stdlib module must be backed by Rust intrinsics (Python files are allowed only as thin, intrinsic-forwarding wrappers).
 - Modules without intrinsic implementation or proven intrinsic-owned support are forbidden in compiled builds and must raise immediately until fully lowered.
-- Pure private forwarding facades inherit support only from all resolved intrinsic implementation owners; forwarding cycles alone cannot establish support. This classification is not runtime conformance evidence.
+- Pure forwarding facades inherit support only from all resolved intrinsic implementation owners, regardless of module spelling; forwarding cycles alone cannot establish support. This classification is not runtime conformance evidence.
 - Each audit scan reports all failed gates. `--json-out` preserves diagnostics on failure and marks incomplete analysis explicitly; `--update-doc` publishes this document only after all gates pass.
 
 ## Progress Summary (Generated)
 - Total audited modules: `881`
 - `intrinsic-backed`: `41`
-- `intrinsic-partial`: `837`
-- `intrinsic-support`: `3`
+- `intrinsic-partial`: `838`
+- `intrinsic-support`: `2`
 - `policy-gate`: `0`
 - `probe-only`: `0`
 - `python-only`: `0`
@@ -123,6 +123,7 @@
 - `_codecs_tw`
 - `_colorize`
 - `_compat_pickle`
+- `_compatibility_errors`
 - `_compression`
 - `_contextvars`
 - `_crypt`
@@ -946,10 +947,9 @@
 - `zoneinfo._tzpath`
 - `zoneinfo._zoneinfo`
 
-### Intrinsic-owned private support fragments and facades
+### Intrinsic-owned support fragments and forwarding facades
 - `_pyio_text`
 - `_weakrefset`
-- `asyncio._debug`
 
 ### Fail-closed policy-gate modules
 
@@ -998,7 +998,7 @@
 
 ## Full-Coverage Attestation Rule
 - Global rule: any module/submodule not explicitly attested as full CPython 3.12+ API/PEP coverage is classified as `intrinsic-partial`.
-- Private `intrinsic-support` modules are owned implementation fragments or proven pure forwarding facades of intrinsic implementations; they are not public full-coverage attestations.
+- `intrinsic-support` modules are owned implementation fragments or proven pure forwarding facades of intrinsic implementations; they are not full-coverage attestations.
 - Attestation source: `tools/stdlib_full_coverage_manifest.py` (`STDLIB_FULLY_COVERED_MODULES`).
 - Full-coverage intrinsic contract source: `tools/stdlib_full_coverage_manifest.py` (`STDLIB_REQUIRED_INTRINSICS_BY_MODULE`).
 - Gate rule: each attested full-coverage module must stay `intrinsic-backed`, declare its required intrinsic set, and wire every declared intrinsic in-module.

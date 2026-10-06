@@ -972,8 +972,53 @@ checks = {}
 checks["tk_available"] = _tkinter.tk_available() is True
 checks["tkinter_tk_available"] = tkinter.tk_available() is True
 
+import tkinter._support as tk_support
+import tkinter.widgets as tk_widgets
+
+checks["tk_callable_provider_shared"] = (
+    tkinter._require_tk_callable is tk_support._require_tk_callable
+    and tk_widgets._require_tk_callable is tk_support._require_tk_callable
+)
+widget_provider_names = {
+    "_TK_WIDGET_BIND_REGISTER": "widget_bind_register",
+    "_TK_WIDGET_BIND_UNREGISTER": "widget_bind_unregister",
+    "_TK_TEXT_TAG_BIND_REGISTER": "text_tag_bind_register",
+    "_TK_TEXT_TAG_BIND_UNREGISTER": "text_tag_bind_unregister",
+    "_TK_TRACE_ADD": "trace_add",
+    "_TK_TRACE_REMOVE": "trace_remove",
+    "_TK_TRACE_CLEAR": "trace_clear",
+    "_TK_TRACE_INFO": "trace_info",
+}
+checks["tk_widget_bindings_own_exact_wrappers"] = all(
+    getattr(tk_widgets, name) is getattr(_tkinter, target)
+    and name not in vars(tkinter)
+    for name, target in widget_provider_names.items()
+)
+for attr, label in (("_missing_tk_provider", "missing"), ("TK_VERSION", "noncallable")):
+    try:
+        tk_support._require_tk_callable(attr)
+    except RuntimeError as exc:
+        checks["tk_callable_provider_" + label + "_fails_closed"] = (
+            str(exc) == "tkinter runtime callable unavailable: " + attr
+        )
+    else:
+        checks["tk_callable_provider_" + label + "_fails_closed"] = False
+
+
 app = _tkinter.create(useTk=False)
 checks["create_use_tk_false_forwarded"] = app._handle["create_options"].get("useTk") is False
+provider_callback = lambda *_args: None
+wrapper_trace = tk_widgets._TK_TRACE_ADD(app, "provider", "write", provider_callback)
+raw_trace = tk_widgets._TK_TRACE_ADD(app._handle, "provider", "write", provider_callback)
+checks["tk_widget_provider_unwraps_both_handle_shapes"] = (
+    app._handle["commands"][wrapper_trace] is provider_callback
+    and app._handle["commands"][raw_trace] is provider_callback
+)
+tk_widgets._TK_TRACE_REMOVE(app, "provider", "write", wrapper_trace)
+tk_widgets._TK_TRACE_REMOVE(app._handle, "provider", "write", raw_trace)
+checks["tk_widget_provider_removes_both_handle_shapes"] = (
+    wrapper_trace not in app._handle["commands"] and raw_trace not in app._handle["commands"]
+)
 _tkinter.setvar(app, "phase0", "value")
 checks["set_get_roundtrip"] = _tkinter.getvar(app, "phase0") == "value"
 
@@ -2427,6 +2472,12 @@ def test_tkinter_phase0_wrappers_support_headless_intrinsic_stubs() -> None:
         "after_callback_invoked",
         "adderrorinfo_sets_errorinfo",
         "create_use_tk_false_forwarded",
+        "tk_callable_provider_shared",
+        "tk_widget_bindings_own_exact_wrappers",
+        "tk_callable_provider_missing_fails_closed",
+        "tk_callable_provider_noncallable_fails_closed",
+        "tk_widget_provider_unwraps_both_handle_shapes",
+        "tk_widget_provider_removes_both_handle_shapes",
         "createtimerhandler_callback_invoked",
         "createtimerhandler_delete_idempotent",
         "createtimerhandler_repr_marks_deleted",

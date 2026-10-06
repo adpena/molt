@@ -75,6 +75,7 @@ fn split_large_function_preserves_protected_runtime_import_entrypoint() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
         ops: vec![
             make_const_int("v0", 1),
@@ -107,6 +108,7 @@ fn split_large_function_preserves_protected_runtime_bootstrap_entrypoint() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
         ops: vec![
             make_op("const_none"),
@@ -135,6 +137,7 @@ fn split_large_function_still_splits_regular_large_functions() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: ExecutionContextPolicy::Inherited,
         ops: vec![
             OpIR {
@@ -457,83 +460,25 @@ fn split_large_function_uses_generated_return_family_and_collision_free_syntheti
 }
 
 #[test]
-fn split_large_function_preserves_drop_authority_on_chunks_only() {
-    let func = FunctionIR {
-        return_abi: molt_ir::FunctionReturnAbi::Void,
-        name: "drop_inserted_large".to_string(),
-        params: vec![],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        execution_context: ExecutionContextPolicy::Inherited,
-        ops: vec![
-            make_op(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
-            OpIR {
-                kind: "line".to_string(),
-                value: Some(1),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "const_none".to_string(),
-                out: Some("a".to_string()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "dec_ref".to_string(),
-                args: Some(vec!["a".to_string()]),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "line".to_string(),
-                value: Some(2),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "const_none".to_string(),
-                out: Some("b".to_string()),
-                ..OpIR::default()
-            },
-            OpIR {
-                kind: "dec_ref".to_string(),
-                args: Some(vec!["b".to_string()]),
-                ..OpIR::default()
-            },
-            make_op("ret_void"),
-        ],
-    };
-
-    let (stub, chunks) = split_for_test(func, 2).expect("expected split");
-
-    assert!(
-        !stub.ops.iter().any(is_drop_fact_marker_op),
-        "synthetic split stub creates its own frame values and must not inherit full-RC authority"
-    );
-    let chunks_with_dec_ref = chunks
-        .iter()
-        .filter(|chunk| chunk.ops.iter().any(|op| op.kind == "dec_ref"))
-        .count();
-    assert!(
-        chunks_with_dec_ref > 0,
-        "test must exercise extracted chunks containing TIR-inserted drops"
-    );
-    for chunk in &chunks {
-        assert_eq!(
-            chunk.ops.first().map(|op| op.kind.as_str()),
-            Some(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
-            "chunk {} must start with the full-RC authority marker",
-            chunk.name
-        );
-        assert_eq!(
-            chunk
-                .ops
-                .iter()
-                .filter(|op| is_drop_fact_marker_op(op))
-                .count(),
-            1,
-            "chunk {} must not duplicate transport markers",
-            chunk.name
-        );
+fn split_large_function_refuses_completed_ownership_without_mutation() {
+    for marker in [
+        crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR,
+        crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR,
+    ] {
+        for has_payload in [false, true] {
+            let mut original = checked_local_split_fixture(has_payload);
+            original.ops.insert(0, make_op(marker));
+            let preserved = original.clone();
+            let mut names = std::collections::BTreeSet::from([original.name.clone()]);
+            let preserved_names = names.clone();
+            let rejected = split_large_function(original, 3, &mut names)
+                .expect_err("new transport cannot inherit completed ownership");
+            assert_eq!(
+                serde_json::to_value(&*rejected).unwrap(),
+                serde_json::to_value(&preserved).unwrap()
+            );
+            assert_eq!(names, preserved_names);
+        }
     }
 }
 
@@ -547,6 +492,7 @@ fn split_large_function_threads_cross_chunk_builtin_type_tag() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: ExecutionContextPolicy::Inherited,
         ops: vec![
             OpIR {
@@ -627,6 +573,7 @@ fn split_generated_op_verifier_rejects_noncanonical_frame_load() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
         ops: vec![
             OpIR {
@@ -768,6 +715,7 @@ fn split_large_function_clones_shared_suffix_exception_handler() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: ExecutionContextPolicy::Inherited,
         ops,
     };
@@ -925,6 +873,7 @@ fn split_large_function_delays_suffix_clone_until_cleanup_reads_are_available() 
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: ExecutionContextPolicy::Inherited,
         ops,
     };
@@ -976,6 +925,7 @@ fn split_large_function_void_only_stub_returns_none() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: ExecutionContextPolicy::Inherited,
         ops: vec![
             OpIR {
@@ -1139,7 +1089,7 @@ fn split_local_execution_frame_keeps_lifecycle_in_stub_and_threads_inherited_chu
 }
 
 #[test]
-fn split_checked_entry_preserves_value_return_and_chunk_only_drop_authority() {
+fn split_checked_entry_preserves_value_return_before_ownership_lowering() {
     let mut original = checked_local_split_fixture(true);
     let typed = crate::tir::lower_from_simple::lower_to_tir(&original);
     original.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&typed);
@@ -1147,13 +1097,6 @@ fn split_checked_entry_preserves_value_return_and_chunk_only_drop_authority() {
     let original_entry = original.ops[..2].to_vec();
     let entry_failure_label = original_entry[1].value.expect("checked entry target");
     let original_failure_tail = original.ops[original.ops.len() - 3..].to_vec();
-    original.ops.splice(
-        0..0,
-        [
-            make_op(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
-            make_op(crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR),
-        ],
-    );
     let (stub, chunks) = split_for_test(original, 3).expect("expected checked value-return split");
     assert_eq!(stub.return_abi, molt_ir::FunctionReturnAbi::Value);
     assert_eq!(stub.ops[..2], original_entry);
@@ -1199,13 +1142,7 @@ fn split_checked_entry_preserves_value_return_and_chunk_only_drop_authority() {
     );
     assert!(!stub.ops.iter().any(is_drop_fact_marker_op));
     assert!(chunks.iter().all(|chunk| {
-        chunk
-            .ops
-            .iter()
-            .filter(|op| is_drop_fact_marker_op(op))
-            .count()
-            == 2
-            && chunk.ops.iter().take(2).all(is_drop_fact_marker_op)
+        !chunk.ops.iter().any(is_drop_fact_marker_op)
             && chunk.ops.iter().all(|op| {
                 !matches!(op.kind.as_str(), "trace_enter_slot" | "trace_exit")
                     && (!crate::tir::op_kinds_generated::simpleir_kind_uses_function_label_id(
@@ -1256,11 +1193,6 @@ fn split_chunk_protocol_owns_abi_independently_of_owner_payload_and_roundtrip() 
                 let typed = crate::tir::lower_from_simple::lower_to_tir(&original);
                 original.ops = crate::tir::lower_to_simple::lower_to_simple_ir(&typed);
             }
-            let drop_markers = [
-                make_op(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
-                make_op(crate::tir::passes::drop_insertion::EXCEPTION_REGION_DROPS_INSERTED_ATTR),
-            ];
-            original.ops.splice(0..0, drop_markers.clone());
             let (stub, chunks) = split_for_test(original, 3)
                 .expect("checked entry must survive both source and SSA roundtrip");
             assert_eq!(stub.return_abi, owner_abi);
@@ -1291,19 +1223,9 @@ fn split_chunk_protocol_owns_abi_independently_of_owner_payload_and_roundtrip() 
                 .collect::<Vec<_>>();
             assert_eq!(calls.len(), chunks.len());
             for (index, (chunk, call)) in chunks.iter().zip(calls).enumerate() {
-                assert_eq!(
-                    chunk.ops[..drop_markers.len()],
-                    drop_markers,
-                    "ownership facts must precede generated frame loads for {context:?}, {owner_abi:?}, payload={has_payload}, roundtrip={roundtrip}"
-                );
-                assert_eq!(
-                    chunk
-                        .ops
-                        .iter()
-                        .filter(|op| is_drop_fact_marker_op(op))
-                        .count(),
-                    drop_markers.len(),
-                    "each chunk carries the ownership prefix exactly once"
+                assert!(
+                    !chunk.ops.iter().any(is_drop_fact_marker_op),
+                    "new transports must be planned by their own ownership phase"
                 );
                 assert_eq!(call.s_value.as_deref(), Some(chunk.name.as_str()));
                 let result = call.out.as_ref().expect("chunk call result");
@@ -1521,6 +1443,7 @@ fn split_megafunctions_splits_module_chunks_at_native_default_threshold() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::Inherited,
             ops,
         }],
@@ -1569,4 +1492,100 @@ fn split_refusal_preserves_contract_and_namespace() {
         assert_eq!(after, before);
         assert_eq!(occupied, before_names);
     }
+}
+
+// The stub is the callable entry: it keeps the source's parameter custody, and
+// every chunk is a transport that borrows its parameters. The stub moves a
+// transferred argument into the split frame and every chunk that reads it
+// takes it out, so the chunk that deletes or rebinds it holds its only
+// reference there.
+#[test]
+fn split_keeps_entry_custody_on_the_stub_and_moves_transferred_bindings() {
+    use molt_ir::ParameterCustody::{Borrowed, Transferred};
+    let mut ops = Vec::new();
+    for line in 1..=3 {
+        ops.push(OpIR {
+            kind: "line".to_string(),
+            value: Some(line),
+            ..OpIR::default()
+        });
+        ops.push(make_arith(
+            "add",
+            &["borrowed", "owned"],
+            &format!("sum_{line}"),
+        ));
+    }
+    ops.push(OpIR {
+        kind: "line".to_string(),
+        value: Some(4),
+        ..OpIR::default()
+    });
+    ops.push(make_ref_op("del_boundary", "owned"));
+    ops.push(make_op("ret_void"));
+    let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
+        name: "owns_argument".to_string(),
+        params: vec!["borrowed".to_string(), "owned".to_string()],
+        parameter_custody: vec![Borrowed, Transferred],
+        execution_context: ExecutionContextPolicy::Inherited,
+        ops,
+        ..FunctionIR::default()
+    };
+    let (stub, chunks) = split_for_test(func, 3).expect("expected split");
+    assert_eq!(stub.parameter_custody, [Borrowed, Transferred]);
+    assert!(chunks.len() > 1, "exercise more than one transport");
+    assert!(
+        stub.ops
+            .iter()
+            .filter(|op| op.kind == "call_internal")
+            .all(|call| call.argument_custody.is_none()),
+        "a chunk call adopts nothing"
+    );
+    for chunk in &chunks {
+        assert!(chunk.parameter_custody.is_empty(), "{}", chunk.name);
+        assert!(chunk.params.iter().any(|param| param == "borrowed"));
+        assert!(
+            !chunk.params.iter().any(|param| param == "owned"),
+            "{}: the transferred argument travels in the frame",
+            chunk.name
+        );
+    }
+    let takes = chunks
+        .iter()
+        .flat_map(|chunk| chunk.ops.windows(2))
+        .filter(|pair| {
+            pair[0].kind == "index"
+                && pair[0].out.as_deref() == Some("owned")
+                && pair[1].kind == "store_index"
+                && pair[1].args.as_deref().map(|args| &args[..2]) == pair[0].args.as_deref()
+        })
+        .count();
+    assert_eq!(
+        takes,
+        chunks.len(),
+        "each chunk takes the argument it reads"
+    );
+    let allocation = stub
+        .ops
+        .iter()
+        .position(|op| op.kind == "list_new")
+        .expect("the split frame carries the transferred argument");
+    assert!(
+        stub.ops[allocation]
+            .args
+            .as_ref()
+            .is_some_and(|args| args.iter().any(|arg| arg == "owned"))
+    );
+    assert_eq!(stub.ops[allocation + 1].kind, "check_exception");
+    assert_eq!(stub.ops[allocation + 2].kind, "del_boundary");
+    assert_eq!(
+        stub.ops[allocation + 2].args.as_deref(),
+        Some(&["owned".to_string()][..]),
+        "the stub gives up its own reference once the frame holds one"
+    );
+    crate::validate_simple_ir(&SimpleIR {
+        functions: std::iter::once(stub).chain(chunks).collect(),
+        profile: None,
+    })
+    .expect("split custody validates");
 }

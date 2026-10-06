@@ -9,6 +9,7 @@ import signal
 import sys
 from typing import TextIO, TypedDict, Unpack
 
+from tools.memory_guard_core import cli_contract as _cli_contract
 from tools.memory_guard_core.cargo_quarantine import (
     _cargo_incremental_quarantine_message,
     _cargo_recovery_next_action,
@@ -18,6 +19,7 @@ from tools.memory_guard_core.common import utc_compact_timestamp, utc_timestamp
 from tools.memory_guard_core.payloads import (
     _rss_record_payload,
     guarded_child_process_payload,
+    process_identities_payload,
     memory_limits_payload,
     termination_reports_payload,
     windows_job_cleanup_payload,
@@ -28,6 +30,7 @@ from tools.memory_guard_core.process_custody import (
     GuardSamplingTelemetry,
     GuardTerminationAction,
     GuardedChildProcess,
+    termination_report_dispositions,
 )
 
 
@@ -85,6 +88,12 @@ def exit_signal_payload(
         conventional_shell_status = True
     elif windows_process_model and returncode in WINDOWS_PROCESS_SIGNAL_EXIT_CODES:
         signo = returncode
+    elif windows_process_model and 0x80000000 <= returncode <= 0xFFFFFFFF:
+        return {
+            "signal": None,
+            "name": f"NTSTATUS 0x{returncode:08X}",
+            "conventional_shell_status": False,
+        }
     else:
         return None
     with contextlib.suppress(ValueError):
@@ -144,56 +153,38 @@ def incident_payload(
         "tracked_orphan_cleanup",
         "repo_scoped_orphan_cleanup",
     }
-    final_orphan_actions: dict[tuple[str, int], GuardTerminationAction] = {}
-    final_primary_actions: dict[tuple[str, int], GuardTerminationAction] = {}
-    for report in result.termination_reports:
-        for action in report.actions:
-            if (
-                report.reason == "tracked_orphan_cleanup"
-                and action.target_kind == "process"
-                and action.target_id == report.root_pid
-            ):
-                continue
-            target_kind = (
-                "process"
-                if action.target_kind == "owned_child_handle"
-                else action.target_kind
-            )
-            key = (target_kind, action.target_id)
-            if report.reason in orphan_reasons:
-                final_orphan_actions[key] = action
-            else:
-                final_primary_actions[key] = action
-    incomplete_orphan_actions = [
-        action
-        for action in final_orphan_actions.values()
-        if action.result not in {"completed_or_missing", "missing"}
-    ]
-    incomplete_primary_actions = [
-        action
-        for action in final_primary_actions.values()
-        if action.result not in {"completed_or_missing", "missing"}
-    ]
+    incomplete_orphan_actions: list[GuardTerminationAction] = []
+    incomplete_primary_actions: list[GuardTerminationAction] = []
+    for report, disposition in zip(
+        result.termination_reports,
+        termination_report_dispositions(result.termination_reports),
+        strict=True,
+    ):
+        if report.reason in orphan_reasons:
+            incomplete_orphan_actions.extend(disposition.incomplete_actions)
+        else:
+            incomplete_primary_actions.extend(disposition.incomplete_actions)
     candidate_pids = sorted(
         {
             action.target_id
             for action in incomplete_orphan_actions
-            if action.target_kind == "process"
+            if action.target_kind in {"process", "owned_child_handle"}
         }
     )
     primary_candidate_pids = sorted(
         {
             action.target_id
             for action in incomplete_primary_actions
-            if action.target_kind == "process"
+            if action.target_kind in {"process", "owned_child_handle"}
         }
     )
 
+    exact_job_completed = (
+        result.windows_job_cleanup is not None and result.windows_job_cleanup.completed
+    )
+
     def cleanup_truth(default: str) -> str:
-        if (
-            result.windows_job_cleanup is not None
-            and result.windows_job_cleanup.completed
-        ):
+        if exact_job_completed:
             return default
         if not incomplete_orphan_actions and not incomplete_primary_actions:
             return default
@@ -214,10 +205,6 @@ def incident_payload(
             payload["termination_reports"] = termination_reports_payload(
                 result.termination_reports
             )
-        exact_job_completed = (
-            result.windows_job_cleanup is not None
-            and result.windows_job_cleanup.completed
-        )
         if incomplete_orphan_actions and not exact_job_completed:
             payload["orphan_cleanup_status"] = "incomplete"
             payload["orphan_cleanup_candidate_pids"] = candidate_pids
@@ -274,6 +261,16 @@ def incident_payload(
         if guard_signal_payload is not None:
             payload["guard_signal"] = guard_signal_payload
         return attach_guard_custody(payload)
+    if result.cancelled:
+        return attach_guard_custody(
+            {
+                "reason": "owner_cancellation",
+                "cleanup": cleanup_truth("guard closed its owned process tree"),
+                "recorded_at": utc_timestamp(),
+                "elapsed_s": result.elapsed_s,
+                "next_action": "Inspect the caller's cancellation and the exact terminal child custody.",
+            }
+        )
     if result.timed_out:
         payload = {
             "reason": "timeout",
@@ -307,7 +304,7 @@ def incident_payload(
                 ),
             }
         )
-    if incomplete_orphan_actions:
+    if incomplete_orphan_actions and not exact_job_completed:
         return attach_guard_custody(
             {
                 "reason": "orphan_cleanup_incomplete",
@@ -339,7 +336,7 @@ def incident_payload(
                 ),
             }
         )
-    exit_signal = signal_payload(result.returncode)
+    exit_signal = None if result.cancelled else signal_payload(result.returncode)
     if exit_signal is not None:
         cleanup = (
             "quarantined Cargo incremental state"
@@ -387,6 +384,8 @@ def write_summary_json(
     incident = incident_payload(result, signal_payload=signal_payload)
     payload = {
         "command": list(command),
+        "guard_pid": os.getpid(),
+        "launch_id": environ.get(_cli_contract.INTERNAL_LAUNCH_ID_ENV),
         "returncode": result.returncode,
         "child_returncode": result.child_returncode,
         "infrastructure_failure": infrastructure_failure_payload(
@@ -412,8 +411,13 @@ def write_summary_json(
         "windows_job_cleanup": windows_job_cleanup_payload(result.windows_job_cleanup),
         "temporary_artifacts": result.temporary_artifacts,
         "timed_out": result.timed_out,
+        "cancelled": result.cancelled,
+        "descendants_closed": result.descendants_closed,
         "orphaned_process_groups": list(result.orphaned_process_groups),
         "child_process": guarded_child_process_payload(result.child_process),
+        "owned_process_identities": process_identities_payload(
+            result.owned_process_identities
+        ),
         "termination_reports": termination_reports_payload(result.termination_reports),
         "sampling_telemetry": sampling_telemetry_payload(result.sampling_telemetry),
         "cargo_incremental_quarantine": _cargo_incremental_quarantine_payload(
@@ -430,6 +434,7 @@ def write_summary_json(
                 result.violation is not None
                 or result.timed_out
                 or result.guard_signal is not None
+                or result.cancelled
             )
             else signal_payload(result.returncode)
         ),
@@ -531,6 +536,34 @@ def prune_default_incident_summaries(directory: Path, *, keep: int) -> None:
             path.unlink()
 
 
+def _publish_interactive_startup(
+    environ: Mapping[str, str], payload: Mapping[str, object]
+) -> None:
+    """Freeze actual worker/child custody before the running summary is replaced.
+
+    Interpreter launchers may delegate to another process on any platform.
+    Their Popen PID is not guard identity. The launch capability binds this
+    startup report and the eventual terminal report to one invocation instead.
+    """
+    launch = _cli_contract.interactive_launch(environ)
+    if launch is None or payload["child_process"] is None:
+        return
+    launch_id, startup_path = launch
+    startup = {
+        "launch_id": launch_id,
+        "guard_pid": payload["guard_pid"],
+        "command": payload["command"],
+        "child_process": payload["child_process"],
+    }
+    try:
+        with startup_path.open("x", encoding="utf-8") as handle:
+            json.dump(startup, handle, sort_keys=True)
+            handle.write("\n")
+    except FileExistsError:
+        if json.loads(startup_path.read_text(encoding="utf-8")) != startup:
+            raise ValueError("interactive guard startup custody changed")
+
+
 def write_running_summary_json(
     path: str,
     *,
@@ -554,6 +587,8 @@ def write_running_summary_json(
     child_payload = guarded_child_process_payload(child_process)
     payload = {
         "command": list(command),
+        "guard_pid": os.getpid(),
+        "launch_id": environ.get(_cli_contract.INTERNAL_LAUNCH_ID_ENV),
         "returncode": None,
         "child_returncode": None,
         "infrastructure_failure": None,
@@ -574,6 +609,8 @@ def write_running_summary_json(
         "peak_total": None,
         "peak_job_commit_bytes": None,
         "timed_out": False,
+        "cancelled": False,
+        "descendants_closed": False,
         "orphaned_process_groups": [],
         "child_process": child_payload,
         "termination_reports": [],
@@ -607,6 +644,7 @@ def write_running_summary_json(
             incident_pid=None if child_process is None else child_process.pid,
         ),
     }
+    _publish_interactive_startup(environ, payload)
     summary_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -676,6 +714,13 @@ def emit_terminal_report(
             "relevant *_MAX_PROCESS_RSS_GB/*_MAX_TOTAL_RSS_GB limit.",
             file=stderr,
         )
+    if result.cancelled:
+        print(
+            "memory_guard: owner requested cancellation; "
+            f"descendants_closed={result.descendants_closed} "
+            f"{child_identity_text(result.child_process)}",
+            file=stderr,
+        )
     if result.timed_out:
         print(
             "memory_guard: timeout after "
@@ -716,7 +761,7 @@ def emit_terminal_report(
             + "; ".join(result.infrastructure_failure.details),
             file=stderr,
         )
-    exit_signal = signal_payload(result.returncode)
+    exit_signal = None if result.cancelled else signal_payload(result.returncode)
     if result.guard_signal is not None:
         guard_signal_payload = signal_payload(128 + result.guard_signal)
         signame = (

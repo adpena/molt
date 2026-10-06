@@ -1,9 +1,6 @@
 //! String API — PyUnicode_*, PyBytes_*.
 
-use crate::abi_types::{
-    Py_TPFLAGS_BYTES_SUBCLASS, Py_TPFLAGS_UNICODE_SUBCLASS, Py_ssize_t, PyByteArrayObject,
-    PyObject, PyVarObject,
-};
+use crate::abi_types::{Py_ssize_t, PyByteArrayObject, PyObject};
 use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::hooks_or_stubs;
 use std::cmp::Ordering;
@@ -23,7 +20,7 @@ unsafe fn str_alloc_failed() -> *mut PyObject {
 
 enum UnicodeCodecErrorObject<'a> {
     Bytes(&'a [u8]),
-    Text(&'a str),
+    Text(PythonStringBytes<'a>),
 }
 
 /// Construct a structured Unicode codec exception through the same five-field
@@ -46,9 +43,7 @@ unsafe fn raise_unicode_codec_error(
         UnicodeCodecErrorObject::Bytes(bytes) => unsafe {
             PyBytes_FromStringAndSize(bytes.as_ptr().cast(), bytes.len() as Py_ssize_t)
         },
-        UnicodeCodecErrorObject::Text(text) => unsafe {
-            PyUnicode_FromStringAndSize(text.as_ptr().cast(), text.len() as Py_ssize_t)
-        },
+        UnicodeCodecErrorObject::Text(text) => unsafe { unicode_from_python_text(text) },
     };
     let start_obj = unsafe { crate::api::numbers::PyLong_FromSsize_t(start as Py_ssize_t) };
     let end_obj = unsafe { crate::api::numbers::PyLong_FromSsize_t(end as Py_ssize_t) };
@@ -56,21 +51,17 @@ unsafe fn raise_unicode_codec_error(
         unsafe { PyUnicode_FromStringAndSize(reason.as_ptr().cast(), reason.len() as Py_ssize_t) };
     let fields = [encoding_obj, object_obj, start_obj, end_obj, reason_obj];
     if fields.iter().any(|field| field.is_null()) {
-        for field in fields {
-            unsafe { crate::api::refcount::Py_XDECREF(field) };
-        }
+        unsafe { crate::api::errors::release_preserving_error(&fields) };
         return;
     }
     let args = unsafe { crate::api::sequences::native_call_args(&fields) };
-    for field in fields {
-        unsafe { crate::api::refcount::Py_DECREF(field) };
-    }
+    unsafe { crate::api::errors::release_preserving_error(&fields) };
     if args.is_null() {
         return;
     }
     unsafe {
         crate::api::errors::PyErr_SetObject(exc_type, args);
-        crate::api::refcount::Py_DECREF(args);
+        crate::api::errors::release_preserving_error(&[args]);
     }
 }
 
@@ -101,11 +92,78 @@ unsafe fn raise_utf8_decode_error(bytes: &[u8], error: std::str::Utf8Error) {
     };
 }
 
-unsafe fn unicode_from_utf8_bytes(bytes: &[u8]) -> *mut PyObject {
-    if let Err(error) = std::str::from_utf8(bytes) {
-        unsafe { raise_utf8_decode_error(bytes, error) };
-        return ptr::null_mut();
+/// Internal Python text: UTF-8 scalar encodings plus individually encoded
+/// surrogate code points. Unlike a UTF-16/WTF-8 normalizer this view preserves
+/// adjacent high/low surrogates as two Python characters. Public UTF-8 decoding
+/// must first use `str::from_utf8`; it must never admit bytes through this view.
+#[derive(Clone, Copy)]
+pub(crate) struct PythonStringBytes<'a>(&'a [u8]);
+
+impl<'a> PythonStringBytes<'a> {
+    pub(crate) fn from_utf8(text: &'a str) -> Self {
+        Self(text.as_bytes())
     }
+
+    pub(crate) fn from_bytes(bytes: &'a [u8]) -> Option<Self> {
+        let mut remaining = bytes;
+        loop {
+            match std::str::from_utf8(remaining) {
+                Ok(_) => return Some(Self(bytes)),
+                Err(error) => {
+                    remaining = &remaining[error.valid_up_to()..];
+                    if remaining.len() < 3
+                        || remaining[0] != 0xed
+                        || !(0xa0..=0xbf).contains(&remaining[1])
+                        || !(0x80..=0xbf).contains(&remaining[2])
+                    {
+                        return None;
+                    }
+                    remaining = &remaining[3..];
+                }
+            }
+        }
+    }
+
+    pub(crate) fn as_bytes(self) -> &'a [u8] {
+        self.0
+    }
+
+    fn code_point_indices(self) -> impl Iterator<Item = (usize, u32)> + 'a {
+        let mut offset = 0;
+        std::iter::from_fn(move || {
+            let first = *self.0.get(offset)?;
+            let start = offset;
+            let (width, mut code) = match first {
+                0x00..=0x7f => (1, u32::from(first)),
+                0xc2..=0xdf => (2, u32::from(first & 0x1f)),
+                0xe0..=0xef => (3, u32::from(first & 0x0f)),
+                _ => (4, u32::from(first & 0x07)),
+            };
+            // Admission proves each complete, minimally encoded code point.
+            for byte in &self.0[start + 1..start + width] {
+                code = (code << 6) | u32::from(byte & 0x3f);
+            }
+            offset += width;
+            Some((start, code))
+        })
+    }
+
+    pub(crate) fn code_points(self) -> impl Iterator<Item = u32> + 'a {
+        self.code_point_indices().map(|(_, code)| code)
+    }
+
+    fn prefix_bytes(self, count: usize) -> &'a [u8] {
+        let end = self
+            .code_point_indices()
+            .nth(count)
+            .map_or(self.0.len(), |(i, _)| i);
+        &self.0[..end]
+    }
+}
+
+/// The sole runtime string allocation/owned-bridge transfer authority.
+pub(crate) unsafe fn unicode_from_python_text(text: PythonStringBytes<'_>) -> *mut PyObject {
+    let bytes = text.as_bytes();
     let h = hooks_or_stubs();
     let bits = unsafe { (h.alloc_str)(bytes.as_ptr(), bytes.len()) };
     if bits == 0 {
@@ -114,18 +172,51 @@ unsafe fn unicode_from_utf8_bytes(bytes: &[u8]) -> *mut PyObject {
     unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
 }
 
-/// Set an exception of type `exc` with a runtime-formatted message.
-unsafe fn set_exc(exc: *mut PyObject, msg: &str) {
-    if let Ok(c) = std::ffi::CString::new(msg) {
-        unsafe { crate::api::errors::PyErr_SetString(exc, c.as_ptr()) };
-    } else {
+/// Admit composed internal Python text without crossing the public UTF-8 codec.
+pub(crate) unsafe fn unicode_from_python_bytes(bytes: &[u8]) -> *mut PyObject {
+    let Some(text) = PythonStringBytes::from_bytes(bytes) else {
         unsafe {
             crate::api::errors::PyErr_SetString(
-                exc,
-                c"(error message contained an embedded NUL)".as_ptr(),
+                (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                c"invalid internal Python string encoding".as_ptr(),
             )
         };
+        return ptr::null_mut();
+    };
+    unsafe { unicode_from_python_text(text) }
+}
+
+unsafe fn unicode_from_utf8_bytes(bytes: &[u8]) -> *mut PyObject {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => unsafe { unicode_from_python_text(PythonStringBytes::from_utf8(text)) },
+        Err(error) => {
+            unsafe { raise_utf8_decode_error(bytes, error) };
+            ptr::null_mut()
+        }
     }
+}
+
+/// Set an exception of type `exc` with a runtime-formatted message.
+unsafe fn set_exc(exc: *mut PyObject, msg: &str) {
+    unsafe { crate::api::errors::set_python_error_bytes(exc, msg.as_bytes()) };
+}
+
+/// Escape Python codepoints for both ascii() and percent %a. ASCII bytes,
+/// including embedded NUL, remain counted bytes rather than C strings.
+pub(crate) fn ascii_escape(text: PythonStringBytes<'_>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.as_bytes().len());
+    for code in text.code_points() {
+        if code < 0x80 {
+            out.push(code as u8);
+        } else if code <= 0xff {
+            out.extend_from_slice(format!("\\x{code:02x}").as_bytes());
+        } else if code <= 0xffff {
+            out.extend_from_slice(format!("\\u{code:04x}").as_bytes());
+        } else {
+            out.extend_from_slice(format!("\\U{code:08x}").as_bytes());
+        }
+    }
+    out
 }
 
 /// Best-effort `Py_TYPE(op)->tp_name` for diagnostics (mirrors CPython's
@@ -159,12 +250,12 @@ fn unicode_range(len: usize, start: Py_ssize_t, end: Py_ssize_t) -> (usize, usiz
     (lo as usize, hi as usize)
 }
 
-unsafe fn unicode_bytes(op: *mut PyObject) -> Option<&'static [u8]> {
+pub(crate) unsafe fn unicode_bytes(op: *mut PyObject) -> Option<&'static [u8]> {
     if op.is_null() {
         return None;
     }
     let bridge = &*GLOBAL_BRIDGE;
-    let bits = bridge.molt_handle_for_pyobj(op)?;
+    let bits = bridge.observed_handle_for_pyobj(op)?;
     let h = hooks_or_stubs();
     let mut len: usize = 0;
     let data = unsafe { (h.str_data)(bits.bits(), &raw mut len) };
@@ -220,7 +311,7 @@ fn replace_bytes(
 }
 
 fn compare_unicode_bytes(left: &[u8], right: &[u8]) -> c_int {
-    match left.cmp(right) {
+    match molt_lang_obj_model::byte_compare::compare_bytes(left, right) {
         Ordering::Less => -1,
         Ordering::Equal => 0,
         Ordering::Greater => 1,
@@ -228,10 +319,9 @@ fn compare_unicode_bytes(left: &[u8], right: &[u8]) -> c_int {
 }
 
 fn latin1_encode_utf8_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
-    let text = std::str::from_utf8(bytes).ok()?;
-    let mut out = Vec::with_capacity(text.len());
-    for ch in text.chars() {
-        let code = ch as u32;
+    let text = PythonStringBytes::from_bytes(bytes)?;
+    let mut out = Vec::with_capacity(bytes.len());
+    for code in text.code_points() {
         if code > 0xff {
             return None;
         }
@@ -256,7 +346,15 @@ fn encoding_name_matches(bytes: &[u8], aliases: &[&[u8]]) -> bool {
         .any(|alias| compacted == compact_ascii_encoding_name(alias))
 }
 
-fn push_codepoint_utf8(out: &mut Vec<u8>, code: u32) -> Option<()> {
+pub(crate) fn push_codepoint_utf8(out: &mut Vec<u8>, code: u32) -> Option<()> {
+    if (0xd800..=0xdfff).contains(&code) {
+        out.extend_from_slice(&[
+            0xed,
+            0x80 | ((code >> 6) as u8 & 0x3f),
+            0x80 | (code as u8 & 0x3f),
+        ]);
+        return Some(());
+    }
     let ch = char::from_u32(code)?;
     let mut buf = [0u8; 4];
     out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
@@ -299,9 +397,12 @@ fn unicode_kind_data_to_utf8(
     Some(out)
 }
 
-fn utf8_bytes_to_ucs4(bytes: &[u8]) -> Option<Vec<u32>> {
-    let text = std::str::from_utf8(bytes).ok()?;
-    Some(text.chars().map(|ch| ch as u32).collect())
+fn python_text_to_ucs4(bytes: &[u8]) -> Option<Vec<u32>> {
+    Some(
+        PythonStringBytes::from_bytes(bytes)?
+            .code_points()
+            .collect(),
+    )
 }
 
 fn unicode_range_contains(ranges: &[(u32, u32)], code: u32) -> bool {
@@ -535,41 +636,91 @@ pub unsafe extern "C" fn PyUnicode_FromStringAndSize(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyUnicode_New(size: Py_ssize_t, _maxchar: u32) -> *mut PyObject {
-    if size < 0 {
+pub unsafe extern "C" fn PyUnicode_New(size: Py_ssize_t, maxchar: u32) -> *mut PyObject {
+    if size == 0 {
+        return unsafe { unicode_from_utf8_bytes(&[]) };
+    }
+    if maxchar > 0x10ffff {
+        unsafe {
+            set_exc(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                "invalid maximum character passed to PyUnicode_New",
+            )
+        };
         return ptr::null_mut();
     }
-    let bytes = vec![b' '; size as usize];
-    unsafe { PyUnicode_FromStringAndSize(bytes.as_ptr().cast(), size) }
-}
-
-#[repr(C)]
-struct FastCopyAscii {
-    ob_base: crate::abi_types::PyObject,
-    length: Py_ssize_t,
-    hash: isize,
-    state: u32,
-    wstr: *mut u32,
-}
-
-unsafe fn fast_copy_layout(op: *mut PyObject) -> Option<(u32, *mut u8)> {
+    if size < 0 {
+        unsafe {
+            set_exc(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                "Negative size passed to PyUnicode_New",
+            )
+        };
+        return ptr::null_mut();
+    }
+    let result = unsafe { (hooks_or_stubs().unicode_new)(size as usize, maxchar) };
+    let op = unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result) };
     if op.is_null() {
-        return None;
+        return op;
     }
-    let ascii = op.cast::<FastCopyAscii>();
-    let state = unsafe { (*ascii).state };
-    let kind = (state >> 2) & 7;
-    let compact = state & (1 << 5) != 0;
-    let ascii_only = state & (1 << 6) != 0;
-    if !compact || !matches!(kind, 1 | 2 | 4) {
-        return None;
+    if !GLOBAL_BRIDGE.begin_unicode_construction(op, maxchar) {
+        unsafe {
+            crate::api::errors::PyErr_NoMemory();
+            crate::api::errors::release_preserving_error(&[op]);
+        }
+        return ptr::null_mut();
     }
-    let offset = if ascii_only {
-        std::mem::size_of::<FastCopyAscii>()
-    } else {
-        std::mem::size_of::<crate::abi_types::PyCompactUnicodeObject>()
+    op
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_capi_unicode_kind(op: *mut PyObject) -> u32 {
+    GLOBAL_BRIDGE
+        .unicode_layout(op)
+        .map_or(0, |(kind, _, _)| kind)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_capi_unicode_data(op: *mut PyObject) -> *mut c_void {
+    GLOBAL_BRIDGE
+        .unicode_layout(op)
+        .map_or(ptr::null_mut(), |(_, data, _)| data)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn molt_capi_unicode_maxchar(op: *mut PyObject) -> u32 {
+    GLOBAL_BRIDGE.unicode_maxchar(op).unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_WriteChar(
+    op: *mut PyObject,
+    index: Py_ssize_t,
+    code: u32,
+) -> c_int {
+    let Some((_, _, len)) = GLOBAL_BRIDGE.unicode_layout(op) else {
+        unsafe { crate::api::errors::PyErr_BadArgument() };
+        return -1;
     };
-    Some((kind, unsafe { op.cast::<u8>().add(offset) }))
+    if index < 0 || index as usize >= len {
+        unsafe {
+            set_exc(
+                (&raw mut crate::abi_types::PyExc_IndexError).cast(),
+                "string index out of range",
+            )
+        };
+        return -1;
+    }
+    if !unsafe { GLOBAL_BRIDGE.unicode_write(op, index as usize, code) } {
+        unsafe {
+            set_exc(
+                (&raw mut crate::abi_types::PyExc_ValueError).cast(),
+                "character write requires unique open Unicode construction and an admitted code point",
+            )
+        };
+        return -1;
+    }
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -580,28 +731,52 @@ pub unsafe extern "C" fn _PyUnicode_FastCopyCharacters(
     from_start: Py_ssize_t,
     how_many: Py_ssize_t,
 ) {
-    let Some((to_kind, to_data)) = (unsafe { fast_copy_layout(to) }) else {
+    let (Some((_, _, target_len)), Some((kind, source, source_len))) = (
+        GLOBAL_BRIDGE.unicode_layout(to),
+        GLOBAL_BRIDGE.unicode_layout(from),
+    ) else {
+        unsafe { crate::api::errors::PyErr_BadArgument() };
         return;
     };
-    let Some((from_kind, from_data)) = (unsafe { fast_copy_layout(from) }) else {
-        return;
-    };
-    for index in 0..how_many {
-        let source = from_start + index;
-        let target = to_start + index;
-        let ch = unsafe {
-            match from_kind {
-                1 => *from_data.add(source as usize) as u32,
-                2 => *from_data.cast::<u16>().add(source as usize) as u32,
-                _ => *from_data.cast::<u32>().add(source as usize),
-            }
-        };
+    if to_start < 0
+        || from_start < 0
+        || how_many < 0
+        || (to_start as usize)
+            .checked_add(how_many as usize)
+            .is_none_or(|end| end > target_len)
+        || (from_start as usize)
+            .checked_add(how_many as usize)
+            .is_none_or(|end| end > source_len)
+        || !GLOBAL_BRIDGE.unicode_is_open(to)
+    {
         unsafe {
-            match to_kind {
-                1 => *to_data.add(target as usize) = ch as u8,
-                2 => *to_data.cast::<u16>().add(target as usize) = ch as u16,
-                _ => *to_data.cast::<u32>().add(target as usize) = ch,
+            set_exc(
+                (&raw mut crate::abi_types::PyExc_SystemError).cast(),
+                "invalid Unicode construction copy",
+            )
+        };
+        return;
+    }
+    // Snapshot overlap before writing, without guessing a physical PyASCIIObject
+    // layout for the managed bridge header.
+    let mut values = Vec::new();
+    if values.try_reserve_exact(how_many as usize).is_err() {
+        unsafe { crate::api::errors::PyErr_NoMemory() };
+        return;
+    }
+    for offset in 0..how_many as usize {
+        let index = from_start as usize + offset;
+        values.push(unsafe {
+            match kind {
+                1 => u32::from(*source.cast::<u8>().add(index)),
+                2 => u32::from(*source.cast::<u16>().add(index)),
+                _ => *source.cast::<u32>().add(index),
             }
+        });
+    }
+    for (offset, code) in values.into_iter().enumerate() {
+        if unsafe { PyUnicode_WriteChar(to, to_start + offset as isize, code) } != 0 {
+            return;
         }
     }
 }
@@ -784,20 +959,16 @@ pub unsafe extern "C" fn PyUnicode_DecodeUTF16(
     unsafe { PyUnicode_FromStringAndSize(text.as_ptr().cast(), text.len() as Py_ssize_t) }
 }
 
-/// CPython ``PyUnicode_IS_ASCII``: 1 when every code point of ``op`` is ASCII,
-/// else 0. Backed by the string's UTF-8 bytes (ASCII iff the UTF-8 encoding is
-/// ASCII) — never a stub.
+/// Report the projection's ASCII storage class without committing construction.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_IS_ASCII(op: *mut PyObject) -> c_int {
-    match unsafe { unicode_bytes(op) } {
-        Some(bytes) => c_int::from(bytes.is_ascii()),
-        None => 0,
-    }
+    c_int::from(GLOBAL_BRIDGE.unicode_is_ascii(op))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_FromOrdinal(ordinal: c_int) -> *mut PyObject {
-    let Some(ch) = char::from_u32(ordinal as u32) else {
+    let mut bytes = Vec::new();
+    let Some(()) = push_codepoint_utf8(&mut bytes, ordinal as u32) else {
         unsafe {
             crate::api::errors::PyErr_SetString(
                 (&raw mut crate::abi_types::PyExc_ValueError).cast::<crate::abi_types::PyObject>(),
@@ -806,9 +977,7 @@ pub unsafe extern "C" fn PyUnicode_FromOrdinal(ordinal: c_int) -> *mut PyObject 
         }
         return ptr::null_mut();
     };
-    let mut bytes = [0u8; 4];
-    let encoded = ch.encode_utf8(&mut bytes);
-    unsafe { PyUnicode_FromStringAndSize(encoded.as_ptr().cast(), encoded.len() as Py_ssize_t) }
+    unsafe { unicode_from_python_bytes(&bytes) }
 }
 
 #[unsafe(no_mangle)]
@@ -821,25 +990,31 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8String(op: *mut PyObject) -> *mut PyObj
     let Some(bytes) = (unsafe { unicode_bytes(op) }) else {
         return ptr::null_mut();
     };
+    if std::str::from_utf8(bytes).is_err() {
+        unsafe { raise_unicode_encode_error(bytes, "utf-8", "surrogates not allowed", 0x10ffff) };
+        return ptr::null_mut();
+    }
     unsafe { PyBytes_FromStringAndSize(bytes.as_ptr().cast(), bytes.len() as Py_ssize_t) }
 }
 
 /// Raise a structured `UnicodeEncodeError` for the first contiguous code-point
 /// run outside `limit`, matching CPython's `unicode_encode_ucs1` span policy.
 unsafe fn raise_unicode_encode_error(bytes: &[u8], codec: &str, reason: &str, limit: u32) {
-    let text =
-        std::str::from_utf8(bytes).expect("runtime Unicode storage must contain valid UTF-8");
+    let Some(text) = PythonStringBytes::from_bytes(bytes) else {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return;
+    };
     let mut start = None;
     let mut end = 0usize;
-    for (index, ch) in text.chars().enumerate() {
-        if (ch as u32) > limit {
+    for (index, code) in text.code_points().enumerate() {
+        if code > limit || (0xd800..=0xdfff).contains(&code) {
             start.get_or_insert(index);
             end = index + 1;
         } else if start.is_some() {
             break;
         }
     }
-    let start = start.expect("encode error helper requires an out-of-range scalar");
+    let start = start.expect("encode error helper requires an unencodable code point");
     unsafe {
         raise_unicode_codec_error(
             (&raw mut crate::abi_types::PyExc_UnicodeEncodeError)
@@ -890,7 +1065,7 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8AndSize(
         unsafe { crate::api::errors::PyErr_BadArgument() };
         return ptr::null();
     }
-    let resolved_bits = GLOBAL_BRIDGE.molt_handle_for_pyobj(op);
+    let resolved_bits = GLOBAL_BRIDGE.observed_handle_for_pyobj(op);
     let bits = match resolved_bits {
         Some(bits) => bits.bits(),
         None => {
@@ -906,8 +1081,12 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8AndSize(
         return ptr::null();
     }
     let bytes = unsafe { std::slice::from_raw_parts(runtime_data, runtime_len) };
+    if std::str::from_utf8(bytes).is_err() {
+        unsafe { raise_unicode_encode_error(bytes, "utf-8", "surrogates not allowed", 0x10ffff) };
+        return ptr::null();
+    }
     let Some((data, len)) = GLOBAL_BRIDGE.unicode_utf8_cache(bits, bytes) else {
-        unsafe { crate::api::errors::PyErr_BadArgument() };
+        unsafe { crate::api::errors::PyErr_NoMemory() };
         return ptr::null();
     };
     if !size.is_null() {
@@ -922,29 +1101,22 @@ pub unsafe extern "C" fn PyUnicode_FromObject(obj: *mut PyObject) -> *mut PyObje
         unsafe { crate::api::errors::PyErr_BadArgument() };
         return ptr::null_mut();
     }
-    if unsafe { (*obj).ob_type == &raw mut crate::abi_types::PyUnicode_Type } {
+    if unsafe { PyUnicode_CheckExact(obj) } != 0 {
         unsafe { crate::api::refcount::Py_INCREF(obj) };
         return obj;
     }
-    let mut size = 0;
-    let data = unsafe { PyUnicode_AsUTF8AndSize(obj, &raw mut size) };
-    if data.is_null() {
+    let Some(bytes) = (unsafe { unicode_bytes(obj) }) else {
+        unsafe { crate::api::errors::PyErr_BadArgument() };
         return ptr::null_mut();
-    }
-    unsafe { PyUnicode_FromStringAndSize(data, size) }
+    };
+    unsafe { unicode_from_python_bytes(bytes) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_GetLength(op: *mut PyObject) -> Py_ssize_t {
-    // CPython: `if (!PyUnicode_Check(unicode)) { PyErr_BadArgument(); return -1; }`
-    // — the -1 sentinel always carries a TypeError.
-    let Some(bytes) = (unsafe { unicode_bytes(op) }) else {
-        unsafe { crate::api::errors::PyErr_BadArgument() };
-        return -1;
-    };
-    match std::str::from_utf8(bytes) {
-        Ok(text) => text.chars().count() as Py_ssize_t,
-        Err(_) => {
+    match GLOBAL_BRIDGE.unicode_layout(op) {
+        Some((_, _, len)) => len as Py_ssize_t,
+        None => {
             unsafe { crate::api::errors::PyErr_BadArgument() };
             -1
         }
@@ -952,57 +1124,49 @@ pub unsafe extern "C" fn PyUnicode_GetLength(op: *mut PyObject) -> Py_ssize_t {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn PyUnicode_ReadChar(unicode: *mut PyObject, index: Py_ssize_t) -> u32 {
-    let Some(bytes) = (unsafe { unicode_bytes(unicode) }) else {
+pub unsafe extern "C" fn PyUnicode_ReadChar(op: *mut PyObject, index: Py_ssize_t) -> u32 {
+    let Some((kind, data, len)) = GLOBAL_BRIDGE.unicode_layout(op) else {
         unsafe { crate::api::errors::PyErr_BadArgument() };
         return u32::MAX;
     };
-    let Ok(text) = std::str::from_utf8(bytes) else {
-        unsafe { crate::api::errors::PyErr_BadArgument() };
-        return u32::MAX;
-    };
-    let Some(character) = usize::try_from(index)
-        .ok()
-        .and_then(|index| text.chars().nth(index))
-    else {
+    if index < 0 || index as usize >= len {
         unsafe {
-            crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_IndexError).cast::<PyObject>(),
-                c"string index out of range".as_ptr(),
+            set_exc(
+                (&raw mut crate::abi_types::PyExc_IndexError).cast(),
+                "string index out of range",
             )
         };
         return u32::MAX;
-    };
-    character as u32
+    }
+    unsafe {
+        match kind {
+            1 => u32::from(*data.cast::<u8>().add(index as usize)),
+            2 => u32::from(*data.cast::<u16>().add(index as usize)),
+            _ => *data.cast::<u32>().add(index as usize),
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_Check(op: *mut PyObject) -> c_int {
-    if op.is_null() {
-        return 0;
+    if GLOBAL_BRIDGE.unicode_layout(op).is_some() {
+        return 1;
     }
-    if let Some(value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(op) {
-        return (value.decode().is_ptr()
-            && unsafe { (hooks_or_stubs().classify_heap)(value.bits()) }
-                == crate::abi_types::MoltTypeTag::Str as u8) as c_int;
+    unsafe {
+        crate::bridge::is_semantic_instance_of(op, &raw mut crate::abi_types::PyUnicode_Type)
+            as c_int
     }
-    let ob_type = unsafe { (*op).ob_type };
-    (!ob_type.is_null() && unsafe { (*ob_type).tp_flags } & Py_TPFLAGS_UNICODE_SUBCLASS != 0)
-        as c_int
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_CheckExact(op: *mut PyObject) -> c_int {
-    if let Some(value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(op) {
-        return (value.decode().is_ptr()
-            && unsafe { (hooks_or_stubs().classify_heap)(value.bits()) }
-                == crate::abi_types::MoltTypeTag::Str as u8) as c_int;
+    if GLOBAL_BRIDGE.unicode_is_open(op) {
+        return 1;
     }
-    (!op.is_null()
-        && std::ptr::eq(
-            unsafe { (*op).ob_type },
-            &raw const crate::abi_types::PyUnicode_Type,
-        )) as c_int
+    unsafe {
+        crate::bridge::is_exact_semantic_type(op, &raw mut crate::abi_types::PyUnicode_Type)
+            as c_int
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1010,15 +1174,15 @@ pub unsafe extern "C" fn PyUnicode_CompareWithASCIIString(
     op: *mut PyObject,
     s: *const c_char,
 ) -> c_int {
-    let obj_ptr = unsafe { PyUnicode_AsUTF8(op) };
-    if obj_ptr.is_null() || s.is_null() {
+    let Some(bytes) = (unsafe { unicode_bytes(op) }) else {
+        unsafe { crate::api::errors::PyErr_BadArgument() };
+        return -1;
+    };
+    if s.is_null() {
+        unsafe { crate::api::errors::PyErr_BadArgument() };
         return -1;
     }
-    unsafe {
-        let a = CStr::from_ptr(obj_ptr).to_bytes();
-        let b = CStr::from_ptr(s).to_bytes();
-        compare_unicode_bytes(a, b)
-    }
+    compare_unicode_bytes(bytes, unsafe { CStr::from_ptr(s) }.to_bytes())
 }
 
 #[unsafe(no_mangle)]
@@ -1030,7 +1194,7 @@ pub unsafe extern "C" fn PyUnicode_FromKindAndData(
     let Some(bytes) = unicode_kind_data_to_utf8(kind, buffer, size) else {
         return ptr::null_mut();
     };
-    unsafe { PyUnicode_FromStringAndSize(bytes.as_ptr().cast(), bytes.len() as Py_ssize_t) }
+    unsafe { unicode_from_python_bytes(&bytes) }
 }
 
 #[unsafe(no_mangle)]
@@ -1049,7 +1213,7 @@ pub unsafe extern "C" fn PyUnicode_AsUCS4(
         unsafe { crate::api::errors::PyErr_BadArgument() };
         return ptr::null_mut();
     };
-    let Some(codepoints) = utf8_bytes_to_ucs4(bytes) else {
+    let Some(codepoints) = python_text_to_ucs4(bytes) else {
         unsafe { crate::api::errors::PyErr_BadArgument() };
         return ptr::null_mut();
     };
@@ -1080,7 +1244,7 @@ pub unsafe extern "C" fn PyUnicode_AsUCS4Copy(unicode: *mut PyObject) -> *mut u3
     let Some(bytes) = (unsafe { unicode_bytes(unicode) }) else {
         return ptr::null_mut();
     };
-    let Some(codepoints) = utf8_bytes_to_ucs4(bytes) else {
+    let Some(codepoints) = python_text_to_ucs4(bytes) else {
         return ptr::null_mut();
     };
     let Some(units) = codepoints.len().checked_add(1) else {
@@ -1143,18 +1307,21 @@ pub unsafe extern "C" fn PyUnicode_Tailmatch(
         unsafe { crate::api::errors::PyErr_BadArgument() };
         return -1;
     };
-    let (Ok(text), Ok(needle)) = (std::str::from_utf8(text), std::str::from_utf8(needle)) else {
+    let (Some(text), Some(needle)) = (
+        PythonStringBytes::from_bytes(text),
+        PythonStringBytes::from_bytes(needle),
+    ) else {
         unsafe { crate::api::errors::PyErr_BadArgument() };
         return -1;
     };
     // CPython ADJUST_INDICES operates on CODE-POINT indices (PyUnicode_GET_LENGTH),
     // not UTF-8 byte offsets — slice the window by chars, then match bytes.
-    let char_count = text.chars().count();
+    let char_count = text.code_points().count();
     let (lo, hi) = unicode_range(char_count, start, end);
     // Map code-point window bounds to byte offsets (single pass).
-    let mut byte_lo = text.len();
-    let mut byte_hi = text.len();
-    for (chars_seen, (byte_idx, _)) in text.char_indices().enumerate() {
+    let mut byte_lo = text.as_bytes().len();
+    let mut byte_hi = text.as_bytes().len();
+    for (chars_seen, (byte_idx, _)) in text.code_point_indices().enumerate() {
         if chars_seen == lo {
             byte_lo = byte_idx;
         }
@@ -1164,10 +1331,10 @@ pub unsafe extern "C" fn PyUnicode_Tailmatch(
         }
     }
     if lo == char_count {
-        byte_lo = text.len();
+        byte_lo = text.as_bytes().len();
     }
     if hi == char_count {
-        byte_hi = text.len();
+        byte_hi = text.as_bytes().len();
     }
     let window = &text.as_bytes()[byte_lo..byte_hi];
     // CPython tailmatch: direction > 0 matches the END (endswith); <= 0 the START.
@@ -1200,7 +1367,7 @@ pub unsafe extern "C" fn PyUnicode_Replace(
     let out = if needle.is_empty() {
         // CPython inserts the replacement between each CODE POINT (and at both
         // ends) for an empty needle — never inside a multi-byte UTF-8 sequence.
-        let Ok(text_str) = std::str::from_utf8(text) else {
+        let Some(text_str) = PythonStringBytes::from_bytes(text) else {
             unsafe { crate::api::errors::PyErr_BadArgument() };
             return ptr::null_mut();
         };
@@ -1211,13 +1378,13 @@ pub unsafe extern "C" fn PyUnicode_Replace(
         };
         let mut out = Vec::with_capacity(text.len() + replacement.len());
         let mut count = 0usize;
-        for ch in text_str.chars() {
+        for (index, _) in text_str.code_point_indices() {
             if count < limit {
                 out.extend_from_slice(replacement);
                 count += 1;
             }
-            let mut buf = [0u8; 4];
-            out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+            let point = PythonStringBytes(&text[index..]).prefix_bytes(1);
+            out.extend_from_slice(point);
         }
         if count < limit {
             out.extend_from_slice(replacement);
@@ -1226,7 +1393,7 @@ pub unsafe extern "C" fn PyUnicode_Replace(
     } else {
         replace_bytes(text, needle, replacement, maxcount)
     };
-    unsafe { PyUnicode_FromStringAndSize(out.as_ptr().cast(), out.len() as Py_ssize_t) }
+    unsafe { unicode_from_python_bytes(&out) }
 }
 
 #[unsafe(no_mangle)]
@@ -1238,12 +1405,13 @@ pub unsafe extern "C" fn PyUnicode_Substring(
     let Some(bytes) = (unsafe { unicode_bytes(str_obj) }) else {
         return ptr::null_mut();
     };
-    let Ok(text) = std::str::from_utf8(bytes) else {
+    let Some(text) = PythonStringBytes::from_bytes(bytes) else {
         return ptr::null_mut();
     };
-    let (lo, hi) = unicode_range(text.chars().count(), start, end);
-    let out: String = text.chars().skip(lo).take(hi - lo).collect();
-    unsafe { PyUnicode_FromStringAndSize(out.as_ptr().cast(), out.len() as Py_ssize_t) }
+    let (lo, hi) = unicode_range(text.code_points().count(), start, end);
+    let begin = text.prefix_bytes(lo).len();
+    let end = text.prefix_bytes(hi).len();
+    unsafe { unicode_from_python_text(PythonStringBytes(&bytes[begin..end])) }
 }
 
 #[unsafe(no_mangle)]
@@ -1357,30 +1525,16 @@ pub unsafe extern "C" fn PyBytes_AsStringAndSize(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyBytes_Check(op: *mut PyObject) -> c_int {
-    if op.is_null() {
-        return 0;
+    unsafe {
+        crate::bridge::is_semantic_instance_of(op, &raw mut crate::abi_types::PyBytes_Type) as c_int
     }
-    if let Some(value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(op) {
-        return (value.decode().is_ptr()
-            && unsafe { (hooks_or_stubs().classify_heap)(value.bits()) }
-                == crate::abi_types::MoltTypeTag::Bytes as u8) as c_int;
-    }
-    let ob_type = unsafe { (*op).ob_type };
-    (!ob_type.is_null() && unsafe { (*ob_type).tp_flags } & Py_TPFLAGS_BYTES_SUBCLASS != 0) as c_int
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyBytes_CheckExact(op: *mut PyObject) -> c_int {
-    if let Some(value) = GLOBAL_BRIDGE.molt_handle_for_pyobj(op) {
-        return (value.decode().is_ptr()
-            && unsafe { (hooks_or_stubs().classify_heap)(value.bits()) }
-                == crate::abi_types::MoltTypeTag::Bytes as u8) as c_int;
+    unsafe {
+        crate::bridge::is_exact_semantic_type(op, &raw mut crate::abi_types::PyBytes_Type) as c_int
     }
-    (!op.is_null()
-        && std::ptr::eq(
-            unsafe { (*op).ob_type },
-            &raw const crate::abi_types::PyBytes_Type,
-        )) as c_int
 }
 
 #[unsafe(no_mangle)]
@@ -1467,13 +1621,7 @@ pub unsafe extern "C" fn PyUnicode_Concat(
     let mut combined = Vec::with_capacity(left_s.len() + right_s.len());
     combined.extend_from_slice(left_s);
     combined.extend_from_slice(right_s);
-    let h = hooks_or_stubs();
-    let bits = unsafe { (h.alloc_str)(combined.as_ptr(), combined.len()) };
-    if bits == 0 {
-        // Out of memory: fail closed with NULL + MemoryError (CPython contract).
-        return unsafe { str_alloc_failed() };
-    }
-    unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) }
+    unsafe { unicode_from_python_bytes(&combined) }
 }
 
 #[unsafe(no_mangle)]
@@ -1579,7 +1727,7 @@ pub unsafe extern "C" fn PyUnicode_Join(
         out.extend_from_slice(bytes);
         unsafe { crate::api::refcount::Py_DECREF(item) };
     }
-    unsafe { PyUnicode_FromStringAndSize(out.as_ptr().cast(), out.len() as Py_ssize_t) }
+    unsafe { unicode_from_python_bytes(&out) }
 }
 
 #[unsafe(no_mangle)]
@@ -1628,13 +1776,11 @@ pub unsafe extern "C" fn PyUnicode_FindChar(
     let Some(bytes) = (unsafe { unicode_bytes(unicode) }) else {
         return -2;
     };
-    let Ok(text) = std::str::from_utf8(bytes) else {
+    let Some(text) = PythonStringBytes::from_bytes(bytes) else {
         return -1;
     };
-    let Some(target) = char::from_u32(ch) else {
-        return -1;
-    };
-    let chars: Vec<char> = text.chars().collect();
+    let target = ch;
+    let chars: Vec<u32> = text.code_points().collect();
     let (lo, hi) = unicode_range(chars.len(), start, end);
     if direction >= 0 {
         for (offset, candidate) in chars[lo..hi].iter().enumerate() {
@@ -1765,64 +1911,56 @@ pub unsafe extern "C" fn PyUnicode_FromEncodedObject(
 pub unsafe extern "C" fn PyUnicode_AsEncodedString(
     unicode: *mut PyObject,
     encoding: *const c_char,
-    _errors: *const c_char,
+    errors: *const c_char,
 ) -> *mut PyObject {
-    let Some(bytes) = (unsafe { unicode_bytes(unicode) }) else {
+    let Some(bits) = GLOBAL_BRIDGE.observed_handle_for_pyobj(unicode) else {
+        unsafe {
+            crate::bridge::ensure_result_error(c"Unicode encoding requires a valid runtime string")
+        };
+        return ptr::null_mut();
+    };
+    if unsafe { PyUnicode_Check(unicode) } == 0 {
         unsafe { crate::api::errors::PyErr_BadArgument() };
         return ptr::null_mut();
+    }
+    let encoding_obj = unsafe {
+        PyUnicode_FromString(if encoding.is_null() {
+            c"utf-8".as_ptr()
+        } else {
+            encoding
+        })
     };
-    let encoding_bytes = if encoding.is_null() {
-        b"utf-8".as_slice()
-    } else {
-        unsafe { CStr::from_ptr(encoding) }.to_bytes()
-    };
-    let encoded = if encoding_name_matches(encoding_bytes, &[b"utf8", b"utf-8"]) {
-        Some(bytes.to_vec())
-    } else if encoding_name_matches(encoding_bytes, &[b"ascii", b"us-ascii"]) {
-        if !bytes.is_ascii() {
-            // CPython codec raises UnicodeEncodeError — never NULL-sans-exception.
-            unsafe {
-                raise_unicode_encode_error(bytes, "ascii", "ordinal not in range(128)", 0x7f)
-            };
-            return ptr::null_mut();
-        }
-        Some(bytes.to_vec())
-    } else if encoding_name_matches(
-        encoding_bytes,
-        &[
-            b"latin1",
-            b"latin-1",
-            b"latin_1",
-            b"iso8859-1",
-            b"iso-8859-1",
-        ],
-    ) {
-        match latin1_encode_utf8_bytes(bytes) {
-            Some(encoded) => Some(encoded),
-            None => {
-                unsafe {
-                    raise_unicode_encode_error(bytes, "latin-1", "ordinal not in range(256)", 0xff)
-                };
-                return ptr::null_mut();
-            }
-        }
-    } else {
-        let msg = format!(
-            "unknown encoding: {}",
-            String::from_utf8_lossy(encoding_bytes)
-        );
-        unsafe {
-            set_exc(
-                (&raw mut crate::abi_types::PyExc_LookupError).cast::<crate::abi_types::PyObject>(),
-                &msg,
-            )
-        };
-        None
-    };
-    let Some(encoded) = encoded else {
+    if encoding_obj.is_null() {
         return ptr::null_mut();
+    }
+    let errors_obj = unsafe {
+        PyUnicode_FromString(if errors.is_null() {
+            c"strict".as_ptr()
+        } else {
+            errors
+        })
     };
-    unsafe { PyBytes_FromStringAndSize(encoded.as_ptr().cast(), encoded.len() as Py_ssize_t) }
+    if errors_obj.is_null() {
+        unsafe { crate::api::errors::release_preserving_error(&[encoding_obj]) };
+        return ptr::null_mut();
+    }
+    let encoding_bits = GLOBAL_BRIDGE.observed_handle_for_pyobj(encoding_obj);
+    let errors_bits = GLOBAL_BRIDGE.observed_handle_for_pyobj(errors_obj);
+    let result = match (encoding_bits, errors_bits) {
+        (Some(encoding), Some(errors)) => unsafe {
+            GLOBAL_BRIDGE.owned_result_to_pyobj((hooks_or_stubs().unicode_encode)(
+                bits.bits(),
+                encoding.bits(),
+                errors.bits(),
+            ))
+        },
+        _ => {
+            unsafe { crate::api::errors::PyErr_BadArgument() };
+            ptr::null_mut()
+        }
+    };
+    unsafe { crate::api::errors::release_preserving_error(&[encoding_obj, errors_obj]) };
+    result
 }
 
 #[unsafe(no_mangle)]
@@ -1856,9 +1994,6 @@ unsafe fn unicode_format_arg(args: *mut PyObject, index: &mut Py_ssize_t) -> *mu
 }
 
 unsafe fn unicode_format_object_bytes(arg: *mut PyObject, repr: bool) -> Option<Vec<u8>> {
-    if let Some(bytes) = unsafe { unicode_bytes(arg) } {
-        return Some(bytes.to_vec());
-    }
     let rendered = if repr {
         unsafe { crate::api::typeobj::PyObject_Repr(arg) }
     } else {
@@ -1867,8 +2002,13 @@ unsafe fn unicode_format_object_bytes(arg: *mut PyObject, repr: bool) -> Option<
     if rendered.is_null() {
         return None;
     }
-    let text = unsafe { unicode_bytes(rendered) }.map(|bytes| bytes.to_vec());
-    unsafe { crate::api::refcount::Py_DECREF(rendered) };
+    let text = unsafe { unicode_bytes(rendered) }
+        .and_then(PythonStringBytes::from_bytes)
+        .map(|text| text.as_bytes().to_vec());
+    if text.is_none() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+    }
+    unsafe { crate::api::errors::release_preserving_error(&[rendered]) };
     text
 }
 
@@ -1884,13 +2024,14 @@ struct PercentSpec {
     prec: Option<usize>,
 }
 
-/// Pad `field` (already-rendered UTF-8) to `width` CODE POINTS with spaces,
+/// Pad admitted Python text to `width` CODE POINTS with spaces,
 /// left- or right-justified. Appends into `out` (writer pattern, no extra
 /// intermediate strings).
 fn pad_field(out: &mut Vec<u8>, field: &[u8], spec: &PercentSpec) {
-    let cp_len = std::str::from_utf8(field)
-        .map(|s| s.chars().count())
-        .unwrap_or(field.len());
+    let cp_len = PythonStringBytes::from_bytes(field)
+        .expect("percent fields are admitted Python text")
+        .code_points()
+        .count();
     let width = spec.width.unwrap_or(0);
     let pad = width.saturating_sub(cp_len);
     if pad == 0 {
@@ -2091,6 +2232,18 @@ unsafe fn percent_int_arg(arg: *mut PyObject, conv: u8) -> Option<i128> {
     Some(v as i128)
 }
 
+/// Mapping lookup owns its result even when a later format parse or callback
+/// fails. Release on every exit without disturbing that failure.
+struct PercentMappedArgument(*mut PyObject);
+
+impl Drop for PercentMappedArgument {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { crate::api::errors::release_preserving_error(&[self.0]) };
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyUnicode_Format(
     format: *mut PyObject,
@@ -2136,7 +2289,7 @@ pub unsafe extern "C" fn PyUnicode_Format(
         }
 
         // Mapping key: '%(name)s' — args must support item lookup.
-        let mut mapped_arg: *mut PyObject = ptr::null_mut();
+        let mut mapped_arg = PercentMappedArgument(ptr::null_mut());
         if format_bytes[cursor] == b'(' {
             used_mapping_keys = true;
             cursor += 1;
@@ -2158,18 +2311,13 @@ pub unsafe extern "C" fn PyUnicode_Format(
             }
             let key_bytes = &format_bytes[key_start..cursor];
             cursor += 1; // consume ')'
-            let key_obj = unsafe {
-                PyUnicode_FromStringAndSize(
-                    key_bytes.as_ptr().cast(),
-                    key_bytes.len() as Py_ssize_t,
-                )
-            };
+            let key_obj = unsafe { unicode_from_python_bytes(key_bytes) };
             if key_obj.is_null() {
                 return ptr::null_mut();
             }
-            mapped_arg = unsafe { crate::api::object::PyObject_GetItem(args, key_obj) };
-            unsafe { crate::api::refcount::Py_DECREF(key_obj) };
-            if mapped_arg.is_null() {
+            mapped_arg.0 = unsafe { crate::api::object::PyObject_GetItem(args, key_obj) };
+            unsafe { crate::api::errors::release_preserving_error(&[key_obj]) };
+            if mapped_arg.0.is_null() {
                 if unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
                     unsafe {
                         set_exc(
@@ -2264,12 +2412,19 @@ pub unsafe extern "C" fn PyUnicode_Format(
             incomplete();
             return ptr::null_mut();
         }
+        let conversion_offset = cursor;
         let conv = format_bytes[cursor];
-        cursor += 1;
+        let conversion = PythonStringBytes::from_bytes(&format_bytes[cursor..])
+            .expect("admitted Python format string");
+        let codepoint = conversion.code_points().next().expect("format conversion");
+        cursor += conversion
+            .code_point_indices()
+            .nth(1)
+            .map_or(conversion.as_bytes().len(), |(offset, _)| offset);
 
         // Resolve the argument (mapping key result or next positional).
-        let arg = if !mapped_arg.is_null() {
-            mapped_arg
+        let arg = if !mapped_arg.0.is_null() {
+            mapped_arg.0
         } else {
             let a = unsafe { unicode_format_arg(args, &mut arg_index) };
             if a.is_null() {
@@ -2284,88 +2439,56 @@ pub unsafe extern "C" fn PyUnicode_Format(
             }
             a
         };
-        // Owned only when it came from the mapping lookup.
-        let release_arg = |arg: *mut PyObject, mapped: bool| {
-            if mapped {
-                unsafe { crate::api::refcount::Py_DECREF(arg) };
-            }
-        };
-        let mapped = !mapped_arg.is_null();
-
         match conv {
             b's' | b'r' | b'a' | b'S' | b'R' => {
                 let repr = matches!(conv, b'r' | b'R' | b'a');
                 let Some(mut text) = (unsafe { unicode_format_object_bytes(arg, repr) }) else {
-                    release_arg(arg, mapped);
                     return ptr::null_mut();
                 };
                 if conv == b'a' {
-                    // %a: ascii() — escape non-ASCII code points.
-                    if !text.is_ascii() {
-                        let escaped: String = match std::str::from_utf8(&text) {
-                            Ok(s) => s
-                                .chars()
-                                .flat_map(|c| {
-                                    if c.is_ascii() {
-                                        vec![c]
-                                    } else if (c as u32) <= 0xFFFF {
-                                        format!("\\u{:04x}", c as u32).chars().collect()
-                                    } else {
-                                        format!("\\U{:08x}", c as u32).chars().collect()
-                                    }
-                                })
-                                .collect(),
-                            Err(_) => String::from_utf8_lossy(&text).into_owned(),
-                        };
-                        text = escaped.into_bytes();
-                    }
+                    let admitted = PythonStringBytes::from_bytes(&text)
+                        .expect("callback result was admitted above");
+                    text = ascii_escape(admitted);
                 }
-                // Precision truncates to prec CODE POINTS.
-                if let Some(prec) = spec.prec
-                    && let Ok(s) = std::str::from_utf8(&text)
-                    && s.chars().count() > prec
-                {
-                    text = s.chars().take(prec).collect::<String>().into_bytes();
+                // Precision truncates at Python code points, including surrogates.
+                if let Some(prec) = spec.prec {
+                    let keep = PythonStringBytes::from_bytes(&text)
+                        .expect("percent field is admitted Python text")
+                        .prefix_bytes(prec)
+                        .len();
+                    text.truncate(keep);
                 }
                 pad_field(&mut out, &text, &spec);
-                release_arg(arg, mapped);
             }
             b'd' | b'i' | b'u' => {
                 let Some(v) = (unsafe { percent_int_arg(arg, conv) }) else {
-                    release_arg(arg, mapped);
                     return ptr::null_mut();
                 };
                 emit_formatted_int(&mut out, v, 10, false, &spec);
-                release_arg(arg, mapped);
             }
             b'o' | b'x' | b'X' => {
                 let Some(v) = (unsafe { percent_int_arg(arg, conv) }) else {
-                    release_arg(arg, mapped);
                     return ptr::null_mut();
                 };
                 let base = if conv == b'o' { 8 } else { 16 };
                 emit_formatted_int(&mut out, v, base, conv == b'X', &spec);
-                release_arg(arg, mapped);
             }
             b'c' => {
                 // %c: a single-character str, or an int code point.
                 let rendered: Option<Vec<u8>> = match unsafe { unicode_bytes(arg) } {
                     Some(bytes) => {
-                        let ok = std::str::from_utf8(bytes)
-                            .map(|s| s.chars().count() == 1)
-                            .unwrap_or(false);
+                        let ok = PythonStringBytes::from_bytes(bytes)
+                            .is_some_and(|s| s.code_points().count() == 1);
                         ok.then(|| bytes.to_vec())
                     }
                     None => unsafe { percent_int_arg(arg, b'c') }.and_then(|code| {
                         unsafe { crate::api::errors::PyErr_Clear() };
-                        u32::try_from(code).ok().and_then(char::from_u32).map(|ch| {
-                            let mut buf = [0u8; 4];
-                            ch.encode_utf8(&mut buf).as_bytes().to_vec()
-                        })
+                        let mut bytes = Vec::new();
+                        push_codepoint_utf8(&mut bytes, u32::try_from(code).ok()?)?;
+                        Some(bytes)
                     }),
                 };
                 let Some(rendered) = rendered else {
-                    release_arg(arg, mapped);
                     unsafe {
                         set_exc(
                             (&raw mut crate::abi_types::PyExc_TypeError)
@@ -2376,13 +2499,11 @@ pub unsafe extern "C" fn PyUnicode_Format(
                     return ptr::null_mut();
                 };
                 pad_field(&mut out, &rendered, &spec);
-                release_arg(arg, mapped);
             }
             b'f' | b'F' | b'e' | b'E' | b'g' | b'G' => {
                 unsafe { crate::api::errors::PyErr_Clear() };
                 let v = unsafe { crate::api::numbers::PyFloat_AsDouble(arg) };
                 if !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
-                    release_arg(arg, mapped);
                     return ptr::null_mut();
                 }
                 let mut rendered = format_float_percent(v, conv, &spec);
@@ -2406,19 +2527,21 @@ pub unsafe extern "C" fn PyUnicode_Format(
                 } else {
                     pad_field(&mut out, rendered.as_bytes(), &spec);
                 }
-                release_arg(arg, mapped);
             }
-            other => {
-                release_arg(arg, mapped);
+            _ => {
+                let index = PythonStringBytes::from_bytes(&format_bytes[..conversion_offset])
+                    .expect("format prefix ends at a codepoint boundary")
+                    .code_points()
+                    .count();
                 let msg = format!(
                     "unsupported format character '{}' (0x{:x}) at index {}",
-                    if other.is_ascii_graphic() {
-                        other as char
+                    if (31..=126).contains(&codepoint) {
+                        char::from_u32(codepoint).expect("ASCII format diagnostic")
                     } else {
                         '?'
                     },
-                    other,
-                    cursor - 1
+                    codepoint,
+                    index,
                 );
                 unsafe {
                     set_exc(
@@ -2446,7 +2569,7 @@ pub unsafe extern "C" fn PyUnicode_Format(
         return ptr::null_mut();
     }
 
-    unsafe { PyUnicode_FromStringAndSize(out.as_ptr().cast(), out.len() as Py_ssize_t) }
+    unsafe { unicode_from_python_bytes(&out) }
 }
 
 #[unsafe(no_mangle)]
@@ -2508,87 +2631,363 @@ pub unsafe extern "C" fn PyByteArray_FromStringAndSize(
     len: Py_ssize_t,
 ) -> *mut PyObject {
     if len < 0 {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
         return ptr::null_mut();
     }
-    let size = len as usize;
-    let Some(alloc) = size.checked_add(1) else {
-        return ptr::null_mut();
-    };
-    let bytes = unsafe { crate::api::memory::PyMem_Calloc(1, alloc) }.cast::<c_char>();
-    if bytes.is_null() {
-        return ptr::null_mut();
-    }
-    if !s.is_null() && size != 0 {
-        unsafe {
-            ptr::copy_nonoverlapping(s, bytes, size);
+    let bits = unsafe { (hooks_or_stubs().alloc_bytearray)(s.cast(), len as usize) };
+    if bits == 0 {
+        if !crate::api::errors::transfer_runtime_pending_to_current() {
+            unsafe { crate::api::errors::PyErr_NoMemory() };
         }
+        return ptr::null_mut();
     }
-    unsafe {
-        *bytes.add(size) = 0;
+    let result = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(bits) };
+    unsafe { crate::api::errors::check_native_result(result, "PyByteArray_FromStringAndSize") }
+}
+
+/// The caller supplies a stable stack address: Py_buffer fields may point to
+/// other fields of the same descriptor. Never move an acquired descriptor.
+unsafe fn bytearray_copy_buffer(op: *mut PyObject, view: *mut crate::abi_types::Py_buffer) -> bool {
+    let status =
+        unsafe { crate::api::buffer::PyObject_GetBuffer(op, view, crate::abi_types::PyBUF_SIMPLE) };
+    if unsafe { crate::api::errors::check_native_status(status, "PyByteArray buffer acquisition") }
+        < 0
+    {
+        if status >= 0 {
+            crate::api::errors::with_preserved_error(|| unsafe {
+                crate::api::buffer::PyBuffer_Release(view)
+            });
+        }
+        return false;
     }
-    let obj = Box::new(PyByteArrayObject {
-        ob_base: PyVarObject {
-            ob_base: PyObject {
-                ob_refcnt: 1,
-                ob_type: &raw mut crate::abi_types::PyByteArray_Type,
-            },
-            ob_size: len,
-        },
-        ob_alloc: alloc as Py_ssize_t,
-        ob_bytes: bytes,
-        ob_start: bytes,
-        ob_exports: 0,
+    if unsafe { (*view).len < 0 || ((*view).len != 0 && (*view).buf.is_null()) } {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        crate::api::errors::with_preserved_error(|| unsafe {
+            crate::api::buffer::PyBuffer_Release(view)
+        });
+        return false;
+    }
+    true
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyByteArray_FromObject(op: *mut PyObject) -> *mut PyObject {
+    if op.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return ptr::null_mut();
+    }
+    if unsafe { crate::api::buffer::PyObject_CheckBuffer(op) } != 0 {
+        let mut view: crate::abi_types::Py_buffer = unsafe { std::mem::zeroed() };
+        if !unsafe { bytearray_copy_buffer(op, &mut view) } {
+            return ptr::null_mut();
+        }
+        let result = unsafe { PyByteArray_FromStringAndSize(view.buf.cast(), view.len) };
+        crate::api::errors::with_preserved_error(|| unsafe {
+            crate::api::buffer::PyBuffer_Release(&mut view)
+        });
+        return result;
+    }
+    // Non-buffer inputs retain Python bytearray's integer/iterable conversion.
+    let result = unsafe {
+        crate::api::object::PyObject_CallOneArg(
+            (&raw mut crate::abi_types::PyByteArray_Type).cast(),
+            op,
+        )
+    };
+    unsafe { crate::api::errors::check_native_result(result, "PyByteArray_FromObject") }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyByteArray_Concat(
+    left: *mut PyObject,
+    right: *mut PyObject,
+) -> *mut PyObject {
+    let mut first: crate::abi_types::Py_buffer = unsafe { std::mem::zeroed() };
+    let mut second: crate::abi_types::Py_buffer = unsafe { std::mem::zeroed() };
+    if !unsafe { bytearray_copy_buffer(left, &mut first) } {
+        return ptr::null_mut();
+    }
+    if !unsafe { bytearray_copy_buffer(right, &mut second) } {
+        crate::api::errors::with_preserved_error(|| unsafe {
+            crate::api::buffer::PyBuffer_Release(&mut first)
+        });
+        return ptr::null_mut();
+    }
+    let result = if let Some(len) = first.len.checked_add(second.len) {
+        let result = unsafe { PyByteArray_FromStringAndSize(ptr::null(), len) };
+        if result.is_null() {
+            result
+        } else {
+            let data = unsafe { PyByteArray_AsString(result) };
+            if data.is_null() {
+                unsafe { crate::api::errors::release_preserving_error(&[result]) };
+                ptr::null_mut()
+            } else {
+                if first.len != 0 {
+                    unsafe {
+                        ptr::copy_nonoverlapping(
+                            first.buf.cast::<c_char>(),
+                            data,
+                            first.len as usize,
+                        )
+                    }
+                };
+                if second.len != 0 {
+                    unsafe {
+                        ptr::copy_nonoverlapping(
+                            second.buf.cast::<c_char>(),
+                            data.add(first.len as usize),
+                            second.len as usize,
+                        )
+                    }
+                };
+                result
+            }
+        }
+    } else {
+        unsafe { crate::api::errors::PyErr_NoMemory() }
+    };
+    crate::api::errors::with_preserved_error(|| unsafe {
+        crate::api::buffer::PyBuffer_Release(&mut second);
+        crate::api::buffer::PyBuffer_Release(&mut first);
     });
-    Box::into_raw(obj).cast::<PyObject>()
+    result
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyByteArray_Check(op: *mut PyObject) -> c_int {
-    if op.is_null() {
-        return 0;
+    unsafe {
+        crate::bridge::is_semantic_instance_of(op, &raw mut crate::abi_types::PyByteArray_Type)
+            as c_int
     }
-    let ob_type = unsafe { (*op).ob_type };
-    std::ptr::eq(ob_type, &raw const crate::abi_types::PyByteArray_Type) as c_int
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyByteArray_CheckExact(op: *mut PyObject) -> c_int {
-    (!op.is_null()
-        && std::ptr::eq(
-            unsafe { (*op).ob_type },
-            &raw const crate::abi_types::PyByteArray_Type,
-        )) as c_int
+    unsafe {
+        crate::bridge::is_exact_semantic_type(op, &raw mut crate::abi_types::PyByteArray_Type)
+            as c_int
+    }
+}
+
+/// A semantic bytearray predicate never authorizes a C payload dereference.
+/// Only a foreign object with an actual bytearray-layout type has this prefix;
+/// bridge views always use the runtime backing hooks, even for subclasses.
+unsafe fn foreign_bytearray_layout(op: *mut PyObject) -> Option<*mut PyByteArrayObject> {
+    if op.is_null() || GLOBAL_BRIDGE.molt_handle_for_pyobj(op).is_some() {
+        return None;
+    }
+    let ty = unsafe { (*op).ob_type };
+    if ty.is_null()
+        || unsafe { (*ty).tp_basicsize } < std::mem::size_of::<PyByteArrayObject>() as isize
+        || (ty != &raw mut crate::abi_types::PyByteArray_Type
+            && unsafe {
+                crate::api::typeobj::PyType_IsSubtype(
+                    ty,
+                    &raw mut crate::abi_types::PyByteArray_Type,
+                )
+            } == 0)
+    {
+        return None;
+    }
+    Some(op.cast())
+}
+
+unsafe fn bytearray_type_error() {
+    unsafe {
+        set_exc(
+            (&raw mut crate::abi_types::PyExc_TypeError).cast(),
+            "bytearray object expected",
+        );
+    }
+}
+
+unsafe fn bytearray_data(op: *mut PyObject) -> Option<(*mut c_char, Py_ssize_t)> {
+    if let Some(handle) = GLOBAL_BRIDGE.molt_handle_for_pyobj(op) {
+        let mut len = 0;
+        let data = unsafe { (hooks_or_stubs().bytearray_data)(handle.bits(), &mut len) };
+        let status = if data.is_null() { -1 } else { 0 };
+        if unsafe { crate::api::errors::check_native_status(status, "bytearray_data") } < 0 {
+            return None;
+        }
+        let Ok(len) = Py_ssize_t::try_from(len) else {
+            unsafe {
+                set_exc(
+                    (&raw mut crate::abi_types::PyExc_OverflowError).cast(),
+                    "bytearray is too large",
+                )
+            };
+            return None;
+        };
+        return Some((data.cast(), len));
+    }
+    let Some(obj) = (unsafe { foreign_bytearray_layout(op) }) else {
+        unsafe { bytearray_type_error() };
+        return None;
+    };
+    let len = unsafe { (*obj).ob_base.ob_size };
+    let mut data = unsafe { (*obj).ob_start };
+    if len == 0 && data.is_null() && unsafe { (*obj).ob_bytes.is_null() && (*obj).ob_exports == 0 }
+    {
+        // A freshly allocated foreign subtype may have a zeroed empty prefix.
+        // Establish its owned sentinel before the first pointer or export escapes.
+        data = unsafe { crate::api::memory::PyMem_Calloc(1, 1) }.cast();
+        if data.is_null() {
+            unsafe { crate::api::errors::PyErr_NoMemory() };
+            return None;
+        }
+        unsafe {
+            (*obj).ob_bytes = data;
+            (*obj).ob_start = data;
+            (*obj).ob_alloc = 1;
+        }
+    }
+    if len < 0 || data.is_null() {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return None;
+    }
+    Some((data, len))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyByteArray_AsString(op: *mut PyObject) -> *mut c_char {
-    if unsafe { PyByteArray_Check(op) } == 0 {
-        return ptr::null_mut();
-    }
-    unsafe { (*op.cast::<PyByteArrayObject>()).ob_start }
+    unsafe { bytearray_data(op) }.map_or(ptr::null_mut(), |(data, _)| data)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyByteArray_Size(op: *mut PyObject) -> Py_ssize_t {
-    if unsafe { PyByteArray_Check(op) } == 0 {
+    unsafe { bytearray_data(op) }.map_or(-1, |(_, len)| len)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyByteArray_Resize(op: *mut PyObject, len: Py_ssize_t) -> c_int {
+    if len < 0 {
+        unsafe {
+            set_exc(
+                (&raw mut crate::abi_types::PyExc_ValueError).cast(),
+                "negative count",
+            )
+        };
         return -1;
     }
-    unsafe { (*op.cast::<PyByteArrayObject>()).ob_base.ob_size }
+    if let Some(handle) = GLOBAL_BRIDGE.molt_handle_for_pyobj(op) {
+        let status = unsafe { (hooks_or_stubs().bytearray_resize)(handle.bits(), len as usize) };
+        return unsafe { crate::api::errors::check_native_status(status, "bytearray_resize") };
+    }
+    let Some(obj) = (unsafe { foreign_bytearray_layout(op) }) else {
+        unsafe { bytearray_type_error() };
+        return -1;
+    };
+    let old_len = unsafe { (*obj).ob_base.ob_size };
+    if old_len == len {
+        return 0;
+    }
+    if unsafe { (*obj).ob_exports } != 0 {
+        unsafe {
+            set_exc(
+                (&raw mut crate::abi_types::PyExc_BufferError).cast(),
+                "Existing exports of data: object cannot be re-sized",
+            )
+        };
+        return -1;
+    }
+    if old_len < 0 || (old_len != 0 && unsafe { (*obj).ob_start.is_null() }) {
+        unsafe { crate::api::errors::PyErr_BadInternalCall() };
+        return -1;
+    }
+    let Some(alloc) = len.checked_add(1) else {
+        unsafe { crate::api::errors::PyErr_NoMemory() };
+        return -1;
+    };
+    let data = unsafe { crate::api::memory::PyMem_Calloc(1, alloc as usize) }.cast::<c_char>();
+    if data.is_null() {
+        unsafe { crate::api::errors::PyErr_NoMemory() };
+        return -1;
+    }
+    // Publish only after allocation succeeds; the old buffer stays valid on failure.
+    let copied = old_len.min(len) as usize;
+    if copied != 0 {
+        unsafe { ptr::copy_nonoverlapping((*obj).ob_start, data, copied) };
+    }
+    unsafe {
+        crate::api::memory::PyMem_Free((*obj).ob_bytes.cast());
+        (*obj).ob_bytes = data;
+        (*obj).ob_start = data;
+        (*obj).ob_alloc = alloc;
+        (*obj).ob_base.ob_size = len;
+    }
+    0
+}
+
+/// Native exports retain their ob_exports count; managed exports retain the
+/// canonical runtime lease. Neither route creates a detached mutable copy.
+pub unsafe extern "C" fn molt_bytearray_getbuffer(
+    object: *mut PyObject,
+    view: *mut crate::abi_types::Py_buffer,
+    flags: c_int,
+) -> c_int {
+    if GLOBAL_BRIDGE.molt_handle_for_pyobj(object).is_some() {
+        // Check physical managed bytearray storage before generic buffer dispatch.
+        if unsafe { bytearray_data(object) }.is_none() {
+            return -1;
+        }
+        return unsafe { crate::api::buffer::PyObject_GetBuffer(object, view, flags) };
+    }
+    let Some(bytearray) = (unsafe { foreign_bytearray_layout(object) }) else {
+        unsafe { bytearray_type_error() };
+        return -1;
+    };
+    let Some((data, len)) = (unsafe { bytearray_data(object) }) else {
+        return -1;
+    };
+    if unsafe { (*bytearray).ob_exports } == Py_ssize_t::MAX {
+        unsafe {
+            set_exc(
+                (&raw mut crate::abi_types::PyExc_OverflowError).cast(),
+                "too many exported buffers",
+            )
+        };
+        return -1;
+    }
+    let result =
+        unsafe { crate::api::buffer::PyBuffer_FillInfo(view, object, data.cast(), len, 0, flags) };
+    if result == 0 {
+        unsafe { (*bytearray).ob_exports += 1 }
+    };
+    result
+}
+
+pub unsafe extern "C" fn molt_bytearray_releasebuffer(
+    object: *mut PyObject,
+    view: *mut crate::abi_types::Py_buffer,
+) {
+    if GLOBAL_BRIDGE.molt_handle_for_pyobj(object).is_some() {
+        unsafe { crate::api::buffer::release_managed_export(view) };
+        return;
+    }
+    let Some(bytearray) = (unsafe { foreign_bytearray_layout(object) }) else {
+        return;
+    };
+    assert!(
+        unsafe { (*bytearray).ob_exports } > 0,
+        "unbalanced bytearray buffer release"
+    );
+    unsafe { (*bytearray).ob_exports -= 1 };
 }
 
 pub unsafe extern "C" fn molt_bytearray_dealloc(op: *mut PyObject) {
-    if op.is_null() {
+    let Some(obj) = (unsafe { foreign_bytearray_layout(op) }) else {
         return;
-    }
-    let obj = op.cast::<PyByteArrayObject>();
-    unsafe {
-        if !(*obj).ob_bytes.is_null() {
-            crate::api::memory::PyMem_Free((*obj).ob_bytes.cast());
-            (*obj).ob_bytes = ptr::null_mut();
-            (*obj).ob_start = ptr::null_mut();
-        }
-        drop(Box::from_raw(obj));
-    }
+    };
+    crate::api::errors::with_preserved_error(|| unsafe {
+        let Some(deallocation) = crate::api::typeobj::NativeDeallocation::storage(op) else {
+            return;
+        };
+        let bytes = std::mem::replace(&mut (*obj).ob_bytes, ptr::null_mut());
+        (*obj).ob_start = ptr::null_mut();
+        crate::api::memory::PyMem_Free(bytes.cast());
+        deallocation.finish();
+    });
 }
 
 #[cfg(test)]
@@ -2597,8 +2996,8 @@ mod tests {
         _PyUnicode_IsAlpha, _PyUnicode_IsDecimalDigit, _PyUnicode_IsDigit, _PyUnicode_IsLinebreak,
         _PyUnicode_IsLowercase, _PyUnicode_IsNumeric, _PyUnicode_IsPrintable,
         _PyUnicode_IsTitlecase, _PyUnicode_IsUppercase, _PyUnicode_IsWhitespace,
-        encoding_name_matches, latin1_encode_utf8_bytes, unicode_kind_data_to_utf8,
-        utf8_bytes_to_ucs4,
+        encoding_name_matches, latin1_encode_utf8_bytes, python_text_to_ucs4,
+        unicode_kind_data_to_utf8,
     };
 
     #[test]
@@ -2646,20 +3045,27 @@ mod tests {
     }
 
     #[test]
-    fn unicode_kind_data_rejects_invalid_scalars() {
+    fn unicode_kind_data_preserves_surrogates_and_rejects_out_of_range_codepoints() {
         let surrogate = [0xd800u16];
-        assert!(unicode_kind_data_to_utf8(2, surrogate.as_ptr().cast(), 1).is_none());
+        assert_eq!(
+            unicode_kind_data_to_utf8(2, surrogate.as_ptr().cast(), 1),
+            Some(vec![0xed, 0xa0, 0x80])
+        );
         let too_large = [0x110000u32];
         assert!(unicode_kind_data_to_utf8(4, too_large.as_ptr().cast(), 1).is_none());
     }
 
     #[test]
-    fn utf8_to_ucs4_counts_scalar_values() {
+    fn python_text_to_ucs4_preserves_codepoints() {
         assert_eq!(
-            utf8_bytes_to_ucs4("a\u{3c0}\u{1f642}".as_bytes()).unwrap(),
+            python_text_to_ucs4("a\u{3c0}\u{1f642}".as_bytes()).unwrap(),
             [0x61, 0x03c0, 0x1f642]
         );
-        assert!(utf8_bytes_to_ucs4(b"\xff").is_none());
+        assert!(python_text_to_ucs4(b"\xff").is_none());
+        assert_eq!(
+            python_text_to_ucs4(b"\xed\xa0\x80\xed\xb0\x80\0").unwrap(),
+            [0xd800, 0xdc00, 0]
+        );
     }
 
     #[test]

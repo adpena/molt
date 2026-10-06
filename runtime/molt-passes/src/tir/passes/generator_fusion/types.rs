@@ -46,13 +46,3 @@ pub(in crate::tir::passes::generator_fusion) struct FusionCandidate {
     /// Present iff the consumer carries structured loop metadata.
     pub(in crate::tir::passes::generator_fusion) loop_header: Option<BlockId>,
 }
-
-/// A user frame slot's resolved promotion data.
-pub(in crate::tir::passes::generator_fusion) struct SlotInfo {
-    /// Frame byte offset (`>= GEN_CONTROL_BYTES`).
-    pub(in crate::tir::passes::generator_fusion) offset: i64,
-    /// The preheader init value, expressed in the CALLER's value space (a clone
-    /// of the AllocTask arg for a param slot, or a fresh clone of the poll's
-    /// entry init for a local slot, or a fresh `None` for an unwritten slot).
-    pub(in crate::tir::passes::generator_fusion) init_caller_val: ValueId,
-}

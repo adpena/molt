@@ -6,8 +6,32 @@ mod support;
 
 use std::ptr;
 
+thread_local! {
+    static STRING_ALLOCATION_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+unsafe extern "C" fn alloc_string(data: *const u8, len: usize) -> u64 {
+    if STRING_ALLOCATION_ENABLED.with(std::cell::Cell::get) {
+        unsafe { support::fake_strings::alloc_str(data, len) }
+    } else {
+        0
+    }
+}
+
+unsafe extern "C" fn classify(bits: u64) -> u8 {
+    if support::fake_strings::contains(bits) {
+        molt_cpython_abi::abi_types::MoltTypeTag::Str as u8
+    } else {
+        molt_cpython_abi::abi_types::MoltTypeTag::Other as u8
+    }
+}
+
 fn init() {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+    let mut hooks = support::stub_runtime_hooks();
+    support::fake_strings::wire(&mut hooks);
+    hooks.alloc_str = alloc_string;
+    hooks.classify_heap = classify;
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 // ---------------------------------------------------------------------------
@@ -368,11 +392,9 @@ fn test_bytes_size_null() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_bytearray_from_string_has_mutable_storage() {
+fn test_foreign_bytearray_fixture_has_mutable_storage() {
     init();
-    let py = unsafe {
-        molt_cpython_abi::api::strings::PyByteArray_FromStringAndSize(c"abc".as_ptr(), 3)
-    };
+    let py = unsafe { foreign_bytearray_fixture(c"abc".as_ptr(), 3) };
     assert!(!py.is_null());
     assert_eq!(
         unsafe { molt_cpython_abi::api::strings::PyByteArray_Check(py) },
@@ -433,4 +455,156 @@ fn test_unicode_concat_fails_closed_on_alloc_failure() {
     let joined = unsafe { molt_cpython_abi::api::strings::PyUnicode_Concat(left, right) };
     assert!(joined.is_null());
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+#[test]
+fn native_bytearray_resize_preserves_aliases_until_last_export_releases() {
+    STRING_ALLOCATION_ENABLED.with(|enabled| enabled.set(true));
+    init();
+    use molt_cpython_abi::abi_types::{Py_buffer, PyBUF_WRITABLE, PyExc_BufferError, PyObject};
+    use molt_cpython_abi::api::{buffer, errors, refcount, strings};
+    unsafe {
+        errors::PyErr_Clear();
+        let object = foreign_bytearray_fixture(c"abc".as_ptr(), 3);
+        assert!(!object.is_null());
+        let data = strings::PyByteArray_AsString(object);
+        let mut first: Py_buffer = std::mem::zeroed();
+        let mut second: Py_buffer = std::mem::zeroed();
+        assert_eq!(
+            buffer::PyObject_GetBuffer(object, &mut first, PyBUF_WRITABLE),
+            0
+        );
+        assert_eq!(
+            buffer::PyObject_GetBuffer(object, &mut second, PyBUF_WRITABLE),
+            0
+        );
+        assert_eq!(first.buf, data.cast());
+        assert_eq!(second.buf, data.cast());
+        first.buf.cast::<u8>().add(1).write(b'Z');
+        assert_eq!(std::slice::from_raw_parts(data.cast::<u8>(), 4), b"aZc\0");
+        assert_eq!(strings::PyByteArray_Resize(object, 3), 0);
+        for len in [0, 2, 4] {
+            assert_eq!(strings::PyByteArray_Resize(object, len), -1);
+            assert_eq!(
+                errors::PyErr_ExceptionMatches((&raw mut PyExc_BufferError).cast::<PyObject>()),
+                1
+            );
+            errors::PyErr_Clear();
+            assert_eq!(strings::PyByteArray_AsString(object), data);
+        }
+        buffer::PyBuffer_Release(&mut first);
+        assert_eq!(strings::PyByteArray_Resize(object, 5), -1);
+        errors::PyErr_Clear();
+        buffer::PyBuffer_Release(&mut second);
+        assert_eq!(strings::PyByteArray_Resize(object, 5), 0);
+        assert_eq!(
+            std::slice::from_raw_parts(strings::PyByteArray_AsString(object).cast::<u8>(), 6),
+            b"aZc\0\0\0"
+        );
+        assert_eq!(strings::PyByteArray_Resize(object, 1), 0);
+        assert_eq!(
+            std::slice::from_raw_parts(strings::PyByteArray_AsString(object).cast::<u8>(), 2),
+            b"a\0"
+        );
+        assert_eq!(strings::PyByteArray_Resize(object, 0), 0);
+        assert_eq!(strings::PyByteArray_Size(object), 0);
+        assert_eq!(*strings::PyByteArray_AsString(object), 0);
+        refcount::Py_DECREF(object);
+        assert!(errors::PyErr_Occurred().is_null());
+    }
+}
+
+#[test]
+fn native_bytearray_foreign_subtype_uses_physical_prefix_and_rejects_short_layout() {
+    init();
+    use molt_cpython_abi::abi_types::{
+        PyByteArray_Type, PyByteArrayObject, PyObject, PyTypeObject,
+    };
+    use molt_cpython_abi::api::{errors, memory, refcount, strings};
+    unsafe {
+        errors::PyErr_Clear();
+        let mut subtype: PyTypeObject = std::mem::zeroed();
+        subtype.tp_base = &raw mut PyByteArray_Type;
+        subtype.tp_basicsize = std::mem::size_of::<PyByteArrayObject>() as isize;
+        subtype.tp_dealloc = Some(strings::molt_bytearray_dealloc);
+        subtype.tp_free = Some(memory::PyObject_Free);
+        let object =
+            memory::PyObject_Calloc(1, std::mem::size_of::<PyByteArrayObject>()).cast::<PyObject>();
+        (*object).ob_refcnt = 1;
+        (*object).ob_type = &mut subtype;
+        assert_eq!(strings::PyByteArray_Check(object), 1);
+        assert_eq!(strings::PyByteArray_CheckExact(object), 0);
+        assert_eq!(*strings::PyByteArray_AsString(object), 0);
+        assert_eq!(strings::PyByteArray_Resize(object, 2), 0);
+        strings::PyByteArray_AsString(object)
+            .cast::<u8>()
+            .write(b'x');
+        assert_eq!(
+            std::slice::from_raw_parts(strings::PyByteArray_AsString(object).cast::<u8>(), 3),
+            b"x\0\0"
+        );
+        refcount::Py_DECREF(object);
+
+        subtype.tp_basicsize = std::mem::size_of::<PyObject>() as isize;
+        let mut short = PyObject {
+            ob_refcnt: 1,
+            ob_type: &mut subtype,
+        };
+        assert_eq!(strings::PyByteArray_Check(&mut short), 1);
+        assert!(strings::PyByteArray_AsString(&mut short).is_null());
+        assert!(!errors::PyErr_Occurred().is_null());
+        errors::PyErr_Clear();
+    }
+}
+
+#[test]
+fn public_bytearray_constructor_fails_closed_without_runtime_allocation() {
+    init();
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_Clear();
+        assert!(
+            molt_cpython_abi::api::strings::PyByteArray_FromStringAndSize(c"abc".as_ptr(), 3)
+                .is_null()
+        );
+        assert_eq!(
+            molt_cpython_abi::api::errors::PyErr_ExceptionMatches(
+                (&raw mut molt_cpython_abi::abi_types::PyExc_MemoryError).cast()
+            ),
+            1
+        );
+        molt_cpython_abi::api::errors::PyErr_Clear();
+    }
+}
+
+/// An explicit foreign-extension allocation; public constructors return managed
+/// objects and therefore never authorize a PyByteArrayObject payload cast.
+unsafe fn foreign_bytearray_fixture(
+    data: *const std::ffi::c_char,
+    len: isize,
+) -> *mut molt_cpython_abi::abi_types::PyObject {
+    let object = unsafe {
+        molt_cpython_abi::api::memory::PyObject_Calloc(
+            1,
+            std::mem::size_of::<molt_cpython_abi::abi_types::PyByteArrayObject>(),
+        )
+    }
+    .cast::<molt_cpython_abi::abi_types::PyByteArrayObject>();
+    assert!(!object.is_null());
+    let bytes = unsafe { molt_cpython_abi::api::memory::PyMem_Calloc(1, len as usize + 1) }
+        .cast::<std::ffi::c_char>();
+    assert!(!bytes.is_null());
+    unsafe {
+        molt_cpython_abi::api::memory::PyObject_Init(
+            object.cast(),
+            &raw mut molt_cpython_abi::abi_types::PyByteArray_Type,
+        );
+        if len != 0 {
+            std::ptr::copy_nonoverlapping(data, bytes, len as usize);
+        }
+        (*object).ob_base.ob_size = len;
+        (*object).ob_alloc = len + 1;
+        (*object).ob_bytes = bytes;
+        (*object).ob_start = bytes;
+    }
+    object.cast()
 }

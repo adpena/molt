@@ -10,41 +10,45 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
+import abc
 import builtins
 import importlib.util
+import _io as _host_native_io
 import sys
 import types
 
+_published_open = _host_native_io.open
+_intrinsic_requests = []
+
+# Capture code before replacing the host loader's _io namespace. The unseeded
+# provider intentionally has no open; importing our fixture must not require
+# file I/O through that namespace or accidentally borrow host builtins.open.
+_code = {{}}
+for _path in ({str(STDLIB_ROOT / "_io.py")!r}, {str(STDLIB_ROOT / "io.py")!r}):
+    with _published_open(_path, "rb") as _source:
+        _code[_path] = compile(_source.read(), _path, "exec")
+
 
 def _io_class(name):
-    return type(name, (), {{"__module__": "io"}})
+    return getattr(_host_native_io, name)
 
 
-def _open_ex(file, mode, buffering, encoding, errors, newline, closefd, opener):
-    return {{
-        "file": file,
-        "mode": mode,
-        "buffering": buffering,
-        "encoding": encoding,
-        "errors": errors,
-        "newline": newline,
-        "closefd": closefd,
-        "opener": opener,
-    }}
+def _builtin_class_lookup(name):
+    # The runtime resolves builtin exception classes by name; the host's _io
+    # owns the same UnsupportedOperation identity.
+    return getattr(_host_native_io, name)
 
 
 builtins._molt_intrinsics = {{
-    "molt_capabilities_require": lambda _cap: None,
-    "molt_file_open_ex": _open_ex,
-    "molt_file_read": lambda _handle, _size=None: b"",
-    "molt_file_close": lambda _handle: None,
     "molt_io_class": _io_class,
+    "molt_builtin_class_lookup": _builtin_class_lookup,
 }}
 
 _intrinsics_mod = types.ModuleType("_intrinsics")
 
 
 def _require_intrinsic(name, namespace=None):
+    _intrinsic_requests.append(name)
     intrinsics = getattr(builtins, "_molt_intrinsics", {{}})
     if name in intrinsics:
         value = intrinsics[name]
@@ -58,17 +62,24 @@ _intrinsics_mod.require_intrinsic = _require_intrinsic
 sys.modules["_intrinsics"] = _intrinsics_mod
 
 
-def _load_module(name, path_text):
+def _load_module(name, path_text, *, published_open=None):
     spec = importlib.util.spec_from_file_location(name, path_text)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    if published_open is not None:
+        module.open = published_open
     sys.modules[name] = module
-    spec.loader.exec_module(module)
+    exec(_code[path_text], module.__dict__)
     return module
 
 
-_load_module("io", {str(STDLIB_ROOT / "io.py")!r})
-_private = _load_module("_molt_private_io", {str(STDLIB_ROOT / "_io.py")!r})
+# The provider must initialize without importing the public facade. Its native
+# callable is supplied by publication, not by this Python module's body.
+sys.modules["io"] = types.ModuleType("io")
+_private = _load_module(
+    "_io", {str(STDLIB_ROOT / "_io.py")!r}, published_open=_published_open
+)
+_public = _load_module("io", {str(STDLIB_ROOT / "io.py")!r})
 
 rows = [
     (name, type(value).__name__, bool(callable(value)))
@@ -78,7 +89,17 @@ rows = [
 for name, type_name, is_callable in rows:
     print(f"ROW|{{name}}|{{type_name}}|{{is_callable}}")
 
-opened = _private.open("probe.txt", mode="rb")
+# A separate provider publication can intentionally exclude open. Importing
+# either facade must preserve memory I/O without borrowing host builtins.open.
+_without_open = _load_module("_io", {str(STDLIB_ROOT / "_io.py")!r})
+_without_open_public = _load_module("io", {str(STDLIB_ROOT / "io.py")!r})
+
+try:
+    _private.open(0, "invalid")
+except ValueError:
+    _native_mode_error = True
+else:
+    _native_mode_error = False
 
 checks = {{
     "constants": (
@@ -88,15 +109,48 @@ checks = {{
         and _private.DEFAULT_BUFFER_SIZE == 8192
     ),
     "classes": (
-        _private.IOBase.__name__ == "IOBase"
-        and _private.RawIOBase.__name__ == "RawIOBase"
-        and _private.BufferedIOBase.__name__ == "BufferedIOBase"
-        and _private.TextIOBase.__name__ == "TextIOBase"
-        and _private.FileIO.__name__ == "FileIO"
-        and _private.BytesIO.__name__ == "BytesIO"
-        and _private.StringIO.__name__ == "StringIO"
+        _private._IOBase is _host_native_io._IOBase
+        and _private._RawIOBase is _host_native_io._RawIOBase
+        and _private._BufferedIOBase is _host_native_io._BufferedIOBase
+        and _private._TextIOBase is _host_native_io._TextIOBase
+        and _private.FileIO is _host_native_io.FileIO
+        and _private.BytesIO is _host_native_io.BytesIO
+        and _private.StringIO is _host_native_io.StringIO
     ),
-    "open": isinstance(opened, dict) and opened["file"] == "probe.txt" and opened["mode"] == "rb",
+    "aliases": all(
+        getattr(_public, name) is getattr(_private, name)
+        for name in _private.__all__
+    ),
+    # CPython layering: _io owns the concrete bases, io publishes ABCs over them.
+    "public_abcs": (
+        all(
+            type(getattr(_public, name)) is abc.ABCMeta
+            and getattr(_private, "_" + name) in getattr(_public, name).__mro__
+            and name not in vars(_private)
+            for name in ("IOBase", "RawIOBase", "BufferedIOBase", "TextIOBase")
+        )
+        and issubclass(_public.FileIO, _public.RawIOBase)
+        and issubclass(_public.BytesIO, _public.BufferedIOBase)
+        and issubclass(_public.StringIO, _public.TextIOBase)
+    ),
+    "open": _private.open is _published_open and _public.open is _published_open,
+    "native_mode_error": _native_mode_error,
+    "excluded_open": all(
+        "open" not in vars(module) and "open" not in module.__all__
+        for module in (_without_open, _without_open_public)
+    ),
+    "memory_io_without_open": (
+        _without_open_public.BytesIO is _without_open.BytesIO
+        and _without_open_public.BytesIO(b"memory").read() == b"memory"
+        and _without_open_public.StringIO("memory").read() == "memory"
+    ),
+    "intrinsics": _intrinsic_requests
+    == ["molt_io_class", "molt_builtin_class_lookup"] * 2,
+    "unsupported_operation": (
+        _private.UnsupportedOperation.__module__ == "io"
+        and issubclass(_private.UnsupportedOperation, OSError)
+        and issubclass(_private.UnsupportedOperation, ValueError)
+    ),
 }}
 for key in sorted(checks):
     print(f"CHECK|{{key}}|{{checks[key]}}")
@@ -109,8 +163,9 @@ def _run_probe() -> tuple[list[tuple[str, str, str]], dict[str, str]]:
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
-        check=True,
+        check=False,
     )
+    assert proc.returncode == 0, proc.stderr
     rows: list[tuple[str, str, str]] = []
     checks: dict[str, str] = {}
     for line in proc.stdout.splitlines():
@@ -125,26 +180,29 @@ def _run_probe() -> tuple[list[tuple[str, str, str]], dict[str, str]]:
 def test__io_public_surface_matches_expected_shape() -> None:
     rows, checks = _run_probe()
     assert rows == [
-        ("BufferedIOBase", "type", "True"),
         ("BufferedRandom", "type", "True"),
         ("BufferedReader", "type", "True"),
         ("BufferedWriter", "type", "True"),
         ("BytesIO", "type", "True"),
         ("DEFAULT_BUFFER_SIZE", "int", "False"),
         ("FileIO", "type", "True"),
-        ("IOBase", "type", "True"),
-        ("RawIOBase", "type", "True"),
         ("SEEK_CUR", "int", "False"),
         ("SEEK_END", "int", "False"),
         ("SEEK_SET", "int", "False"),
         ("StringIO", "type", "True"),
-        ("TextIOBase", "type", "True"),
         ("TextIOWrapper", "type", "True"),
         ("UnsupportedOperation", "type", "True"),
-        ("open", "function", "True"),
+        ("open", "builtin_function_or_method", "True"),
     ]
     assert checks == {
+        "aliases": "True",
         "classes": "True",
         "constants": "True",
+        "excluded_open": "True",
+        "intrinsics": "True",
+        "memory_io_without_open": "True",
+        "native_mode_error": "True",
         "open": "True",
+        "public_abcs": "True",
+        "unsupported_operation": "True",
     }

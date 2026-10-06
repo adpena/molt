@@ -49,6 +49,7 @@ from tools.proof_queue_pkg import (  # noqa: E402
     process_image_capture,
     state,
     supervisor_custody as supervisor,
+    supervisor_generation,
     toolchain_capture,
 )
 
@@ -112,6 +113,18 @@ def _supervisor_build_environment(
     """Keep bootstrap outputs external and Unix startup sockets bounded."""
     build_env = dict(execution_env)
     build_env["CARGO_TARGET_DIR"] = str(target.resolve(strict=True))
+    # Bootstrap scratch has the same lifetime as its source-bound build store.
+    # The payload's per-run nonce and temporary roots never select compiler output.
+    build_env[supervisor.PROOF_SCRATCH_ROOT_ENV] = str(target.parent / "scratch")
+    if "CARGO_BUILD_BUILD_DIR" in build_env:
+        build_env["CARGO_BUILD_BUILD_DIR"] = str(target.parent / "build")
+    if os.name == "nt" or external_placement:
+        temporary = target.parent / "tmp"
+        custody_cas._canonical_root(temporary, create=True)
+        for name in ("TMPDIR", "TMP", "TEMP"):
+            build_env[name] = str(temporary)
+        if "PYTHONPYCACHEPREFIX" in build_env:
+            build_env["PYTHONPYCACHEPREFIX"] = str(temporary / "pycache")
     if os.name != "nt" and external_placement:
         wrappers = (
             build_env.get(name, "")
@@ -417,10 +430,9 @@ def execute_guarded_request(request_path: Path) -> int:
         )
         if preflight:
             raise ValueError("toolchain preflight failed: " + "; ".join(preflight))
-        # The result custody root is already proven external to the admitted
-        # source tree.  It is therefore the single authority for the reusable
-        # supervisor build as well; inherited Cargo target state must not move
-        # control-plane output back under proof source custody.
+        # A source-bound bootstrap store reuses Cargo intermediates across
+        # results. Every run receives its own immutable binary and generation
+        # record before execution; payload targets retain their own custody.
         cargo_output_layout.validate_root(output_layout.declaration)
         supervisor_target = output_layout.supervisor_target
         source_root = effective_cwd.resolve(strict=True)
@@ -436,7 +448,7 @@ def execute_guarded_request(request_path: Path) -> int:
             external_placement=output_layout.declaration is not None,
         )
         built_supervisor, supervisor_provision_telemetry = (
-            supervisor._provision_proof_supervisor(cwd=cwd, env=supervisor_build_env)
+            supervisor_generation.provision(cwd=cwd, env=supervisor_build_env)
         )
         supervisor_binary_artifact = custody_cas.put_file(
             result_path.parent / "custody-cas",
@@ -444,6 +456,15 @@ def execute_guarded_request(request_path: Path) -> int:
             logical_name=built_supervisor.name,
             executable=True,
         ).as_dict()
+        supervisor_provision_telemetry = supervisor_generation.publish_receipt(
+            supervisor_provision_telemetry, cas_root=result_path.parent / "custody-cas"
+        )
+        supervisor_generation.validate_receipt(
+            supervisor_provision_telemetry,
+            binary=supervisor_binary_artifact,
+            cas_root=result_path.parent / "custody-cas",
+            expected_target=supervisor_target,
+        )
         supervisor_binary = Path(str(supervisor_binary_artifact["path"])).resolve(
             strict=True
         )
@@ -1408,6 +1429,8 @@ def execute_guarded_request(request_path: Path) -> int:
                     + str(result["rust_link_capture_failure"]["publication_error"]),
                     file=sys.stderr,
                 )
+        if isinstance(exc, supervisor.SupervisorCapabilityUnavailable):
+            result["supervisor_capability"] = exc.capability
         if isinstance(exc, disk_capacity.DiskCapacityError):
             result["disk_capacity_admission"] = dict(exc.diagnostic)
         if isinstance(exc, cargo_cache_custody.CargoInputClosureUnproven):

@@ -1,6 +1,19 @@
 use std::collections::HashSet;
 
+use crate::object::ops_format::{
+    format_class_name_bytes, format_native_repr_override_bytes, format_obj_bytes,
+    snapshot_format_inputs,
+};
 use crate::*;
+
+fn text(parts: &[&[u8]]) -> Vec<u8> {
+    parts.concat()
+}
+fn text_len(bytes: &[u8]) -> usize {
+    crate::object::ops_string::wtf8_from_bytes(bytes)
+        .code_points()
+        .count()
+}
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -26,8 +39,11 @@ fn bool_from_bits_default(bits: u64, default: bool) -> bool {
     default
 }
 
-fn alloc_string_result(_py: &PyToken<'_>, s: &str) -> u64 {
-    let ptr = alloc_string(_py, s.as_bytes());
+fn alloc_string_result(_py: &PyToken<'_>, s: &[u8]) -> u64 {
+    if exception_pending(_py) {
+        return MoltObject::none().bits();
+    }
+    let ptr = alloc_string(_py, s);
     if ptr.is_null() {
         return raise_exception::<_>(_py, "MemoryError", "out of memory");
     }
@@ -45,34 +61,40 @@ pub(crate) fn safe_repr_inner(
     depth: i64,
     max_depth: i64,
     max_width: i64,
-) -> (String, bool, bool) {
+) -> (Vec<u8>, bool, bool) {
     // readable = true if the repr can be eval'd back
     // recursive = true if we detected a cycle
 
+    if exception_pending(_py) {
+        return (Vec::new(), false, false);
+    }
     let obj = obj_from_bits(bits);
 
     // None and immediates
-    if obj.is_none() {
-        return ("None".to_string(), true, false);
-    }
-    if let Some(f) = obj.as_float() {
-        return (format!("{}", f), true, false);
-    }
-    if let Some(i) = to_i64(obj) {
-        return (format!("{}", i), true, false);
+    if obj.is_none()
+        || obj.as_bool().is_some()
+        || obj.as_int().is_some()
+        || obj.as_float().is_some()
+    {
+        return (format_obj_bytes(_py, obj), true, false);
     }
 
     let Some(ptr) = obj.as_ptr() else {
-        return ("None".to_string(), true, false);
+        return ("None".as_bytes().to_vec(), true, false);
     };
 
     let type_id = unsafe { object_type_id(ptr) };
+
+    if let Some(repr) = format_native_repr_override_bytes(_py, obj) {
+        let readable = !repr.is_empty() && !repr.starts_with(b"<");
+        return (repr, readable, false);
+    }
 
     // Strings, bytes — use runtime repr
     // Note: None, bool, int, float are NaN-boxed and handled before as_ptr().
     match type_id {
         TYPE_ID_STRING | TYPE_ID_BYTES => {
-            let repr = format_obj(_py, obj);
+            let repr = format_obj_bytes(_py, obj);
             return (repr, true, false);
         }
         _ => {}
@@ -81,11 +103,11 @@ pub(crate) fn safe_repr_inner(
     // Check depth limit
     if max_depth > 0 && depth >= max_depth {
         match type_id {
-            TYPE_ID_LIST => return ("[...]".to_string(), false, false),
-            TYPE_ID_TUPLE => return ("(...)".to_string(), false, false),
-            TYPE_ID_DICT => return ("{...}".to_string(), false, false),
-            TYPE_ID_SET => return ("{...}".to_string(), false, false),
-            TYPE_ID_FROZENSET => return ("frozenset({...})".to_string(), false, false),
+            TYPE_ID_LIST => return ("[...]".as_bytes().to_vec(), false, false),
+            TYPE_ID_TUPLE => return ("(...)".as_bytes().to_vec(), false, false),
+            TYPE_ID_DICT => return ("{...}".as_bytes().to_vec(), false, false),
+            TYPE_ID_SET => return ("{...}".as_bytes().to_vec(), false, false),
+            TYPE_ID_FROZENSET => return ("frozenset({...})".as_bytes().to_vec(), false, false),
             _ => {}
         }
     }
@@ -98,9 +120,13 @@ pub(crate) fn safe_repr_inner(
 
     if is_container {
         if seen.contains(&bits) {
-            let type_label = type_name(_py, obj);
+            let type_label = format_class_name_bytes(type_of_bits(_py, bits));
             return (
-                format!("<Recursion on {type_label} with id={bits}>"),
+                text(&[
+                    b"<Recursion on ",
+                    &type_label,
+                    format!(" with id={bits}>").as_bytes(),
+                ]),
                 false,
                 true,
             );
@@ -112,7 +138,7 @@ pub(crate) fn safe_repr_inner(
         TYPE_ID_LIST => {
             let len = unsafe { crate::object::seq_access::locked_len(ptr) };
             if len == 0 {
-                ("[]".to_string(), true, false)
+                ("[]".as_bytes().to_vec(), true, false)
             } else {
                 let mut readable = true;
                 let mut recursive = false;
@@ -139,16 +165,20 @@ pub(crate) fn safe_repr_inner(
                     parts.push(s);
                 }
                 if display_len < len {
-                    parts.push("...".to_string());
+                    parts.push("...".as_bytes().to_vec());
                     readable = false;
                 }
-                (format!("[{}]", parts.join(", ")), readable, recursive)
+                (
+                    text(&[b"[", &parts.join(b", ".as_slice()), b"]"]),
+                    readable,
+                    recursive,
+                )
             }
         }
         TYPE_ID_TUPLE => {
             let len = unsafe { crate::object::seq_access::locked_len(ptr) };
             if len == 0 {
-                ("()".to_string(), true, false)
+                ("()".as_bytes().to_vec(), true, false)
             } else {
                 let mut readable = true;
                 let mut recursive = false;
@@ -175,21 +205,34 @@ pub(crate) fn safe_repr_inner(
                     parts.push(s);
                 }
                 if display_len < len {
-                    parts.push("...".to_string());
+                    parts.push("...".as_bytes().to_vec());
                     readable = false;
                 }
                 if len == 1 && display_len == 1 {
-                    (format!("({},)", parts[0]), readable, recursive)
+                    (text(&[b"(", &parts[0], b",)"]), readable, recursive)
                 } else {
-                    (format!("({})", parts.join(", ")), readable, recursive)
+                    (
+                        text(&[b"(", &parts.join(b", ".as_slice()), b")"]),
+                        readable,
+                        recursive,
+                    )
                 }
             }
         }
         TYPE_ID_DICT => {
-            let order = unsafe { dict_order(ptr) };
+            let Some(order) = (unsafe {
+                crate::object::ops_dict::dict_snapshot(
+                    _py,
+                    ptr,
+                    crate::object::ops_dict::DictSnapshotKind::Entries,
+                )
+            }) else {
+                seen.remove(&bits);
+                return (Vec::new(), false, false);
+            };
             let num_pairs = order.len() / 2;
             if num_pairs == 0 {
-                ("{}".to_string(), true, false)
+                ("{}".as_bytes().to_vec(), true, false)
             } else {
                 let mut readable = true;
                 let mut recursive = false;
@@ -208,8 +251,14 @@ pub(crate) fn safe_repr_inner(
                 }
                 // Sort by key repr for deterministic output
                 pairs.sort_by(|a, b| {
-                    let ka = format_obj(_py, obj_from_bits(a.0));
-                    let kb = format_obj(_py, obj_from_bits(b.0));
+                    if exception_pending(_py) {
+                        return std::cmp::Ordering::Equal;
+                    }
+                    let ka = format_obj_bytes(_py, obj_from_bits(a.0));
+                    if exception_pending(_py) {
+                        return std::cmp::Ordering::Equal;
+                    }
+                    let kb = format_obj_bytes(_py, obj_from_bits(b.0));
                     ka.cmp(&kb)
                 });
                 for &(key_bits, val_bits) in pairs.iter().take(display_len) {
@@ -223,23 +272,30 @@ pub(crate) fn safe_repr_inner(
                     if krec || vrec {
                         recursive = true;
                     }
-                    parts.push(format!("{}: {}", ks, vs));
+                    parts.push(text(&[&ks, b": ", &vs]));
                 }
                 if display_len < num_pairs {
-                    parts.push("...".to_string());
+                    parts.push("...".as_bytes().to_vec());
                     readable = false;
                 }
-                (format!("{{{}}}", parts.join(", ")), readable, recursive)
+                (
+                    text(&[b"{", &parts.join(b", ".as_slice()), b"}"]),
+                    readable,
+                    recursive,
+                )
             }
         }
         TYPE_ID_SET => {
-            let order = unsafe { set_order(ptr) };
+            let Some(order) = snapshot_format_inputs(_py, unsafe { set_order(ptr) }) else {
+                seen.remove(&bits);
+                return (Vec::new(), false, false);
+            };
             if order.is_empty() {
-                ("set()".to_string(), true, false)
+                ("set()".as_bytes().to_vec(), true, false)
             } else {
                 let readable = true;
                 let recursive = false;
-                let mut repr_elems: Vec<String> = order
+                let mut repr_elems: Vec<Vec<u8>> = order
                     .iter()
                     .map(|&e| {
                         let (s, _, _) =
@@ -249,20 +305,23 @@ pub(crate) fn safe_repr_inner(
                     .collect();
                 repr_elems.sort();
                 (
-                    format!("{{{}}}", repr_elems.join(", ")),
+                    text(&[b"{", &repr_elems.join(b", ".as_slice()), b"}"]),
                     readable,
                     recursive,
                 )
             }
         }
         TYPE_ID_FROZENSET => {
-            let order = unsafe { set_order(ptr) };
+            let Some(order) = snapshot_format_inputs(_py, unsafe { set_order(ptr) }) else {
+                seen.remove(&bits);
+                return (Vec::new(), false, false);
+            };
             if order.is_empty() {
-                ("frozenset()".to_string(), true, false)
+                ("frozenset()".as_bytes().to_vec(), true, false)
             } else {
                 let readable = true;
                 let recursive = false;
-                let mut repr_elems: Vec<String> = order
+                let mut repr_elems: Vec<Vec<u8>> = order
                     .iter()
                     .map(|&e| {
                         let (s, _, _) =
@@ -272,7 +331,7 @@ pub(crate) fn safe_repr_inner(
                     .collect();
                 repr_elems.sort();
                 (
-                    format!("frozenset({{{}}})", repr_elems.join(", ")),
+                    text(&[b"frozenset({", &repr_elems.join(b", ".as_slice()), b"})"]),
                     readable,
                     recursive,
                 )
@@ -280,8 +339,8 @@ pub(crate) fn safe_repr_inner(
         }
         _ => {
             // Fall back to the runtime repr for other types
-            let repr = format_obj(_py, obj);
-            let readable = !repr.is_empty() && !repr.starts_with('<');
+            let repr = format_obj_bytes(_py, obj);
+            let readable = !repr.is_empty() && !repr.starts_with(b"<");
             (repr, readable, false)
         }
     };
@@ -306,7 +365,7 @@ struct PformatConfig {
 }
 
 /// Full pformat implementation matching CPython's pprint.pformat behavior.
-fn pformat_impl(_py: &PyToken<'_>, bits: u64, config: PformatConfig) -> String {
+fn pformat_impl(_py: &PyToken<'_>, bits: u64, config: PformatConfig) -> Vec<u8> {
     let mut seen = HashSet::new();
     pformat_recursive(_py, bits, &mut seen, 0, 0, config)
 }
@@ -318,33 +377,37 @@ fn pformat_recursive(
     current_indent: i64,
     level: i64,
     config: PformatConfig,
-) -> String {
+) -> Vec<u8> {
+    if exception_pending(_py) {
+        return Vec::new();
+    }
     let obj = obj_from_bits(bits);
 
     // Simple scalars
-    if obj.is_none() {
-        return "None".to_string();
+    if obj.is_none() || obj.as_bool().is_some() || obj.as_float().is_some() {
+        return format_obj_bytes(_py, obj);
     }
-    if let Some(f) = obj.as_float() {
-        return format!("{}", f);
-    }
-    if let Some(i) = to_i64(obj) {
+    if let Some(i) = obj.as_int() {
         if config.underscore_numbers {
-            return format_int_underscored(i);
+            return format_int_underscored(i).into_bytes();
         }
-        return format!("{}", i);
+        return format!("{}", i).into_bytes();
     }
 
     let Some(ptr) = obj.as_ptr() else {
-        return "None".to_string();
+        return "None".as_bytes().to_vec();
     };
 
     let type_id = unsafe { object_type_id(ptr) };
 
+    if let Some(repr) = format_native_repr_override_bytes(_py, obj) {
+        return repr;
+    }
+
     // Scalars — Note: None, bool, int, float are NaN-boxed and handled before as_ptr().
     match type_id {
         TYPE_ID_STRING | TYPE_ID_BYTES => {
-            return format_obj(_py, obj);
+            return format_obj_bytes(_py, obj);
         }
         _ => {}
     }
@@ -352,9 +415,9 @@ fn pformat_recursive(
     // Depth check
     if config.max_depth > 0 && level >= config.max_depth {
         match type_id {
-            TYPE_ID_LIST => return "[...]".to_string(),
-            TYPE_ID_TUPLE => return "(...)".to_string(),
-            TYPE_ID_DICT => return "{...}".to_string(),
+            TYPE_ID_LIST => return "[...]".as_bytes().to_vec(),
+            TYPE_ID_TUPLE => return "(...)".as_bytes().to_vec(),
+            TYPE_ID_DICT => return "{...}".as_bytes().to_vec(),
             _ => {}
         }
     }
@@ -365,8 +428,12 @@ fn pformat_recursive(
         TYPE_ID_LIST | TYPE_ID_TUPLE | TYPE_ID_DICT | TYPE_ID_SET | TYPE_ID_FROZENSET
     );
     if is_container && seen.contains(&bits) {
-        let type_label = type_name(_py, obj);
-        return format!("<Recursion on {type_label} with id={bits}>");
+        let type_label = format_class_name_bytes(type_of_bits(_py, bits));
+        return text(&[
+            b"<Recursion on ",
+            &type_label,
+            format!(" with id={bits}>").as_bytes(),
+        ]);
     }
     if is_container {
         seen.insert(bits);
@@ -380,7 +447,7 @@ fn pformat_recursive(
     };
 
     let available = config.width - current_indent;
-    if (simple.len() as i64) <= available {
+    if (text_len(&simple) as i64) <= available {
         if is_container {
             seen.remove(&bits);
         }
@@ -390,10 +457,19 @@ fn pformat_recursive(
     // Multi-line formatting for containers
     let result = match type_id {
         TYPE_ID_DICT => {
-            let order = unsafe { dict_order(ptr) };
+            let Some(order) = (unsafe {
+                crate::object::ops_dict::dict_snapshot(
+                    _py,
+                    ptr,
+                    crate::object::ops_dict::DictSnapshotKind::Entries,
+                )
+            }) else {
+                seen.remove(&bits);
+                return Vec::new();
+            };
             let num_pairs = order.len() / 2;
             if num_pairs == 0 {
-                "{}".to_string()
+                "{}".as_bytes().to_vec()
             } else {
                 let child_indent = current_indent + config.indent_per_level;
                 let indent_str = " ".repeat(child_indent as usize);
@@ -406,8 +482,14 @@ fn pformat_recursive(
                 }
                 if config.sort_dicts {
                     pairs.sort_by(|a, b| {
-                        let ka = format_obj(_py, obj_from_bits(a.0));
-                        let kb = format_obj(_py, obj_from_bits(b.0));
+                        if exception_pending(_py) {
+                            return std::cmp::Ordering::Equal;
+                        }
+                        let ka = format_obj_bytes(_py, obj_from_bits(a.0));
+                        if exception_pending(_py) {
+                            return std::cmp::Ordering::Equal;
+                        }
+                        let kb = format_obj_bytes(_py, obj_from_bits(b.0));
                         ka.cmp(&kb)
                     });
                 }
@@ -419,24 +501,24 @@ fn pformat_recursive(
                         _py,
                         *val_bits,
                         seen,
-                        child_indent + key_repr.len() as i64 + 2,
+                        child_indent + text_len(&key_repr) as i64 + 2,
                         level + 1,
                         config,
                     );
-                    parts.push(format!("{key_repr}: {val_repr}"));
+                    parts.push(text(&[&key_repr, b": ", &val_repr]));
                 }
                 let prefix = if config.indent_per_level > 1 {
-                    format!("{{{}", " ".repeat((config.indent_per_level - 1) as usize))
+                    format!("{{{}", " ".repeat((config.indent_per_level - 1) as usize)).into_bytes()
                 } else {
-                    "{".to_string()
+                    "{".as_bytes().to_vec()
                 };
                 let sep = format!(",\n{indent_str}");
-                format!("{}{}}}", prefix, parts.join(&sep))
+                text(&[&prefix, &parts.join(sep.as_bytes()), b"}"])
             }
         }
         TYPE_ID_LIST => {
             if unsafe { crate::object::seq_access::locked_len(ptr) } == 0 {
-                "[]".to_string()
+                "[]".as_bytes().to_vec()
             } else {
                 format_sequence_pformat(_py, ptr, seen, current_indent, level, config, ("[", "]"))
             }
@@ -444,7 +526,7 @@ fn pformat_recursive(
         TYPE_ID_TUPLE => {
             let len = unsafe { crate::object::seq_access::locked_len(ptr) };
             if len == 0 {
-                "()".to_string()
+                "()".as_bytes().to_vec()
             } else {
                 let end = if len == 1 { ",)" } else { ")" };
                 format_sequence_pformat(_py, ptr, seen, current_indent, level, config, ("(", end))
@@ -468,7 +550,7 @@ fn format_sequence_pformat(
     level: i64,
     config: PformatConfig,
     delimiters: (&str, &str),
-) -> String {
+) -> Vec<u8> {
     let (open, close) = delimiters;
     let child_indent = current_indent + config.indent_per_level;
     let indent_str = " ".repeat(child_indent as usize);
@@ -495,22 +577,22 @@ fn format_sequence_pformat(
 
     if config.compact {
         // In compact mode, try to fit multiple items on each line
-        let mut lines: Vec<String> = Vec::new();
-        let mut current_line = String::new();
+        let mut lines: Vec<Vec<u8>> = Vec::new();
+        let mut current_line = Vec::new();
         let max_line = config.width - child_indent;
 
         for (i, repr) in reprs.iter().enumerate() {
             let candidate = if current_line.is_empty() {
                 repr.clone()
             } else {
-                format!("{}, {}", current_line, repr)
+                text(&[&current_line, b", ", repr])
             };
             let extra = if i == reprs.len() - 1 {
                 close.len() as i64
             } else {
                 2 // ", "
             };
-            if !current_line.is_empty() && (candidate.len() as i64 + extra) > max_line {
+            if !current_line.is_empty() && (text_len(&candidate) as i64 + extra) > max_line {
                 lines.push(current_line);
                 current_line = repr.clone();
             } else {
@@ -527,11 +609,12 @@ fn format_sequence_pformat(
                 open,
                 " ".repeat((config.indent_per_level - 1) as usize)
             )
+            .into_bytes()
         } else {
-            open.to_string()
+            open.as_bytes().to_vec()
         };
         let sep = format!(",\n{indent_str}");
-        format!("{}{}{}", prefix, lines.join(&sep), close)
+        text(&[&prefix, &lines.join(sep.as_bytes()), close.as_bytes()])
     } else {
         let prefix = if config.indent_per_level > 1 {
             format!(
@@ -539,11 +622,12 @@ fn format_sequence_pformat(
                 open,
                 " ".repeat((config.indent_per_level - 1) as usize)
             )
+            .into_bytes()
         } else {
-            open.to_string()
+            open.as_bytes().to_vec()
         };
         let sep = format!(",\n{indent_str}");
-        format!("{}{}{}", prefix, reprs.join(&sep), close)
+        text(&[&prefix, &reprs.join(sep.as_bytes()), close.as_bytes()])
     }
 }
 

@@ -54,7 +54,6 @@ static_type = [
   { params = ["i64", "i64", "i64", "i32", "i64", "i64", "i64", "i64", "i64"], results = ["i64"] },
   { params = ["i64", "i32"], results = ["i32"] },
   { params = [], results = ["i32"] },
-  { params = ["i64", "i64"], results = ["i32"] },
 ]
 
 non_runtime_callable_intrinsic = [
@@ -62,7 +61,6 @@ non_runtime_callable_intrinsic = [
   # never Python-callable function objects.  Every published callable obeys
   # the single owned-result contract; direct intrinsic lowering retains these
   # raw borrow semantics without exposing them through callable dispatch.
-  "molt_type_of_borrowed",
   "molt_dict_getitem_borrowed",
   "molt_list_getitem_borrowed",
   "molt_tuple_getitem_borrowed",
@@ -409,12 +407,6 @@ runtime_name = "molt_abc_update_abstractmethods"
 callable_arity = 1
 
 [[import]]
-name = "abc_abstractmethod_check"
-type = 2
-runtime_name = "molt_abc_abstractmethod_check"
-callable_arity = 1
-
-[[import]]
 name = "array_new"
 type = 2
 runtime_name = "molt_array_new"
@@ -672,6 +664,69 @@ callable_arity = 1
 name = "module_set_attr"
 type = 5
 
+# Backend-only typed frame publication. All inputs are borrowed boxed values;
+# the ABI returns the borrowed None singleton and publishes no Python callable.
+[[import]]
+name = "frame_context_set"
+runtime_name = "molt_frame_context_set"
+type = 5
+boxed_call = true
+return_contract = "borrowed_object"
+
+[[import]]
+name = "frame_locals_begin"
+type = 0
+runtime_name = "molt_frame_locals_begin"
+callable_arity = 0
+
+# Backend-only frame binding storage. The homes lender takes a raw slot count
+# and returns a raw linear-memory address, never an object: 0 when the frame
+# entry failed or the frame has too few homes, with an exception pending. A
+# home read takes one home's raw address and returns the binding borrowed from
+# the home; a home take moves the binding out and returns it owned. `locals()`
+# returns an owned dict.
+[[import]]
+name = "frame_homes"
+runtime_name = "molt_frame_homes"
+type = 2
+return_contract = "raw_bits"
+
+[[import]]
+name = "frame_home_load"
+runtime_name = "molt_frame_home_load"
+type = 2
+return_contract = "borrowed_object"
+
+[[import]]
+name = "frame_home_take"
+runtime_name = "molt_frame_home_take"
+type = 2
+return_contract = "owned_object"
+
+[[import]]
+name = "locals_builtin"
+runtime_name = "molt_locals_builtin"
+type = 0
+callable_arity = 0
+
+[[import]]
+name = "frame_cell_publish"
+type = 3
+runtime_name = "molt_frame_cell_publish"
+callable_arity = 2
+
+[[import]]
+name = "exception_prepare_raise"
+type = 3
+runtime_name = "molt_exception_prepare_raise"
+callable_arity = 2
+
+[[import]]
+name = "exception_trace_prepend"
+type = 2
+runtime_name = "molt_exception_trace_prepend"
+callable_arity = 1
+
 [[import]]
 name = "exception_active"
 type = 0
@@ -777,10 +832,6 @@ type = 0
 name = "exception_push"
 return_contract = "owned_object"
 type = 0
-
-[[import]]
-name = "exception_set_cause"
-type = 3
 
 [[import]]
 name = "exception_set_last"
@@ -951,11 +1002,6 @@ return_contract = "owned_object"
 type = 2
 
 [[import]]
-name = "type_of_borrowed"
-return_contract = "borrowed_object"
-type = 2
-
-[[import]]
 name = "bound_method_new"
 type = 3
 boxed_call = true
@@ -970,10 +1016,12 @@ name = "closure_store"
 return_contract = "owned_object"
 type = 5
 
+# (fn_ptr, trampoline_ptr, arity, entry_custody): the last operand is the raw
+# entry-custody word derived from the function's own parameter declaration.
 [[import]]
 name = "func_new"
 return_contract = "owned_object"
-type = 5
+type = 7
 
 [[import]]
 name = "func_new_builtin"
@@ -986,10 +1034,11 @@ type = 7
 runtime_name = "molt_func_new_builtin_named"
 callable_arity = 4
 
+# (fn_ptr, trampoline_ptr, arity, closure, entry_custody).
 [[import]]
 name = "func_new_closure"
 return_contract = "owned_object"
-type = 7
+type = 12
 
 [[import]]
 name = "function_closure_bits"
@@ -1206,6 +1255,13 @@ name = "call_bind_ic"
 return_contract = "owned_object"
 type = 5
 
+# `call_bind`/`call_indirect` of a stack-form builder whose instruction adopted
+# its callable as well as the builder (`argument_custody`).
+[[import]]
+name = "call_bind_ic_owned"
+return_contract = "owned_object"
+type = 5
+
 [[import]]
 name = "call_method_ic0"
 return_contract = "owned_object"
@@ -1231,6 +1287,13 @@ name = "call_method_ic4"
 return_contract = "owned_object"
 type = 41
 
+# A fused method call whose instruction adopted its receiver and arguments:
+# (site, receiver, name, name length, spilled arguments, count).
+[[import]]
+name = "call_method_ic_owned"
+return_contract = "owned_object"
+type = 39
+
 [[import]]
 name = "call_super_method_ic0"
 return_contract = "owned_object"
@@ -1255,6 +1318,14 @@ type = 45
 name = "call_super_method_ic4"
 return_contract = "owned_object"
 type = 46
+
+# A fused `super().method()` call whose instruction adopted `self` and its
+# arguments; the class stays borrowed: (site, class, self, name, name length,
+# spilled arguments, count).
+[[import]]
+name = "call_super_method_ic_owned"
+return_contract = "owned_object"
+type = 44
 
 # Method inline-cache arity selector. Extra arguments are capped at the highest
 # generated helper arity; `call_method_ic4` and `call_super_method_ic4` own the
@@ -1315,6 +1386,23 @@ name = "call_func_dispatch"
 return_contract = "owned_object"
 type = 7
 
+# An ordinary source call (`call_func`, `call_method`, the `call_guarded`
+# fallback) that adopted its callable and its arguments: the callable and the
+# spilled argument references belong to the call, which ends a temporary bound
+# method before its function runs, moves the arguments into an adopting entry
+# or releases them after a borrowing callee, and releases the callable last.
+[[import]]
+name = "call_func_owned"
+return_contract = "owned_object"
+type = 7
+
+# A call instruction's adopted inputs that no callee took over (after a
+# borrowing callee, or a failure before invocation): (callable or 0, spilled
+# arguments, count), released in CALL's order.
+[[import]]
+name = "call_inputs_release"
+type = 30
+
 [[import]]
 name = "call_indirect_ic"
 return_contract = "owned_object"
@@ -1330,6 +1418,11 @@ type = 3
 
 [[import]]
 name = "callargs_new"
+return_contract = "owned_object"
+type = 3
+
+[[import]]
+name = "callargs_new_expanded"
 return_contract = "owned_object"
 type = 3
 
@@ -1389,6 +1482,11 @@ type = 2
 name = "guard_layout"
 return_contract = "owned_object"
 type = 5
+
+[[import]]
+name = "profile_enabled"
+return_contract = "raw_bits"
+type = 0
 
 [[import]]
 name = "guard_type"
@@ -1549,6 +1647,8 @@ type = 3
 [[import]]
 name = "pow_mod"
 type = 5
+runtime_name = "molt_pow_mod"
+callable_arity = 3
 
 [[import]]
 name = "neg"
@@ -1722,25 +1822,28 @@ return_contract = "raw_bits"
 [[import]]
 name = "frame_invocation_exit"
 type = 2
-return_contract = "owned_object"
+return_contract = "borrowed_object"
 
 [[import]]
 name = "trace_enter_slot"
 type = 2
 runtime_name = "molt_trace_enter_slot"
 callable_arity = 1
+return_contract = "borrowed_object"
 
 [[import]]
 name = "trace_exit"
 type = 0
 runtime_name = "molt_trace_exit"
 callable_arity = 0
+return_contract = "borrowed_object"
 
 [[import]]
 name = "trace_set_line"
 type = 2
 runtime_name = "molt_trace_set_line"
 callable_arity = 1
+return_contract = "borrowed_object"
 
 [[import]]
 name = "runtime_init"
@@ -1793,7 +1896,7 @@ runtime_name = "molt_gen_locals"
 callable_arity = 1
 
 [[import]]
-name = "gen_locals_register"
+name = "stateful_locals_register"
 return_contract = "owned_object"
 type = 5
 
@@ -1824,6 +1927,7 @@ callable_arity = 0
 [[import]]
 name = "future_poll"
 return_contract = "poll_result"
+boxed_call = true
 type = 2
 
 [[import]]
@@ -1990,6 +2094,7 @@ type = 3
 
 [[import]]
 name = "del_index"
+return_contract = "borrowed_object"
 type = 3
 
 [[import]]
@@ -2020,10 +2125,6 @@ type = 3
 name = "dict_getitem_borrowed"
 return_contract = "borrowed_object"
 type = 3
-
-[[import]]
-name = "dict_inc"
-type = 5
 
 [[import]]
 name = "dict_items"
@@ -2057,6 +2158,7 @@ type = 5
 
 [[import]]
 name = "dict_setitem"
+return_contract = "borrowed_object"
 type = 5
 
 [[import]]
@@ -2117,10 +2219,6 @@ type = 3
 name = "unpack_sequence"
 return_contract = "owned_object"
 type = 5
-
-[[import]]
-name = "intarray_from_seq"
-type = 2
 
 [[import]]
 name = "iter"
@@ -2184,22 +2282,8 @@ return_contract = "borrowed_object"
 type = 3
 
 [[import]]
-name = "list_builder_append"
-type = 49
-
-[[import]]
 name = "list_contains"
 type = 3
-
-[[import]]
-name = "list_builder_finish"
-return_contract = "owned_object"
-type = 2
-
-[[import]]
-name = "list_builder_new"
-return_contract = "owned_object"
-type = 2
 
 [[import]]
 name = "list_clear"
@@ -2239,6 +2323,7 @@ type = 3
 
 [[import]]
 name = "list_int_setitem"
+return_contract = "borrowed_object"
 type = 5
 
 [[import]]
@@ -2388,17 +2473,24 @@ return_contract = "borrowed_object"
 type = 5
 
 [[import]]
-name = "tuple_builder_finish"
-return_contract = "owned_object"
-type = 2
-
-[[import]]
 name = "tuple_count"
 type = 3
 
 [[import]]
 name = "tuple_from_list"
 type = 2
+
+# Fixed-arity construction borrows one word range: a raw address and a raw
+# length, never boxed operands.
+[[import]]
+name = "tuple_from_values"
+return_contract = "owned_object"
+type = 3
+
+[[import]]
+name = "list_from_values"
+return_contract = "owned_object"
+type = 3
 
 [[import]]
 name = "tuple_getitem"
@@ -2482,6 +2574,10 @@ name = "oct_builtin"
 type = 2
 runtime_name = "molt_oct_builtin"
 callable_arity = 1
+
+[[import]]
+name = "operator_index"
+type = 2
 
 [[import]]
 name = "ord"
@@ -2687,6 +2783,12 @@ runtime_name = "molt_sys_api_version"
 callable_arity = 0
 
 [[import]]
+name = "sys_audit"
+type = 3
+runtime_name = "molt_sys_audit"
+callable_arity = 2
+
+[[import]]
 name = "sys_executable"
 type = 0
 runtime_name = "molt_sys_executable"
@@ -2747,6 +2849,11 @@ boxed_call = true
 name = "dataclass_new"
 return_contract = "owned_object"
 type = 7
+
+[[import]]
+name = "dataclass_new_from_values"
+return_contract = "owned_object"
+type = 12
 
 [[import]]
 name = "dataclass_set"
@@ -2842,124 +2949,24 @@ runtime_name = "molt_msgpack_parse_scalar_obj"
 callable_arity = 1
 
 [[import]]
-name = "vec_max_int"
-return_contract = "owned_object"
-type = 3
-
-[[import]]
-name = "vec_max_int_range"
-return_contract = "owned_object"
+name = "vec_max"
+boxed_call = true
 type = 5
 
 [[import]]
-name = "vec_max_int_range_trusted"
-return_contract = "owned_object"
+name = "vec_min"
+boxed_call = true
 type = 5
 
 [[import]]
-name = "vec_max_int_trusted"
-return_contract = "owned_object"
-type = 3
-
-[[import]]
-name = "vec_min_int"
-return_contract = "owned_object"
-type = 3
-
-[[import]]
-name = "vec_min_int_range"
-return_contract = "owned_object"
+name = "vec_prod"
+boxed_call = true
 type = 5
 
 [[import]]
-name = "vec_min_int_range_trusted"
-return_contract = "owned_object"
+name = "vec_sum"
+boxed_call = true
 type = 5
-
-[[import]]
-name = "vec_min_int_trusted"
-return_contract = "owned_object"
-type = 3
-
-[[import]]
-name = "vec_prod_int"
-return_contract = "owned_object"
-type = 3
-
-[[import]]
-name = "vec_prod_int_range"
-return_contract = "owned_object"
-type = 5
-
-[[import]]
-name = "vec_prod_int_range_trusted"
-return_contract = "owned_object"
-type = 5
-
-[[import]]
-name = "vec_prod_int_trusted"
-return_contract = "owned_object"
-type = 3
-
-[[import]]
-name = "vec_sum_float"
-return_contract = "owned_object"
-type = 3
-
-[[import]]
-name = "vec_sum_float_range"
-return_contract = "owned_object"
-type = 5
-
-[[import]]
-name = "vec_sum_float_range_iter"
-return_contract = "owned_object"
-type = 3
-
-[[import]]
-name = "vec_sum_float_range_iter_trusted"
-return_contract = "owned_object"
-type = 3
-
-[[import]]
-name = "vec_sum_float_range_trusted"
-return_contract = "owned_object"
-type = 5
-
-[[import]]
-name = "vec_sum_float_trusted"
-return_contract = "owned_object"
-type = 3
-
-[[import]]
-name = "vec_sum_int"
-return_contract = "owned_object"
-type = 3
-
-[[import]]
-name = "vec_sum_int_range"
-return_contract = "owned_object"
-type = 5
-
-[[import]]
-name = "vec_sum_int_range_iter"
-return_contract = "owned_object"
-type = 3
-
-[[import]]
-name = "vec_sum_int_range_iter_trusted"
-return_contract = "owned_object"
-type = 3
-
-[[import]]
-name = "vec_sum_int_range_trusted"
-return_contract = "owned_object"
-type = 5
-
-[[import]]
-name = "vec_sum_int_trusted"
-return_contract = "owned_object"
-type = 3
 
 [[import]]
 name = "heapq_heapify"
@@ -3000,10 +3007,6 @@ name = "statistics_stdev_slice"
 type = 12
 
 [[import]]
-name = "taq_ingest_line"
-type = 5
-
-[[import]]
 name = "io_wait_new"
 type = 5
 runtime_name = "molt_io_wait_new"
@@ -3026,20 +3029,15 @@ callable_arity = 0
 
 [[import]]
 name = "asyncgen_hooks_set"
-type = 3
+type = 5
 runtime_name = "molt_asyncgen_hooks_set"
-callable_arity = 2
+callable_arity = 3
 
 [[import]]
 name = "asyncgen_locals"
 type = 2
 runtime_name = "molt_asyncgen_locals"
 callable_arity = 1
-
-[[import]]
-name = "asyncgen_locals_register"
-return_contract = "owned_object"
-type = 5
 
 [[import]]
 name = "asyncgen_new"
@@ -3052,110 +3050,79 @@ type = 2
 poll_table_slot = 3
 
 [[import]]
-name = "asyncgen_shutdown"
-type = 0
-runtime_name = "molt_asyncgen_shutdown"
-callable_arity = 0
-
-[[import]]
 name = "asyncio_fd_watcher_poll"
-type = 2
-poll_table_slot = 26
-
-[[import]]
-name = "asyncio_gather_poll"
-type = 2
-poll_table_slot = 11
-
-[[import]]
-name = "asyncio_ready_runner_poll"
-type = 2
-poll_table_slot = 28
-
-[[import]]
-name = "asyncio_server_accept_loop_poll"
-type = 2
-poll_table_slot = 27
-
-[[import]]
-name = "asyncio_sock_accept_poll"
-type = 2
-poll_table_slot = 19
-
-[[import]]
-name = "asyncio_sock_connect_poll"
-type = 2
-poll_table_slot = 18
-
-[[import]]
-name = "asyncio_sock_recv_into_poll"
-type = 2
-poll_table_slot = 20
-
-[[import]]
-name = "asyncio_sock_recv_poll"
-type = 2
-poll_table_slot = 17
-
-[[import]]
-name = "asyncio_sock_recvfrom_into_poll"
-type = 2
-poll_table_slot = 23
-
-[[import]]
-name = "asyncio_sock_recvfrom_poll"
 type = 2
 poll_table_slot = 22
 
 [[import]]
-name = "asyncio_sock_sendall_poll"
+name = "asyncio_server_accept_loop_poll"
 type = 2
-poll_table_slot = 21
+poll_table_slot = 23
 
 [[import]]
-name = "asyncio_sock_sendto_poll"
-type = 2
-poll_table_slot = 24
-
-[[import]]
-name = "asyncio_socket_reader_read_poll"
-type = 2
-poll_table_slot = 12
-
-[[import]]
-name = "asyncio_socket_reader_readline_poll"
-type = 2
-poll_table_slot = 13
-
-[[import]]
-name = "asyncio_stream_reader_read_poll"
-type = 2
-poll_table_slot = 14
-
-[[import]]
-name = "asyncio_stream_reader_readline_poll"
-type = 2
-poll_table_slot = 15
-
-[[import]]
-name = "asyncio_stream_send_all_poll"
+name = "asyncio_sock_accept_poll"
 type = 2
 poll_table_slot = 16
 
 [[import]]
-name = "asyncio_timer_handle_poll"
+name = "asyncio_sock_connect_poll"
 type = 2
-poll_table_slot = 25
+poll_table_slot = 15
 
 [[import]]
-name = "asyncio_wait_for_poll"
+name = "asyncio_sock_recv_into_poll"
+type = 2
+poll_table_slot = 17
+
+[[import]]
+name = "asyncio_sock_recv_poll"
+type = 2
+poll_table_slot = 14
+
+[[import]]
+name = "asyncio_sock_recvfrom_into_poll"
+type = 2
+poll_table_slot = 20
+
+[[import]]
+name = "asyncio_sock_recvfrom_poll"
+type = 2
+poll_table_slot = 19
+
+[[import]]
+name = "asyncio_sock_sendall_poll"
+type = 2
+poll_table_slot = 18
+
+[[import]]
+name = "asyncio_sock_sendto_poll"
+type = 2
+poll_table_slot = 21
+
+[[import]]
+name = "asyncio_socket_reader_read_poll"
 type = 2
 poll_table_slot = 9
 
 [[import]]
-name = "asyncio_wait_poll"
+name = "asyncio_socket_reader_readline_poll"
 type = 2
 poll_table_slot = 10
+
+[[import]]
+name = "asyncio_stream_reader_read_poll"
+type = 2
+poll_table_slot = 11
+
+[[import]]
+name = "asyncio_stream_reader_readline_poll"
+type = 2
+poll_table_slot = 12
+
+[[import]]
+name = "asyncio_stream_send_all_poll"
+type = 2
+poll_table_slot = 13
 
 [[import]]
 name = "buffer2d_cols"
@@ -3340,22 +3307,22 @@ type = 2
 [[import]]
 name = "contextlib_async_exitstack_enter_context_poll"
 type = 2
-poll_table_slot = 32
+poll_table_slot = 27
 
 [[import]]
 name = "contextlib_async_exitstack_exit_poll"
 type = 2
-poll_table_slot = 31
+poll_table_slot = 26
 
 [[import]]
 name = "contextlib_asyncgen_enter_poll"
 type = 2
-poll_table_slot = 29
+poll_table_slot = 24
 
 [[import]]
 name = "contextlib_asyncgen_exit_poll"
 type = 2
-poll_table_slot = 30
+poll_table_slot = 25
 
 [[import]]
 name = "importlib_bootstrap_payload"
@@ -4803,7 +4770,7 @@ type = 5
 
 [[import]]
 name = "string_split_sep_dict_inc"
-type = 7
+type = 12
 
 [[import]]
 name = "string_split_validate"
@@ -4811,7 +4778,7 @@ type = 3
 
 [[import]]
 name = "string_split_ws_dict_inc"
-type = 5
+type = 7
 
 [[import]]
 name = "string_startswith"
@@ -5304,6 +5271,16 @@ callable_arity = 3
 # LIR-fast runtime-call enum authority. Each row references a canonical import
 # above; preserved Copy runtime services use the import name as their
 # `_original_kind` key and carry only the operand count here.
+
+[[lir_runtime_call]]
+variant = "ProfileEnabled"
+import_name = "profile_enabled"
+
+[[lir_runtime_call]]
+variant = "GuardType"
+import_name = "guard_type"
+boxed_operand_count = 2
+preserved_copy_operand_count = 2
 
 [[lir_runtime_call]]
 variant = "Add"
@@ -5826,123 +5803,23 @@ lir_variant = "StringEq"
 lir_operand_count = 2
 
 [[numeric_runtime_selector]]
-kind = "vec_sum_int"
-import_name = "vec_sum_int"
+kind = "vec_sum"
+import_name = "vec_sum"
 op_loop_variant = "VectorReduction"
 
 [[numeric_runtime_selector]]
-kind = "vec_sum_int_trusted"
-import_name = "vec_sum_int_trusted"
+kind = "vec_prod"
+import_name = "vec_prod"
 op_loop_variant = "VectorReduction"
 
 [[numeric_runtime_selector]]
-kind = "vec_sum_int_range_iter"
-import_name = "vec_sum_int_range_iter"
+kind = "vec_min"
+import_name = "vec_min"
 op_loop_variant = "VectorReduction"
 
 [[numeric_runtime_selector]]
-kind = "vec_sum_int_range_iter_trusted"
-import_name = "vec_sum_int_range_iter_trusted"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_sum_int_range"
-import_name = "vec_sum_int_range"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_sum_int_range_trusted"
-import_name = "vec_sum_int_range_trusted"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_sum_float"
-import_name = "vec_sum_float"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_sum_float_trusted"
-import_name = "vec_sum_float_trusted"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_sum_float_range_iter"
-import_name = "vec_sum_float_range_iter"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_sum_float_range_iter_trusted"
-import_name = "vec_sum_float_range_iter_trusted"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_sum_float_range"
-import_name = "vec_sum_float_range"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_sum_float_range_trusted"
-import_name = "vec_sum_float_range_trusted"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_prod_int"
-import_name = "vec_prod_int"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_prod_int_trusted"
-import_name = "vec_prod_int_trusted"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_prod_int_range"
-import_name = "vec_prod_int_range"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_prod_int_range_trusted"
-import_name = "vec_prod_int_range_trusted"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_min_int"
-import_name = "vec_min_int"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_min_int_trusted"
-import_name = "vec_min_int_trusted"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_min_int_range"
-import_name = "vec_min_int_range"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_min_int_range_trusted"
-import_name = "vec_min_int_range_trusted"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_max_int"
-import_name = "vec_max_int"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_max_int_trusted"
-import_name = "vec_max_int_trusted"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_max_int_range"
-import_name = "vec_max_int_range"
-op_loop_variant = "VectorReduction"
-
-[[numeric_runtime_selector]]
-kind = "vec_max_int_range_trusted"
-import_name = "vec_max_int_range_trusted"
+kind = "vec_max"
+import_name = "vec_max"
 op_loop_variant = "VectorReduction"
 
 [[lir_runtime_call]]
@@ -6006,20 +5883,12 @@ variant = "UnpackSequence"
 import_name = "unpack_sequence"
 
 [[lir_runtime_call]]
-variant = "ListBuilderNew"
-import_name = "list_builder_new"
+variant = "TupleFromValues"
+import_name = "tuple_from_values"
 
 [[lir_runtime_call]]
-variant = "ListBuilderAppend"
-import_name = "list_builder_append"
-
-[[lir_runtime_call]]
-variant = "ListBuilderFinish"
-import_name = "list_builder_finish"
-
-[[lir_runtime_call]]
-variant = "TupleBuilderFinish"
-import_name = "tuple_builder_finish"
+variant = "ListFromValues"
+import_name = "list_from_values"
 
 [[lir_runtime_call]]
 variant = "DictNew"
@@ -6188,6 +6057,10 @@ import_name = "object_new_bound"
 [[lir_runtime_call]]
 variant = "ClosureLoad"
 import_name = "closure_load"
+
+[[lir_runtime_call]]
+variant = "FrameContextSet"
+import_name = "frame_context_set"
 
 [[lir_runtime_call]]
 variant = "ClosureStore"
@@ -6431,6 +6304,13 @@ lir_variant = "ModuleImportFrom"
 lir_operand_count = 2
 
 [[op_loop_runtime_call]]
+kind = "frame_context_set"
+import_name = "frame_context_set"
+args = ["local:0", "local:1", "local:2"]
+lir_variant = "FrameContextSet"
+lir_operand_count = 3
+
+[[op_loop_runtime_call]]
 kind = "module_get_global"
 import_name = "module_get_global"
 args = ["local:0", "local:1"]
@@ -6549,6 +6429,15 @@ args = ["local:0"]
 kind = "guard_tag"
 import_name = "guard_type"
 args = ["local:0", "local:1"]
+required_imports = ["guard_type", "profile_enabled"]
+lir_variant = "GuardType"
+lir_operand_count = 2
+
+[[op_loop_runtime_call]]
+kind = "guard_type"
+import_name = "guard_type"
+args = ["local:0", "local:1"]
+required_imports = ["guard_type", "profile_enabled"]
 
 [[op_loop_runtime_call]]
 kind = "string_format"
@@ -6619,9 +6508,8 @@ required_imports = [
   "asyncgen_hooks_get",
   "asyncgen_hooks_set",
   "asyncgen_locals",
-  "asyncgen_locals_register",
   "asyncgen_new",
-  "asyncgen_shutdown",
+  "stateful_locals_register",
 ]
 
 [[op_loop_runtime_call_group]]
@@ -6713,7 +6601,6 @@ kinds = [
   "exception_new",
   "exception_new_from_class",
   "exceptiongroup_match",
-  "exception_set_cause",
   "exception_set_value",
 ]
 
@@ -6727,7 +6614,6 @@ kinds = [
   "range_new",
   "list_insert",
   "dict_get",
-  "dict_inc",
   "dict_str_int_inc",
   "dict_set",
   "dict_setdefault",
@@ -6759,15 +6645,13 @@ boxed_call = true
 kinds = [
   "ord",
   "chr",
+  "operator_index",
   "string_lower",
   "string_upper",
   "string_capitalize",
   "bytes_from_obj",
   "bytearray_from_obj",
   "float_from_obj",
-  "intarray_from_seq",
-  "memoryview_new",
-  "memoryview_tobytes",
   "str_from_obj",
   "repr_from_obj",
   "ascii_from_obj",
@@ -6817,8 +6701,6 @@ kinds = [
   "complex_from_obj",
   "buffer2d_new",
   "buffer2d_get",
-  "string_split_ws_dict_inc",
-  "taq_ingest_line",
   "string_split_field_start",
   "string_split_field_end",
   "string_split_field_is_ascii",
@@ -6836,7 +6718,7 @@ kinds = [
   "bytearray_replace",
   "buffer2d_set",
   "memoryview_cast",
-  "string_split_sep_dict_inc",
+  "string_split_ws_dict_inc",
   "bytearray_fill_range",
 ]
 
@@ -6847,6 +6729,7 @@ kinds = [
   "string_split_field_ord_at_bounds",
   "statistics_mean_slice",
   "statistics_stdev_slice",
+  "string_split_sep_dict_inc",
 ]
 
 [[op_loop_runtime_call_group]]
@@ -8103,7 +7986,6 @@ lir_fast = "materialize"
 [[const_op_policy]]
 kind = "const_str"
 materializer_import = "string_from_bytes"
-literal_payload = "string"
 dispatch_runtime_seed = true
 raw_int_effect = "clear"
 lir_fast = "materialize"
@@ -8111,7 +7993,6 @@ lir_fast = "materialize"
 [[const_op_policy]]
 kind = "const_bigint"
 materializer_import = "bigint_from_str"
-literal_payload = "bigint_decimal"
 dispatch_runtime_seed = true
 raw_int_effect = "clear"
 lir_fast = "materialize"
@@ -8119,7 +8000,66 @@ lir_fast = "materialize"
 [[const_op_policy]]
 kind = "const_bytes"
 materializer_import = "bytes_from_bytes"
-literal_payload = "bytes"
 dispatch_runtime_seed = true
 raw_int_effect = "clear"
 lir_fast = "materialize"
+
+
+[[import]]
+name = "await_iterator_poll"
+type = 2
+poll_table_slot = 28
+
+[[import]]
+name = "coroutine_wrapper_poll"
+type = 2
+poll_table_slot = 29
+
+[[import]]
+name = "coroutine_send_method"
+type = 3
+runtime_name = "molt_coroutine_send_method"
+callable_arity = 2
+shared_runtime_callable = true
+
+[[import]]
+name = "coroutine_throw_method"
+type = 3
+runtime_name = "molt_coroutine_throw_method"
+callable_arity = 2
+shared_runtime_callable = true
+
+[[import]]
+name = "coroutine_close_method"
+type = 2
+runtime_name = "molt_coroutine_close_method"
+callable_arity = 1
+shared_runtime_callable = true
+
+[[import]]
+name = "awaitable_await"
+type = 2
+runtime_name = "molt_awaitable_await"
+callable_arity = 1
+shared_runtime_callable = true
+
+[[import]]
+name = "coroutine_wrapper_iter"
+type = 2
+runtime_name = "molt_coroutine_wrapper_iter"
+callable_arity = 1
+shared_runtime_callable = true
+
+[[import]]
+name = "coroutine_wrapper_next"
+type = 2
+runtime_name = "molt_coroutine_wrapper_next"
+callable_arity = 1
+shared_runtime_callable = true
+
+[[import]]
+name = "generator_throw_method"
+type = 3
+runtime_name = "molt_generator_throw_method"
+callable_arity = 2
+shared_runtime_callable = true

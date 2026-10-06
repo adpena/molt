@@ -2,6 +2,7 @@
 // Split from ops.rs for compilation-unit size reduction.
 
 use crate::audit::{AuditArgs, audit_capability_decision};
+use crate::builtins::exceptions::{ExceptionValue, with_saved_raised_exception};
 use crate::builtins::numbers::{
     INT_BYTES_NEGATIVE_UNSIGNED, INT_BYTES_OK, bigint_from_bytes, bigint_to_bytes,
 };
@@ -15,7 +16,6 @@ use molt_obj_model::MoltObject;
 use num_bigint::BigInt;
 use num_traits::{Signed, ToPrimitive, Zero};
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::ffi::CStr;
 #[cfg(not(target_arch = "wasm32"))]
 use std::ffi::CString;
@@ -473,15 +473,20 @@ pub(crate) fn sys_flags_hash_randomization(_py: &PyToken<'_>) -> i64 {
     }
 }
 
-pub(crate) fn current_sys_version_info(state: &RuntimeState) -> (PythonVersionInfo, bool) {
+fn project_sys_version_info<T>(
+    state: &RuntimeState,
+    project: impl FnOnce(&PythonVersionInfo, bool) -> T,
+) -> T {
     let mut guard = state.sys_version_info.lock().unwrap();
-    if let Some(existing) = guard.as_ref() {
-        (existing.clone(), false)
-    } else {
-        let init = default_sys_version_info();
-        *guard = Some(init.clone());
-        (init, true)
-    }
+    let initialized = guard.is_none();
+    project(
+        guard.get_or_insert_with(default_sys_version_info),
+        initialized,
+    )
+}
+
+pub(crate) fn current_sys_version_info(state: &RuntimeState) -> (PythonVersionInfo, bool) {
+    project_sys_version_info(state, |info, initialized| (info.clone(), initialized))
 }
 
 pub(crate) fn runtime_target_python_info(state: &RuntimeState) -> PythonVersionInfo {
@@ -489,12 +494,15 @@ pub(crate) fn runtime_target_python_info(state: &RuntimeState) -> PythonVersionI
 }
 
 pub(crate) fn runtime_target_minor(_py: &PyToken<'_>) -> i64 {
-    runtime_target_python_info(runtime_state(_py)).minor
+    // Scalar policy checks (including dictionary allocation) must not clone
+    // the owned release-level string. Initialization still has one authority.
+    project_sys_version_info(runtime_state(_py), |info, _| info.minor)
 }
 
 pub(crate) fn runtime_target_at_least(_py: &PyToken<'_>, major: i64, minor: i64) -> bool {
-    let info = runtime_target_python_info(runtime_state(_py));
-    info.major > major || (info.major == major && info.minor >= minor)
+    project_sys_version_info(runtime_state(_py), |info, _| {
+        info.major > major || (info.major == major && info.minor >= minor)
+    })
 }
 
 /// C-ABI view of [`runtime_target_at_least`]. Exposed so satellite stdlib
@@ -514,6 +522,23 @@ pub extern "C" fn molt_runtime_target_at_least(major: i64, minor: i64) -> i64 {
     })
 }
 
+/// Publish sys metadata by transferring its freshly constructed field owners.
+/// A failed child or tuple allocation releases every field and preserves the
+/// first exception. No partially constructed tuple escapes to the Python view.
+pub(crate) fn sys_tuple_from_owned(_py: &PyToken<'_>, values: &[u64]) -> u64 {
+    if !exception_pending(_py) {
+        let ptr = crate::object::builders::alloc_tuple_owned(_py, values);
+        if !ptr.is_null() {
+            return MoltObject::from_ptr(ptr).bits();
+        }
+        crate::record_memory_error_without_allocation(_py);
+    }
+    for &bits in values {
+        dec_ref_bits(_py, bits);
+    }
+    MoltObject::none().bits()
+}
+
 pub(crate) fn alloc_sys_version_info_tuple(
     _py: &PyToken<'_>,
     info: &PythonVersionInfo,
@@ -523,22 +548,21 @@ pub(crate) fn alloc_sys_version_info_tuple(
         return None;
     }
     let release_bits = MoltObject::from_ptr(release_ptr).bits();
-    let elems = [
-        MoltObject::from_int(info.major).bits(),
-        MoltObject::from_int(info.minor).bits(),
-        MoltObject::from_int(info.micro).bits(),
-        release_bits,
-        MoltObject::from_int(info.serial).bits(),
-    ];
-    let tuple_ptr = alloc_tuple(_py, &elems);
-    if tuple_ptr.is_null() {
-        dec_ref_bits(_py, release_bits);
-        return None;
+    let mut elems = [MoltObject::none().bits(); 5];
+    elems[3] = release_bits;
+    for (index, value) in [
+        (0, info.major),
+        (1, info.minor),
+        (2, info.micro),
+        (4, info.serial),
+    ] {
+        elems[index] = crate::builtins::numbers::int_bits_from_i64(_py, value);
+        if exception_pending(_py) {
+            break;
+        }
     }
-    for bits in elems {
-        dec_ref_bits(_py, bits);
-    }
-    Some(MoltObject::from_ptr(tuple_ptr).bits())
+    let tuple_bits = sys_tuple_from_owned(_py, &elems);
+    (!obj_from_bits(tuple_bits).is_none()).then_some(tuple_bits)
 }
 
 // molt_set_argv, molt_set_argv_utf16 live in ops.rs
@@ -670,21 +694,22 @@ fn resource_limits_from_env() -> Result<Option<crate::resource::ResourceLimits>,
 ///
 /// Two-layer enforcement: the parsed limits install the precise in-VM
 /// [`LimitedTracker`] (Layer 1, cross-target, deterministic) via the global
-/// factory, and — when a memory cap is set — an OS-level `RLIMIT_AS` backstop
-/// (Layer 2, native only) bounds anything that bypasses the tracker. The
+/// factory, and — when a memory cap is set — an OS-level committed-memory
+/// backstop (Layer 2, Linux `RLIMIT_DATA` above the startup footprint) bounds
+/// anything that bypasses the tracker. The
 /// backstop never replaces the tracker; it only converts a runaway into a clean
 /// failure instead of an OOM-kill of the host.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_init_resources() {
-    use crate::resource::{install_address_space_backstop, install_global_limited_tracker};
+    use crate::resource::{install_global_limited_tracker, install_memory_backstop};
 
     match resource_limits_from_env() {
         Ok(Some(limits)) => {
-            // Layer 2 (OS backstop) FIRST so the address-space ceiling is in
-            // place before any tracker-allocated structures grow. Layer 1
+            // Layer 2 (OS backstop) FIRST so the committed-memory ceiling is
+            // in place before any tracker-allocated structures grow. Layer 1
             // remains the deterministic contract.
             if let Some(max_memory) = limits.max_memory {
-                install_address_space_backstop(max_memory);
+                install_memory_backstop(max_memory);
             }
             install_global_limited_tracker(limits);
         }
@@ -1032,6 +1057,35 @@ fn trace_len_enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("MOLT_TRACE_LEN").as_deref() == Ok("1"))
 }
 
+/// Interpret the borrowed result of Python's __len__ protocol once for all
+/// consumers. __index__ conversion and the signed pointer-width bound match
+/// PyNumber_AsSsize_t; negativity retains the length protocol's ValueError.
+pub(crate) fn coerce_length_result(py: &PyToken<'_>, bits: u64) -> Option<isize> {
+    let length = if let Some(value) = crate::builtins::numbers::index_i64_integral_bits(bits) {
+        if value < 0 {
+            return raise_exception(py, "ValueError", "__len__() should return >= 0");
+        }
+        isize::try_from(value).ok()
+    } else {
+        let message = format!(
+            "'{}' object cannot be interpreted as an integer",
+            class_name_for_error(type_of_bits(py, bits))
+        );
+        let value = crate::builtins::numbers::index_bigint_from_obj(py, bits, &message)?;
+        if value.is_negative() {
+            return raise_exception(py, "ValueError", "__len__() should return >= 0");
+        }
+        value.to_isize()
+    };
+    length.or_else(|| {
+        raise_exception(
+            py,
+            "OverflowError",
+            "cannot fit 'int' into an index-sized integer",
+        )
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_len(val: u64) -> u64 {
     len_impl(val, false)
@@ -1055,6 +1109,14 @@ fn len_impl(val: u64, builtin_only: bool) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 let type_id = object_type_id(ptr);
+                if builtin_only && crate::object::tuple_storage::native_tuple(val).is_some() {
+                    let tuple =
+                        crate::object::tuple_storage::TupleStorage::from_bits(_py, val).unwrap();
+                    return tuple.len().map_or_else(
+                        || MoltObject::none().bits(),
+                        |len| int_bits_from_i64(_py, len as i64),
+                    );
+                }
                 if builtin_only || crate::object::iterable::builtin_receiver(_py, ptr) {
                     if type_id == TYPE_ID_STRING {
                         let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
@@ -1089,9 +1151,6 @@ fn len_impl(val: u64, builtin_only: bool) -> u64 {
                     if type_id == TYPE_ID_TUPLE {
                         return MoltObject::from_int(tuple_len(ptr) as i64).bits();
                     }
-                    if type_id == TYPE_ID_INTARRAY {
-                        return MoltObject::from_int(intarray_len(ptr) as i64).bits();
-                    }
                     if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
                         let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                             return MoltObject::none().bits();
@@ -1115,7 +1174,14 @@ fn len_impl(val: u64, builtin_only: bool) -> u64 {
                             return MoltObject::none().bits();
                         };
                         let len = range_len_bigint(&start, &stop, &step);
-                        return int_bits_from_bigint(_py, len);
+                        let Some(len) = len.to_isize() else {
+                            return raise_exception(
+                                _py,
+                                "OverflowError",
+                                "Python int too large to convert to C ssize_t",
+                            );
+                        };
+                        return int_bits_from_i64(_py, len as i64);
                     }
                 }
                 if !builtin_only {
@@ -1137,32 +1203,12 @@ fn len_impl(val: u64, builtin_only: bool) -> u64 {
                             return MoltObject::none().bits();
                         }
                         exception_stack_pop(_py);
-                        let message = format!(
-                            "'{}' object cannot be interpreted as an integer",
-                            type_name(_py, obj_from_bits(res_bits))
-                        );
-                        let value = crate::builtins::numbers::index_bigint_from_obj(
-                            _py, res_bits, &message,
-                        );
+                        let value = coerce_length_result(_py, res_bits);
                         dec_ref_bits(_py, res_bits);
-                        let Some(value) = value else {
-                            return MoltObject::none().bits();
-                        };
-                        if value.is_negative() {
-                            return raise_exception::<_>(
-                                _py,
-                                "ValueError",
-                                "__len__() should return >= 0",
-                            );
-                        }
-                        let Some(value) = value.to_isize() else {
-                            return raise_exception::<_>(
-                                _py,
-                                "OverflowError",
-                                "cannot fit 'int' into an index-sized integer",
-                            );
-                        };
-                        return int_bits_from_i64(_py, value as i64);
+                        return value.map_or_else(
+                            || MoltObject::none().bits(),
+                            |value| int_bits_from_i64(_py, value as i64),
+                        );
                     }
                 }
             }
@@ -1181,7 +1227,9 @@ pub extern "C" fn molt_len_list(bits: u64) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 let tid = object_type_id(ptr);
-                if tid == TYPE_ID_LIST || tid == TYPE_ID_LIST_INT || tid == TYPE_ID_LIST_BOOL {
+                if matches!(tid, TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL)
+                    && crate::object::iterable::builtin_receiver(_py, ptr)
+                {
                     return MoltObject::from_int(list_len(ptr) as i64).bits();
                 }
             }
@@ -1197,7 +1245,9 @@ pub extern "C" fn molt_len_str(bits: u64) -> u64 {
         let obj = obj_from_bits(bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
-                if object_type_id(ptr) == TYPE_ID_STRING {
+                if object_type_id(ptr) == TYPE_ID_STRING
+                    && crate::object::iterable::builtin_receiver(_py, ptr)
+                {
                     let bytes = std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr));
                     let count = utf8_codepoint_count_cached(_py, bytes, Some(ptr as usize));
                     return MoltObject::from_int(count).bits();
@@ -1215,7 +1265,9 @@ pub extern "C" fn molt_len_dict(bits: u64) -> u64 {
         let obj = obj_from_bits(bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
-                if let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) {
+                if crate::object::iterable::builtin_receiver(_py, ptr)
+                    && let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr)
+                {
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                         return MoltObject::none().bits();
                     };
@@ -1234,7 +1286,9 @@ pub extern "C" fn molt_len_tuple(bits: u64) -> u64 {
         let obj = obj_from_bits(bits);
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
-                if object_type_id(ptr) == TYPE_ID_TUPLE {
+                if object_type_id(ptr) == TYPE_ID_TUPLE
+                    && crate::object::iterable::builtin_receiver(_py, ptr)
+                {
                     return MoltObject::from_int(tuple_len(ptr) as i64).bits();
                 }
             }
@@ -1251,7 +1305,9 @@ pub extern "C" fn molt_len_set(bits: u64) -> u64 {
         if let Some(ptr) = obj.as_ptr() {
             unsafe {
                 let tid = object_type_id(ptr);
-                if tid == TYPE_ID_SET || tid == TYPE_ID_FROZENSET {
+                if matches!(tid, TYPE_ID_SET | TYPE_ID_FROZENSET)
+                    && crate::object::iterable::builtin_receiver(_py, ptr)
+                {
                     return MoltObject::from_int(set_len(ptr) as i64).bits();
                 }
             }
@@ -1392,6 +1448,9 @@ pub extern "C" fn molt_gc_collect(generation_bits: u64) -> u64 {
             | crate::object::gc::GcCollectStatus::ReentrantNoop => outcome.collected as i64,
             crate::object::gc::GcCollectStatus::ResourceError(message) => {
                 return raise_exception::<_>(_py, "MemoryError", message);
+            }
+            crate::object::gc::GcCollectStatus::CallbackError(message) => {
+                return gc_callback_failure(_py, message);
             }
             crate::object::gc::GcCollectStatus::UnsupportedConcurrency => {
                 return raise_exception::<_>(
@@ -1580,11 +1639,7 @@ pub extern "C" fn molt_gc_is_finalized(obj_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let finalized = obj_from_bits(obj_bits)
             .as_ptr()
-            .map(|ptr| unsafe {
-                (*header_from_obj_ptr(ptr)).load_synchronized_flags()
-                    & crate::object::HEADER_FLAG_FINALIZER_RAN
-                    != 0
-            })
+            .map(|ptr| unsafe { crate::object::gc::gc_is_finalized(ptr) })
             .unwrap_or(false);
         MoltObject::from_bool(finalized).bits()
     })
@@ -1616,6 +1671,15 @@ pub extern "C" fn molt_gc_get_objects(generation_bits: u64) -> u64 {
     })
 }
 
+fn gc_callback_failure(py: &PyToken<'_>, message: &str) -> u64 {
+    if !crate::cpython_abi_hooks::transfer_pending_cpython_exception()
+        && !crate::exception_pending(py)
+    {
+        raise_exception::<()>(py, "RuntimeError", message);
+    }
+    MoltObject::none().bits()
+}
+
 fn gc_introspection_failure(
     py: &PyToken<'_>,
     error: crate::object::gc::GcIntrospectionError,
@@ -1623,6 +1687,9 @@ fn gc_introspection_failure(
     match error {
         crate::object::gc::GcIntrospectionError::Resource(message) => {
             raise_exception::<_>(py, "MemoryError", message)
+        }
+        crate::object::gc::GcIntrospectionError::Callback(message) => {
+            gc_callback_failure(py, message)
         }
         crate::object::gc::GcIntrospectionError::UnsupportedConcurrency => raise_exception::<_>(
             py,
@@ -1716,46 +1783,25 @@ pub extern "C" fn molt_gc_get_freeze_count() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_getrecursionlimit() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        MoltObject::from_int(recursion_limit_get() as i64).bits()
+        crate::builtins::numbers::int_bits_from_i128(_py, recursion_limit_get() as i128)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_setrecursionlimit(limit_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(limit_bits);
-        let limit = if let Some(value) = to_i64(obj) {
-            if value < 1 {
-                return raise_exception::<_>(
-                    _py,
-                    "ValueError",
-                    "recursion limit must be greater or equal than 1",
-                );
-            }
-            value as usize
-        } else if let Some(big_ptr) = bigint_ptr_from_bits(limit_bits) {
-            let big = unsafe { bigint_ref(big_ptr) };
-            if big.is_negative() {
-                return raise_exception::<_>(
-                    _py,
-                    "ValueError",
-                    "recursion limit must be greater or equal than 1",
-                );
-            }
-            let Some(value) = big.to_usize() else {
-                return raise_exception::<_>(
-                    _py,
-                    "OverflowError",
-                    "cannot fit 'int' into an index-sized integer",
-                );
-            };
-            value
-        } else {
-            let type_name = class_name_for_error(type_of_bits(_py, limit_bits));
-            let msg = format!("'{type_name}' object cannot be interpreted as an integer");
-            return raise_exception::<_>(_py, "TypeError", &msg);
+        let Some(limit) = crate::builtins::numbers::index_c_int_from_obj(_py, limit_bits) else {
+            return MoltObject::none().bits();
         };
-        let depth = RECURSION_DEPTH.with(|depth| depth.get());
+        if limit < 1 {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "recursion limit must be greater or equal than 1",
+            );
+        }
+        let limit = limit as usize;
+        let depth = crate::state::recursion::recursion_depth();
         if limit <= depth {
             let msg = format!(
                 "cannot set the recursion limit to {limit} at the recursion depth {depth}: the limit is too low"
@@ -1922,7 +1968,19 @@ pub extern "C" fn molt_sys_set_version_info(
 
         let state = runtime_state(_py);
         let default_info = default_sys_version_info();
-        // Stage the version-gated class namespaces before changing either sys
+        if let Some(namespace) = crate::builtins::modules::interpreter_sys_module(_py)
+            && !crate::builtins::module_table::module_execution_owns_initializing_namespace(
+                _py, "sys", namespace,
+            )
+            && current_sys_version_info(state).0 != info
+        {
+            return raise_exception::<_>(
+                _py,
+                "RuntimeError",
+                "Python target cannot change after sys initialization",
+            );
+        }
+        // Stage version-gated wrapper and type namespaces before changing either sys
         // fact. Allocation failure leaves the old version and descriptors intact.
         let Some(publication) =
             crate::builtins::attributes::prepare_wrapper_members(_py, info.major, info.minor)
@@ -1954,15 +2012,17 @@ pub extern "C" fn molt_sys_set_version_info(
         // Infallible publication advances all class versions before displaced
         // values can run finalizers. Neither sys mutex is held across a release.
         publication.commit(_py);
-        // If the sys module already exists, keep its version metadata in sync.
-        let sys_bits = {
-            let cache = crate::builtins::exceptions::internals::module_cache(_py);
-            cache.lock().unwrap().get("sys").copied()
-        };
+        // Only an active initializer may refresh its unfinished public shapes.
+        // Repeated host setup after initialization must not replace Python views
+        // or recreate public keys removed by user code.
+        let sys_bits = crate::builtins::modules::interpreter_sys_module(_py);
         if trace_sys_version() {
             eprintln!("molt sys version: sys module cached={}", sys_bits.is_some());
         }
         if let Some(bits) = sys_bits
+            && crate::builtins::module_table::module_execution_owns_initializing_namespace(
+                _py, "sys", bits,
+            )
             && let Some(sys_ptr) = obj_from_bits(bits).as_ptr()
         {
             unsafe {
@@ -2027,7 +2087,9 @@ pub extern "C" fn molt_sys_hexversion() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_api_version() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { MoltObject::from_int(sys_api_version()).bits() })
+    crate::with_gil_entry_nopanic!(_py, {
+        crate::builtins::numbers::int_bits_from_i64(_py, sys_api_version())
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2111,8 +2173,12 @@ pub extern "C" fn molt_sys_implementation_payload() -> u64 {
             (b"version", version_bits),
             (b"hexversion", hexversion_bits),
         ];
-        for (attr_name, value_bits) in attrs {
+        let mut remaining = attrs.into_iter();
+        while let Some((attr_name, value_bits)) = remaining.next() {
             if !sys_namespace_set_attr_owned(_py, namespace_bits, attr_name, value_bits) {
+                for (_, unconsumed) in remaining {
+                    dec_ref_bits(_py, unconsumed);
+                }
                 dec_ref_bits(_py, namespace_bits);
                 return MoltObject::none().bits();
             }
@@ -2124,7 +2190,9 @@ pub extern "C" fn molt_sys_implementation_payload() -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sys_flags_payload() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let keys_and_values: [(&[u8], i64); 19] = [
+        // The sequence fields plus every named non-sequence field any supported
+        // target exposes; sys.py publishes the extras by target version.
+        let keys_and_values: [(&[u8], i64); 21] = [
             (b"debug", env_flag_bool("PYTHONDEBUG").unwrap_or(0)),
             (b"inspect", env_flag_bool("PYTHONINSPECT").unwrap_or(0)),
             (b"interactive", 0),
@@ -2157,28 +2225,39 @@ pub extern "C" fn molt_sys_flags_payload() -> u64 {
                     .unwrap_or(DEFAULT_SYS_FLAGS_INT_MAX_STR_DIGITS),
             ),
             (b"gil", 1),
+            // CPython 3.14 GIL builds default both to 0; the environment
+            // variables mirror their -X options.
+            (
+                b"context_aware_warnings",
+                env_flag_bool("PYTHON_CONTEXT_AWARE_WARNINGS").unwrap_or(0),
+            ),
+            (
+                b"thread_inherit_context",
+                env_flag_bool("PYTHON_THREAD_INHERIT_CONTEXT").unwrap_or(0),
+            ),
         ];
         let mut pairs: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
-        let mut owned: Vec<u64> = Vec::with_capacity(keys_and_values.len() * 2);
-
         for (key, value) in keys_and_values {
             let key_ptr = alloc_string(_py, key);
             if key_ptr.is_null() {
-                for bits in owned {
+                for bits in pairs {
                     dec_ref_bits(_py, bits);
                 }
                 return MoltObject::none().bits();
             }
-            let key_bits = MoltObject::from_ptr(key_ptr).bits();
-            let value_bits = MoltObject::from_int(value).bits();
-            pairs.push(key_bits);
+            pairs.push(MoltObject::from_ptr(key_ptr).bits());
+            let value_bits = crate::builtins::numbers::int_bits_from_i64(_py, value);
+            if exception_pending(_py) {
+                for bits in pairs {
+                    dec_ref_bits(_py, bits);
+                }
+                return MoltObject::none().bits();
+            }
             pairs.push(value_bits);
-            owned.push(key_bits);
-            owned.push(value_bits);
         }
 
         let dict_ptr = alloc_dict_with_pairs(_py, &pairs);
-        for bits in owned {
+        for bits in pairs {
             dec_ref_bits(_py, bits);
         }
         if dict_ptr.is_null() {
@@ -2284,38 +2363,6 @@ pub extern "C" fn molt_getpid() -> u64 {
         #[cfg(not(target_arch = "wasm32"))]
         {
             MoltObject::from_int(std::process::id() as i64).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_signal_raise(sig_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(sig) = to_i64(obj_from_bits(sig_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "signal number must be int");
-        };
-        if sig < i32::MIN as i64 || sig > i32::MAX as i64 {
-            return raise_exception::<_>(_py, "ValueError", "signal number out of range");
-        }
-        let sig_i32 = sig as i32;
-        #[cfg(all(unix, not(target_arch = "wasm32")))]
-        {
-            let rc = unsafe { libc::raise(sig_i32) };
-            if rc != 0 {
-                return raise_exception::<_>(
-                    _py,
-                    "OSError",
-                    &std::io::Error::last_os_error().to_string(),
-                );
-            }
-            MoltObject::none().bits()
-        }
-        #[cfg(any(not(unix), target_arch = "wasm32"))]
-        {
-            if sig_i32 == 2 {
-                return raise_exception::<_>(_py, "KeyboardInterrupt", "signal interrupt");
-            }
-            MoltObject::none().bits()
         }
     })
 }
@@ -2882,71 +2929,6 @@ pub extern "C" fn molt_traceback_exception_chain_payload(value_bits: u64, limit_
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_traceback_source_line(filename_bits: u64, lineno_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(filename) = string_obj_to_owned(obj_from_bits(filename_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "filename must be str");
-        };
-        let Some(lineno) = to_i64(obj_from_bits(lineno_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "lineno must be int");
-        };
-        let text = traceback_source_line_native(_py, &filename, lineno);
-        let ptr = alloc_string(_py, text.as_bytes());
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_traceback_infer_col_offsets(line_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(line) = string_obj_to_owned(obj_from_bits(line_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "line must be str");
-        };
-        let (colno, end_colno) = traceback_infer_column_offsets(&line);
-        let colno_bits = MoltObject::from_int(colno).bits();
-        let end_colno_bits = MoltObject::from_int(end_colno).bits();
-        let tuple_ptr = alloc_tuple(_py, &[colno_bits, end_colno_bits]);
-        dec_ref_bits(_py, colno_bits);
-        dec_ref_bits(_py, end_colno_bits);
-        if tuple_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(tuple_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_traceback_format_caret_line(
-    line_bits: u64,
-    colno_bits: u64,
-    end_colno_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(line) = string_obj_to_owned(obj_from_bits(line_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "line must be str");
-        };
-        let Some(colno) = to_i64(obj_from_bits(colno_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "colno must be int");
-        };
-        let Some(end_colno) = to_i64(obj_from_bits(end_colno_bits)) else {
-            return raise_exception::<_>(_py, "TypeError", "end_colno must be int");
-        };
-        let out = traceback_format_caret_line_native(&line, colno, end_colno);
-        let ptr = alloc_string(_py, out.as_bytes());
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn molt_traceback_format_exception_only(exc_type_bits: u64, value_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         let line = traceback_format_exception_only_line(_py, exc_type_bits, value_bits);
@@ -2968,26 +2950,34 @@ pub extern "C" fn molt_traceback_format_exception(
             Err(bits) => return bits,
         };
         let chain = is_truthy(_py, obj_from_bits(chain_bits));
-        let effective_exc_type_bits = if obj_from_bits(exc_type_bits).is_none() {
-            traceback_exception_type_bits(_py, value_bits)
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let value = ExceptionValue::pin(_py, value_bits);
+        let effective_exc_type = if obj_from_bits(exc_type_bits).is_none() {
+            let Some(class) = traceback_exception_type(_py, value.bits()) else {
+                return MoltObject::none().bits();
+            };
+            class
         } else {
-            exc_type_bits
+            ExceptionValue::pin(_py, exc_type_bits)
         };
-        let effective_tb_bits = if obj_from_bits(tb_bits).is_none() {
-            traceback_exception_trace_bits(value_bits)
+        let effective_tb = if obj_from_bits(tb_bits).is_none() {
+            let Some(traceback) = traceback_exception_trace(_py, value.bits()) else {
+                return MoltObject::none().bits();
+            };
+            traceback
         } else {
-            tb_bits
+            ExceptionValue::pin(_py, tb_bits)
         };
-        let mut seen: HashSet<u64> = HashSet::new();
-        let mut lines: Vec<String> = Vec::new();
+        let mut lines: Vec<Vec<u8>> = Vec::new();
         traceback_append_exception_chain_lines(
             _py,
-            effective_exc_type_bits,
-            value_bits,
-            effective_tb_bits,
+            effective_exc_type.bits(),
+            value.bits(),
+            effective_tb.bits(),
             limit,
             chain,
-            &mut seen,
             &mut lines,
         );
         traceback_lines_to_list(_py, &lines)
@@ -3017,27 +3007,36 @@ pub extern "C" fn molt_traceback_format_exc(limit_bits: u64) -> u64 {
                 return MoltObject::from_ptr(ptr).bits();
             }
         };
-        let exc_type_bits = traceback_exception_type_bits(_py, value_bits);
-        let tb_bits = traceback_exception_trace_bits(value_bits);
-        let mut seen: HashSet<u64> = HashSet::new();
-        let mut lines: Vec<String> = Vec::new();
-        traceback_append_exception_chain_lines(
-            _py,
-            exc_type_bits,
-            value_bits,
-            tb_bits,
-            limit,
-            true, // chain
-            &mut seen,
-            &mut lines,
-        );
-        // Join all lines into a single string
-        let joined = lines.join("");
-        let ptr = alloc_string(_py, joined.as_bytes());
-        if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        MoltObject::from_ptr(ptr).bits()
+        let value = ExceptionValue::pin(_py, value_bits);
+        let mut result = MoltObject::none().bits();
+        with_saved_raised_exception(_py, || {
+            let Some(class) = traceback_exception_type(_py, value.bits()) else {
+                return false;
+            };
+            let Some(traceback) = traceback_exception_trace(_py, value.bits()) else {
+                return false;
+            };
+            let mut lines = Vec::new();
+            traceback_append_exception_chain_lines(
+                _py,
+                class.bits(),
+                value.bits(),
+                traceback.bits(),
+                limit,
+                true,
+                &mut lines,
+            );
+            if exception_pending(_py) {
+                return false;
+            }
+            let ptr = alloc_string(_py, &lines.concat());
+            if ptr.is_null() {
+                return false;
+            }
+            result = MoltObject::from_ptr(ptr).bits();
+            true
+        });
+        result
     })
 }
 
@@ -3048,11 +3047,15 @@ pub extern "C" fn molt_traceback_format_tb(tb_bits: u64, limit_bits: u64) -> u64
             Ok(limit) => limit,
             Err(bits) => return bits,
         };
-        let mut lines: Vec<String> = Vec::new();
-        for (filename, line, name) in traceback_frames(_py, tb_bits, limit) {
-            lines.push(format!("  File \"{filename}\", line {line}, in {name}\n"));
+        let payload = traceback_payload_from_source(_py, tb_bits, limit);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
         }
-        traceback_lines_to_list(_py, &lines)
+        let entries = match traceback_payload_to_formatted_entries(_py, &payload) {
+            Ok(entries) => entries,
+            Err(bits) => return bits,
+        };
+        traceback_lines_to_list(_py, &entries)
     })
 }
 
@@ -3064,8 +3067,14 @@ pub extern "C" fn molt_traceback_format_stack(source_bits: u64, limit_bits: u64)
             Err(bits) => return bits,
         };
         let payload = traceback_payload_from_source(_py, source_bits, limit);
-        let lines = traceback_payload_to_formatted_lines(_py, &payload);
-        traceback_lines_to_list(_py, &lines)
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let entries = match traceback_payload_to_formatted_entries(_py, &payload) {
+            Ok(entries) => entries,
+            Err(bits) => return bits,
+        };
+        traceback_lines_to_list(_py, &entries)
     })
 }
 
@@ -3076,77 +3085,8 @@ pub extern "C" fn molt_traceback_extract_tb(tb_bits: u64, limit_bits: u64) -> u6
             Ok(limit) => limit,
             Err(bits) => return bits,
         };
-        let mut tuples: Vec<u64> = Vec::new();
-        for (filename, lineno, name) in traceback_frames(_py, tb_bits, limit) {
-            let line_text = traceback_source_line_native(_py, &filename, lineno);
-            let (colno, end_colno) = traceback_infer_column_offsets(&line_text);
-            let end_lineno = lineno;
-            let filename_ptr = alloc_string(_py, filename.as_bytes());
-            if filename_ptr.is_null() {
-                for bits in tuples {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let name_ptr = alloc_string(_py, name.as_bytes());
-            if name_ptr.is_null() {
-                dec_ref_bits(_py, MoltObject::from_ptr(filename_ptr).bits());
-                for bits in tuples {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let line_ptr = alloc_string(_py, line_text.as_bytes());
-            if line_ptr.is_null() {
-                dec_ref_bits(_py, MoltObject::from_ptr(filename_ptr).bits());
-                dec_ref_bits(_py, MoltObject::from_ptr(name_ptr).bits());
-                for bits in tuples {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            let filename_bits = MoltObject::from_ptr(filename_ptr).bits();
-            let lineno_bits = MoltObject::from_int(lineno).bits();
-            let end_lineno_bits = MoltObject::from_int(end_lineno).bits();
-            let colno_bits = MoltObject::from_int(colno).bits();
-            let end_colno_bits = MoltObject::from_int(end_colno).bits();
-            let name_bits = MoltObject::from_ptr(name_ptr).bits();
-            let line_bits = MoltObject::from_ptr(line_ptr).bits();
-            let tuple_ptr = alloc_tuple(
-                _py,
-                &[
-                    filename_bits,
-                    lineno_bits,
-                    end_lineno_bits,
-                    colno_bits,
-                    end_colno_bits,
-                    name_bits,
-                    line_bits,
-                ],
-            );
-            dec_ref_bits(_py, filename_bits);
-            dec_ref_bits(_py, end_lineno_bits);
-            dec_ref_bits(_py, colno_bits);
-            dec_ref_bits(_py, end_colno_bits);
-            dec_ref_bits(_py, name_bits);
-            dec_ref_bits(_py, line_bits);
-            if tuple_ptr.is_null() {
-                for bits in tuples {
-                    dec_ref_bits(_py, bits);
-                }
-                return MoltObject::none().bits();
-            }
-            tuples.push(MoltObject::from_ptr(tuple_ptr).bits());
-        }
-        let list_ptr = alloc_list(_py, tuples.as_slice());
-        for bits in tuples {
-            dec_ref_bits(_py, bits);
-        }
-        if list_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(list_ptr).bits()
-        }
+        let payload = traceback_payload_from_source(_py, tb_bits, limit);
+        traceback_payload_to_list(_py, &payload)
     })
 }
 
@@ -3169,22 +3109,18 @@ pub extern "C" fn molt_recursion_guard_exit() {
 }
 
 /// Lightweight recursion guard for direct calls to known functions.
-/// Uses global atomics only — no TLS access on the hot path.
+/// Shares thread depth and interpreter policy with every runtime call guard.
 /// Returns 1 on success, 0 if the recursion limit is exceeded (caller must
 /// handle the error).
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_recursion_enter_fast() -> i64 {
-    if crate::state::recursion::recursion_guard_enter_fast() {
-        1
-    } else {
-        0
-    }
+    if recursion_guard_enter() { 1 } else { 0 }
 }
 
-/// Lightweight recursion guard exit — uses global atomics only.
+/// Releases the calling thread's charge without entering the object runtime.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_recursion_exit_fast() {
-    crate::state::recursion::recursion_guard_exit_fast();
+    recursion_guard_exit();
 }
 
 /// Cold-path: raise RecursionError. Only called when molt_recursion_enter_fast
@@ -3192,9 +3128,6 @@ pub extern "C" fn molt_recursion_exit_fast() {
 #[unsafe(no_mangle)]
 #[cold]
 pub extern "C" fn molt_raise_recursion_error() -> u64 {
-    // Sync the fast global depth back to TLS before the GIL-holding code
-    // reads it (traceback formatting, etc.).
-    crate::state::recursion::sync_fast_depth_to_tls();
     crate::with_gil_entry_nopanic!(_py, {
         raise_exception::<u64>(_py, "RecursionError", "maximum recursion depth exceeded")
     })

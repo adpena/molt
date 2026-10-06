@@ -1,4 +1,4 @@
-"""Assemble the committed source closure and production compiler as one payload."""
+"""Assemble the committed source closure, production compiler and runtime cells."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ from .git_source_snapshot import (
     GitSourceSnapshot,
     capture_git_source_snapshot,
     materialize_git_source_snapshot,
+    immutable_git_environment,
 )
 
 # Harvested from the preserved release-source lane; current config consumers
@@ -57,9 +58,11 @@ REQUIRED_MARKERS = frozenset(
         "Cargo.lock",
         "pyproject.toml",
         "uv.lock",
+        "rust-toolchain.toml",
         "runtime/molt-backend/Cargo.toml",
         "runtime/molt-runtime/Cargo.toml",
         "src/molt/cli/__main__.py",
+        "src/molt/backend_environment.json",
         "src/molt/stdlib/builtins.py",
         "packaging/bootstrap.py",
         "packaging/INSTALL.md",
@@ -90,7 +93,7 @@ def source_environment() -> dict[str, str]:
         GIT_OPTIONAL_LOCKS="0",
         LC_ALL="C",
     )
-    return env
+    return immutable_git_environment(env)
 
 
 def source_snapshot(repo_root: Path, source_sha: str) -> GitSourceSnapshot:
@@ -153,6 +156,7 @@ def materialize_sources(
     snapshot: GitSourceSnapshot,
     compiler: dict[str, Any],
     launcher: dict[str, Any],
+    runtime: dict[str, Any],
 ) -> Path:
     env = source_environment()
     source = materialize_git_source_snapshot(
@@ -174,6 +178,7 @@ def materialize_sources(
             "files": [entry.as_record() for entry in snapshot.files],
             "compiler": compiler,
             "launcher": launcher,
+            "runtime": runtime,
         },
     )
     return source

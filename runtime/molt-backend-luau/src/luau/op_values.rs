@@ -6,7 +6,7 @@ impl LuauBackend {
             // ================================================================
             // Constants
             // ================================================================
-            "const" => {
+            "const" | "const_int" | "load_const" => {
                 let out = self.out_var(op);
                 if let Some(v) = op.value {
                     self.emit_line(&format!("local {out}: number = {v}"));
@@ -21,14 +21,6 @@ impl LuauBackend {
             }
             "const_float" => {
                 if let Some(val) = op.f_value {
-                    let out = self.out_var(op);
-                    self.emit_line(&format!("local {out}: number = {val}"));
-                } else {
-                    self.emit_unsupported_op(op);
-                }
-            }
-            "const_int" => {
-                if let Some(val) = op.value {
                     let out = self.out_var(op);
                     self.emit_line(&format!("local {out}: number = {val}"));
                 } else {
@@ -97,7 +89,8 @@ impl LuauBackend {
                 self.emit_line(&format!("local {out} = molt_not_implemented"));
             }
             "const_ellipsis" => {
-                self.emit_unsupported_op(op);
+                let out = self.out_var(op);
+                self.emit_line(&format!("local {out} = molt_ellipsis"));
             }
             "missing" => {
                 let out = self.out_var(op);

@@ -37,6 +37,8 @@ from tests import proof_queue_owned_roots
 from tests.proof_queue_custody_test_support import (
     ReceiptCustodyFactory,
     assert_execution_context_rejects_substitutions,
+    capability_aware_proof_execution,
+    proof_queue_execution_capability as proof_queue_execution_capability,
     synthetic_live_custody as _synthetic_live_custody,
     synthetic_python_toolchain,
     synthetic_receipt_custody as synthetic_receipt_custody,
@@ -65,6 +67,7 @@ from molt.scientific_stack_versions import (
     resolve_scientific_stack,
     scientific_extension_variant,
 )
+from tools.proof_queue_pkg import supervisor_generation
 from tools.proof_queue_pkg import (
     cli,
     command_admission,
@@ -2515,7 +2518,7 @@ def test_supervisor_build_environment_bounds_posix_sccache_startup_socket_path(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows environment contract")
-def test_supervisor_build_environment_preserves_windows_temp_authority(
+def test_supervisor_build_environment_uses_admitted_windows_store_temp(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "proof-supervisor-target"
@@ -2535,6 +2538,8 @@ def test_supervisor_build_environment_preserves_windows_temp_authority(
     assert build_env == {
         **execution_env,
         "CARGO_TARGET_DIR": str(target.resolve(strict=True)),
+        "MOLT_PROOF_SCRATCH_ROOT": str(target.parent / "scratch"),
+        **{name: str(target.parent / "tmp") for name in ("TMPDIR", "TMP", "TEMP")},
     }
 
 
@@ -3035,6 +3040,7 @@ def test_transcript_receipt_streams_hash_and_structured_counts(tmp_path: Path) -
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -3078,6 +3084,7 @@ def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_guarded_receipt_rejects_stable_dirty_source(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -3100,6 +3107,7 @@ def test_guarded_receipt_rejects_stable_dirty_source(
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_guarded_receipt_rejects_source_mutation_during_command(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -3139,6 +3147,7 @@ def test_guarded_receipt_rejects_source_mutation_during_command(
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_live_custody_detects_mutate_execute_restore_transient(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -3192,6 +3201,7 @@ def test_live_custody_detects_mutate_execute_restore_transient(
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_live_custody_detects_tracked_directory_rename_restore(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -3233,6 +3243,7 @@ def test_live_custody_detects_tracked_directory_rename_restore(
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_python_leaf_blocks_cargo_and_node_children_before_launch(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -3460,6 +3471,7 @@ def test_python_bootstrap_pytest_disables_source_cache_exactly_once(
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_python_bootstrap_installs_custody_under_isolated_startup(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -3510,10 +3522,12 @@ def test_python_bootstrap_installs_custody_under_isolated_startup(
     supervisor = context["process_supervisor"]
     assert supervisor["schema"] == "molt.proof-process-supervision.v1"
     assert supervisor["supervisor_returncode"] == 0
-    assert supervisor["receipt"]["schema"] == ("molt.proof-process-closure-receipt.v3")
+    assert supervisor["receipt"]["schema"] == (
+        supervisor_custody.SUPERVISOR_RECEIPT_SCHEMA
+    )
     assert supervisor["receipt"]["state"] == "COMPLETE"
     assert supervisor["receipt"]["complete"] is True
-    assert supervisor["receipt"]["accounting"]["total_processes"] == 1
+    assert supervisor["receipt"]["accounting"]["process_creates"] == 1
     capture = context["toolchain_capture"]
     assert capture["telemetry"]["capture"]["full_capture_count"] == 1
     assert capture["verification"]["stable"] is True
@@ -3524,6 +3538,7 @@ def test_python_bootstrap_installs_custody_under_isolated_startup(
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3683,6 +3698,7 @@ def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_python_leaf_blocks_exec_replacement_before_launch(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -3741,6 +3757,7 @@ def test_node_leaf_rejects_shell_mediated_spawn(tmp_path: Path) -> None:
     assert any(event.get("reason") == "opaque-shell" for event in receipt["violations"])
 
 
+@capability_aware_proof_execution
 def test_guarded_identity_timeout_is_terminal_before_command_launch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3991,8 +4008,8 @@ def test_guarded_execution_rejects_source_owned_outputs_before_arming(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        supervisor_custody,
-        "_provision_proof_supervisor",
+        supervisor_generation,
+        "provision",
         lambda **_kwargs: pytest.fail("supervisor provisioned before boundary check"),
     )
     with pytest.raises(ValueError, match="outputs must be outside effective source"):
@@ -4240,6 +4257,11 @@ def test_passed_windows_declared_tree_requires_platform_process_custody(
     assert raw_context is not None
     context = json.loads(raw_context[0])
     context.pop("platform_process_custody")
+    # This case tests the semantic requirement in an otherwise sealed fixture.
+    # An unresealed deletion tests terminal tampering and never reaches it.
+    context["terminal_evidence_sha256"] = supervisor_custody.terminal_evidence_sha256(
+        context, run_id="platform-custody-run", returncode=0
+    )
     state._update_run(
         conn,
         "platform-custody-run",
@@ -4307,6 +4329,7 @@ def _rows(db: Path) -> list[sqlite3.Row]:
     return list(conn.execute("SELECT * FROM proof_runs ORDER BY rowid"))
 
 
+@capability_aware_proof_execution
 def test_proof_queue_non_wasm_exec_does_not_load_wasm_toolchain(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, custody_python: Path
 ) -> None:
@@ -4424,7 +4447,7 @@ def test_proof_queue_git_snapshot_tracks_runtime_generation_changes(
     tmp_path: Path,
 ) -> None:
     def git(*args: str) -> None:
-        run_guarded_test_process(
+        run_custody_subject_process(
             ["git", *args],
             cwd=tmp_path,
             check=True,
@@ -4460,7 +4483,7 @@ def test_proof_queue_git_snapshot_expands_untracked_directories(
     tmp_path: Path,
 ) -> None:
     def git(*args: str) -> None:
-        run_guarded_test_process(
+        run_custody_subject_process(
             ["git", *args],
             cwd=tmp_path,
             check=True,
@@ -4487,6 +4510,7 @@ def test_proof_queue_git_snapshot_expands_untracked_directories(
     assert any("src/split/child.rs" in line for line in snapshot["status"])
 
 
+@capability_aware_proof_execution
 def test_proof_queue_exec_records_passed_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, custody_python: Path
 ) -> None:
@@ -4617,6 +4641,7 @@ def test_proof_queue_help_detection_ignores_metadata_values_and_command_args() -
     assert not cli._proof_command_help_requested(["exec", "--", "--help"])
 
 
+@capability_aware_proof_execution
 def test_proof_queue_exec_preserves_command_help_after_delimiter(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], custody_python: Path
 ) -> None:
@@ -4737,6 +4762,7 @@ def test_proof_queue_exec_rejects_pre_delimiter_residue(
     assert not db.exists()
 
 
+@capability_aware_proof_execution
 def test_proof_queue_exec_honors_explicit_memory_guard_poll_override(
     tmp_path: Path, custody_python: Path
 ) -> None:
@@ -4952,6 +4978,7 @@ def test_proof_queue_exec_rejects_invalid_memory_guard_poll_before_detach(
     assert not logs.exists()
 
 
+@capability_aware_proof_execution
 def test_proof_queue_evidence_accepts_positional_run_id(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -5014,6 +5041,7 @@ def test_proof_queue_evidence_accepts_positional_run_id(
         cli.main([*base_args, "evidence", run_id, "--run-id", "not-a-run-id"])
 
 
+@capability_aware_proof_execution
 def test_proof_queue_projection_failure_is_nonfatal_observability(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -5097,6 +5125,7 @@ def test_proof_queue_projection_failure_is_nonfatal_observability(
     assert "queue-infra-warning" in signals
 
 
+@capability_aware_proof_execution
 def test_proof_queue_submission_metadata_failure_is_terminal(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -5212,6 +5241,7 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
     assert followup_marker.read_text(encoding="utf-8") == "ran"
 
 
+@capability_aware_proof_execution
 def test_proof_queue_guarded_identity_failure_is_explicit_nonexecution(
     tmp_path: Path,
     monkeypatch,
@@ -7616,6 +7646,7 @@ def test_proof_queue_prune_stale_run_id_canonicalizes_selected_stale_row(
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_proof_queue_wasm_rows_check_rust_target_before_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -7696,6 +7727,7 @@ def test_proof_queue_wasm_preflight_fails_before_command(
     assert not marker.exists()
 
 
+@capability_aware_proof_execution
 def test_proof_queue_run_id_executes_only_selected_queued_row(
     tmp_path: Path, custody_python: Path
 ) -> None:
@@ -7740,6 +7772,7 @@ def test_proof_queue_run_id_executes_only_selected_queued_row(
     assert "B" in (logs / "queued-b.log").read_text(encoding="utf-8")
 
 
+@capability_aware_proof_execution
 def test_proof_queue_run_id_executes_selected_dispatched_row(
     tmp_path: Path, custody_python: Path
 ) -> None:
@@ -9175,6 +9208,7 @@ def test_proof_queue_cargo_lane_allows_explicit_warm_single_test(
     )
 
 
+@capability_aware_proof_execution
 def test_proof_queue_submit_run_executes_queued_row_in_place(
     tmp_path: Path, custody_python: Path
 ) -> None:
@@ -9304,6 +9338,7 @@ def test_proof_queue_submit_records_initial_notes_and_marimo_projection(
     assert '"git": {' in notebook_text
 
 
+@capability_aware_proof_execution
 def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
     tmp_path: Path, custody_python: Path
 ) -> None:
@@ -16148,8 +16183,8 @@ def test_native_fixture_environment_uses_declared_short_root_and_preserves_input
     assert target.is_relative_to(Path(cargo))
     assert not target.is_relative_to(Path(str(metadata["path"])))
     assert environment["MOLT_FIXTURE_SENTINEL"] == "preserved"
-    assert target.name == "proof-supervisor-target"
-    assert not target.exists()
+    assert target.name == "target"
+    assert target.parent.parent.name == "proof-supervisor"
     owner_files = list(Path(str(metadata["path"])).glob("*/metadata-owner.json"))
     assert any(
         json.loads(p.read_text())["identity"]["nodeid"]
@@ -16176,10 +16211,10 @@ def test_cached_python_authority_never_redirects_supervisor_build_layout(
             "build_target_dir": env["CARGO_TARGET_DIR"]
         }
 
-    monkeypatch.setattr(supervisor_custody, "_provision_proof_supervisor", provision)
+    monkeypatch.setattr(supervisor_generation, "provision", provision)
 
     def execute(request):
-        binary, telemetry = supervisor_custody._provision_proof_supervisor(
+        binary, telemetry = supervisor_generation.provision(
             cwd=repo, env=admitted_environment
         )
         assert binary == Path("real-admitted-image")
@@ -16195,4 +16230,4 @@ def test_cached_python_authority_never_redirects_supervisor_build_layout(
     assert rc == 0 and record["model"] is True
     assert observed == [(repo, admitted_environment)]
     assert not hasattr(authority, "supervisor_target")
-    assert supervisor_custody._provision_proof_supervisor is provision
+    assert supervisor_generation.provision is provision

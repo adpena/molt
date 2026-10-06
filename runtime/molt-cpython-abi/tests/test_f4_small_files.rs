@@ -10,139 +10,33 @@ mod support;
 use molt_cpython_abi::abi_types::{Py_buffer, PyObject, PyTypeObject};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
-use molt_lang_obj_model::MoltObject;
-use std::collections::HashMap;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::Mutex;
 
 // ── Fake runtime backend: strings, dicts, modules, imports ───────────────────
 
-static STR_MAP: Mutex<Option<HashMap<u64, &'static [u8]>>> = Mutex::new(None);
-static DICT_MAP: Mutex<Option<HashMap<u64, HashMap<u64, u64>>>> = Mutex::new(None);
 static SYS_MODULES: Mutex<u64> = Mutex::new(0);
-static NEXT_MODULE: Mutex<u64> = Mutex::new(0);
-
-fn str_map() -> std::sync::MutexGuard<'static, Option<HashMap<u64, &'static [u8]>>> {
-    let mut g = STR_MAP.lock().unwrap();
-    if g.is_none() {
-        *g = Some(HashMap::new());
-    }
-    g
-}
-fn dict_map() -> std::sync::MutexGuard<'static, Option<HashMap<u64, HashMap<u64, u64>>>> {
-    let mut g = DICT_MAP.lock().unwrap();
-    if g.is_none() {
-        *g = Some(HashMap::new());
-    }
-    g
-}
-
-fn leak_handle(bytes: &[u8]) -> (u64, &'static [u8]) {
-    let data: Vec<u8> = if bytes.is_empty() {
-        vec![0]
-    } else {
-        bytes.to_vec()
-    };
-    let leaked: &'static [u8] = Box::leak(data.into_boxed_slice());
-    let handle = MoltObject::from_ptr(leaked.as_ptr() as *mut u8).bits();
-    let view: &'static [u8] = if bytes.is_empty() {
-        &leaked[..0]
-    } else {
-        leaked
-    };
-    (handle, view)
-}
-
-unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
-    let bytes: &[u8] = if data.is_null() {
-        &[]
-    } else {
-        unsafe { std::slice::from_raw_parts(data, len) }
-    };
-    // Intern by content so equal names get equal handles (dict keys).
-    static INTERN: Mutex<Option<HashMap<Vec<u8>, u64>>> = Mutex::new(None);
-    let mut g = INTERN.lock().unwrap();
-    if g.is_none() {
-        *g = Some(HashMap::new());
-    }
-    if let Some(&h) = g.as_ref().unwrap().get(bytes) {
-        return h;
-    }
-    let (handle, view) = leak_handle(bytes);
-    str_map().as_mut().unwrap().insert(handle, view);
-    g.as_mut().unwrap().insert(bytes.to_vec(), handle);
-    handle
-}
-
-unsafe extern "C" fn fake_str_data(bits: u64, out_len: *mut usize) -> *const u8 {
-    if let Some(&v) = str_map().as_ref().unwrap().get(&bits) {
-        unsafe { *out_len = v.len() };
-        return v.as_ptr();
-    }
-    unsafe { *out_len = 0 };
-    ptr::null()
-}
 
 unsafe extern "C" fn fake_bytes_data(_bits: u64, out_len: *mut usize) -> *const u8 {
     unsafe { *out_len = 0 };
     ptr::null()
 }
 
-unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
-    use molt_cpython_abi::abi_types::MoltTypeTag;
-    if str_map().as_ref().unwrap().contains_key(&bits) {
-        MoltTypeTag::Str as u8
-    } else if dict_map().as_ref().unwrap().contains_key(&bits) {
-        MoltTypeTag::Dict as u8
-    } else {
-        MoltTypeTag::Other as u8
-    }
-}
-
-unsafe extern "C" fn fake_alloc_dict() -> u64 {
-    let (handle, _) = leak_handle(b"d");
-    dict_map().as_mut().unwrap().insert(handle, HashMap::new());
-    handle
-}
-unsafe extern "C" fn fake_dict_get(dict: u64, key: u64) -> BorrowedHandleResult {
-    match dict_map()
-        .as_ref()
-        .unwrap()
-        .get(&dict)
-        .and_then(|m| m.get(&key).copied())
-    {
-        Some(value) => BorrowedHandleResult::ok(value),
-        None => BorrowedHandleResult::missing(),
-    }
-}
-unsafe extern "C" fn fake_dict_set(dict: u64, key: u64, val: u64) -> i32 {
-    if let Some(m) = dict_map().as_mut().unwrap().get_mut(&dict) {
-        m.insert(key, val);
-    }
-    0
-}
-
 unsafe extern "C" fn fake_sys_get_object_borrowed(
     data: *const u8,
     len: usize,
+    _policy: molt_cpython_abi::hooks::SysLookupPolicy,
 ) -> BorrowedHandleResult {
     let name = unsafe { std::slice::from_raw_parts(data, len) };
     if name == b"modules" {
         let mut g = SYS_MODULES.lock().unwrap();
         if *g == 0 {
-            *g = unsafe { fake_alloc_dict() };
+            *g = unsafe { support::fake_runtime::alloc_dict() };
         }
         return BorrowedHandleResult::ok(*g);
     }
     BorrowedHandleResult::missing()
-}
-
-unsafe extern "C" fn fake_alloc_module(_data: *const u8, _len: usize) -> u64 {
-    let mut g = NEXT_MODULE.lock().unwrap();
-    let (handle, _) = leak_handle(b"m");
-    *g = handle;
-    handle
 }
 
 unsafe extern "C" fn fake_import_add_module_borrowed(
@@ -153,46 +47,50 @@ unsafe extern "C" fn fake_import_add_module_borrowed(
     let modules = {
         let mut slot = SYS_MODULES.lock().unwrap();
         if *slot == 0 {
-            *slot = unsafe { fake_alloc_dict() };
+            *slot = unsafe { support::fake_runtime::alloc_dict() };
         }
         *slot
     };
-    let key = unsafe { fake_alloc_str(name.as_ptr(), name.len()) };
-    if let Some(module) = dict_map()
-        .as_ref()
-        .unwrap()
-        .get(&modules)
-        .and_then(|entries| entries.get(&key).copied())
-    {
+    let key = unsafe { support::fake_runtime::alloc_str(name.as_ptr(), name.len()) };
+    let found = unsafe {
+        support::fake_runtime::dict_get(
+            modules,
+            key,
+            molt_cpython_abi::hooks::DictHashSource::Compute,
+            0,
+        )
+    };
+    if let molt_cpython_abi::hooks::DecodedHandleResult::Ok(module) = found.decode() {
+        unsafe { support::fake_runtime::dec_ref(key) };
         return BorrowedHandleResult::ok(module);
     }
-    let module = unsafe { fake_alloc_module(name.as_ptr(), name.len()) };
-    unsafe { fake_dict_set(modules, key, module) };
-    BorrowedHandleResult::ok(module)
+    let module = unsafe { support::fake_runtime::alloc_module(name.as_ptr(), name.len()) };
+    let status = unsafe {
+        support::fake_runtime::dict_mutate(modules, key, module, 0, None, std::ptr::null_mut())
+    };
+    molt_cpython_abi::api::errors::with_preserved_error(|| unsafe {
+        support::fake_runtime::dec_ref(key);
+        support::fake_runtime::dec_ref(module);
+    });
+    if status == 0 {
+        BorrowedHandleResult::ok(module)
+    } else {
+        BorrowedHandleResult::error()
+    }
 }
 
 unsafe extern "C" fn fake_import_module_fails(_data: *const u8, _len: usize) -> u64 {
     0 // every import fails — the mirror-error path must fire
 }
 
-unsafe extern "C" fn noop_ref(_: u64) {}
-
 fn install() {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.alloc_str = fake_alloc_str;
-    hooks.str_data = fake_str_data;
+    support::fake_runtime::wire(&mut hooks);
     hooks.bytes_data = fake_bytes_data;
-    hooks.classify_heap = fake_classify_heap;
-    hooks.alloc_dict = fake_alloc_dict;
-    hooks.dict_get = fake_dict_get;
-    hooks.dict_set = fake_dict_set;
     hooks.sys_get_object_borrowed = fake_sys_get_object_borrowed;
-    hooks.alloc_module = fake_alloc_module;
     hooks.import_add_module_borrowed = fake_import_add_module_borrowed;
     hooks.import_module = fake_import_module_fails;
-    hooks.inc_ref = noop_ref;
-    hooks.dec_ref = noop_ref;
-    support::prepare_abi_test_thread(hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 unsafe fn str_obj(text: &str) -> *mut PyObject {
@@ -209,7 +107,10 @@ unsafe fn read_str(py: *mut PyObject) -> Vec<u8> {
         .pyobj_to_handle(py)
         .map(|identity| identity.as_handle())
         .expect("bridge str handle");
-    str_map().as_ref().unwrap().get(&bits).unwrap().to_vec()
+    let mut len = 0;
+    let bytes = unsafe { support::fake_runtime::str_data(bits, &mut len) };
+    assert!(!bytes.is_null());
+    unsafe { std::slice::from_raw_parts(bytes, len) }.to_vec()
 }
 
 unsafe fn err_clear() {

@@ -36,6 +36,7 @@ fn hello_world_ir() -> SimpleIR {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -53,6 +54,7 @@ fn empty_main_ir() -> SimpleIR {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -71,6 +73,7 @@ fn host_init_and_main_ir() -> SimpleIR {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -82,6 +85,7 @@ fn host_init_and_main_ir() -> SimpleIR {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -105,6 +109,7 @@ fn ir_with_async_ops() -> SimpleIR {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -127,6 +132,7 @@ fn ir_with_os_name() -> SimpleIR {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -164,6 +170,7 @@ fn ir_with_escaped_call_guarded() -> SimpleIR {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -175,6 +182,7 @@ fn ir_with_escaped_call_guarded() -> SimpleIR {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],
@@ -214,6 +222,7 @@ fn ir_with_socket_ops() -> SimpleIR {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -235,6 +244,7 @@ fn ir_with_time_ops() -> SimpleIR {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -642,7 +652,7 @@ fn pure_profile_keeps_collection_ops() {
     let wasm = compile_with_profile(hello_world_ir(), WasmProfile::Pure);
     let names = import_names(&wasm);
 
-    for core in ["dict_new", "list_builder_new", "set_new"] {
+    for core in ["dict_new", "list_from_values", "set_new"] {
         assert!(
             names.contains(core),
             "Pure profile should keep collection import: {core}"

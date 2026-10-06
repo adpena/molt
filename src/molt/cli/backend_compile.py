@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.runtime_build_python import BuildPythonAdmission
+
 from molt.cli.native_symbol_inspection import (
     NativeSymbolInspectionError,
 )
@@ -14,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, ContextManager, Mapping
 
 from molt.capability_manifest import ResolvedRuntimePolicy
+from molt.cli.compiler_identity import CompilerIdentityError
 from molt.cli import backend_binary as _backend_binary
 from molt.cli import backend_cache_setup as _backend_cache_setup
 from molt.cli import factgraph as _factgraph
@@ -70,11 +73,19 @@ from molt.cli.output import (
     subprocess_output_text as _subprocess_output_text,
 )
 from molt.cli.runtime_build import _initialize_runtime_artifact_state
+from molt.cli.installed_runtime_contract import InstalledRuntimeError
+from molt.cli.runtime_features import SOURCE_EXTENSION_RUNTIME_FEATURES
+from molt.cli.runtime_wasm_build_policy import runtime_wasm_simd_policy
+from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.native_link_plan import NativeArtifactKind
 from molt.cli.runtime_callable_symbols import (
     _stage_runtime_callable_symbols_for_native_codegen,
 )
 from molt.cli.runtime_native_build import _maybe_start_native_runtime_lib_ready_async
+from molt.cli.runtime_native_codegen import (
+    NativeRuntimeCodegenBinding,
+    native_runtime_codegen_environment,
+)
 from molt.cli.runtime_wasm_pair_build import _ensure_runtime_wasm_both
 from molt.target_python import TargetPythonVersion
 from molt.cli.wasm_codegen_layout import (
@@ -198,20 +209,33 @@ def _prepare_backend_setup(
     resolved_modules: set[str] | frozenset[str] | None = None,
     resolved_capability_policy: ResolvedRuntimePolicy | None = None,
     stage_timings_ms: dict[str, float] | None = None,
+    build_python_admission: BuildPythonAdmission | None = None,
 ) -> tuple[_PreparedBackendSetup | None, _CliFailure | None]:
+    try:
+        artifact_contract = resolve_backend_artifact_contract(
+            target=target, emit_mode=emit_mode, target_triple=target_triple
+        )
+    except ValueError as exc:
+        return None, _fail(str(exc), json_output, command="build")
+    if artifact_contract.native_target is not None:
+        target_triple = artifact_contract.native_target.cargo_target
     extra_runtime_features: tuple[str, ...] = ()
     if native_artifact_plan.artifacts and not is_wasm:
-        extra_runtime_features = ("source_extension_loader",)
-    runtime_state = _initialize_runtime_artifact_state(
-        is_rust_transpile=is_rust_transpile or is_luau_transpile,
-        is_wasm=is_wasm,
-        emit_mode=emit_mode,
-        molt_root=molt_root,
-        runtime_cargo_profile=runtime_cargo_profile,
-        target_triple=target_triple,
-        stdlib_profile=stdlib_profile,
-        extra_runtime_features=extra_runtime_features,
-    )
+        extra_runtime_features = SOURCE_EXTENSION_RUNTIME_FEATURES
+    try:
+        runtime_state = _initialize_runtime_artifact_state(
+            is_rust_transpile=is_rust_transpile or is_luau_transpile,
+            is_wasm=is_wasm,
+            emit_mode=emit_mode,
+            molt_root=molt_root,
+            runtime_cargo_profile=runtime_cargo_profile,
+            target_triple=target_triple,
+            stdlib_profile=stdlib_profile,
+            extra_runtime_features=extra_runtime_features,
+        )
+    except InstalledRuntimeError as exc:
+        return None, _fail(str(exc), json_output, command="build")
+    runtime_state.build_python_admission = build_python_admission
     runtime_callable_symbols_digest = ""
     callable_symbols_start = time.perf_counter()
     runtime_callable_symbols_digest, callable_symbols_error = (
@@ -270,7 +294,7 @@ def _prepare_backend_setup(
             cargo_profile=runtime_cargo_profile,
             cargo_timeout=cargo_timeout,
             project_root=molt_root,
-            simd_enabled=not is_wasm_freestanding,
+            simd_enabled=runtime_wasm_simd_policy(freestanding=is_wasm_freestanding),
             freestanding=is_wasm_freestanding,
             stdlib_profile=stdlib_profile,
             resolved_modules=resolved_modules,
@@ -288,7 +312,7 @@ def _prepare_backend_setup(
                 json_output,
                 command="build",
             )
-        runtime_wasm_codegen_digest = binding.generation.manifest.name
+        runtime_wasm_codegen_digest = binding.semantic_digest
     cache_setup_start = time.perf_counter()
     try:
         cache_setup = _backend_cache_setup._prepare_backend_cache_setup(
@@ -296,7 +320,7 @@ def _prepare_backend_setup(
             cache_enabled=cache,
             ir=ir,
             target=target,
-            target_triple=target_triple,
+            artifact_contract=artifact_contract,
             profile=profile,
             runtime_cargo_profile=runtime_cargo_profile,
             backend_cargo_profile=backend_cargo_profile,
@@ -312,13 +336,13 @@ def _prepare_backend_setup(
             target_python=target_python,
             stdlib_profile=stdlib_profile,
             native_artifact_plan=native_artifact_plan,
-            runtime_callable_symbols_digest=runtime_callable_symbols_digest,
+            native_runtime_codegen_binding=runtime_state.native_runtime_codegen_binding,
             runtime_wasm_codegen_digest=runtime_wasm_codegen_digest,
             backend_compiler_fingerprint=backend_ensure_result.cache_compiler_fingerprint,
             resolved_capability_policy=resolved_capability_policy,
             stage_timings_ms=stage_timings_ms,
         )
-    except NativeSymbolInspectionError as error:
+    except (NativeSymbolInspectionError, OSError, ValueError) as error:
         return None, _fail(str(error), json_output, command="build")
     _record_pipeline_stage_ms(
         stage_timings_ms,
@@ -405,7 +429,7 @@ def _prepare_backend_runtime_context(
             cargo_profile=runtime_cargo_profile,
             cargo_timeout=cargo_timeout,
             project_root=molt_root,
-            simd_enabled=not is_wasm_freestanding,
+            simd_enabled=runtime_wasm_simd_policy(freestanding=is_wasm_freestanding),
             freestanding=is_wasm_freestanding,
             stdlib_profile=stdlib_profile,
             resolved_modules=resolved_modules,
@@ -452,7 +476,6 @@ def _start_backend_daemon_under_lock(
     *,
     cargo_profile: str,
     project_root: Path,
-    target_triple: str | None,
     config_digest: str | None,
     startup_timeout: float | None,
     json_output: bool,
@@ -473,7 +496,6 @@ def _start_backend_daemon_under_lock(
                 daemon_socket,
                 cargo_profile=cargo_profile,
                 project_root=project_root,
-                target_triple=target_triple,
                 config_digest=config_digest,
                 startup_timeout=startup_timeout,
                 json_output=json_output,
@@ -515,10 +537,24 @@ def _prepare_backend_dispatch(
     backend_bin: Path | None = None,
     backend_compiler_fingerprint: str | None = None,
     start_daemon: bool = True,
+    native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
 ) -> tuple[_PreparedBackendDispatch | None, _CliFailure | None]:
-    backend_env = _backend_environment_with_compiler_fingerprint(
-        os.environ, backend_compiler_fingerprint
-    )
+    try:
+        if (
+            not (is_wasm or is_rust_transpile or is_luau_transpile)
+            and native_runtime_codegen_binding is None
+        ):
+            raise ValueError(
+                "native backend dispatch requires an admitted runtime binding"
+            )
+        backend_env = _backend_environment_with_compiler_fingerprint(
+            native_runtime_codegen_environment(
+                os.environ, native_runtime_codegen_binding
+            ),
+            backend_compiler_fingerprint,
+        )
+    except (OSError, ValueError) as exc:
+        return None, _fail(str(exc), json_output, command="build")
     if is_wasm:
         if wasm_layout is None:
             return None, _fail(
@@ -583,14 +619,17 @@ def _prepare_backend_dispatch(
         and not is_luau_transpile
         and _backend_daemon_enabled()
     ):
-        daemon_config_digest = _backend_daemon_config_digest(
-            molt_root,
-            backend_cargo_profile,
-            env=backend_env,
-            backend_bin=backend_bin,
-            target_triple=target_triple,
-            backend_features=backend_features,
-        )
+        try:
+            daemon_config_digest = _backend_daemon_config_digest(
+                molt_root,
+                backend_cargo_profile,
+                env=backend_env,
+                backend_bin=backend_bin,
+                target_triple=target_triple,
+                backend_features=backend_features,
+            )
+        except CompilerIdentityError as exc:
+            return None, _fail(str(exc), json_output, command="build")
         if diagnostics_enabled and "backend_daemon_setup" not in phase_starts:
             phase_starts["backend_daemon_setup"] = time.perf_counter()
         daemon_socket = _backend_daemon_socket_path(
@@ -604,7 +643,6 @@ def _prepare_backend_dispatch(
             daemon_socket,
             cargo_profile=backend_cargo_profile,
             project_root=molt_root,
-            target_triple=target_triple,
             config_digest=daemon_config_digest,
             startup_timeout=startup_timeout,
             json_output=json_output,
@@ -643,7 +681,6 @@ def _execute_backend_compile(
     cache_key: str | None,
     function_cache_key: str | None,
     cache_setup: _BackendCacheSetup,
-    target_triple: str | None,
     backend_daemon_config_digest: str | None,
     entry_module: str,
     ir: Mapping[str, Any],
@@ -660,7 +697,23 @@ def _execute_backend_compile(
     backend_daemon_cached: bool | None,
     backend_daemon_cache_tier: str | None,
     backend_daemon_health: dict[str, Any] | None,
+    native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
 ) -> tuple[_BackendExecutionResult | None, _CliFailure | None]:
+    target_triple = cache_setup.artifact_contract.target_triple
+    try:
+        if (
+            cache_setup.artifact_contract.is_native
+            and native_runtime_codegen_binding is None
+        ):
+            raise ValueError(
+                "native backend execution requires an admitted runtime binding"
+            )
+        backend_env = native_runtime_codegen_environment(
+            os.environ if backend_env is None else backend_env,
+            native_runtime_codegen_binding,
+        )
+    except (OSError, ValueError) as exc:
+        return None, _fail(str(exc), json_output, command="build")
     backend_output_ctx: ContextManager[Path]
     # One-shot backend subprocess compilation should always write to a fresh
     # artifact path and stage atomically into cache/output afterward. Writing
@@ -778,11 +831,14 @@ def _execute_backend_compile(
             )
             if forward_daemon_log and not json_output:
                 daemon_log_path = _backend_daemon_log_path(
-                    molt_root, backend_cargo_profile
+                    molt_root,
+                    backend_cargo_profile,
+                    config_digest=backend_daemon_config_digest,
                 )
                 daemon_log_offset = _backend_daemon_log_mark(daemon_log_path)
             daemon_compile = _compile_with_backend_daemon(
                 daemon_socket,
+                native_runtime_codegen_binding=native_runtime_codegen_binding,
                 project_root=molt_root,
                 ir=ir,
                 backend_output=backend_output,
@@ -838,7 +894,6 @@ def _execute_backend_compile(
                     daemon_socket,
                     cargo_profile=backend_cargo_profile,
                     project_root=molt_root,
-                    target_triple=target_triple,
                     config_digest=backend_daemon_config_digest,
                     startup_timeout=restart_timeout,
                     json_output=json_output,
@@ -852,6 +907,7 @@ def _execute_backend_compile(
                 if daemon_ready:
                     daemon_compile = _compile_with_backend_daemon(
                         daemon_socket,
+                        native_runtime_codegen_binding=native_runtime_codegen_binding,
                         project_root=molt_root,
                         ir=ir,
                         backend_output=backend_output,
@@ -914,8 +970,6 @@ def _execute_backend_compile(
             if diagnostics_enabled and "backend_subprocess_compile" not in phase_starts:
                 phase_starts["backend_subprocess_compile"] = time.perf_counter()
             _is_transpile = is_rust_transpile or is_luau_transpile
-            if not is_wasm and not _is_transpile and backend_env is None:
-                backend_env = os.environ.copy()
             if not is_wasm and not _is_transpile and backend_env is not None:
                 # Always scrub the partition contract before setting the
                 # current build's values so stale ambient state cannot leak
@@ -972,19 +1026,7 @@ def _execute_backend_compile(
             # cleared the cache tree, and the backend's own
             # ensure_output_parent_dir may race with ld -r timing.
             backend_output.parent.mkdir(parents=True, exist_ok=True)
-            # Progress indicator for long builds (Issue 2.2 / 7.1).
-            if not json_output:
-                import sys as _sys
-
-                _entry_name = (
-                    entry_module.rsplit(".", 1)[-1] if entry_module else "program"
-                )
-                print(
-                    f"Compiling {_entry_name}...",
-                    end="",
-                    flush=True,
-                    file=_sys.stderr,
-                )
+            _entry_name = entry_module or "program"
             try:
                 ir_file_path = _ensure_backend_ir_file_path()
                 cmd_with_output.extend(["--ir-file", str(ir_file_path)])
@@ -992,7 +1034,11 @@ def _execute_backend_compile(
                     cmd_with_output,
                     env=backend_env,
                     timeout=backend_timeout,
-                    progress_label=None if json_output else "Backend compilation",
+                    progress_label=None
+                    if json_output
+                    else (
+                        f"Compiling {_entry_name} ({target_triple or 'native'}, {backend_cargo_profile} compiler)"
+                    ),
                 )
             except subprocess.TimeoutExpired:
                 return None, _fail(
@@ -1006,20 +1052,16 @@ def _execute_backend_compile(
                     json_output,
                     command="build",
                 )
-            # Always surface backend stderr when verbose — debug
-            # env vars like MOLT_TRACE_EQ and MOLT_DEBUG_ENTRY_INIT
-            # emit to stderr and are invisible without this.
+            # Emit each captured stream once. Failed commands expose both
+            # streams even without verbosity; JSON diagnostics stay structured.
             backend_stderr = _subprocess_output_text(backend_process.stderr)
             backend_stdout = _subprocess_output_text(backend_process.stdout)
-            if verbose and not json_output:
+            if not json_output and (verbose or backend_process.returncode != 0):
                 if backend_stderr:
                     print(backend_stderr, end="", file=sys.stderr)
+                if backend_stdout:
+                    print(backend_stdout, end="")
             if backend_process.returncode != 0:
-                if not json_output and not verbose:
-                    if backend_stderr:
-                        print(backend_stderr, end="", file=sys.stderr)
-                    if backend_stdout:
-                        print(backend_stdout, end="")
                 # Build a more informative error message
                 _fail_detail_parts = ["Backend compilation failed"]
                 _fail_detail_parts.append(f" (exit code {backend_process.returncode})")
@@ -1048,18 +1090,7 @@ def _execute_backend_compile(
                     backend_process.returncode or 1,
                     command="build",
                 )
-            if verbose and not json_output:
-                backend_stdout = _subprocess_output_text(backend_process.stdout)
-                backend_stderr = _subprocess_output_text(backend_process.stderr)
-                if backend_stdout:
-                    print(backend_stdout, end="")
-                if backend_stderr:
-                    print(backend_stderr, end="", file=sys.stderr)
             backend_output_written = True
-            if not json_output:
-                import sys as _sys
-
-                print(" done", file=_sys.stderr)
         if backend_output_written and not (
             daemon_ready and backend_compiled and backend_output_exists
         ):
@@ -1130,7 +1161,6 @@ def _prepare_backend_compile(
     runtime_state: _RuntimeArtifactState,
     cargo_timeout: float | None,
     molt_root: Path,
-    target_triple: str | None,
     backend_cargo_profile: str,
     backend_timeout: float | None,
     backend_daemon_config_digest: str | None,
@@ -1147,6 +1177,7 @@ def _prepare_backend_compile(
     if diagnostics_enabled:
         phase_starts["cache_lookup"] = time.perf_counter()
     cache_enabled = cache_setup.cache_enabled
+    target_triple = cache_setup.artifact_contract.target_triple
     wasm_layout = None
     if is_wasm:
         try:
@@ -1205,6 +1236,7 @@ def _prepare_backend_compile(
                     phase_starts["backend_prepare"] = now
             prepared_backend_dispatch, prepared_backend_dispatch_error = (
                 _prepare_backend_dispatch(
+                    native_runtime_codegen_binding=runtime_state.native_runtime_codegen_binding,
                     is_rust_transpile=is_rust_transpile,
                     is_luau_transpile=is_luau_transpile,
                     is_wasm=is_wasm,
@@ -1231,6 +1263,7 @@ def _prepare_backend_compile(
                 phase_starts["backend_dispatch"] = time.perf_counter()
             backend_execution_result, backend_execution_error = (
                 _execute_backend_compile(
+                    native_runtime_codegen_binding=runtime_state.native_runtime_codegen_binding,
                     cache=cache_enabled,
                     cache_path=cache_path,
                     function_cache_path=function_cache_path,
@@ -1247,7 +1280,6 @@ def _prepare_backend_compile(
                     cache_key=cache_key,
                     function_cache_key=function_cache_key,
                     cache_setup=cache_setup,
-                    target_triple=target_triple,
                     backend_daemon_config_digest=(
                         prepared_backend_dispatch.backend_daemon_config_digest
                     ),

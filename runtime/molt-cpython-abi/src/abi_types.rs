@@ -11,8 +11,8 @@ use std::ffi::c_void;
 use std::os::raw::{c_char, c_double, c_int, c_uint, c_ulong};
 
 pub type Py_ssize_t = isize;
-pub type Py_hash_t = isize;
-pub type Py_uhash_t = usize;
+pub type Py_hash_t = molt_lang_obj_model::hash_policy::HashWord;
+pub type Py_uhash_t = molt_lang_obj_model::hash_policy::UnsignedHashWord;
 pub type PyCFunction = unsafe extern "C" fn(*mut PyObject, *mut PyObject) -> *mut PyObject;
 pub type PyCFunctionWithKeywords =
     unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut PyObject) -> *mut PyObject;
@@ -260,20 +260,12 @@ unsafe impl Send for PyDateTime_DateTime {}
 unsafe impl Sync for PyDateTime_DateTime {}
 
 #[repr(C)]
-pub struct PyDictProxyObject {
-    pub ob_base: PyObject,
-    pub mapping: *mut PyObject,
-}
-
-#[repr(C)]
 pub struct PyGenericAliasObject {
     pub ob_base: PyObject,
     pub origin: *mut PyObject,
     pub args: *mut PyObject,
 }
 
-unsafe impl Send for PyDictProxyObject {}
-unsafe impl Sync for PyDictProxyObject {}
 unsafe impl Send for PyGenericAliasObject {}
 unsafe impl Sync for PyGenericAliasObject {}
 
@@ -321,9 +313,11 @@ pub struct PyTypeObject {
     pub tp_weaklistoffset: Py_ssize_t,
     pub tp_iter: Option<unsafe extern "C" fn(*mut PyObject) -> *mut PyObject>,
     pub tp_iternext: Option<unsafe extern "C" fn(*mut PyObject) -> *mut PyObject>,
+    /// Null-terminated declaration tables retain their canonical entry types,
+    /// matching the C header; only Stable-ABI slot transport erases pointers.
     pub tp_methods: *mut PyMethodDef,
-    pub tp_members: *mut c_void,
-    pub tp_getset: *mut c_void,
+    pub tp_members: *mut PyMemberDef,
+    pub tp_getset: *mut PyGetSetDef,
     pub tp_base: *mut PyTypeObject,
     pub tp_dict: *mut PyObject,
     pub tp_descr_get: Option<PyDescrGetFunc>,
@@ -403,9 +397,21 @@ pub struct PyDescrObject {
     pub d_type: *mut PyTypeObject,
     /// Attribute name as an interned `str` object (owned reference).
     pub d_name: *mut PyObject,
-    /// Qualified name (unused by the subset numpy needs; kept for layout parity).
+    /// Cached qualified name (owned reference, initially NULL).
     pub d_qualname: *mut PyObject,
 }
+
+/// Native method and classmethod descriptors share CPython's descriptor header
+/// and borrow a declaration whose storage outlives the declaring type.
+#[repr(C)]
+pub struct PyMethodDescrObject {
+    pub d_common: PyDescrObject,
+    pub d_method: *mut PyMethodDef,
+    pub vectorcall: Option<PyVectorcallFunc>,
+}
+
+unsafe impl Send for PyMethodDescrObject {}
+unsafe impl Sync for PyMethodDescrObject {}
 
 /// `getset_descriptor` object — CPython `PyGetSetDescrObject`. Holds a borrowed
 /// pointer to the caller's static `PyGetSetDef` (which must outlive the type).
@@ -429,15 +435,47 @@ pub struct PyMemberDescrObject {
 unsafe impl Send for PyMemberDescrObject {}
 unsafe impl Sync for PyMemberDescrObject {}
 
+pub type PyWrapperFunc =
+    unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut c_void) -> *mut PyObject;
+pub type PyWrapperFuncKeywords =
+    unsafe extern "C" fn(*mut PyObject, *mut PyObject, *mut c_void, *mut PyObject) -> *mut PyObject;
+
+/// CPython Include/cpython/descrobject.h `struct wrapperbase`.
+/// A descriptor borrows this declaration for its entire lifetime.
+#[repr(C)]
+pub struct PyWrapperBase {
+    pub name: *const c_char,
+    pub offset: c_int,
+    pub function: *mut c_void,
+    pub wrapper: Option<PyWrapperFunc>,
+    pub doc: *const c_char,
+    pub flags: c_int,
+    pub name_strobj: *mut PyObject,
+}
+
+unsafe impl Send for PyWrapperBase {}
+unsafe impl Sync for PyWrapperBase {}
+
+pub const PyWrapperFlag_KEYWORDS: c_int = 1;
+
 /// wrapper_descriptor object - CPython PyWrapperDescrObject.
 #[repr(C)]
 pub struct PyWrapperDescrObject {
     pub d_common: PyDescrObject,
+    pub d_base: *mut PyWrapperBase,
     pub d_wrapped: *mut c_void,
 }
 
 unsafe impl Send for PyWrapperDescrObject {}
 unsafe impl Sync for PyWrapperDescrObject {}
+
+/// CPython Objects/descrobject.c `wrapperobject`.
+#[repr(C)]
+pub struct PyMethodWrapperObject {
+    pub ob_base: PyObject,
+    pub descr: *mut PyWrapperDescrObject,
+    pub self_: *mut PyObject,
+}
 
 /// Module definition — used by `PyModuleDef_Init`.
 #[repr(C)]
@@ -955,7 +993,7 @@ pub struct SpecializationCache {
 /// extension's `((PyHeapTypeObject*)type)->ht_name`/`ht_module` reads run OOB past
 /// the 416-byte `PyTypeObject` (matrix PyTypeObject #3, L3). The five sub-table
 /// fields are present for layout fidelity (so `ht_*` land at the CPython offsets);
-/// the runtime still points `tp_as_*` at the separately-boxed `ensure_*` tables.
+/// spec construction points `tp_as_*` at these inline owned tables.
 #[repr(C)]
 pub struct PyHeapTypeObject {
     pub ht_type: PyTypeObject,
@@ -987,6 +1025,9 @@ pub const METH_STATIC: c_int = 0x0020;
 pub const METH_COEXIST: c_int = 0x0040;
 pub const METH_FASTCALL: c_int = 0x0080;
 pub const METH_METHOD: c_int = 0x0200;
+
+/// CPython 3.12 descriptor declaration relative to a negative spec basicsize.
+pub const Py_RELATIVE_OFFSET: c_int = 8;
 
 /// PyType tp_flags bits.
 pub const Py_TPFLAGS_BASETYPE: c_ulong = 1 << 10;
@@ -1160,6 +1201,8 @@ pub enum MoltTypeTag {
     Traceback = 15,
     Exception = 16,
     BuiltinCallable = 17,
+    MemoryView = 18,
+    Slice = 19,
     Other = 255,
 }
 
@@ -1239,7 +1282,7 @@ pub static mut Py_EllipsisObject: PyObject = PyObject {
 };
 
 // We can't use the macro with const-init for tp_name (C strings aren't const).
-// Instead the names are patched in `init_static_types()`.
+// Instead the names are patched by the canonical process ABI bootstrap.
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut PyLong_Type: PyTypeObject = unsafe { std::mem::zeroed() };
@@ -1263,6 +1306,8 @@ pub static mut MoltManaged_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut PyList_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[unsafe(no_mangle)]
+pub static mut PyRange_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut PyTuple_Type: PyTypeObject = unsafe { std::mem::zeroed() };
@@ -1311,6 +1356,15 @@ pub static mut PyMethod_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 pub static mut PyMethodDescr_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
+pub static mut PyClassMethodDescr_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut PyStaticMethod_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut PyClassMethod_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
 pub static mut PyMemberDescr_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
@@ -1318,6 +1372,9 @@ pub static mut PyGetSetDescr_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut PyWrapperDescr_Type: PyTypeObject = unsafe { std::mem::zeroed() };
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut _PyMethodWrapper_Type: PyTypeObject = unsafe { std::mem::zeroed() };
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut PyCapsule_Type: PyTypeObject = unsafe { std::mem::zeroed() };
@@ -1590,24 +1647,11 @@ unsafe extern "C" fn tuple_slot_subscript(
 /// cached.  Element hashes continue to come from the single `PyObject_Hash`
 /// authority, preserving cross-type equality/hash invariants.
 unsafe extern "C" fn tuple_slot_hash(tuple: *mut PyObject) -> Py_hash_t {
-    #[cfg(target_pointer_width = "64")]
-    const PRIME_1: Py_uhash_t = 11_400_714_785_074_694_791;
-    #[cfg(target_pointer_width = "64")]
-    const PRIME_2: Py_uhash_t = 14_029_467_366_897_027_727;
-    #[cfg(target_pointer_width = "64")]
-    const PRIME_5: Py_uhash_t = 2_870_177_450_012_600_261;
-    #[cfg(target_pointer_width = "32")]
-    const PRIME_1: Py_uhash_t = 2_654_435_761;
-    #[cfg(target_pointer_width = "32")]
-    const PRIME_2: Py_uhash_t = 2_246_822_519;
-    #[cfg(target_pointer_width = "32")]
-    const PRIME_5: Py_uhash_t = 3_747_613_939;
-
     let len = unsafe { crate::api::sequences::PyTuple_Size(tuple) };
     if len < 0 {
         return -1;
     }
-    let mut accumulator = PRIME_5;
+    let mut accumulator = molt_lang_obj_model::hash_policy::TupleHashAccumulator::new();
     for index in 0..len {
         let item = unsafe { crate::api::sequences::PyTuple_GetItem(tuple, index) };
         if item.is_null() {
@@ -1620,23 +1664,45 @@ unsafe extern "C" fn tuple_slot_hash(tuple: *mut PyObject) -> Py_hash_t {
         if lane == -1 {
             return -1;
         }
-        accumulator = accumulator.wrapping_add((lane as Py_uhash_t).wrapping_mul(PRIME_2));
-        #[cfg(target_pointer_width = "64")]
-        {
-            accumulator = accumulator.rotate_left(31);
-        }
-        #[cfg(target_pointer_width = "32")]
-        {
-            accumulator = accumulator.rotate_left(13);
-        }
-        accumulator = accumulator.wrapping_mul(PRIME_1);
+        accumulator.push(lane as i64);
     }
-    accumulator =
-        accumulator.wrapping_add((len as Py_uhash_t) ^ (PRIME_5 ^ (3_527_539 as Py_uhash_t)));
-    if accumulator == Py_uhash_t::MAX {
-        1_546_275_796
-    } else {
-        accumulator as Py_hash_t
+    accumulator.finish_tuple(len as usize) as Py_hash_t
+}
+
+#[cfg(test)]
+mod tuple_hash_policy_tests {
+    use super::*;
+
+    #[test]
+    fn c_tuple_hash_slot_matches_cpython_target_vectors() {
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
+        crate::bridge::molt_cpython_abi_init();
+        for (len, expected32, expected64) in [
+            (0, 750394483, 5740354900026072187),
+            (1, 1214856301, -8753497827991233192),
+            (2, -168982784, -8458139203682520985),
+        ] {
+            unsafe {
+                let tuple = crate::api::sequences::PyTuple_New(len);
+                assert!(!tuple.is_null());
+                for index in 0..len {
+                    let zero = crate::api::numbers::PyLong_FromLong(0);
+                    assert!(!zero.is_null());
+                    assert_eq!(
+                        crate::api::sequences::PyTuple_SetItem(tuple, index, zero),
+                        0
+                    );
+                }
+                let hash = PyTuple_Type.tp_hash.unwrap()(tuple);
+                let expected = if Py_hash_t::BITS == 32 {
+                    expected32
+                } else {
+                    expected64
+                };
+                assert_eq!(hash as i64, expected);
+                crate::api::refcount::Py_DECREF(tuple);
+            }
+        }
     }
 }
 
@@ -1645,6 +1711,12 @@ unsafe extern "C" fn tuple_slot_traverse(
     visit: *mut c_void,
     argument: *mut c_void,
 ) -> c_int {
+    if crate::bridge::GLOBAL_BRIDGE
+        .managed_handle_for_pyobj(tuple)
+        .is_some()
+    {
+        return unsafe { crate::api::memory::molt_managed_gc_traverse(tuple, visit, argument) };
+    }
     if visit.is_null() {
         return 0;
     }
@@ -1724,25 +1796,12 @@ unsafe extern "C" fn tuple_slot_new(
     subtype
 }
 
-/// Publish process-owned builtin shells once.
+/// Process-owned type storage, installed only by the canonical ABI bootstrap.
 ///
 /// # Safety
-/// Complete initialization before any extension accesses the static shells.
-/// Repeated and concurrent initialization calls are synchronized and permitted.
-/// Runtime teardown/rebuild still requires its own exclusive lifecycle custody.
-/// Runtime restart retires and
-/// rebuilds runtime-backed roots through the explicit lifecycle functions below;
-/// extension loading must never reset live type flags, slots or identities.
-///
-/// The initializer only stores static data/function pointers and initializes
-/// exception shells; it invokes no runtime hooks or loader callbacks, so it
-/// cannot recursively enter this publication boundary.
-pub unsafe fn init_static_types() {
-    static INIT: std::sync::Once = std::sync::Once::new();
-    INIT.call_once(|| unsafe { initialize_static_type_shells() });
-}
-
-unsafe fn initialize_static_type_shells() {
+/// Must run once, before slots or runtime bindings are published. Reinitializing
+/// live shells would erase GC flags and invalidate descriptor/type ownership.
+pub(crate) unsafe fn initialize_static_type_storage() {
     macro_rules! set_name {
         ($ty:expr, $s:literal) => {
             $ty.tp_name = $s.as_ptr().cast();
@@ -1768,6 +1827,7 @@ unsafe fn initialize_static_type_shells() {
         set_name!(PyByteArray_Type, b"bytearray\0");
         set_name!(MoltManaged_Type, b"molt.managed\0");
         set_name!(PyList_Type, b"list\0");
+        set_name!(PyRange_Type, b"range\0");
         set_name!(PyTuple_Type, b"tuple\0");
         set_name!(PyDict_Type, b"dict\0");
         set_name!(PyDictProxy_Type, b"mappingproxy\0");
@@ -1781,9 +1841,17 @@ unsafe fn initialize_static_type_shells() {
         set_name!(PyCMethod_Type, b"builtin_method\0");
         set_name!(PyMethod_Type, b"method\0");
         set_name!(PyMethodDescr_Type, b"method_descriptor\0");
+        set_name!(PyClassMethodDescr_Type, b"classmethod_descriptor\0");
+        set_name!(PyStaticMethod_Type, b"staticmethod\0");
+        set_name!(PyClassMethod_Type, b"classmethod\0");
+        // Instances use the runtime's existing wrapper storage and descriptor
+        // protocol; this bound class shell supplies canonical public identity.
+        PyStaticMethod_Type.tp_base = &raw mut PyBaseObject_Type;
+        PyClassMethod_Type.tp_base = &raw mut PyBaseObject_Type;
         set_name!(PyMemberDescr_Type, b"member_descriptor\0");
         set_name!(PyGetSetDescr_Type, b"getset_descriptor\0");
         set_name!(PyWrapperDescr_Type, b"wrapper_descriptor\0");
+        set_name!(_PyMethodWrapper_Type, b"method-wrapper\0");
         set_name!(PyCapsule_Type, b"PyCapsule\0");
         set_name!(PySlice_Type, b"slice\0");
         set_name!(PyTraceBack_Type, b"traceback\0");
@@ -1794,6 +1862,10 @@ unsafe fn initialize_static_type_shells() {
         set_name!(PyDateTime_TimeType, b"datetime.time\0");
         set_name!(PyDateTime_DeltaType, b"datetime.timedelta\0");
         set_name!(PyDateTime_TZInfoType, b"datetime.tzinfo\0");
+
+        // The builtin list owns physical sequence slots. Managed/native
+        // descendants inherit these exact functions through declared owners.
+        crate::api::sequences::list_slots::initialize();
 
         MOLT_TUPLE_AS_SEQUENCE.sq_length = tuple_slot_length as *mut c_void;
         MOLT_TUPLE_AS_SEQUENCE.sq_concat = tuple_slot_concat as *mut c_void;
@@ -1824,7 +1896,27 @@ unsafe fn initialize_static_type_shells() {
         // dict is EQ/NE key-value equality. Without them two distinct-but-equal
         // list/dict objects compare unequal by object identity in do_richcompare.
         PyList_Type.tp_richcompare = Some(crate::api::sequences::molt_list_richcompare);
+        PyList_Type.tp_traverse = Some(crate::api::memory::molt_list_gc_traverse);
+        PyList_Type.tp_clear = Some(crate::api::memory::molt_managed_gc_clear);
+        for ty in [
+            &raw mut PyDict_Type,
+            &raw mut PySet_Type,
+            &raw mut PyFrozenSet_Type,
+            &raw mut PyModule_Type,
+            &raw mut PyTraceBack_Type,
+        ] {
+            (*ty).tp_traverse = Some(crate::api::memory::molt_managed_gc_traverse);
+        }
+        for ty in [
+            &raw mut PyDict_Type,
+            &raw mut PySet_Type,
+            &raw mut PyModule_Type,
+        ] {
+            (*ty).tp_clear = Some(crate::api::memory::molt_managed_gc_clear);
+        }
         PyDict_Type.tp_richcompare = Some(crate::api::mapping::molt_dict_richcompare);
+        PySet_Type.tp_richcompare = Some(crate::api::sequences::molt_set_richcompare);
+        PyFrozenSet_Type.tp_richcompare = Some(crate::api::sequences::molt_set_richcompare);
 
         // ── Builtin VALUE-type slots (CLASS1-SLOTS): `tp_hash` + `tp_richcompare`
         // on int/bool/float/complex/str/bytes. numpy 2.4.2 `DUAL_INHERIT`/
@@ -1856,6 +1948,17 @@ unsafe fn initialize_static_type_shells() {
         PyComplex_Type.tp_richcompare = Some(crate::api::typeobj::molt_complex_richcompare);
         PyUnicode_Type.tp_richcompare = Some(crate::api::typeobj::molt_str_richcompare);
         PyBytes_Type.tp_richcompare = Some(crate::api::typeobj::molt_bytes_richcompare);
+        PyByteArray_Type.tp_richcompare = Some(crate::api::typeobj::molt_bytearray_richcompare);
+        PyBytes_Type.tp_as_buffer = Box::into_raw(Box::new(PyBufferProcs {
+            bf_getbuffer: crate::api::typeobj::molt_bytes_getbuffer as *mut c_void,
+            bf_releasebuffer: std::ptr::null_mut(),
+        }))
+        .cast();
+        PyByteArray_Type.tp_as_buffer = Box::into_raw(Box::new(PyBufferProcs {
+            bf_getbuffer: crate::api::strings::molt_bytearray_getbuffer as *mut c_void,
+            bf_releasebuffer: crate::api::strings::molt_bytearray_releasebuffer as *mut c_void,
+        }))
+        .cast();
         PyLong_Type.tp_repr = Some(crate::api::typeobj::molt_native_repr);
         PyLong_Type.tp_str = Some(crate::api::typeobj::molt_native_str);
         PyBool_Type.tp_repr = Some(crate::api::typeobj::molt_native_repr);
@@ -1871,22 +1974,44 @@ unsafe fn initialize_static_type_shells() {
         PyLong_Type.tp_dealloc = Some(crate::api::numbers::molt_numeric_scalar_dealloc);
         PyFloat_Type.tp_dealloc = Some(crate::api::numbers::molt_numeric_scalar_dealloc);
         PyComplex_Type.tp_dealloc = Some(crate::api::numbers::molt_complex_dealloc);
-        PyDictProxy_Type.tp_basicsize = std::mem::size_of::<PyDictProxyObject>() as Py_ssize_t;
-        PyDictProxy_Type.tp_dealloc = Some(crate::api::mapping::molt_dictproxy_dealloc);
-        PyDictProxy_Type.tp_iter = Some(crate::api::mapping::molt_dictproxy_iter);
-        PyDictProxy_Type.tp_as_mapping = Box::into_raw(Box::new(PyMappingMethods {
-            mp_length: crate::api::mapping::molt_dictproxy_len as *mut c_void,
-            mp_subscript: crate::api::mapping::molt_dictproxy_subscript as *mut c_void,
-            mp_ass_subscript: std::ptr::null_mut(),
-        })) as *mut c_void;
+        // PyDictProxy_Type is a static projection of the runtime mappingproxy.
         Py_GenericAliasType.tp_basicsize =
             std::mem::size_of::<PyGenericAliasObject>() as Py_ssize_t;
         Py_GenericAliasType.tp_dealloc = Some(crate::api::object::molt_generic_alias_dealloc);
         PyContextVar_Type.tp_basicsize = std::mem::size_of::<PyContextVarObject>() as Py_ssize_t;
         PyContextVar_Type.tp_dealloc = Some(crate::api::contextvars::molt_contextvar_dealloc);
         PyCapsule_Type.tp_dealloc = Some(crate::api::capsule::molt_capsule_dealloc);
-        PySlice_Type.tp_dealloc = Some(crate::api::slice::molt_slice_dealloc);
-        PyMemoryView_Type.tp_dealloc = Some(crate::api::memory::molt_memoryview_dealloc);
+        // Exact slices have one runtime owner and a concrete bridge projection.
+        // The collector traverses runtime fields; C field mirrors add no graph edges.
+        PySlice_Type.tp_basicsize = std::mem::size_of::<PySliceObject>() as Py_ssize_t;
+        PySlice_Type.tp_flags |= Py_TPFLAGS_HAVE_GC;
+        PySlice_Type.tp_traverse = Some(crate::api::memory::molt_managed_gc_traverse);
+        PySlice_Type.tp_clear = None;
+        // These slots project the same runtime semantic object. Bridge custody
+        // retires its physical view; no independent native deallocator exists.
+        PyMemoryView_Type.tp_flags |= Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_SEQUENCE;
+        PyMemoryView_Type.tp_traverse = Some(crate::api::memory::molt_managed_gc_traverse);
+        PyMemoryView_Type.tp_as_buffer = Box::into_raw(Box::new(PyBufferProcs {
+            bf_getbuffer: crate::api::buffer::PyObject_GetBuffer as *mut c_void,
+            bf_releasebuffer: crate::api::memory::memoryview_releasebuffer as *mut c_void,
+        }))
+        .cast();
+        PyMemoryView_Type.tp_as_mapping = Box::into_raw(Box::new(PyMappingMethods {
+            mp_length: crate::api::object::PyObject_Size as *mut c_void,
+            mp_subscript: crate::api::object::PyObject_GetItem as *mut c_void,
+            mp_ass_subscript: crate::api::object::molt_ass_subscript as *mut c_void,
+        }))
+        .cast();
+        PyMemoryView_Type.tp_iter = Some(crate::api::object::PyObject_GetIter);
+        let mut sequence: PySequenceMethods = std::mem::zeroed();
+        sequence.sq_length = crate::api::object::PyObject_Size as *mut c_void;
+        sequence.sq_item = crate::api::memory::memoryview_item as *mut c_void;
+        sequence.sq_ass_item = crate::api::memory::memoryview_ass_item as *mut c_void;
+        PyMemoryView_Type.tp_as_sequence = Box::into_raw(Box::new(sequence)).cast();
+        PyMemoryView_Type.tp_hash = Some(crate::api::typeobj::molt_generic_hash);
+        PyMemoryView_Type.tp_richcompare = Some(crate::api::typeobj::PyObject_RichCompare);
+        PyMemoryView_Type.tp_repr = Some(crate::api::typeobj::molt_native_repr);
+
         PyDateTime_DateType.tp_basicsize = std::mem::size_of::<PyDateTime_Date>() as Py_ssize_t;
         PyDateTime_DateTimeType.tp_basicsize =
             std::mem::size_of::<PyDateTime_DateTime>() as Py_ssize_t;
@@ -1920,6 +2045,9 @@ unsafe fn initialize_static_type_shells() {
         // every `SomeDTypeClass()` call fails "'numpy._DTypeMeta' object is not
         // callable" during `_multiarray_umath` init.
         PyType_Type.tp_call = Some(crate::api::typeobj::molt_type_call);
+        // Runtime-owned root types do not traverse native slot inheritance at
+        // readiness. Their C allocation slots must be complete at bootstrap.
+        PyType_Type.tp_alloc = Some(crate::api::typeobj::PyType_GenericAlloc);
         // CPython `type` inherits `object.__hash__` (identity `_Py_HashPointer`):
         // a class is hashable by identity. Without this slot, hashing any class
         // object raises "unhashable type: 'type'" — numpy.dtypes registration
@@ -1941,6 +2069,8 @@ unsafe fn initialize_static_type_shells() {
         // invisible and uncleared.
         PyType_Type.tp_traverse = Some(crate::api::typeobj::molt_type_traverse);
         PyType_Type.tp_clear = Some(crate::api::typeobj::molt_type_clear);
+        PyType_Type.tp_dealloc = Some(crate::api::typeobj::type_dealloc);
+        PyType_Type.tp_free = Some(crate::api::memory::PyObject_GC_Del);
 
         set_name!(PyNone_Type, b"NoneType\0");
         set_name!(PyNotImplemented_Type, b"NotImplementedType\0");
@@ -1970,10 +2100,41 @@ unsafe fn initialize_static_type_shells() {
             };
         }
         let object: *mut PyTypeObject = &raw mut PyBaseObject_Type;
+        shell!(
+            PyRange_Type,
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_SEQUENCE,
+            object
+        );
+        shell!(
+            PyDictProxy_Type,
+            Py_TPFLAGS_DEFAULT | Py_TPFLAGS_MAPPING,
+            object
+        );
+        // Runtime-backed exported shells own compact protocol storage and need
+        // real namespace/slot readiness after production hooks are installed.
+        for object in type_static_ptrs() {
+            let tp = object.cast::<PyTypeObject>();
+            if let Some(protocols) = crate::api::typeobj::process_runtime_protocols(tp) {
+                protocols.attach(tp);
+                (*tp).tp_flags &= !Py_TPFLAGS_READY;
+            }
+        }
         // object — root of the hierarchy; DEFAULT|BASETYPE, no base.
         PyBaseObject_Type.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_READY;
         PyBaseObject_Type.tp_base = std::ptr::null_mut();
         PyBaseObject_Type.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
+        PyBaseObject_Type.tp_alloc = Some(crate::api::typeobj::PyType_GenericAlloc);
+        PyBaseObject_Type.tp_init = Some(crate::api::typeobj::object_init);
+        PyBaseObject_Type.tp_new = Some(crate::api::typeobj::object_new);
+        PyBaseObject_Type.tp_repr = Some(crate::api::typeobj::object_repr);
+        PyBaseObject_Type.tp_str = Some(crate::api::typeobj::object_str);
+        PyBaseObject_Type.tp_richcompare = Some(crate::api::typeobj::object_richcompare);
+        PyBaseObject_Type.tp_dealloc = Some(crate::api::typeobj::object_dealloc);
+        PyBaseObject_Type.tp_free = Some(crate::api::memory::PyObject_Free);
+        // Ordinary extension types inherit the generic descriptor/dictionary
+        // protocol at readiness. Lookup consumes those published slots directly.
+        PyBaseObject_Type.tp_getattro = Some(crate::api::object::PyObject_GenericGetAttr);
+        PyBaseObject_Type.tp_setattro = Some(crate::api::object::PyObject_GenericSetAttr);
         // CPython `object.__hash__` is identity (`_Py_HashPointer`): a bare
         // `object()` and every subclass that does not override it are hashable by
         // identity. molt previously left this NULL, so a foreign `object()`
@@ -2008,6 +2169,10 @@ unsafe fn initialize_static_type_shells() {
         // inherits this at ready-time, so its instances have room for the ht_* tail.
         PyType_Type.tp_basicsize = std::mem::size_of::<PyHeapTypeObject>() as Py_ssize_t;
         PyType_Type.tp_itemsize = std::mem::size_of::<PyMemberDef>() as Py_ssize_t;
+        // CPython type's physical instance dictionary is PyTypeObject.tp_dict.
+        // Generic attribute get/set/delete uses this layout without publishing
+        // semantic type caches or slots; default type mutation owns publication.
+        PyType_Type.tp_dictoffset = core::mem::offset_of!(PyTypeObject, tp_dict) as Py_ssize_t;
         // int — LONG_SUBCLASS|BASETYPE|MATCH_SELF; variable-length (ob_digit tail).
         shell!(
             PyLong_Type,
@@ -2135,6 +2300,17 @@ unsafe fn initialize_static_type_shells() {
         );
         init_exception_singleton_types();
 
+        // Process-owned builtin shells may appear in a managed class's MRO
+        // before their runtime dictionaries are projected. Publish the inherited
+        // object setter now, as an actual C slot. The metatype installs its own
+        // override in init_type_getattro; extension-owned NULL slots stay NULL.
+        for object in type_static_ptrs().into_iter().chain(exc_singleton_ptrs()) {
+            let kind = object.cast::<PyTypeObject>();
+            if (*kind).tp_setattro.is_none() && (*kind).tp_setattr.is_none() {
+                (*kind).tp_setattro = Some(crate::api::object::PyObject_GenericSetAttr);
+            }
+        }
+
         Py_None.ob_type = &raw mut PyNone_Type;
         // `Py_True`/`Py_False` set `ob_base.ob_type = &PyBool_Type` in their const
         // initialiser (they are value-carrying `PyLongObject`s now), so no runtime
@@ -2158,6 +2334,8 @@ pub fn type_static_ptrs() -> Vec<*mut PyObject> {
         &raw mut PyBytes_Type as *mut PyObject,
         &raw mut PyCFunction_Type as *mut PyObject,
         &raw mut PyCMethod_Type as *mut PyObject,
+        &raw mut PyClassMethodDescr_Type as *mut PyObject,
+        &raw mut PyClassMethod_Type as *mut PyObject,
         &raw mut PyCapsule_Type as *mut PyObject,
         &raw mut PyComplex_Type as *mut PyObject,
         &raw mut PyContextVar_Type as *mut PyObject,
@@ -2172,6 +2350,7 @@ pub fn type_static_ptrs() -> Vec<*mut PyObject> {
         &raw mut PyFrozenSet_Type as *mut PyObject,
         &raw mut PyGetSetDescr_Type as *mut PyObject,
         &raw mut PyList_Type as *mut PyObject,
+        &raw mut PyRange_Type as *mut PyObject,
         &raw mut PyLong_Type as *mut PyObject,
         &raw mut PyMemberDescr_Type as *mut PyObject,
         &raw mut PyMemoryView_Type as *mut PyObject,
@@ -2182,12 +2361,14 @@ pub fn type_static_ptrs() -> Vec<*mut PyObject> {
         &raw mut PyNone_Type as *mut PyObject,
         &raw mut PyNotImplemented_Type as *mut PyObject,
         &raw mut PySet_Type as *mut PyObject,
+        &raw mut PyStaticMethod_Type as *mut PyObject,
         &raw mut PySlice_Type as *mut PyObject,
         &raw mut PyTraceBack_Type as *mut PyObject,
         &raw mut PyTuple_Type as *mut PyObject,
         &raw mut PyType_Type as *mut PyObject,
         &raw mut PyUnicode_Type as *mut PyObject,
         &raw mut PyWrapperDescr_Type as *mut PyObject,
+        &raw mut _PyMethodWrapper_Type as *mut PyObject,
         &raw mut Py_GenericAliasType as *mut PyObject,
     ]
 }
@@ -2234,6 +2415,7 @@ fn builtin_static_type_runtime_cohort() -> Vec<(*mut PyTypeObject, bool)> {
 /// runtime and bindings are still available.
 pub unsafe fn prepare_builtin_static_type_runtime_state() {
     crate::api::typeobj::reopen_static_type_runtime_roots(&builtin_static_type_runtime_cohort());
+    crate::api::typeobj::reset_type_watchers_for_runtime();
 }
 
 // ─── Exception singletons ──────────────────────────────────────────────────
@@ -2251,7 +2433,14 @@ pub unsafe fn prepare_builtin_static_type_runtime_state() {
 // per-interpreter and published through builtins.  Molt still needs one exact
 // in-process identity for constructor selection, but it must not become a
 // C-ABI data symbol or leak into Python.h/stable-ABI manifests.
-pub(crate) static mut PYEXC_EXCEPTION_GROUP_INTERNAL: PyTypeObject = unsafe { std::mem::zeroed() };
+pub(crate) static mut PYEXC_EXCEPTION_GROUP_INTERNAL: PyHeapTypeObject =
+    unsafe { std::mem::zeroed() };
+
+/// Exact process storage declaration; never infer extent from public flags.
+pub(crate) fn process_heap_type_storage(tp: *mut PyTypeObject) -> Option<*mut PyHeapTypeObject> {
+    let heap = &raw mut PYEXC_EXCEPTION_GROUP_INTERNAL;
+    std::ptr::eq(tp, heap.cast()).then_some(heap)
+}
 
 unsafe fn init_exception_singleton_type(
     ty: *mut PyTypeObject,
@@ -2295,7 +2484,12 @@ unsafe fn init_exception_singleton_type(
             crate::api::errors::native_exception_members_for_builtin(builtin_name, root);
         (*ty).tp_getset =
             crate::api::errors::native_exception_getset_for_builtin(builtin_name, root);
-        (*ty).tp_str = Some(crate::api::errors::molt_native_exception_str);
+        // Normalization can construct an error while PyType_Ready is itself
+        // failing. Its immutable inherited rendering slots must work without
+        // allocating a namespace or recursively trying type readiness.
+        let (string, repr) = spec.effective_render_slots();
+        (*ty).tp_str = Some(crate::api::errors::exception_str_slot(string));
+        (*ty).tp_repr = repr.then_some(crate::api::errors::molt_native_exception_repr);
     }
 }
 
@@ -2420,10 +2614,14 @@ macro_rules! exc_singletons {
             )*
             unsafe {
                 init_exception_singleton_type(
-                    &raw mut PYEXC_EXCEPTION_GROUP_INTERNAL,
+                    (&raw mut PYEXC_EXCEPTION_GROUP_INTERNAL).cast::<PyTypeObject>(),
                     c"ExceptionGroup".as_ptr(),
                     "ExceptionGroup",
                 );
+                // CPython creates ExceptionGroup through PyErr_NewException:
+                // a mutable heap class, unlike the exported static exceptions.
+                let ty = (&raw mut PYEXC_EXCEPTION_GROUP_INTERNAL).cast::<PyTypeObject>();
+                (*ty).tp_flags = ((*ty).tp_flags & !Py_TPFLAGS_IMMUTABLETYPE) | Py_TPFLAGS_HEAPTYPE;
             }
         }
 
@@ -2456,7 +2654,7 @@ macro_rules! exc_singletons {
                 }
             )*
             if unsafe {
-                crate::api::typeobj::PyType_Ready(&raw mut PYEXC_EXCEPTION_GROUP_INTERNAL)
+                crate::api::typeobj::PyType_Ready((&raw mut PYEXC_EXCEPTION_GROUP_INTERNAL).cast())
             } < 0
             {
                 return -1;
@@ -2851,26 +3049,15 @@ pub struct PyMemoryViewObject {
     pub ob_base: PyObject,
     pub view: Py_buffer,
     pub base: *mut PyObject,
-    /// Embedded descriptor storage — CPython's `ob_array` model
-    /// (Objects/memoryobject.c `memory_alloc` places shape/strides in the
-    /// memoryview object's own tail storage and `init_shape_strides` re-points
-    /// `view.shape`/`view.strides` into it). For memoryviews built by
-    /// `PyMemoryView_FromBuffer` the copied descriptor VALUES live here, so
-    /// `view.format`/`shape`/`strides` point into the object itself: the
-    /// descriptor dies with the object, there is no side allocation to free,
-    /// and `PyBuffer_Release` stays pure obj-dispatch (no registry, no
-    /// `internal` deref). Fields are appended after `base`, so the
-    /// `ob_base`/`view`/`base` prefix layout seen by C is unchanged.
+    /// Stable physical geometry only. The semantic MemoryView owns its exporter.
     pub ob_shape: [Py_ssize_t; 64],
     pub ob_strides: [Py_ssize_t; 64],
-    pub ob_format: [u8; 16],
 }
 
 // Literal capacities above keep the C-layout generator
 // (tools/gen_cpython_abi_layout.py) parseable; these bind them to the single
 // authority so they cannot drift.
 const _: () = assert!(crate::hooks::MOLT_BUFFER_MAX_NDIM == 64);
-const _: () = assert!(crate::hooks::MOLT_BUFFER_FORMAT_CAP == 16);
 
 unsafe impl Send for PyMemoryViewObject {}
 unsafe impl Sync for PyMemoryViewObject {}
@@ -2977,10 +3164,10 @@ mod unresolved_pyobject_tests {
     #[test]
     fn type_static_ptrs_are_distinct_and_nonnull() {
         // Canonical builtin shells, including the internal managed carrier
-        // and CMethod/WrapperDescr types (38 statics). Guards
+        // and CMethod/WrapperDescr types (43 statics). Guards
         // against an accidental drop/duplicate when the type static list changes.
         let ptrs = type_static_ptrs();
-        assert_eq!(ptrs.len(), 38, "type static count drifted");
+        assert_eq!(ptrs.len(), 43, "type static count drifted");
         for p in &ptrs {
             assert!(!p.is_null());
         }
@@ -2989,7 +3176,7 @@ mod unresolved_pyobject_tests {
         addrs.dedup();
         assert_eq!(
             addrs.len(),
-            38,
+            43,
             "duplicate type static in type_static_ptrs()"
         );
     }

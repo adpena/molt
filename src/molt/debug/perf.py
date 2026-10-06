@@ -16,12 +16,9 @@ HOT_COUNTER_KEYS = (
     "call_bind_ic_miss",
     "attr_site_name_hit",
     "attr_site_name_miss",
-    "split_ws_ascii",
-    "split_ws_unicode",
     "dict_str_int_prehash_hit",
     "dict_str_int_prehash_miss",
     "dict_str_int_prehash_deopt",
-    "ascii_i64_parse_fail",
 )
 
 ALLOC_COUNTER_KEYS = (

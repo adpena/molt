@@ -20,7 +20,6 @@ from typing import (
 
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
-    GEN_CLOSED_OFFSET,
     GEN_CONTROL_SIZE,
     MoltOp,
     MoltValue,
@@ -80,30 +79,14 @@ class ComprehensionMixin(GeneratorMixinBase):
             if outer.is_async
             else self._emit_iter_new(outer_value)
         )
-        outer_iter_name = f"__molt_genexpr_outer_iter_{self.genexpr_counter}"
-        outer_iter_expr = ast.copy_location(
-            ast.Name(id=outer_iter_name, ctx=ast.Load()), outer.iter
-        )
-        poll_outer = ast.comprehension(
-            target=outer.target,
-            iter=outer_iter_expr,
-            ifs=outer.ifs,
-            is_async=outer.is_async,
-        )
-        poll_node = ast.copy_location(
-            ast.GeneratorExp(
-                elt=node.elt,
-                generators=[poll_outer, *node.generators[1:]],
-            ),
-            node,
-        )
-        cell_vars = self._callable_cell_vars(poll_node)
+        cell_plan = self._callable_cell_plan(node)
+        cell_vars = cell_plan.cellvars
         prev_func = self.current_func_name
 
         module_namedexpr_targets: set[str] = set()
         if self.current_func_name == "molt_main":
             module_namedexpr_targets = self._collect_namedexpr_targets_comprehension(
-                poll_node
+                node
             )
             if module_namedexpr_targets:
                 self.module_global_mutations.update(module_namedexpr_targets)
@@ -119,8 +102,7 @@ class ComprehensionMixin(GeneratorMixinBase):
                     self.boxed_locals.pop(name, None)
         free_vars, free_var_hints, closure_val, has_closure = (
             self._capture_lexical_closure(
-                self._lexical_dependencies().summary(poll_node).body.lexical
-                - {outer_iter_name}
+                self._lexical_dependencies().summary(node).body.lexical
             )
         )
         frame_plan = stateful_function_frame_plan(
@@ -138,7 +120,7 @@ class ComprehensionMixin(GeneratorMixinBase):
             gen_control_size=GEN_CONTROL_SIZE,
         )
         yield_stmt = ast.Expr(value=ast.Yield(value=node.elt))
-        body = self._build_comprehension_body(poll_node.generators, [yield_stmt])
+        body = self._build_comprehension_body(node.generators, [yield_stmt])
         assigned = self._collect_assigned_names(body)
         del_targets = self._collect_deleted_names(body)
         prev_state = self._capture_function_state()
@@ -146,7 +128,7 @@ class ComprehensionMixin(GeneratorMixinBase):
         self.start_function(
             poll_func_name,
             stateful_frame_plan=frame_plan,
-            python_first_arg=outer_iter_name,
+            python_first_arg=".0",
             params=["self"],
             compiler_params={"self"},
             type_facts_name=func_symbol,
@@ -165,31 +147,33 @@ class ComprehensionMixin(GeneratorMixinBase):
             self.async_closure_offset = frame_plan.async_closure_offset
             self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
             self.free_var_hints = free_var_hints
-        self.async_public_hints[outer_iter_name] = outer_iter.type_hint or "Any"
-        self._async_local_offset(outer_iter_name)
+        # The Python-visible hidden parameter owns the payload slot. Do not
+        # fabricate a Name at outer.iter's source position: source-order facts
+        # describe that original expression, not this already-acquired iterator.
+        self.async_public_hints[".0"] = outer_iter.type_hint or "Any"
+        self._async_local_offset(".0")
         self._store_return_slot_for_stateful()
         self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
-        self._prebox_scope_cell_vars(cell_vars)
+        self._prebox_scope_cell_vars(
+            cell_plan.captured, private_cells=cell_plan.private
+        )
         self._publish_python_frame_context()
         self._push_qualname("<genexpr>", True)
         try:
-            for stmt in body:
-                self.visit(stmt)
+            iterator = self._load_local_value(".0", guard_unbound=False)
+            assert iterator is not None
+            (outer_loop,) = body
+            if isinstance(outer_loop, ast.AsyncFor):
+                self._visit_async_for(outer_loop, iterator=iterator)
+            else:
+                assert isinstance(outer_loop, ast.For)
+                self._visit_for(outer_loop, iterator=iterator)
         finally:
             self._pop_qualname()
         if self.return_label is not None:
             if not self._ends_with_return_jump():
                 none_val = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-                closed = MoltValue(self.next_var(), type_hint="bool")
-                self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=closed))
-                self.emit(
-                    MoltOp(
-                        kind="STORE_CLOSURE",
-                        args=["self", GEN_CLOSED_OFFSET, closed],
-                        result=MoltValue("none"),
-                    )
-                )
                 done = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
                 pair = MoltValue(self.next_var(), type_hint="tuple")
@@ -199,21 +183,13 @@ class ComprehensionMixin(GeneratorMixinBase):
         elif not (self.current_ops and self.current_ops[-1].kind == "ret"):
             none_val = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-            closed = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=closed))
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", GEN_CLOSED_OFFSET, closed],
-                    result=MoltValue("none"),
-                )
-            )
             done = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=done))
             pair = MoltValue(self.next_var(), type_hint="tuple")
             self.emit(MoltOp(kind="TUPLE_NEW", args=[none_val, done], result=pair))
             self._emit_normal_return_terminator(pair)
         self._spill_async_temporaries()
+        locals_layout = self._stateful_locals_layout(frame_plan, [".0"], free_vars)
         closure_size = self._task_closure_size(
             frame_plan.payload_slots,
             include_gen_control=frame_plan.include_gen_control,
@@ -237,6 +213,16 @@ class ComprehensionMixin(GeneratorMixinBase):
                 metadata=frame_plan.callable_task_metadata(closure_size),
             )
         )
+        name_layout = self._collect_callable_name_layout(
+            posonly_params=[".0"],
+            pos_or_kw_params=[],
+            kwonly_params=[],
+            vararg=None,
+            varkw=None,
+            body=body,
+            free_vars=free_vars,
+            cell_vars=cell_vars,
+        )
         self._emit_function_metadata(
             callable_val,
             code_symbol=poll_func_name,
@@ -252,17 +238,12 @@ class ComprehensionMixin(GeneratorMixinBase):
             kw_default_exprs=[],
             docstring=None,
             execution_kind=frame_plan.kind,
-            varnames=self._collect_varnames_for_body(
-                posonly_params=[".0"],
-                pos_or_kw_params=[],
-                kwonly_params=[],
-                vararg=None,
-                varkw=None,
-                body=body,
-            ),
+            varnames=list(name_layout.varnames),
+            code_names=list(name_layout.names),
             freevars=free_vars,
             cellvars=cell_vars,
         )
+        self._emit_stateful_locals_register(locals_layout, poll_func_name)
         res = MoltValue(self.next_var(), type_hint=frame_plan.result_type_hint)
         self.emit(MoltOp(kind="CALL_FUNC", args=[callable_val, outer_iter], result=res))
         return res
@@ -312,7 +293,7 @@ class ComprehensionMixin(GeneratorMixinBase):
                 Diagnostic.SYNTAX_FORM,
                 "Unsupported range in list comprehension",
             )
-        start, stop, step, _ = parsed
+        start, stop, step = parsed
         range_obj = self._emit_range_obj_from_args(start, stop, step)
         count = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="LEN", args=[range_obj], result=count))
@@ -330,7 +311,7 @@ class ComprehensionMixin(GeneratorMixinBase):
                 Diagnostic.SYNTAX_FORM,
                 "Unsupported range in list comprehension",
             )
-        start, stop, step, _ = parsed
+        start, stop, step = parsed
         range_obj = self._emit_range_obj_from_args(start, stop, step)
         count = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="LEN", args=[range_obj], result=count))

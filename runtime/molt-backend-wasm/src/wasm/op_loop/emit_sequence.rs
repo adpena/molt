@@ -25,6 +25,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
         label_stack: &mut Vec<i64>,
         label_depths: &mut BTreeMap<i64, usize>,
         base_idx: usize,
+        enclosing_control_depth: u32,
     ) {
         let backend = &mut self.backend;
         let func_ir = self.func_ir;
@@ -46,14 +47,17 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
 
         // Call-boundary retention is a path-local value-epoch fact, unlike RC
         // coalescing. Build it over the exact plain/jumpful/stateful emission
-        // region so future definitions sharing a physical local cannot retain
-        // stale bits from an already-released SSA value.
-        let call_liveness = CallRetentionLiveness::for_region(ops);
+        // region, against the frame's exact storage occupancy, so neither a
+        // future definition nor another value sharing a physical local can
+        // retain stale bits from an already-released SSA value.
+        let call_liveness =
+            CallRetentionLiveness::for_region(ops, base_idx, frame.value_occupancy());
         let mut known_raw_ints: BTreeMap<u32, i64> = BTreeMap::new();
         let mut skip_next = false;
 
         for (rel_idx, op) in ops.iter().enumerate() {
             let op_idx = base_idx + rel_idx;
+            let return_depth = enclosing_control_depth + control_stack.len() as u32;
 
             if skip_next {
                 skip_next = false;
@@ -92,6 +96,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 reloc_enabled,
                 ops,
                 op_idx,
+                self.frame.guard_profile_local(op),
             ) {
                 continue;
             }
@@ -116,7 +121,6 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 import_ids,
                 locals,
                 const_cache,
-                frame,
                 func_index,
                 reloc_enabled,
             ) {
@@ -151,6 +155,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                 call_live_idx: rel_idx,
                 op_idx,
                 try_stack_is_empty: try_stack.is_empty(),
+                return_depth,
             };
             match emit_call_op(&mut call_op_context, func, op) {
                 CallOpEmission::Handled => continue,
@@ -166,11 +171,9 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
                     call_site_abi,
                     import_ids,
                     locals,
-                    const_cache,
-                    frame,
                     reloc_enabled,
+                    guard_profile_local: self.frame.guard_profile_local(op),
                     native_eh_enabled,
-                    raise_exits_function: try_stack.is_empty(),
                     func_index,
                     func_import_count: backend.func_import_count,
                     table_relocations: &mut backend.table_relocations,
@@ -201,6 +204,7 @@ impl<'a, 'ctx> WasmFunctionEmitContext<'a, 'ctx> {
 
             emit_control_op(
                 ControlOpContext {
+                    return_depth,
                     func_ir,
                     import_ids,
                     locals,

@@ -924,7 +924,7 @@ def _validate_verified_subset_facts(
         backend_keys = (
             frozenset({"backend", "runner"})
             if expected_coordinate is not None
-            and expected_coordinate.backend == "native"
+            and expected_coordinate.backend in {"llvm", "native"}
             else frozenset(
                 {"backend", "binary_name", "binary_sha256", "runner", "version"}
             )

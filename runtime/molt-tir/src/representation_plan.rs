@@ -59,12 +59,12 @@ fn effective_param_types_from_repr(
 }
 
 mod indexed_facts;
+pub(crate) use indexed_facts::tir_container_storage_facts;
 
 use indexed_facts::{
     FunctionFactIndex, IndexedFunctionFactIndex, PlanHashMap, PlanHashSet, alias_source_name,
-    container_constructor_result_ty, is_cold_module_chunk_function, plan_hash_map, plan_hash_set,
+    is_cold_module_chunk_function, plan_hash_map, plan_hash_set,
     simple_op_produces_non_scalar_value, store_var_targets_all_sources_where,
-    tir_container_storage_facts,
 };
 /// A typed representation fact for a name in the legacy SimpleIR namespace.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -121,6 +121,7 @@ pub struct ScalarRepresentationPlan {
     container_storage_by_name: PlanHashMap<String, ContainerStorageFact>,
     container_storage_conflicted_names: PlanHashSet<String>,
     container_storage_ops: PlanHashMap<usize, ContainerStorageFact>,
+    exact_builtin_list_names: PlanHashSet<String>,
     /// The representation lattice element per SimpleIR name — the single source
     /// of truth for native scalar-carrier classification. Integer names floor to
     /// [`Repr::MaybeBigInt`] and can be raised to [`Repr::RawI64Safe`] or
@@ -243,6 +244,7 @@ impl ScalarRepresentationPlan {
             container_storage_by_name: plan_hash_map(op_count / 2 + 1),
             container_storage_conflicted_names: plan_hash_set(op_count / 8 + 1),
             container_storage_ops: plan_hash_map(op_count / 8 + 1),
+            exact_builtin_list_names: plan_hash_set(op_count / 4 + 1),
             repr_by_name: plan_hash_map(name_capacity),
             direct_numeric_op_reprs: plan_hash_map(op_count / 4 + 1),
             typed_slot_store_modes: BTreeMap::new(),
@@ -255,10 +257,6 @@ impl ScalarRepresentationPlan {
         func_ir: &FunctionIR,
         target_info: &crate::tir::target_info::TargetInfo,
     ) -> Self {
-        if is_cold_module_chunk_function(&func_ir.name) {
-            return Self::with_capacity(func_ir.ops.len());
-        }
-
         let fact_index = FunctionFactIndex::for_function(func_ir);
         let indexed_fact_index = fact_index
             .needs_indexed_name_graph()
@@ -294,6 +292,7 @@ impl ScalarRepresentationPlan {
             .extend(names.ambiguous_source_names().map(str::to_string));
         plan.typed_slot_store_modes = typed_slot_store_modes;
         plan.seed_container_storage_from_tir(&tir_func, &names);
+        plan.seed_exact_builtin_lists(&tir_func, &names);
         let mut block_ids: Vec<_> = lir_func.blocks.keys().copied().collect();
         block_ids.sort_by_key(|block_id| block_id.0);
         for block_id in block_ids {
@@ -335,11 +334,6 @@ impl ScalarRepresentationPlan {
                 }
             }
         }
-        // Restore the true container kind for constructor outputs before alias
-        // propagation, so a `set`/`dict`/`list`/`tuple` built by `set_new`/etc.
-        // (lifted to a type-aliasing `OpCode::Copy` passthrough) is not mistyped
-        // as its first element — the root of the membership-dispatch miscompile.
-        plan.seed_container_constructor_facts(func_ir, &names);
         if fact_index.has_scalar_alias_or_store_edges()
             && let Some(indexed_fact_index) = indexed_fact_index.as_ref()
         {
@@ -684,6 +678,45 @@ impl ScalarRepresentationPlan {
         true
     }
 
+    fn seed_exact_builtin_lists(&mut self, func: &TirFunction, names: &SimpleValueNames) {
+        let exact = indexed_facts::tir_exact_builtin_list_values(func);
+        let mut named: PlanHashMap<String, bool> = plan_hash_map(exact.len());
+        let mut observe = |name: String, value: ValueId| {
+            let proven = exact.contains(&value);
+            named
+                .entry(name)
+                .and_modify(|all| *all &= proven)
+                .or_insert(proven);
+        };
+        for block in func.blocks.values() {
+            for (index, arg) in block.args.iter().enumerate() {
+                observe(names.source_or_value_name(arg.id), arg.id);
+                observe(names.block_arg_slot(block.id, index), arg.id);
+            }
+            for op in &block.ops {
+                for &result in &op.results {
+                    observe(names.source_or_value_name(result), result);
+                }
+            }
+        }
+        for name in names.ambiguous_source_names() {
+            named.insert(name.to_string(), false);
+        }
+        self.exact_builtin_list_names = named
+            .into_iter()
+            .filter_map(|(name, proven)| proven.then_some(name))
+            .collect();
+    }
+
+    /// Exact class provenance for source list operations. A semantic List type
+    /// only permits guarded runtime dispatch and cannot authorize raw storage.
+    pub fn op_has_exact_builtin_list(&self, op: &OpIR) -> bool {
+        op.args
+            .as_ref()
+            .and_then(|args| args.first())
+            .is_some_and(|name| self.exact_builtin_list_names.contains(name))
+    }
+
     fn insert_container_storage_fact(&mut self, name: String, fact: ContainerStorageFact) -> bool {
         if self.container_storage_conflicted_names.contains(&name) {
             return false;
@@ -705,7 +738,9 @@ impl ScalarRepresentationPlan {
         tir_func: &TirFunction,
         names: &SimpleValueNames,
     ) {
-        let storage_by_value = tir_container_storage_facts(tir_func);
+        let ranges = value_range_for(tir_func);
+        let repr = repr_by_value_for(tir_func, Some(&ranges));
+        let storage_by_value = tir_container_storage_facts(tir_func, &repr);
         let mut block_ids: Vec<_> = tir_func.blocks.keys().copied().collect();
         block_ids.sort_by_key(|block_id| block_id.0);
         for block_id in block_ids {
@@ -720,6 +755,11 @@ impl ScalarRepresentationPlan {
                         names.block_arg_slot(block.id, index),
                         fact.clone(),
                     );
+                } else {
+                    self.container_storage_conflicted_names
+                        .insert(names.source_or_value_name(arg.id));
+                    self.container_storage_conflicted_names
+                        .insert(names.block_arg_slot(block.id, index));
                 }
             }
             for op in &block.ops {
@@ -729,58 +769,14 @@ impl ScalarRepresentationPlan {
                             names.source_or_value_name(*result),
                             fact.clone(),
                         );
+                    } else {
+                        // Projection cannot re-create a rejected phi or alias
+                        // merely because another spelling has a known fact.
+                        self.container_storage_conflicted_names
+                            .insert(names.source_or_value_name(*result));
                     }
                 }
             }
-        }
-    }
-
-    /// Seed each container-constructor op's output with its true container
-    /// [`TirType`], overriding the type inferred via the TIR lift.
-    ///
-    /// The frontend/native container constructors (`list_new`, `dict_new`,
-    /// `set_new`, `tuple_new`, `frozenset_new`, and the list/tuple conversion
-    /// variants) have no dedicated TIR `OpCode`; `ssa::kind_to_opcode` lifts them
-    /// to the `OpCode::Copy` passthrough fallback. Copy's type rule aliases the
-    /// result to its first operand — which for a constructor is one *element*
-    /// (e.g. the first `str` of a `set`), not the container. That mistyping makes
-    /// [`Self::name_container_kind`] report the element type, so a `contains`
-    /// dispatch (`function_compiler.rs`) calls the wrong specialized intrinsic on
-    /// the container — e.g. `molt_str_contains` on a `set`/`dict`, which reads the
-    /// container's bytes as a string and faults (a P0 SIGSEGV), or `molt_len_str`
-    /// on a `set` from the `len` dispatch.
-    ///
-    /// The container kind is unambiguous from the constructor op kind itself, so
-    /// this restores it directly from the SimpleIR stream. Operating on the plan
-    /// facts (not the TIR `value_types`) keeps the fix free of the generator
-    /// poll-tuple / `frozenset` *return-type* contracts that the TIR types feed:
-    /// the plan facts exist solely for backend lane/dispatch selection, where
-    /// `frozenset` correctly probes through the shared set hash path
-    /// (`molt_set_contains` reads set/frozenset by the same layout) and an
-    /// unknown-arity tuple is the right "is a tuple" answer.
-    fn seed_container_constructor_facts(&mut self, func_ir: &FunctionIR, names: &SimpleValueNames) {
-        for op in &func_ir.ops {
-            let Some(out) = op.out.as_deref() else {
-                continue;
-            };
-            if names.source_name_is_ambiguous(out) {
-                continue;
-            }
-            let Some(ty) = container_constructor_result_ty(op.kind.as_str()) else {
-                continue;
-            };
-            // An unambiguous constructor's container kind is authoritative; force it over
-            // any (mistyped) LIR-derived fact and clear the conflict/weak markers
-            // so a later alias/weak insert cannot blacklist or displace it.
-            self.conflicted_names.remove(out);
-            self.weak_fact_names.remove(out);
-            self.facts_by_name.insert(
-                out.to_string(),
-                ScalarRepresentationFact {
-                    ty,
-                    repr: LirRepr::DynBox,
-                },
-            );
         }
     }
 

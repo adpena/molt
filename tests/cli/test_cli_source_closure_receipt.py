@@ -12,6 +12,7 @@ from molt.cli import compiler_metadata
 from molt.cli import python_source_closure as graph
 from molt.cli.module_source import PythonSourceSnapshot
 from molt.cli.python_import_resolution import LocalPythonModuleResolver
+from tests.operation_probe import same_thread_probe
 
 
 pytestmark = pytest.mark.usefixtures("isolated_molt_cache")
@@ -111,7 +112,7 @@ def test_cache_keys_do_not_resolve_or_grant_source_authority(tmp_path, monkeypat
         raise AssertionError("persisted cache keys must not resolve filesystem paths")
 
     with monkeypatch.context() as patch:
-        patch.setattr(Path, "resolve", forbidden)
+        patch.setattr(Path, "resolve", same_thread_probe(Path.resolve, forbidden))
         entries, pruned = graph._read_graph_cache(tmp_path)
     assert entries == {source.name: {}}
     assert pruned
@@ -124,7 +125,7 @@ def test_resolver_does_not_canonicalize_missing_candidates(tmp_path, monkeypatch
         raise AssertionError("missing import candidate must stop at stat")
 
     with monkeypatch.context() as patch:
-        patch.setattr(Path, "resolve", forbidden)
+        patch.setattr(Path, "resolve", same_thread_probe(Path.resolve, forbidden))
         result = resolver.source_for_module("missing.child")
     assert result is None
 
@@ -240,9 +241,55 @@ def test_canonical_fingerprint_paths_are_projected_without_resolving(
         raise AssertionError("canonical paths must not be admitted again")
 
     with monkeypatch.context() as patch:
-        patch.setattr(Path, "resolve", forbidden)
+        patch.setattr(Path, "resolve", same_thread_probe(Path.resolve, forbidden))
         pathspecs = compiler_metadata._clean_pathspecs_for_root(
             tmp_path,
             tuple(map(str, inputs.paths)),
         )
     assert pathspecs == ("source.py",)
+
+
+def test_inventory_receipt_captures_bytes_once_without_parsing_covered_owners(
+    tmp_path, monkeypatch
+):
+    seed = _write(tmp_path / "entry.py", "__package__ = unknown\nfrom . import child\n")
+    owner = _write(tmp_path / "owner.py", "future syntax not parsed by host !!!\n")
+    original = owner.read_bytes()
+    capture = LocalPythonModuleResolver.capture_source
+    calls = Counter()
+
+    def capture_then_change(resolver, path):
+        calls[path] += 1
+        snapshot = capture(resolver, path)
+        if path == owner:
+            owner.write_text("a different source generation\n")
+        return snapshot
+
+    with monkeypatch.context() as patch:
+        patch.setattr(LocalPythonModuleResolver, "capture_source", capture_then_change)
+        receipt = graph.local_python_import_closure(tmp_path, (seed,))
+    assert set(receipt.paths) == {seed, owner}
+    assert calls == {seed: 1, owner: 1}
+    assert receipt.source_sha256[owner] == hashlib.sha256(original).hexdigest()
+    changed = graph.local_python_import_closure(tmp_path, (seed,))
+    assert changed.content_digest != receipt.content_digest
+    # Real graph reachability still owns parse errors despite complete coverage.
+    seed.write_text(seed.read_text() + "import owner\n")
+    with pytest.raises(ValueError, match="cannot parse local Python source"):
+        graph.local_python_import_closure(tmp_path, (seed,))
+
+
+def test_inventory_topology_participates_in_semantic_fingerprint(tmp_path, monkeypatch):
+    seed = _write(
+        tmp_path / "src/molt/frontend/entry.py",
+        "__package__ = unknown\nfrom . import child\n",
+    )
+    monkeypatch.setattr(fingerprints, "_compiler_root", lambda: tmp_path)
+    first = fingerprints._frontend_semantic_tooling_snapshot()
+    (tmp_path / "src/molt/new_namespace").mkdir()
+    second = fingerprints._frontend_semantic_tooling_snapshot()
+    assert (
+        seed.parent in first.source_paths
+    )  # Frontend sources share a directory owner.
+    assert first.source_paths == second.source_paths
+    assert first.fingerprint != second.fingerprint

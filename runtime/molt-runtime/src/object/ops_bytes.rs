@@ -31,7 +31,94 @@ pub use ops_bytes_ascii::{
     molt_bytes_title, molt_bytes_upper, molt_bytes_zfill,
 };
 
-use super::ops::{decode_error_byte, decode_error_range, parse_codec_arg};
+use super::ops::parse_codec_arg;
+
+/// Both byte-storage families use the same index-or-simple-buffer protocol.
+/// Coercion and exporter callbacks finish before observing the haystack address.
+pub(crate) fn bytes_contains_builtin(py: &PyToken<'_>, container: u64, needle: u64) -> u64 {
+    use molt_cpython_abi::{
+        abi_types::PyBUF_SIMPLE,
+        api::{buffer::PyObject_GetBuffer, memory::MemoryViewLease, refcount::OwnedPyObject},
+        bridge::GLOBAL_BRIDGE,
+    };
+    let has_index = crate::builtins::numbers::index_integral_payload_bits(needle).is_some()
+        || unsafe { crate::builtins::attr::has_special_method(py, needle, b"__index__") };
+    if exception_pending(py) {
+        return MoltObject::none().bits();
+    }
+    let number = if has_index {
+        crate::builtins::numbers::index_ssize_clamped_from_obj(
+            py,
+            needle,
+            "object cannot be interpreted as an integer",
+        )
+    } else {
+        None
+    };
+    if let Some(number) = number {
+        if !(0..=255).contains(&number) {
+            return raise_exception(py, "ValueError", "byte must be in range(0, 256)");
+        }
+        let ptr = obj_from_bits(container).as_ptr().unwrap();
+        let hay = unsafe { std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr)) };
+        return MoltObject::from_bool(memchr::memchr(number as u8, hay).is_some()).bits();
+    }
+    // CPython _Py_bytes_contains clears ANY failed index conversion before
+    // requesting PyBUF_SIMPLE, including a raising user __index__ callback.
+    if exception_pending(py) {
+        clear_exception(py);
+    }
+    if !crate::object::buffer_exports::supports_buffer(py, needle) {
+        return raise_exception(
+            py,
+            "TypeError",
+            &format!(
+                "a bytes-like object is required, not '{}'",
+                type_name(py, obj_from_bits(needle)),
+            ),
+        );
+    }
+    unsafe {
+        // Ordinary byte payloads need no lease: there are no remaining callbacks
+        // before the search. Observe both addresses only after index coercion.
+        if let Some(ptr) = obj_from_bits(needle).as_ptr()
+            && matches!(object_type_id(ptr), TYPE_ID_BYTES | TYPE_ID_BYTEARRAY)
+        {
+            let needle = std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr));
+            let hay_ptr = obj_from_bits(container).as_ptr().unwrap();
+            let hay = std::slice::from_raw_parts(bytes_data(hay_ptr), bytes_len(hay_ptr));
+            return MoltObject::from_bool(bytes_find_impl(hay, needle) >= 0).bits();
+        }
+        let object = OwnedPyObject::from_owned(GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(needle));
+        if object.as_ptr().is_null() {
+            crate::cpython_abi_hooks::propagate_native_failure(py, "membership buffer projection");
+            return MoltObject::none().bits();
+        }
+        let lease =
+            match MemoryViewLease::acquire(object.as_ptr(), PyBUF_SIMPLE, PyObject_GetBuffer) {
+                Ok(lease) => lease,
+                Err(molt_cpython_abi::ErrorIndicatorSet) => {
+                    crate::cpython_abi_hooks::propagate_native_failure(
+                        py,
+                        "membership buffer acquisition",
+                    );
+                    return MoltObject::none().bits();
+                }
+            };
+        let view = &*lease.descriptor();
+        if view.len < 0 || (view.len != 0 && view.buf.is_null()) {
+            return raise_exception(py, "BufferError", "invalid membership buffer span");
+        }
+        let needle = if view.len == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(view.buf.cast::<u8>(), view.len as usize)
+        };
+        let ptr = obj_from_bits(container).as_ptr().unwrap();
+        let hay = std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr));
+        MoltObject::from_bool(bytes_find_impl(hay, needle) >= 0).bits()
+    }
+}
 
 fn bytes_like_arg_or_type_error<F>(
     _py: &PyToken<'_>,
@@ -104,18 +191,8 @@ pub(super) fn collect_bytearray_assign_bytes(_py: &PyToken<'_>, bits: u64) -> Op
             }
         }
     }
-    let iter_bits = molt_iter(bits);
-    if obj_from_bits(iter_bits).is_none() {
-        if exception_pending(_py) {
-            return None;
-        }
-        return raise_exception::<_>(
-            _py,
-            "TypeError",
-            "can assign only bytes, buffers, or iterables of ints in range(0, 256)",
-        );
-    }
-    bytes_collect_from_iter(_py, iter_bits, BytesCtorKind::Bytearray)
+    let mut iter = crate::object::iterable::OwnedIterator::new(_py, bits)?;
+    bytes_collect_from_iter(_py, &mut iter, BytesCtorKind::Bytearray, 0)
 }
 
 #[unsafe(no_mangle)]
@@ -434,10 +511,6 @@ pub extern "C" fn molt_bytearray_reverse(bytearray_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_resize(bytearray_bits: u64, size_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let bytearray_obj = obj_from_bits(bytearray_bits);
-        let Some(bytearray_ptr) = bytearray_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "bytearray.resize expects bytearray");
-        };
         let size = index_i64_from_obj(
             _py,
             size_bits,
@@ -450,25 +523,14 @@ pub extern "C" fn molt_bytearray_resize(bytearray_bits: u64, size_bits: u64) -> 
             let msg = format!("Can only resize to positive sizes, got {size}");
             return raise_exception::<_>(_py, "ValueError", &msg);
         }
-        unsafe {
-            if object_type_id(bytearray_ptr) != TYPE_ID_BYTEARRAY {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "bytearray.resize expects bytearray",
-                );
-            }
-            let Ok(size) = usize::try_from(size) else {
-                return raise_exception::<_>(
-                    _py,
-                    "OverflowError",
-                    "cannot fit 'int' into an index-sized integer",
-                );
-            };
-            if bytearray_mutate(_py, bytearray_ptr, size, |vec| vec.resize(size, 0)).is_none() {
-                return MoltObject::none().bits();
-            }
-        }
+        let Ok(size) = usize::try_from(size) else {
+            return raise_exception::<_>(
+                _py,
+                "OverflowError",
+                "cannot fit 'int' into an index-sized integer",
+            );
+        };
+        crate::object::buffer_exports::bytearray_resize(_py, bytearray_bits, size);
         MoltObject::none().bits()
     })
 }
@@ -514,9 +576,8 @@ fn bytes_decode_impl(
                 let msg = format!("unknown error handler name '{name}'");
                 raise_exception::<_>(_py, "LookupError", &msg)
             }
-            Err(DecodeTextError::Failure(DecodeFailure::Byte { pos, byte, message }, label)) => {
-                let msg = decode_error_byte(&label, byte, pos, message);
-                raise_exception::<_>(_py, "UnicodeDecodeError", &msg)
+            Err(DecodeTextError::Failure(DecodeFailure::Byte { pos, message, .. }, label)) => {
+                raise_unicode_decode_error(_py, &label, hay_bits, pos, pos + 1, message)
             }
             Err(DecodeTextError::Failure(
                 DecodeFailure::Range {
@@ -525,10 +586,14 @@ fn bytes_decode_impl(
                     message,
                 },
                 label,
-            )) => {
-                let msg = decode_error_range(&label, start, end, message);
-                raise_exception::<_>(_py, "UnicodeDecodeError", &msg)
-            }
+            )) => raise_unicode_decode_error(
+                _py,
+                &label,
+                hay_bits,
+                start,
+                end.saturating_add(1),
+                message,
+            ),
             Err(DecodeTextError::Failure(DecodeFailure::UnknownErrorHandler(name), _label)) => {
                 let msg = format!("unknown error handler name '{name}'");
                 raise_exception::<_>(_py, "LookupError", &msg)
@@ -1430,7 +1495,7 @@ fn bytes_from_count(_py: &PyToken<'_>, len: usize, kind: BytesCtorKind) -> u64 {
         return MoltObject::none().bits();
     }
     unsafe {
-        let data_ptr = ptr.add(std::mem::size_of::<usize>());
+        let data_ptr = super::layout::InlineBytesStorage::data(ptr);
         std::ptr::write_bytes(data_ptr, 0, len);
     }
     MoltObject::from_ptr(ptr).bits()
@@ -1439,240 +1504,529 @@ fn bytes_from_count(_py: &PyToken<'_>, len: usize, kind: BytesCtorKind) -> u64 {
 pub(super) fn bytes_item_to_u8(_py: &PyToken<'_>, bits: u64, kind: BytesCtorKind) -> Option<u8> {
     let type_name = class_name_for_error(type_of_bits(_py, bits));
     let msg = format!("'{}' object cannot be interpreted as an integer", type_name);
-    let val = index_i64_from_obj(_py, bits, &msg);
-    if exception_pending(_py) {
-        return None;
-    }
-    if !(0..=255).contains(&val) {
-        return raise_exception::<_>(_py, "ValueError", kind.range_error());
-    }
-    Some(val as u8)
+    let val = crate::builtins::numbers::index_bigint_from_obj(_py, bits, &msg)?;
+    val.to_u8()
+        .or_else(|| raise_exception::<_>(_py, "ValueError", kind.range_error()))
 }
 
 fn bytes_collect_from_iter(
     _py: &PyToken<'_>,
-    iter_bits: u64,
+    iter: &mut crate::object::iterable::OwnedIterator<'_, '_>,
     kind: BytesCtorKind,
+    capacity: usize,
+) -> Option<Vec<u8>> {
+    collect_byte_items(_py, kind, capacity, || {
+        let item = iter.next().ok()?;
+        let Some(item) = item else {
+            return Some(None);
+        };
+        let byte = bytes_item_to_u8(_py, item, kind);
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, item));
+        byte.map(Some)
+    })
+}
+
+fn collect_byte_items(
+    _py: &PyToken<'_>,
+    _kind: BytesCtorKind,
+    capacity: usize,
+    mut next: impl FnMut() -> Option<Option<u8>>,
 ) -> Option<Vec<u8>> {
     let mut out = Vec::new();
-    loop {
-        let pair_bits = molt_iter_next(iter_bits);
-        if exception_pending(_py) {
-            return None;
+    if out.try_reserve(capacity).is_err() {
+        return raise_exception::<_>(_py, "MemoryError", "bytes allocation failed");
+    }
+    while let Some(byte) = next()? {
+        if out.try_reserve(1).is_err() {
+            return raise_exception::<_>(_py, "MemoryError", "bytes allocation failed");
         }
-        let pair_ptr = obj_from_bits(pair_bits).as_ptr()?;
-        unsafe {
-            if object_type_id(pair_ptr) != TYPE_ID_TUPLE {
-                return None;
-            }
-            let (val_bits, done_bits) =
-                crate::object::seq_access::with_immutable_tuple_slice(pair_ptr, |items| {
-                    items.first().copied().zip(items.get(1).copied())
-                })
-                .flatten()?;
-            if is_truthy(_py, obj_from_bits(done_bits)) {
-                break;
-            }
-            let byte = bytes_item_to_u8(_py, val_bits, kind)?;
-            out.push(byte);
-        }
+        out.push(byte);
     }
     Some(out)
 }
 
-fn bytes_from_obj_impl(_py: &PyToken<'_>, bits: u64, kind: BytesCtorKind) -> u64 {
-    let obj = obj_from_bits(bits);
-    if let Some(i) = to_i64(obj) {
-        if i < 0 {
-            return raise_exception::<_>(_py, "ValueError", "negative count");
+/// Native iterator custody adapts the existing linked slot protocol to the
+/// same byte collector as managed iteration. No copied sequence algorithm.
+fn native_bytes_iterable(py: &PyToken<'_>, bits: u64, kind: BytesCtorKind) -> Option<Vec<u8>> {
+    use molt_cpython_abi::api::{abstract_number, errors, object, refcount::OwnedPyObject};
+    let native =
+        unsafe { crate::object::foreign::foreign_ptr_from_obj(obj_from_bits(bits).as_ptr()?) };
+    let source = std::ptr::with_exposed_provenance_mut(native);
+    let iterator = unsafe { object::PyObject_GetIter(source) };
+    if iterator.is_null() {
+        if unsafe {
+            errors::PyErr_ExceptionMatches(
+                (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast(),
+            )
+        } != 0
+        {
+            unsafe { errors::PyErr_Clear() };
+            let name = unsafe {
+                molt_cpython_abi::api::typeobj::object_type_name_with_precision(source, 200)
+            };
+            return raise_exception(py, "TypeError", &kind.non_iterable_message(&name));
         }
-        let len = match usize::try_from(i) {
-            Ok(len) => len,
-            Err(_) => {
-                return raise_exception::<_>(
-                    _py,
-                    "OverflowError",
-                    "cannot fit 'int' into an index-sized integer",
+        crate::cpython_abi_hooks::propagate_native_failure(py, "bytes native iterator acquisition");
+        return None;
+    }
+    let iterator = unsafe { OwnedPyObject::from_owned(iterator) };
+    let capacity = if matches!(kind, BytesCtorKind::Bytes) {
+        let hint = unsafe { object::PyObject_LengthHint(source, 64) };
+        if hint < 0 {
+            crate::cpython_abi_hooks::propagate_native_failure(py, "bytes native length hint");
+            return None;
+        }
+        hint as usize
+    } else {
+        0
+    };
+    collect_byte_items(py, kind, capacity, || {
+        let item = unsafe { object::PyIter_Next(iterator.as_ptr()) };
+        if item.is_null() {
+            if unsafe { errors::PyErr_Occurred() }.is_null() {
+                return Some(None);
+            }
+            crate::cpython_abi_hooks::propagate_native_failure(py, "bytes native iteration");
+            return None;
+        }
+        let item = unsafe { OwnedPyObject::from_owned(item) };
+        let value =
+            unsafe { abstract_number::PyNumber_AsSsize_t(item.as_ptr(), std::ptr::null_mut()) };
+        if value == -1 && !unsafe { errors::PyErr_Occurred() }.is_null() {
+            crate::cpython_abi_hooks::propagate_native_failure(
+                py,
+                "bytes native integer conversion",
+            );
+            return None;
+        }
+        match u8::try_from(value) {
+            Ok(byte) => Some(Some(byte)),
+            Err(_) => raise_exception(py, "ValueError", kind.range_error()),
+        }
+    })
+}
+
+fn bytes_constructor_iter<'a, 'py>(
+    py: &'a PyToken<'py>,
+    source: u64,
+    kind: BytesCtorKind,
+) -> Option<crate::object::iterable::OwnedIterator<'a, 'py>> {
+    let iter = crate::object::iterable::OwnedIterator::new(py, source);
+    if iter.is_none() && exception_pending(py) {
+        let error = molt_exception_last();
+        let replace =
+            crate::builtins::exceptions::exception_matches_builtin_name(py, error, "TypeError");
+        if replace {
+            clear_exception(py);
+        }
+        dec_ref_bits(py, error);
+        if replace {
+            raise_exception::<()>(
+                py,
+                "TypeError",
+                &kind.non_iterable_message(&type_name(py, obj_from_bits(source))),
+            );
+        }
+    }
+    iter
+}
+
+/// __bytes__ is a physical descriptor, distinct from the converting builtin.
+/// Inherited calls on a subtype return a fresh exact value; an override may
+/// legally return any bytes subtype, and bytes(obj) preserves that result.
+pub(crate) extern "C" fn bytes_bytes(bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let Some(ptr) = obj_from_bits(bits)
+            .as_ptr()
+            .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_BYTES })
+        else {
+            return raise_exception::<_>(
+                py,
+                "TypeError",
+                "descriptor '__bytes__' requires a 'bytes' object",
+            );
+        };
+        if type_of_bits(py, bits) == builtin_classes(py).bytes {
+            inc_ref_bits(py, bits);
+            return bits;
+        }
+        let out = unsafe { alloc_bytes(py, bytes_like_slice_raw(ptr).unwrap()) };
+        if out.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(out).bits()
+        }
+    })
+}
+
+/// Byte constructors share the integral protocol, including the documented
+/// TypeError fallback from an index provider to the buffer/iterable path.
+fn byte_count(py: &PyToken<'_>, bits: u64) -> Result<Option<usize>, ()> {
+    let integral = crate::builtins::numbers::index_bigint_integral_bits(bits).is_some();
+    let index =
+        integral || unsafe { crate::builtins::attr::has_special_method(py, bits, b"__index__") };
+    if exception_pending(py) {
+        return Err(());
+    }
+    if !index {
+        return Ok(None);
+    }
+    let value = crate::builtins::numbers::index_bigint_from_obj(
+        py,
+        bits,
+        "object cannot be interpreted as an integer",
+    );
+    let Some(value) = value else {
+        let error = molt_exception_last();
+        let fallback =
+            crate::builtins::exceptions::exception_matches_builtin_name(py, error, "TypeError");
+        if fallback {
+            clear_exception(py);
+        }
+        dec_ref_bits(py, error);
+        return if fallback { Ok(None) } else { Err(()) };
+    };
+    if value.is_negative() {
+        raise_exception::<()>(py, "ValueError", "negative count");
+        return Err(());
+    }
+    let Some(count) = value
+        .to_usize()
+        .filter(|&count| count <= isize::MAX as usize)
+    else {
+        raise_exception::<()>(
+            py,
+            "OverflowError",
+            "cannot fit 'int' into an index-sized integer",
+        );
+        return Err(());
+    };
+    Ok(Some(count))
+}
+
+/// Reuse the admitted typed/strided projection. Native exports stay owned
+/// through the copy; managed memoryviews retain their existing caller lease.
+pub(in crate::object) fn byte_buffer(
+    py: &PyToken<'_>,
+    source: u64,
+) -> Option<(Vec<u8>, Option<PtrDropGuard>)> {
+    if let Some(ptr) = obj_from_bits(source).as_ptr()
+        && unsafe { object_type_id(ptr) == crate::TYPE_ID_FOREIGN }
+    {
+        let object = std::ptr::with_exposed_provenance_mut(unsafe {
+            crate::object::foreign::foreign_ptr_from_obj(ptr)
+        });
+        return match unsafe {
+            molt_cpython_abi::api::buffer::with_buffer_descriptor(object, |view| {
+                crate::object::memoryview::collect_bytes_from_descriptor(py, view)
+            })
+        } {
+            Ok(Some(bytes)) => Some((bytes, None)),
+            Ok(None) => None, // The runtime collector set its own error.
+            Err(molt_cpython_abi::ErrorIndicatorSet) => {
+                crate::cpython_abi_hooks::propagate_native_failure(
+                    py,
+                    "native byte buffer acquisition",
                 );
+                None
             }
         };
-        return bytes_from_count(_py, len, kind);
     }
-    if let Some(ptr) = obj.as_ptr() {
-        unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_STRING {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "string argument without an encoding",
-                );
+    let view = molt_memoryview_new(source);
+    if exception_pending(py) {
+        dec_ref_bits(py, view);
+        return None;
+    }
+    let ptr = obj_from_bits(view).as_ptr()?;
+    let owner = PtrDropGuard::new(ptr);
+    let bytes = unsafe { memoryview_collect_bytes(ptr) };
+    let Some(bytes) = bytes else {
+        if !exception_pending(py) {
+            raise_exception::<()>(py, "BufferError", "invalid constructor buffer geometry");
+        }
+        return None;
+    };
+    Some((bytes, Some(owner)))
+}
+
+/// C object conversion shares the constructor's special/buffer/iterable owner,
+/// but PyObject_Bytes never interprets an index-only value as a byte count.
+pub(crate) fn bytes_from_object(py: &PyToken<'_>, bits: u64, special: bool) -> u64 {
+    bytes_from_obj_impl(py, bits, BytesCtorKind::Bytes, false, special)
+}
+
+fn bytes_from_obj_impl(
+    py: &PyToken<'_>,
+    bits: u64,
+    kind: BytesCtorKind,
+    allow_count: bool,
+    special: bool,
+) -> u64 {
+    if special && matches!(kind, BytesCtorKind::Bytes) {
+        let method =
+            unsafe { crate::builtins::attr::lookup_special_method(py, bits, b"__bytes__") };
+        if let Some(method) = method {
+            let result = unsafe { call_callable0(py, method) };
+            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, method));
+            if exception_pending(py) {
+                molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, result));
+                return MoltObject::none().bits();
             }
-            if type_id == TYPE_ID_BYTES && matches!(kind, BytesCtorKind::Bytes) {
-                inc_ref_bits(_py, bits);
-                return bits;
+            let valid = obj_from_bits(result).as_ptr().is_some_and(|ptr| unsafe {
+                object_type_id(ptr) == TYPE_ID_BYTES
+                    || (object_type_id(ptr) == crate::TYPE_ID_FOREIGN
+                        && molt_cpython_abi::api::strings::PyBytes_Check(
+                            std::ptr::with_exposed_provenance_mut(
+                                crate::object::foreign::foreign_ptr_from_obj(ptr),
+                            ),
+                        ) != 0)
+            });
+            if valid {
+                return result;
             }
-            if type_id == TYPE_ID_LIST || type_id == TYPE_ID_TUPLE {
-                let Some(elems) = crate::object::seq_access::snapshot(
-                    _py,
-                    ptr,
-                    "bytes input snapshot allocation failed",
-                ) else {
-                    return MoltObject::none().bits();
-                };
-                let mut out = Vec::with_capacity(elems.len());
-                for &elem in elems.iter() {
-                    let Some(byte) = bytes_item_to_u8(_py, elem, kind) else {
-                        return MoltObject::none().bits();
-                    };
-                    out.push(byte);
-                }
-                let out_ptr = match kind {
-                    BytesCtorKind::Bytes => alloc_bytes(_py, &out),
-                    BytesCtorKind::Bytearray => alloc_bytearray(_py, &out),
-                };
-                if out_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                return MoltObject::from_ptr(out_ptr).bits();
-            }
-            if type_id == TYPE_ID_MEMORYVIEW && memoryview_released(ptr) {
-                return raise_released_memoryview(_py);
-            }
-            if let Some(slice) = bytes_like_slice(ptr) {
-                let out_ptr = match kind {
-                    BytesCtorKind::Bytes => alloc_bytes(_py, slice),
-                    BytesCtorKind::Bytearray => alloc_bytearray(_py, slice),
-                };
-                if out_ptr.is_null() {
-                    return MoltObject::none().bits();
-                }
-                return MoltObject::from_ptr(out_ptr).bits();
-            }
-            if type_id == TYPE_ID_MEMORYVIEW
-                && let Some(out) = memoryview_collect_bytes(ptr)
+            let name = if let Some(pointer) = obj_from_bits(result).as_ptr()
+                && unsafe { object_type_id(pointer) == crate::TYPE_ID_FOREIGN }
             {
-                let out_ptr = match kind {
-                    BytesCtorKind::Bytes => alloc_bytes(_py, &out),
-                    BytesCtorKind::Bytearray => alloc_bytearray(_py, &out),
-                };
-                if out_ptr.is_null() {
-                    return MoltObject::none().bits();
+                unsafe {
+                    molt_cpython_abi::api::typeobj::object_type_name_with_precision(
+                        std::ptr::with_exposed_provenance_mut(
+                            crate::object::foreign::foreign_ptr_from_obj(pointer),
+                        ),
+                        200,
+                    )
                 }
-                return MoltObject::from_ptr(out_ptr).bits();
-            }
-            // Check __bytes__ method (e.g. PickleBuffer, custom objects).
-            if matches!(kind, BytesCtorKind::Bytes) {
-                let bytes_dunder = intern_static_name(
-                    _py,
-                    &runtime_state(_py).interned.bytes_dunder,
-                    b"__bytes__",
-                );
-                let call = attr_lookup_ptr(_py, ptr, bytes_dunder);
-                if let Some(call_bits) = call {
-                    let res_bits = call_callable0(_py, call_bits);
-                    dec_ref_bits(_py, call_bits);
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    if let Some(res_ptr) = obj_from_bits(res_bits).as_ptr()
-                        && object_type_id(res_ptr) == TYPE_ID_BYTES
-                    {
-                        return res_bits;
-                    }
-                    let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                    if obj_from_bits(res_bits).as_ptr().is_some() {
-                        dec_ref_bits(_py, res_bits);
-                    }
-                    let msg = format!("__bytes__ returned non-bytes (type {res_type})");
-                    return raise_exception::<_>(_py, "TypeError", &msg);
-                }
-                if exception_pending(_py) {
-                    clear_exception(_py);
-                }
-            }
-            if type_id == TYPE_ID_BIGINT {
-                let big = bigint_ref(ptr);
-                if big.is_negative() {
-                    return raise_exception::<_>(_py, "ValueError", "negative count");
-                }
-                let Some(len) = big.to_usize() else {
-                    return raise_exception::<_>(
-                        _py,
-                        "OverflowError",
-                        "cannot fit 'int' into an index-sized integer",
-                    );
-                };
-                return bytes_from_count(_py, len, kind);
-            }
-            let index_name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.index_name, b"__index__");
-            let call_bits = attr_lookup_ptr(_py, ptr, index_name_bits);
-            dec_ref_bits(_py, index_name_bits);
-            if let Some(call_bits) = call_bits {
-                let res_bits = call_callable0(_py, call_bits);
-                dec_ref_bits(_py, call_bits);
-                if exception_pending(_py) {
-                    return MoltObject::none().bits();
-                }
-                let res_obj = obj_from_bits(res_bits);
-                if let Some(i) = to_i64(res_obj) {
-                    if i < 0 {
-                        return raise_exception::<_>(_py, "ValueError", "negative count");
-                    }
-                    let len = match usize::try_from(i) {
-                        Ok(len) => len,
-                        Err(_) => {
-                            return raise_exception::<_>(
-                                _py,
-                                "OverflowError",
-                                "cannot fit 'int' into an index-sized integer",
-                            );
-                        }
-                    };
-                    return bytes_from_count(_py, len, kind);
-                }
-                if let Some(big_ptr) = bigint_ptr_from_bits(res_bits) {
-                    let big = bigint_ref(big_ptr);
-                    if big.is_negative() {
-                        return raise_exception::<_>(_py, "ValueError", "negative count");
-                    }
-                    let Some(len) = big.to_usize() else {
-                        return raise_exception::<_>(
-                            _py,
-                            "OverflowError",
-                            "cannot fit 'int' into an index-sized integer",
-                        );
-                    };
-                    dec_ref_bits(_py, res_bits);
-                    return bytes_from_count(_py, len, kind);
-                }
-                let res_type = class_name_for_error(type_of_bits(_py, res_bits));
-                if res_obj.as_ptr().is_some() {
-                    dec_ref_bits(_py, res_bits);
-                }
-                let msg = format!("__index__ returned non-int (type {res_type})");
-                return raise_exception::<_>(_py, "TypeError", &msg);
-            }
+            } else {
+                let name = type_name(py, obj_from_bits(result)).into_owned();
+                String::from_utf8_lossy(&name.as_bytes()[..name.len().min(200)]).into_owned()
+            };
+            let failure = raise_exception::<u64>(
+                py,
+                "TypeError",
+                &format!("__bytes__ returned non-bytes (type {name})"),
+            );
+            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, result));
+            return failure;
+        }
+        if exception_pending(py) {
+            return MoltObject::none().bits();
         }
     }
-    let iter_bits = molt_iter(bits);
-    if obj_from_bits(iter_bits).is_none() {
-        let type_name = class_name_for_error(type_of_bits(_py, bits));
-        let msg = kind.non_iterable_message(&type_name);
-        return raise_exception::<_>(_py, "TypeError", &msg);
+    if obj_from_bits(bits)
+        .as_ptr()
+        .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
+    {
+        if allow_count {
+            return raise_exception::<_>(py, "TypeError", "string argument without an encoding");
+        }
+        let name = type_name(py, obj_from_bits(bits)).into_owned();
+        let name = String::from_utf8_lossy(&name.as_bytes()[..name.len().min(200)]);
+        return raise_exception::<_>(
+            py,
+            "TypeError",
+            &format!("cannot convert '{name}' object to bytes"),
+        );
     }
-    let Some(out) = bytes_collect_from_iter(_py, iter_bits, kind) else {
+    if allow_count {
+        match byte_count(py, bits) {
+            Ok(Some(count)) => return bytes_from_count(py, count, kind),
+            Ok(None) => {}
+            Err(()) => return MoltObject::none().bits(),
+        }
+    }
+    let bytes = if crate::object::buffer_exports::supports_buffer(py, bits) {
+        let Some((bytes, _export)) = byte_buffer(py, bits) else {
+            return MoltObject::none().bits();
+        };
+        bytes
+    } else if obj_from_bits(bits)
+        .as_ptr()
+        .is_some_and(|ptr| unsafe { object_type_id(ptr) == crate::TYPE_ID_FOREIGN })
+    {
+        let Some(bytes) = native_bytes_iterable(py, bits, kind) else {
+            return MoltObject::none().bits();
+        };
+        bytes
+    } else {
+        let Some(mut iter) = bytes_constructor_iter(py, bits, kind) else {
+            return MoltObject::none().bits();
+        };
+        let capacity = if matches!(kind, BytesCtorKind::Bytes) {
+            let Some(hint) = crate::object::iterable::length_hint(py, bits) else {
+                return MoltObject::none().bits();
+            };
+            hint
+        } else {
+            0
+        };
+        let Some(bytes) = bytes_collect_from_iter(py, &mut iter, kind, capacity) else {
+            return MoltObject::none().bits();
+        };
+        bytes
+    };
+    let ptr = match kind {
+        BytesCtorKind::Bytes => alloc_bytes(py, &bytes),
+        BytesCtorKind::Bytearray => alloc_bytearray(py, &bytes),
+    };
+    if ptr.is_null() {
+        MoltObject::none().bits()
+    } else {
+        MoltObject::from_ptr(ptr).bits()
+    }
+}
+
+/// bytearray.__init__ is an in-place transaction with CPython's partial mutation
+/// semantics: argument parsing precedes clearing; conversion/iteration follows
+/// clearing; each callback ends before reloading current length and storage.
+pub(crate) fn bytearray_init_from_arguments(
+    py: &PyToken<'_>,
+    receiver: u64,
+    bound: [Option<u64>; 3],
+) -> u64 {
+    let Some(ptr) = obj_from_bits(receiver)
+        .as_ptr()
+        .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_BYTEARRAY })
+    else {
+        return raise_exception::<_>(
+            py,
+            "TypeError",
+            "descriptor '__init__' requires a 'bytearray' object",
+        );
+    };
+    if unsafe { bytearray_mutate(py, ptr, 0, Vec::clear) }.is_none() {
+        return MoltObject::none().bits();
+    }
+    let Some(source) = bound[0] else {
+        if bound[1].is_some() || bound[2].is_some() {
+            return raise_exception::<_>(
+                py,
+                "TypeError",
+                if bound[1].is_some() {
+                    "encoding without a string argument"
+                } else {
+                    "errors without a string argument"
+                },
+            );
+        }
         return MoltObject::none().bits();
     };
-    let out_ptr = match kind {
-        BytesCtorKind::Bytes => alloc_bytes(_py, &out),
-        BytesCtorKind::Bytearray => alloc_bytearray(_py, &out),
-    };
-    if out_ptr.is_null() {
+    let string = obj_from_bits(source)
+        .as_ptr()
+        .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING });
+    if string {
+        let Some(encoding) = bound[1] else {
+            return raise_exception::<_>(py, "TypeError", "string argument without an encoding");
+        };
+        let encoded = molt_bytes_from_str(
+            source,
+            encoding,
+            bound[2].unwrap_or_else(|| MoltObject::none().bits()),
+        );
+        if exception_pending(py) {
+            dec_ref_bits(py, encoded);
+            return MoltObject::none().bits();
+        }
+        let _result = molt_bytearray_extend(receiver, encoded);
+        dec_ref_bits(py, encoded);
         return MoltObject::none().bits();
     }
-    MoltObject::from_ptr(out_ptr).bits()
+    if bound[1].is_some() || bound[2].is_some() {
+        return raise_exception::<_>(
+            py,
+            "TypeError",
+            if bound[1].is_some() {
+                "encoding without a string argument"
+            } else {
+                "errors without a string argument"
+            },
+        );
+    }
+    match byte_count(py, source) {
+        Ok(Some(count)) => {
+            if count != 0 {
+                unsafe {
+                    bytearray_mutate(py, ptr, count, |bytes| {
+                        bytes.resize(count, 0);
+                        bytes.fill(0);
+                    });
+                }
+            }
+            return MoltObject::none().bits();
+        }
+        Ok(None) => {}
+        Err(()) => return MoltObject::none().bits(),
+    }
+    if crate::object::buffer_exports::supports_buffer(py, source) {
+        let Some((bytes, _export)) = byte_buffer(py, source) else {
+            return MoltObject::none().bits();
+        };
+        unsafe {
+            bytearray_mutate(py, ptr, bytes.len(), |target| {
+                target.clear();
+                target.extend_from_slice(&bytes);
+            });
+        }
+        return MoltObject::none().bits();
+    }
+    if let Some(sequence) = obj_from_bits(source).as_ptr()
+        && unsafe {
+            matches!(object_type_id(sequence), TYPE_ID_LIST | TYPE_ID_TUPLE)
+                && crate::object::iterable::builtin_receiver(py, sequence)
+        }
+    {
+        let Some(items) = (unsafe {
+            crate::object::seq_access::snapshot(
+                py,
+                sequence,
+                "bytearray constructor snapshot failed",
+            )
+        }) else {
+            return MoltObject::none().bits();
+        };
+        if unsafe { bytearray_mutate(py, ptr, items.len(), |bytes| bytes.resize(items.len(), 0)) }
+            .is_none()
+        {
+            return MoltObject::none().bits();
+        }
+        let mut complete = true;
+        for (index, &item) in items.iter().enumerate() {
+            if type_of_bits(py, item) != builtin_classes(py).int {
+                complete = false;
+                break;
+            }
+            let Some(value) = bytes_item_to_u8(py, item, BytesCtorKind::Bytearray) else {
+                return MoltObject::none().bits();
+            };
+            unsafe {
+                bytearray_mutate(py, ptr, items.len(), |bytes| bytes[index] = value);
+            }
+        }
+        if complete {
+            return MoltObject::none().bits();
+        }
+        // The optimization owns no source snapshot across Python callbacks.
+        drop(items);
+        if unsafe { bytearray_mutate(py, ptr, 0, Vec::clear) }.is_none() {
+            return MoltObject::none().bits();
+        }
+    }
+    let Some(mut iter) = bytes_constructor_iter(py, source, BytesCtorKind::Bytearray) else {
+        return MoltObject::none().bits();
+    };
+    while let Ok(Some(item)) = iter.next() {
+        let value = bytes_item_to_u8(py, item, BytesCtorKind::Bytearray);
+        dec_ref_bits(py, item);
+        let Some(value) = value else {
+            break;
+        };
+        let Some(len) = (unsafe { bytearray_len(ptr) }).checked_add(1) else {
+            raise_exception::<()>(py, "MemoryError", "bytearray allocation failed");
+            break;
+        };
+        if unsafe { bytearray_mutate(py, ptr, len, |bytes| bytes.push(value)) }.is_none() {
+            break;
+        }
+    }
+    MoltObject::none().bits()
 }
 
 fn bytes_from_str_impl(
@@ -1766,14 +2120,14 @@ fn bytes_from_str_impl(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytes_from_obj(bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        bytes_from_obj_impl(_py, bits, BytesCtorKind::Bytes)
+        bytes_from_obj_impl(_py, bits, BytesCtorKind::Bytes, true, true)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_bytearray_from_obj(bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        bytes_from_obj_impl(_py, bits, BytesCtorKind::Bytearray)
+        bytes_from_obj_impl(_py, bits, BytesCtorKind::Bytearray, true, true)
     })
 }
 

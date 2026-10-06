@@ -5,6 +5,7 @@ This directory contains small, user-facing programs and focused reference worklo
 ## Layout
 
 - `hello.py`: minimal compile/run smoke example
+- `string_comprehension.py`: comprehension smoke inside every backend's exact subset (CI compiles it for Luau, which has no arbitrary-precision int)
 - `edgebox/`: edge/runtime example with its own local README
 - `cloudflare-demo/`: Cloudflare-oriented example assets
 - `microgpt/`: larger model-oriented example workload

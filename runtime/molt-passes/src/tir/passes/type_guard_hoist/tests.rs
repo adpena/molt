@@ -48,7 +48,10 @@ fn typeguard_loop_invariant_hoisted() {
 
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![x]));
+        entry.ops.push(TirOp {
+            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(30))]),
+            ..make_op(OpCode::ConstInt, vec![], vec![x])
+        });
         entry.terminator = Terminator::Branch {
             target: loop_header_id,
             args: vec![],
@@ -121,7 +124,10 @@ fn typeguard_hoists_when_latch_id_precedes_header() {
 
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![x]));
+        entry.ops.push(TirOp {
+            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(31))]),
+            ..make_op(OpCode::ConstInt, vec![], vec![x])
+        });
         entry.terminator = Terminator::Branch {
             target: header,
             args: vec![],
@@ -213,7 +219,13 @@ fn typeguard_loop_local_not_hoisted() {
             id: loop_body_id,
             args: vec![],
             ops: vec![
-                make_op(OpCode::ConstInt, vec![], vec![y]),
+                TirOp {
+                    attrs: AttrDict::from([(
+                        "value".into(),
+                        molt_ir::tir::ops::AttrValue::Int(32),
+                    )]),
+                    ..make_op(OpCode::ConstInt, vec![], vec![y])
+                },
                 make_type_guard(y, ok),
             ],
             terminator: Terminator::Branch {
@@ -247,7 +259,10 @@ fn no_typeguard_no_changes() {
     let v = func.fresh_value();
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![v]));
+    entry.ops.push(TirOp {
+        attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(33))]),
+        ..make_op(OpCode::ConstInt, vec![], vec![v])
+    });
     entry.terminator = Terminator::Return { values: vec![v] };
 
     let stats = run(&mut func, &mut AnalysisManager::new());
@@ -267,7 +282,10 @@ fn typeguard_outside_loop_unchanged() {
     let ok = func.fresh_value();
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![x]));
+    entry.ops.push(TirOp {
+        attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(34))]),
+        ..make_op(OpCode::ConstInt, vec![], vec![x])
+    });
     entry.ops.push(make_type_guard(x, ok));
     entry.terminator = Terminator::Return { values: vec![ok] };
 

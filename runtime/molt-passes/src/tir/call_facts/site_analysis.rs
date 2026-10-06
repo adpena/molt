@@ -8,9 +8,8 @@ use std::collections::BTreeMap;
 use super::{CallFacts, CallTargetFact, FactValue, InlineEligibility};
 use crate::repr::Repr;
 use crate::tir::call_graph::CallGraph;
-use crate::tir::call_targets::{direct_call_symbol_for_op, gpu_runtime_result_type_for_op};
+use crate::tir::call_sites::{CallSite, CallSiteTarget};
 use crate::tir::function::TirFunction;
-use crate::tir::op_kinds_generated::{CallOpcodeRole, opcode_call_role_table};
 use crate::tir::ops::TirOp;
 use crate::tir::passes::inliner::classify_inline_eligibility;
 use crate::tir::passes::ip_summary::ModuleSummaries;
@@ -21,25 +20,6 @@ use crate::tir::values::ValueId;
 // ───────────────────────────────────────────────────────────────────────────
 // Per-call-site analysis
 // ───────────────────────────────────────────────────────────────────────────
-
-/// The result `ValueId` of a call-bearing op whose generated [`CallOpcodeRole`]
-/// records facts, if it produces a value. Returns `None` for non-call ops and
-/// for a (rare) result-less call. The key the side-table uses.
-pub(super) fn call_op_result(op: &TirOp) -> Option<ValueId> {
-    if !call_role_records_facts(opcode_call_role_table(op.opcode)) {
-        return None;
-    }
-    op.results.first().copied()
-}
-
-/// Whether this generated call role is one CallFacts records.
-#[inline]
-fn call_role_records_facts(role: CallOpcodeRole) -> bool {
-    matches!(
-        role,
-        CallOpcodeRole::UserCall | CallOpcodeRole::DynamicMethod | CallOpcodeRole::RuntimeBuiltin
-    )
-}
 
 /// The typed return `Repr` for a call op's result, derived from the result
 /// `ValueId`'s `TirType` in `func.value_types`. `Some(repr)` when the type is
@@ -56,27 +36,16 @@ fn typed_return_for(result: ValueId, func: &TirFunction) -> Option<Repr> {
     }
 }
 
-/// The typed call target for a `Call` op, resolved against the module's defined
-/// function set. `StaticDirect` iff the `Call` has a proven direct source role
-/// naming a defined, non-gpu-runtime function; else `Opaque`. Dynamic-method opcodes and
-/// `CallBuiltin` (runtime helper) are always `Opaque`. This mirrors
-/// `call_graph::classify_call_op` exactly — same operation-aware call identity
-/// and defined predicate — but returns the *typed* fact rather than a `CallEdge`.
-fn target_for_module(op: &TirOp, call_graph: &CallGraph) -> CallTargetFact {
-    match opcode_call_role_table(op.opcode) {
-        CallOpcodeRole::UserCall => match direct_call_symbol_for_op(op) {
-            // A gpu_* runtime symbol lifts to `Call` but is a runtime helper, not
-            // a user function — the call graph excludes it as an edge, so it is
-            // not a static-direct user target here either.
-            Some(_) if gpu_runtime_result_type_for_op(op).is_some() => CallTargetFact::Opaque,
-            Some(name) if call_graph.is_defined(name) => CallTargetFact::StaticDirect {
-                callee: name.to_string(),
-            },
-            _ => CallTargetFact::Opaque,
-        },
-        // Method dispatch is always dynamic; a builtin is always a runtime helper.
-        CallOpcodeRole::DynamicMethod | CallOpcodeRole::RuntimeBuiltin => CallTargetFact::Opaque,
-        CallOpcodeRole::CopyOriginalKind | CallOpcodeRole::NotCall => CallTargetFact::Opaque,
+/// Resolve the shared site target; callback membership and source provenance
+/// were already proved by FunctionCallSites, including preserved Copy calls.
+fn target_for_module(site: &CallSite, call_graph: &CallGraph) -> CallTargetFact {
+    match &site.target {
+        CallSiteTarget::Direct(name) if call_graph.is_defined(name) => {
+            CallTargetFact::StaticDirect {
+                callee: name.clone(),
+            }
+        }
+        _ => CallTargetFact::Opaque,
     }
 }
 
@@ -84,6 +53,7 @@ fn target_for_module(op: &TirOp, call_graph: &CallGraph) -> CallTargetFact {
 /// context. The interprocedural path.
 pub(super) fn analyze_call_site_module(
     op: &TirOp,
+    site: &CallSite,
     func: &TirFunction,
     call_graph: &CallGraph,
     summaries: &ModuleSummaries,
@@ -96,7 +66,7 @@ pub(super) fn analyze_call_site_module(
         .copied()
         .expect("analyze_call_site_module called on a result-less op");
 
-    let target = target_for_module(op, call_graph);
+    let target = target_for_module(site, call_graph);
     let typed_return = typed_return_for(result, func);
 
     // leaf / inlinable are callee-side: resolved only
@@ -112,7 +82,7 @@ pub(super) fn analyze_call_site_module(
         None => FactValue::Unknown,
     };
 
-    let no_throw = no_throw_for(op);
+    let no_throw = no_throw_for(site);
 
     // inlinable: the inliner's own decision (single source of truth). Only a
     // StaticDirect, module-resident callee is even a candidate; everything else
@@ -135,7 +105,11 @@ pub(super) fn analyze_call_site_module(
 
 /// Compute the fail-closed intraprocedural floor [`CallFacts`] for one call op
 /// (no module context). The [`Analysis::compute`] path.
-pub(super) fn analyze_call_site_local(op: &TirOp, func: &TirFunction) -> CallFacts {
+pub(super) fn analyze_call_site_local(
+    op: &TirOp,
+    site: &CallSite,
+    func: &TirFunction,
+) -> CallFacts {
     let result = op
         .results
         .first()
@@ -147,7 +121,7 @@ pub(super) fn analyze_call_site_local(op: &TirOp, func: &TirFunction) -> CallFac
     // cannot prove).
     let typed_return = typed_return_for(result, func);
 
-    let no_throw = no_throw_for(op);
+    let no_throw = no_throw_for(site);
 
     CallFacts {
         target: CallTargetFact::Opaque,
@@ -159,14 +133,14 @@ pub(super) fn analyze_call_site_local(op: &TirOp, func: &TirFunction) -> CallFac
     }
 }
 
-/// The generated operation contract is the no-throw authority for both local
+/// The shared operation-aware effect contract is the no-throw authority for both local
 /// and module tables. Absence of a handler does not prove absence of a raise;
 /// even an innocent callee body does not prove call admission cannot fail.
 /// Likewise a builtin name alone proves neither argument validity nor its
 /// allocation/dispatch behavior. A may-throw contract yields `Unknown`, not
 /// `False`: it permits a raise but does not prove this execution raises.
-fn no_throw_for(op: &TirOp) -> FactValue {
-    if !crate::tir::op_kinds_generated::opcode_may_throw_table(op.opcode) {
+fn no_throw_for(site: &CallSite) -> FactValue {
+    if site.effects.nothrow {
         return FactValue::Proven;
     }
     FactValue::Unknown

@@ -68,6 +68,8 @@ def resolve_owned_path(path: Path) -> Path:
 
     Check the supplied spelling before resolution can erase an indirect root,
     including dangling links and components preceding a parent traversal.
+    Windows DOS and UNC paths have one spelling, independent of whether the
+    caller or the filesystem resolver supplied an extended-length prefix.
     """
 
     lexical = Path(path).expanduser()
@@ -78,7 +80,14 @@ def resolve_owned_path(path: Path) -> Path:
         cursor /= part
         if is_link_like(cursor):
             raise ValueError(f"owned path traverses a link or junction: {cursor}")
-    return lexical.resolve()
+    resolved = lexical.resolve()
+    if os.name == "nt":
+        spelling = str(resolved)
+        if spelling.startswith("\\\\?\\UNC\\"):
+            resolved = Path("\\\\" + spelling[8:])
+        elif spelling.startswith("\\\\?\\") and re.match(r"[a-zA-Z]:\\", spelling[4:]):
+            resolved = Path(spelling[4:])
+    return resolved
 
 
 def windows_move_file_api() -> tuple[MoveFileEx, GetLastError]:
@@ -615,35 +624,18 @@ def durable_replace(staged: Path, destination: Path) -> None:
 
 
 def durable_publish_exclusive(staged: Path, destination: Path) -> None:
-    """Durably publish a staged file without replacing an existing leaf."""
+    """Publish one stable file generation without replacing an existing leaf."""
 
     staged = Path(staged)
     destination = Path(destination)
     _flush_staged_file(staged)
     if destination.exists() or is_link_like(destination):
         raise FileExistsError(destination)
-    if os.name == "nt":
-        windows_replace_write_through(
-            staged,
-            destination,
-            replace_once=lambda source, target: move_file_ex_write_through(
-                source,
-                target,
-                replace_existing=False,
-            ),
-        )
-    elif os.name == "posix":
-        os.link(staged, destination, follow_symlinks=False)
-        _sync_publication_parents_after_commit(destination.parent, destination.parent)
-        try:
-            staged.unlink()
-            _sync_publication_parents_after_commit(staged.parent, staged.parent)
-        except OSError as exc:
-            _warn_after_commit(
-                f"exclusive file publication retained staged residue {staged}: {exc}"
-            )
-    else:
-        raise OSError(f"unsupported exclusive publication platform: {os.name}")
+    # Link-then-unlink changes the visible inode's ctime after publication and
+    # invalidates identities already captured by concurrent readers. Use the
+    # same exclusive rename authority as directory/leaf publication.
+    _namespace_publish_leaf_exclusive_once(staged, destination)
+    _sync_publication_parents_after_commit(staged.parent, destination.parent)
 
 
 def canonical_file_leaf(
@@ -740,7 +732,11 @@ def atomic_write_bytes(
     exclusive: bool = False,
     replace: DurableReplace | None = None,
 ) -> None:
-    """Publish complete bytes atomically after crossing the durability barrier."""
+    """Publish complete bytes atomically after crossing the durability barrier.
+
+    Only an absent stage is harmless cleanup. A cleanup failure propagates,
+    or annotates an existing publication error without replacing that error.
+    """
 
     destination = canonical_file_leaf(path, create_parent=True)
     if exclusive and destination.exists():
@@ -749,6 +745,7 @@ def atomic_write_bytes(
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(staged, flags, 0o666)
+    primary: BaseException | None = None
     try:
         with os.fdopen(descriptor, "wb", buffering=0) as stream:
             pending = memoryview(data)
@@ -761,6 +758,19 @@ def atomic_write_bytes(
             durable_publish_exclusive(staged, destination)
         else:
             (replace or durable_replace)(staged, destination)
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
-        with contextlib.suppress(OSError):
+        try:
             staged.unlink()
+        except FileNotFoundError:
+            pass
+        except BaseException as cleanup_error:
+            if primary is None:
+                raise
+            BaseException.add_note(
+                primary,
+                f"atomic publication stage cleanup failed for {staged}: "
+                f"{type(cleanup_error).__name__}: {cleanup_error}",
+            )

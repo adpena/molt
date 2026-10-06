@@ -1,10 +1,9 @@
-use super::super::builder_ops::{BuilderFinish, emit_sequence_builder_from_args};
+use super::super::builder_ops::{WordRangeConstructor, emit_word_range_constructor};
 use super::super::result_sink::{finish_owned_local_result, store_runtime_result};
 use crate::OpIR;
 use crate::wasm::WasmFrameLocals;
 use crate::wasm_binary::emit_call;
 use crate::wasm_import_tracking::TrackedImportIds;
-use crate::wasm_values::box_none;
 use wasm_encoder::{Function, Instruction};
 
 pub(super) fn emit_dataclass_op(
@@ -45,38 +44,21 @@ pub(super) fn emit_dataclass_op(
             let fields = locals[&args[1]];
             let flags = locals[&args[2]];
             let out = locals.op_result_or_sink_slot(op);
-            emit_sequence_builder_from_args(
+            // Field values travel as one borrowed word range, as on native and
+            // LLVM; no intermediate values tuple is allocated or published.
+            emit_word_range_constructor(
                 func,
                 &args[3..],
                 out,
+                WordRangeConstructor {
+                    import: crate::wasm_abi_generated::WasmRuntimeImport::DataclassNewFromValues,
+                    leading: &[name, fields],
+                    trailing: &[flags],
+                },
                 import_ids,
                 locals,
                 reloc_enabled,
-                BuilderFinish::Tuple,
             );
-            func.instruction(&Instruction::LocalGet(out));
-            func.instruction(&Instruction::I64Const(box_none()));
-            func.instruction(&Instruction::I64Ne);
-            func.instruction(&Instruction::If(wasm_encoder::BlockType::Empty));
-            func.instruction(&Instruction::LocalGet(name));
-            func.instruction(&Instruction::LocalGet(fields));
-            func.instruction(&Instruction::LocalGet(out));
-            func.instruction(&Instruction::LocalGet(flags));
-            emit_call(
-                func,
-                reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DataclassNew],
-            );
-            // Dataclass construction borrows the completed values tuple. Keep
-            // its result on the stack while releasing that temporary owner.
-            func.instruction(&Instruction::LocalGet(out));
-            emit_call(
-                func,
-                reloc_enabled,
-                import_ids[crate::wasm_abi_generated::WasmRuntimeImport::DecRefObj],
-            );
-            func.instruction(&Instruction::LocalSet(out));
-            func.instruction(&Instruction::End);
             finish_owned_local_result(func, op, locals, import_ids, reloc_enabled, out);
         }
         "dataclass_get" => {

@@ -4,6 +4,46 @@
 **Purpose:** Define deterministic, testable transforms from Python AST → Molt IR for supported idioms.
 **Audience:** Compiler engineers, optimization authors writing compiler passes.
 
+## Imported callable code identity
+
+Import visibility and code-symbol custody are distinct. A guarded Python call
+may name a `(module, function)` code address only when the module belongs to the
+compiled partition and canonical source analysis declares that function. Named
+imports, module-attribute calls and callable type hints share this rule. Public
+API spellings, re-export lists and missing analysis cannot establish a symbol.
+
+Runtime-published builtins, re-exports and other callable values use their actual
+imported binding. Even with a proven code address, guarded dispatch retains that
+live value; the shared runtime guard owns callable identity, closure and binding
+eligibility. Defaults, positional/keyword arguments and decorator replacements
+do not require per-function frontend binding lists. Native exports still require
+their declared callable ABI metadata. This rule is independent of target/backend
+and does not broaden import admission or the verified subset.
+
+## Runtime protocol and exception identity
+
+An `await` operand is an ordinary Python expression. Its callable, argument
+order and keyword binding follow the same live binding authority as other calls;
+spelling a callee `anext` does not authorize a separate lowering path. Async
+iterator acquisition uses the async type protocol even when a value carries a
+list, generator or iterator hint. Only an explicitly prepared iterator binding
+can bypass acquisition.
+
+Compiler-owned termination checks use canonical builtin exception tags and
+inheritance. Source `except` expressions use their evaluated class values; every
+entry in a flat handler tuple is validated before matching, without metaclass
+instance/subclass hooks. `except*` shares that admission rule and additionally
+rejects exception-group classes. Exception names and formatted messages remain
+diagnostics, not classification inputs. Import execution propagates the original
+exception object, including notes, context and custom attributes.
+
+Async special methods bypass instance attributes and `__getattribute__`.
+Iterator admission observes the `__anext__` type slot without binding its
+descriptor. Descriptor failures follow the configured CPython version: 3.12 and
+3.13 async slot wrappers replace lookup failures with `AttributeError`; 3.14
+preserves the original error. This version rule belongs to the shared runtime
+lookup authority, not individual frontend consumers.
+
 ## Context-manager scope custody
 
 `TryScope` owns nonlocal cleanup for `return`, `break`, and `continue` in both
@@ -79,8 +119,24 @@ An absent state after the resume fixpoint is unreachable, not a depth-zero
 entry; producer, lexical-handler, release and pop-owner queries all use this
 same rule. Reachable unresolved saved states are explicit analysis errors.
 LLVM emits only explicit exception-stack operations, not implicit frames for
-TRY markers. WASM dispatch uses pending-state checks; native EH is selected only
-for a structured, non-relocatable frame that actually emits an EH region. Luau
+TRY markers. WASM dispatch uses pending-state checks; structured non-relocatable
+functions may use native EH for local handler control. Python-tag exceptions
+return through the shared activation epilogue as boxed None with the original
+runtime exception pending; they never unwind through caller invocation, recursion,
+reference-count or Rust runtime guards. Native EH does not replace runtime
+exception push/pop state or pending-error checks. Foreign exceptions retain their
+identity when propagated through activation cleanup. Ordinary return, suspension
+and failed construction share one boxed-result epilogue, so anchor cleanup grows
+with the number of anchors rather than anchors times exits. Statically known
+forward WASM dispatch edges use their enclosing block labels directly, including
+pending-error checks and ready await continuations. The operation-to-block map
+also owns saved-state lookup; only backward or dynamic resume edges reenter the
+dispatcher. An ordinary implicit function exit uses the shared activation
+epilogue; stateful fallthrough is rejected because suspension protocols require
+an explicit terminal return. Unknown saved states, out-of-range operation
+indices and invalid dispatch-table entries trap instead of entering unrelated
+code or redispatching indefinitely.
+Luau
 labelled transfers project the shared executable SimpleIR graph (excluding
 verifier-only reachability edges), with explicit pending/handled exception state
 in the coroutine-owned frame context. No backend pairs textual TRY intervals or
@@ -97,6 +153,14 @@ The current Rust target policy also gates unstructured control and truthiness;
 internal executable-emission tests do not confer checked-target support.
 
 Shared TIR-to-SimpleIR lowering owns block-argument transport for every target.
+Explicit exception transfers end their source basic block. Their canonical CFG
+edge relation includes self-transfers: liveness, dominance, SSA argument
+placement and iterator validity must observe the same re-entry, with edge
+arguments captured at the transfer operation rather than a later definition.
+CFG construction gives a re-entrant first source block a distinct invocation
+predecessor. Declared parameters remain the invocation ABI in source order;
+internal loop-carried values, including initially undefined locals, become
+ordinary join arguments instead of additional or reordered function parameters.
 Function invocation seeds entry join slots once, before the entry label; a
 backedge to entry reloads its supplied arguments without rerunning that prologue.
 Explicit and structured branches use the same edge stores and block-entry loads,
@@ -201,6 +265,34 @@ Source binding invalidation removes value and specialization facts, never the
 lexical storage owner. Name, callee and attribute-receiver evaluation retain
 their local/cell loads and unbound guards after callbacks; only names whose
 canonical binding fact selects global lookup re-read the module namespace.
+
+Frontend consumer witnesses follow the value through its semantic owner.
+Assignment-expression capture precedes `FRAME_HOME_STORE`, which publishes the
+binding and releases its displaced owner; `STORE_VAR` transports only the
+borrowed view. Code-name tables follow lexical compiler visitation before dead
+branch removal, while executable imports and statements follow reachability.
+Fused dictionary increments consume their kernel's boolean admission result and
+run the original statement only on decline. Published module calls retain the
+loaded callable before argument effects and select positional or CallArgs
+dispatch from actual syntax; import spelling does not select an FFI lane.
+Opcode serialization fixtures remain distinct from these producer/consumer
+checks, so a valid wire opcode is never evidence that a source pattern must emit
+it. `test_frontend_ir_alias_ops.py` checks these ownership, ordering and operand
+links; code metadata uses an independent CPython reference.
+
+Code-name projection receives the target Python version and future-annotation
+mode separately. Eager namespace annotations visit their annotation expression;
+future-string annotations do not. Both record `__annotations__` at a simple
+named annotation, even in a dead branch; parenthesized names, attributes and
+subscripts do not write that dictionary. Python 3.14 module metadata prepends
+`__conditional_annotations__` when its lexical body contains an annotated
+assignment and records deferred `__annotate__` publication after the body when a
+simple annotation requires it. These are name-table facts, not permission to
+execute dead statements. Function-local annotations contribute only evaluated
+target/value operations. Nested class and function bodies remain separate
+lexical regions; inline class annotation storage keeps its existing namespace
+owner. Module/callable metadata oracles do not claim standalone class code-object
+support.
 
 Generic attribute reads keep boxed receivers and enter `molt_get_attr_object_ic`,
 which caches only an owned interned name before invoking `molt_get_attr_name`.
@@ -411,7 +503,11 @@ inside the current activation are distinct from supplied closure values.
 Function, lambda, deferred annotation and generator-expression activations share
 external-slot discovery and entry widening: compatible cells may hold arbitrary
 values or be empty. A generator expression's first iterator is acquired in its
-creating scope; only its deferred body uses foreign activation inputs. Inline
+creating scope and transported in the Python-visible `.0` frame slot. Both
+synchronous and asynchronous loop lowering consume that acquired value without
+re-evaluating the outer expression or borrowing its source-position binding
+facts for a fabricated name. The original lexical regions own capture: only
+the deferred body uses foreign activation inputs. Inline
 class and eager comprehension scopes inherit their enclosing activation's
 custody, but class preparation and other callbacks still invalidate exposed
 cells. Callback exposure is independent of lexical storage: an empty lexical
@@ -462,6 +558,62 @@ to boxed SimpleIR; equal bits do not imply one credit. Mutable bindings and thei
 snapshots cannot be conflated by a static alias map. Candidate liveness lists
 schedule cleanup but do not constitute a second release-state authority. Raw
 scalar carriers remain outside boxed-object cleanup.
+
+Every canonical control arc carries custody. A terminator arc binds its target's
+block arguments, and a `CheckException` binds its operands to its handler's
+arguments when it raises. A `TryStart` registers its region: it keeps the
+handler reachable and binds nothing. An owned root that the target does
+not read moves into its first argument; any other owned binding is retained on
+its arc, by a check's landing on the exceptional path only. After a move, an
+explicit release or an operation that adopts its own `+1`, the root's name owns
+nothing until its definition runs again, and an argument that nothing reads is
+released on entry. A Python-bound local, a transferred parameter and an
+explicitly released root keep their objects to a Python boundary. A block
+argument that takes one of them keeps the same boundary
+through its transparent aliases and intervening blocks, so its last textual use
+does not end the owner's lifetime.
+
+A source Python call instruction adopts each operand whose typed custody is
+`Transferred`, and a bind adopts the CallArgs builder it frees, on both
+continuations. The holder moves a dead, non-lexical owner's own `+1` into the
+first adopted position that names it and retains one right before the call for
+every other position (`drop_insertion/transfers.rs`). The plan and last-use
+releases read one last-read projection. A raw carrier holds no reference there.
+
+Exceptional liveness enters at the observing operation, separately from normal
+terminator demand. After ordinary lifetime releases are placed, an exception
+edge releases available owned roots whose normal continuation was abandoned,
+while preserving handler live-ins and transferred payloads, and retains each
+payload that its handler argument cannot take by move. Cleanup operands
+travel as explicit block arguments; a definition below the check cannot supply
+them. Identical cleanup states share a landing block. ExceptionRegions carries
+pending-error custody through that block into the original handler. Lowered
+state-machine activations expose suspension as ordinary Return exits before
+this analysis. Frame stores/loads own persistence; invocation-local references
+use the same release and transfer rules on completion, suspension and error.
+The saved-state dispatch map is transported explicitly, independently of label
+numbers and physical block order. Backends do not synthesize suspension returns
+or a second activation ownership policy.
+
+Release placement names an owned root only where one authority,
+`drop_insertion/availability.rs`, finds it available. The root's definition
+must reach the point on every path, including an exception edge that leaves a
+block before the definition. A conditionally-valid result must also lie inside
+the region its producer initializes. The root's name must still own its object:
+no path to the point may pass a move, an explicit release or an adoption of
+it, unless its definition ran again afterwards. Straight-line observations,
+entry and arc releases, phi retains and lexical boundaries ask this query.
+Landings ask it without custody, because final liveness already excludes a root
+that gave up its object. A Return or join may be entered by arcs that carry a
+root and by arcs that do not, like the exit that `raise; jump exit` shares with
+every check. Such a block does not release the root itself. The release moves
+to the normal arcs where custody ends, and landings release it on the
+exceptional entries that still have it. Landing labels are fresh in the whole
+exception-label namespace. CPython frame and traceback lifetime is not modeled
+for named locals on exceptional paths, or where lowering emits no scope-exit
+cleanup (module code, closures, boxed and async locals). There a release may
+precede a handler or the exit's statements, and landings follow reverse
+creation order.
 
 An absent result binding does not erase an operation's effects. BoxVal/UnboxVal
 retain their canonical operation identity across SimpleIR, TIR and LIR;
@@ -551,9 +703,44 @@ unobserved results afterward. Dict/set/frozenset insertion results never replace
 the container owner: failed allocation skips entries, and a failed insertion
 releases the partial container and temporary scalar boxes, preserves the pending
 exception, and skips later boxing/hash/equality calls. Native, WASM and LLVM
-construction follow this same transaction. Fixed boxed LLVM container operations use the shared runtime
+construction follow this same transaction. Native and LLVM entries materialize
+lazily in entry order: a source repeated in a later entry reuses its first box, and minted
+boxes stay owned until construction ends, so a shared box is never released
+while a later entry borrows it. Fixed boxed LLVM container operations use the shared runtime
 call emitter; specialized builders and out-buffer protocols retain explicit
 custody for their additional resources.
+Fixed-arity lists, tuples and dataclass field values use canonical runtime constructors
+that borrow a contiguous word range (`molt_list_from_values`, `molt_tuple_from_values`,
+`molt_dataclass_new_from_values`). The constructor refuses to allocate while an
+exception is pending, copies and retains every word in one constructor transaction, and
+returns None only with an exception pending, so no builder owner, per-element
+failure branch or partial publication exists. Native Cranelift passes a stack
+slot and LLVM one static entry-block slot (as for unpack, class-definition and
+dataclass ranges), so construction in a loop never grows the stack. WASM passes
+a scratch allocation private to that one construction and freed before the next
+operation; no static buffer is shared with a reentrant callback, another
+activation or another thread. Dynamic streaming construction retains the list
+builder protocol. Native materialization uses one operation-scoped operand
+transaction over the shared representation plan to box each input once,
+preserve repeated operand identity, release only minted full-i64 boxes, and
+skip all dependent work after failure. Such temporary boxes
+never enter scalarized tuple aliases. Borrowed scalarized tuple views are
+published as None on construction failure, so releasing source owners cannot
+leave a later projection holding a freed element. Slice construction passes its
+three bounds to `molt_slice_new` as direct arguments, with no range storage; an
+omitted bound is None. Native slices use the same materialization transaction,
+as do subscript and dict/set operations, including views and fused counting
+operations. Borrowed returns acquire any escaping credit before operand cleanup;
+owned discarded returns are released. Proven raw-index list lanes retain their
+raw access, and a failed checked read does not materialize a result object.
+Boxed results enter scalar homes only through the shared carrier boundary.
+List, tuple, dict,
+set and slice construction are throwing operations in the canonical effect
+table: allocation can fail, and hashing/equality can raise. Their results retain
+every operand, so an operand's finalizer sensitivity extends to the constructed
+object. Frontend exception edges and optimizer
+check retention consume that same fact; construction failure must transfer to
+the handler before any dependent Python operation.
 Native and WASM scalar parsing use the same object parser for literal and dynamic inputs.
 The runtime alone owns input-type admission and exceptions; lowering must not
 reparse raw literal bytes through a second, name-based path. This removes the
@@ -717,9 +904,39 @@ result transfer/release. There is no separate descriptor signature/lowering tabl
 Direct and preserved boxed calls share selected-runtime availability admission
 before symbol declaration or argument materialization; a generated ABI fact does
 not prove the symbol exists in the selected runtime profile.
-Boxed runtime calls borrow arguments: temporary owners minted when boxing raw
-integers are released after the call independently of result ownership, while
-already-boxed operand owners remain with their original SSA values.
+Every LLVM consumer of borrowed boxed runtime operands uses one operation-local
+custody: fixed and hash constructors; boxed runtime, dynamic, method and
+builtin calls; attribute, subscript, module, conversion, generator and await
+operations; and direct compiled calls into boxed parameters. Each distinct SSA
+operand is boxed once, at its first request; a failed box prevents all later
+boxing and the consumer call and leaves the first exception pending. Static
+owner slots are initialized before the first failure edge and retired on both
+paths. Hash construction requests each entry only after the previous insertion
+succeeded. Already-boxed operands remain borrowed from their original SSA
+owners, and an operation whose operands cannot mint an owner adds no branch or
+release. A bound borrowed return acquires its independent credit before
+argument cleanup; discarded owned returns are released, while setters whose
+every path returns the immortal None bind it without a release. Values a
+consumer stores or returns (task payloads, yielded pairs, `and`/`or` selections)
+take their own owner instead of a borrowed one. Raw ABI words (addresses,
+lengths, tags, capacities) pass unboxed, and object-address parameters receive
+unboxed pointers. A preserved kind whose runtime entry is exactly `molt_<kind>`
+with a generated boxed row takes the shared admitted route, with no
+spelling-based call path; this includes preserved `slice_new` and the CallArgs
+push and expansion steps. LLVM-built CallArgs reserve every positional slot, so
+their pushes cannot fail; a consuming bind frees its builder even when it
+observes an exception left pending by an earlier step. Native fixed constructors, hash construction and
+subscript read, write, delete and slice share one native operand transaction
+with the same ownership invariant, including both borrowed ranges of a class
+definition. Its owner slots precede the first failure edge; its join publishes
+None on failure and carries internal CFG cleanup tracking to the final block.
+Subscript lanes that read a proven list through a raw-int index box it only on
+a cold path whose runtime call needs a boxed key; that path opens its own
+transaction and rejoins before the lane merge. Discarded owned subscript
+results are released, and statement returns borrowed from the container acquire
+nothing. These
+operation-local rules do not establish identity across separate boxing sites;
+that requires the shared representation plan to preserve the source identity.
 Class allocation publishes initialized storage before exposing an owned result;
 generator locals registration preserves raw function addresses alongside boxed
 metadata. Borrowed closure edges acquire a reference only when retained as an IR
@@ -769,6 +986,110 @@ while an exact bytearray key is unhashable even though its elements are inert.
 This contract does not prove imported dataclass/statistics identities, mutable
 container element facts, or target execution parity; those need their own
 runtime identity/ownership and native/WASM receipts.
+
+## Fused loops
+
+A fused op runs items of a Python loop, or the statement
+`d[k] = d.get(k, 0) + delta`, in a runtime kernel. It is an optimization of
+the ordinary lowering, never a separate semantics: the frontend emits the
+ordinary lowering after or beside the op, and the op leaves exactly the state
+the code would leave after the items it ran, having run no Python code.
+
+- **Admission is a runtime fact.** Source shapes and type hints only select a
+  candidate. The kernel admits an item when, on the values the code actually
+  reads, it provably runs no Python code: exact builtin containers, exact
+  ints, bools and floats (no subclasses), `str` keys whose dict probe decides
+  without Python equality, and a loop target whose previous value releases
+  inertly (unbound, unboxed, or an exact `str`, `bytes`, `int` or `float`).
+- **Long loops run as a chunked prefix.** A reduction (`vec_sum`, `vec_prod`,
+  `vec_min`, `vec_max`) takes the loop's own iterator, acquired once where the
+  loop acquires it, and consumes at most one bounded chunk per call (4096
+  items, fewer once a big int total grows past 4096 bits); a counted
+  `bytearray` fill writes at most 1 MiB per chunk. The calls run in a chunk
+  loop whose back edge is an ordinary loop back edge, where the canonical
+  eval-breaker observation (`async_work_poll`: pending calls, signals, GC
+  finalizers) runs. Before that back edge the chunk's state is published: the
+  loop target takes the last item and then the accumulator its result, the
+  order in which the loop releases them, through the bindings' homes. The next
+  chunk rereads both (and the fill its index and buffer) from those homes,
+  since the serviced work may have rebound them. The chunk loop ends at the
+  iterator's end or at the first item the kernel does not admit, which it
+  leaves unconsumed; the ordinary loop then continues from that state on the
+  same iterator or index, so it runs every remaining item, and no consumed
+  item or callback is ever replayed. After the last chunk the ordinary loop
+  finds the iterator exhausted (or the fill index at its bound) and ends,
+  running an `else:` clause as the loop would.
+- **Whole-loop kernels are bounded.** The split/count kernel runs a whole line
+  of at most 4096 words or declines before any effect, after which the
+  ordinary loop evaluates `line.split(sep)` itself; `dict_str_int_inc` runs
+  one statement.
+- **Results are the code's own.** Integers are exact at any size; float
+  operations are the loop's IEEE operations in iteration order (no
+  compensation, reassociation, closed forms that round differently, wrapping
+  or saturation); int/float mixing follows the binary operators; min/max keep
+  the source's strict comparison and the element object itself. A NaN meeting
+  a NaN, or a big int meeting a float, is not admitted, since the operand
+  order that picks the result or the error is not part of the op. No result
+  depends on an earlier call, adaptive history or the environment.
+- **Bindings are the code's own.** In a function body only (a module's loop
+  target is a module global and a class body's a namespace entry, whose every
+  store is observable), the loop target and accumulator are published after
+  each nonempty chunk; a loop that runs no iteration leaves an unbound target
+  unbound.
+- **Moved reads are unobservable.** A fused op reads, before the code does,
+  bindings the code reads later. Such a read uses the binding's current value
+  (from 3.13 a callback may rebind a frame local through `f_locals`), and must
+  not raise: the binding analysis proves the name bound, which for a fast
+  local survives callbacks (they rebind but never delete it) and for a global,
+  class-namespace or cell binding also needs a clean read. A key read that can
+  raise (a dataclass field may be unset) happens only after an exact dict
+  makes the source's earlier `d.get` lookup unobservable.
+- **Results are owned by their contract.** A kernel's result tuple is a fresh
+  owned object, as its runtime import's return contract states, and is
+  classified `OwnedValue` so drop insertion releases it; `audit_op_kinds`
+  category `owned_result_transparent_alias` rejects any new result-producing
+  kind whose owned boxed return the classifier would alias instead.
+- **Counted `for` over `range()`.** Only a call the binding analysis proves is
+  builtin `range` counts. Its arguments are evaluated in order, then each
+  given bound converts through `operator.index` (`operator_index`; start,
+  stop, step, raising `range()`'s own TypeError), then the step is checked
+  for zero. A bound the analysis proves an exact int converts to itself and a
+  bool literal to its int, so the counted loop only ever sees exact ints of any
+  size; a raw `i64` lane still needs a representation proof. A counted
+  `while` guards its index the same way (an exact int start) before entering
+  the counted lane.
+- **Distinct operations stay distinct.** Builtin `sum()` is CPython's
+  `builtin_sum_impl` for the target version: an int phase reading C `long`
+  items into a `Py_ssize_t` total (the target's C data model: LP64 Linux and
+  macOS, LLP64 Windows, ILP32 wasm32-wasi; `sys.maxsize` and
+  `struct.calcsize('l')` report the same widths), a compensated float phase
+  (3.14 also compensates the ints it meets there), from 3.14 a compensated
+  complex phase, then generic `+`. It is not an explicit `+=` loop; inline
+  `sum(<generator>)` keeps a running total only for items structurally proven
+  exact ints and otherwise calls `sum()`. Builtin `min()`/`max()` compare each
+  value to the best with one rich comparison (`value < best`,
+  `value > best`); `sorted()` is `list.sort()` on the list its iterable
+  makes, and `list.sort()` compares with `<` alone, asking the target
+  version's comparisons in its order (CPython's timsort, whose run detection
+  changed in 3.13, gh-116554).
+  All of them hold their iterator and each item only as long as CPython does.
+  Complex arithmetic with a real operand follows the target's rules (3.14:
+  C99 mixed-mode arithmetic, gh-69639), as do complex products and quotients
+  (Smith division; 3.14 recovers Annex G infinities and zeros).
+- **Backend loop rewrites follow the same rule.** A backend may rewrite an
+  admitted or ordinary loop (for example the native 4x unrolled `list[int]`
+  sum) only with unchecked `i64` arithmetic that a value-range proof makes
+  exact; a checked full-range carrier keeps its checked operations.
+
+The ops are `vec_sum`, `vec_prod`, `vec_min`, `vec_max` (operands
+`(it, acc, target)`, result `(result, last, count, more)`),
+`string_split_ws_dict_inc`, `string_split_sep_dict_inc`, `dict_str_int_inc`,
+the `operator_index` range-bound conversion and the counted
+`while`/`bytearray` lanes (SimpleIR schema, "Fused Loops"). Targets that cannot
+evaluate an admission check decline every fused op, consuming nothing.
+Differential guests `vec_reduction_in_function.py`, `fused_loop_semantics.py`,
+`range_bound_semantics.py` and `builtin_reductions.py` pin the observable
+contract.
 
 ---
 
@@ -843,7 +1164,10 @@ Each rule includes:
 **Correctness notes:**
 - Python `range` supports negative steps; must normalize.
 - `RangeLen` must match Python semantics (empty ranges allowed).
-- Overflow behavior: in Tier 0 require `n` fits i64 or raise compile-time error; Tier 1 guard.
+- The bounds are `range()`'s own conversions ("Fused loops": counted `for`
+  over `range()`): exact ints of any size, converted once, in order, before
+  the zero-step check. The index is a raw `i64` only where a value-range proof
+  bounds it; otherwise it is a boxed exact int.
 
 **Tests:**
 - `n=0,1,10`
@@ -866,11 +1190,10 @@ Each rule includes:
 5. Return `vec`
 
 **Correctness notes:**
-- In Python, list of range yields ints; Molt may use i64.
-- If `a/b/s` not statically known, Tier 1 emits guards:
-  - args are ints
-  - step != 0
-  - length computation does not overflow
+- In Python, list of range yields exact ints of any size; values outside the
+  inline int window are boxed at full range, never truncated.
+- The bounds are converted as for a counted `for`; the runtime range
+  constructor then checks the step and computes the length exactly.
 
 **Tests:**
 - `list(range(5)) == [0,1,2,3,4]`
@@ -913,17 +1236,12 @@ Same as `list(range(...))`, but:
 **Pattern:** `Call(sum,[Call(range,...)])`
 **Tier:** 0/1
 
-**Lowering options:**
-- **Analytic** (preferred): if step constant, use arithmetic series:
-  - `len = RangeLen(trip)`
-  - `first = RangeAt(trip,0)` if len>0 else 0
-  - `last = RangeAt(trip,len-1)` if len>0 else 0
-  - `sum = len*(first+last)/2` (careful with overflow)
-- **Loop** fallback: accumulate in counted loop
-
-**Guards:**
-- overflow checks → deopt
-- numeric type must be int
+**Lowering:** builtin `sum()` over the range's iterator ("Fused loops",
+distinct operations): its int phase adds C `long` values into a `Py_ssize_t`
+total and leaves it exactly as CPython does, so the result's type and value
+depend on the start and the target's C data model. An analytic closed form
+would have to reproduce those phase transitions and any float start's
+rounding; it is not used.
 
 **Tests:**
 - compare with CPython for random ranges
@@ -975,6 +1293,17 @@ Tier 0/1 lowerings cannot emit `CallDyn` except inside a deopt block.
 ### 3.3 Deterministic lowering
 Given the same AST and Tier configuration, lowering must be deterministic.
 No heuristic-only transforms without a controlling flag.
+
+Function reservations, generated lambdas and generator expressions, module chunks,
+and materialized bodies share one emitted-symbol namespace. Admission consults
+the existing reservation, allocated-name, and function-body owners together.
+Stateful function kind reserves its callable and poll targets atomically, before
+lowering either body; a source function named `f_poll` cannot alias the poll target
+of a coroutine or generator named `f`, in either declaration order. Only source
+function materialization may consume a matching module reservation; generated
+annotation functions and class-method symbols allocate their own identities.
+A materialized reservation is consumed: a later definition with the same source
+name gets a new target, preserving any retained earlier callable.
 
 ---
 

@@ -63,7 +63,7 @@ fn binding_snapshots_keep_incoming_facts_when_storage_is_rebound() {
                 op(kind, Some("float_snapshot"), Some("mixed"), &["float"]),
                 op(kind, Some("bool_snapshot"), Some("mixed"), &["bool"]),
                 op(kind, None, Some("wide_copy"), &["wide_snapshot"]),
-                op("list_int_new", Some("items"), None, &[]),
+                op("list_int_new", Some("items"), None, &["lhs", "rhs"]),
                 op(kind, Some("items_snapshot"), Some("items_slot"), &["items"]),
                 op("missing", Some("missing_value"), None, &[]),
                 op(
@@ -299,6 +299,101 @@ fn container_transport_metadata_does_not_seed_container_kind() {
 }
 
 #[test]
+fn exact_builtin_list_class_requires_allocator_provenance() {
+    let index = op("index", Some("item"), None, &["xs", "i"]);
+    let annotated = function(
+        "annotated_list_parameter",
+        &["xs", "i"],
+        Some(vec!["list", "int"]),
+        vec![index.clone()],
+    );
+    let plan = native_representation_plan(&annotated);
+    assert_eq!(plan.name_container_kind("xs"), Some(ContainerKind::List));
+    assert!(!plan.op_has_exact_builtin_list(&index));
+
+    for kind in [
+        "copy",
+        "identity_alias",
+        "binding_alias",
+        "guard_tag",
+        "guard_type",
+    ] {
+        let alias_index = op("index", Some("item"), None, &["alias", "i"]);
+        let inputs: &[&str] = if matches!(kind, "guard_tag" | "guard_type") {
+            &["xs", "expected_tag"]
+        } else {
+            &["xs"]
+        };
+        let constructed = function(
+            "exact_list_alias",
+            &[],
+            None,
+            vec![
+                const_int("i", 0),
+                const_int("value", 1),
+                const_int("expected_tag", 8),
+                op("list_new", Some("xs"), None, &["value"]),
+                op(kind, Some("alias"), None, inputs),
+                alias_index.clone(),
+            ],
+        );
+        let plan = native_representation_plan(&constructed);
+        assert!(plan.op_has_exact_builtin_list(&alias_index), "{kind}");
+
+        let mut ambiguous = constructed.clone();
+        ambiguous.params.push("unknown".to_string());
+        ambiguous.param_types = None;
+        ambiguous
+            .ops
+            .insert(5, op("copy", Some("alias"), None, &["unknown"]));
+        let plan = native_representation_plan(&ambiguous);
+        assert!(!plan.op_has_exact_builtin_list(&alias_index), "{kind}");
+    }
+}
+
+#[test]
+fn retained_container_alias_keeps_class_but_escape_revokes_storage() {
+    let alias = op("binding_alias", Some("captured"), None, &["xs"]);
+    let index = op("index", Some("item"), None, &["xs", "i"]);
+    let captured_index = op("index", Some("captured_item"), None, &["captured", "i"]);
+    let mut func = function(
+        "retained_list_storage",
+        &[],
+        None,
+        vec![
+            const_int("count", 4),
+            const_int("fill", 0),
+            const_int("i", 0),
+            op("list_int_new", Some("xs"), None, &["count", "fill"]),
+            alias,
+            index.clone(),
+            captured_index.clone(),
+        ],
+    );
+    let plan = native_representation_plan(&func);
+    for op in [&index, &captured_index] {
+        assert!(plan.op_has_exact_builtin_list(op));
+    }
+    for name in ["xs", "captured"] {
+        assert_eq!(
+            plan.name_container_storage_kind(name),
+            Some(ContainerStorageKind::FlatListInt)
+        );
+    }
+
+    let mut escape = op("call", Some("call_result"), None, &["captured"]);
+    escape.s_value = Some("opaque_consumer".to_string());
+    func.ops.insert(5, escape);
+    let plan = native_representation_plan(&func);
+    for op in [&index, &captured_index] {
+        assert!(plan.op_has_exact_builtin_list(op));
+    }
+    for name in ["xs", "captured"] {
+        assert_eq!(plan.name_container_storage_kind(name), None);
+    }
+}
+
+#[test]
 fn flat_list_storage_requires_structural_producer() {
     let mut index = op("index", Some("item"), None, &["xs", "i"]);
     index.container_type = Some("list".to_string());
@@ -316,16 +411,30 @@ fn flat_list_storage_requires_structural_producer() {
 
 #[test]
 fn list_int_new_seeds_flat_storage_and_aliases() {
-    let list_new = op("list_int_new", Some("xs"), None, &[]);
+    let list_new = op(
+        "list_int_new",
+        Some("xs"),
+        None,
+        &["storage_count", "storage_fill"],
+    );
     let copy = op("copy", Some("ys"), None, &["xs"]);
     let store = op("store_var", None, Some("slot"), &["ys"]);
     let load = op("load_var", Some("zs"), Some("slot"), &[]);
     let index = op("index", Some("item"), None, &["zs", "i"]);
     let func = function(
         "storage_aliases",
-        &["i"],
-        Some(vec!["int"]),
-        vec![list_new, copy, store, load, index.clone()],
+        &[],
+        None,
+        vec![
+            const_int("storage_count", 4),
+            const_int("storage_fill", 0),
+            const_int("i", 0),
+            list_new,
+            copy,
+            store,
+            load,
+            index.clone(),
+        ],
     );
     let plan = native_representation_plan(&func);
 
@@ -345,12 +454,17 @@ fn list_int_new_seeds_flat_storage_and_aliases() {
         plan.name_container_storage_kind("zs"),
         Some(ContainerStorageKind::FlatListInt)
     );
-    assert!(plan.op_has_container_storage(4, &index, ContainerStorageKind::FlatListInt));
+    assert!(plan.op_has_container_storage(7, &index, ContainerStorageKind::FlatListInt));
 }
 
 #[test]
 fn non_int_store_index_conflicts_flat_list_storage() {
-    let list_new = op("list_int_new", Some("xs"), None, &[]);
+    let list_new = op(
+        "list_int_new",
+        Some("xs"),
+        None,
+        &["storage_count", "storage_fill"],
+    );
     let idx = const_int("i", 0);
     let value = const_float("f", 1.25);
     let store = op("store_index", Some("ys"), None, &["xs", "i", "f"]);
@@ -359,14 +473,22 @@ fn non_int_store_index_conflicts_flat_list_storage() {
         "flat_storage_non_int_write",
         &[],
         None,
-        vec![list_new, idx, value, store.clone(), index.clone()],
+        vec![
+            const_int("storage_count", 4),
+            const_int("storage_fill", 0),
+            list_new,
+            idx,
+            value,
+            store.clone(),
+            index.clone(),
+        ],
     );
     let plan = native_representation_plan(&func);
 
     assert_eq!(plan.name_container_storage_kind("xs"), None);
     assert_eq!(plan.name_container_storage_kind("ys"), None);
-    assert!(!plan.op_has_container_storage(3, &store, ContainerStorageKind::FlatListInt));
-    assert!(!plan.op_has_container_storage(4, &index, ContainerStorageKind::FlatListInt));
+    assert!(!plan.op_has_container_storage(5, &store, ContainerStorageKind::FlatListInt));
+    assert!(!plan.op_has_container_storage(6, &index, ContainerStorageKind::FlatListInt));
 }
 
 #[test]
@@ -420,7 +542,12 @@ fn index_result_lane_comes_from_element_fact_not_key() {
 
 #[test]
 fn list_write_storage_facts_do_not_enable_the_read_index_lane() {
-    let list_new = op("list_int_new", Some("items"), None, &[]);
+    let list_new = op(
+        "list_int_new",
+        Some("items"),
+        None,
+        &["storage_count", "storage_fill"],
+    );
     let index = const_int("idx", 0);
     let value = const_int("value", 7);
     let store_index = op(
@@ -440,6 +567,8 @@ fn list_write_storage_facts_do_not_enable_the_read_index_lane() {
         &[],
         None,
         vec![
+            const_int("storage_count", 4),
+            const_int("storage_fill", 0),
             list_new,
             index,
             value,
@@ -451,8 +580,8 @@ fn list_write_storage_facts_do_not_enable_the_read_index_lane() {
 
     assert!(!plan.op_index_key_is_integer_family(&store_index));
     assert!(!plan.op_index_key_is_integer_family(&dict_set));
-    assert!(plan.op_has_container_storage(3, &store_index, ContainerStorageKind::FlatListInt,));
-    assert!(plan.op_has_container_storage(4, &dict_set, ContainerStorageKind::FlatListInt,));
+    assert!(!plan.op_has_container_storage(5, &store_index, ContainerStorageKind::FlatListInt,));
+    assert!(!plan.op_has_container_storage(6, &dict_set, ContainerStorageKind::FlatListInt,));
 }
 
 #[test]
@@ -1583,7 +1712,7 @@ fn scalar_primary_excludes_missing_sentinel_store_sources() {
 }
 
 #[test]
-fn cold_module_chunk_functions_have_empty_primary_sets() {
+fn cold_module_chunk_functions_keep_semantic_facts_without_primary_carriers() {
     let func = function(
         "__molt_module_chunk_0",
         &[],
@@ -1592,18 +1721,32 @@ fn cold_module_chunk_functions_have_empty_primary_sets() {
             const_int("value", 1),
             const_bool("flag", true),
             op("list_new", Some("items"), None, &["value"]),
+            op("const_none", Some("nothing"), None, &[]),
         ],
     );
 
-    let plan = native_representation_plan(&func);
-    let primary = plan.primary_name_sets();
+    for target in [
+        crate::tir::TargetInfo::native_release_fast(),
+        crate::tir::TargetInfo::wasm_release_fast(),
+        crate::tir::TargetInfo::llvm_release_fast(),
+        crate::tir::TargetInfo::luau_release_fast(),
+        crate::tir::TargetInfo::rust_release_fast(),
+        crate::tir::TargetInfo::mlir_release_fast(),
+    ] {
+        let plan = ScalarRepresentationPlan::for_function_ir_for_target(&func, &target);
+        let primary = plan.primary_name_sets();
 
-    assert!(primary.int.is_empty());
-    assert!(primary.bool_.is_empty());
-    assert!(primary.float.is_empty());
-    assert_eq!(plan.name_scalar_kind("value"), None);
-    assert_eq!(plan.name_scalar_kind("flag"), None);
-    assert_eq!(plan.name_container_kind("items"), None);
+        assert!(primary.int.is_empty());
+        assert!(primary.bool_.is_empty());
+        assert!(primary.float.is_empty());
+        assert_eq!(plan.name_scalar_kind("value"), Some(ScalarKind::Int));
+        assert_eq!(plan.name_scalar_kind("flag"), Some(ScalarKind::Bool));
+        assert_eq!(
+            plan.name_scalar_kind("nothing"),
+            Some(ScalarKind::NoneValue)
+        );
+        assert_eq!(plan.name_container_kind("items"), Some(ContainerKind::List));
+    }
 }
 
 #[test]
@@ -1694,5 +1837,192 @@ fn annotation_only_scalar_aliases_remain_boxed_beside_exact_producers() {
                 "exact {annotation} producer must retain its carrier through {name}"
             );
         }
+    }
+}
+
+#[test]
+fn physical_storage_requires_inline_admission_and_closed_aliases_in_both_consumers() {
+    for (case, fill, tail, expected) in [
+        ("inline", const_int("fill", 7), vec![], true),
+        ("heap", const_int("fill", 1_i64 << 62), vec![], false),
+        ("bool", const_bool("fill", true), vec![], false),
+        (
+            "heap_store",
+            const_int("fill", 7),
+            vec![
+                const_int("wide", 1_i64 << 62),
+                op("store_index", Some("after"), None, &["alias", "i", "wide"]),
+            ],
+            false,
+        ),
+        (
+            "bool_store",
+            const_int("fill", 7),
+            vec![
+                const_bool("boolean", true),
+                op(
+                    "store_index",
+                    Some("after"),
+                    None,
+                    &["alias", "i", "boolean"],
+                ),
+            ],
+            false,
+        ),
+        (
+            "callback_key",
+            const_int("fill", 7),
+            vec![op(
+                "index",
+                Some("callback_read"),
+                None,
+                &["alias", "callback"],
+            )],
+            false,
+        ),
+        (
+            "escape",
+            const_int("fill", 7),
+            vec![op("call", Some("ignored"), None, &["callee", "alias"])],
+            false,
+        ),
+    ] {
+        let mut ops = vec![
+            const_int("n", 4),
+            const_int("i", 0),
+            fill,
+            op("list_int_new", Some("xs"), None, &["n", "fill"]),
+            op("copy", Some("alias"), None, &["xs"]),
+        ];
+        ops.extend(tail);
+        ops.push(op("index", Some("read"), None, &["xs", "i"]));
+        let func = function(case, &["callback", "callee"], None, ops);
+        let plan = native_representation_plan(&func);
+        assert_eq!(
+            plan.name_container_storage_kind("xs").is_some(),
+            expected,
+            "{case}"
+        );
+        let mut tir =
+            lower_to_tir_for_target(&func, &crate::tir::TargetInfo::native_release_fast());
+        refine_types(&mut tir);
+        let lir = crate::tir::lower_to_lir::lower_function_to_lir(&tir);
+        assert_eq!(!lir.container_storage.is_empty(), expected, "LIR {case}");
+    }
+}
+
+#[test]
+fn flat_storage_index_keys_require_exact_integers_not_inline_carriers() {
+    for (case, key, expected) in [
+        ("inline", const_int("i", 0), true),
+        ("wide", const_int("i", 1_i64 << 62), true),
+        ("bool", const_bool("i", true), true),
+        ("annotation", op("copy", Some("i"), None, &["key"]), false),
+    ] {
+        for access in ["index", "store_index"] {
+            let args = if access == "index" {
+                vec!["xs", "i"]
+            } else {
+                vec!["xs", "i", "fill"]
+            };
+            let func = function(
+                case,
+                &["key"],
+                Some(vec!["int"]),
+                vec![
+                    const_int("n", 4),
+                    const_int("fill", 7),
+                    op("list_int_new", Some("xs"), None, &["n", "fill"]),
+                    key.clone(),
+                    op(access, Some("result"), None, &args),
+                ],
+            );
+            let plan = native_representation_plan(&func);
+            assert_eq!(
+                plan.op_has_container_storage(4, &func.ops[4], ContainerStorageKind::FlatListInt),
+                expected,
+                "{case} {access}"
+            );
+            let mut tir =
+                lower_to_tir_for_target(&func, &crate::tir::TargetInfo::native_release_fast());
+            refine_types(&mut tir);
+            let lir = crate::tir::lower_to_lir::lower_function_to_lir(&tir);
+            assert_eq!(
+                !lir.container_storage.is_empty(),
+                expected,
+                "LIR {case} {access}"
+            );
+        }
+    }
+}
+
+#[test]
+fn canonical_repeat_proves_singleton_aliases_before_publishing_flat_storage() {
+    for (mutation, expected) in [(false, true), (true, false)] {
+        for reverse in [false, true] {
+            let mut ops = vec![
+                const_int("n", 3),
+                const_int("i", 0),
+                const_int("fill", 7),
+                op("list_new", Some("source"), None, &["fill"]),
+                op("copy", Some("alias"), None, &["source"]),
+            ];
+            if mutation {
+                ops.extend([
+                    const_int("wide", 1_i64 << 62),
+                    op("store_index", Some("after"), None, &["alias", "i", "wide"]),
+                ]);
+            }
+            let operands = if reverse {
+                ["n", "source"]
+            } else {
+                ["source", "n"]
+            };
+            ops.push(op("mul", Some("repeated"), None, &operands));
+            ops.push(op("index", Some("read"), None, &["repeated", "i"]));
+            let func = function("repeat_storage", &[], None, ops);
+            let plan = native_representation_plan(&func);
+            assert_eq!(
+                plan.name_container_storage_kind("repeated").is_some(),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
+fn runtime_guard_alias_keeps_source_carrier_despite_mismatching_tag() {
+    for kind in ["guard_tag", "guard_type"] {
+        let func = function(
+            "runtime_guard_carriers",
+            &[],
+            None,
+            vec![
+                const_int("left", 1_i64 << 31),
+                const_int("right", 1_i64 << 31),
+                op(
+                    "checked_mul",
+                    Some("overflow"),
+                    Some("wide"),
+                    &["left", "right"],
+                ),
+                const_int("small", 7),
+                const_float("float", 1.25),
+                const_bool("bool", true),
+                const_int("tag", 5),
+                op(kind, Some("wide_alias"), None, &["wide", "tag"]),
+                op(kind, Some("small_alias"), None, &["small", "tag"]),
+                op(kind, Some("float_alias"), None, &["float", "tag"]),
+                op(kind, Some("bool_alias"), None, &["bool", "tag"]),
+            ],
+        );
+        let plan = native_representation_plan(&func);
+        assert!(plan.is_full_deopt_int_name("wide_alias"), "{kind}");
+        assert!(plan.is_inline_safe_int_name("small_alias"), "{kind}");
+        assert!(plan.is_float_unboxed("float_alias"), "{kind}");
+        assert!(plan.is_bool_unboxed("bool_alias"), "{kind}");
+        let facts = crate::passes::RuntimeGuardFacts::for_function(&func);
+        assert!(!facts.is_nonthrowing(&func.ops[7], Some(&plan)));
+        assert!(facts.is_nonthrowing(&func.ops[8], Some(&plan)));
     }
 }

@@ -169,6 +169,9 @@ pub struct LirBlock {
 /// A function in representation-aware LIR.
 #[derive(Debug, Clone)]
 pub struct LirFunction {
+    /// Physical storage facts proved on the source TIR after alias/mutation/
+    /// escape closure. Backends consume this projection without reseeding it.
+    pub container_storage: HashMap<ValueId, crate::repr::ContainerStorageFact>,
     pub name: String,
     pub param_names: Vec<String>,
     pub param_types: Vec<TirType>,
@@ -184,6 +187,29 @@ pub struct LirFunction {
     /// analysis. `TryEnd.value` is still round-tripped as pairing metadata
     /// but is not a transfer edge.
     pub label_id_map: HashMap<u32, i64>,
+}
+
+impl super::dominators::ProgramPointGraph for LirFunction {
+    fn entry_block(&self) -> BlockId {
+        self.entry_block
+    }
+    fn label_id_map(&self) -> &HashMap<u32, i64> {
+        &self.label_id_map
+    }
+    fn block_ids(&self) -> impl Iterator<Item = BlockId> {
+        self.blocks.keys().copied()
+    }
+    fn block_argument_ids(&self, block: BlockId) -> impl Iterator<Item = ValueId> {
+        self.blocks[&block].args.iter().map(|arg| arg.id)
+    }
+    fn operations(&self, block: BlockId) -> impl Iterator<Item = &TirOp> {
+        self.blocks[&block].ops.iter().map(|op| &op.tir_op)
+    }
+    fn for_each_successor(&self, block: BlockId, mut visit: impl FnMut(BlockId)) {
+        self.blocks[&block]
+            .terminator
+            .for_each_edge(|target, _| visit(target));
+    }
 }
 
 #[cfg(test)]

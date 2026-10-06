@@ -4,3 +4,5 @@
 mod tir {
     mod ownership_memory;
 }
+
+mod fixture_support;

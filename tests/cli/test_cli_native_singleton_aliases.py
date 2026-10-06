@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from molt.cli.native_link_plan import resolve_native_target_spec
+
+from types import SimpleNamespace
+
 from pathlib import Path
 
 from molt.cli import native_link_command
@@ -32,12 +36,12 @@ def _plan(monkeypatch, tmp_path: Path, platform: str) -> NativeLinkPlan:
     monkeypatch.setattr(
         native_link_command,
         "_collect_cargo_native_link_deps",
-        lambda _runtime_lib, **_kwargs: [],
+        lambda _runtime_lib, **_kwargs: SimpleNamespace(flags=(), verify=lambda: None),
     )
     monkeypatch.setattr(
         native_link_command,
         "_append_darwin_runtime_frameworks",
-        lambda _command, *, target_triple: None,
+        lambda _command, *, target: None,
     )
     output_obj = tmp_path / "app.o"
     stub_path = tmp_path / "main.c"
@@ -50,7 +54,7 @@ def _plan(monkeypatch, tmp_path: Path, platform: str) -> NativeLinkPlan:
         stub_path=stub_path,
         runtime_lib=runtime_lib,
         output_binary=tmp_path / "app",
-        target_triple=None,
+        target=resolve_native_target_spec(None, host_platform=platform),
         sysroot_path=None,
         profile="dev",
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,

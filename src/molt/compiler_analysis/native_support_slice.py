@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from molt.python_private_names import python_import_binding
 import copy
 from collections.abc import Collection, Sequence
 
@@ -76,9 +77,7 @@ def _support_runtime_node(node: ast.stmt) -> ast.stmt:
 def import_bound_names(stmt: ast.stmt) -> set[str]:
     if isinstance(stmt, ast.Import):
         return {
-            alias.asname or alias.name.split(".", 1)[0]
-            for alias in stmt.names
-            if alias.name != "*"
+            python_import_binding(alias) for alias in stmt.names if alias.name != "*"
         }
     if isinstance(stmt, ast.ImportFrom):
         return {alias.asname or alias.name for alias in stmt.names if alias.name != "*"}

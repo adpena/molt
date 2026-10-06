@@ -4,14 +4,13 @@ use crate::object::ops_string::{
 use crate::{
     MoltObject, TYPE_ID_BIGINT, TYPE_ID_BOUND_METHOD, TYPE_ID_BUFFER2D, TYPE_ID_BYTEARRAY,
     TYPE_ID_BYTES, TYPE_ID_COMPLEX, TYPE_ID_DATACLASS, TYPE_ID_FLOAT, TYPE_ID_FROZENSET,
-    TYPE_ID_INTARRAY, TYPE_ID_LIST, TYPE_ID_LIST_BOOL, TYPE_ID_LIST_INT, TYPE_ID_MEMORYVIEW,
-    TYPE_ID_RANGE, TYPE_ID_SET, TYPE_ID_SLICE, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_TAG_ANY,
-    TYPE_TAG_BOOL, TYPE_TAG_BUFFER2D, TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES, TYPE_TAG_COMPLEX,
-    TYPE_TAG_DATACLASS, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT, TYPE_TAG_INTARRAY,
-    TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET,
-    TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE, bound_method_self_bits, molt_dict_get,
-    molt_index, molt_list_append, molt_store_index, molt_string_join, obj_from_bits,
-    object_is_exact_builtin_dict, object_type_id, raise_exception,
+    TYPE_ID_LIST, TYPE_ID_LIST_BOOL, TYPE_ID_LIST_INT, TYPE_ID_MEMORYVIEW, TYPE_ID_RANGE,
+    TYPE_ID_SET, TYPE_ID_SLICE, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_TAG_ANY, TYPE_TAG_BOOL,
+    TYPE_TAG_BUFFER2D, TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES, TYPE_TAG_COMPLEX, TYPE_TAG_DATACLASS,
+    TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT, TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW,
+    TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET, TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE,
+    bound_method_self_bits, molt_dict_get, molt_index, molt_list_append, molt_store_index,
+    molt_string_join, obj_from_bits, object_is_exact_builtin_dict, object_type_id, raise_exception,
 };
 use std::alloc::{Layout, alloc, dealloc};
 
@@ -228,7 +227,6 @@ pub extern "C" fn molt_type_tag_of_bits(bits: u64) -> i64 {
             TYPE_ID_DATACLASS => TYPE_TAG_DATACLASS,
             TYPE_ID_BUFFER2D => TYPE_TAG_BUFFER2D,
             TYPE_ID_MEMORYVIEW => TYPE_TAG_MEMORYVIEW,
-            TYPE_ID_INTARRAY => TYPE_TAG_INTARRAY,
             TYPE_ID_SET => TYPE_TAG_SET,
             TYPE_ID_FROZENSET => TYPE_TAG_FROZENSET,
             TYPE_ID_COMPLEX => TYPE_TAG_COMPLEX,
@@ -388,16 +386,20 @@ mod tests {
             return;
         }
 
-        let output = Command::new(std::env::current_exe().expect("current test executable"))
+        let mut command = Command::new(std::env::current_exe().expect("current test executable"));
+        command
             .args([
                 "--exact",
                 "wasm_abi_exports::tests::scratch_alloc_cold_resource_denial_is_null_and_nounwind",
                 "--nocapture",
                 "--test-threads=1",
             ])
-            .env(CHILD, "1")
-            .output()
-            .expect("spawn isolated cold-runtime test");
+            .env(CHILD, "1");
+        let output = crate::test_support::captured_runtime_children::capture(
+            &mut command,
+            "cold-resource-denial",
+            "cold",
+        );
         assert!(
             output.status.success(),
             "cold raw-ABI failure crossed extern C or violated its null contract:\nstdout:\n{}\nstderr:\n{}",

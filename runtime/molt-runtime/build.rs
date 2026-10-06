@@ -22,6 +22,7 @@ fn main() {
     let target_family = env::var("CARGO_CFG_TARGET_FAMILY").unwrap_or_default();
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR missing"));
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    emit_c_api_version(&manifest_dir, &out_dir);
     let build_python = build_python::resolve();
     emit_cpython_abi_variadic_export_anchors(&manifest_dir, &out_dir);
 
@@ -257,4 +258,40 @@ fn resolve_wasm_link_archive(env_key: &str, file_name: &str) -> Option<PathBuf> 
     } else {
         None
     }
+}
+
+/// The shipped header owns the compiled C layout major on every target.
+fn emit_c_api_version(manifest_dir: &Path, out_dir: &Path) {
+    let header = manifest_dir.join("../../include/molt/molt.h");
+    println!("cargo:rerun-if-changed={}", header.display());
+    let source = fs::read_to_string(&header).expect("cannot read C API version authority");
+    let definitions: Vec<Vec<_>> = source
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>())
+        .filter(|words| words.starts_with(&["#define", "MOLT_C_API_VERSION"]))
+        .collect();
+    assert_eq!(
+        definitions.len(),
+        1,
+        "expected one whole-line C API version definition"
+    );
+    assert_eq!(
+        definitions[0].len(),
+        3,
+        "C API version must be a single numeric literal"
+    );
+    let literal = definitions[0][2];
+    let digits = literal.strip_suffix('u').unwrap_or(literal);
+    assert!(
+        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()),
+        "C API version must be a numeric u32 literal"
+    );
+    let version = digits.parse::<u32>().expect("C API version exceeds u32");
+    fs::write(
+        out_dir.join("molt_c_api_version.rs"),
+        format!(
+            "/// libmolt C-API surface version.\npub const MOLT_C_API_VERSION: u32 = {version};\n"
+        ),
+    )
+    .expect("cannot write C API version projection");
 }

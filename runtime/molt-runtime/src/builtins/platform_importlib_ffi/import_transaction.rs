@@ -268,10 +268,10 @@ pub extern "C" fn molt_importlib_known_absent_missing_name(resolved_bits: u64) -
             Ok(value) => value,
             Err(bits) => return bits,
         };
-        let Some(name) = known_absent_module_missing_name(_py, &resolved) else {
+        let Some(absence) = known_import_absence(_py, &resolved) else {
             return MoltObject::none().bits();
         };
-        match alloc_str_bits(_py, &name) {
+        match alloc_str_bits(_py, absence.diagnostic_name()) {
             Ok(bits) => bits,
             Err(err) => err,
         }
@@ -333,19 +333,25 @@ pub(super) fn importlib_canonical_codecs_file_path(path: &str) -> String {
 pub(super) fn importlib_codecs_file_display(
     _py: &PyToken<'_>,
     codecs_bits: u64,
-) -> Result<String, u64> {
+) -> Result<Vec<u8>, u64> {
     let file_name = intern_runtime_static_name(_py, b"__file__");
     let Some(file_bits) = getattr_optional_bits(_py, codecs_bits, file_name)? else {
-        return Ok("None".to_string());
+        return Ok(b"None".to_vec());
     };
-    let display = match string_obj_to_owned(obj_from_bits(file_bits)) {
-        Some(path) => importlib_canonical_codecs_file_path(&path),
-        None => format_obj_str(_py, obj_from_bits(file_bits)),
+    let display = match crate::object::ops_format::string_obj_bytes(obj_from_bits(file_bits)) {
+        Some(path) => std::str::from_utf8(&path)
+            .map(|path| importlib_canonical_codecs_file_path(path).into_bytes())
+            .unwrap_or(path),
+        None => crate::object::ops_format::format_obj_str_bytes(_py, obj_from_bits(file_bits)),
     };
     if !obj_from_bits(file_bits).is_none() {
         dec_ref_bits(_py, file_bits);
     }
-    Ok(display)
+    if exception_pending(_py) {
+        Err(MoltObject::none().bits())
+    } else {
+        Ok(display)
+    }
 }
 
 pub(super) fn importlib_import_module_reject_missing_oem_codec(
@@ -360,7 +366,7 @@ pub(super) fn importlib_import_module_reject_missing_oem_codec(
         }
         let codecs_key_bits = alloc_str_bits(_py, "codecs")?;
         let codecs_bits =
-            importlib_import_resolved_module(_py, "codecs", codecs_key_bits, modules_ptr);
+            importlib_import_resolved_module(_py, "codecs", codecs_key_bits, modules_ptr, false);
         dec_ref_bits(_py, codecs_key_bits);
         if exception_pending(_py) {
             if !obj_from_bits(codecs_bits).is_none() {
@@ -398,10 +404,16 @@ pub(super) fn importlib_import_module_reject_missing_oem_codec(
             }
         };
         dec_ref_bits(_py, codecs_bits);
-        Err(raise_exception::<_>(
+        let message = [
+            b"cannot import name 'oem_encode' from 'codecs' (".as_slice(),
+            &display,
+            b")",
+        ]
+        .concat();
+        Err(crate::builtins::exceptions::raise_exception_bytes::<_>(
             _py,
             "ImportError",
-            &format!("cannot import name 'oem_encode' from 'codecs' ({display})"),
+            &message,
         ))
     }
     #[cfg(target_os = "windows")]
@@ -434,7 +446,13 @@ pub(super) fn importlib_import_resolved_transaction(
         dec_ref_bits(_py, resolved_key_bits);
         return Err(err);
     }
-    let leaf_bits = importlib_import_resolved_module(_py, resolved, resolved_key_bits, modules_ptr);
+    let leaf_bits = importlib_import_resolved_module(
+        _py,
+        resolved,
+        resolved_key_bits,
+        modules_ptr,
+        fromlist_bits.is_none(),
+    );
     dec_ref_bits(_py, resolved_key_bits);
     if exception_pending(_py) {
         if !obj_from_bits(leaf_bits).is_none() {
@@ -446,21 +464,38 @@ pub(super) fn importlib_import_resolved_transaction(
     let Some(fromlist_bits) = fromlist_bits else {
         return Ok(leaf_bits);
     };
-    if let Err(err) =
-        importlib_transaction_prepare_fromlist(_py, resolved, leaf_bits, fromlist_bits)
+    // __import__ selects the return module before package-only child preparation.
+    // Ordinary modules leave __all__ entirely to indexed IMPORT_STAR; consuming
+    // it here changes its protocol, exception precedence, and partial writes.
+    let has_fromlist = is_truthy(_py, obj_from_bits(fromlist_bits));
+    if exception_pending(_py) {
+        dec_ref_bits(_py, leaf_bits);
+        return Err(MoltObject::none().bits());
+    }
+    if !has_fromlist {
+        return Ok(importlib_transaction_top_level_value(
+            _py,
+            resolved,
+            modules_ptr,
+            leaf_bits,
+        ));
+    }
+    // Presence is the package boundary, including a falsey/dynamic __path__.
+    // Use the ordinary attribute protocol so only AttributeError is a miss.
+    let path_name = intern_runtime_static_name(_py, b"__path__");
+    let has_path = molt_has_attr_name(leaf_bits, path_name);
+    if exception_pending(_py) {
+        dec_ref_bits(_py, leaf_bits);
+        return Err(MoltObject::none().bits());
+    }
+    if is_truthy(_py, obj_from_bits(has_path))
+        && let Err(err) =
+            importlib_transaction_prepare_fromlist(_py, resolved, leaf_bits, fromlist_bits)
     {
-        if !obj_from_bits(leaf_bits).is_none() {
-            dec_ref_bits(_py, leaf_bits);
-        }
+        dec_ref_bits(_py, leaf_bits);
         return Err(err);
     }
-    Ok(importlib_transaction_return_value(
-        _py,
-        resolved,
-        modules_ptr,
-        leaf_bits,
-        fromlist_bits,
-    ))
+    Ok(leaf_bits)
 }
 
 pub(super) fn importlib_import_module_impl(
@@ -484,16 +519,8 @@ pub(super) fn importlib_import_module_impl(
         }
         return Err(err);
     }
-    if let Some(missing_name) = known_absent_module_missing_name(_py, &resolved) {
-        if !obj_from_bits(modules_bits).is_none() {
-            dec_ref_bits(_py, modules_bits);
-        }
-        return Err(raise_exception::<_>(
-            _py,
-            "ModuleNotFoundError",
-            &format!("No module named '{missing_name}'"),
-        ));
-    }
+    // Cache precedence and provider/dependency provenance are resolved once by
+    // the shared import attempt after the transaction's public-cache lookup.
     let out = importlib_import_resolved_transaction(_py, &resolved, modules_ptr, None);
     if !obj_from_bits(modules_bits).is_none() {
         dec_ref_bits(_py, modules_bits);
@@ -781,7 +808,7 @@ pub(super) fn importlib_dict_get_raw_key_bits(
 pub(super) fn importlib_none_in_modules_error(_py: &PyToken<'_>, resolved: &str) -> u64 {
     raise_exception::<_>(
         _py,
-        "ImportError",
+        "ModuleNotFoundError",
         &format!("import of {resolved} halted; None in sys.modules"),
     )
 }
@@ -791,6 +818,7 @@ pub(super) fn importlib_import_resolved_module(
     resolved: &str,
     resolved_key_bits: u64,
     modules_ptr: *mut u8,
+    strict_spec_probe: bool,
 ) -> u64 {
     let cached_bits = match importlib_dict_get_raw_key_bits(_py, modules_ptr, resolved_key_bits) {
         Ok(bits) => bits,
@@ -800,83 +828,54 @@ pub(super) fn importlib_import_resolved_module(
         if obj_from_bits(cached_bits).is_none() {
             return importlib_none_in_modules_error(_py, resolved);
         }
-        let is_empty = match importlib_module_is_empty_placeholder(_py, resolved, cached_bits) {
-            Ok(value) => value,
-            Err(err) => return err,
-        };
-        let should_retry = match importlib_module_should_retry_empty(_py, resolved, cached_bits) {
-            Ok(value) => value,
-            Err(err) => return err,
-        };
-        if !is_empty && !should_retry {
-            if let Err(err) =
-                importlib_bind_submodule_on_parent(_py, resolved, cached_bits, modules_ptr)
-            {
-                return err;
+        // sys.modules is authoritative, including a partially initialized
+        // package and an explicitly installed empty or non-module object.
+        // Namespace contents cannot distinguish either from an uninitialized
+        // module; the module table owns that transition. Pin before metadata
+        // callbacks, which may remove this exact sys.modules entry.
+        inc_ref_bits(_py, cached_bits);
+        let probe = importlib_cached_initialization_probe(_py, cached_bits);
+        if probe.is_err() {
+            if strict_spec_probe {
+                dec_ref_bits(_py, cached_bits);
+                return MoltObject::none().bits();
             }
-            inc_ref_bits(_py, cached_bits);
-            return cached_bits;
+            // CPython's C __import__ path ignores spec-probe failures;
+            // importlib's Python _find_and_load path propagates them.
+            clear_exception(_py);
         }
-        importlib_dict_del_string_key(_py, modules_ptr, resolved_key_bits);
+        return cached_bits;
     }
 
     let imported_bits =
         match importlib_import_with_fallback(_py, resolved, resolved_key_bits, modules_ptr) {
             Ok(bits) => bits,
-            Err(err) => {
-                if exception_pending(_py) {
-                    importlib_rethrow_pending_exception(_py);
-                }
-                return err;
-            }
+            Err(err) => return err,
         };
 
-    let cached_bits = match importlib_dict_get_raw_key_bits(_py, modules_ptr, resolved_key_bits) {
-        Ok(bits) => bits,
-        Err(err) => {
-            if !obj_from_bits(imported_bits).is_none() {
-                dec_ref_bits(_py, imported_bits);
-            }
-            return err;
-        }
+    // The load completion already selected and owns its result, and already
+    // ran any fresh-child publication. Re-reading sys.modules here would erase
+    // replacement/deletion effects of the parent's __setattr__ callback.
+    imported_bits
+}
+
+fn importlib_cached_initialization_probe(py: &PyToken<'_>, module: u64) -> Result<(), u64> {
+    let spec_name = intern_runtime_static_name(py, b"__spec__");
+    let Some(spec) = getattr_optional_bits(py, module, spec_name)? else {
+        return Ok(());
     };
-    if let Some(cached_bits) = cached_bits {
-        if obj_from_bits(cached_bits).is_none() {
-            if !obj_from_bits(imported_bits).is_none() {
-                dec_ref_bits(_py, imported_bits);
-            }
-            return importlib_none_in_modules_error(_py, resolved);
-        }
-        if let Err(err) =
-            importlib_bind_submodule_on_parent(_py, resolved, cached_bits, modules_ptr)
-        {
-            if !obj_from_bits(imported_bits).is_none() {
-                dec_ref_bits(_py, imported_bits);
-            }
-            return err;
-        }
-        inc_ref_bits(_py, cached_bits);
-        if cached_bits != imported_bits && !obj_from_bits(imported_bits).is_none() {
-            dec_ref_bits(_py, imported_bits);
-        }
-        return cached_bits;
+    let initializing_name = intern_runtime_static_name(py, b"_initializing");
+    let initializing = getattr_optional_bits(py, spec, initializing_name);
+    dec_ref_bits(py, spec);
+    if let Some(initializing) = initializing? {
+        let _ = is_truthy(py, obj_from_bits(initializing));
+        dec_ref_bits(py, initializing);
     }
-    if !obj_from_bits(imported_bits).is_none() {
-        if let Err(err) =
-            importlib_bind_submodule_on_parent(_py, resolved, imported_bits, modules_ptr)
-        {
-            if !obj_from_bits(imported_bits).is_none() {
-                dec_ref_bits(_py, imported_bits);
-            }
-            return err;
-        }
-        return imported_bits;
+    if exception_pending(py) {
+        Err(MoltObject::none().bits())
+    } else {
+        Ok(())
     }
-    raise_exception::<_>(
-        _py,
-        "ModuleNotFoundError",
-        &format!("No module named '{resolved}'"),
-    )
 }
 
 pub(super) fn importlib_import_parent_chain(
@@ -890,8 +889,13 @@ pub(super) fn importlib_import_parent_chain(
         let parent_name = &resolved[..dot];
         if !parent_name.is_empty() {
             let parent_key_bits = alloc_str_bits(_py, parent_name)?;
-            let parent_bits =
-                importlib_import_resolved_module(_py, parent_name, parent_key_bits, modules_ptr);
+            let parent_bits = importlib_import_resolved_module(
+                _py,
+                parent_name,
+                parent_key_bits,
+                modules_ptr,
+                false,
+            );
             dec_ref_bits(_py, parent_key_bits);
             if exception_pending(_py) {
                 if !obj_from_bits(parent_bits).is_none() {
@@ -917,6 +921,15 @@ pub(super) fn importlib_transaction_package_from_globals(
     _py: &PyToken<'_>,
     globals_bits: u64,
 ) -> Result<Option<String>, u64> {
+    // The builtin's C default is NULL, even though its text signature displays
+    // None. Preserve omission through named binding rather than accepting None.
+    if globals_bits == crate::missing_bits(_py) {
+        return Err(raise_exception::<_>(
+            _py,
+            "KeyError",
+            "'__name__' not in globals",
+        ));
+    }
     let Some(globals_ptr) =
         crate::builtins::frames::globals_namespace_storage_ptr(_py, globals_bits)
     else {
@@ -1131,16 +1144,12 @@ fn trace_importlib_transaction(
     );
 }
 
-pub(super) fn importlib_transaction_return_value(
+pub(super) fn importlib_transaction_top_level_value(
     _py: &PyToken<'_>,
     resolved: &str,
     modules_ptr: *mut u8,
     leaf_bits: u64,
-    fromlist_bits: u64,
 ) -> u64 {
-    if is_truthy(_py, obj_from_bits(fromlist_bits)) {
-        return leaf_bits;
-    }
     let Some((top_name, _)) = resolved.split_once('.') else {
         return leaf_bits;
     };
@@ -1191,12 +1200,21 @@ pub(super) fn importlib_transaction_string_items(
     context: ImportlibTransactionStringItemsContext<'_>,
 ) -> Result<Vec<String>, u64> {
     let iter_bits = molt_iter(iterable_bits);
+    let _iter_owner = obj_from_bits(iter_bits)
+        .as_ptr()
+        .map(crate::PtrDropGuard::new);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
     let mut out = Vec::new();
     loop {
         let pair_bits = molt_iter_next(iter_bits);
+        let _pair_owner = obj_from_bits(pair_bits)
+            .as_ptr()
+            .map(crate::PtrDropGuard::new);
+        if exception_pending(_py) {
+            return Err(MoltObject::none().bits());
+        }
         let Some(pair_ptr) = maybe_ptr_from_bits(pair_bits) else {
             return Err(MoltObject::none().bits());
         };
@@ -1236,20 +1254,6 @@ pub(super) fn importlib_transaction_string_items(
     Ok(out)
 }
 
-pub(super) fn importlib_transaction_fromlist_items(
-    _py: &PyToken<'_>,
-    fromlist_bits: u64,
-) -> Result<Vec<String>, u64> {
-    if !is_truthy(_py, obj_from_bits(fromlist_bits)) {
-        return Ok(Vec::new());
-    }
-    importlib_transaction_string_items(
-        _py,
-        fromlist_bits,
-        ImportlibTransactionStringItemsContext::FromList,
-    )
-}
-
 pub(super) fn importlib_transaction_child_name(resolved: &str, item: &str) -> String {
     if resolved == "molt.stdlib" {
         item.to_string()
@@ -1282,25 +1286,28 @@ pub(super) fn importlib_transaction_module_all_items(
             "fromlist star expects module",
         ));
     }
-    let dict_ptr = importlib_module_dict_ptr_for_state(_py, module_bits)?;
     let all_name_bits = intern_static_name(_py, &runtime_state(_py).interned.all_name, b"__all__");
-    let all_bits = unsafe { dict_get_in_place(_py, dict_ptr, all_name_bits) };
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
+    let all_bits = unsafe {
+        crate::builtins::attr::attr_lookup_ptr_allow_missing(_py, module_ptr, all_name_bits)
+    };
     let Some(all_bits) = all_bits else {
-        return Ok(None);
+        return if exception_pending(_py) {
+            Err(MoltObject::none().bits())
+        } else {
+            Ok(None)
+        };
     };
     let module_name = unsafe { string_obj_to_owned(obj_from_bits(module_name_bits(module_ptr))) }
         .unwrap_or_default();
-    importlib_transaction_string_items(
+    let items = importlib_transaction_string_items(
         _py,
         all_bits,
         ImportlibTransactionStringItemsContext::ModuleAll {
             module_name: &module_name,
         },
-    )
-    .map(Some)
+    );
+    dec_ref_bits(_py, all_bits);
+    items.map(Some)
 }
 
 pub(super) fn importlib_transaction_prepare_fromlist_item(
@@ -1349,7 +1356,11 @@ pub(super) fn importlib_transaction_prepare_fromlist(
     module_bits: u64,
     fromlist_bits: u64,
 ) -> Result<(), u64> {
-    for item in importlib_transaction_fromlist_items(_py, fromlist_bits)? {
+    for item in importlib_transaction_string_items(
+        _py,
+        fromlist_bits,
+        ImportlibTransactionStringItemsContext::FromList,
+    )? {
         if item == "*" {
             importlib_transaction_prepare_fromlist_star(_py, resolved, module_bits)?;
             continue;
@@ -1415,4 +1426,34 @@ pub extern "C" fn molt_importlib_import_transaction(
         }
         out
     })
+}
+
+#[cfg(test)]
+mod cached_module_tests {
+    use super::*;
+    #[test]
+    fn importlib_cached_empty_namespace_preserves_identity_and_owner() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let name = alloc_str_bits(py, "cached_empty").unwrap();
+            let module = crate::object::builders::alloc_module_obj(py, name);
+            assert!(!module.is_null());
+            let bits = MoltObject::from_ptr(module).bits();
+            let modules = alloc_dict_with_pairs(py, &[name, bits]);
+            assert!(!modules.is_null());
+            let before = unsafe { (*crate::header_from_obj_ptr(module)).ref_count_snapshot() };
+            let imported =
+                importlib_import_resolved_module(py, "cached_empty", name, modules, true);
+            assert!(!exception_pending(py));
+            assert_eq!(imported, bits);
+            assert_eq!(
+                unsafe { (*crate::header_from_obj_ptr(module)).ref_count_snapshot() },
+                before + 1
+            );
+            dec_ref_bits(py, imported);
+            dec_ref_bits(py, MoltObject::from_ptr(modules).bits());
+            dec_ref_bits(py, bits);
+            dec_ref_bits(py, name);
+        });
+    }
 }

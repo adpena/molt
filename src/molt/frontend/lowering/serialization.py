@@ -15,13 +15,14 @@ from typing import (
     Literal,
 )
 
-from molt.frontend._types import MoltOp, MoltValue
+from molt.frontend._types import _MOLT_CLOSURE_PARAM, MoltOp, MoltValue
 from molt.frontend.module_publication import inspect_source_module_publication
 from molt.frontend.lowering.serialization_basic_ops import SerializationBasicOpsMixin
 from molt.frontend.lowering.serialization_collection_ops import (
     SerializationCollectionOpsMixin,
 )
 from molt.frontend.lowering.serialization_context import SerializationContext
+from molt.frontend.lowering.op_kinds_generated import validate_serialized_kind
 from molt.frontend.lowering.serialization_exception_ops import (
     SerializationExceptionOpsMixin,
 )
@@ -78,14 +79,6 @@ class SerializationMixin(
         raise RuntimeError(
             f"Control-flow op {op.kind} requires int label, got {raw!r} ({type(raw).__name__})"
         )
-
-    @staticmethod
-    def _serialization_carry_bound_local(
-        op: MoltOp, entry: dict[str, Any]
-    ) -> dict[str, Any]:
-        if (op.metadata or {}).get("bound_local"):
-            entry["bound_local"] = True
-        return entry
 
     @staticmethod
     def _scalarize_string_split_fields_json(
@@ -289,11 +282,6 @@ class SerializationMixin(
                     candidates[root].unsafe = True
                     for other_root in used_roots - {root}:
                         candidates[other_root].unsafe = True
-            elif kind == "guard_tag" and len(args) >= 1 and arg_roots[0] is not None:
-                root = arg_roots[0]
-                candidates[root].alias_op_indexes.add(op_index)
-                for other_root in used_roots - {root}:
-                    candidates[other_root].unsafe = True
             else:
                 for root in used_roots:
                     candidates[root].unsafe = True
@@ -512,16 +500,6 @@ class SerializationMixin(
             self._active_midend_function_name = "<direct>"
         if run_midend:
             ops = self._run_ir_midend_passes(ops)
-        ops, fused_dict_guard_prunes = (
-            self._eliminate_redundant_fused_dict_increment_guards(ops)
-        )
-        if fused_dict_guard_prunes:
-            self.midend_stats["fused_dict_guard_prunes"] = (
-                self.midend_stats.get("fused_dict_guard_prunes", 0)
-                + fused_dict_guard_prunes
-            )
-            func_stats = self._midend_function_stats()
-            func_stats["fused_dict_guard_prunes"] += fused_dict_guard_prunes
         json_ops: list[dict[str, Any]] = []
         json_list_int_containers = set(getattr(self, "_list_int_containers", set()))
         function_owns_frame = self._function_needs_frame_trace(function_name)
@@ -599,6 +577,8 @@ class SerializationMixin(
 
         json_ops = self._scalarize_string_split_fields_json(json_ops)
         json_ops = self._fuse_string_split_field_consumers_json(json_ops)
+        for entry in json_ops:
+            validate_serialized_kind(entry["kind"])
         return json_ops
 
     def _finalize_code_ids(self) -> None:
@@ -651,6 +631,20 @@ class SerializationMixin(
                 "return_abi": data["return_abi"],
                 "ops": json_ops,
             }
+            if self._function_binds_homes(name):
+                # A synchronous frame's entry adopts every Python argument: its
+                # prologue moves each into the argument's home. The closure
+                # transport parameter stays borrowed. Backends derive the
+                # function object's entry custody from this declaration.
+                custody = [
+                    "borrowed" if param == _MOLT_CLOSURE_PARAM else "transferred"
+                    for param in data["params"]
+                ]
+                # The wire contract omits all-borrowed custody, including
+                # zero-argument entries and closure-only functions. Their
+                # homes still own local bindings, but entry transfers none.
+                if "transferred" in custody:
+                    func_entry["parameter_custody"] = custody
             if "source_module_publication" in data:
                 func_entry["source_module_publication"] = data[
                     "source_module_publication"

@@ -7,6 +7,7 @@ passes are not native credit. Darwin filesystem recovery still defers unknown.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import subprocess
@@ -200,6 +201,193 @@ def test_waiting_unobserved_cargo_preserves_all_incremental_state(tmp_path):
     assert receipt.ownership_status == "deferred" and receipt.moved_paths == ()
 
 
+def test_completed_cache_retention_requires_complete_interruption_inventory(tmp_path):
+    from tools import proof_plan
+
+    target = tmp_path / "target"
+    owned = unit(target)
+    receipt = cargo._quarantine_cargo_incremental_state(
+        reason="timeout",
+        target_dir=target,
+        command=("cargo", "test"),
+        cwd=tmp_path,
+        descendants_closed=True,
+        interruption_inventory_complete=True,
+    )
+    assert owned.exists()
+    assert receipt.ownership_status == "not_required"
+    assert receipt.errors == () and receipt.moved_paths == ()
+    metrics = {
+        "timed_out": True,
+        "termination_reports": [{"remaining_pids": [], "remaining_pgids": []}],
+        "cargo_incremental_quarantine": cargo._cargo_incremental_quarantine_payload(
+            receipt
+        ),
+    }
+    assert (
+        proof_plan._guarded_failure_scope(
+            metrics, metrics_valid=True, returncode=124, cancelled=False
+        )[0]
+        == "partition"
+    )
+
+
+def test_restored_non_incremental_artifacts_remain_admitted_guard_inputs(tmp_path):
+    from tools.harness_memory_guard import canonical_harness_env
+
+    target = tmp_path / "restored-target"
+    dependency = target / "debug" / "deps" / "librestored.rlib"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_bytes(b"restored non-incremental dependency")
+    # Layer the explicit selections over the process environment, as the real
+    # harness does: hosted runners prove their ephemeral checkout custody there
+    # (a bare mapping would demote GitHub's D: checkout to forbidden durable
+    # custody on Windows).
+    canonical = canonical_harness_env(
+        {**os.environ, "CARGO_TARGET_DIR": str(target), "CARGO_INCREMENTAL": "0"}
+    )
+    assert canonical["CARGO_TARGET_DIR"] == str(target)
+    assert canonical["CARGO_INCREMENTAL"] == "0"
+    receipt = cargo._quarantine_cargo_incremental_state(
+        reason="timeout",
+        target_dir=target,
+        command=("cargo", "test"),
+        cwd=tmp_path,
+        descendants_closed=True,
+        interruption_inventory_complete=True,
+    )
+    assert receipt.ownership_status == "not_required"
+    assert receipt.errors == () and receipt.moved_paths == ()
+    assert dependency.read_bytes() == b"restored non-incremental dependency"
+    assert not (target / ".molt_state").exists()
+
+
+@pytest.mark.parametrize("compiler_name", ["rustc", "clippy-driver"])
+def test_interruption_inventory_rejects_unowned_or_unobserved_compilers(
+    tmp_path, compiler_name
+):
+    compiler = SimpleNamespace(
+        command_kind="full",
+        pid=90051,
+        ppid=90050,
+        started_at_ns=300,
+        argv=(compiler_name, "-C", f"incremental={tmp_path / 'incremental'}"),
+    )
+    parent = SimpleNamespace(
+        command_kind="full",
+        pid=90050,
+        ppid=1,
+        started_at_ns=200,
+        argv=("cargo", "test"),
+    )
+    samples = {compiler.pid: compiler, parent.pid: parent}
+    identities = {pid: process_identity(item) for pid, item in samples.items()}
+    observed = cargo.observe_owned_incremental_state(samples, set(samples), identities)
+    assert cargo.observe_cargo_interruption_inventory(
+        samples, set(samples), identities, observed
+    ).complete
+    assert not cargo.observe_cargo_interruption_inventory(
+        samples, set(samples), identities, set()
+    ).complete
+    assert not cargo.observe_cargo_interruption_inventory(
+        samples, set(samples), {}, observed
+    ).complete
+    compiler.command_kind = "short"
+    assert not cargo.observe_cargo_interruption_inventory(
+        samples, set(samples), identities, observed
+    ).complete
+
+
+@pytest.mark.parametrize(
+    "native_command",
+    ['"C:\\tests\\hang.exe" --test', None, "rustc -C incremental=C:\\cache"],
+)
+def test_interruption_inventory_queries_image_arguments_with_birth_custody(
+    monkeypatch, native_command
+):
+    from tools.memory_guard_core import windows_snapshot
+
+    sample = SimpleNamespace(
+        command_kind="image",
+        pid=90051,
+        ppid=90050,
+        started_at_ns=300,
+        argv=None,
+        command="C:\\tests\\hang.exe",
+    )
+    samples = {sample.pid: sample}
+    identities = {sample.pid: process_identity(sample)}
+    calls = []
+    monkeypatch.setattr(cargo, "os", SimpleNamespace(name="nt"))
+
+    def query(pid, birth):
+        calls.append((pid, birth))
+        return (90050, native_command) if native_command else None
+
+    monkeypatch.setattr(windows_snapshot, "windows_job_command_context", query)
+    assert cargo.observe_cargo_interruption_inventory(
+        samples, set(samples), identities, set()
+    ).complete is (native_command is not None and native_command.startswith('"C:'))
+    assert calls == [(sample.pid, sample.started_at_ns)]
+    calls.clear()
+    assert not cargo.observe_cargo_interruption_inventory(
+        samples, set(samples), {}, set()
+    ).complete
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("renamed-compiler", "-C", "incremental=C:\\cache"),
+        ("compiler-wrapper", "@args"),
+    ],
+)
+def test_unknown_compiler_implementation_cannot_authorize_recovery(argv):
+    sample = SimpleNamespace(
+        command_kind="full",
+        pid=90051,
+        ppid=90050,
+        started_at_ns=300,
+        argv=argv,
+    )
+    parent = SimpleNamespace(
+        command_kind="full",
+        pid=90050,
+        ppid=1,
+        started_at_ns=200,
+        argv=("cargo", "check"),
+    )
+    samples = {item.pid: item for item in (sample, parent)}
+    identities = {pid: process_identity(item) for pid, item in samples.items()}
+    observed = cargo.observe_owned_incremental_state(samples, set(samples), identities)
+    assert not observed
+    assert not cargo.observe_cargo_interruption_inventory(
+        samples, set(samples), identities, observed
+    ).complete
+
+
+@pytest.mark.parametrize(
+    "before,after,closed,complete",
+    [
+        (3, 3, True, True),
+        (3, 4, True, False),
+        (3, 2, True, False),
+        (None, 3, True, False),
+        (3, 3, False, False),
+    ],
+)
+def test_interruption_inventory_requires_unchanged_native_birth_generation(
+    before, after, closed, complete
+):
+    observed = cargo.CargoInterruptionInventory()
+    assert (
+        observed.fence_process_births(before, after, closed=closed).complete is complete
+    )
+    unknown = cargo.CargoInterruptionInventory("native argv unknown")
+    assert unknown.fence_process_births(before, after, closed=closed) is unknown
+
+
 def test_observed_profile_recovery_preserves_other_profiles_and_old_evidence(
     tmp_path,
 ):
@@ -267,7 +455,7 @@ def test_installed_cargo_artifact_lock_conflicts_with_recovery_exclusion(tmp_pat
 
     manifest = tmp_path / "Cargo.toml"
     manifest.write_text(
-        '[package]\nname="molt-custody-lock-probe"\nversion="0.0.0"\nedition="2021"\n'
+        '[package]\nname="molt-custody-lock-probe"\nversion="0.0.0"\nedition="2021"\n\n[workspace]\n'
     )
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "lib.rs").write_text("pub fn unused() {}")
@@ -475,6 +663,64 @@ def test_reused_parent_birth_never_grants_incremental_observation(tmp_path):
     )
 
 
+@pytest.mark.parametrize(
+    "cargo_birth,rustc_birth,admitted",
+    [
+        (200, 300, True),
+        (300, 300, True),
+        (400, 300, False),
+        (None, 300, False),
+        (200, None, False),
+        (0, 300, False),
+        (200, 0, False),
+        (-1, 300, False),
+        (200, -1, False),
+        (True, 300, False),
+        (1, True, False),
+        (200.0, 300, False),
+        (200, 300.0, False),
+        ("200", 300, False),
+        (200, "300", False),
+    ],
+)
+def test_live_and_persisted_cargo_edges_require_ordered_exact_births(
+    tmp_path, cargo_birth, rustc_birth, admitted
+):
+    target = tmp_path / "target"
+    incremental = unit(target).parent.resolve()
+    parent = SimpleNamespace(
+        command_kind="full",
+        pid=90050,
+        ppid=1,
+        started_at_ns=cargo_birth,
+        command="cargo",
+        argv=("cargo",),
+    )
+    child = SimpleNamespace(
+        command_kind="full",
+        pid=90051,
+        ppid=90050,
+        started_at_ns=rustc_birth,
+        command="rustc",
+        argv=("rustc", "-C", f"incremental={incremental}"),
+    )
+    samples = {parent.pid: parent, child.pid: child}
+    identities = {pid: process_identity(sample) for pid, sample in samples.items()}
+    observation = cargo.CargoIncrementalObservation(
+        90051, rustc_birth, str(incremental), 90050, cargo_birth
+    )
+    assert cargo.observe_owned_incremental_state(samples, set(samples), identities) == (
+        {observation} if admitted else set()
+    )
+    if admitted:
+        assert cargo._observed_incremental_units(target, (observation,)) == {
+            incremental: incremental.parent
+        }
+    else:
+        with pytest.raises(ValueError, match="lacks process birth authority"):
+            cargo._observed_incremental_units(target, (observation,))
+
+
 def test_release_interrupt_attempts_all_handles_then_propagates(tmp_path, monkeypatch):
     import molt.file_locks as locks
 
@@ -546,7 +792,7 @@ def test_actual_cargo_held_profile_locks_defer_recovery(tmp_path):
 
     manifest = tmp_path / "Cargo.toml"
     manifest.write_text(
-        '[package]\nname="molt-custody-held-lock"\nversion="0.0.0"\nedition="2021"\n'
+        '[package]\nname="molt-custody-held-lock"\nversion="0.0.0"\nedition="2021"\n\n[workspace]\n'
     )
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "lib.rs").write_text("pub fn unused() {}")
@@ -1063,7 +1309,7 @@ def test_actual_windows_job_cargo_observer_preserves_completed_cache_on_late_tim
 
     (tmp_path / "src").mkdir()
     (tmp_path / "Cargo.toml").write_text(
-        '[package]\nname="molt-job-custody-probe"\nversion="0.0.0"\nedition="2021"\n'
+        '[package]\nname="molt-job-custody-probe"\nversion="0.0.0"\nedition="2021"\n\n[workspace]\n'
     )
     (tmp_path / "src/lib.rs").write_text("pub fn answer() -> u32 { 42 }\n")
     (tmp_path / "build.rs").write_text(
@@ -1118,7 +1364,8 @@ def test_actual_windows_job_cargo_observer_preserves_completed_cache_on_late_tim
         (tmp_path / "ready").exists() and result.timed_out and result.returncode == 124
     )
     receipt = result.cargo_incremental_quarantine
-    assert receipt.ownership_status == "deferred" and not receipt.moved_paths
+    assert receipt.ownership_status == "not_required" and not receipt.moved_paths
+    assert receipt.interruption_inventory_complete and not receipt.errors
     assert receipt.ownership_observations and not receipt.recovery_observations
     assert (target / "debug/incremental").exists()
 
@@ -1146,17 +1393,22 @@ def test_bounded_model_lock_settle_preserves_authority(tmp_path, monkeypatch, ca
     if case != "never_release":
         worker = threading.Thread(target=release_later)
         worker.start()
-    if case == "closure_unknown":
-        monkeypatch.setattr(cargo, "_observed_compilers_closed", lambda *args: False)
+    # These PIDs are modeled observations, never native process authority.
+    monkeypatch.setattr(
+        cargo, "_observed_compilers_closed", lambda *args: case != "closure_unknown"
+    )
+    calls = []
     if case == "acquire_error":
         from molt import file_locks
 
         original = file_locks._try_acquire_file_lock
-        calls = []
+        # Fail this transaction's second coordinate, not the second global
+        # lock call, which unrelated guard activity may consume concurrently.
+        error_path = lock_path.parent / ".cargo-lock"
 
         def injected(path):
-            calls.append(path)
-            if len(calls) == 2:
+            if path == error_path:
+                calls.append(path)
                 raise OSError("native lock query failed")
             return original(path)
 
@@ -1181,6 +1433,9 @@ def test_bounded_model_lock_settle_preserves_authority(tmp_path, monkeypatch, ca
         else:
             _release_file_lock(handle)
     assert time.perf_counter() - started < 2
+    if case == "acquire_error":
+        assert calls == [error_path]
+        assert receipt.errors == ("OSError: native lock query failed",)
     if case == "release":
         assert released.is_set() and receipt.ownership_status == "quarantined"
         assert not owned.exists()

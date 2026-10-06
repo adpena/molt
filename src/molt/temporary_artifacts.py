@@ -14,9 +14,12 @@ from pathlib import Path
 import os
 import re
 import reprlib
+import secrets
 import stat
 import tempfile
 import time
+import warnings
+import weakref
 
 from molt.exact_json import canonical_json_sha256, read_exact, write_exact
 from molt.file_deletion import delete_path
@@ -153,6 +156,14 @@ def _owner_mismatch(
     )
 
 
+def _same_owned_path(expected: object, observed: object) -> bool:
+    return (
+        isinstance(expected, str)
+        and isinstance(observed, str)
+        and resolve_owned_path(Path(expected)) == resolve_owned_path(Path(observed))
+    )
+
+
 def _owner(generation: Path) -> dict[str, object]:
     value = read_exact(
         resolve_owned_path(generation / "owner.json"),
@@ -167,7 +178,12 @@ def _owner(generation: Path) -> dict[str, object]:
         ("generation", str(generation)),
     ):
         observed = value.get(field)
-        if observed != expected:
+        matches = (
+            _same_owned_path(expected, observed)
+            if field == "generation"
+            else observed == expected
+        )
+        if not matches:
             raise _owner_mismatch(generation, field, expected, observed)
     states = {
         "leased",
@@ -190,6 +206,74 @@ def _owner(generation: Path) -> dict[str, object]:
     return value
 
 
+def windows_temporary_directory_mode(mode: int) -> int:
+    """Retain inherited Windows ACLs instead of installing a user-only DACL."""
+    return 0o755 if mode == 0o700 else mode
+
+
+def new_temporary_directory(root: Path, *, prefix: str = "tmp") -> Path:
+    """Atomically allocate under admitted custody, preserving Windows inherited ACLs."""
+    if not isinstance(prefix, str) or any(
+        value in prefix for value in ("/", "\\", "\0")
+    ):
+        raise ValueError("temporary directory prefix must be a confined basename")
+    root = root.resolve(strict=True)
+    mode = windows_temporary_directory_mode(0o700) if os.name == "nt" else 0o700
+    for _attempt in range(100):
+        name = "".join(
+            secrets.choice("abcdefghijklmnopqrstuvwxyz0123456789_") for _ in range(8)
+        )
+        path = root / (prefix + name)
+        try:
+            path.mkdir(mode=mode)
+        except FileExistsError:
+            continue
+        return path
+    raise FileExistsError("cannot allocate a unique guard-owned scratch directory")
+
+
+def _cleanup_temporary_directory(
+    path: Path, identity: dict[str, int], *, warn: bool = False
+) -> None:
+    try:
+        current = _identity(path)
+    except FileNotFoundError:
+        return
+    if current != identity:
+        raise ValueError("temporary directory allocation changed before cleanup")
+    removed, error = delete_path(path)
+    if not removed:
+        raise OSError(f"cannot clean owned temporary directory {path}: {error}")
+    if warn:
+        warnings.warn(
+            f"Implicitly cleaning up owned temporary directory {path}", ResourceWarning
+        )
+
+
+class OwnedTemporaryDirectory:
+    """One host-correct directory allocation and its identity-fenced lifetime."""
+
+    def __init__(self, *, prefix: str = "tmp", dir: str | Path | None = None) -> None:
+        self._path = new_temporary_directory(
+            Path(tempfile.gettempdir()) if dir is None else Path(dir), prefix=prefix
+        )
+        self.name = str(self._path)
+        self._identity = _identity(self._path)
+        self._finalizer = weakref.finalize(
+            self, _cleanup_temporary_directory, self._path, self._identity, warn=True
+        )
+
+    def __enter__(self) -> str:
+        return self.name
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.cleanup()
+
+    def cleanup(self) -> None:
+        self._finalizer.detach()
+        _cleanup_temporary_directory(self._path, self._identity)
+
+
 def acquire_guard_scratch(
     repo_root: Path, environ: Mapping[str, str]
 ) -> GuardScratchLease:
@@ -203,7 +287,7 @@ def acquire_guard_scratch(
         raise RuntimeError("new scratch generation unexpectedly locked")
     target: Path | None = None
     try:
-        target = Path(tempfile.mkdtemp(prefix="pt-", dir=generation.parent.parent))
+        target = new_temporary_directory(generation.parent.parent, prefix="pt-")
         owner = {
             "schema": SCHEMA,
             "token": token,
@@ -231,8 +315,10 @@ def guard_scratch(repo_root: Path, environ: Mapping[str, str]) -> Path:
     target = _target(generation, owner)
     if (
         owner["state"] != "leased"
-        or owner.get("guard_marker") != environ.get("MOLT_MEMORY_GUARD_MARKER")
-        or str(target) != environ.get(SCRATCH_ENV)
+        or not _same_owned_path(
+            owner.get("guard_marker"), environ.get("MOLT_MEMORY_GUARD_MARKER")
+        )
+        or not _same_owned_path(str(target), environ.get(SCRATCH_ENV))
         or _identity(target) != owner["target_identity"]
     ):
         raise ValueError("scratch is not the active parent's allocation")
@@ -272,8 +358,8 @@ def _terminal(generation: Path, owner: Mapping[str, object]) -> _ScratchTerminal
         terminal.get("schema") != SCHEMA
         or terminal.get("token") != owner["token"]
         or terminal.get("target_identity") != owner["target_identity"]
-        or terminal.get("target") != owner.get("target")
-        or terminal.get("generation") != str(generation)
+        or not _same_owned_path(terminal.get("target"), owner.get("target"))
+        or not _same_owned_path(str(generation), terminal.get("generation"))
         or terminal.get("closed") is not True
         or type(success) is not bool
         or type(finished_ns) is not int
@@ -621,7 +707,7 @@ def new_guarded_directory(
     if re.fullmatch(r"[A-Za-z0-9_.-]{1,48}", prefix) is None:
         raise ValueError("scratch prefix must be a short basename")
     root = guard_scratch(repo_root, environ)
-    path = Path(tempfile.mkdtemp(prefix=prefix, dir=root))
+    path = new_temporary_directory(root, prefix=prefix)
     if resolve_owned_path(path).parent != root:
         raise ValueError("scratch helper escaped its owning allocation")
     return path

@@ -57,17 +57,15 @@ pub(super) fn validated_topology(func: &LirFunction) -> TirFunction {
             targets.push(target);
         });
         match &block.terminator {
-            LirTerminator::CondBranch { cond, .. } => {
-                if !values.contains_key(cond) {
-                    fail("branch condition value is missing");
-                }
+            LirTerminator::CondBranch { cond, .. } if !values.contains_key(cond) => {
+                fail("branch condition value is missing");
             }
-            LirTerminator::Switch { value, .. } => {
+            LirTerminator::Switch { value, .. }
                 if !values.get(value).is_some_and(|repr| {
                     matches!(repr, LirRepr::I64 | LirRepr::DynBox | LirRepr::Ref64)
-                }) {
-                    fail("switch selector requires an i64 carrier");
-                }
+                }) =>
+            {
+                fail("switch selector requires an i64 carrier");
             }
             _ => {}
         }

@@ -9,6 +9,7 @@
 //! releases it with the other mutable runtime classes.
 
 use super::*;
+use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 
 const MODULE_SPEC_INIT_ARGUMENT_NAMES: &[&[u8]] =
     &[b"self", b"name", b"loader", b"origin", b"is_package"];
@@ -20,9 +21,13 @@ fn module_spec_class(py: &PyToken<'_>) -> u64 {
         py,
         &state.module_spec_class,
         "ModuleSpec",
-        8,
-        None,
-        |_class_bits, dict_ptr| configure_module_spec_class(py, state, dict_ptr),
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::heap(false, true),
+            layout_size: 8,
+            instance_shape: None,
+            native_slots: None,
+        },
+        |class_bits, dict_ptr| configure_module_spec_class(py, state, class_bits, dict_ptr),
     )
 }
 
@@ -70,6 +75,7 @@ pub(crate) fn alloc_module_spec(
 fn configure_module_spec_class(
     py: &PyToken<'_>,
     state: &TypesRuntimeState,
+    class_bits: u64,
     dict_ptr: *mut u8,
 ) -> bool {
     let module_ptr = alloc_string(py, b"_frozen_importlib");
@@ -85,13 +91,13 @@ fn configure_module_spec_class(
     if !published {
         return false;
     }
-    let init_bits = module_spec_init_bits(py, state);
+    let init_bits = module_spec_init_bits(py, state, class_bits);
     if !set_class_method(py, dict_ptr, "__init__", init_bits) {
         return false;
     }
     let repr_bits = builtin_func_bits(
         py,
-        &state.module_spec_repr_fn,
+        NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, class_bits, "__repr__"),
         crate::builtins::functions::runtime_fn_addr(
             "molt_importlib_module_spec_repr",
             molt_importlib_module_spec_repr as *const (),
@@ -103,7 +109,7 @@ fn configure_module_spec_class(
     }
     let parent_bits = builtin_func_bits(
         py,
-        &state.module_spec_parent_fn,
+        NativeCallableSpec::function(&state.module_spec_parent_fn),
         crate::builtins::functions::runtime_fn_addr(
             "molt_importlib_module_spec_parent",
             molt_importlib_module_spec_parent as *const (),
@@ -130,7 +136,7 @@ fn configure_module_spec_class(
 /// `__init__(self, name, loader=None, origin=None, is_package=None)`: the
 /// positional-or-keyword signature every existing runtime and compiled
 /// consumer binds against.
-fn module_spec_init_bits(py: &PyToken<'_>, state: &TypesRuntimeState) -> u64 {
+fn module_spec_init_bits(py: &PyToken<'_>, state: &TypesRuntimeState, class_bits: u64) -> u64 {
     if exception_pending(py) {
         return 0;
     }
@@ -146,6 +152,20 @@ fn module_spec_init_bits(py: &PyToken<'_>, state: &TypesRuntimeState) -> u64 {
             &[none, none, none],
         );
         if bits == 0 {
+            return 0;
+        }
+        if !unsafe {
+            crate::builtins::functions::native_callable::configure_native_callable(
+                py,
+                obj_from_bits(bits).as_ptr().unwrap(),
+                NativeCallableSpec::declared(
+                    NativeCallableKind::MethodDescriptor,
+                    class_bits,
+                    "__init__",
+                ),
+            )
+        } {
+            dec_ref_bits(py, bits);
             return 0;
         }
         if !crate::builtins::methods::configure_builtin_signature(
@@ -431,22 +451,10 @@ fn append_spec_formatted_value(
         dec_ref_bits(py, formatted);
         return false;
     }
-    let Some(ptr) = obj_from_bits(formatted)
+    // Both public renderer entrypoints own callback validation and cleanup.
+    let ptr = obj_from_bits(formatted)
         .as_ptr()
-        .filter(|&ptr| unsafe { object_type_id(ptr) } == TYPE_ID_STRING)
-    else {
-        let message = if use_repr {
-            "__repr__ returned non-string".to_string()
-        } else {
-            format!(
-                "__format__ must return a str, not {}",
-                type_name(py, obj_from_bits(formatted))
-            )
-        };
-        dec_ref_bits(py, formatted);
-        let _ = raise_exception::<u64>(py, "TypeError", &message);
-        return false;
-    };
+        .expect("validated renderer string");
     out.extend_from_slice(unsafe {
         std::slice::from_raw_parts(crate::string_bytes(ptr), crate::string_len(ptr))
     });
@@ -458,12 +466,7 @@ fn append_spec_formatted_value(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_importlib_module_spec_type() -> u64 {
     crate::with_gil_entry_nopanic!(py, {
-        let class_bits = module_spec_class(py);
-        if class_bits == 0 {
-            return MoltObject::none().bits();
-        }
-        inc_ref_bits(py, class_bits);
-        class_bits
+        crate::state::cache::retain_cached_result(py, module_spec_class(py))
     })
 }
 
@@ -494,11 +497,11 @@ mod tests {
         crate::with_gil_entry_nopanic!(py, {
             if string_obj_to_owned(obj_from_bits(name_bits)).as_deref() == Some("name") {
                 let observed = str_bits(py, b"observed.leaf");
-                let result = molt_object_setattr(self_bits, name_bits, observed);
+                let result = crate::molt_object_setattr(self_bits, name_bits, observed);
                 dec_ref_bits(py, observed);
                 result
             } else {
-                molt_object_setattr(self_bits, name_bits, value_bits)
+                crate::molt_object_setattr(self_bits, name_bits, value_bits)
             }
         })
     }
@@ -518,11 +521,13 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let class = module_spec_class(py);
-            let setter = crate::builtins::methods::alloc_builtin_function(
-                py,
-                observed_setattr as *const () as usize as u64,
-                3,
-            );
+            let setter =
+                MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    crate::provenance::abi::expose_function_address(observed_setattr as *const ()),
+                    3,
+                ))
+                .bits();
             let setter_name = str_bits(py, b"__setattr__");
             inc_ref_bits(py, class);
             let _restore_class = RemoveAttribute(class, setter_name);
@@ -641,7 +646,7 @@ mod tests {
             assert_eq!(attr_text(py, keyword, b"parent"), "top");
 
             let parent_name = str_bits(py, b"parent");
-            let _ = molt_object_setattr(keyword, parent_name, name);
+            let _ = molt_set_attr_name(keyword, parent_name, name);
             assert!(exception_pending(py), "parent is a read-only property");
             clear_exception(py);
 

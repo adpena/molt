@@ -39,8 +39,8 @@ molt-codegen-abi = { path = "../molt-codegen-abi" }
 # value-range) that molt-tir exposes only under #[cfg(any(test, feature = "test-util"))].
 molt-tir = { path = "../molt-tir", features = ["test-util"] }
 molt-backend-wasm = { path = "../molt-backend-wasm", default-features = false, features = ["test-util"] }
-wasm-encoder = "0.252.0"
-wasmparser = "0.252.0"
+wasm-encoder = "0.259.0"
+wasmparser = "0.259.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = { version = "0.33", optional = true }

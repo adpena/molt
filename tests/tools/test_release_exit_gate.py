@@ -15,6 +15,7 @@ from molt.verified_subset import load_verified_subset_policy
 from tests.process_guard_common import run_guarded_test_process
 from tests.tools.verified_subset_fixtures import synthetic_validation
 from tests.tools.receipt_engine_fixtures import install_observed_runtime
+from tests.tools.perf_scoreboard_fixtures import write_synthetic_build_observation
 from tools import perf_scoreboard, release_exit_gate, verified_subset
 from tools.compat import comparison, test_policy
 
@@ -221,12 +222,19 @@ def _write_e1_receipt(
     return receipt_path
 
 
-def _scoreboard_cell(gate, benchmark: str, backend: str) -> dict[str, object]:
+def _scoreboard_cell(
+    gate, benchmark: str, backend: str, *, observation_root: Path
+) -> dict[str, object]:
     return {
         "benchmark": benchmark,
         "target": "native",
         "backend": backend,
         "profile": gate.pa.CANONICAL_PERF_PROFILE,
+        "build_observation": write_synthetic_build_observation(
+            observation_root / backend / f"{Path(benchmark).stem}.fixture",
+            target="native",
+            profile=gate.pa.CANONICAL_PERF_PROFILE,
+        ),
         "build_ok": True,
         "run_blocked": False,
         "molt_ok": True,
@@ -303,6 +311,7 @@ def _write_scoreboard(
                             gate,
                             benchmark,
                             backend,
+                            observation_root=path.parent / "build-observations",
                         )
                     }
                     for backend in backends
@@ -1111,16 +1120,12 @@ def test_assembly_rejects_unadmitted_e2_toolchains(
     payload = _read(inputs["e2_scoreboard"])
     if forged_verified:
         for cell in gate.pa.perf_schema.flatten_cells(payload):
-            cell["build_observation"] = {
-                "kind": "molt-build-observation-v1",
-                "compiled_with_verified": True,
-            }
+            cell["build_observation"]["compiled_with_verified"] = True
+    assert gate.pa.canonical_scoreboard_shape_problems(payload) == []
     _write(inputs["e2_scoreboard"], payload)
     with pytest.raises(ValueError, match="invalid E2 scoreboard") as exc_info:
         gate.assemble_release_bundle(**inputs)
-    assert "observation is missing" in str(
-        exc_info.value
-    ) or "used-byte admission receipt is unavailable" in str(exc_info.value)
+    assert "used-byte admission receipt is unavailable" in str(exc_info.value)
 
 
 def test_verification_rejects_unadmitted_e2_toolchains(tmp_path, monkeypatch):
@@ -1132,6 +1137,6 @@ def test_verification_rejects_unadmitted_e2_toolchains(tmp_path, monkeypatch):
     report = gate.verify_release_bundle(manifest, repo_root=REPO_ROOT, now=NOW)
     assert report.passed is False
     assert any(
-        "E2:" in problem and "observation is missing" in problem
+        "E2:" in problem and "used-byte admission receipt is unavailable" in problem
         for problem in report.problems
     )

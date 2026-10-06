@@ -13,6 +13,33 @@ Formal schema for the SimpleIR interchange format between the Python frontend
 
 ## Transport Formats
 
+Saved-state dispatch uses `state_switch.state_targets`, an array of
+`[saved_state_id, control_label_id]` pairs projected from TIR `StateDispatch`.
+Saved states and control labels are separate identities; multiple states may
+target one label. State IDs must be unique and each target label must exist
+exactly once. An explicit empty array means no resume cases. Source IR may omit
+the map before CFG lifting; terminal lowering always emits it, and code generation
+must not reconstruct it from suspension syntax or physical instruction order.
+When suspension operations remain, an explicit map must include the saved state
+of every executable `state_yield` and the pending-state operand of every executable
+`state_transition`. The ready/running state is not a resume requirement. An empty
+map remains valid when no suspension can execute; unreachable suspension syntax
+does not create cases. Missing cases are rejected, never filled by inference.
+The map participates in the same serialized operation and function identity as
+every other semantic IR field.
+
+Terminal ownership lowers `state_yield` and `state_transition` to ordinary
+returns and branches plus `state_set` (raw integer saved state), `is_pending`
+(exact pending-sentinel predicate), and `task_wait` (existing scheduler wait
+registration). These primitives do not terminate the activation or manage
+invocation references. Shared DropInsertion owns those references; frame
+`closure_store`/`closure_load` own persistence across invocations.
+
+`molt build --emit-ir` writes the exact prepared backend input, including module
+registry and all control-flow references. It does not renumber labels or saved
+states for display: emitted IR must remain replayable, and diagnostic formatting
+must not change the program being inspected.
+
 ### Batch JSON
 
 Single JSON object containing all functions:
@@ -74,6 +101,7 @@ only the remaining functions; hotness cannot replace semantic entry identity.
 | `return_abi`  | `"void" \| "value"` | yes | Immutable linkage return convention, independent of body exits |
 | `ops`         | `OpIR[]`   | yes      | Ordered instruction sequence                          |
 | `param_types` | `string[]?`| no       | Optional type annotations parallel to `params`        |
+| `parameter_custody` | `("borrowed" \| "transferred")[]` | no | Entry custody parallel to `params`; absent means every parameter is borrowed |
 
 The frontend may also emit `borrowed_params` (list of param names eligible for
 Perceus-style borrow elision), but the backend does not require it.
@@ -86,6 +114,27 @@ in a void function it has no machine result. A value payload in a void function
 is invalid. Removing every value-returning path, including making the whole body
 unreachable, does not change the calling convention. Missing or unknown ABI
 values are rejected, not reconstructed from the body.
+
+Whole-function verification rejects every entry-reachable executable transfer
+past the operation stream. Completion follows the canonical operation-level CFG,
+not the last lexical instruction: both arms may return before a trailing `end_if`,
+and a non-returning cycle has no falloff. Loop latches and TRY registration edges
+retain their executable-versus-verifier distinction. Conditional fallthrough,
+loop breaks, dispatch defaults, and missing source resume continuations are real
+exits and cannot be lost when projecting edges onto operation indices. Partial
+control-flow admission validates structure and labels without requiring complete
+function exits. Explicit `state_targets` maps feed that same CFG authority and the
+SSA block projection; suspension itself does not dispatch to every resume target.
+
+`parameter_custody` declares, per parameter, who holds the argument's
+reference (design 20 §1.6). A `transferred` argument moves into the
+activation, which releases it at the binding's Python boundaries; a
+`borrowed` one stays the caller's. The field names every parameter and at
+least one `transferred` entry, never on the closure parameter; all-borrowed
+custody is the absent field. It belongs to the function contract (version 3),
+so every cache digest covers it. An extern declaration, a megafunction stub
+and a native linkage row keep it, and megafunction chunks borrow every
+parameter.
 
 An `is_extern: true` declaration has empty `ops` and retains the same explicit
 signature fields. Extern bodies do not carry synthetic `missing`/`ret` signature
@@ -161,6 +210,7 @@ site collisions must not substitute an attribute or an instance's value.
 | `native_callable_binding` | `string?` | `null` | Native binding mode on `invoke_ffi`; public callable wrappers and internal bootstrap calls use `direct_symbol` |
 | `native_callable_symbol` | `string?` | `null` | Required direct native symbol when `native_callable_binding` is `direct_symbol` |
 | `native_callable_abi` | `string?` | `null` | ABI contract token for the native callable export |
+| `argument_custody` | `("borrowed" \| "transferred")[]?` | `null` | Source call operand custody parallel to `args`; the instruction adopts each `transferred` operand |
 
 `fast_int`, `fast_float`, and `type_hint` exist to describe
 compatibility metadata on the current backend transport. New lowering work
@@ -187,6 +237,19 @@ symbol identity. The source of these roles and requirements is
 `runtime/molt-ir/src/tir/op_kinds.toml`, consumed through `OpIR` admission.
 
 - `param_types`, when present, must have the same length as `params`.
+- `parameter_custody`, when present, has one entry per parameter, names at
+  least one `transferred` entry, and never transfers the closure parameter.
+- `argument_custody` is admitted only on source call spellings with a
+  `[[source_call_kind]]` row in `op_kinds.toml`, and names every `args`
+  position and at least one transfer.
+  - A raw direct call (`call`, `call_internal`) to a function in the
+    document carries exactly its target's parameter custody, skipping a
+    leading closure parameter, and a `call` to a runtime entry carries none.
+  - A dynamic source call transfers every argument, and never an operand
+    before the row's `first_adopted_operand` (a `super()` class). It
+    transfers the row's `callable_operand` as well, except that a
+    `call_bind` or `call_indirect` whose builder's `callargs_new` has the
+    `expanded` call form borrows its callable.
 - `fast_int` and `fast_float` cannot both be `true` on the same op.
 - `fast_int` / `fast_float` are accepted only on op families that own scalar
   specialization. Generic calls and container mutators must not smuggle scalar
@@ -265,11 +328,20 @@ canonical set grouped by category.
 | `const_bigint`     | `s_value`, `out`                   | Arbitrary-precision integer as decimal string |
 | `const_bool`       | `value` (0 or 1), `out`           | Boolean constant                     |
 | `const_float`      | `f_value`, `out`                   | Float constant (non-finite as string) |
-| `const_str`        | `s_value` or `bytes`, `out`        | String constant. Uses `bytes` for surrogate content |
+| `const_str`        | `s_value` or `bytes`, `out`        | String constant; lossless surrogatepass UTF-8 bytes for surrogate content |
 | `const_bytes`      | `bytes`, `out`                     | Bytes literal                        |
 | `const_none`       | `out`                              | `None` singleton                     |
 | `const_ellipsis`   | `out`                              | `Ellipsis` singleton                 |
 | `const_not_implemented` | `out`                         | `NotImplemented` singleton           |
+
+The shared `molt-ir::literal_payload` authority admits and projects string,
+bytes, and bigint literal payloads through SimpleIR, TIR, optimization, and
+native/LLVM/WASM materializers. Empty `s_value` and empty `bytes` are present
+payloads; an absent payload is malformed IR. NUL and surrogatepass bytes retain
+their exact length and contents across every lift and lowering. A string with
+both carriers must have equal bytes; conflicting carriers are rejected. TIR
+uses the same `s_value`/`bytes` names, never an implicit `value` fallback.
+`const_bytes` requires `bytes`; `const_bigint` requires decimal `s_value`.
 
 **Example:**
 ```json
@@ -413,7 +485,6 @@ user call site that invokes that wrapper as a normal Python callable.
 | `exception_last`            | `out`                 | Get current exception                |
 | `exception_clear`           | `out`                 | Clear current exception              |
 | `exception_set_last`        | `args` [exc], `out`   | Set current exception                |
-| `exception_set_cause`       | `args` [exc, cause], `out` | Set `__cause__` (raise from)    |
 | `exception_context_set`     | `args` [exc], `out`   | Set `__context__`                    |
 | `exception_kind`            | `args` [exc], `out`   | Get exception type tag               |
 | `exception_class`           | `args` [exc], `out`   | Get exception class                  |
@@ -499,7 +570,7 @@ List: `list_append`, `list_pop`, `list_extend`, `list_insert`, `list_remove`,
 Dict: `dict_get`, `dict_set`, `dict_pop`, `dict_setdefault`,
 `dict_setdefault_empty_list`, `dict_update`, `dict_update_missing`,
 `dict_update_kwstar`, `dict_clear`, `dict_copy`, `dict_popitem`, `dict_keys`,
-`dict_values`, `dict_items`, `dict_inc`, `dict_str_int_inc`.
+`dict_values`, `dict_items`, `dict_str_int_inc`.
 
 Set: `set_add`, `set_discard`, `set_remove`, `set_pop`, `set_update`,
 `set_intersection_update`, `set_difference_update`, `set_symdiff_update`,
@@ -539,13 +610,13 @@ All use the standard `args` + `out` pattern.
 | `repr_from_obj`       | `args`, `out`                 | repr(obj)                |
 | `ascii_from_obj`      | `args`, `out`                 | ascii(obj)               |
 | `int_from_obj`        | `args`, `out`                 | int(obj)                 |
+| `operator_index`      | `args`, `out`                 | operator.index(obj): range()'s bound conversion, an exact int |
 | `float_from_obj`      | `args`, `out`                 | float(obj)               |
 | `complex_from_obj`    | `args`, `out`                 | complex(obj)             |
 | `bytes_from_obj`      | `args`, `out`                 | bytes(obj)               |
 | `bytes_from_str`      | `args`, `out`                 | str.encode()             |
 | `bytearray_from_obj`  | `args`, `out`                 | bytearray(obj)           |
 | `bytearray_from_str`  | `args`, `out`                 | bytearray from str       |
-| `intarray_from_seq`   | `args`, `out`                 | Internal int array       |
 | `len`                 | `args`, `out`                 | len(obj)                 |
 | `id`                  | `args`, `out`                 | id(obj)                  |
 | `ord`                 | `args`, `out`                 | ord(ch)                  |
@@ -596,7 +667,7 @@ All use the standard `args` + `out` pattern.
 |---------------------------|------------------------------------------|--------------------------------|
 | `func_new`                | `s_value` (name), `value` (arity), `out`, optional paired `task_kind` / `task_closure_size` | Create function object |
 | `func_new_closure`        | `s_value`, `value`, `args` [closure], `out`, optional paired `task_kind` / `task_closure_size` | Create closure |
-| `builtin_func`            | `s_value` (name), `value` (arity), `out` | Reference to built-in function |
+| `builtin_func`            | `s_value` (runtime symbol), `value` (arity), `out`, paired `builtin_name` / `args` [name] | Acquire a public builtin binding or construct a runtime callable |
 | `code_new`                | `args`, `out`                            | Create code object             |
 | `code_slot_set`           | `value` (code_id), `args` [code_obj, globals_dict] | Bind owned code and lexical namespace in slot table |
 | `code_slots_init`         | `value` (count)                          | Initialize code slot table     |
@@ -605,6 +676,12 @@ All use the standard `args` + `out` pattern.
 | `property_new`            | `args`, `out`                            | Create property descriptor     |
 | `bound_method_new`        | `args`, `out`                            | Create bound method            |
 | `function_closure_bits`   | `args`, `out`                            | Closure capture bitmap         |
+
+`builtin_name` and the single executable name operand are inseparable: neither
+may appear without the other. Public builtin acquisition and named runtime
+construction use this encoding; unnamed runtime constructors carry neither.
+The shared SimpleIR/TIR conversion preserves the pair through every optimization
+roundtrip, before native, LLVM, WASM, Luau, or Rust admission and emission.
 
 ### Module
 
@@ -653,15 +730,14 @@ All use the standard `args` + `out` pattern.
 | `yield`            | --                   | Generator yield          |
 | `yield_from`       | --                   | Generator yield from     |
 | `is_native_awaitable` | `args`, `out`     | Check if native awaitable |
-| `gen_locals_register` | `s_value`, `args`  | Register generator locals |
-| `asyncgen_locals_register` | `s_value`, `args` | Register async gen locals |
+| `stateful_locals_register` | `s_value`, `args` | Register the typed public-locals layout of a generator, coroutine, async generator or generator expression; layout is `(parameter_count, offsets, cell_ordinals, closure_offset)`, with `-1` for raw bindings and contiguous cell publication ordinals |
 
 ### Guard and Deopt
 
 | kind             | Fields used   | Description                     |
 |------------------|---------------|---------------------------------|
-| `guard_type`     | `args`        | Deopt if type mismatch          |
-| `guard_tag`      | `args`        | Deopt if NaN-box tag mismatch   |
+| `guard_type`     | `args`        | Read value and expected tag; profile mismatch and return the original value |
+| `guard_tag`      | `args`        | Same runtime contract as `guard_type`; rejected expected tags raise |
 | `guard_dict_shape` | `args`, `out` | Deopt if dict shape changed   |
 | `type_guard`     | --            | Generic type guard              |
 
@@ -669,27 +745,28 @@ All use the standard `args` + `out` pattern.
 
 | kind                    | Fields used   | Description              |
 |-------------------------|---------------|--------------------------|
-| `callargs_new`          | `out`         | Create CallArgs builder  |
+| `callargs_new`          | `out`, `s_value` | Create CallArgs builder. `s_value` is `"expanded"` at a CALL_FUNCTION_EX call site and absent at a CALL call site; no other value is valid |
 | `callargs_push_pos`     | `args`, `out` | Push positional arg      |
 | `callargs_push_kw`      | `args`, `out` | Push keyword arg         |
 | `callargs_expand_star`  | `args`, `out` | Expand *args             |
 | `callargs_expand_kwstar`| `args`, `out` | Expand **kwargs          |
 
-### Vectorized Intrinsics
+### Fused Loops
 
-Fused loop intrinsics for common patterns:
+A fused op runs items of a Python loop, or a statement, in a runtime kernel,
+which admits the values the code reads or declines; the ordinary lowering is
+emitted after or beside it (see `0190_LOWERING_RULES.md`, "Fused loops"). A
+reduction runs one bounded chunk of its loop's iterator per call, inside a
+chunk loop whose back edge observes pending asynchronous work: `count` items
+consumed, `result` and `last` the accumulator and loop target after them, and
+`more` true when the chunk ended at its size bound.
 
-`vec_sum_int`, `vec_sum_int_trusted`, `vec_sum_int_range`,
-`vec_sum_int_range_trusted`, `vec_sum_int_range_iter`,
-`vec_sum_int_range_iter_trusted`, `vec_sum_float`, `vec_sum_float_trusted`,
-`vec_sum_float_range`, `vec_sum_float_range_trusted`,
-`vec_sum_float_range_iter`, `vec_sum_float_range_iter_trusted`,
-`vec_prod_int`, `vec_prod_int_trusted`, `vec_prod_int_range`,
-`vec_prod_int_range_trusted`, `vec_min_int`, `vec_min_int_trusted`,
-`vec_min_int_range`, `vec_min_int_range_trusted`, `vec_max_int`,
-`vec_max_int_trusted`, `vec_max_int_range`, `vec_max_int_range_trusted`.
-
-All use the standard `args` + `out` pattern.
+| kind                        | `args`                                        | `out`                  |
+|-----------------------------|-----------------------------------------------|------------------------|
+| `vec_sum`, `vec_prod`, `vec_min`, `vec_max` | [it, acc, target_old] | tuple (result, last, count, more) |
+| `string_split_ws_dict_inc`  | [line, dict, delta, target_old]               | tuple (last, ok)       |
+| `string_split_sep_dict_inc` | [line, sep, dict, delta, target_old]          | tuple (last, ok)       |
+| `dict_str_int_inc`          | [dict, key, delta]                            | bool: the statement ran |
 
 ### Miscellaneous
 
@@ -698,7 +775,8 @@ All use the standard `args` + `out` pattern.
 | `nop`               | --                    | No operation                     |
 | `line`              | `value` (line number) | Source line mapping               |
 | `trace_enter_slot`  | `value` (slot)        | Attempt frame entry; next `check_exception` owns failure cleanup |
-| `trace_exit`        | --                    | Exit trace                       |
+| `trace_exit`        | --                    | Mark the authored normal frame exit; backend activation cleanup consumes ownership |
+| `frame_context_set` | `args` (exactly 3) | Publish argument-zero value, boxed argument kind, and class cell; no result |
 | `frame_locals_set`  | `args`                | Set frame locals dict            |
 | `copy`              | --                    | SSA copy / variable alias        |
 | `identity_alias`    | `args`, `out`         | Identity alias (no-op copy)      |
@@ -720,9 +798,14 @@ All use the standard `args` + `out` pattern.
 | `buffer2d_get`      | `args`, `out`         | Get from 2D buffer               |
 | `buffer2d_set`      | `args`, `out`         | Set in 2D buffer                 |
 | `buffer2d_matmul`   | `args`, `out`         | 2D buffer matrix multiply        |
-| `taq_ingest_line`   | `args`, `out`         | TAQ data ingestion               |
 | `state_block_start` | --                    | State machine block start        |
 | `state_block_end`   | --                    | State machine block end          |
+
+State-machine poll completion follows the explicit IR continuation, including
+its exception matching, clearing and propagation operations. A backend must not
+infer an exception destination by scanning ahead for a later `check_exception`:
+that would bypass protocol handling such as async iteration termination and
+change which surrounding handler observes the exception.
 
 Codec and buffer operations act on runtime values; they do not make Python
 module names compiler syntax. `molt_json`, `molt_msgpack`, `molt_cbor`, and
@@ -843,3 +926,53 @@ Unknown kind strings fall through to `Copy` (no-op).
   ]
 }
 ```
+
+
+Stateful frame locals use the registered layout at constructor, prologue,
+suspension, live-frame observation and traceback capture. A single monotonic
+phase in the existing task sidecar records body-slot initialization and cell
+publication. The compiler's prologue calls `molt_frame_locals_begin` once to
+initialize every nonparameter public slot to missing, then calls
+`molt_frame_cell_publish(offset, cell)` in layout ordinal order. Cell storage
+and phase advance publish before displaced owners are released. Raw arguments
+that happen to be Python cells remain raw until their own publication.
+
+The compiled frame retains its activation through the existing invocation
+handoff. Observations project locals after retaining frame edges and releasing
+stack borrows. Tracebacks own projected dictionaries, including while a live
+frame unwinds after terminal state was set. Suspended terminal views are empty.
+Ordinary functions without a stateful payload retain their existing compiler
+locals-publication contract; no slot layout is invented for stack-only storage.
+
+Explicit source raises evaluate the exception and cause expressions in that order,
+then call `molt_exception_prepare_raise(exc, cause_or_missing)`. This owned-result
+boundary constructs exception classes, validates instances and explicit causes,
+and publishes `__cause__` before instance-only context, traceback or deferred
+pending-state operations. MISSING means no `from` clause; None suppresses context.
+Runtime class ingress shares the same normalization authority. Throw retains its
+distinct class/value/traceback restoration protocol. Both source raise and throw
+injection call `molt_exception_trace_prepend` before publishing an already-traced exception. Bare reraises and pending-state
+transport preserve the existing traceback. The same prefix constructor accepts
+lazy or already-observed tails; materialization preserves eager tail identity.
+
+Cold module chunks retain the same producer-derived scalar and container facts
+as other functions. Suppressing their raw-primary carriers is an optimization
+policy, not permission to erase semantic provenance used by target admission.
+In particular, identity against a proven None singleton remains admissible on
+Luau; this does not admit unknown numeric identity or integer arithmetic without
+the target's required exact numeric authority.
+The preserved frontend `iter` spelling and typed `get_iter` projection both
+require the canonical iterable/sequence protocol; neither is runtime-neutral.
+Luau local-frame cookies are owned by the function scope, including context,
+entry depth, code and coroutine owner. Operation capture closures and dispatch
+blocks assign that cookie rather than shadow it, so later source updates and
+frame exit observe the same entry.
+
+
+`frame_context_set` requires internal execution-frame support. Its three boxed
+operands are borrowed; the runtime retains the active frame owners. It has no
+SSA result (the backend ABI returns borrowed `None`), may raise, and can access
+arbitrary heap state through displaced-owner finalizers. It does not create a
+Python call-return scheduling boundary or an implicit exception transfer. The
+`molt_frame_context_set` export is backend-only: generic call and callable
+acquisition carriers must use the typed operation instead.

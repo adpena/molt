@@ -258,14 +258,17 @@ fn bind(function: u64, positional: &[i64], keywords: &[(&str, i64)]) -> u64 {
 }
 
 fn defining_class() -> u64 {
-    with_gil(|py| {
+    with_gil(|py| unsafe {
         let name = alloc_string(&py, b"DefiningClass");
         assert!(!name.is_null());
         let name_bits = MoltObject::from_ptr(name).bits();
-        let class = crate::object::builders::alloc_class_obj(&py, name_bits);
+        let class = crate::molt_class_new(name_bits);
         dec_ref_bits(&py, name_bits);
-        assert!(!class.is_null());
-        MoltObject::from_ptr(class).bits()
+        let class_ptr = MoltObject::from_bits(class).as_ptr().unwrap();
+        crate::molt_class_set_base(class, crate::builtin_classes(&py).object);
+        crate::object::class_finish_definition(&py, class_ptr).unwrap();
+        assert!(!crate::exception_pending(&py));
+        class
     })
 }
 
@@ -309,7 +312,8 @@ unsafe fn assert_callable_class_identity(callable: *mut PyObject, is_method: boo
             let name = alloc_string(&py, hidden);
             assert!(!name.is_null());
             let name_bits = MoltObject::from_ptr(name).bits();
-            let result = hook_object_get_attr(bits, name_bits);
+            let result =
+                hook_object_get_attr(bits, name_bits, AttributeAccess::Normal, ptr::null(), false);
             dec_ref_bits(&py, name_bits);
             assert!(matches!(result.decode(), DecodedHandleResult::Error));
             assert!(crate::exception_pending(&py));
@@ -330,8 +334,9 @@ fn runtime_builtin_callable_has_safe_semantic_vectorcall_storage() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(register_cpython_hooks());
     with_gil(|py| unsafe {
+        let _provider = crate::test_support::NativeProviderTestNamespace::new(&py, "builtins");
         // A genuine runtime builtin has no PyMethodDef/native C callback.
-        let bits = crate::builtins::functions::python_builtin_function_bits(&py, "len")
+        let bits = crate::builtins::functions::lookup_builtin_name(&py, "len")
             .expect("canonical len builtin");
         assert_eq!(hook_classify_heap(bits), MoltTypeTag::BuiltinCallable as u8);
         let callable = molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(bits);
@@ -527,6 +532,171 @@ fn cext_all_conventions_use_runtime_binding_and_ordered_keyword_transport() {
         unsafe { hook_dec_ref(function) };
     }
     unsafe { hook_dec_ref(class) };
+}
+
+#[test]
+fn cext_fixed_conventions_reject_wrong_widths_across_call_routes() {
+    use crate::call::function;
+    use crate::concurrency::execution::{
+        RuntimeExecutionGuard, current_thread_has_c_extension_execution_context,
+    };
+    use molt_cpython_abi::api::{errors, object, refcount, typeobj};
+
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    assert!(register_cpython_hooks());
+    with_gil(|py| unsafe {
+        for (flags, target, width, expected) in [
+            (
+                METH_NOARGS,
+                noargs as *const (),
+                1,
+                "convention_probe() takes no arguments (1 given)",
+            ),
+            (
+                METH_O,
+                one as *const (),
+                0,
+                "convention_probe() takes exactly one argument (0 given)",
+            ),
+            (
+                METH_O,
+                one as *const (),
+                2,
+                "convention_probe() takes exactly one argument (2 given)",
+            ),
+        ] {
+            let callable_bits = register(target, flags, MoltObject::none().bits());
+            assert_ne!(callable_bits, 0);
+            let callable = refcount::OwnedPyObject::from_owned(
+                cext_new_pyobject_from_borrowed_bits(callable_bits),
+            );
+            assert!(!callable.as_ptr().is_null());
+            let positional = [10, 20];
+            let args: Vec<_> = positional[..width]
+                .iter()
+                .map(|&value| MoltObject::from_int(value).bits())
+                .collect();
+            let tuple =
+                refcount::OwnedPyObject::from_owned(sequences::PyTuple_New(width as Py_ssize_t));
+            assert!(!tuple.as_ptr().is_null());
+            for (index, &value) in positional[..width].iter().enumerate() {
+                let value = numeric::PyLong_FromLongLong(value);
+                assert!(!value.is_null());
+                assert_eq!(
+                    sequences::PyTuple_SetItem(tuple.as_ptr(), index as Py_ssize_t, value),
+                    0
+                );
+            }
+            let mut c_args: Vec<_> = (0..width)
+                .map(|index| sequences::PyTuple_GetItem(tuple.as_ptr(), index as Py_ssize_t))
+                .collect();
+            for admitted in [false, true] {
+                let _execution = admitted.then(RuntimeExecutionGuard::enter);
+                for route in [
+                    "fixed",
+                    "bound-vector",
+                    "runtime-vector",
+                    "trampoline",
+                    "binder",
+                    "abi-tuple",
+                    "abi-vector",
+                    "abi-vectorcall-tuple",
+                ] {
+                    OBSERVED.with(|slot| *slot.borrow_mut() = None);
+                    let runtime_result = match route {
+                        "fixed" => Some(match width {
+                            0 => function::call_function_obj0(&py, callable_bits),
+                            1 => function::call_function_obj1(&py, callable_bits, args[0]),
+                            2 => function::call_function_obj2(&py, callable_bits, args[0], args[1]),
+                            _ => unreachable!(),
+                        }),
+                        "bound-vector" => Some(function::call_function_obj_bound_vec(
+                            &py,
+                            callable_bits,
+                            &args,
+                        )),
+                        "runtime-vector" => {
+                            Some(function::call_function_obj_vec(&py, callable_bits, &args))
+                        }
+                        "trampoline" => Some(function::call_function_obj_trampoline(
+                            &py,
+                            callable_bits,
+                            &args,
+                        )),
+                        "binder" => Some(bind(callable_bits, &positional[..width], &[])),
+                        _ => {
+                            let result = match route {
+                                "abi-tuple" => object::PyObject_Call(
+                                    callable.as_ptr(),
+                                    tuple.as_ptr(),
+                                    ptr::null_mut(),
+                                ),
+                                "abi-vector" => object::PyObject_Vectorcall(
+                                    callable.as_ptr(),
+                                    c_args.as_mut_ptr(),
+                                    width,
+                                    ptr::null_mut(),
+                                ),
+                                "abi-vectorcall-tuple" => object::PyVectorcall_Call(
+                                    callable.as_ptr(),
+                                    tuple.as_ptr(),
+                                    ptr::null_mut(),
+                                ),
+                                _ => unreachable!(),
+                            };
+                            assert!(
+                                result.is_null(),
+                                "{route}: flags={flags:#x}, admitted={admitted}"
+                            );
+                            None
+                        }
+                    };
+                    if let Some(result) = runtime_result {
+                        dec_ref_bits(&py, result);
+                    }
+                    assert!(
+                        OBSERVED.with(|slot| slot.borrow().is_none()),
+                        "{route}: flags={flags:#x}, admitted={admitted}",
+                    );
+                    {
+                        let error =
+                            refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
+                        assert!(
+                            !error.as_ptr().is_null(),
+                            "{route}: flags={flags:#x}, admitted={admitted}"
+                        );
+                        let class = refcount::OwnedPyObject::from_owned(typeobj::PyObject_Type(
+                            error.as_ptr(),
+                        ));
+                        assert_eq!(
+                            class.as_ptr(),
+                            (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast()
+                        );
+                        let message = refcount::OwnedPyObject::from_owned(typeobj::PyObject_Str(
+                            error.as_ptr(),
+                        ));
+                        assert!(!message.as_ptr().is_null());
+                        let text = strings::PyUnicode_AsUTF8(message.as_ptr());
+                        assert!(!text.is_null());
+                        assert_eq!(
+                            CStr::from_ptr(text).to_bytes(),
+                            expected.as_bytes(),
+                            "{route}: flags={flags:#x}, admitted={admitted}",
+                        );
+                    }
+                    assert!(errors::PyErr_Occurred().is_null());
+                    assert!(!crate::exception_pending(&py));
+                    assert_eq!(current_thread_has_c_extension_execution_context(), admitted);
+                }
+            }
+            drop(tuple);
+            drop(callable);
+            dec_ref_bits(&py, callable_bits);
+        }
+        assert!(errors::PyErr_Occurred().is_null());
+        assert!(!crate::exception_pending(&py));
+        assert!(!current_thread_has_c_extension_execution_context());
+    });
 }
 
 #[test]

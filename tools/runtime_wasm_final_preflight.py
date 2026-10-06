@@ -36,6 +36,7 @@ from molt.path_custody import (
     canonical_host_path,
     host_path_is_within,
 )
+from tools.memory_guard_core.active_custody import read_marker_records
 
 try:
     from tools.command_execution import CommandExecutor
@@ -47,9 +48,6 @@ SCHEMA = "molt.runtime-wasm-final-preflight.v2"
 _COMMANDS = CommandExecutor.for_file(__file__)
 _GIT_TIMEOUT_SECONDS = 30.0
 _COMPILER_MUTEX = "compiler-build-resource"
-_TERMINAL_GUARD_STATUSES = frozenset(
-    {"completed", "finalizer_completed", "spawn_failed"}
-)
 _BUILD_TOOL_NAMES = frozenset(
     {
         "cargo",
@@ -293,24 +291,26 @@ def _active_build_guards(
 ) -> list[dict[str, object]]:
     conflicts: list[dict[str, object]] = []
     for marker_dir in marker_dirs:
-        for marker in sorted(marker_dir.glob("guard-*.json")):
-            try:
-                payload = json.loads(marker.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+        try:
+            records = read_marker_records(marker_dir)
+        except (OSError, ValueError) as exc:
+            conflicts.append({"marker": os.fspath(marker_dir), "error": str(exc)})
+            continue
+        for record in records:
+            marker = record.path
+            if record.error is not None or record.payload is None:
+                conflicts.append({"marker": os.fspath(marker), "error": record.error})
                 continue
-            if not isinstance(payload, dict):
-                continue
-            status = str(payload.get("status", ""))
-            if status in _TERMINAL_GUARD_STATUSES:
+            payload = record.payload
+            status = record.status
+            if record.terminal:
                 continue
             command = payload.get("command")
             launch_command = payload.get("launch_command")
             if not (_is_build_command(command) or _is_build_command(launch_command)):
                 continue
-            try:
-                pid = int(payload.get("pid", 0))
-            except (TypeError, ValueError):
-                pid = 0
+            assert record.guard is not None
+            pid = record.guard.pid
             if pid not in live_pids or pid in exclude_pids:
                 continue
             conflicts.append(

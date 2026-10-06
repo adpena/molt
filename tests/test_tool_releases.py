@@ -41,6 +41,31 @@ def test_repository_manifest_pins_every_host_asset_of_wasm_tools() -> None:
     assert release.provenance.kind == tool_releases.PROVENANCE_GITHUB_RELEASE
 
 
+def test_repository_manifest_pins_lune_for_every_ci_host() -> None:
+    release = tool_releases.tool_release("lune", ROOT)
+    assert release.version == "0.10.5"
+    assert release.executable == "lune"
+    assert release.provenance.kind == tool_releases.PROVENANCE_GITHUB_RELEASE
+    assert release.provenance.release_id == 348167792
+    assert release.provenance.url == (
+        "https://api.github.com/repos/lune-org/lune/releases/tags/v0.10.5"
+    )
+    assert set(release.assets) == {
+        f"{architecture}-{system}"
+        for architecture in ("x86_64", "aarch64")
+        for system in ("windows", "linux", "macos")
+    }
+    for key, asset in release.assets.items():
+        architecture, system = key.split("-", 1)
+        assert asset.url == (
+            "https://github.com/lune-org/lune/releases/download/v0.10.5/"
+            f"lune-0.10.5-{system}-{architecture}.zip"
+        )
+        assert asset.archive_member == ("lune.exe" if system == "windows" else "lune")
+        assert asset.size > 0
+        assert len(asset.sha256) == 64
+
+
 def test_repository_manifest_pins_node_from_the_official_distribution() -> None:
     release = tool_releases.load_tool_releases(ROOT)["node"]
     assert release.provenance.kind == tool_releases.PROVENANCE_CHECKSUM_MANIFEST
@@ -297,11 +322,8 @@ def test_pinned_executable_prefers_a_provisioned_release(
     assert tool_releases.pinned_executable("node", ROOT) == executable
 
 
-def test_cli_exports_only_attested_tool_directory(tmp_path: Path, monkeypatch) -> None:
-    from types import SimpleNamespace
-    import molt.dx
-
-    release, archive = _pinned_release(tmp_path, b"verified tool bytes")
+def _installed_demo(tmp_path, monkeypatch):
+    release, archive = _pinned_release(tmp_path, b"managed executable generation")
     downloads = tmp_path / "downloads"
     downloads.mkdir()
     (downloads / archive.name).write_bytes(archive.read_bytes())
@@ -309,11 +331,101 @@ def test_cli_exports_only_attested_tool_directory(tmp_path: Path, monkeypatch) -
     discovery = tool_releases.provision_tool(
         release, toolchain_root, downloads=downloads
     )
+    from types import SimpleNamespace
+
     monkeypatch.setattr(
-        molt.dx,
-        "checkout_custody",
-        lambda _root: SimpleNamespace(toolchain_root=toolchain_root),
+        "molt.dx.checkout_custody",
+        lambda *_a, **_k: SimpleNamespace(toolchain_root=toolchain_root),
     )
+    return discovery
+
+
+def test_required_tool_ignores_ambient_path_and_never_provisions(tmp_path, monkeypatch):
+    discovery = _installed_demo(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        tool_releases.shutil, "which", lambda *_a, **_k: pytest.fail("ambient PATH")
+    )
+    monkeypatch.setattr(
+        tool_releases,
+        "provision_tool",
+        lambda *_a, **_k: pytest.fail("implicit install"),
+    )
+    assert tool_releases.require_pinned_tool("demo", tmp_path) == discovery
+    discovery.executable.unlink()
+    with pytest.raises(
+        tool_releases.ToolReleaseError, match="attested toolchain custody"
+    ):
+        tool_releases.require_pinned_tool("demo", tmp_path)
+
+
+def test_pinned_tool_runner_preserves_guard_options_and_exact_entrypoint(
+    tmp_path, monkeypatch
+):
+    discovery = _installed_demo(tmp_path, monkeypatch)
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append((argv, kwargs))
+        return "validated"
+
+    assert (
+        tool_releases.run_pinned_tool(
+            "demo",
+            ["validate", "guest.wasm"],
+            run=run,
+            repo_root=tmp_path,
+            memory_guard_prefix="MOLT_BUILD",
+            timeout=60,
+        )
+        == "validated"
+    )
+    assert seen == [
+        (
+            [str(discovery.executable), "validate", "guest.wasm"],
+            {"memory_guard_prefix": "MOLT_BUILD", "timeout": 60},
+        )
+    ]
+
+
+def test_pinned_tool_runner_rejects_replacement_after_discovery(tmp_path, monkeypatch):
+    discovery = _installed_demo(tmp_path, monkeypatch)
+
+    def replaced(*_args, **_kwargs):
+        discovery.executable.write_bytes(b"changed after discovery")
+        return discovery
+
+    monkeypatch.setattr(tool_releases, "require_pinned_tool", replaced)
+    with pytest.raises(
+        tool_releases.ToolReleaseError, match="changed after attested discovery"
+    ):
+        tool_releases.run_pinned_tool(
+            "demo",
+            ["validate"],
+            repo_root=tmp_path,
+            run=lambda *_a, **_k: pytest.fail("must not run replacement"),
+        )
+
+
+def test_pinned_tool_runner_rejects_mutation_during_execution(tmp_path, monkeypatch):
+    discovery = _installed_demo(tmp_path, monkeypatch)
+
+    def run(*_args, **_kwargs):
+        discovery.executable.write_bytes(b"changed during execution")
+        return "not accepted"
+
+    with pytest.raises(
+        tool_releases.ToolReleaseError, match="execution identity failed"
+    ):
+        tool_releases.run_pinned_tool(
+            "demo",
+            ["validate"],
+            run=run,
+            repo_root=tmp_path,
+        )
+
+
+def test_cli_exports_only_attested_tool_directory(tmp_path: Path, monkeypatch) -> None:
+    discovery = _installed_demo(tmp_path, monkeypatch)
     output = tmp_path / "github-path"
     output.write_text("existing-directory\n")
     assert (

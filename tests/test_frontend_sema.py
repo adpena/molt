@@ -12,6 +12,7 @@ the existing god-object dicts from SemaResult so the walk stays byte-identical.
 from __future__ import annotations
 
 import ast
+from molt.compiler_analysis.python_lexical_scope import function_contains_yield
 import pytest
 
 from molt.frontend import SimpleTIRGenerator
@@ -26,7 +27,6 @@ from molt.frontend.sema import (
     collect_module_class_names,
     collect_module_func_defaults,
     collect_module_func_kinds,
-    function_contains_yield,
     reachable_base_names,
     static_class_bases,
     static_mro_names,
@@ -563,7 +563,7 @@ def test_lexical_dependency_and_storage_planning_share_authority(
     # A comprehension target must not suppress the independent outer value.
     assert "value" in gen._collect_free_vars_raw(middle)
     if not body.startswith("return"):
-        assert "value" in gen._collect_scope_cell_vars(middle.body, {"value"})
+        assert "value" in gen._collect_scope_cell_vars(middle.body, {"value"}).enclosing
 
 
 @pytest.mark.parametrize(
@@ -587,7 +587,9 @@ def test_string_field_declarations_are_not_outer_closure_dependencies(
     authority = gen._lexical_dependencies()
     assert "bound" in authority.declarations(node).bound
     assert "bound" not in gen._collect_free_vars_raw(node)
-    assert gen._collect_scope_cell_vars(node.body, {"bound"}) == {"bound"}
+    captures = gen._collect_scope_cell_vars(node.body, {"bound"})
+    assert captures.enclosing == {"bound"}
+    assert captures.inlined == frozenset()
 
 
 def test_free_var_cache_keeps_nested_super_classcell_projection() -> None:

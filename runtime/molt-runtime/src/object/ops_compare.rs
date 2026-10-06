@@ -3,7 +3,11 @@
 
 use crate::*;
 use molt_obj_model::MoltObject;
+use molt_obj_model::sequence_compare::RichCompareOp;
 use std::cmp::Ordering;
+
+pub(crate) mod builtin_families;
+mod sequence;
 
 use super::ops::{is_float_extended, simd_bytes_eq, simd_find_first_mismatch};
 
@@ -62,8 +66,7 @@ fn builtin_comparison_operands(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObje
         let Some(ptr) = value.as_ptr() else {
             return true;
         };
-        let class = unsafe { object_class_bits(ptr) };
-        class == 0 || is_builtin_class_bits(_py, class)
+        unsafe { crate::object::iterable::builtin_receiver(_py, ptr) }
     })
 }
 
@@ -77,210 +80,21 @@ fn compare_numbers_outcome(lhs: MoltObject, rhs: MoltObject) -> CompareOutcome {
     CompareOutcome::NotComparable
 }
 
-// ---------------------------------------------------------------------------
-// SIMD-accelerated lexicographic byte comparison for string/bytes ordering.
-// Uses SIMD to skip past equal prefix, then scalar compare at divergence.
-// ---------------------------------------------------------------------------
-
-/// Find the first byte index where `a` and `b` differ, within `len` bytes.
-/// Returns `len` if the prefixes are identical.
-#[inline]
-unsafe fn simd_find_first_byte_diff(a: *const u8, b: *const u8, len: usize) -> usize {
+unsafe fn compare_string_bytes(lhs: *mut u8, rhs: *mut u8) -> Ordering {
     unsafe {
-        #[cfg(target_arch = "x86_64")]
-        {
-            if std::arch::is_x86_feature_detected!("avx2") {
-                return simd_find_first_byte_diff_avx2(a, b, len);
-            }
-            return simd_find_first_byte_diff_sse2(a, b, len);
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            return simd_find_first_byte_diff_neon(a, b, len);
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            if cfg!(target_feature = "simd128") {
-                return simd_find_first_byte_diff_wasm(a, b, len);
-            }
-        }
-        #[allow(unreachable_code)]
-        {
-            for i in 0..len {
-                if *a.add(i) != *b.add(i) {
-                    return i;
-                }
-            }
-            len
-        }
+        molt_obj_model::byte_compare::compare_bytes(
+            std::slice::from_raw_parts(string_bytes(lhs), string_len(lhs)),
+            std::slice::from_raw_parts(string_bytes(rhs), string_len(rhs)),
+        )
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-#[inline]
-unsafe fn simd_find_first_byte_diff_wasm(a: *const u8, b: *const u8, len: usize) -> usize {
-    use std::arch::wasm32::*;
-    let mut i = 0usize;
-    while i + 16 <= len {
-        let va = unsafe { v128_load(a.add(i) as *const v128) };
-        let vb = unsafe { v128_load(b.add(i) as *const v128) };
-        let eq = u8x16_eq(va, vb);
-        let mask = u8x16_bitmask(eq) as u32;
-        if mask != 0xFFFF {
-            // Not all equal — find first differing byte
-            return i + (!mask).trailing_zeros() as usize;
-        }
-        i += 16;
-    }
-    // Scalar tail
-    while i < len {
-        if unsafe { *a.add(i) != *b.add(i) } {
-            return i;
-        }
-        i += 1;
-    }
-    len
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
-unsafe fn simd_find_first_byte_diff_sse2(a: *const u8, b: *const u8, len: usize) -> usize {
+unsafe fn compare_bytes_like(lhs: *mut u8, rhs: *mut u8) -> Ordering {
     unsafe {
-        use std::arch::x86_64::*;
-        let mut i = 0usize;
-        while i + 16 <= len {
-            let va = _mm_loadu_si128(a.add(i) as *const __m128i);
-            let vb = _mm_loadu_si128(b.add(i) as *const __m128i);
-            let cmp = _mm_cmpeq_epi8(va, vb);
-            let mask = _mm_movemask_epi8(cmp) as u32;
-            if mask != 0xFFFF {
-                // Find first differing byte via trailing zeros of negated mask
-                return i + (!mask).trailing_zeros() as usize;
-            }
-            i += 16;
-        }
-        for j in i..len {
-            if *a.add(j) != *b.add(j) {
-                return j;
-            }
-        }
-        len
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline]
-unsafe fn simd_find_first_byte_diff_avx2(a: *const u8, b: *const u8, len: usize) -> usize {
-    unsafe {
-        use std::arch::x86_64::*;
-        let mut i = 0usize;
-        while i + 32 <= len {
-            let va = _mm256_loadu_si256(a.add(i) as *const __m256i);
-            let vb = _mm256_loadu_si256(b.add(i) as *const __m256i);
-            let cmp = _mm256_cmpeq_epi8(va, vb);
-            let mask = _mm256_movemask_epi8(cmp) as u32;
-            if mask != 0xFFFFFFFF {
-                return i + (!mask).trailing_zeros() as usize;
-            }
-            i += 32;
-        }
-        // SSE2 tail
-        if i + 16 <= len {
-            let va = _mm_loadu_si128(a.add(i) as *const __m128i);
-            let vb = _mm_loadu_si128(b.add(i) as *const __m128i);
-            let cmp = _mm_cmpeq_epi8(va, vb);
-            let mask = _mm_movemask_epi8(cmp) as u32;
-            if mask != 0xFFFF {
-                return i + (!mask).trailing_zeros() as usize;
-            }
-            i += 16;
-        }
-        for j in i..len {
-            if *a.add(j) != *b.add(j) {
-                return j;
-            }
-        }
-        len
-    }
-}
-
-#[cfg(target_arch = "aarch64")]
-#[inline]
-unsafe fn simd_find_first_byte_diff_neon(a: *const u8, b: *const u8, len: usize) -> usize {
-    unsafe {
-        use std::arch::aarch64::*;
-        let mut i = 0usize;
-        while i + 16 <= len {
-            let va = vld1q_u8(a.add(i));
-            let vb = vld1q_u8(b.add(i));
-            let cmp = vceqq_u8(va, vb);
-            if vminvq_u8(cmp) != 0xFF {
-                // Find the exact byte — check 8-byte halves first
-                let low = vget_low_u8(cmp);
-                let _high = vget_high_u8(cmp);
-                if vminv_u8(low) != 0xFF {
-                    for j in 0..8 {
-                        if *a.add(i + j) != *b.add(i + j) {
-                            return i + j;
-                        }
-                    }
-                }
-                for j in 8..16 {
-                    if *a.add(i + j) != *b.add(i + j) {
-                        return i + j;
-                    }
-                }
-            }
-            i += 16;
-        }
-        for j in i..len {
-            if *a.add(j) != *b.add(j) {
-                return j;
-            }
-        }
-        len
-    }
-}
-
-unsafe fn compare_string_bytes(lhs_ptr: *mut u8, rhs_ptr: *mut u8) -> Ordering {
-    unsafe {
-        let l_len = string_len(lhs_ptr);
-        let r_len = string_len(rhs_ptr);
-        let common = l_len.min(r_len);
-        if common >= 32 {
-            // SIMD fast path: skip past identical prefix
-            let l_data = string_bytes(lhs_ptr);
-            let r_data = string_bytes(rhs_ptr);
-            let diff_at = simd_find_first_byte_diff(l_data, r_data, common);
-            if diff_at == common {
-                return l_len.cmp(&r_len);
-            }
-            return (*l_data.add(diff_at)).cmp(&*r_data.add(diff_at));
-        }
-        let l_bytes = std::slice::from_raw_parts(string_bytes(lhs_ptr), l_len);
-        let r_bytes = std::slice::from_raw_parts(string_bytes(rhs_ptr), r_len);
-        l_bytes.cmp(r_bytes)
-    }
-}
-
-unsafe fn compare_bytes_like(lhs_ptr: *mut u8, rhs_ptr: *mut u8) -> Ordering {
-    unsafe {
-        let l_len = bytes_len(lhs_ptr);
-        let r_len = bytes_len(rhs_ptr);
-        let common = l_len.min(r_len);
-        if common >= 32 {
-            // SIMD fast path: skip past identical prefix
-            let l_data = bytes_data(lhs_ptr);
-            let r_data = bytes_data(rhs_ptr);
-            let diff_at = simd_find_first_byte_diff(l_data, r_data, common);
-            if diff_at == common {
-                return l_len.cmp(&r_len);
-            }
-            return (*l_data.add(diff_at)).cmp(&*r_data.add(diff_at));
-        }
-        let l_bytes = std::slice::from_raw_parts(bytes_data(lhs_ptr), l_len);
-        let r_bytes = std::slice::from_raw_parts(bytes_data(rhs_ptr), r_len);
-        l_bytes.cmp(r_bytes)
+        molt_obj_model::byte_compare::compare_bytes(
+            std::slice::from_raw_parts(bytes_data(lhs), bytes_len(lhs)),
+            std::slice::from_raw_parts(bytes_data(rhs), bytes_len(rhs)),
+        )
     }
 }
 
@@ -313,173 +127,53 @@ unsafe fn compare_sequence(
     }
 }
 
-struct ComparisonRecursionGuard;
-
-impl ComparisonRecursionGuard {
-    fn enter(_py: &PyToken<'_>) -> Option<Self> {
-        if crate::state::recursion::recursion_guard_enter_fast() {
-            Some(Self)
-        } else {
-            raise_exception::<u64>(
-                _py,
-                "RecursionError",
-                "maximum recursion depth exceeded in comparison",
-            );
-            None
-        }
-    }
-}
-
-impl Drop for ComparisonRecursionGuard {
-    fn drop(&mut self) {
-        crate::state::recursion::recursion_guard_exit_fast();
-    }
-}
-
-unsafe fn compare_sequence_eq_bool(
-    _py: &PyToken<'_>,
-    lhs_ptr: *mut u8,
-    rhs_ptr: *mut u8,
-) -> CompareBoolOutcome {
-    unsafe {
-        let Some(_guard) = ComparisonRecursionGuard::enter(_py) else {
-            return CompareBoolOutcome::Error;
-        };
-        if object_type_id(lhs_ptr) == TYPE_ID_TUPLE {
-            return crate::object::seq_access::with_immutable_tuple_slice(lhs_ptr, |lhs| {
-                crate::object::seq_access::with_immutable_tuple_slice(rhs_ptr, |rhs| {
-                    if lhs.len() != rhs.len() {
-                        return CompareBoolOutcome::False;
-                    }
-                    let first_diff = simd_find_first_mismatch(lhs, rhs);
-                    for idx in first_diff..lhs.len() {
-                        let l_bits = lhs[idx];
-                        let r_bits = rhs[idx];
-                        if l_bits == r_bits {
-                            continue;
-                        }
-                        match compare_object_eq_bool(
-                            _py,
-                            obj_from_bits(l_bits),
-                            obj_from_bits(r_bits),
-                        ) {
-                            CompareBoolOutcome::True => {}
-                            CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {
-                                return CompareBoolOutcome::False;
-                            }
-                            CompareBoolOutcome::Error => {
-                                return CompareBoolOutcome::Error;
-                            }
-                        }
-                    }
-                    CompareBoolOutcome::True
-                })
-                .unwrap_or(CompareBoolOutcome::Error)
-            })
-            .unwrap_or(CompareBoolOutcome::Error);
-        }
-
-        if crate::object::seq_access::locked_len(lhs_ptr)
-            != crate::object::seq_access::locked_len(rhs_ptr)
-        {
-            return CompareBoolOutcome::False;
-        }
-        let mut idx = 0;
-        loop {
-            let lhs_len = crate::object::seq_access::locked_len(lhs_ptr);
-            let rhs_len = crate::object::seq_access::locked_len(rhs_ptr);
-            if idx >= lhs_len.min(rhs_len) {
-                return if lhs_len == rhs_len {
-                    CompareBoolOutcome::True
-                } else {
-                    CompareBoolOutcome::False
-                };
-            }
-            let Some(lhs) = crate::object::seq_access::pin_item(_py, lhs_ptr, idx) else {
-                continue;
-            };
-            let Some(rhs) = crate::object::seq_access::pin_item(_py, rhs_ptr, idx) else {
-                continue;
-            };
-            let l_bits = lhs.bits();
-            let r_bits = rhs.bits();
-            if l_bits != r_bits {
-                match compare_object_eq_bool(_py, obj_from_bits(l_bits), obj_from_bits(r_bits)) {
-                    CompareBoolOutcome::True => {}
-                    CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {
-                        return CompareBoolOutcome::False;
-                    }
-                    CompareBoolOutcome::Error => {
-                        return CompareBoolOutcome::Error;
-                    }
-                }
-            }
-            idx += 1;
-        }
-    }
-}
-
-fn compare_builtin_eq_bool(
-    _py: &PyToken<'_>,
+fn compare_builtin_equality_value(
+    py: &PyToken<'_>,
     lhs: MoltObject,
     rhs: MoltObject,
-) -> CompareBoolOutcome {
-    if !builtin_comparison_operands(_py, lhs, rhs) {
-        return CompareBoolOutcome::NotComparable;
+    op: RichCompareOp,
+) -> CompareValueOutcome {
+    debug_assert!(op.is_equality());
+    if !builtin_comparison_operands(py, lhs, rhs) {
+        return CompareValueOutcome::NotComparable;
     }
     match compare_numbers_outcome(lhs, rhs) {
-        CompareOutcome::Ordered(ordering) => {
-            return if ordering == Ordering::Equal {
-                CompareBoolOutcome::True
-            } else {
-                CompareBoolOutcome::False
-            };
+        CompareOutcome::Ordered(ordering) => return comparison_order_to_value(ordering, op),
+        CompareOutcome::Unordered => {
+            return CompareValueOutcome::Value(
+                MoltObject::from_bool(op == RichCompareOp::Ne).bits(),
+            );
         }
-        CompareOutcome::Unordered => return CompareBoolOutcome::False,
-        CompareOutcome::Error => return CompareBoolOutcome::Error,
+        CompareOutcome::Error => return CompareValueOutcome::Error,
         CompareOutcome::NotComparable => {}
     }
     if lhs.is_none() && rhs.is_none() {
-        return CompareBoolOutcome::True;
+        return comparison_order_to_value(Ordering::Equal, op);
     }
-    let (Some(lhs_ptr), Some(rhs_ptr)) = (lhs.as_ptr(), rhs.as_ptr()) else {
-        return CompareBoolOutcome::NotComparable;
-    };
-    unsafe {
-        let ltype = object_type_id(lhs_ptr);
-        let rtype = object_type_id(rhs_ptr);
-        if (ltype == TYPE_ID_LIST && rtype == TYPE_ID_LIST)
-            || (ltype == TYPE_ID_TUPLE && rtype == TYPE_ID_TUPLE)
-        {
-            return compare_sequence_eq_bool(_py, lhs_ptr, rhs_ptr);
-        }
-        if ltype == TYPE_ID_STRING && rtype == TYPE_ID_STRING {
-            return if compare_string_bytes(lhs_ptr, rhs_ptr) == Ordering::Equal {
-                CompareBoolOutcome::True
-            } else {
-                CompareBoolOutcome::False
-            };
-        }
-        if (ltype == TYPE_ID_BYTES || ltype == TYPE_ID_BYTEARRAY)
-            && (rtype == TYPE_ID_BYTES || rtype == TYPE_ID_BYTEARRAY)
-        {
-            return if compare_bytes_like(lhs_ptr, rhs_ptr) == Ordering::Equal {
-                CompareBoolOutcome::True
-            } else {
-                CompareBoolOutcome::False
-            };
-        }
-        if (is_set_like_type(ltype) || is_set_view_type(ltype))
-            && (is_set_like_type(rtype) || is_set_view_type(rtype))
-        {
-            return if obj_eq(_py, lhs, rhs) {
-                CompareBoolOutcome::True
-            } else {
-                CompareBoolOutcome::False
-            };
-        }
+    // Even builtin descriptors may produce an arbitrary owned value (for
+    // example GenericAlias delegates to the rich equality of its arguments).
+    // Only explicit truth consumers may coerce that value or release it.
+    compare_builtin_storage(py, lhs, rhs, op)
+}
+
+fn compare_builtin_storage(
+    py: &PyToken<'_>,
+    left: MoltObject,
+    right: MoltObject,
+    op: RichCompareOp,
+) -> CompareValueOutcome {
+    if let Some(family) = SequenceComparison::for_value(left) {
+        return family.compare(
+            py,
+            left.as_ptr().expect("admitted sequence"),
+            right.bits(),
+            op,
+        );
     }
-    CompareBoolOutcome::NotComparable
+    if let Some(family) = builtin_families::family_for_value(py, left) {
+        return family.compare(py, left, right, op);
+    }
+    CompareValueOutcome::NotComparable
 }
 
 /// Consume an owned rich-comparison result only at a truth-valued boundary.
@@ -504,22 +198,206 @@ pub(crate) fn comparison_value_to_bool(
     }
 }
 
-fn comparison_bool_to_value(outcome: CompareBoolOutcome) -> CompareValueOutcome {
-    match outcome {
-        CompareBoolOutcome::True => CompareValueOutcome::Value(MoltObject::from_bool(true).bits()),
-        CompareBoolOutcome::False => {
-            CompareValueOutcome::Value(MoltObject::from_bool(false).bits())
-        }
-        CompareBoolOutcome::NotComparable => CompareValueOutcome::NotComparable,
-        CompareBoolOutcome::Error => CompareValueOutcome::Error,
+/// Declaring storage families for native lexicographic comparisons. Source
+/// operators perform subclass/reflected dispatch; an explicit base descriptor
+/// validates storage and bypasses overrides on the outer container only.
+#[derive(Clone, Copy)]
+pub(crate) enum SequenceComparison {
+    List,
+    Tuple,
+    String,
+    Bytes,
+    Bytearray,
+}
+
+fn rich_order(op: CompareOp) -> RichCompareOp {
+    match op {
+        CompareOp::Lt => RichCompareOp::Lt,
+        CompareOp::Le => RichCompareOp::Le,
+        CompareOp::Gt => RichCompareOp::Gt,
+        CompareOp::Ge => RichCompareOp::Ge,
     }
 }
 
-#[derive(Clone, Copy)]
-enum CellCompareOp {
-    Eq,
-    Ne,
-    Order(CompareOp),
+fn ordering_op(op: RichCompareOp) -> CompareOp {
+    match op {
+        RichCompareOp::Lt => CompareOp::Lt,
+        RichCompareOp::Le => CompareOp::Le,
+        RichCompareOp::Gt => CompareOp::Gt,
+        RichCompareOp::Ge => CompareOp::Ge,
+        RichCompareOp::Eq | RichCompareOp::Ne => unreachable!("ordering operation"),
+    }
+}
+
+impl SequenceComparison {
+    fn for_value(value: MoltObject) -> Option<Self> {
+        let ptr = value.as_ptr()?;
+        match unsafe { object_type_id(ptr) } {
+            TYPE_ID_LIST | TYPE_ID_LIST_INT | TYPE_ID_LIST_BOOL => Some(Self::List),
+            TYPE_ID_TUPLE => Some(Self::Tuple),
+            TYPE_ID_STRING => Some(Self::String),
+            TYPE_ID_BYTES => Some(Self::Bytes),
+            TYPE_ID_BYTEARRAY => Some(Self::Bytearray),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn owner(self, py: &PyToken<'_>) -> u64 {
+        let b = builtin_classes(py);
+        match self {
+            Self::List => b.list,
+            Self::Tuple => b.tuple,
+            Self::String => b.str,
+            Self::Bytes => b.bytes,
+            Self::Bytearray => b.bytearray,
+        }
+    }
+
+    fn storage(self, bits: u64) -> Option<*mut u8> {
+        if matches!(self, Self::List) {
+            return crate::object::ops_list::list_storage_ptr(bits);
+        }
+        obj_from_bits(bits).as_ptr().filter(|&ptr| unsafe {
+            object_type_id(ptr)
+                == match self {
+                    Self::Tuple => TYPE_ID_TUPLE,
+                    Self::String => TYPE_ID_STRING,
+                    Self::Bytes => TYPE_ID_BYTES,
+                    Self::Bytearray => TYPE_ID_BYTEARRAY,
+                    Self::List => unreachable!(),
+                }
+        })
+    }
+
+    pub(crate) fn invoke(self, py: &PyToken<'_>, left: u64, right: u64, op: RichCompareOp) -> u64 {
+        if matches!(self, Self::Tuple)
+            && (crate::object::tuple_storage::native_tuple(left).is_some()
+                || crate::object::tuple_storage::native_tuple(right).is_some())
+        {
+            let Some(tuple) =
+                crate::object::tuple_storage::TupleStorage::admit(py, left, op.method_name())
+            else {
+                return MoltObject::none().bits();
+            };
+            return tuple.compare(right, op);
+        }
+        let Some(lhs) = self.storage(left) else {
+            let expected = match self {
+                Self::List => "list",
+                Self::Tuple => "tuple",
+                Self::String => "str",
+                Self::Bytes => "bytes",
+                Self::Bytearray => "bytearray",
+            };
+            return raise_exception(
+                py,
+                "TypeError",
+                &format!(
+                    "descriptor '{}' requires a '{}' object but received a '{}'",
+                    op.method_name(),
+                    expected,
+                    type_name(py, obj_from_bits(left)),
+                ),
+            );
+        };
+        match self.compare(py, lhs, right, op) {
+            CompareValueOutcome::Value(bits) => bits,
+            CompareValueOutcome::NotComparable => {
+                crate::builtins::methods::not_implemented_bits(py)
+            }
+            CompareValueOutcome::Error => MoltObject::none().bits(),
+        }
+    }
+
+    // No callback may run while a mutable byte span is borrowed. Sequence
+    // element comparison uses the existing pin/reacquire authority instead.
+    fn compare(
+        self,
+        py: &PyToken<'_>,
+        lhs: *mut u8,
+        right: u64,
+        op: RichCompareOp,
+    ) -> CompareValueOutcome {
+        if matches!(self, Self::Bytearray) {
+            use crate::object::buffer_exports::{ScopedBuffer, supports_buffer};
+            if !supports_buffer(py, MoltObject::from_ptr(lhs).bits()) || !supports_buffer(py, right)
+            {
+                return CompareValueOutcome::NotComparable;
+            }
+            let mut compared = None;
+            crate::builtins::exceptions::with_saved_raised_exception(py, || {
+                // Self is exported before the peer can allocate or re-enter.
+                // This pins the compared span and rejects callback resizing.
+                // CPython's bytearray slot explicitly clears failed simple-
+                // buffer acquisition and declines that pair.
+                let acquire = |bits| {
+                    let buffer = ScopedBuffer::new(py, bits).ok()?;
+                    let len = buffer.contiguous_len().ok()?;
+                    Some((buffer, len))
+                };
+                let Some((left, left_len)) = acquire(MoltObject::from_ptr(lhs).bits()) else {
+                    if exception_pending(py) {
+                        crate::clear_exception(py);
+                    }
+                    return true;
+                };
+                let Some((right, right_len)) = acquire(right) else {
+                    if exception_pending(py) {
+                        crate::clear_exception(py);
+                    }
+                    drop(left);
+                    return true;
+                };
+                let order = unsafe {
+                    let left_bytes = if left_len == 0 {
+                        &[]
+                    } else {
+                        std::slice::from_raw_parts(left.view().data, left_len)
+                    };
+                    let right_bytes = if right_len == 0 {
+                        &[]
+                    } else {
+                        std::slice::from_raw_parts(right.view().data, right_len)
+                    };
+                    molt_obj_model::byte_compare::compare_bytes(left_bytes, right_bytes)
+                };
+                // Buffer release order is observable for exporter callbacks.
+                drop(left);
+                drop(right);
+                compared = Some(comparison_order_to_value(order, op));
+                true
+            });
+            return compared.unwrap_or(CompareValueOutcome::NotComparable);
+        }
+        let Some(rhs) = self.storage(right) else {
+            return CompareValueOutcome::NotComparable;
+        };
+        unsafe {
+            if matches!(self, Self::String | Self::Bytes) {
+                let order = if matches!(self, Self::String) {
+                    compare_string_bytes(lhs, rhs)
+                } else {
+                    compare_bytes_like(lhs, rhs)
+                };
+                return comparison_order_to_value(order, op);
+            }
+            if matches!(self, Self::List) {
+                crate::object::ops_list::promote_specialized_list_to_list(py, lhs);
+                if exception_pending(py) {
+                    return CompareValueOutcome::Error;
+                }
+                crate::object::ops_list::promote_specialized_list_to_list(py, rhs);
+                if exception_pending(py) {
+                    return CompareValueOutcome::Error;
+                }
+            }
+            sequence::compare(py, lhs, rhs, op)
+        }
+    }
+}
+
+fn comparison_order_to_value(order: Ordering, op: RichCompareOp) -> CompareValueOutcome {
+    CompareValueOutcome::Value(MoltObject::from_bool(op.test(order)).bits())
 }
 
 /// Compare the retained contents of two cells. The extracted values remain
@@ -529,7 +407,7 @@ fn compare_cell_value(
     _py: &PyToken<'_>,
     lhs: MoltObject,
     rhs: MoltObject,
-    op: CellCompareOp,
+    op: RichCompareOp,
 ) -> Option<CompareValueOutcome> {
     let (Some(lhs_ptr), Some(rhs_ptr)) = (lhs.as_ptr(), rhs.as_ptr()) else {
         return None;
@@ -539,7 +417,10 @@ fn compare_cell_value(
     {
         return None;
     }
-    let Some(_guard) = ComparisonRecursionGuard::enter(_py) else {
+    let Some(_guard) = crate::state::recursion::RecursionGuard::enter_with_message(
+        _py,
+        "maximum recursion depth exceeded in comparison",
+    ) else {
         return Some(CompareValueOutcome::Error);
     };
     let left = unsafe { crate::object::cells::cell_value_bits(lhs_ptr) };
@@ -555,24 +436,22 @@ fn compare_cell_value(
             (false, true) => Ordering::Greater,
             (false, false) => unreachable!(),
         };
-        CompareValueOutcome::Value(
-            MoltObject::from_bool(match op {
-                CellCompareOp::Eq => ordering == Ordering::Equal,
-                CellCompareOp::Ne => ordering != Ordering::Equal,
-                CellCompareOp::Order(op) => ordering_matches(ordering, op),
-            })
-            .bits(),
-        )
+        CompareValueOutcome::Value(MoltObject::from_bool(op.test(ordering)).bits())
     } else {
         match op {
-            CellCompareOp::Eq => {
+            RichCompareOp::Eq => {
                 compare_object_eq_value(_py, obj_from_bits(left), obj_from_bits(right))
             }
-            CellCompareOp::Ne => {
+            RichCompareOp::Ne => {
                 compare_object_ne_value(_py, obj_from_bits(left), obj_from_bits(right))
             }
-            CellCompareOp::Order(op) => {
-                compare_object_value_for_op(_py, obj_from_bits(left), obj_from_bits(right), op)
+            RichCompareOp::Lt | RichCompareOp::Le | RichCompareOp::Gt | RichCompareOp::Ge => {
+                compare_object_value_for_op(
+                    _py,
+                    obj_from_bits(left),
+                    obj_from_bits(right),
+                    ordering_op(op),
+                )
             }
         }
     };
@@ -590,7 +469,7 @@ fn cell_compare_method(
     lhs_bits: u64,
     rhs_bits: u64,
     method: &str,
-    op: CellCompareOp,
+    op: RichCompareOp,
 ) -> u64 {
     let lhs = obj_from_bits(lhs_bits);
     if crate::object::cells::cell_ptr_from_bits(lhs_bits).is_none() {
@@ -616,42 +495,42 @@ fn cell_compare_method(
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cell_eq(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        cell_compare_method(_py, a, b, "__eq__", CellCompareOp::Eq)
+        cell_compare_method(_py, a, b, "__eq__", RichCompareOp::Eq)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cell_ne(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        cell_compare_method(_py, a, b, "__ne__", CellCompareOp::Ne)
+        cell_compare_method(_py, a, b, "__ne__", RichCompareOp::Ne)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cell_lt(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        cell_compare_method(_py, a, b, "__lt__", CellCompareOp::Order(CompareOp::Lt))
+        cell_compare_method(_py, a, b, "__lt__", RichCompareOp::Lt)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cell_le(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        cell_compare_method(_py, a, b, "__le__", CellCompareOp::Order(CompareOp::Le))
+        cell_compare_method(_py, a, b, "__le__", RichCompareOp::Le)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cell_gt(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        cell_compare_method(_py, a, b, "__gt__", CellCompareOp::Order(CompareOp::Gt))
+        cell_compare_method(_py, a, b, "__gt__", RichCompareOp::Gt)
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_cell_ge(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        cell_compare_method(_py, a, b, "__ge__", CellCompareOp::Order(CompareOp::Ge))
+        cell_compare_method(_py, a, b, "__ge__", RichCompareOp::Ge)
     })
 }
 
@@ -660,23 +539,17 @@ fn compare_object_eq_value(
     lhs: MoltObject,
     rhs: MoltObject,
 ) -> CompareValueOutcome {
-    if let Some(outcome) = compare_cell_value(_py, lhs, rhs, CellCompareOp::Eq) {
+    if let Some(outcome) = compare_cell_value(_py, lhs, rhs, RichCompareOp::Eq) {
         return outcome;
     }
-    match compare_builtin_eq_bool(_py, lhs, rhs) {
-        CompareBoolOutcome::NotComparable => {}
-        outcome => return comparison_bool_to_value(outcome),
+    match compare_builtin_equality_value(_py, lhs, rhs, RichCompareOp::Eq) {
+        CompareValueOutcome::NotComparable => {}
+        outcome => return outcome,
     }
     let name = intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
     match rich_compare_value(_py, lhs, rhs, name, name) {
         CompareValueOutcome::NotComparable => {
-            let previous = exception_last_bits_noinc(_py);
-            let equal = obj_eq(_py, lhs, rhs);
-            if exception_pending(_py) && exception_last_bits_noinc(_py) != previous {
-                CompareValueOutcome::Error
-            } else {
-                CompareValueOutcome::Value(MoltObject::from_bool(equal).bits())
-            }
+            CompareValueOutcome::Value(MoltObject::from_bool(lhs.bits() == rhs.bits()).bits())
         }
         outcome => outcome,
     }
@@ -687,29 +560,17 @@ fn compare_object_ne_value(
     lhs: MoltObject,
     rhs: MoltObject,
 ) -> CompareValueOutcome {
-    if let Some(outcome) = compare_cell_value(_py, lhs, rhs, CellCompareOp::Ne) {
+    if let Some(outcome) = compare_cell_value(_py, lhs, rhs, RichCompareOp::Ne) {
         return outcome;
     }
-    match compare_builtin_eq_bool(_py, lhs, rhs) {
-        CompareBoolOutcome::True => {
-            return CompareValueOutcome::Value(MoltObject::from_bool(false).bits());
-        }
-        CompareBoolOutcome::False => {
-            return CompareValueOutcome::Value(MoltObject::from_bool(true).bits());
-        }
-        CompareBoolOutcome::Error => return CompareValueOutcome::Error,
-        CompareBoolOutcome::NotComparable => {}
+    match compare_builtin_equality_value(_py, lhs, rhs, RichCompareOp::Ne) {
+        CompareValueOutcome::NotComparable => {}
+        outcome => return outcome,
     }
     let name = intern_static_name(_py, &runtime_state(_py).interned.ne_name, b"__ne__");
     match rich_compare_value(_py, lhs, rhs, name, name) {
         CompareValueOutcome::NotComparable => {
-            let previous = exception_last_bits_noinc(_py);
-            let equal = obj_eq(_py, lhs, rhs);
-            if exception_pending(_py) && exception_last_bits_noinc(_py) != previous {
-                CompareValueOutcome::Error
-            } else {
-                CompareValueOutcome::Value(MoltObject::from_bool(!equal).bits())
-            }
+            CompareValueOutcome::Value(MoltObject::from_bool(lhs.bits() != rhs.bits()).bits())
         }
         outcome => outcome,
     }
@@ -758,15 +619,6 @@ fn compare_objects_builtin(_py: &PyToken<'_>, lhs: MoltObject, rhs: MoltObject) 
         }
     }
     CompareOutcome::NotComparable
-}
-
-fn ordering_matches(ordering: Ordering, op: CompareOp) -> bool {
-    match op {
-        CompareOp::Lt => ordering == Ordering::Less,
-        CompareOp::Le => ordering != Ordering::Greater,
-        CompareOp::Gt => ordering == Ordering::Greater,
-        CompareOp::Ge => ordering != Ordering::Less,
-    }
 }
 
 fn compare_op_symbol(op: CompareOp) -> &'static str {
@@ -819,92 +671,25 @@ fn compare_object_value_for_op(
     }
 }
 
-unsafe fn compare_sequence_value(
-    _py: &PyToken<'_>,
-    lhs_ptr: *mut u8,
-    rhs_ptr: *mut u8,
-    op: CompareOp,
-) -> CompareValueOutcome {
-    let Some(_guard) = ComparisonRecursionGuard::enter(_py) else {
-        return CompareValueOutcome::Error;
-    };
-    unsafe {
-        if object_type_id(lhs_ptr) == TYPE_ID_TUPLE {
-            return crate::object::seq_access::with_immutable_tuple_slice(lhs_ptr, |lhs| {
-                crate::object::seq_access::with_immutable_tuple_slice(rhs_ptr, |rhs| {
-                    let common = lhs.len().min(rhs.len());
-                    let first_diff = simd_find_first_mismatch(lhs, rhs);
-                    for idx in first_diff..common {
-                        let l_bits = lhs[idx];
-                        let r_bits = rhs[idx];
-                        match compare_object_eq_bool(
-                            _py,
-                            obj_from_bits(l_bits),
-                            obj_from_bits(r_bits),
-                        ) {
-                            CompareBoolOutcome::True => continue,
-                            CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {}
-                            CompareBoolOutcome::Error => return CompareValueOutcome::Error,
-                        }
-                        return compare_object_value_for_op(
-                            _py,
-                            obj_from_bits(l_bits),
-                            obj_from_bits(r_bits),
-                            op,
-                        );
-                    }
-                    CompareValueOutcome::Value(
-                        MoltObject::from_bool(ordering_matches(lhs.len().cmp(&rhs.len()), op))
-                            .bits(),
-                    )
-                })
-                .unwrap_or(CompareValueOutcome::Error)
-            })
-            .unwrap_or(CompareValueOutcome::Error);
-        }
-
-        let mut idx = 0;
-        loop {
-            let lhs_len = crate::object::seq_access::locked_len(lhs_ptr);
-            let rhs_len = crate::object::seq_access::locked_len(rhs_ptr);
-            if idx >= lhs_len.min(rhs_len) {
-                return CompareValueOutcome::Value(
-                    MoltObject::from_bool(ordering_matches(lhs_len.cmp(&rhs_len), op)).bits(),
-                );
-            }
-            let Some(lhs) = crate::object::seq_access::pin_item(_py, lhs_ptr, idx) else {
-                continue;
-            };
-            let Some(rhs) = crate::object::seq_access::pin_item(_py, rhs_ptr, idx) else {
-                continue;
-            };
-            let l_bits = lhs.bits();
-            let r_bits = rhs.bits();
-            match compare_object_eq_bool(_py, obj_from_bits(l_bits), obj_from_bits(r_bits)) {
-                CompareBoolOutcome::True => {
-                    idx += 1;
-                    continue;
-                }
-                CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {}
-                CompareBoolOutcome::Error => return CompareValueOutcome::Error,
-            }
-            return compare_object_value_for_op(
-                _py,
-                obj_from_bits(l_bits),
-                obj_from_bits(r_bits),
-                op,
-            );
-        }
-    }
-}
-
-pub(crate) fn compare_builtin_bool(
+/// `PyObject_RichCompareBool(lhs, rhs, op)` for an ordering operator: the
+/// operator's one rich comparison, TypeError when neither operand implements
+/// it, then the truth of its result. Never `NotComparable`.
+pub(crate) fn rich_compare_op_bool(
     _py: &PyToken<'_>,
     lhs: MoltObject,
     rhs: MoltObject,
     op: CompareOp,
 ) -> CompareBoolOutcome {
-    comparison_value_to_bool(_py, compare_builtin_value(_py, lhs, rhs, op))
+    comparison_value_to_bool(_py, compare_object_value_for_op(_py, lhs, rhs, op))
+}
+
+unsafe fn compare_sequence_value(
+    py: &PyToken<'_>,
+    left: *mut u8,
+    right: *mut u8,
+    op: CompareOp,
+) -> CompareValueOutcome {
+    unsafe { sequence::compare(py, left, right, rich_order(op)) }
 }
 
 fn compare_builtin_value(
@@ -916,33 +701,17 @@ fn compare_builtin_value(
     if !builtin_comparison_operands(_py, lhs, rhs) {
         return CompareValueOutcome::NotComparable;
     }
-    if let (Some(lhs_ptr), Some(rhs_ptr)) = (lhs.as_ptr(), rhs.as_ptr()) {
-        unsafe {
-            let ltype = object_type_id(lhs_ptr);
-            let rtype = object_type_id(rhs_ptr);
-            if ltype == TYPE_ID_CELL && rtype == TYPE_ID_CELL {
-                return compare_cell_value(_py, lhs, rhs, CellCompareOp::Order(op))
-                    .expect("validated cell operands");
-            }
-            if (ltype == TYPE_ID_LIST && rtype == TYPE_ID_LIST)
-                || (ltype == TYPE_ID_TUPLE && rtype == TYPE_ID_TUPLE)
-            {
-                return compare_sequence_value(_py, lhs_ptr, rhs_ptr, op);
-            }
-        }
+    if let Some(outcome) = compare_cell_value(_py, lhs, rhs, rich_order(op)) {
+        return outcome;
     }
-    comparison_bool_to_value(match compare_objects_builtin(_py, lhs, rhs) {
-        CompareOutcome::Ordered(ordering) => {
-            if ordering_matches(ordering, op) {
-                CompareBoolOutcome::True
-            } else {
-                CompareBoolOutcome::False
-            }
+    match compare_numbers_outcome(lhs, rhs) {
+        CompareOutcome::Ordered(ordering) => comparison_order_to_value(ordering, rich_order(op)),
+        CompareOutcome::Unordered => {
+            CompareValueOutcome::Value(MoltObject::from_bool(false).bits())
         }
-        CompareOutcome::Unordered => CompareBoolOutcome::False,
-        CompareOutcome::NotComparable => CompareBoolOutcome::NotComparable,
-        CompareOutcome::Error => CompareBoolOutcome::Error,
-    })
+        CompareOutcome::Error => CompareValueOutcome::Error,
+        CompareOutcome::NotComparable => compare_builtin_storage(_py, lhs, rhs, rich_order(op)),
+    }
 }
 
 pub(crate) fn rich_compare_bool(
@@ -972,7 +741,9 @@ pub(crate) fn rich_compare_method_value(
     };
     let previous = exception_last_bits_noinc(_py);
     let changed = || exception_pending(_py) && exception_last_bits_noinc(_py) != previous;
-    unsafe {
+    let owner = MoltObject::from_ptr(class).bits();
+    inc_ref_bits(_py, owner);
+    let outcome = (|| unsafe {
         let Some(raw) = class_attr_lookup_raw_mro(_py, class, name) else {
             return if changed() {
                 CompareValueOutcome::Error
@@ -1004,7 +775,9 @@ pub(crate) fn rich_compare_method_value(
         } else {
             CompareValueOutcome::Value(result)
         }
-    }
+    })();
+    dec_ref_bits(_py, owner);
+    outcome
 }
 
 pub(crate) fn rich_compare_value(
@@ -1137,31 +910,34 @@ pub extern "C" fn molt_ne(a: u64, b: u64) -> u64 {
     })
 }
 
+/// Compare physical Unicode contents without hashing or Python callbacks.
+/// Identifier classification and sealed layout maps admit str subclasses but
+/// must never invoke their rich equality. Real dictionary keys use rich lookup.
+///
+/// # Safety
+/// Both handles, when pointers, must remain live under the caller's Python token.
+#[inline]
+pub(crate) unsafe fn string_storage_equal(left_bits: u64, right_bits: u64) -> bool {
+    unsafe {
+        let (Some(left), Some(right)) = (
+            obj_from_bits(left_bits).as_ptr(),
+            obj_from_bits(right_bits).as_ptr(),
+        ) else {
+            return false;
+        };
+        if object_type_id(left) != TYPE_ID_STRING || object_type_id(right) != TYPE_ID_STRING {
+            return false;
+        }
+        let len = string_len(left);
+        string_len(right) == len
+            && (left == right || simd_bytes_eq(string_bytes(left), string_bytes(right), len))
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_string_eq(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let lhs = obj_from_bits(a);
-        let rhs = obj_from_bits(b);
-        let Some(lp) = lhs.as_ptr() else {
-            return MoltObject::from_bool(false).bits();
-        };
-        let Some(rp) = rhs.as_ptr() else {
-            return MoltObject::from_bool(false).bits();
-        };
-        unsafe {
-            if object_type_id(lp) != TYPE_ID_STRING || object_type_id(rp) != TYPE_ID_STRING {
-                return MoltObject::from_bool(false).bits();
-            }
-            if lp == rp {
-                return MoltObject::from_bool(true).bits();
-            }
-            let l_len = string_len(lp);
-            let r_len = string_len(rp);
-            if l_len != r_len {
-                return MoltObject::from_bool(false).bits();
-            }
-            MoltObject::from_bool(simd_bytes_eq(string_bytes(lp), string_bytes(rp), l_len)).bits()
-        }
+        MoltObject::from_bool(unsafe { string_storage_equal(a, b) }).bits()
     })
 }
 
@@ -1169,3 +945,6 @@ pub extern "C" fn molt_string_eq(a: u64, b: u64) -> u64 {
 pub extern "C" fn molt_is(a: u64, b: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, { MoltObject::from_bool(a == b).bits() })
 }
+
+#[cfg(test)]
+mod sequence_tests;

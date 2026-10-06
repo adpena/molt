@@ -72,7 +72,7 @@ def test_setup_project_callers_use_declared_inputs() -> None:
     assert calls >= 10
 
 
-def test_setup_project_cache_identity_is_complete_and_registry_only() -> None:
+def test_setup_project_cache_identity_is_complete_and_non_incremental() -> None:
     action = _read(".github/actions/setup-project/action.yml")
     normalizer = _read(".github/actions/setup-project/normalize-inputs.sh")
     for token in (
@@ -82,16 +82,48 @@ def test_setup_project_cache_identity_is_complete_and_registry_only() -> None:
         "inputs.rust-targets",
         "rust-toolchain.toml",
         "Cargo.lock",
+        "**/Cargo.toml",
+        "tools/proof_plan.toml",
         "config/llvm_toolchain_releases.toml",
         "config/llvm_toolchain_arches.toml",
     ):
         assert token in action
-    cargo_block = action.split("- name: Cache Cargo source downloads", 1)[1].split(
-        "- name: Cache Lean lake artifacts", 1
-    )[0]
-    assert "~/.cargo/registry" in cargo_block
-    assert "~/.cargo/git" in cargo_block
-    assert "\n          target\n" not in cargo_block
+    steps = yaml.safe_load(action)["runs"]["steps"]
+    configure = next(step for step in steps if step.get("id") == "cargo-cache")
+    cache = next(
+        step
+        for step in steps
+        if step.get("name") == "Cache Cargo builds and source downloads"
+    )
+    assert re.fullmatch(r"actions/cache@[0-9a-f]{40}", cache["uses"])
+    assert (
+        configure["if"] == cache["if"] == "steps.inputs.outputs.cache-cargo == 'true'"
+    )
+    assert configure["run"] == "python3 tools/ci_cargo_cache.py"
+    cached_paths = cache["with"]["path"].split()
+    assert "${{" in " ".join(cached_paths)
+    assert "steps.cargo-cache.outputs.target-dir" in cache["with"]["path"]
+    for source in (
+        "~/.cargo/registry/index",
+        "~/.cargo/registry/cache",
+        "~/.cargo/git/db",
+    ):
+        assert source in cached_paths
+    for token in ("runner.os", "runner.arch", "steps.inputs.outputs.rust-cache-token"):
+        assert token in cache["with"]["key"]
+        assert token in cache["with"]["restore-keys"]
+    assert "hashFiles(" in cache["with"]["key"]
+    assert "hashFiles(" not in cache["with"]["restore-keys"]
+    install = next(step for step in steps if step.get("name") == "Install exact Rust")
+    assert steps.index(install) < steps.index(configure) < steps.index(cache)
+    assert (
+        sum(
+            step.get("name") == "Cache Cargo builds and source downloads"
+            for step in steps
+        )
+        == 1
+    )
+    assert "Cache Cargo source downloads" not in action
     assert "cache-uv requires uv" in normalizer
     assert "sync requires uv" in normalizer
     assert "cache-cargo requires rust-toolchain" in normalizer
@@ -195,6 +227,56 @@ def test_security_reusable_selection_truth_table(
     text = _read(".github/workflows/security_hardening.yml")
     assert "if: github.event_name == 'schedule' || inputs.python_security" in text
     assert "if: github.event_name == 'schedule' || inputs.rust_security" in text
+
+
+@pytest.mark.parametrize(
+    ("workflow", "job"),
+    [
+        ("ci.yml", "docs-gates"),
+        ("ci.yml", "platform-portability"),
+        ("ci.yml", "native-integration"),
+        ("ci.yml", "rust-build-unit-smoke"),
+        ("ci.yml", "llvm-backend"),
+        ("molt-wasm-ci.yml", "wasm-build"),
+        ("security_hardening.yml", "rust-security"),
+    ],
+)
+def test_ci_rust_consumers_share_compiled_artifact_cache(
+    workflow: str, job: str
+) -> None:
+    steps = yaml.safe_load(_read(f".github/workflows/{workflow}"))["jobs"][job]["steps"]
+    setups = [
+        step for step in steps if step.get("uses") == "./.github/actions/setup-project"
+    ]
+    assert len(setups) == 1
+    assert setups[0]["with"]["rust-toolchain"]
+    assert setups[0]["with"]["cache-cargo"] == "true"
+    assert not any("rust-cache@" in step.get("uses", "") for step in steps)
+
+
+@pytest.mark.parametrize(
+    ("workflow", "job"),
+    [("ci.yml", "rust-build-unit-smoke"), ("molt-wasm-ci.yml", "wasm-build")],
+)
+def test_ci_luau_runner_uses_digest_bound_prebuilt_authority(
+    workflow: str, job: str
+) -> None:
+    text = _read(f".github/workflows/{workflow}")
+    steps = yaml.safe_load(text)["jobs"][job]["steps"]
+    provision = next(
+        step
+        for step in steps
+        if step.get("name") == "Install pinned executable Luau proof runner"
+    )
+    assert provision["run"] == (
+        'python3 -m molt.tool_releases provision lune --github-path "$GITHUB_PATH"'
+    )
+    assert "cargo install lune" not in text
+    assert steps.index(provision) < next(
+        index
+        for index, step in enumerate(steps)
+        if "--run-family" in step.get("run", "")
+    )
 
 
 def test_ci_push_path_is_cheap_only() -> None:
@@ -708,14 +790,15 @@ def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
     assert "wasi_sysroot_url" not in action_text
     # These command families declare both native ld.lld and SDK wasm-ld. The
     # WebAssembly-only SDK must never stand in for the full native LLVM SDK.
-    rust_steps = yaml.safe_load(ci_text)["jobs"]["rust-build-unit-smoke"]["steps"]
-    rust_llvm_steps = [
-        step
-        for step in rust_steps
-        if step.get("uses") == "./.github/actions/setup-llvm"
-    ]
-    assert len(rust_llvm_steps) == 1
-    assert rust_llvm_steps[0]["with"] == {"profile": "full", "wasi": "true"}
+    jobs = yaml.safe_load(ci_text)["jobs"]
+    for job in ("rust-build-unit-smoke", "native-integration"):
+        sdk_steps = [
+            step
+            for step in jobs[job]["steps"]
+            if step.get("uses") == "./.github/actions/setup-llvm"
+        ]
+        assert len(sdk_steps) == 1
+        assert sdk_steps[0]["with"] == {"profile": "full", "wasi": "true"}
     wasm_steps = yaml.safe_load(wasm_text)["jobs"]["wasm-build"]["steps"]
     llvm_steps = [
         step
@@ -747,6 +830,37 @@ def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
     assert "grep -oE" not in perf_text
     assert "LLVM_SYS_${MAJOR}1_PREFIX" not in ci_text
     assert "LLVM_SYS_${MAJOR}1_PREFIX" not in perf_text
+
+
+def test_wasm_ci_provisions_pinned_optimizer_before_linked_partitions() -> None:
+    workflow = yaml.safe_load(_read(".github/workflows/molt-wasm-ci.yml"))
+    steps = workflow["jobs"]["wasm-build"]["steps"]
+    optimizer_steps = [
+        (index, step)
+        for index, step in enumerate(steps)
+        if step.get("uses") == "./.github/actions/setup-binaryen"
+    ]
+    assert len(optimizer_steps) == 1
+    optimizer_index, optimizer = optimizer_steps[0]
+    assert optimizer["id"] == "binaryen"
+    partition_index, partition = next(
+        (index, step)
+        for index, step in enumerate(steps)
+        if "--run-family wasm" in step.get("run", "")
+    )
+    assert optimizer_index < partition_index
+    assert partition["env"]["MOLT_WASM_OPT"] == (
+        "${{ steps.binaryen.outputs.wasm_opt }}"
+    )
+    action = yaml.safe_load(_read(".github/actions/setup-binaryen/action.yml"))
+    assert action["outputs"]["wasm_opt"]["value"] == (
+        "${{ steps.binaryen.outputs.wasm_opt }}"
+    )
+    provision = next(
+        step for step in action["runs"]["steps"] if step.get("id") == "binaryen"
+    )
+    assert "python -m tools.provision_binaryen" in provision["run"]
+    assert '--github-output "$GITHUB_OUTPUT"' in provision["run"]
 
 
 def test_pr_trust_labeler_is_advisory_not_authoritative() -> None:
@@ -970,8 +1084,8 @@ def test_rust_security_reuses_cached_tool_builds() -> None:
     assert 'rust-toolchain: "1.96.1"' in rust_security
     assert 'cache-cargo: "true"' in rust_security
     setup_project = _read(".github/actions/setup-project/action.yml")
-    assert "~/.cargo/registry" in setup_project
-    assert "~/.cargo/git" in setup_project
+    assert "Cache Cargo builds and source downloads" in setup_project
+    assert "steps.cargo-cache.outputs.target-dir" in setup_project
     assert "cargo install cargo-deny --version 0.20.2 --locked" in rust_security
     assert "cargo install cargo-audit --version 0.22.2 --locked" in rust_security
     assert "rm -rf" not in rust_security
@@ -1129,12 +1243,17 @@ def test_ci_rust_compile_truth_has_no_redundant_subset_commands() -> None:
         assert redundant_id not in commands
     assert "native-backend" in backend_manifest["features"]["default"]
     assert commands["rust.test.default-truth"]["dependencies"] == []
-    assert commands["rust.clippy.workspace-default"]["dependencies"] == [
-        "rust.test.default-truth"
-    ]
-    assert commands["rust.clippy.feature-surfaces"]["dependencies"] == [
-        "rust.clippy.workspace-default"
-    ]
+    # The compiler-build resource runs one command at a time, so ordering edges
+    # add no starvation protection; they would only let one red truth hide the
+    # independent lint truths behind "required dependency failed".
+    assert commands["rust.clippy.workspace-default"]["dependencies"] == []
+    assert commands["rust.clippy.feature-surfaces"]["dependencies"] == []
+    compiler_policy = next(
+        policy
+        for policy in plan["resource_policy"]
+        if policy["name"] == "compiler-build-resource"
+    )
+    assert compiler_policy["max_parallel"] == 1
     assert commands["rust.test.default-truth"]["argv"] == [
         "uv",
         "run",
@@ -1379,13 +1498,18 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
     assert "          cargo install cargo-deny --locked" not in security_text
     assert "          cargo install cargo-audit --locked" not in security_text
 
-    assert (
-        release_text.count(
-            "python tools/guarded_exec.py --prefix MOLT_RELEASE -- \\\n"
-            "            cargo build --locked --profile release-output -p molt-worker"
-        )
-        == 2
-    )
+    release_workflow = yaml.safe_load(release_text)
+    build_steps = [
+        step["run"]
+        for job in release_workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if step.get("name") == "Build independent native release generations"
+    ]
+    assert len(build_steps) == 1
+    assert "for lane in primary secondary; do" in build_steps[0]
+    assert "tools/guarded_exec.py --prefix MOLT_RELEASE --" in build_steps[0]
+    assert "python -m tools.release.build_compiler" in build_steps[0]
+    assert '--output "dist/native-$lane"' in build_steps[0]
     assert "run: cargo build -p molt-worker --release" not in release_text
 
 
@@ -1643,3 +1767,58 @@ def test_wasm_ci_guarded_steps_have_github_timeout_backstops() -> None:
     assert "MOLT_WASM_TEST_TIMEOUT_SEC:" not in wasm_text
     assert '"--timeout",' in proof_text
     assert 'command.data.get("timeout_env", [])' in proof_text
+
+
+# Repository Actions policy (Settings > Actions > General), read from
+# `gh api repos/adpena/molt/actions/permissions/selected-actions`: GitHub-owned
+# actions, actions owned by the repository owner, and these patterns. A
+# disallowed `uses:` fails every job at "Prepare all required actions" before
+# any step runs, so the policy is checked statically here.
+_ACTIONS_POLICY_OWNERS = frozenset(("actions", "github", "adpena"))
+_ACTIONS_POLICY_PATTERNS = (
+    "astral-sh/setup-uv@*",
+    "cloudflare/wrangler-action@*",
+    "softprops/action-gh-release@*",
+    "taiki-e/install-action@*",
+)
+
+
+def _action_references() -> list[tuple[str, str]]:
+    references: list[tuple[str, str]] = []
+    root = Path(__file__).resolve().parents[1]
+    paths = sorted((root / ".github" / "workflows").glob("*.yml")) + sorted(
+        (root / ".github" / "actions").glob("*/action.yml")
+    )
+    for path in paths:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        jobs = (document or {}).get("jobs", {}) or {}
+        steps = [
+            step for job in jobs.values() for step in (job or {}).get("steps", []) or []
+        ]
+        steps += ((document or {}).get("runs", {}) or {}).get("steps", []) or []
+        uses = [
+            job["uses"]
+            for job in jobs.values()
+            if isinstance(job, dict) and "uses" in job
+        ]
+        uses += [
+            step["uses"] for step in steps if isinstance(step, dict) and "uses" in step
+        ]
+        references.extend((path.relative_to(root).as_posix(), use) for use in uses)
+    return references
+
+
+def test_every_action_reference_is_admitted_by_repository_policy() -> None:
+    references = _action_references()
+    assert references
+    for source, use in references:
+        if use.startswith("./"):
+            continue
+        assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", use), (source, use)
+        owner = use.split("/", 1)[0]
+        admitted = owner in _ACTIONS_POLICY_OWNERS or any(
+            fnmatchcase(use, pattern) for pattern in _ACTIONS_POLICY_PATTERNS
+        )
+        assert admitted, (
+            f"{source}: {use} is not allowed by the repository Actions policy"
+        )

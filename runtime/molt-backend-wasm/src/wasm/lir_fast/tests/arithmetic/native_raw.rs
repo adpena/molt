@@ -168,7 +168,7 @@ fn add_two_f64s() {
                 opcode: OpCode::ConstFloat,
                 operands: vec![],
                 results: vec![value],
-                attrs: AttrDict::from([("value".into(), AttrValue::Float(number))]),
+                attrs: AttrDict::from([("f_value".into(), AttrValue::Float(number))]),
                 source_span: None,
             },
         );
@@ -187,7 +187,7 @@ fn add_two_f64s() {
 }
 
 #[test]
-fn f64_mod_declares_emission_scratch_locals() {
+fn f64_mod_requires_exact_runtime_semantics_for_proven_float_carriers() {
     let mut func = TirFunction::new(
         "mod_f64".into(),
         vec![TirType::F64, TirType::F64],
@@ -228,7 +228,7 @@ fn f64_mod_declares_emission_scratch_locals() {
                 opcode: OpCode::ConstFloat,
                 operands: vec![],
                 results: vec![value],
-                attrs: AttrDict::from([("value".into(), AttrValue::Float(number))]),
+                attrs: AttrDict::from([("f_value".into(), AttrValue::Float(number))]),
                 source_span: None,
             },
         );
@@ -236,11 +236,56 @@ fn f64_mod_declares_emission_scratch_locals() {
     let output = lower_tir_to_wasm(&func).test_view();
     assert_eq!(output.param_types, vec![ValType::I64, ValType::I64]);
     assert_eq!(output.result_types, vec![ValType::F64]);
-    assert!(!output.runtime_calls.contains(&"mod"));
-    assert!(!output.bails_to_generic_path);
-    assert_eq!(
-        output.locals,
-        vec![ValType::F64; 5],
-        "exact f64 modulo declares two producer locals, its result and two scratch locals"
+    assert!(output.runtime_calls.contains(&"mod"));
+    assert!(
+        output.bails_to_generic_path,
+        "an owned boxed remainder must not masquerade as a raw float local"
     );
+    assert!(
+        !output
+            .instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::F64Floor | Instruction::F64Div)),
+        "floor(a/b) cannot implement CPython fmod for tiny divisors or signed zero"
+    );
+}
+
+#[test]
+fn proven_negative_divisor_floor_and_mod_keep_python_sign_correction() {
+    for (opcode, correction) in [
+        (OpCode::FloorDiv, Instruction::I64Sub),
+        (OpCode::Mod, Instruction::I64Add),
+    ] {
+        let mut func = make_add_two_consts_func(7, -3);
+        let operation = func
+            .blocks
+            .get_mut(&func.entry_block)
+            .unwrap()
+            .ops
+            .iter_mut()
+            .find(|operation| operation.opcode == OpCode::Add)
+            .unwrap();
+        operation.opcode = opcode;
+        let output = lower_tir_to_wasm(&func).test_view();
+        assert!(!output.bails_to_generic_path);
+        assert!(
+            output
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::I64RemS))
+        );
+        assert!(
+            output
+                .instructions
+                .iter()
+                .any(|i| matches!(i, Instruction::I64Xor)),
+            "truncating machine div/rem require divisor-sign correction"
+        );
+        assert!(
+            output
+                .instructions
+                .iter()
+                .any(|i| std::mem::discriminant(i) == std::mem::discriminant(&correction))
+        );
+    }
 }

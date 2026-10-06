@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import sys
+
+import pytest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -96,7 +98,7 @@ def _seed_marker(root, session_id, start_head, last_block_head=None):
 def _patch_facts(
     monkeypatch, *, tool_uses, head, has_commit, queue, blocker, subjects=""
 ):
-    monkeypatch.setattr(lg, "_count_tool_uses", lambda p: tool_uses)
+    monkeypatch.setattr(lg, "_count_execution_tools", lambda p: tool_uses)
     monkeypatch.setattr(lg._common, "git_head", lambda root: head)
     monkeypatch.setattr(lg, "_window_has_commit", lambda root, sh: has_commit)
     monkeypatch.setattr(lg, "_queue_row_in_flight", lambda root: queue)
@@ -157,3 +159,107 @@ def test_evaluate_allows_report_only_token(tmp_path, monkeypatch):
     )
     data = {"session_id": "s1", "transcript_path": "x"}
     assert lg.evaluate(data, tmp_path) is None
+
+
+def _transcript(path, tools):
+    rows = [
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": f"use-{index}",
+                        "name": tool,
+                        "input": {"text": 'quoted "tool_use"'},
+                    }
+                ]
+            },
+        }
+        for index, tool in enumerate(tools)
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    return rows
+
+
+def test_read_only_review_does_not_request_implementation(tmp_path, monkeypatch):
+    path = tmp_path / "review.jsonl"
+    _transcript(path, ["Read", "Grep", "Glob"] * 30)
+    _seed_marker(tmp_path, "review", "BASE")
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("read-only review must not query implementation gates")
+
+    monkeypatch.setattr(lg, "_window_has_commit", unexpected)
+    monkeypatch.setattr(lg, "_queue_row_in_flight", unexpected)
+    assert (
+        lg.evaluate({"session_id": "review", "transcript_path": str(path)}, tmp_path)
+        is None
+    )
+    marker = json.loads((common.state_dir(tmp_path) / lg.MARKER_NAME).read_text())
+    assert marker["last_block_head"] is None
+
+
+def test_execution_signal_uses_assistant_records_and_unique_tool_ids(tmp_path):
+    path = tmp_path / "tools.jsonl"
+    rows = _transcript(path, ["Read", "Bash", "Edit", "new_capability"])
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(rows[1]) + "\n")
+        stream.write(json.dumps({"type": "user", "message": rows[2]["message"]}) + "\n")
+        stream.write(
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": json.dumps(rows[2])}]
+                    },
+                }
+            )
+            + "\n"
+        )
+    assert lg._count_execution_tools(str(path)) == 3
+
+
+@pytest.mark.parametrize("boundary", ["line", "partial"])
+def test_transcript_tail_preserves_complete_records_only(
+    tmp_path, monkeypatch, boundary
+):
+    path = tmp_path / "long.jsonl"
+    suffix = (
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [{"type": "tool_use", "id": "real", "name": "Write"}]
+                },
+            }
+        )
+        + "\n"
+    )
+    path.write_text(
+        '{"type":"user","padding":"' + "x" * 300 + '"}\n' + suffix,
+        encoding="utf-8",
+        newline="\n",
+    )
+    monkeypatch.setattr(
+        lg,
+        "_TRANSCRIPT_TAIL_BYTES",
+        len(suffix.encode()) + (20 if boundary == "partial" else 0),
+    )
+    assert lg._count_execution_tools(str(path)) == 1
+
+
+@pytest.mark.parametrize("kind", ["missing", "malformed"])
+def test_transcript_failure_allows_review_with_visible_diagnostic(
+    tmp_path, monkeypatch, capsys, kind
+):
+    path = tmp_path / "unavailable.jsonl"
+    if kind == "malformed":
+        path.write_text("{invalid json}\n", encoding="utf-8")
+    _seed_marker(tmp_path, "review", "BASE")
+    assert (
+        lg.evaluate({"session_id": "review", "transcript_path": str(path)}, tmp_path)
+        is None
+    )
+    assert "landing_gate.transcript" in capsys.readouterr().err
+    assert (common.state_dir(tmp_path) / "landing_gate.transcript_errors.log").is_file()

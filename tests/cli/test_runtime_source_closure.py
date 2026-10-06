@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -21,22 +20,6 @@ def _manifest_tree(root: Path) -> None:
         path.write_text(text, encoding="utf-8")
 
 
-def test_manifest_membership_stamp_observes_same_metadata_content_change(
-    tmp_path: Path,
-) -> None:
-    _manifest_tree(tmp_path)
-    manifest = tmp_path / "runtime" / "crate-a" / "Cargo.toml"
-    before_stat = manifest.stat()
-    before = closure._runtime_manifest_cache_stamp(tmp_path)
-    original = manifest.read_text(encoding="utf-8")
-    manifest.write_text(original.replace("'a'", "'b'"), encoding="utf-8")
-    os.utime(manifest, ns=(before_stat.st_atime_ns, before_stat.st_mtime_ns))
-
-    after = closure._runtime_manifest_cache_stamp(tmp_path)
-
-    assert after != before
-
-
 def test_source_closure_deduplicates_features_and_keeps_shared_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -54,9 +37,7 @@ def test_source_closure_deduplicates_features_and_keeps_shared_inputs(
     first = closure.runtime_source_paths(
         tmp_path / ".", ("feature-b", "feature-a", "feature-b", "default-features")
     )
-    second = closure.runtime_source_paths(tmp_path, ("feature-a", "feature-b"))
-
-    assert first == second
+    assert first == (tmp_path / "runtime" / "crate-a",)
     assert calls == [("feature-a", "feature-b")]
     assert extras == [
         (
@@ -96,7 +77,7 @@ def test_cargo_closure_owns_build_script_non_src_inputs(tmp_path: Path) -> None:
     assert before["digest"] != after["digest"]
 
 
-def test_warm_cached_directory_closure_observes_added_rust_module(
+def test_repeated_directory_closure_observes_added_rust_module(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _manifest_tree(tmp_path)

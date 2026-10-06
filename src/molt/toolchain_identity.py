@@ -16,7 +16,11 @@ import stat
 import subprocess
 from typing import BinaryIO
 
-from molt.file_hashing import content_change_time_ns, content_change_time_ns_from_fd
+from molt.file_hashing import (
+    content_change_time_ns,
+    content_change_time_ns_from_fd,
+    open_stable_read_descriptor,
+)
 from molt.file_publication import metadata_is_link_like
 from molt.llvm_linker_roles import lexical_executable_path
 
@@ -48,7 +52,11 @@ class ExecutableIdentity:
 
 @dataclass(frozen=True, slots=True)
 class StableRegularFileVersion:
-    """Mutation identity for one direct regular file; no payload hashing."""
+    """Metadata observation for one direct regular file; no payload hashing.
+
+    An equal token cannot prove no writes occurred while its handle was closed.
+    Windows in particular can assign the same ChangeTime to distinct writes.
+    """
 
     path: Path
     size: int
@@ -142,6 +150,26 @@ def _unlink_owned_file(path: Path, identity: os.stat_result | None) -> None:
         path.unlink()
 
 
+def stable_regular_file_path_is_current(
+    identity: StableRegularFileVersion, metadata: os.stat_result
+) -> bool:
+    """Whether no-follow path metadata still names the captured generation.
+
+    This path-level fence compares object, type, length, mtime and content
+    change time without reopening the payload. Handle-level custody remains
+    ``verify_stable_regular_file_identity``.
+    """
+
+    return (
+        stat.S_ISREG(metadata.st_mode)
+        and not metadata_is_link_like(metadata)
+        and _path_handle_identity(metadata)
+        == _stored_path_handle_identity(identity._stat_identity)
+        and content_change_time_ns(identity.path, metadata)
+        == identity._content_change_time_ns
+    )
+
+
 def _unlink_stable_file_identity(identity: StableRegularFileIdentity) -> None:
     """Unlink only a path that still names the attested file generation."""
 
@@ -149,14 +177,8 @@ def _unlink_stable_file_identity(identity: StableRegularFileIdentity) -> None:
         current = identity.path.lstat()
     except FileNotFoundError:
         return
-    if _path_handle_identity(current) != _stored_path_handle_identity(
-        identity._stat_identity
-    ):
-        return
-    current_change_time_ns = content_change_time_ns(identity.path, current)
-    if current_change_time_ns != identity._content_change_time_ns:
-        return
-    identity.path.unlink()
+    if stable_regular_file_path_is_current(identity, current):
+        identity.path.unlink()
 
 
 def _executable_paths(path: Path, *, label: str) -> tuple[Path, Path]:
@@ -412,17 +434,35 @@ def resolve_explicit_tool_command(
     return (str(path), *argv[1:])
 
 
-def _stable_file_content(
+def _capture_executable_content(
     path: Path,
     *,
     label: str,
-) -> tuple[Path, Path, int, str, bytes]:
-    """Snapshot a regular file while proving pathname and handle stability."""
+) -> tuple[Path, StableRegularFileIdentity, bytes]:
+    """Capture executable digest and header together, including entrypoint fences."""
+    entrypoint, resolved = _executable_paths(path, label=label)
+    before_entry = _stat_identity(entrypoint.lstat())
+    with open_stable_regular_file(resolved, label=label) as opened:
+        identity = stable_regular_file_handle_identity(opened, label=label)
+        header = opened.stream.read(4)
+        final_entrypoint, final_resolved = _executable_paths(entrypoint, label=label)
+        if (
+            final_entrypoint != entrypoint
+            or final_resolved != resolved
+            or _stat_identity(entrypoint.lstat()) != before_entry
+        ):
+            raise StableRegularFileChangedError(
+                f"{label} entrypoint changed during capture: {entrypoint}"
+            )
+    return entrypoint, identity, header
 
-    with stable_executable_probe(path, label=label) as (lexical, identity):
-        with open_stable_regular_file(identity.path, label=label) as opened:
-            header = opened.stream.read(4)
-        return lexical, identity.path, identity.size, identity.sha256, header
+
+def _stable_file_content(
+    path: Path, *, label: str
+) -> tuple[Path, Path, int, str, bytes]:
+    """Snapshot executable bytes and header through their shared owned capture."""
+    lexical, identity, header = _capture_executable_content(path, label=label)
+    return lexical, identity.path, identity.size, identity.sha256, header
 
 
 _DIGEST_CHUNK_BYTES = 256 * 1024
@@ -486,27 +526,37 @@ def open_stable_regular_file(
     path: Path,
     *,
     label: str,
+    expected_path_stat: os.stat_result | None = None,
+    observed: StableRegularFileVersion | None = None,
 ) -> Iterator[StableRegularFileHandle]:
-    """Open one direct regular file without following path indirection."""
+    """Open one direct regular file, optionally bound to a no-follow snapshot row.
+
+    Supplied metadata replaces only the opening path lookup. The freshly opened
+    handle and path must agree with it before bytes are read; all closing path,
+    handle and content-change-time fences remain mandatory. On Windows the
+    descriptor excludes writes and deletion until this context closes; native
+    ChangeTime alone cannot distinguish writes within one filesystem clock tick.
+    """
 
     lexical = path.expanduser().absolute()
     try:
-        before_path = lexical.lstat()
+        before_path = (
+            lexical.lstat() if expected_path_stat is None else expected_path_stat
+        )
     except OSError as exc:
         raise StableRegularFileError(f"{label} is unavailable: {lexical}") from exc
     if not stat.S_ISREG(before_path.st_mode) or metadata_is_link_like(before_path):
         raise StableRegularFileError(
             f"{label} is not one stable regular file: {lexical}"
         )
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_BINARY", 0)
-        | getattr(os, "O_NOINHERIT", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
     try:
-        descriptor = os.open(lexical, flags)
+        descriptor = open_stable_read_descriptor(lexical)
     except OSError as exc:
+        if getattr(exc, "winerror", None) in (32, 33):
+            raise StableRegularFileChangedError(
+                f"{label} changed or has a conflicting writer before identity read: "
+                f"{lexical}"
+            ) from exc
         try:
             current_path = lexical.lstat()
         except OSError:
@@ -558,7 +608,36 @@ def open_stable_regular_file(
             stat=before_handle,
             content_change_time_ns=before_change,
         )
-        yield opened
+        if observed is not None and (
+            opened.path != observed.path
+            or _stat_identity(before_handle) != observed._stat_identity
+            or before_change != observed._content_change_time_ns
+        ):
+            raise StableRegularFileChangedError(
+                f"{label} changed since identity capture: {lexical}"
+            )
+        try:
+            yield opened
+        except OSError as exc:
+            # Win32 reports sharing violations directly; CPython's CRT-backed
+            # open() can report only EACCES. Bind that case to this pathname so
+            # an unrelated permission failure keeps its original diagnostic.
+            same_path_denied = (
+                os.name == "nt"
+                and exc.filename is not None
+                and os.path.normcase(os.path.abspath(exc.filename))
+                == os.path.normcase(os.path.abspath(lexical))
+                and (
+                    getattr(exc, "winerror", None) in (32, 33)
+                    or isinstance(exc, PermissionError)
+                )
+            )
+            if same_path_denied:
+                raise StableRegularFileChangedError(
+                    f"{label} changed or attempted a conflicting write/delete "
+                    f"during identity read: {lexical}"
+                ) from exc
+            raise
         try:
             after_handle = os.fstat(stream.fileno())
             after_change = content_change_time_ns_from_fd(
@@ -592,12 +671,19 @@ def _stable_regular_file_snapshot(
     *,
     label: str,
     hash_content: bool,
+    expected_path_stat: os.stat_result | None = None,
 ) -> tuple[Path, os.stat_result, int, str | None]:
     """Read one direct regular file's stable open-handle identity."""
 
     try:
-        with open_stable_regular_file(path, label=label) as opened:
-            digest = _sha256_stream(opened.stream) if hash_content else None
+        with open_stable_regular_file(
+            path, label=label, expected_path_stat=expected_path_stat
+        ) as opened:
+            digest = (
+                stable_regular_file_handle_identity(opened, label=label).sha256
+                if hash_content
+                else None
+            )
     except OSError as exc:
         operation = "hashed" if hash_content else "verified"
         lexical = path.expanduser().absolute()
@@ -617,12 +703,62 @@ def _regular_file_identity(
     )
 
 
+def stable_regular_file_handle_identity(
+    opened: StableRegularFileHandle, *, label: str, max_bytes: int | None = None
+) -> StableRegularFileIdentity:
+    """Hash an owned handle in bounded chunks, then rewind it for its consumer.
+
+    The caller retains the enclosing open_stable_regular_file context through
+    consumption. This is the same content authority as a pathname capture;
+    callers that already own a descriptor must not detach and reopen the path.
+    """
+    if max_bytes is not None and (
+        type(max_bytes) is not int or max_bytes <= 0 or opened.stat.st_size > max_bytes
+    ):
+        raise ValueError(f"{label} exceeds size limit: {opened.path}")
+    opened.stream.seek(0)
+    digest = _sha256_stream(opened.stream)
+    if opened.stream.tell() != opened.stat.st_size:
+        raise StableRegularFileChangedError(
+            f"{label} size changed during capture: {opened.path}"
+        )
+    opened.stream.seek(0)
+    return _regular_file_identity(
+        opened.path, opened.stat, opened.content_change_time_ns, digest
+    )
+
+
+def verify_stable_regular_file_content(
+    identity: StableRegularFileIdentity, *, sha256: str, size: int, label: str
+) -> None:
+    """Bind a digest of bytes consumed under an owned read to its old identity.
+
+    This comparison performs no I/O. The caller supplies the digest and length
+    of the actual read buffer, mapped view or copied stream, before closing its
+    open_stable_regular_file context. Metadata-only polling remains separate.
+    """
+    if size != identity.size or sha256 != identity.sha256:
+        raise StableRegularFileChangedError(
+            f"{label} content changed since identity capture: {identity.path}"
+        )
+
+
 def capture_stable_regular_file(
-    path: Path, *, label: str
+    path: Path, *, label: str, max_bytes: int | None = None
 ) -> tuple[StableRegularFileIdentity, bytes]:
     """Capture bytes and their mutation identity from one stable no-follow read."""
     with open_stable_regular_file(path, label=label) as opened:
-        data = opened.stream.read()
+        if max_bytes is not None and (
+            type(max_bytes) is not int
+            or max_bytes <= 0
+            or opened.stat.st_size > max_bytes
+        ):
+            raise ValueError(f"{label} exceeds size limit: {path}")
+        # Read one byte beyond the admitted length to detect growth without an
+        # unbounded allocation if a POSIX writer extends the file concurrently.
+        data = opened.stream.read(opened.stat.st_size + 1)
+        if max_bytes is not None and len(data) > max_bytes:
+            raise ValueError(f"{label} exceeds size limit: {path}")
         if len(data) != opened.stat.st_size:
             raise StableRegularFileChangedError(
                 f"{label} size changed during capture: {opened.path}"
@@ -640,6 +776,7 @@ def stable_regular_file_identity(
     path: Path,
     *,
     label: str,
+    expected_path_stat: os.stat_result | None = None,
 ) -> StableRegularFileIdentity:
     """Hash one direct regular file and retain its cheap mutation identity."""
 
@@ -647,6 +784,7 @@ def stable_regular_file_identity(
         path,
         label=label,
         hash_content=True,
+        expected_path_stat=expected_path_stat,
     )
     if digest is None:
         raise RuntimeError("stable regular-file identity omitted its content digest")
@@ -763,39 +901,58 @@ def verify_stable_regular_file_identity(
     identity: StableRegularFileVersion,
     *,
     label: str,
+    expected_path_stat: os.stat_result | None = None,
+    hash_content: bool = False,
 ) -> None:
-    """Fail unless a file still has the captured handle and mutation identity."""
+    """Compare current handle metadata with a previously observed generation.
 
-    _path, file_stat, change_time_ns, _digest = _stable_regular_file_snapshot(
+    Detached observations do not retain read custody. Metadata polling does not
+    revalidate bytes; content-cache admission must explicitly request hashing.
+    """
+    if hash_content and not isinstance(identity, StableRegularFileIdentity):
+        raise ValueError(f"{label} lacks a captured content digest: {identity.path}")
+    _path, file_stat, change_time_ns, digest = _stable_regular_file_snapshot(
         identity.path,
         label=label,
-        hash_content=False,
+        hash_content=hash_content,
+        expected_path_stat=expected_path_stat,
     )
     if (
         _stat_identity(file_stat) != identity._stat_identity
         or change_time_ns != identity._content_change_time_ns
     ):
         raise ValueError(f"{label} changed since identity capture: {identity.path}")
+    if hash_content:
+        assert isinstance(identity, StableRegularFileIdentity) and digest is not None
+        verify_stable_regular_file_content(
+            identity, sha256=digest, size=file_stat.st_size, label=label
+        )
 
 
 def read_stable_regular_file(
-    identity: StableRegularFileIdentity, *, label: str
+    identity: StableRegularFileIdentity, *, label: str, max_bytes: int | None = None
 ) -> bytes:
-    """Read attested bytes without rehashing or retaining a second content cache."""
+    """Read once and validate the returned bytes against their captured digest.
 
-    with open_stable_regular_file(identity.path, label=label) as opened:
-        if (
-            _stat_identity(opened.stat) != identity._stat_identity
-            or opened.content_change_time_ns != identity._content_change_time_ns
-        ):
-            raise StableRegularFileChangedError(
-                f"{label} changed since identity capture: {identity.path}"
-            )
-        data = opened.stream.read()
-        if len(data) != identity.size:
-            raise StableRegularFileChangedError(
-                f"{label} ended before its captured size: {identity.path}"
-            )
+    Metadata observations fence the open, but cannot attest content across a
+    closed-handle interval. Hash the already-read buffer under this owned read;
+    no second read, descriptor or retained content cache is needed.
+    """
+
+    if max_bytes is not None and (
+        type(max_bytes) is not int or max_bytes <= 0 or identity.size > max_bytes
+    ):
+        raise ValueError(f"{label} exceeds size limit: {identity.path}")
+    with open_stable_regular_file(
+        identity.path, label=label, observed=identity
+    ) as opened:
+        data = opened.stream.read(identity.size + 1)
+        verify_stable_regular_file_content(
+            identity,
+            sha256=hashlib.sha256(data).hexdigest(),
+            size=len(data),
+            label=label,
+        )
     return data
 
 
@@ -810,7 +967,13 @@ def stable_executable_probe(
     entrypoint, resolved = _executable_paths(path, label=label)
     before_entry = _stat_identity(entrypoint.lstat())
     if identity is None:
-        identity = stable_regular_file_identity(resolved, label=label)
+        captured_entrypoint, identity, _header = _capture_executable_content(
+            path, label=label
+        )
+        if captured_entrypoint != entrypoint or identity.path != resolved:
+            raise StableRegularFileChangedError(
+                f"{label} entrypoint changed before probe: {entrypoint}"
+            )
     else:
         if resolved != identity.path:
             raise StableRegularFileChangedError(
@@ -867,14 +1030,13 @@ def stable_native_executable_probe(
     path: Path, *, label: str
 ) -> Iterator[tuple[Path, StableRegularFileIdentity]]:
     """Bind native executable admission and a probe to one captured generation."""
-    with stable_executable_probe(path, label=label) as (entrypoint, identity):
-        with open_stable_regular_file(identity.path, label=label) as opened:
-            header = opened.stream.read(4)
-        if not _native_executable_header(header):
-            raise ValueError(
-                f"{label} must be a native executable, not a script or delegating wrapper: "
-                f"{identity.path}"
-            )
+    entrypoint, identity, header = _capture_executable_content(path, label=label)
+    if not _native_executable_header(header):
+        raise ValueError(
+            f"{label} must be a native executable, not a script or delegating wrapper: "
+            f"{identity.path}"
+        )
+    with stable_executable_probe(entrypoint, label=label, identity=identity):
         yield entrypoint, identity
 
 

@@ -6,9 +6,14 @@ from tools import harness_memory_guard
 
 from .paths import ROOT
 from .primitive_effects import render_primitive_effects_rs
-from .runtime_requirements import runtime_symbol_requirement_masks
+from .runtime_requirements import (
+    INTEGER_SEMANTIC_ROLES,
+    integer_semantics_by_kind,
+    runtime_symbol_requirement_masks,
+    runtime_kind_requirement_masks,
+    target_runtime_requirement_masks,
+)
 from .schema import (
-    _CALL_OPCODE_ROLES,
     _EXCEPTION_REGION_NESTING_ROLES,
     _FUZZ_TIR_ATTR_PAYLOAD_RULES,
     _GENERATOR_FUSION_ITER_USE_ROLES,
@@ -19,7 +24,10 @@ from .schema import (
     _SIMPLEIR_OP_VALUE_RULES,
     _SIMPLEIR_VERIFIER_CONTROL_FACT_FIELDS,
 )
-from .validate import _opcode_role_members, _simpleir_registered_runtime_kinds
+from .validate import (
+    _opcode_role_members,
+    _simpleir_var_forbidden_spellings,
+)
 from .render_rust_analysis import (
     _render_predicate_semantics,
     _render_counted_loop_comparison_roles,
@@ -62,8 +70,8 @@ _RS_HEADER = """\
 // (docs/design/foundation/25_op_kind_registry.md). These tables back the
 // `kind_to_opcode` mapper (ssa.rs), the `CopyLowering` classifier
 // (alias_analysis.rs), the per-OpCode effect oracle (effects.rs), and the
-// operand-ownership tables (design 27 §2.1/§2.3, consumed by drop_insertion.rs's
-// `op_consumed_operand_root`). A drift between this file and op_kinds.toml is
+// operand-ownership tables (design 27 §2.1/§2.3, read by the ownership module's
+// `op_transferred_operands`). A drift between this file and op_kinds.toml is
 // caught by tests/test_gen_op_kinds.py; a new op kind that the frontend can emit
 // but that is absent here is caught by tools/audit_op_kinds.py --check.
 
@@ -80,7 +88,6 @@ def render_rs(data: dict) -> str:
 def _render_rs_unformatted(data: dict) -> str:
     opcodes = data["opcode"]
     kinds = data.get("kind", [])
-    prefixes = data.get("classifier_fresh_value_prefixes", [])
 
     out: list[str] = [_RS_HEADER]
 
@@ -94,6 +101,17 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append("\n\n")
     out.append(_render_simpleir_runtime_semantics(data))
     out.append("\n\n")
+
+    out.append(
+        "/// Backend-only runtime services must use their typed semantic operation.\n"
+        "/// Generated from backend_service_symbol on the canonical kind row.\n"
+        "pub fn simpleir_backend_service_kind(symbol: &str) -> Option<&'static str> {\n"
+        "    match symbol {\n"
+    )
+    for row in kinds:
+        if (service := row.get("backend_service_symbol")) is not None:
+            out.append(f'        "{service}" => Some("{row["canonical"]}"),\n')
+    out.append("        _ => None,\n    }\n}\n\n")
 
     # -- kind_to_opcode table ------------------------------------------------
     out.append(
@@ -126,13 +144,11 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append("\n")
 
     # -- fresh-value classifier exact set ------------------------------------
-    fresh = list(data.get("classifier_fresh_value", []))
+    fresh = list(data.get("classifier_owned_value", []))
     out.append(
-        "/// EXACT-match arm of `copy_kind_mints_fresh_owned_ref`: kinds whose\n"
-        "/// runtime mints a fresh +1 owned reference. The `vec_*` prefix rule is\n"
-        "/// applied separately by the caller (see `fresh_value_prefixes`).\n"
+        "/// Exact canonical kinds returning an independent owned reference; no allocation-freshness claim.\n"
         "#[inline]\n"
-        "pub fn copy_kind_mints_fresh_owned_ref_table(kind: &str) -> bool {\n"
+        "pub fn copy_kind_mints_owned_value_table(kind: &str) -> bool {\n"
         "    matches!(\n"
         "        kind,\n"
     )
@@ -169,23 +185,12 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_matches_arm(exception_creation))
     out.append("    )\n}\n\n")
 
-    # -- fresh-value prefix rule ---------------------------------------------
-    out.append(
-        "/// Prefix rules for `copy_kind_mints_fresh_owned_ref`: a kind starting\n"
-        "/// with any of these mints a fresh owned reference (e.g. the `vec_*`\n"
-        "/// vectorized-reduction family, each calling a dedicated `molt_vec_*`).\n"
-        "pub const FRESH_VALUE_PREFIXES: &[&str] = &[\n"
-    )
-    for p in prefixes:
-        out.append(f'    "{p}",\n')
-    out.append("];\n\n")
-
     # -- inert-marker classifier exact set -----------------------------------
     inert = list(data.get("classifier_inert_marker", []))
     out.append(
         "/// EXACT-match arm of `classify_copy_kind`'s inert bucket: kinds with a\n"
         "/// dedicated RC-inert backend lowering and no surviving heap reference to\n"
-        "/// own (`line`/`trace_*`/`missing`/`nop`, the read-only repr/layout guards).\n"
+        "/// own (`line`/`missing`/`nop`, the read-only repr/layout guards).\n"
         "#[inline]\n"
         "pub fn copy_kind_is_inert_marker_table(kind: &str) -> bool {\n"
         "    matches!(\n"
@@ -199,7 +204,7 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(
         "/// EXACT-match arm of `classify_copy_kind`'s explicit transparent-alias\n"
         "/// bucket: known Copy-lifted runtime ops that intentionally keep the\n"
-        "/// drop-insertion fail-closed behavior (not FreshValue, not InertMarker)\n"
+        "/// drop-insertion fail-closed behavior (not OwnedValue, not InertMarker)\n"
         "/// while remaining distinct from `copy_kind_is_explicit_no_heap_move`.\n"
         "/// Membership here DOES NOT grant MemGVN/SROA no-heap-move privileges.\n"
         "#[inline]\n"
@@ -223,6 +228,22 @@ def _render_rs_unformatted(data: dict) -> str:
         "        kind,\n"
     )
     out.append(_render_matches_arm(no_heap))
+    out.append("    )\n}\n\n")
+
+    # -- binding-view classifier exact set -----------------------------------
+    binding_view = list(data.get("classifier_binding_view", []))
+    out.append(
+        "/// EXACT-match arm of the frame binding views: Copy-lifted kinds whose\n"
+        "/// result is a view of the binding a frame home holds, with no reference\n"
+        "/// of its own, valid until the next write to its slot. A subset of the\n"
+        "/// explicit transparent-alias bucket; `OwnershipRootFacts` joins views\n"
+        "/// through block arguments and never releases one.\n"
+        "#[inline]\n"
+        "pub fn copy_kind_is_binding_view_table(kind: &str) -> bool {\n"
+        "    matches!(\n"
+        "        kind,\n"
+    )
+    out.append(_render_matches_arm(binding_view))
     out.append("    )\n}\n\n")
 
     out.append(_render_all_opcodes(opcodes))
@@ -253,6 +274,20 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append("    }\n}\n\n")
 
     out.append(
+        "/// Synchronous Python callback capability, including finalizers.\n"
+        "/// Independent from global-memory access and deferred poll references.\n"
+        "#[inline]\n"
+        "pub fn opcode_may_call_python_table(opcode: OpCode) -> bool {\n"
+        "    match opcode {\n"
+    )
+    out.append(
+        _render_opcode_bool_arms(
+            opcodes, [r["name"] for r in opcodes if r["may_call_python"]]
+        )
+    )
+    out.append("    }\n}\n\n")
+
+    out.append(
         "/// Effect facts for the LICM/GVN/alias/MemorySSA core. Generated from\n"
         "/// each opcode row's `purity`, `may_throw`, and heap-access facts so\n"
         "/// consumers never carry a second callback-effect classification table.\n"
@@ -262,30 +297,35 @@ def _render_rs_unformatted(data: dict) -> str:
         "    pub effect_free: bool,\n"
         "    pub nothrow: bool,\n"
         "    pub may_access_arbitrary_heap: bool,\n"
+        "    pub may_call_python: bool,\n"
         "}\n\n"
         "pub const OPCODE_EFFECTS_PURE: OpcodeEffects = OpcodeEffects {\n"
         "    consistent: true,\n"
         "    effect_free: true,\n"
         "    nothrow: true,\n"
         "    may_access_arbitrary_heap: false,\n"
+        "    may_call_python: false,\n"
         "};\n"
         "pub const OPCODE_EFFECTS_PURE_MAY_THROW: OpcodeEffects = OpcodeEffects {\n"
         "    consistent: true,\n"
         "    effect_free: true,\n"
         "    nothrow: false,\n"
         "    may_access_arbitrary_heap: false,\n"
+        "    may_call_python: false,\n"
         "};\n"
         "pub const OPCODE_EFFECTS_IMPURE: OpcodeEffects = OpcodeEffects {\n"
         "    consistent: false,\n"
         "    effect_free: false,\n"
         "    nothrow: false,\n"
         "    may_access_arbitrary_heap: true,\n"
+        "    may_call_python: true,\n"
         "};\n"
         "pub const OPCODE_EFFECTS_IMPURE_LOCAL: OpcodeEffects = OpcodeEffects {\n"
         "    consistent: false,\n"
         "    effect_free: false,\n"
         "    nothrow: false,\n"
         "    may_access_arbitrary_heap: false,\n"
+        "    may_call_python: false,\n"
         "};\n\n"
         "/// Per-OpCode effect facts. EXHAUSTIVE over the enum — a new variant fails\n"
         "/// to compile until classified in op_kinds.toml.\n"
@@ -299,16 +339,17 @@ def _render_rs_unformatted(data: dict) -> str:
         "    // Impurity does not imply throwing. Project the same authority\n"
         "    // used by exception consumers instead of inheriting a preset floor.\n"
         "    effects.nothrow = !opcode_may_throw_table(opcode);\n"
+        "    effects.may_call_python = opcode_may_call_python_table(opcode);\n"
         "    effects\n}\n\n"
     )
-    out.append(_render_call_opcode_roles(opcodes, data))
+    out.append(_render_observation_kind_predicates(data))
     out.append("\n")
 
     async_work_poll_after = list(data.get("async_work_poll_after_opcodes", []))
     out.append(
         "/// Whether successful completion of this first-class opcode is a Python\n"
         "/// asynchronous-work/eval-breaker observation point. Preserved Copy call\n"
-        "/// spellings use `simpleir_kind_is_call_graph_user_call`. EXHAUSTIVE over\n"
+        "/// spellings use `simpleir_kind_requires_async_work_poll_after`. EXHAUSTIVE over\n"
         "/// OpCode so native and wasm cannot grow private call-return poll sets.\n"
         "#[inline]\n"
         "pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {\n"
@@ -456,20 +497,6 @@ def _render_rs_unformatted(data: dict) -> str:
         "    match opcode {\n"
     )
     out.append(_render_opcode_bool_arms(opcodes, lowered_state_machine_body))
-    out.append("    }\n}\n\n")
-
-    drop_insertion_suspension_points = list(
-        data.get("drop_insertion_suspension_point_opcodes", [])
-    )
-    out.append(
-        "/// Whether an opcode suspends execution and requires drop_insertion.rs\n"
-        "/// to retain live owned values into the coroutine frame. DISTINCT from\n"
-        "/// broader state-machine/fusion facts. EXHAUSTIVE over OpCode.\n"
-        "#[inline]\n"
-        "pub fn opcode_is_drop_insertion_suspension_point_table(opcode: OpCode) -> bool {\n"
-        "    match opcode {\n"
-    )
-    out.append(_render_opcode_bool_arms(opcodes, drop_insertion_suspension_points))
     out.append("    }\n}\n\n")
 
     drop_insertion_return_deferral_barriers = list(
@@ -735,17 +762,29 @@ def _render_rs_unformatted(data: dict) -> str:
 
     # -- literal payload facts: exhaustive over OpCode ----------------------
     literal_kinds = {
-        row["opcode"]: row["literal"] for row in data.get("literal_payload_opcodes", [])
+        row["opcode"]: row["literal"] for row in data["literal_payload_opcodes"]
     }
     out.append(
+        "/// Owned carrier shape shared by IR admission and all backends.\n"
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n"
+        "pub enum OwnedLiteralPayloadKind {\n"
+    )
+    for variant, owned in _LITERAL_PAYLOAD_KINDS.values():
+        if owned:
+            out.append(f"    {variant},\n")
+    out.append("}\n\n")
+    out.append(
         "/// Literal payload kind consumers may record for an opcode.\n"
-        "#[derive(Clone, Copy, PartialEq, Eq)]\n"
+        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n"
         "pub enum LiteralPayloadKind {\n"
-        "    Int,\n"
-        "    Bool,\n"
+    )
+    for variant, owned in _LITERAL_PAYLOAD_KINDS.values():
+        if not owned:
+            out.append(f"    {variant},\n")
+    out.append(
+        "    Owned(OwnedLiteralPayloadKind),\n"
         "}\n\n"
-        "/// Literal payload classifier. EXHAUSTIVE over OpCode; non-literal\n"
-        "/// opcodes map to None instead of pass-local wildcards.\n"
+        "/// Literal payload classifier. EXHAUSTIVE over OpCode.\n"
         "#[inline]\n"
         "pub fn opcode_literal_payload_kind_table(\n"
         "    opcode: OpCode,\n"
@@ -758,11 +797,27 @@ def _render_rs_unformatted(data: dict) -> str:
         if literal is None:
             out.append(f"        OpCode::{opcode} => None,\n")
         else:
-            variant = _LITERAL_PAYLOAD_KINDS[literal]
-            out.append(
-                f"        OpCode::{opcode} => Some(LiteralPayloadKind::{variant}),\n"
+            variant, owned = _LITERAL_PAYLOAD_KINDS[literal]
+            value = (
+                f"LiteralPayloadKind::Owned(OwnedLiteralPayloadKind::{variant})"
+                if owned
+                else f"LiteralPayloadKind::{variant}"
             )
+            out.append(f"        OpCode::{opcode} => Some({value}),\n")
     out.append("    }\n}\n\n")
+    out.append(
+        "/// Owned-carrier projection of the same literal authority.\n"
+        "#[inline]\n"
+        "pub fn opcode_owned_literal_payload_kind_table(\n"
+        "    opcode: OpCode,\n"
+        ") -> Option<OwnedLiteralPayloadKind> {\n"
+        "    match opcode_literal_payload_kind_table(opcode) {\n"
+        "        Some(LiteralPayloadKind::Owned(kind)) => Some(kind),\n"
+    )
+    for variant, owned in _LITERAL_PAYLOAD_KINDS.values():
+        if not owned:
+            out.append(f"        Some(LiteralPayloadKind::{variant}) => None,\n")
+    out.append("        None => None,\n    }\n}\n\n")
 
     # -- canonicalize facts: exhaustive over OpCode -------------------------
     commutative_domains = {
@@ -822,6 +877,7 @@ def _render_rs_unformatted(data: dict) -> str:
             opcodes,
             data.get("consuming_kind", []),
             data.get("absorbing_operand_kind", []),
+            data.get("source_call_kind", []),
         )
     )
     out.append("\n")
@@ -950,6 +1006,17 @@ def _render_simpleir_kind_bool_fn(fn_name: str, members: list[str], doc: str) ->
 
 
 def _render_simpleir_op_shapes(data: dict) -> str:
+    kinds = {row["canonical"]: row for row in data.get("kind", [])}
+    # Project canonical shape facts to every registered spelling. Keeping each
+    # spelling in its row preserves the malformed input's diagnostic identity.
+    shapes = [
+        {**row, "kind": spelling}
+        for row in data.get("simpleir_op_shape", [])
+        for spelling in (
+            row["kind"],
+            *kinds.get(row["kind"], {}).get("aliases", []),
+        )
+    ]
     out = [
         "/// Integer-metadata admission for generated SimpleIR operation shapes.\n",
         "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
@@ -970,7 +1037,7 @@ def _render_simpleir_op_shapes(data: dict) -> str:
             "pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[\n",
         ]
     )
-    for row in data.get("simpleir_op_shape", []):
+    for row in shapes:
         out.extend(
             [
                 "    SimpleIrOpShape {\n",
@@ -988,7 +1055,7 @@ def _render_simpleir_op_shapes(data: dict) -> str:
             "    match kind {\n",
         ]
     )
-    for index, row in enumerate(data.get("simpleir_op_shape", [])):
+    for index, row in enumerate(shapes):
         out.append(
             f"        {_rs_string(row['kind'])} => Some(&SIMPLEIR_OP_SHAPES[{index}]),\n"
         )
@@ -1188,6 +1255,10 @@ def _render_simpleir_field_roles(data: dict) -> str:
     for key, role in var_roles:
         patterns = " | ".join(f'"{member}"' for member in data.get(key, []))
         lines.append(f"        {patterns} => SimpleIrVarFieldRole::{role},\n")
+    forbidden = _simpleir_var_forbidden_spellings(data)
+    if forbidden:
+        patterns = " | ".join(f'"{member}"' for member in forbidden)
+        lines.append(f"        {patterns} => SimpleIrVarFieldRole::Forbidden,\n")
     return_terminators = [
         row["kind"]
         for row in data.get("simpleir_control_kind", [])
@@ -1224,17 +1295,7 @@ def _render_simpleir_field_roles(data: dict) -> str:
 
 
 def _render_simpleir_integer_semantics(data: dict) -> str:
-    roles = (
-        ("simpleir_dynamic_add_semantics_kinds", "DynamicAdd"),
-        ("simpleir_dynamic_numeric_semantics_kinds", "DynamicNumeric"),
-        ("simpleir_dynamic_true_div_semantics_kinds", "DynamicTrueDiv"),
-        ("simpleir_dynamic_divmod_semantics_kinds", "DynamicDivmod"),
-        ("simpleir_dynamic_power_semantics_kinds", "DynamicPower"),
-        ("simpleir_dynamic_unary_numeric_semantics_kinds", "DynamicUnaryNumeric"),
-        ("simpleir_integer_only_semantics_kinds", "IntegerOnly"),
-        ("simpleir_integer_literal_semantics_kinds", "IntegerLiteral"),
-        ("simpleir_integer_producer_semantics_kinds", "IntegerProducer"),
-    )
+    roles = INTEGER_SEMANTIC_ROLES
     lines = [
         "/// Python integer semantic role for a SimpleIR wire spelling.\n",
         "/// Generated from op_kinds.toml so string-dispatch backends apply target\n",
@@ -1271,9 +1332,17 @@ def _render_simpleir_integer_semantics(data: dict) -> str:
             "    match kind {\n",
         ]
     )
-    for key, variant in roles:
-        patterns = " | ".join(f'"{member}"' for member in data.get(key, []))
-        lines.append(f"        {patterns} => SimpleIrIntegerSemantics::{variant},\n")
+    semantics = integer_semantics_by_kind(data)
+    for _, variant in roles:
+        patterns = " | ".join(
+            f'"{member}"'
+            for member in sorted(semantics)
+            if semantics[member] == variant
+        )
+        if patterns:
+            lines.append(
+                f"        {patterns} => SimpleIrIntegerSemantics::{variant},\n"
+            )
     lines.extend(
         [
             "        _ => SimpleIrIntegerSemantics::None,\n",
@@ -1296,7 +1365,6 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
         )
     )
     known_mask = sum(1 << bit for _, _, bit, _ in roles)
-    registered = _simpleir_registered_runtime_kinds(data)
 
     lines = [
         "/// Composable runtime/object-model requirements for a SimpleIR spelling.\n",
@@ -1353,7 +1421,7 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
             f"requirement: SimpleIrRuntimeRequirements::{constant}, "
             f"reason: {constant}_REQUIREMENT_REASON }},\n"
         )
-    role_bits = {constant: bit for _, constant, bit, _ in roles}
+    target_masks = target_runtime_requirement_masks(data)
     lines.extend(
         [
             "];\n\n",
@@ -1382,7 +1450,7 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
     for profile in sorted(
         data["simpleir_target_runtime_profiles"], key=lambda row: row["target"]
     ):
-        bits = sum(1 << role_bits[constant] for constant in profile["supported"])
+        bits = target_masks[profile["target"]]
         lines.append(
             f"        super::target_info::TargetKind::{profile['rust_variant']} => SimpleIrRuntimeRequirements({bits}),\n"
         )
@@ -1398,10 +1466,7 @@ def _render_simpleir_runtime_semantics(data: dict) -> str:
         ]
     )
 
-    requirements_by_kind = {kind: 0 for kind in registered}
-    for key, _, bit, _ in roles:
-        for kind in data.get(key, []):
-            requirements_by_kind[kind] = requirements_by_kind.get(kind, 0) | (1 << bit)
+    requirements_by_kind = runtime_kind_requirement_masks(data)
     grouped: dict[int, list[str]] = {}
     for kind, bits in requirements_by_kind.items():
         grouped.setdefault(bits, []).append(kind)
@@ -1553,44 +1618,23 @@ def _render_opcode_result_arity_arms(opcodes: list[dict]) -> str:
     return "".join(lines)
 
 
-def _render_call_opcode_roles(opcodes: list[dict], data: dict) -> str:
-    """Render call graph / CallFacts opcode roles and Copy-kind predicate."""
-    rows = data.get("call_opcode_roles", [])
-    role_by_opcode = {row["opcode"]: row["role"] for row in rows}
+def _render_observation_kind_predicates(data: dict) -> str:
+    """Render the observation protocol and audited Copy callback exemptions."""
     lines = [
-        "/// Call graph / CallFacts role for first-class opcodes.\n",
-        "/// EXHAUSTIVE over OpCode; opcodes outside the role table are not calls.\n",
-        "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
-        "pub enum CallOpcodeRole {\n",
+        "/// Audited callback-free preserved primitives; absence fails closed.\n",
+        "#[inline]\n",
+        "pub fn copy_kind_is_callback_free_table(kind: &str) -> bool {\n",
+        "    matches!(kind,\n",
+        _render_matches_arm(data.get("callback_free_copy_kinds", [])),
+        "    )\n}\n\n",
+        "/// Copy spellings requiring a call-return async-work observation.\n",
+        "/// This is a polling protocol, not call graph membership.\n",
+        "#[inline]\n",
+        "pub fn simpleir_kind_requires_async_work_poll_after(kind: &str) -> bool {\n",
+        "    matches!(\n",
+        "        kind,\n",
     ]
-    for variant in _CALL_OPCODE_ROLES.values():
-        lines.append(f"    {variant},\n")
-    lines.extend(
-        [
-            "}\n\n",
-            "#[inline]\n",
-            "pub fn opcode_call_role_table(opcode: OpCode) -> CallOpcodeRole {\n",
-            "    match opcode {\n",
-        ]
-    )
-    for row in opcodes:
-        name = row["name"]
-        role = role_by_opcode.get(name, "not_call")
-        variant = _CALL_OPCODE_ROLES[role]
-        lines.append(f"        OpCode::{name} => CallOpcodeRole::{variant},\n")
-    lines.extend(
-        [
-            "    }\n}\n\n",
-            "/// SimpleIR kind spellings that make a Copy `_original_kind` a user-call edge.\n",
-            "/// Generated from `call_graph_user_call_kinds` so call_graph.rs has no\n",
-            "/// private call-kind string set beside the mapper table.\n",
-            "#[inline]\n",
-            "pub fn simpleir_kind_is_call_graph_user_call(kind: &str) -> bool {\n",
-            "    matches!(\n",
-            "        kind,\n",
-        ]
-    )
-    lines.append(_render_matches_arm(data.get("call_graph_user_call_kinds", [])))
+    lines.append(_render_matches_arm(data.get("async_work_poll_after_kinds", [])))
     lines.append("    )\n}\n\n")
     lines.extend(
         [

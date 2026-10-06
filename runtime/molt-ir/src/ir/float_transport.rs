@@ -88,7 +88,7 @@ mod tests {
             f64::MAX,
             0.9999999999999999,
             123456789012345.67,
-            2.2250738585072011e-308,
+            f64::from_bits(0x000f_ffff_ffff_ffff),
         ] {
             let ir = SimpleIR {
                 functions: vec![FunctionIR {

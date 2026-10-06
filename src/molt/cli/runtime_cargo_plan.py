@@ -38,12 +38,11 @@ from molt.cli.wasm_link_args import runtime_link_response_arguments
 from molt.toolchain_identity import (
     ExecutableIdentity,
     StableRegularFileIdentity,
-    read_stable_regular_file,
+    capture_stable_regular_file,
     resolve_executable,
     executable_content_path,
     stable_executable_probe,
     stable_native_executable_probe,
-    stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
 
@@ -139,6 +138,7 @@ class CargoResourceRoot:
     dynamic_libraries_only: bool = False
 
     def files(self) -> tuple[tuple[str, Path], ...]:
+        """Capture lexical file edges without unfolding directory backedges."""
         try:
             metadata = self.path.lstat()
         except FileNotFoundError:
@@ -156,7 +156,7 @@ class CargoResourceRoot:
         def visit(directory: Path, ancestors: frozenset[Path]) -> None:
             resolved = directory.resolve(strict=True)
             if resolved in ancestors:
-                raise ValueError(f"runtime resource directory alias cycle: {directory}")
+                return
             ancestors = ancestors | {resolved}
             for path in sorted(directory.iterdir()):
                 if self.dynamic_libraries_only and not (
@@ -190,24 +190,35 @@ class CargoResourceCustody:
     def capture(cls, roots: tuple[CargoResourceRoot, ...]) -> CargoResourceCustody:
         snapshots: dict[Path, StableRegularFileIdentity] = {}
         files: list[CargoFileCustody] = []
-        for root in roots:
-            for label, path in root.files():
-                content_path = executable_content_path(path, label=label)
-                prior = snapshots.get(content_path)
-                if prior is None:
-                    captured = CargoFileCustody.capture(label, path)
-                    snapshots[captured.identity.path] = captured.identity
-                else:
-                    captured = CargoFileCustody(label, path, prior)
-                if label.startswith("rust/link-response/"):
-                    if captured.identity.size > RUNTIME_ARTIFACT_METADATA_MAX_BYTES:
-                        raise ValueError(
-                            "runtime linker response exceeds the artifact metadata limit"
-                        )
-                    runtime_link_response_arguments(
-                        read_stable_regular_file(captured.identity, label=label)
-                    )
-                files.append(captured)
+        selected = tuple(
+            (label, path, executable_content_path(path, label=label))
+            for root in roots
+            for label, path in root.files()
+        )
+        response_paths = {
+            content_path
+            for label, _path, content_path in selected
+            if label.startswith("rust/link-response/")
+        }
+        for label, path, content_path in selected:
+            prior = snapshots.get(content_path)
+            if prior is not None:
+                captured = CargoFileCustody(label, path, prior)
+            elif content_path in response_paths:
+                # Capture and parse the same bounded bytes, even if this file
+                # first occurs under another resource label. Retain only its
+                # identity; no response-content cache outlives this operation.
+                identity, content = capture_stable_regular_file(
+                    content_path,
+                    label="runtime linker response",
+                    max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+                )
+                runtime_link_response_arguments(content)
+                captured = CargoFileCustody(label, path, identity)
+            else:
+                captured = CargoFileCustody.capture(label, path)
+            snapshots[captured.identity.path] = captured.identity
+            files.append(captured)
         result = cls(roots, tuple(files))
         result.verify()
         return result
@@ -1064,8 +1075,7 @@ def _apply_cargo_environment(
 
 
 def _capture_config(path: Path, *, label: str) -> CargoConfigurationInput:
-    identity = stable_regular_file_identity(path, label=label)
-    raw = read_stable_regular_file(identity, label=label)
+    identity, raw = capture_stable_regular_file(path, label=label)
     try:
         value = tomllib.loads(raw.decode("utf-8"))
     except (UnicodeError, tomllib.TOMLDecodeError) as exc:
@@ -1097,9 +1107,7 @@ def _capture_config(path: Path, *, label: str) -> CargoConfigurationInput:
             and not Path(command).is_absolute()
         ):
             table[key] = str((path.parent.parent / command).resolve(strict=False))
-    return CargoConfigurationInput(
-        label, identity, cast(Mapping[str, object], _freeze_json(value))
-    )
+    return CargoConfigurationInput(label, identity, _freeze_json(value))
 
 
 def _command_options(command: Sequence[str]) -> tuple[str | None, tuple[str, ...]]:
@@ -1401,6 +1409,26 @@ class RuntimeCargoPlan:
     c_environment: Mapping[str, tuple[str, ...]]
 
     @property
+    def cargo_profile(self) -> str:
+        """Present the profile selected by the admitted Cargo command.
+
+        Rustc arguments after `--` never select a Cargo profile. This is a
+        command projection only; it performs no configuration or identity work.
+        """
+        profile = "dev"
+        arguments = iter(self.command[1:])
+        for argument in arguments:
+            if argument == "--":
+                break
+            if argument == "--release":
+                profile = "release"
+            elif argument == "--profile":
+                profile = next(arguments)
+            elif argument.startswith("--profile="):
+                profile = argument.partition("=")[2]
+        return profile
+
+    @property
     def logical_paths(self) -> tuple[tuple[str, Path], ...]:
         return (
             *self.resource_paths,
@@ -1571,6 +1599,38 @@ class RuntimeCargoPlan:
         self.rust_resources.verify()
         self.link_resources.verify()
 
+    def rust_resource_identity(self) -> dict[str, object]:
+        return {
+            "host_triple": self.host_target,
+            "selected_target": self.target,
+            "content": self.rust_resources.content_identity(),
+        }
+
+    def toolchain_identity(self) -> dict[str, object]:
+        """Project Cargo's admitted tools/resources, without consumer extras.
+
+        A runtime build may additionally execute Python generators. The compiler
+        build does not inherit those runtime-only inputs or interpreter probes.
+        """
+        tools: dict[str, object] = {}
+        wrappers: dict[str, object] = {}
+        for item in self.executable_custody:
+            group, role = item.label.split("/", 1)
+            destination = tools if group == "tool" else wrappers
+            destination[role] = {
+                "logical_name": role if group == "tool" else role.casefold(),
+                **item.content_record(),
+            }
+        return {
+            "tools": tools,
+            "wrappers": wrappers,
+            "cargo_configuration": self.configuration_identity(),
+            "effective_target": self.target,
+            "rust_resources": self.rust_resource_identity(),
+            "sysroots": {},
+            "archives": [],
+        }
+
     def configuration_identity(self) -> dict[str, object]:
         self.verify()
         entries = [
@@ -1723,6 +1783,8 @@ def resolve_runtime_cargo_plan(
     cargo_command: Sequence[str],
     requested_target: str | None,
     host_target: str | None = None,
+    environment_transform: Callable[[Mapping[str, str]], Mapping[str, str]]
+    | None = None,
     rustflags_transform: Callable[[tuple[str, ...]], tuple[str, ...]] | None = None,
     capture_inputs: Callable[
         [Mapping[str, str], Mapping[str, Path], tuple[CargoResourceRoot, ...]], None
@@ -1790,6 +1852,10 @@ def resolve_runtime_cargo_plan(
     environment, forced_environment, environment_resources = _apply_cargo_environment(
         configuration, cli, environment, environment_origins
     )
+    if environment_transform is not None:
+        environment = _CargoEnvironment(
+            environment_transform(MappingProxyType(environment))
+        )
     rustc_selector = _selected(
         configuration,
         cli,
@@ -2069,8 +2135,8 @@ def resolve_runtime_cargo_plan(
         rustflags,
         tuple(inputs),
         paths,
-        cast(Mapping[str, object], _freeze_json(cli)),
-        cast(Mapping[str, object], _freeze_json(profiles)),
+        _freeze_json(cli),
+        _freeze_json(profiles),
         executable_custody,
         resources,
         resource_paths,

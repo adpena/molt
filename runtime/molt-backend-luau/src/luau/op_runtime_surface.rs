@@ -81,13 +81,92 @@ impl LuauBackend {
             "trace_enter_slot" => {
                 let code_id = op.value.expect("admitted trace_enter_slot ID");
                 self.emit_line(&format!(
-                    "local __molt_frame_context, __molt_frame_depth, __molt_frame_code, __molt_frame_owner = molt_frame_enter_slot(molt_code_slots[{code_id}])"
+                    "__molt_frame_context, __molt_frame_depth, __molt_frame_code, __molt_frame_owner = molt_frame_enter_slot(molt_code_slots[{code_id}])"
                 ));
             }
             "trace_exit" => {
                 self.emit_line(
                     "molt_frame_exit(__molt_frame_context, __molt_frame_depth, __molt_frame_code, __molt_frame_owner)",
                 );
+            }
+            // A frame's binding homes are its `__molt_homes` table: code slot
+            // `n` at index `n + 1`, the missing sentinel while unbound. Luau
+            // runs no drop insertion, so a home holds its binding without
+            // reference custody.
+            "frame_home_store" | "frame_home_cell" | "frame_home_private_cell" => {
+                let (Some(slot), Some(src)) =
+                    (op.value, op.args.as_ref().and_then(|args| args.first()))
+                else {
+                    self.emit_unsupported_op(op);
+                    return true;
+                };
+                let value = sanitize_ident(src);
+                self.emit_line(&format!("__molt_homes[{}] = {value}", slot + 1));
+                if let Some(ref out_name) = op.out
+                    && out_name != "none"
+                {
+                    if self.tuple_vars.contains(src) {
+                        self.tuple_vars.insert(out_name.clone());
+                    }
+                    let out = self.out_var(op);
+                    self.emit_line(&format!("local {out} = {value}"));
+                }
+            }
+            "frame_home_load" => {
+                let Some(slot) = op.value else {
+                    self.emit_unsupported_op(op);
+                    return true;
+                };
+                let out = self.out_var(op);
+                self.emit_line(&format!("local {out} = __molt_homes[{}]", slot + 1));
+            }
+            "frame_home_take" => {
+                let Some(slot) = op.value else {
+                    self.emit_unsupported_op(op);
+                    return true;
+                };
+                let out = self.out_var(op);
+                self.emit_line(&format!("local {out} = __molt_homes[{}]", slot + 1));
+                self.emit_line(&format!(
+                    "__molt_homes[{}] = molt_missing_sentinel",
+                    slot + 1
+                ));
+            }
+            "frame_home_clear" => {
+                let Some(slot) = op.value else {
+                    self.emit_unsupported_op(op);
+                    return true;
+                };
+                self.emit_line(&format!(
+                    "__molt_homes[{}] = molt_missing_sentinel",
+                    slot + 1
+                ));
+            }
+            // `locals()` from the operand pairs; an unbound name is absent.
+            // `value` 1 (before PEP 667): the activation's one dict, which
+            // each call refreshes; otherwise a fresh snapshot.
+            "frame_locals" => {
+                let out = self.out_var(op);
+                let args = op.args.as_deref().unwrap_or(&[]);
+                if op.value == Some(1) {
+                    self.emit_line(
+                        "if __molt_locals_dict == nil then __molt_locals_dict = molt_dict_new() end",
+                    );
+                    self.emit_line(&format!(
+                        "local {out}: {{[any]: any}} = __molt_locals_dict :: {{[any]: any}}"
+                    ));
+                } else {
+                    self.emit_line(&format!("local {out}: {{[any]: any}} = molt_dict_new()"));
+                }
+                for pair in args.chunks(2) {
+                    if let [key, value] = pair {
+                        self.emit_line(&format!(
+                            "molt_dict_update_missing({out}, {}, {}, molt_missing_sentinel)",
+                            sanitize_ident(key),
+                            sanitize_ident(value)
+                        ));
+                    }
+                }
             }
             "frame_locals_set" => {
                 let args = op.args.as_deref().unwrap_or(&[]);
@@ -129,7 +208,7 @@ impl LuauBackend {
                     self.emit_line(&format!("error({diagnostic})"));
                 }
             }
-            "memoryview_new" | "memoryview_tobytes" | "memoryview_cast" | "complex_from_obj" => {
+            "memoryview_cast" | "complex_from_obj" => {
                 self.emit_unsupported_op(op);
             }
             "bytearray_fill_range" => {

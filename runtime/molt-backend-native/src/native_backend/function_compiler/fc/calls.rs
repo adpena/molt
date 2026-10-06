@@ -19,13 +19,12 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "getframe",
     "sys_executable",
 ];
-use super::var_get_boxed_overflow_safe_fn;
 
 /// Cranelift codegen handlers for direct calls, guarded calls, Python function
 /// calls, FFI invocation, call binding, method dispatch ICs, and adjacent
-/// process/frame call helpers. Extracted from `compile_func_inner` as a
-/// move-only function split: backend state is threaded explicitly, and every
-/// handled arm falls through to the parent per-op epilogue.
+/// process/frame call helpers. One operand transaction prepares each distinct
+/// source before admission and funds the declared taking occurrences. Handler
+/// arms consume prepared words and settle temporary credits on every exit.
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 pub(in crate::native_backend::function_compiler) fn handle_call_op(
@@ -59,9 +58,37 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     local_dec_ref_obj: FuncRef,
     nbc: &crate::NanBoxConsts,
 ) {
+    let names = op.args.as_deref().unwrap_or(&[]);
+    let mut input_names: Vec<&str> = names.iter().map(String::as_str).collect();
+    if matches!(op.kind.as_str(), "call" | "call_internal")
+        && let Some(target) = op.s_value.as_deref()
+        && closure_functions.contains(target)
+        && let Some(environment) = local_closure_envs.get(target)
+    {
+        input_names.push(environment);
+    }
+    let mut operands =
+        NativeOperandTransaction::begin(builder, representation_plan, input_names.iter().copied());
+    operands.adopt_call_inputs(op, builder, vars, representation_plan);
+    for name in input_names {
+        operands.operand(
+            name,
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            sealed_blocks,
+            vars,
+            representation_plan,
+            nbc,
+        );
+    }
+    operands.enter_consumer(builder, block_tracked_obj, block_tracked_ptr);
+    operands.commit_call_inputs(op, module, import_ids, builder, import_refs);
     match op.kind.as_str() {
         "call" => handle_call_direct_op(
             op,
+            &operands,
             op_idx,
             master_return_block,
             returns_value,
@@ -70,9 +97,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            &mut *sealed_blocks,
             vars,
-            representation_plan,
             param_name_set,
             last_use,
             alias_roots,
@@ -87,15 +112,14 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             &mut *block_tracked_ptr,
             &mut *cleanup_roots,
             local_dec_ref_obj,
-            nbc,
         ),
         "call_internal" => handle_call_internal_op(
             op,
+            &operands,
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            &mut *sealed_blocks,
             vars,
             representation_plan,
             closure_functions,
@@ -104,10 +128,10 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             declared_func_arities,
             function_has_ret,
             defined_functions,
-            nbc,
         ),
         "call_guarded" => handle_call_guarded_op(
             op,
+            &operands,
             op_idx,
             func_name,
             master_return_block,
@@ -118,16 +142,15 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             &mut *import_refs,
             &mut *sealed_blocks,
             vars,
-            representation_plan,
             closure_functions,
             known_function_arities,
             declared_func_arities,
             function_has_ret,
             defined_functions,
-            nbc,
         ),
         "call_func" => handle_call_func_op(
             op,
+            &operands,
             op_idx,
             &mut *module,
             &mut *import_ids,
@@ -142,6 +165,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
         ),
         "invoke_ffi" => handle_invoke_ffi_op(
             op,
+            &operands,
             op_idx,
             func_name,
             &mut *module,
@@ -155,13 +179,13 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
         ),
         "call_bind" | "call_indirect" => handle_call_bind_indirect_op(
             op,
+            &operands,
             op_idx,
             func_name,
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            &mut *sealed_blocks,
             vars,
             representation_plan,
             cleanup_roots,
@@ -169,39 +193,39 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
         ),
         "call_method_ic" => handle_call_method_ic_op(
             op,
+            &operands,
             op_idx,
             func_name,
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            &mut *sealed_blocks,
             vars,
             representation_plan,
             nbc,
         ),
         "call_super_method_ic" => handle_call_super_method_ic_op(
             op,
+            &operands,
             op_idx,
             func_name,
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            &mut *sealed_blocks,
             vars,
             representation_plan,
             nbc,
         ),
         "call_method" => handle_call_method_op(
             op,
+            &operands,
             op_idx,
             func_name,
             &mut *module,
             &mut *import_ids,
             &mut *builder,
             &mut *import_refs,
-            &mut *sealed_blocks,
             vars,
             representation_plan,
             nbc,
@@ -209,20 +233,168 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
         "getargv" => handle_getargv_op(op, &mut *module, &mut *import_ids, &mut *builder, vars),
         "getframe" => handle_getframe_op(
             op,
+            &operands,
             &mut *module,
             &mut *import_ids,
             &mut *builder,
-            &mut *import_refs,
-            &mut *sealed_blocks,
             vars,
-            representation_plan,
-            nbc,
         ),
         "sys_executable" => {
             handle_sys_executable_op(op, &mut *module, &mut *import_ids, &mut *builder, vars)
         }
         _ => unreachable!("non-call op routed to handle_call_op"),
     }
+    operands.finish_operation(
+        op,
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        sealed_blocks,
+        vars,
+        representation_plan,
+        nbc,
+        block_tracked_obj,
+        block_tracked_ptr,
+    );
+}
+
+/// Whether the call instruction adopted any operand (`argument_custody`). It
+/// then owns one reference to each adopted operand on both of its
+/// continuations, and its direct legs may enter only an adopting entry.
+#[cfg(feature = "native-backend")]
+fn call_adopts_arguments(op: &OpIR) -> bool {
+    op.argument_custody
+        .as_deref()
+        .is_some_and(|custody| custody.contains(&molt_ir::ParameterCustody::Transferred))
+}
+
+/// Whether the instruction adopted operand `index`.
+#[cfg(feature = "native-backend")]
+fn operand_adopted(op: &OpIR, index: usize) -> bool {
+    op.argument_custody
+        .as_deref()
+        .is_some_and(|custody| custody.get(index) == Some(&molt_ir::ParameterCustody::Transferred))
+}
+
+/// Spill call argument words to an 8-byte-aligned stack slot for a runtime
+/// entry that takes `(args_ptr, nargs)`.
+#[cfg(feature = "native-backend")]
+fn spill_call_arguments(builder: &mut FunctionBuilder<'_>, args: &[Value]) -> (Value, Value) {
+    let slot_size = std::cmp::max(args.len(), 1) * 8;
+    let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        slot_size as u32,
+        3, // align_shift: 2^3 = 8-byte alignment
+    ));
+    for (i, arg) in args.iter().enumerate() {
+        builder.ins().stack_store(*arg, args_slot, (i * 8) as i32);
+    }
+    let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
+    let nargs = builder.ins().iconst(types::I64, args.len() as i64);
+    (args_ptr, nargs)
+}
+
+/// Release a call instruction's adopted inputs that no callee took over: once
+/// a borrowing callee returns, or on a failure before invocation (recursion
+/// or frame admission). The runtime owns CALL's release order
+/// (`molt_call_inputs_release`, CPython's `DECREF_INPUTS`): the adopted
+/// arguments in the target version's order, then the adopted callable.
+/// `callable` is operand 0 when the instruction has one; `args[0]` is operand
+/// `first_arg`.
+#[cfg(feature = "native-backend")]
+#[allow(clippy::too_many_arguments)]
+fn release_adopted_call_inputs(
+    op: &OpIR,
+    callable: Option<Value>,
+    first_arg: usize,
+    args: &[Value],
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+) {
+    if !call_adopts_arguments(op) {
+        return;
+    }
+    let adopted_args: Vec<Value> = args
+        .iter()
+        .enumerate()
+        .filter(|&(index, _)| operand_adopted(op, first_arg + index))
+        .map(|(_, &arg)| arg)
+        .collect();
+    let callable = match callable {
+        Some(callable) if operand_adopted(op, 0) => callable,
+        _ => builder.ins().iconst(types::I64, 0),
+    };
+    let (args_ptr, nargs) = spill_call_arguments(builder, &adopted_args);
+    let release = import_func_ref(
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        "molt_call_inputs_release",
+        &[types::I64, types::I64, types::I64],
+        &[],
+    );
+    builder.ins().call(release, &[callable, args_ptr, nargs]);
+}
+
+/// Release an adopted callable once its direct leg has returned: the callee
+/// frame has already ended its parameters, and CALL releases its callable
+/// last, as CPython's frame clear releases the function after the locals.
+#[cfg(feature = "native-backend")]
+fn release_adopted_callable(
+    op: &OpIR,
+    callable: Value,
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut BTreeMap<&'static str, FuncRef>,
+) {
+    if !operand_adopted(op, 0) {
+        return;
+    }
+    let release = import_func_ref(
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        "molt_dec_ref_obj",
+        &[types::I64],
+        &[],
+    );
+    builder.ins().call(release, &[callable]);
+}
+
+/// `molt_call_func_owned(callable, args, nargs, code_id)`: the runtime's
+/// invocation authority for an ordinary call that adopted its callable and
+/// its arguments. It ends a temporary bound method before its function runs,
+/// moves the arguments into an adopting entry or releases them after a
+/// borrowing one, and releases the callable last.
+#[cfg(feature = "native-backend")]
+fn emit_owned_dynamic_call(
+    module: &mut ObjectModule,
+    import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
+    builder: &mut FunctionBuilder<'_>,
+    callable: Value,
+    args: &[Value],
+    code_id: i64,
+) -> Value {
+    let (args_ptr, nargs) = spill_call_arguments(builder, args);
+    let code_id = builder.ins().iconst(types::I64, code_id);
+    let callee = SimpleBackend::import_func_id_split(
+        module,
+        import_ids,
+        "molt_call_func_owned",
+        &[types::I64, types::I64, types::I64, types::I64],
+        &[types::I64],
+    );
+    let local_callee = module.declare_func_in_func(callee, builder.func);
+    let call = builder
+        .ins()
+        .call(local_callee, &[callable, args_ptr, nargs, code_id]);
+    builder.inst_results(call)[0]
 }
 
 /// Closure transport has already materialized any hidden argument. Both static
@@ -253,6 +425,7 @@ fn static_call_arity(
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 fn handle_call_direct_op(
     op: &OpIR,
+    operands: &NativeOperandTransaction<'_>,
     op_idx: usize,
     master_return_block: Block,
     returns_value: bool,
@@ -261,9 +434,7 @@ fn handle_call_direct_op(
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
-    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    representation_plan: &ScalarRepresentationPlan,
     param_name_set: &BTreeSet<&str>,
     last_use: &BTreeMap<String, usize>,
     alias_roots: &BTreeMap<String, String>,
@@ -278,50 +449,19 @@ fn handle_call_direct_op(
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     cleanup_roots: &mut NativeCleanupRoots,
     local_dec_ref_obj: FuncRef,
-    nbc: &crate::NanBoxConsts,
 ) {
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
-                                       builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
-                                       sealed_blocks: &mut BTreeSet<Block>,
-                                       vars: &BTreeMap<String, Variable>,
-                                       name: &str,
-                                       representation_plan: &ScalarRepresentationPlan|
-     -> Option<crate::VarValue> {
-        var_get_boxed_overflow_safe_fn(
-            module,
-            import_ids,
-            builder,
-            import_refs,
-            sealed_blocks,
-            vars,
-            name,
-            representation_plan,
-            nbc,
-        )
-    };
     let target_name = require_static_target_symbol(op);
     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
     let mut args = Vec::new();
     for name in args_names {
-        // Deferred overflow re-boxing at call argument.
-        let val = ensure_boxed_primitive_safe(
-            &mut *module,
-            &mut *import_ids,
-            &mut *builder,
-            &mut *import_refs,
-            &mut *sealed_blocks,
-            vars,
-            nbc,
-            representation_plan,
-            name,
-        );
+        // The transaction prepared this source once before call admission.
+        let val = *operands
+            .word(name)
+            .expect("prepared direct argument missing");
         args.push(val);
     }
+    // The operands alone, before any closure transport argument is prepended.
+    let operand_args = args.clone();
 
     // Collect arg values that are dead after this call. We explicitly avoid
     // decrementing function parameters here: parameters are treated as borrowed
@@ -380,17 +520,9 @@ fn handle_call_direct_op(
     if closure_functions.contains(target_name)
         && let Some(func_obj_var) = local_closure_envs.get(target_name)
     {
-        let func_obj_bits = *var_get_boxed_overflow_safe(
-            &mut *module,
-            &mut *import_ids,
-            &mut *builder,
-            &mut *import_refs,
-            &mut *sealed_blocks,
-            vars,
-            func_obj_var,
-            representation_plan,
-        )
-        .expect("Closure func obj not found for direct call");
+        let func_obj_bits = *operands
+            .word(func_obj_var)
+            .expect("Closure func obj not found for direct call");
         let extract_local = import_func_ref(
             &mut *module,
             &mut *import_ids,
@@ -452,11 +584,12 @@ fn handle_call_direct_op(
     // value-only guarded dispatcher adds no trace and corrupts a void ABI.
     // CHECK_EXCEPTION owns post-call routing; the recursion-limit arm returns
     // immediately to preserve the pending exception.
-    let is_leaf_call = leaf_functions.contains(target_name);
-    let res = if is_leaf_call {
-        // Leaf function: no user-level calls inside, so it
-        // cannot recurse.  Skip the recursion guard entirely
-        // (saves 2 atomic ops + 2 extern-C calls per call).
+    let needs_python_recursion_guard = !(leaf_functions.contains(target_name)
+        || (runtime_result.is_some() && linkage == Linkage::Import));
+    let res = if !needs_python_recursion_guard {
+        // Classified runtime services are not Python activations. Their user
+        // callbacks own their call boundaries; do not add a second boundary
+        // around internal polling (or a hidden cleanup-bypassing error exit).
         let direct_call = builder.ins().call(local_callee, &args);
         let results = builder.inst_results(direct_call);
         if results.is_empty() {
@@ -504,6 +637,18 @@ fn handle_call_direct_op(
             &[types::I64],
         );
         let raise_call = builder.ins().call(raise_ref, &[]);
+        // No callee took the adopted arguments over.
+        release_adopted_call_inputs(
+            op,
+            None,
+            0,
+            &operand_args,
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            &mut *import_refs,
+        );
+        operands.release_temporaries(module, import_ids, builder, import_refs);
         if returns_value {
             let raise_results = builder.inst_results(raise_call);
             let err_val = if raise_results.is_empty() {
@@ -608,11 +753,11 @@ fn handle_call_direct_op(
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 fn handle_call_internal_op(
     op: &OpIR,
+    operands: &NativeOperandTransaction<'_>,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
-    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     closure_functions: &BTreeSet<String>,
@@ -621,66 +766,21 @@ fn handle_call_internal_op(
     declared_func_arities: &BTreeMap<String, usize>,
     function_has_ret: &BTreeMap<String, bool>,
     defined_functions: &BTreeSet<String>,
-    nbc: &crate::NanBoxConsts,
 ) {
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
-                                       builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
-                                       sealed_blocks: &mut BTreeSet<Block>,
-                                       vars: &BTreeMap<String, Variable>,
-                                       name: &str,
-                                       representation_plan: &ScalarRepresentationPlan|
-     -> Option<crate::VarValue> {
-        var_get_boxed_overflow_safe_fn(
-            module,
-            import_ids,
-            builder,
-            import_refs,
-            sealed_blocks,
-            vars,
-            name,
-            representation_plan,
-            nbc,
-        )
-    };
     let target_name = require_static_target_symbol(op);
     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
     let mut args = Vec::new();
     for name in args_names {
-        args.push(
-            *var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                name,
-                representation_plan,
-            )
-            .expect("Arg not found"),
-        );
+        args.push(*operands.word(name).expect("Arg not found"));
     }
 
     // For direct calls to closures, extract env from function object
     if closure_functions.contains(target_name)
         && let Some(func_obj_var) = local_closure_envs.get(target_name)
     {
-        let func_obj_bits = *var_get_boxed_overflow_safe(
-            &mut *module,
-            &mut *import_ids,
-            &mut *builder,
-            &mut *import_refs,
-            &mut *sealed_blocks,
-            vars,
-            func_obj_var,
-            representation_plan,
-        )
-        .expect("Closure func obj not found for direct call");
+        let func_obj_bits = *operands
+            .word(func_obj_var)
+            .expect("Closure func obj not found for direct call");
         let extract_local = import_func_ref(
             &mut *module,
             &mut *import_ids,
@@ -813,6 +913,7 @@ fn emit_positional_call_bind(
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 fn handle_call_guarded_op(
     op: &OpIR,
+    operands: &NativeOperandTransaction<'_>,
     op_idx: usize,
     func_name: &str,
     master_return_block: Block,
@@ -823,68 +924,21 @@ fn handle_call_guarded_op(
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    representation_plan: &ScalarRepresentationPlan,
     closure_functions: &BTreeSet<String>,
     known_function_arities: &BTreeMap<String, usize>,
     declared_func_arities: &BTreeMap<String, usize>,
     function_has_ret: &BTreeMap<String, bool>,
     defined_functions: &BTreeSet<String>,
-    nbc: &crate::NanBoxConsts,
 ) {
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
-                                       builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
-                                       sealed_blocks: &mut BTreeSet<Block>,
-                                       vars: &BTreeMap<String, Variable>,
-                                       name: &str,
-                                       representation_plan: &ScalarRepresentationPlan|
-     -> Option<crate::VarValue> {
-        var_get_boxed_overflow_safe_fn(
-            module,
-            import_ids,
-            builder,
-            import_refs,
-            sealed_blocks,
-            vars,
-            name,
-            representation_plan,
-            nbc,
-        )
-    };
     let target_name = require_static_target_symbol(op);
     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-    let callee_bits = var_get_boxed_overflow_safe(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        &mut *sealed_blocks,
-        vars,
-        &args_names[0],
-        representation_plan,
-    )
-    .expect("Callee not found");
+    let callee_bits = operands.word(&args_names[0]).expect("Callee not found");
     let mut args = Vec::new();
     for name in &args_names[1..] {
-        args.push(
-            *var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                name,
-                representation_plan,
-            )
-            .expect("Arg not found"),
-        );
+        args.push(*operands.word(name).expect("Arg not found"));
     }
 
+    let adopts = call_adopts_arguments(op);
     let has_closure = closure_functions.contains(target_name);
     // Use the previously-declared arity if available so the
     // Cranelift signature matches the definition even when the
@@ -896,16 +950,20 @@ fn handle_call_guarded_op(
         .unwrap_or(args.len() + usize::from(has_closure));
     // A Python argument mismatch must reach binding, not an invalid static ABI.
     if sig_arity != args.len() + usize::from(has_closure) {
-        let result = emit_positional_call_bind(
-            module,
-            import_ids,
-            builder,
-            import_refs,
-            *callee_bits,
-            &args,
-            func_name,
-            op_idx,
-        );
+        let result = if adopts {
+            emit_owned_dynamic_call(module, import_ids, builder, *callee_bits, &args, 0)
+        } else {
+            emit_positional_call_bind(
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                *callee_bits,
+                &args,
+                func_name,
+                op_idx,
+            )
+        };
         bind_owned_runtime_result(op, result, module, import_ids, builder, vars);
         return;
     }
@@ -980,7 +1038,12 @@ fn handle_call_guarded_op(
         &[types::I64],
     );
     let supplied = builder.ins().iconst(types::I64, args.len() as i64);
-    let closure_shape = builder.ins().iconst(types::I64, i64::from(has_closure));
+    // Bit 0: the entry takes the closure first; bit 1: the entry's custody
+    // must match this instruction's adoption of its arguments.
+    let closure_shape = builder.ins().iconst(
+        types::I64,
+        i64::from(has_closure) | if adopts { 0b10 } else { 0 },
+    );
     let eligible_call = builder
         .ins()
         .call(is_func_local, &[*callee_bits, supplied, closure_shape]);
@@ -1006,16 +1069,22 @@ fn handle_call_guarded_op(
         .brif(is_func_bool, func_block, &[], fallback_block, &[]);
 
     switch_to_block_materialized(&mut *builder, fallback_block);
-    let fallback_res = emit_positional_call_bind(
-        module,
-        import_ids,
-        builder,
-        import_refs,
-        *callee_bits,
-        &args,
-        func_name,
-        op_idx,
-    );
+    // Both legs adopt alike: the fallback hands the instruction's arguments to
+    // the runtime's owned lane.
+    let fallback_res = if adopts {
+        emit_owned_dynamic_call(module, import_ids, builder, *callee_bits, &args, 0)
+    } else {
+        emit_positional_call_bind(
+            module,
+            import_ids,
+            builder,
+            import_refs,
+            *callee_bits,
+            &args,
+            func_name,
+            op_idx,
+        )
+    };
     jump_block(&mut *builder, merge_block, &[fallback_res]);
 
     switch_to_block_materialized(&mut *builder, func_block);
@@ -1062,7 +1131,8 @@ fn handle_call_guarded_op(
     seal_block_once(&mut *builder, &mut *sealed_blocks, then_invoke_block);
     // Closure is an ABI argument, never a Python positional argument. Its owner
     // is the admitted actual callable, not the lexical target's first object.
-    let mut direct_args = args;
+    // The failure blocks below still release the adopted operands themselves.
+    let mut direct_args = args.clone();
     if has_closure {
         let extract_local = import_func_ref(
             module,
@@ -1088,6 +1158,9 @@ fn handle_call_guarded_op(
         .ins()
         .call(invocation_exit_local, &[invocation_token]);
     let _ = builder.ins().call(guard_exit_local, &[]);
+    // The adopting entry ended its parameters; the instruction's callable ends
+    // after it returns, identically to the owned fallback leg.
+    release_adopted_callable(op, *callee_bits, module, import_ids, builder, import_refs);
     jump_block(&mut *builder, merge_block, &[direct_res]);
 
     switch_to_block_materialized(&mut *builder, then_invocation_fail_block);
@@ -1097,6 +1170,17 @@ fn handle_call_guarded_op(
         then_invocation_fail_block,
     );
     let _ = builder.ins().call(guard_exit_local, &[]);
+    release_adopted_call_inputs(
+        op,
+        Some(*callee_bits),
+        1,
+        &args,
+        module,
+        import_ids,
+        builder,
+        import_refs,
+    );
+    operands.release_temporaries(module, import_ids, builder, import_refs);
     if returns_value {
         let none_bits = builder.ins().iconst(types::I64, box_none());
         jump_block(builder, master_return_block, &[none_bits]);
@@ -1106,11 +1190,22 @@ fn handle_call_guarded_op(
 
     switch_to_block_materialized(&mut *builder, then_fail_block);
     seal_block_once(&mut *builder, &mut *sealed_blocks, then_fail_block);
+    release_adopted_call_inputs(
+        op,
+        Some(*callee_bits),
+        1,
+        &args,
+        module,
+        import_ids,
+        builder,
+        import_refs,
+    );
     // Recursion guard failed — exception is already pending
     // from molt_recursion_guard_enter.  Return immediately so
     // the pending RecursionError propagates to the caller
     // instead of being silently swallowed as None (which
     // caused TypeError: NoneType + int downstream).
+    operands.release_temporaries(module, import_ids, builder, import_refs);
     if returns_value {
         let none_bits = builder.ins().iconst(types::I64, box_none());
         jump_block(builder, master_return_block, &[none_bits]);
@@ -1128,6 +1223,7 @@ fn handle_call_guarded_op(
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 fn handle_call_func_op(
     op: &OpIR,
+    operands: &NativeOperandTransaction<'_>,
     op_idx: usize,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
@@ -1140,62 +1236,17 @@ fn handle_call_func_op(
     last_use: &BTreeMap<String, usize>,
     nbc: &crate::NanBoxConsts,
 ) {
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
-                                       builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
-                                       sealed_blocks: &mut BTreeSet<Block>,
-                                       vars: &BTreeMap<String, Variable>,
-                                       name: &str,
-                                       representation_plan: &ScalarRepresentationPlan|
-     -> Option<crate::VarValue> {
-        var_get_boxed_overflow_safe_fn(
-            module,
-            import_ids,
-            builder,
-            import_refs,
-            sealed_blocks,
-            vars,
-            name,
-            representation_plan,
-            nbc,
-        )
-    };
     // Inline codegen and runtime dispatch share one Python-call admission gate.
     // The admitted no-closure path retains direct call_indirect dispatch.
     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-    let func_bits = var_get_boxed_overflow_safe(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        &mut *sealed_blocks,
-        vars,
-        &args_names[0],
-        representation_plan,
-    )
-    .expect("Func not found");
+    let func_bits = operands.word(&args_names[0]).expect("Func not found");
     let mut args = Vec::new();
     for name in &args_names[1..] {
-        args.push(
-            *var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                name,
-                representation_plan,
-            )
-            .expect("Arg not found"),
-        );
+        args.push(*operands.word(name).expect("Arg not found"));
     }
     let code_id = op.value.unwrap_or(0);
     let nargs = args.len();
+    let adopts = call_adopts_arguments(op);
 
     let use_inline_probe = nargs <= 3 && code_id == 0;
     let inline_live_through = if use_inline_probe {
@@ -1227,10 +1278,13 @@ fn handle_call_func_op(
             &[types::I64],
         );
         let supplied = builder.ins().iconst(types::I64, nargs as i64);
-        let no_closure = builder.ins().iconst(types::I64, 0);
+        // No closure; bit 1 admits only an entry whose custody matches ours.
+        let shape = builder
+            .ins()
+            .iconst(types::I64, if adopts { 0b10 } else { 0 });
         let eligibility_call = builder
             .ins()
-            .call(eligibility_ref, &[*func_bits, supplied, no_closure]);
+            .call(eligibility_ref, &[*func_bits, supplied, shape]);
         let eligible = builder.inst_results(eligibility_call)[0];
         let admitted = builder.ins().icmp_imm(IntCC::NotEqual, eligible, 0);
         brif_block(builder, admitted, direct_call_block, &[], slow_block, &[]);
@@ -1289,6 +1343,17 @@ fn handle_call_func_op(
         );
         let raise_call = builder.ins().call(raise_ref, &[]);
         let err_val = builder.inst_results(raise_call)[0];
+        // No callee took the adopted callable and arguments over.
+        release_adopted_call_inputs(
+            op,
+            Some(*func_bits),
+            1,
+            &args,
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            &mut *import_refs,
+        );
         let merge_args = merge_args_with_live_through(err_val, &inline_live_through);
         jump_block(&mut *builder, merge_block, &merge_args);
 
@@ -1330,6 +1395,16 @@ fn handle_call_func_op(
         switch_to_block_materialized(builder, invocation_fail_block);
         seal_block_once(builder, sealed_blocks, invocation_fail_block);
         builder.ins().call(guard_exit, &[]);
+        release_adopted_call_inputs(
+            op,
+            Some(*func_bits),
+            1,
+            &args,
+            module,
+            import_ids,
+            builder,
+            import_refs,
+        );
         let none = builder.ins().iconst(types::I64, box_none());
         let fail_args = merge_args_with_live_through(none, &inline_live_through);
         jump_block(builder, merge_block, &fail_args);
@@ -1355,34 +1430,49 @@ fn handle_call_func_op(
         );
         builder.ins().call(invocation_exit, &[invocation_token]);
         builder.ins().call(guard_exit, &[]);
+        // The adopting entry ended its parameters; the instruction's callable
+        // ends after it returns.
+        release_adopted_callable(op, *func_bits, module, import_ids, builder, import_refs);
         let merge_args = merge_args_with_live_through(direct_res, &inline_live_through);
         jump_block(&mut *builder, merge_block, &merge_args);
 
-        // Slow path: call molt_call_func_fast{N}
+        // Slow path: the runtime's invocation authority. Adopted arguments
+        // take its owned lane; borrowed ones molt_call_func_fast{N}.
         switch_to_block_materialized(&mut *builder, slow_block);
         seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
-        let fast_name: &'static str = match nargs {
-            0 => "molt_call_func_fast0",
-            1 => "molt_call_func_fast1",
-            2 => "molt_call_func_fast2",
-            3 => "molt_call_func_fast3",
-            _ => unreachable!(),
+        let slow_res = if adopts {
+            emit_owned_dynamic_call(
+                &mut *module,
+                &mut *import_ids,
+                &mut *builder,
+                *func_bits,
+                &args,
+                code_id,
+            )
+        } else {
+            let fast_name: &'static str = match nargs {
+                0 => "molt_call_func_fast0",
+                1 => "molt_call_func_fast1",
+                2 => "molt_call_func_fast2",
+                3 => "molt_call_func_fast3",
+                _ => unreachable!(),
+            };
+            let param_types = vec![types::I64; nargs + 1];
+            let fast_ref = import_func_ref(
+                &mut *module,
+                &mut *import_ids,
+                &mut *builder,
+                &mut *import_refs,
+                fast_name,
+                &param_types,
+                &[types::I64],
+            );
+            let mut slow_call_args = Vec::with_capacity(nargs + 1);
+            slow_call_args.push(*func_bits);
+            slow_call_args.extend_from_slice(&args);
+            let slow_call = builder.ins().call(fast_ref, &slow_call_args);
+            builder.inst_results(slow_call)[0]
         };
-        let param_types = vec![types::I64; nargs + 1];
-        let fast_ref = import_func_ref(
-            &mut *module,
-            &mut *import_ids,
-            &mut *builder,
-            &mut *import_refs,
-            fast_name,
-            &param_types,
-            &[types::I64],
-        );
-        let mut slow_call_args = Vec::with_capacity(nargs + 1);
-        slow_call_args.push(*func_bits);
-        slow_call_args.extend_from_slice(&args);
-        let slow_call = builder.ins().call(fast_ref, &slow_call_args);
-        let slow_res = builder.inst_results(slow_call)[0];
         let merge_args = merge_args_with_live_through(slow_res, &inline_live_through);
         jump_block(&mut *builder, merge_block, &merge_args);
 
@@ -1410,10 +1500,17 @@ fn handle_call_func_op(
         let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
         let nargs_val = builder.ins().iconst(types::I64, nargs as i64);
         let code_id_val = builder.ins().iconst(types::I64, code_id);
+        // Adopted arguments belong to the call: the owned lane of the same
+        // invocation authority moves or releases them.
+        let dispatch = if adopts {
+            "molt_call_func_owned"
+        } else {
+            "molt_call_func_dispatch"
+        };
         let callee = SimpleBackend::import_func_id_split(
             &mut *module,
             &mut *import_ids,
-            "molt_call_func_dispatch",
+            dispatch,
             &[types::I64, types::I64, types::I64, types::I64],
             &[types::I64],
         );
@@ -1618,6 +1715,7 @@ fn emit_native_forward_f32_call(
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 fn handle_invoke_ffi_op(
     op: &OpIR,
+    operands: &NativeOperandTransaction<'_>,
     op_idx: usize,
     func_name: &str,
     module: &mut ObjectModule,
@@ -1629,30 +1727,6 @@ fn handle_invoke_ffi_op(
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) {
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
-                                       builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
-                                       sealed_blocks: &mut BTreeSet<Block>,
-                                       vars: &BTreeMap<String, Variable>,
-                                       name: &str,
-                                       representation_plan: &ScalarRepresentationPlan|
-     -> Option<crate::VarValue> {
-        var_get_boxed_overflow_safe_fn(
-            module,
-            import_ids,
-            builder,
-            import_refs,
-            sealed_blocks,
-            vars,
-            name,
-            representation_plan,
-            nbc,
-        )
-    };
     // `module_attr` exports resolve a callable object and share the runtime FFI
     // inline-cache path with WASM. `direct_symbol` exports instead declare an
     // object-file import with the canonical machine signature owned by
@@ -1694,17 +1768,9 @@ fn handle_invoke_ffi_op(
                 .expect("validated native callable arity must have a machine signature");
             let result = match abi_contract.lowering() {
                 molt_ir::native_callable_abi::NativeCallableLowering::ForwardF32 => {
-                    let input_bits = *var_get_boxed_overflow_safe(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        &mut *sealed_blocks,
-                        vars,
-                        &args_names[0],
-                        representation_plan,
-                    )
-                    .expect("native forward_f32 payload not found");
+                    let input_bits = *operands
+                        .word(&args_names[0])
+                        .expect("native forward_f32 payload not found");
                     emit_native_forward_f32_call(
                         module,
                         import_ids,
@@ -1721,17 +1787,9 @@ fn handle_invoke_ffi_op(
                     // Its address crosses into the runtime transaction, which
                     // owns hook setup, package context, invocation, result
                     // validation/publication and transfers one owned module.
-                    let module_name_bits = *var_get_boxed_overflow_safe(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        &mut *sealed_blocks,
-                        vars,
-                        &args_names[0],
-                        representation_plan,
-                    )
-                    .expect("native PyInit module-name payload not found");
+                    let module_name_bits = *operands
+                        .word(&args_names[0])
+                        .expect("native PyInit module-name payload not found");
                     let pointer_type = module.target_config().pointer_type();
                     let initializer =
                         declare_native_callable_symbol(module, builder, symbol, &machine_signature);
@@ -1759,23 +1817,11 @@ fn handle_invoke_ffi_op(
                 | molt_ir::native_callable_abi::NativeCallableLowering::ObjectCallargs => {
                     let mut args = Vec::with_capacity(args_names.len());
                     for name in args_names {
-                        args.push(
-                            *var_get_boxed_overflow_safe(
-                                &mut *module,
-                                &mut *import_ids,
-                                &mut *builder,
-                                &mut *import_refs,
-                                &mut *sealed_blocks,
-                                vars,
-                                name,
-                                representation_plan,
+                        args.push(*operands.word(name).unwrap_or_else(|| {
+                            panic!(
+                                "native callable export `{export_name}` payload `{name}` not found"
                             )
-                            .unwrap_or_else(|| {
-                                panic!(
-                                    "native callable export `{export_name}` payload `{name}` not found"
-                                )
-                            }),
-                        );
+                        }));
                     }
                     let direct_symbol =
                         declare_native_callable_symbol(module, builder, symbol, &machine_signature);
@@ -1814,17 +1860,7 @@ fn handle_invoke_ffi_op(
         None
     };
     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-    let func_bits = var_get_boxed_overflow_safe(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        &mut *sealed_blocks,
-        vars,
-        &args_names[0],
-        representation_plan,
-    )
-    .expect("Func not found");
+    let func_bits = operands.word(&args_names[0]).expect("Func not found");
 
     // `object_callargs_v1` module_attr exports pass the callargs object through
     // `args[1]` directly; every other lane materializes positional args into a
@@ -1838,17 +1874,9 @@ fn handle_invoke_ffi_op(
             );
         }
         Some(
-            *var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args_names[1],
-                representation_plan,
-            )
-            .expect("Callargs payload not found"),
+            *operands
+                .word(&args_names[1])
+                .expect("Callargs payload not found"),
         )
     } else {
         None
@@ -1859,19 +1887,7 @@ fn handle_invoke_ffi_op(
     } else {
         let mut args = Vec::new();
         for name in &args_names[1..] {
-            args.push(
-                *var_get_boxed_overflow_safe(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    name,
-                    representation_plan,
-                )
-                .expect("Arg not found"),
-            );
+            args.push(*operands.word(name).expect("Arg not found"));
         }
         let callargs_new_local = import_func_ref(
             &mut *module,
@@ -1954,77 +1970,47 @@ fn handle_invoke_ffi_op(
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 fn handle_call_bind_indirect_op(
     op: &OpIR,
+    operands: &NativeOperandTransaction<'_>,
     op_idx: usize,
     func_name: &str,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
-    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     cleanup_roots: &mut NativeCleanupRoots,
     nbc: &crate::NanBoxConsts,
 ) {
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
-                                       builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
-                                       sealed_blocks: &mut BTreeSet<Block>,
-                                       vars: &BTreeMap<String, Variable>,
-                                       name: &str,
-                                       representation_plan: &ScalarRepresentationPlan|
-     -> Option<crate::VarValue> {
-        var_get_boxed_overflow_safe_fn(
-            module,
-            import_ids,
-            builder,
-            import_refs,
-            sealed_blocks,
-            vars,
-            name,
-            representation_plan,
-            nbc,
-        )
-    };
     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-    let func_bits = var_get_boxed_overflow_safe(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        &mut *sealed_blocks,
-        vars,
-        &args_names[0],
-        representation_plan,
-    )
-    .expect("Func not found");
-    let builder_ptr = var_get_boxed_overflow_safe(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        &mut *sealed_blocks,
-        vars,
-        &args_names[1],
-        representation_plan,
-    )
-    .expect("Callargs not found");
+    let func_bits = operands.word(&args_names[0]).expect("Func not found");
+    let builder_ptr = operands.word(&args_names[1]).expect("Callargs not found");
     let callargs_name = &args_names[1];
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(types::I64));
     sig.params.push(AbiParam::new(types::I64));
     sig.params.push(AbiParam::new(types::I64));
     sig.returns.push(AbiParam::new(types::I64));
+    // An ordinary call (a stack-form builder) adopted its callable as well as
+    // the builder; one owned entry serves both spellings, whose runtime
+    // dispatch is the same. An expanded call keeps its callable borrowed.
+    let owned_callable = operand_adopted(op, 0);
     let callee_name = if op.kind == "call_indirect" {
         "molt_call_indirect_ic"
     } else {
         "molt_call_bind_ic"
     };
-    let local_callee = if op.kind == "call_bind" {
+    let local_callee = if owned_callable {
+        import_func_ref(
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            &mut *import_refs,
+            "molt_call_bind_ic_owned",
+            &[types::I64, types::I64, types::I64],
+            &[types::I64],
+        )
+    } else if op.kind == "call_bind" {
         import_func_ref(
             &mut *module,
             &mut *import_ids,
@@ -2085,73 +2071,29 @@ fn handle_call_bind_indirect_op(
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 fn handle_call_method_ic_op(
     op: &OpIR,
+    operands: &NativeOperandTransaction<'_>,
     op_idx: usize,
     func_name: &str,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
-    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) {
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
-                                       builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
-                                       sealed_blocks: &mut BTreeSet<Block>,
-                                       vars: &BTreeMap<String, Variable>,
-                                       name: &str,
-                                       representation_plan: &ScalarRepresentationPlan|
-     -> Option<crate::VarValue> {
-        var_get_boxed_overflow_safe_fn(
-            module,
-            import_ids,
-            builder,
-            import_refs,
-            sealed_blocks,
-            vars,
-            name,
-            representation_plan,
-            nbc,
-        )
-    };
     // Fused instance-method dispatch (LOAD_METHOD/CALL_METHOD):
     //   args = [recv, a0, a1, ...]  s_value = <method name>
     // Lowers to a single `molt_call_method_icN(site, recv, name,
     // name_len, a0..)` call — no bound-method/callargs alloc on
     // the fast path, identical legacy behaviour on the slow path.
     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-    let recv_bits = var_get_boxed_overflow_safe(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        &mut *sealed_blocks,
-        vars,
-        &args_names[0],
-        representation_plan,
-    )
-    .expect("call_method_ic receiver not found");
+    let recv_bits = operands
+        .word(&args_names[0])
+        .expect("call_method_ic receiver not found");
     let mut extra_args = Vec::new();
     for name in &args_names[1..] {
-        extra_args.push(
-            *var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                name,
-                representation_plan,
-            )
-            .expect("call_method_ic arg not found"),
-        );
+        extra_args.push(*operands.word(name).expect("call_method_ic arg not found"));
     }
     let method_name = op
         .s_value
@@ -2177,27 +2119,47 @@ fn handle_call_method_ic_op(
         types::I64,
         box_int(stable_ic_site_id(func_name, op_idx, "call_method_ic")),
     );
-    let symbol = match extra_args.len() {
-        0 => "molt_call_method_ic0",
-        1 => "molt_call_method_ic1",
-        2 => "molt_call_method_ic2",
-        3 => "molt_call_method_ic3",
-        _ => "molt_call_method_ic4",
+    let res = if call_adopts_arguments(op) {
+        // The instruction adopted its receiver and arguments: the owned entry
+        // moves them into the resolved method's frame, or ends the receiver
+        // at attribute resolution, and never returns them to this frame.
+        let (args_ptr, nargs) = spill_call_arguments(&mut *builder, &extra_args);
+        let callee = SimpleBackend::import_func_id_split(
+            &mut *module,
+            &mut *import_ids,
+            "molt_call_method_ic_owned",
+            &[types::I64; 6],
+            &[types::I64],
+        );
+        let local = module.declare_func_in_func(callee, builder.func);
+        let call = builder.ins().call(
+            local,
+            &[site_bits, *recv_bits, name_ptr, name_len, args_ptr, nargs],
+        );
+        builder.inst_results(call)[0]
+    } else {
+        let symbol = match extra_args.len() {
+            0 => "molt_call_method_ic0",
+            1 => "molt_call_method_ic1",
+            2 => "molt_call_method_ic2",
+            3 => "molt_call_method_ic3",
+            _ => "molt_call_method_ic4",
+        };
+        // site + recv + name_ptr + name_len + one I64 per extra arg.
+        let sig_params = vec![types::I64; 4 + extra_args.len()];
+        let callee = SimpleBackend::import_func_id_split(
+            &mut *module,
+            &mut *import_ids,
+            symbol,
+            &sig_params,
+            &[types::I64],
+        );
+        let local = module.declare_func_in_func(callee, builder.func);
+        let mut call_args = vec![site_bits, *recv_bits, name_ptr, name_len];
+        call_args.extend_from_slice(&extra_args);
+        let call = builder.ins().call(local, &call_args);
+        builder.inst_results(call)[0]
     };
-    // site + recv + name_ptr + name_len + one I64 per extra arg.
-    let sig_params = vec![types::I64; 4 + extra_args.len()];
-    let callee = SimpleBackend::import_func_id_split(
-        &mut *module,
-        &mut *import_ids,
-        symbol,
-        &sig_params,
-        &[types::I64],
-    );
-    let local = module.declare_func_in_func(callee, builder.func);
-    let mut call_args = vec![site_bits, *recv_bits, name_ptr, name_len];
-    call_args.extend_from_slice(&extra_args);
-    let call = builder.ins().call(local, &call_args);
-    let res = builder.inst_results(call)[0];
     if let Some(out__) = op.out.as_ref() {
         def_var_from_boxed_transport(
             &mut *module,
@@ -2219,83 +2181,35 @@ fn handle_call_method_ic_op(
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 fn handle_call_super_method_ic_op(
     op: &OpIR,
+    operands: &NativeOperandTransaction<'_>,
     op_idx: usize,
     func_name: &str,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
-    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) {
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
-                                       builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
-                                       sealed_blocks: &mut BTreeSet<Block>,
-                                       vars: &BTreeMap<String, Variable>,
-                                       name: &str,
-                                       representation_plan: &ScalarRepresentationPlan|
-     -> Option<crate::VarValue> {
-        var_get_boxed_overflow_safe_fn(
-            module,
-            import_ids,
-            builder,
-            import_refs,
-            sealed_blocks,
-            vars,
-            name,
-            representation_plan,
-            nbc,
-        )
-    };
     // Fused `super().method(args)` dispatch (no super-object /
     // bound-method / callargs allocation on the fast path):
     //   args = [class, self, a0, a1, ...]  s_value = <method>
     // Lowers to `molt_call_super_method_icN(site, class, self,
     // name, name_len, a0..)`.
     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-    let class_bits = *var_get_boxed_overflow_safe(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        &mut *sealed_blocks,
-        vars,
-        &args_names[0],
-        representation_plan,
-    )
-    .expect("call_super_method_ic class not found");
-    let self_bits = *var_get_boxed_overflow_safe(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        &mut *sealed_blocks,
-        vars,
-        &args_names[1],
-        representation_plan,
-    )
-    .expect("call_super_method_ic self not found");
+    let class_bits = *operands
+        .word(&args_names[0])
+        .expect("call_super_method_ic class not found");
+    let self_bits = *operands
+        .word(&args_names[1])
+        .expect("call_super_method_ic self not found");
     let mut extra_args = Vec::new();
     for name in &args_names[2..] {
         extra_args.push(
-            *var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                name,
-                representation_plan,
-            )
-            .expect("call_super_method_ic arg not found"),
+            *operands
+                .word(name)
+                .expect("call_super_method_ic arg not found"),
         );
     }
     let method_name = op
@@ -2320,27 +2234,49 @@ fn handle_call_super_method_ic_op(
         types::I64,
         box_int(stable_ic_site_id(func_name, op_idx, "call_super_method_ic")),
     );
-    let symbol = match extra_args.len() {
-        0 => "molt_call_super_method_ic0",
-        1 => "molt_call_super_method_ic1",
-        2 => "molt_call_super_method_ic2",
-        3 => "molt_call_super_method_ic3",
-        _ => "molt_call_super_method_ic4",
+    let res = if call_adopts_arguments(op) {
+        // The instruction adopted `self` and its arguments (never the class):
+        // the owned entry moves them into the resolved method's frame and
+        // never returns them to this frame.
+        let (args_ptr, nargs) = spill_call_arguments(&mut *builder, &extra_args);
+        let callee = SimpleBackend::import_func_id_split(
+            &mut *module,
+            &mut *import_ids,
+            "molt_call_super_method_ic_owned",
+            &[types::I64; 7],
+            &[types::I64],
+        );
+        let local = module.declare_func_in_func(callee, builder.func);
+        let call = builder.ins().call(
+            local,
+            &[
+                site_bits, class_bits, self_bits, name_ptr, name_len, args_ptr, nargs,
+            ],
+        );
+        builder.inst_results(call)[0]
+    } else {
+        let symbol = match extra_args.len() {
+            0 => "molt_call_super_method_ic0",
+            1 => "molt_call_super_method_ic1",
+            2 => "molt_call_super_method_ic2",
+            3 => "molt_call_super_method_ic3",
+            _ => "molt_call_super_method_ic4",
+        };
+        // site + class + self + name_ptr + name_len + one per arg.
+        let sig_params = vec![types::I64; 5 + extra_args.len()];
+        let callee = SimpleBackend::import_func_id_split(
+            &mut *module,
+            &mut *import_ids,
+            symbol,
+            &sig_params,
+            &[types::I64],
+        );
+        let local = module.declare_func_in_func(callee, builder.func);
+        let mut call_args = vec![site_bits, class_bits, self_bits, name_ptr, name_len];
+        call_args.extend_from_slice(&extra_args);
+        let call = builder.ins().call(local, &call_args);
+        builder.inst_results(call)[0]
     };
-    // site + class + self + name_ptr + name_len + one per arg.
-    let sig_params = vec![types::I64; 5 + extra_args.len()];
-    let callee = SimpleBackend::import_func_id_split(
-        &mut *module,
-        &mut *import_ids,
-        symbol,
-        &sig_params,
-        &[types::I64],
-    );
-    let local = module.declare_func_in_func(callee, builder.func);
-    let mut call_args = vec![site_bits, class_bits, self_bits, name_ptr, name_len];
-    call_args.extend_from_slice(&extra_args);
-    let call = builder.ins().call(local, &call_args);
-    let res = builder.inst_results(call)[0];
     if let Some(out__) = op.out.as_ref() {
         def_var_from_boxed_transport(
             &mut *module,
@@ -2362,68 +2298,22 @@ fn handle_call_super_method_ic_op(
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 fn handle_call_method_op(
     op: &OpIR,
+    operands: &NativeOperandTransaction<'_>,
     op_idx: usize,
     func_name: &str,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut BTreeMap<&'static str, FuncRef>,
-    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
 ) {
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
-                                       builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
-                                       sealed_blocks: &mut BTreeSet<Block>,
-                                       vars: &BTreeMap<String, Variable>,
-                                       name: &str,
-                                       representation_plan: &ScalarRepresentationPlan|
-     -> Option<crate::VarValue> {
-        var_get_boxed_overflow_safe_fn(
-            module,
-            import_ids,
-            builder,
-            import_refs,
-            sealed_blocks,
-            vars,
-            name,
-            representation_plan,
-            nbc,
-        )
-    };
     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-    let method_bits = var_get_boxed_overflow_safe(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        &mut *sealed_blocks,
-        vars,
-        &args_names[0],
-        representation_plan,
-    )
-    .expect("Method not found");
+    let method_bits = operands.word(&args_names[0]).expect("Method not found");
     let mut extra_args = Vec::new();
     for name in &args_names[1..] {
-        extra_args.push(
-            *var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                name,
-                representation_plan,
-            )
-            .expect("Arg not found"),
-        );
+        extra_args.push(*operands.word(name).expect("Arg not found"));
     }
 
     // --- Fast-path: dispatch known bound-method patterns
@@ -2530,7 +2420,31 @@ fn handle_call_method_op(
     };
 
     let res = if let Some(fast_res) = fast_dispatched {
+        // The builtin borrowed the instruction's adopted inputs; they end once
+        // it returns, the bound method last.
+        release_adopted_call_inputs(
+            op,
+            Some(*method_bits),
+            1,
+            &extra_args,
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            &mut *import_refs,
+        );
         fast_res
+    } else if call_adopts_arguments(op) {
+        // An ordinary call that adopted its bound method and arguments: the
+        // owned lane ends a temporary bound method of a Python function before
+        // that function runs.
+        emit_owned_dynamic_call(
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            *method_bits,
+            &extra_args,
+            0,
+        )
     } else {
         // Generic path: allocate callargs and dispatch via IC.
         let callargs_new_local = import_func_ref(
@@ -2625,51 +2539,14 @@ fn handle_getargv_op(
 #[allow(clippy::too_many_arguments, clippy::manual_map)]
 fn handle_getframe_op(
     op: &OpIR,
+    operands: &NativeOperandTransaction<'_>,
     module: &mut ObjectModule,
     import_ids: &mut BTreeMap<&'static str, (cranelift_module::FuncId, ImportSignatureShape)>,
     builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut BTreeMap<&'static str, FuncRef>,
-    sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    representation_plan: &ScalarRepresentationPlan,
-    nbc: &crate::NanBoxConsts,
 ) {
-    let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
-                                       import_ids: &mut BTreeMap<
-        &'static str,
-        (cranelift_module::FuncId, ImportSignatureShape),
-    >,
-                                       builder: &mut FunctionBuilder<'_>,
-                                       import_refs: &mut BTreeMap<&'static str, FuncRef>,
-                                       sealed_blocks: &mut BTreeSet<Block>,
-                                       vars: &BTreeMap<String, Variable>,
-                                       name: &str,
-                                       representation_plan: &ScalarRepresentationPlan|
-     -> Option<crate::VarValue> {
-        var_get_boxed_overflow_safe_fn(
-            module,
-            import_ids,
-            builder,
-            import_refs,
-            sealed_blocks,
-            vars,
-            name,
-            representation_plan,
-            nbc,
-        )
-    };
     let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-    let depth = var_get_boxed_overflow_safe(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        &mut *sealed_blocks,
-        vars,
-        &args[0],
-        representation_plan,
-    )
-    .expect("depth not found");
+    let depth = operands.word(&args[0]).expect("depth not found");
     let callee = SimpleBackend::import_func_id_split(
         &mut *module,
         &mut *import_ids,

@@ -12,10 +12,29 @@ fn rust_sources(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+fn raw_header_flags_access(object_module: &Path, path: &Path, line: &str) -> bool {
+    path.starts_with(object_module) && (line.contains(").flags") || line.contains("header.flags"))
+}
+
 #[test]
 fn molt_header_flags_have_one_access_authority() {
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let authority = source_root.join("object").join("mod.rs");
+    let object_module = source_root.join("object");
+    let authority = object_module.join("mod.rs");
+    let authority_source = fs::read_to_string(&authority).expect("header authority must be UTF-8");
+    let header_fields = authority_source
+        .split_once("pub struct MoltHeader {")
+        .expect("canonical MoltHeader declaration")
+        .1
+        .split_once('}')
+        .expect("complete MoltHeader declaration")
+        .0;
+    assert!(
+        header_fields
+            .lines()
+            .any(|line| line.trim_start().starts_with("flags: MoltFlags,")),
+        "MoltHeader flags must remain private to the object module"
+    );
     let mut sources = Vec::new();
     rust_sources(&source_root, &mut sources);
 
@@ -23,13 +42,8 @@ fn molt_header_flags_have_one_access_authority() {
     for path in sources {
         let source = fs::read_to_string(&path).expect("Rust source must be UTF-8");
         for (index, line) in source.lines().enumerate() {
-            // MoltHeader's flag field is private, so this guard is primarily a
-            // durable architecture diagnostic: it names any attempted return
-            // to pointer-level raw reads, writes, or read/modify/write.
             let unpublished_constructor = path == authority && line.contains("addr_of_mut!");
-            if !unpublished_constructor
-                && (line.contains(").flags") || line.contains("header.flags"))
-            {
+            if !unpublished_constructor && raw_header_flags_access(&object_module, &path, line) {
                 violations.push(format!("{}:{}: {}", path.display(), index + 1, line.trim()));
             }
         }
@@ -40,6 +54,26 @@ fn molt_header_flags_have_one_access_authority() {
         "MoltHeader flags must use load/store/fetch/update helpers:\n{}",
         violations.join("\n")
     );
+}
+
+#[test]
+fn header_flag_source_classifier_respects_rust_visibility() {
+    let object_module = Path::new("src/object");
+    assert!(raw_header_flags_access(
+        object_module,
+        Path::new("src/object/mod.rs"),
+        "(*header).flags.load(ordering)"
+    ));
+    assert!(raw_header_flags_access(
+        object_module,
+        Path::new("src/object/collector.rs"),
+        "header.flags.store(value, ordering)"
+    ));
+    assert!(!raw_header_flags_access(
+        object_module,
+        Path::new("src/cpython_abi_hooks/native_lifecycle_tests.rs"),
+        "(*(*type_).tp_members).flags & Py_RELATIVE_OFFSET"
+    ));
 }
 
 #[test]

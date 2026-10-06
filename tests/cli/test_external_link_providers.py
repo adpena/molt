@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import contextmanager
+from collections import OrderedDict
 import os
 
 import pytest
@@ -94,25 +96,29 @@ def test_provider_surface_owns_complete_archive_symbol_families(
     }
     reads: list[Path] = []
 
-    def read_symbols(path: Path, *, target_triple: str, identity):
+    @contextmanager
+    def read_symbols(path: Path, *, target_triple: str, archive: bool):
+        assert archive
+        identity = native_symbol_inspection._native_symbol_artifact_identity(path)
         reads.append(path)
         assert target_triple == "wasm32-wasip1"
         defined, undefined = facts[path]
-        return native_symbol_inspection._NativeGlobalSymbolFacts(
-            defined=frozenset(defined),
-            undefined=frozenset(undefined),
-            defined_functions=frozenset(defined),
-            artifact_digest=identity.sha256,
+        yield (
+            None,
+            identity,
+            native_symbol_inspection._NativeGlobalSymbolFacts(
+                defined=frozenset(defined),
+                undefined=frozenset(undefined),
+                defined_functions=frozenset(defined),
+                artifact_digest=identity.sha256,
+            ),
         )
 
     monkeypatch.setattr(
         providers,
-        "_native_archive_global_symbol_facts",
+        "_native_symbol_facts_admission",
         read_symbols,
     )
-    providers._provider_surfaces_from_key.cache_clear()
-    providers._provider_symbol_classes_from_key.cache_clear()
-    providers._provider_symbols_from_key.cache_clear()
 
     classes = providers.wasm_external_link_provider_symbol_classes()
     assert classes["exit"] == providers.WASM_LIBC_LINK_IMPORT_CLASS
@@ -125,8 +131,8 @@ def test_provider_surface_owns_complete_archive_symbol_families(
     assert set(reads) == set(facts)
 
     reads.clear()
-    assert providers.wasm_external_link_provider_symbol_classes() is classes
-    assert reads == []
+    assert providers.wasm_external_link_provider_symbol_classes() == classes
+    assert set(reads) == set(facts), "projections always enter canonical admission"
 
 
 def test_unreadable_provider_family_fails_closed(
@@ -145,15 +151,14 @@ def test_unreadable_provider_family_fails_closed(
         ),
     )
 
-    def unreadable(path: Path, *, target_triple: str, identity):
+    @contextmanager
+    def unreadable(path: Path, *, target_triple: str, archive: bool):
         raise native_symbol_inspection.NativeSymbolInspectionError(
             path, ["provider unreadable"]
         )
+        yield
 
-    monkeypatch.setattr(providers, "_native_archive_global_symbol_facts", unreadable)
-    providers._provider_surfaces_from_key.cache_clear()
-    providers._provider_symbol_classes_from_key.cache_clear()
-    providers._provider_symbols_from_key.cache_clear()
+    monkeypatch.setattr(providers, "_native_symbol_facts_admission", unreadable)
 
     for _ in range(2):
         with pytest.raises(
@@ -161,7 +166,6 @@ def test_unreadable_provider_family_fails_closed(
             match="provider unreadable",
         ):
             providers.wasm_external_link_provider_symbol_classes()
-        assert providers._provider_surfaces_from_key.cache_info().currsize == 0
 
 
 def test_nm_symbol_normalization_uses_artifact_target_not_host(
@@ -197,7 +201,7 @@ def test_nm_symbol_normalization_uses_artifact_target_not_host(
         providers.wasm_external_link_provider_symbols,
     ],
 )
-def test_outer_provider_cache_rechecks_generation_before_return(
+def test_provider_projection_admits_once_and_fences_native_cache_hits(
     tmp_path, monkeypatch, query
 ):
     archive = tmp_path / "libc.a"
@@ -260,23 +264,38 @@ def test_outer_provider_cache_rechecks_generation_before_return(
     monkeypatch.setattr(
         native_symbol_inspection, "_read_native_global_symbol_facts", read_symbols
     )
-    for cached in (
-        providers._provider_surfaces_from_key,
-        providers._provider_symbol_classes_from_key,
-        providers._provider_symbols_from_key,
-    ):
-        cached.cache_clear()
+    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+    captured = []
+    original_hash = native_symbol_inspection.stable_regular_file_handle_identity
+
+    def capture(opened, **kwargs):
+        captured.append(opened.path)
+        return original_hash(opened, **kwargs)
+
+    monkeypatch.setattr(
+        native_symbol_inspection, "stable_regular_file_handle_identity", capture
+    )
     query()
-    original = providers._provider_resolution_key
+    assert captured == [archive]
+    captured.clear()
+    query()
+    assert captured == [archive]
+    storage = native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE
 
-    def replace_after_key(target):
-        key = original(target)
-        stamp = archive.stat()
-        archive.write_bytes(static_archive_bytes(b"replaced"))
-        os.utime(archive, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
-        return key
+    class ReplacingCache(OrderedDict):
+        def get(self, key, default=None):
+            found = super().get(key, default)
+            assert found is not None
+            stamp = archive.stat()
+            archive.write_bytes(static_archive_bytes(b"replacement-with-changed-size"))
+            os.utime(archive, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            return found
 
-    monkeypatch.setattr(providers, "_provider_resolution_key", replace_after_key)
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "_NATIVE_ARCHIVE_SYMBOL_SETS_CACHE",
+        ReplacingCache(storage),
+    )
     with pytest.raises(
         native_symbol_inspection.NativeSymbolInspectionError, match="changed"
     ):

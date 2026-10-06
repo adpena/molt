@@ -66,7 +66,7 @@ pub(crate) unsafe fn callable_matches_runtime_symbol(
 
 #[inline]
 pub(crate) unsafe fn resolved_new_is_default_object_new(new_bits: Option<u64>) -> bool {
-    unsafe { callable_matches_runtime_symbol(new_bits, fn_addr!(molt_object_new_bound)) }
+    unsafe { callable_matches_runtime_symbol(new_bits, fn_key!(molt_object_new_bound)) }
 }
 
 /// Whether CPython permits extra arguments when `object.__new__` or
@@ -107,9 +107,9 @@ pub(crate) unsafe fn object_constructor_extra_args_allowed(
             return false;
         }
         let new_is_object =
-            callable_matches_runtime_symbol(Some(resolved_new), fn_addr!(molt_object_new_bound));
+            callable_matches_runtime_symbol(Some(resolved_new), fn_key!(molt_object_new_bound));
         let init_is_object =
-            callable_matches_runtime_symbol(Some(resolved_init), fn_addr!(molt_object_init));
+            callable_matches_runtime_symbol(Some(resolved_init), fn_key!(molt_object_init));
 
         match call {
             ObjectConstructorCall::New => new_is_object && !init_is_object,
@@ -124,7 +124,7 @@ pub(crate) unsafe fn resolved_constructor_init_policy(
     init_bits: Option<u64>,
 ) -> InitArgPolicy {
     unsafe {
-        let init_is_object = callable_matches_runtime_symbol(init_bits, fn_addr!(molt_object_init));
+        let init_is_object = callable_matches_runtime_symbol(init_bits, fn_key!(molt_object_init));
         if !init_is_object {
             return InitArgPolicy::ForwardArgs;
         }
@@ -214,10 +214,10 @@ mod tests {
             let new_bits = object_method_bits(_py, "__new__");
             let init_bits = object_method_bits(_py, "__init__");
             assert!(unsafe {
-                callable_matches_runtime_symbol(new_bits, fn_addr!(crate::molt_object_new_bound))
+                callable_matches_runtime_symbol(new_bits, fn_key!(crate::molt_object_new_bound))
             });
             assert!(unsafe {
-                callable_matches_runtime_symbol(init_bits, fn_addr!(crate::molt_object_init))
+                callable_matches_runtime_symbol(init_bits, fn_key!(crate::molt_object_init))
             });
         });
     }
@@ -228,7 +228,7 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let call_bits = type_method_bits(_py, "__call__");
             assert!(unsafe {
-                callable_matches_runtime_symbol(call_bits, fn_addr!(crate::molt_type_call))
+                callable_matches_runtime_symbol(call_bits, fn_key!(crate::molt_type_call))
             });
         });
     }
@@ -242,13 +242,13 @@ mod tests {
             assert!(unsafe {
                 callable_matches_runtime_symbol(
                     new_bits,
-                    fn_addr!(crate::builtins::exceptions::molt_exception_new_bound),
+                    fn_key!(crate::builtins::exceptions::molt_exception_new_bound),
                 )
             });
             assert!(unsafe {
                 callable_matches_runtime_symbol(
                     init_bits,
-                    fn_addr!(crate::builtins::exceptions::molt_exception_init_owned),
+                    fn_key!(crate::builtins::exceptions::molt_exception_init_owned),
                 )
             });
         });

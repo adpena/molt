@@ -47,6 +47,15 @@ pub(crate) struct TrackedVecOwner<T> {
     ptr: NonNull<TrackedVecBox<T>>,
 }
 
+impl<T> TrackedVecOwner<T> {
+    /// Transfer this allocation, including its accounting and mutation identity,
+    /// to an object that assumes sole responsibility for terminal destruction.
+    pub(crate) fn into_raw(self) -> *mut Vec<T> {
+        let owner = std::mem::ManuallyDrop::new(self);
+        unsafe { &raw mut (*owner.ptr.as_ptr()).vec }
+    }
+}
+
 /// Detached backing-buffer custody from a still-live tracked Vec owner. The
 /// stable owner retains its lock/epoch identity with an empty zero-charge Vec;
 /// dropping this value releases the displaced buffer's resource charge.

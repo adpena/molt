@@ -397,20 +397,14 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "GUARD_TYPE":
-            ctx.json_ops.append(
-                {
-                    "kind": "guard_type",
-                    "args": [arg.name for arg in op.args],
-                }
-            )
-        elif op.kind == "GUARD_TAG":
-            ctx.json_ops.append(
-                {
-                    "kind": "guard_tag",
-                    "args": [arg.name for arg in op.args],
-                }
-            )
+        elif op.kind in {"GUARD_TAG", "GUARD_TYPE"}:
+            guard = {
+                "kind": op.kind.lower(),
+                "args": [arg.name for arg in op.args],
+            }
+            if op.result.name != "none":
+                guard["out"] = op.result.name
+            ctx.json_ops.append(guard)
         elif op.kind == "GUARD_DICT_SHAPE":
             ctx.json_ops.append(
                 {

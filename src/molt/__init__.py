@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ._version import version as _resolve_version
+from molt._version import version as _resolve_version
 
 __version__ = _resolve_version()
 

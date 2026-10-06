@@ -551,7 +551,8 @@ fn classless_payload_tail_is_a_field_not_an_instance_dictionary() {
             1,
             "boxed payload destruction releases its field owner"
         );
-        for bits in [value] {
+        {
+            let bits = value;
             dec_ref_bits(_py, bits);
         }
         assert!(!exception_pending(_py));

@@ -4,14 +4,10 @@ use crate::abi_types::PyObject;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyEval_GetBuiltins() -> *mut PyObject {
-    // CPython returns the interpreter's REAL `builtins` module dict (the
-    // frame's `f_builtins`, normally `sys.modules['builtins'].__dict__`). The
-    // previous body lazily created a fresh, permanently-empty `PyDict` in a
-    // detached `OnceCell` — never populated by anything — so every
-    // `PyDict_GetItemString(PyEval_GetBuiltins(), name)` lookup a C extension
-    // makes (the common way to reach e.g. `len`/`print`/`Exception` from C)
-    // would silently miss. Route through the runtime's current-frame/default
-    // builtins hook: no import re-entry and no second builtins namespace.
+    // Borrow the executing frame's exact f_builtins (normally a dictionary,
+    // but explicit mappings and nonmappings retain their identity). With no
+    // frame, use the interpreter namespace. The runtime hook owns this choice;
+    // no import re-entry or secondary namespace is permitted here.
     let Some(h) = crate::hooks::hooks() else {
         crate::api::imports::propagate_hook_error(
             c"builtins lookup is unavailable without runtime hooks",

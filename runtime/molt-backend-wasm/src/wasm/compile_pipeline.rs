@@ -3,6 +3,7 @@ use super::control_flow::has_non_linear_control_flow;
 use crate::SimpleIR;
 use crate::wasm::WasmCompileOutput;
 use crate::wasm::lir_fast::compute_lir_wasm_lowering_plans_from_final_ir_with_escaped;
+use crate::wasm_plan::{WasmStageAudit, emit_wasm_stage_audit, simple_ir_stage_shape};
 
 /// Run a body-only operation against defined functions while preserving the
 /// original declaration/body ordering in the module IR.
@@ -89,6 +90,7 @@ impl WasmBackend {
     }
 
     fn compile_admitted(self, ir: SimpleIR) -> WasmCompileOutput {
+        let stage_audit = WasmStageAudit::from_environment();
         let mut ir = ir;
         let target_info = crate::tir::target_info::TargetInfo::wasm_release_fast();
         crate::apply_profile_order(&mut ir);
@@ -131,21 +133,17 @@ impl WasmBackend {
         {
             crate::fold_constants(&mut func_ir.ops);
         }
-        split_wasm_megafunctions(&mut ir);
-        super::tir_pipeline::run_tir_pipeline(&mut ir, &target_info);
-
         // Fuse `obj.method(args)` (get_attr_generic_ptr + callargs_new +
         // callargs_push_pos + call_bind) into a single allocation-free
         // `call_method_ic` op, and `super().method(args)` into
         // `call_super_method_ic` (CPython LOAD_METHOD/CALL_METHOD parity).
-        // Run as the LAST SimpleIR transformation before runtime import-surface planning
-        // and codegen. TIR has first-class IC opcodes, but this backend consumes
-        // the final SimpleIR stream, so fusion belongs after the TIR roundtrip
-        // and module-phase inliner have produced that stream (identical placement
-        // contract to the native backend, which fuses immediately before
-        // `compile_func`). The fused op kinds are recognized as non-removable by
-        // `eliminate_dead_ops` because method dispatch runs arbitrary user code,
-        // so the dead-op pass below preserves them.
+        // Fusion rewrites source calls, so it runs before the TIR lift, as on
+        // every native lane: the fused call carries its source call's adoption
+        // (design 20 §1.6) into ownership planning, and the receiver moves into
+        // the call as in CPython's method-form LOAD_ATTR and CALL. The IC opcodes
+        // lower back to the same SimpleIR spellings after the roundtrip, and
+        // `eliminate_dead_ops` keeps them because method dispatch runs arbitrary
+        // user code.
         for func_ir in ir
             .functions
             .iter_mut()
@@ -153,9 +151,24 @@ impl WasmBackend {
         {
             crate::passes::fuse_method_dispatch(func_ir);
         }
-
-        // Bound growth introduced by TIR and final SimpleIR rewrites.
         split_wasm_megafunctions(&mut ir);
+        super::tir_pipeline::run_tir_pipeline(&mut ir, &target_info, stage_audit);
+
+        // Existing stage audits bracket the terminal pipeline as well as TIR.
+        // A before marker preserves the active boundary on interruption. Normal
+        // compilation does not construct audit projections or sample the clock.
+        let audit_start = stage_audit.start();
+        let audit = |stage, functions: &[crate::FunctionIR]| {
+            emit_wasm_stage_audit(
+                stage_audit,
+                stage,
+                || simple_ir_stage_shape(functions),
+                None,
+                None,
+                None,
+                || audit_start.map(|start| start.elapsed().as_millis()),
+            );
+        };
 
         // Catalog initializers are address/ModuleId reached and therefore have
         // no ordinary SimpleIR call edge. Keep exactly the canonical catalog
@@ -165,11 +178,17 @@ impl WasmBackend {
             .as_ref()
             .map(|registry| registry.init_symbols.iter().cloned().collect())
             .unwrap_or_default();
+        audit("before-function-reachability", &ir.functions);
         crate::eliminate_dead_functions_with_roots(&mut ir, &module_registry_roots);
+        audit("after-function-reachability", &ir.functions);
+        audit("before-import-reachability", &ir.functions);
         apply_defined_function_ir_pass(&mut ir, crate::eliminate_dead_imports);
+        audit("after-import-reachability", &ir.functions);
+        audit("before-operation-reachability", &ir.functions);
         apply_defined_function_ir_pass(&mut ir, |defined_ir| {
             crate::eliminate_dead_ops(defined_ir, &target_info);
         });
+        audit("after-operation-reachability", &ir.functions);
 
         if let Some(config) = crate::should_dump_ir() {
             for func_ir in &ir.functions {
@@ -179,20 +198,38 @@ impl WasmBackend {
             }
         }
 
+        audit("before-trampoline-analysis", &ir.functions);
         let trampoline_analysis =
             super::trampoline_analysis::analyze_wasm_trampolines_with_source(&ir, source_callables);
+        audit("after-trampoline-analysis", &ir.functions);
+        audit("before-lir-planning", &ir.functions);
         let lir_lowering_plans = compute_lir_wasm_lowering_plans_from_final_ir_with_escaped(
             &ir,
             &trampoline_analysis.escaped_callable_targets,
         );
-        self.emit_wasm_module(ir, lir_lowering_plans, trampoline_analysis)
+        audit("after-lir-planning", &ir.functions);
+        audit("before-module-emission", &ir.functions);
+        let output =
+            self.emit_wasm_module(&ir, lir_lowering_plans, trampoline_analysis, stage_audit);
+        emit_wasm_stage_audit(
+            stage_audit,
+            "after-module-emission",
+            || simple_ir_stage_shape(&ir.functions),
+            Some(output.wasm.len()),
+            None,
+            None,
+            || audit_start.map(|start| start.elapsed().as_millis()),
+        );
+        output
     }
 }
 
 // One target-admission predicate serves both pre-lift and post-rewrite bounds.
 // Sequential splitting is not proven for WASM's nonlinear dispatch machine.
-fn split_wasm_megafunctions(ir: &mut SimpleIR) {
+pub(super) fn split_wasm_megafunctions(
+    ir: &mut SimpleIR,
+) -> std::collections::BTreeMap<String, String> {
     crate::passes::split_megafunctions_with_filter(ir, |function| {
         !function.is_extern && !has_non_linear_control_flow(&function.ops)
-    });
+    })
 }

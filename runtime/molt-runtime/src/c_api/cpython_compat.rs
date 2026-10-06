@@ -99,13 +99,15 @@ pub extern "C" fn PyList_Check(obj: u64) -> i32 {
 
 /// `PyDict_Check(obj)` — return 1 if obj is a dict, 0 otherwise.
 pub extern "C" fn PyDict_Check(obj: u64) -> i32 {
-    if let Some(ptr) = obj_from_bits(obj).as_ptr()
-        && unsafe { object_type_id(ptr) } == TYPE_ID_DICT
-    {
-        1
-    } else {
-        0
-    }
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            crate::object::class_layout::is_real_subtype(
+                py,
+                type_of_bits(py, obj),
+                builtin_classes(py).dict,
+            ) as i32
+        }
+    })
 }
 
 /// `PyTuple_Check(obj)` — return 1 if obj is a tuple, 0 otherwise.
@@ -330,19 +332,26 @@ pub extern "C" fn PyDict_New() -> u64 {
     })
 }
 
+/// All libmolt C dict operations share the runtime's tri-state backing query.
+fn c_dict_pointer(py: &PyToken<'_>, dict: u64) -> Option<*mut u8> {
+    match crate::object::ops::dict_backing_bits(py, dict) {
+        Ok(Some(bits)) => obj_from_bits(bits).as_ptr(),
+        Ok(None) => {
+            raise_exception::<()>(py, "SystemError", "bad argument to internal function");
+            None
+        }
+        Err(()) => None,
+    }
+}
+
 /// `PyDict_SetItem(dict, key, val)` — insert key/value pair into dict.
 /// Returns 0 on success, -1 on error.
 pub extern "C" fn PyDict_SetItem(dict: u64, key: u64, val: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(ptr) = obj_from_bits(dict).as_ptr() else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "expected dict object");
+        let Some(ptr) = c_dict_pointer(_py, dict) else {
             return -1;
         };
         unsafe {
-            if object_type_id(ptr) != TYPE_ID_DICT {
-                let _ = raise_exception::<u64>(_py, "TypeError", "expected dict object");
-                return -1;
-            }
             dict_set_in_place(_py, ptr, key, val);
             if exception_pending(_py) { -1 } else { 0 }
         }
@@ -352,33 +361,13 @@ pub extern "C" fn PyDict_SetItem(dict: u64, key: u64, val: u64) -> i32 {
 /// `PyDict_GetItem(dict, key)` — return a **borrowed** reference to dict[key],
 /// or 0 (NULL) if the key is not present (no exception set for missing key).
 pub extern "C" fn PyDict_GetItem(dict: u64, key: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(ptr) = obj_from_bits(dict).as_ptr() else {
-            return 0;
-        };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_DICT {
+    molt_cpython_abi::api::errors::with_preserved_error(|| {
+        crate::with_gil_entry_nopanic!(_py, {
+            let Some(ptr) = c_dict_pointer(_py, dict) else {
                 return 0;
-            }
-            match dict_get_in_place(_py, ptr, key) {
-                Some(val_bits) => {
-                    // Clear any exception that dict_get_in_place might have set
-                    // due to unhashable key (CPython PyDict_GetItem suppresses errors).
-                    if exception_pending(_py) {
-                        let _ = molt_exception_clear();
-                    }
-                    // Borrowed reference.
-                    val_bits
-                }
-                None => {
-                    // Suppress exceptions (CPython semantics for PyDict_GetItem).
-                    if exception_pending(_py) {
-                        let _ = molt_exception_clear();
-                    }
-                    0
-                }
-            }
-        }
+            };
+            unsafe { dict_get_in_place(_py, ptr, key).unwrap_or(0) }
+        })
     })
 }
 
@@ -410,32 +399,20 @@ pub unsafe extern "C" fn PyDict_SetItemString(
 /// `PyDict_Size(dict)` — return the number of items in the dict, or -1 on error.
 pub extern "C" fn PyDict_Size(dict: u64) -> isize {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(ptr) = obj_from_bits(dict).as_ptr() else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "expected dict object");
+        let Some(ptr) = c_dict_pointer(_py, dict) else {
             return -1;
         };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_DICT {
-                let _ = raise_exception::<u64>(_py, "TypeError", "expected dict object");
-                return -1;
-            }
-            dict_len(ptr) as isize
-        }
+        unsafe { dict_len(ptr) as isize }
     })
 }
 
 /// `PyDict_Contains(dict, key)` — return 1 if key is in dict, 0 if not, -1 on error.
 pub extern "C" fn PyDict_Contains(dict: u64, key: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        let Some(ptr) = obj_from_bits(dict).as_ptr() else {
-            let _ = raise_exception::<u64>(_py, "TypeError", "expected dict object");
+        let Some(ptr) = c_dict_pointer(_py, dict) else {
             return -1;
         };
         unsafe {
-            if object_type_id(ptr) != TYPE_ID_DICT {
-                let _ = raise_exception::<u64>(_py, "TypeError", "expected dict object");
-                return -1;
-            }
             match dict_get_in_place(_py, ptr, key) {
                 Some(_) => {
                     if exception_pending(_py) {
@@ -869,43 +846,50 @@ pub extern "C" fn PyMapping_Length(o: u64) -> isize {
 
 /// `PyMapping_Keys(o)` — return `list(o.keys())`, or 0 on error.
 pub extern "C" fn PyMapping_Keys(o: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_dict_keys(o);
-        if exception_pending(_py) {
-            if !obj_from_bits(res).is_none() {
-                dec_ref_bits(_py, res);
-            }
-            return 0;
-        }
-        res
-    })
+    mapping_method_as_list(o, c"keys")
 }
 
 /// `PyMapping_Values(o)` — return `list(o.values())`, or 0 on error.
 pub extern "C" fn PyMapping_Values(o: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_dict_values(o);
-        if exception_pending(_py) {
-            if !obj_from_bits(res).is_none() {
-                dec_ref_bits(_py, res);
-            }
-            return 0;
-        }
-        res
-    })
+    mapping_method_as_list(o, c"values")
 }
 
 /// `PyMapping_Items(o)` — return `list(o.items())`, or 0 on error.
 pub extern "C" fn PyMapping_Items(o: u64) -> u64 {
+    mapping_method_as_list(o, c"items")
+}
+
+/// Mapping methods are ordinary attribute calls; subclasses and arbitrary
+/// mappings may override them. Only the returned iterable is materialized.
+fn mapping_method_as_list(o: u64, name: &std::ffi::CStr) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_dict_items(o);
+        let method = PyObject_GetAttrString(o, name.as_ptr());
         if exception_pending(_py) {
-            if !obj_from_bits(res).is_none() {
-                dec_ref_bits(_py, res);
-            }
+            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, method));
             return 0;
         }
-        res
+        let result = unsafe { call_callable0(_py, method) };
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, method));
+        crate::object::mapping_merge::output_as_list(_py, o, name.to_bytes(), result).unwrap_or(0)
+    })
+}
+
+fn dict_output_as_list(dict: u64, kind: crate::object::ops_dict::DictSnapshotKind) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(storage) = c_dict_pointer(_py, dict) else {
+            return 0;
+        };
+        let Some(snapshot) =
+            (unsafe { crate::object::ops_dict::dict_snapshot(_py, storage, kind) })
+        else {
+            return 0;
+        };
+        let list = crate::object::builders::alloc_list_from_snapshot(_py, snapshot);
+        if list.is_null() {
+            0
+        } else {
+            MoltObject::from_ptr(list).bits()
+        }
     })
 }
 
@@ -982,8 +966,7 @@ pub extern "C" fn PyMapping_HasKey(o: u64, key: u64) -> i32 {
 /// `PySequence_GetItem(o, i)` — return `o[i]`, or 0 on error.
 pub extern "C" fn PySequence_GetItem(o: u64, i: isize) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let idx_bits = MoltObject::from_int(i as i64).bits();
-        let res = molt_getitem_method(o, idx_bits);
+        let res = crate::object::sequence_index::sequence_item_at_index(_py, o, i as i64);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
                 dec_ref_bits(_py, res);
@@ -1330,14 +1313,9 @@ pub extern "C" fn PyObject_GetAttrString(obj: u64, name: *const std::ffi::c_char
 /// `PyObject_SetAttr(obj, name, value)` — set obj.name = value. Returns 0 on success, -1 on error.
 pub extern "C" fn PyObject_SetAttr(obj: u64, name: u64, value: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_object_setattr(obj, name, value);
-        if exception_pending(_py) || obj_from_bits(res).is_none() {
-            return -1;
-        }
-        if !obj_from_bits(res).is_none() {
-            dec_ref_bits(_py, res);
-        }
-        0
+        let result = molt_set_attr_name(obj, name, value);
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, result));
+        if exception_pending(_py) { -1 } else { 0 }
     })
 }
 
@@ -1396,14 +1374,9 @@ pub extern "C" fn PyObject_HasAttrString(obj: u64, name: *const std::ffi::c_char
 /// `PyObject_DelAttr(obj, name)` — delete obj.name. Returns 0 on success, -1 on error.
 pub extern "C" fn PyObject_DelAttr(obj: u64, name: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
-        let res = molt_object_delattr(obj, name);
-        if exception_pending(_py) || obj_from_bits(res).is_none() {
-            return -1;
-        }
-        if !obj_from_bits(res).is_none() {
-            dec_ref_bits(_py, res);
-        }
-        0
+        let result = molt_del_attr_name(obj, name);
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(_py, result));
+        if exception_pending(_py) { -1 } else { 0 }
     })
 }
 
@@ -1546,53 +1519,36 @@ pub extern "C" fn PyObject_IsSubclass(sub: u64, cls: u64) -> i32 {
 // libmolt C-API — Set Protocol
 // ---------------------------------------------------------------------------
 
-/// `PySet_New(iterable)` — create a new set, optionally from an iterable (pass 0 for empty set).
-pub extern "C" fn PySet_New(iterable: u64) -> u64 {
+/// One set/frozenset construction owner; absence is independent of value bits.
+pub(crate) fn new_set_from_iterable(iterable: Option<u64>, frozen: bool) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        // molt_set_new expects raw capacity u64, NOT NaN-boxed
-        let set_bits = molt_set_new(0u64);
-        if exception_pending(_py) || obj_from_bits(set_bits).is_none() {
+        let result = if frozen {
+            molt_frozenset_new(0)
+        } else {
+            molt_set_new(0)
+        };
+        if exception_pending(_py) || obj_from_bits(result).is_none() {
             return 0;
         }
-        if iterable != 0 && !obj_from_bits(iterable).is_none() {
-            let res = molt_set_update(set_bits, iterable);
-            if exception_pending(_py) {
-                dec_ref_bits(_py, set_bits);
-                if !obj_from_bits(res).is_none() {
-                    dec_ref_bits(_py, res);
-                }
+        if let Some(iterable) = iterable {
+            let Some(pointer) = obj_from_bits(result).as_ptr() else {
+                return 0;
+            };
+            if unsafe {
+                crate::object::ops_set::set_update_iterable(
+                    _py,
+                    pointer,
+                    iterable,
+                    crate::object::ops_hash::HashContext::SetElement,
+                )
+            }
+            .is_err()
+            {
+                dec_ref_bits(_py, result);
                 return 0;
             }
-            if !obj_from_bits(res).is_none() {
-                dec_ref_bits(_py, res);
-            }
         }
-        set_bits
-    })
-}
-
-/// `PyFrozenSet_New(iterable)` — create a new frozenset.
-pub extern "C" fn PyFrozenSet_New(iterable: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        // molt_frozenset_new expects raw capacity u64, NOT NaN-boxed
-        let fs_bits = molt_frozenset_new(0u64);
-        if exception_pending(_py) || obj_from_bits(fs_bits).is_none() {
-            return 0;
-        }
-        if iterable != 0 && !obj_from_bits(iterable).is_none() {
-            let res = molt_set_update(fs_bits, iterable);
-            if exception_pending(_py) {
-                dec_ref_bits(_py, fs_bits);
-                if !obj_from_bits(res).is_none() {
-                    dec_ref_bits(_py, res);
-                }
-                return 0;
-            }
-            if !obj_from_bits(res).is_none() {
-                dec_ref_bits(_py, res);
-            }
-        }
-        fs_bits
+        result
     })
 }
 
@@ -1648,7 +1604,12 @@ pub extern "C" fn PySet_Contains(set: u64, key: u64) -> i32 {
             );
             return -1;
         }
-        let res = molt_set_contains(set, key);
+        let res = crate::object::ops_set::set_contains(
+            _py,
+            set,
+            key,
+            crate::object::ops_set::SetContainsPolicy::ExactKey,
+        );
         if exception_pending(_py) {
             return -1;
         }
@@ -1696,8 +1657,8 @@ pub extern "C" fn PySet_Add(set: u64, key: u64) -> i32 {
 
 /// `PySet_Discard(set, key)` — remove key from set if present. Returns 1 if the
 /// key was found and removed, 0 if it was absent, -1 on error. Raises
-/// `SystemError` if `set` is not a set/frozenset and `TypeError` if `key` is
-/// unhashable. Never raises `KeyError` (unlike `set.discard`).
+/// `SystemError` if `set` is not a mutable set and `TypeError` if `key` is
+/// unhashable. Never raises `KeyError` (unlike `set.remove`).
 pub extern "C" fn PySet_Discard(set: u64, key: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let ptr = match obj_from_bits(set).as_ptr() {
@@ -1707,24 +1668,14 @@ pub extern "C" fn PySet_Discard(set: u64, key: u64) -> i32 {
                 return -1;
             }
         };
-        // `molt_set_contains` runs the ensure_hashable gate (an unhashable key
-        // raises TypeError, surfaced here as -1) and reports presence, giving us
-        // the found bit CPython's PySet_Discard returns (1 removed / 0 absent).
-        // `set_del_in_place` alone returns false both for "absent" and "raised",
-        // which would collapse the two cases.
-        let contains = molt_set_contains(set, key);
-        if exception_pending(_py) {
-            return -1;
-        }
-        let present = is_truthy(_py, obj_from_bits(contains));
-        if !present {
-            return 0;
-        }
+        // The deletion owner validates and hashes the exact key once, then
+        // reports whether it removed an entry. A pending exception separates
+        // failed hashing/equality from an absent key without another lookup.
         let removed = unsafe { set_del_in_place(_py, ptr, key) };
         if exception_pending(_py) {
             return -1;
         }
-        if removed { 1 } else { 0 }
+        i32::from(removed)
     })
 }
 
@@ -1870,34 +1821,31 @@ pub extern "C" fn PyUnicode_CompareWithASCIIString(
 
 /// `PyDict_GetItemString(dict, key)` — get item using C string key. Borrowed reference.
 pub extern "C" fn PyDict_GetItemString(dict: u64, key: *const std::ffi::c_char) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        if key.is_null() {
-            return 0;
-        }
-        let key_cstr = unsafe { std::ffi::CStr::from_ptr(key) };
-        let key_bytes = key_cstr.to_bytes();
-        let key_ptr = alloc_string(_py, key_bytes);
-        if key_ptr.is_null() {
-            if exception_pending(_py) {
-                let _ = molt_exception_clear();
+    molt_cpython_abi::api::errors::with_preserved_error(|| {
+        crate::with_gil_entry_nopanic!(_py, {
+            if key.is_null() {
+                return 0;
             }
-            return 0;
-        }
-        let key_bits = MoltObject::from_ptr(key_ptr).bits();
-        let result = PyDict_GetItem(dict, key_bits);
-        dec_ref_bits(_py, key_bits);
-        // PyDict_GetItem suppresses errors and returns NULL for missing keys
-        if exception_pending(_py) {
-            let _ = molt_exception_clear();
-            return 0;
-        }
-        result
+            let bytes = unsafe { std::ffi::CStr::from_ptr(key) }.to_bytes();
+            let key_ptr = alloc_string(_py, bytes);
+            if key_ptr.is_null() {
+                return 0;
+            }
+            let key_bits = MoltObject::from_ptr(key_ptr).bits();
+            let result = PyDict_GetItem(dict, key_bits);
+            dec_ref_bits(_py, key_bits);
+            result
+        })
     })
 }
 
 /// `PyDict_DelItem(dict, key)` — delete dict[key]. Returns 0 on success, -1 on error.
 pub extern "C" fn PyDict_DelItem(dict: u64, key: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
+        let Some(storage) = c_dict_pointer(_py, dict) else {
+            return -1;
+        };
+        let dict = MoltObject::from_ptr(storage).bits();
         // Use molt_dict_pop with no default — raises KeyError if missing
         let res = molt_dict_pop(dict, key, none_bits(), MoltObject::from_bool(false).bits());
         if exception_pending(_py) {
@@ -1936,22 +1884,26 @@ pub extern "C" fn PyDict_DelItemString(dict: u64, key: *const std::ffi::c_char) 
 
 /// `PyDict_Keys(dict)` — return a list of all keys in the dict.
 pub extern "C" fn PyDict_Keys(dict: u64) -> u64 {
-    PyMapping_Keys(dict)
+    dict_output_as_list(dict, crate::object::ops_dict::DictSnapshotKind::Keys)
 }
 
 /// `PyDict_Values(dict)` — return a list of all values in the dict.
 pub extern "C" fn PyDict_Values(dict: u64) -> u64 {
-    PyMapping_Values(dict)
+    dict_output_as_list(dict, crate::object::ops_dict::DictSnapshotKind::Values)
 }
 
 /// `PyDict_Items(dict)` — return a list of all (key, value) pairs in the dict.
 pub extern "C" fn PyDict_Items(dict: u64) -> u64 {
-    PyMapping_Items(dict)
+    dict_output_as_list(dict, crate::object::ops_dict::DictSnapshotKind::Items)
 }
 
 /// `PyDict_Update(a, b)` — merge b into a. Returns 0 on success, -1 on error.
 pub extern "C" fn PyDict_Update(a: u64, b: u64) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
+        let Some(storage) = c_dict_pointer(_py, a) else {
+            return -1;
+        };
+        let a = MoltObject::from_ptr(storage).bits();
         let res = molt_dict_update(a, b);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {
@@ -1969,6 +1921,10 @@ pub extern "C" fn PyDict_Update(a: u64, b: u64) -> i32 {
 /// `PyDict_Copy(dict)` — return a shallow copy of the dict.
 pub extern "C" fn PyDict_Copy(dict: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
+        let Some(storage) = c_dict_pointer(_py, dict) else {
+            return 0;
+        };
+        let dict = MoltObject::from_ptr(storage).bits();
         let res = molt_dict_copy(dict);
         if exception_pending(_py) {
             if !obj_from_bits(res).is_none() {

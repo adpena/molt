@@ -1,3 +1,4 @@
+use crate::object::ops_compare::{CompareBoolOutcome, compare_object_eq_bool};
 use molt_obj_model::MoltObject;
 
 use super::methods::is_not_implemented_bits;
@@ -6,7 +7,7 @@ use crate::{
     alloc_string, alloc_tuple, attr_name_bits_from_bytes, builtin_classes, call_callable1,
     class_bases_bits, class_bases_vec, class_dict_bits, class_mro_vec, dec_ref_bits,
     dict_get_in_place, dict_order, exception_pending, inc_ref_bits, int_bits_from_i64, is_truthy,
-    issubclass_bits, maybe_ptr_from_bits, obj_eq, obj_from_bits, object_type_id, raise_exception,
+    issubclass_bits, maybe_ptr_from_bits, obj_from_bits, object_type_id, raise_exception,
     runtime_state, type_of_bits,
 };
 
@@ -108,11 +109,16 @@ fn set_contains(_py: &crate::PyToken<'_>, set_bits: u64, value_bits: u64) -> Res
     }
     let mut found = false;
     for_each_iter_value(_py, set_bits, |entry_bits| {
-        if obj_eq(_py, obj_from_bits(entry_bits), obj_from_bits(value_bits)) {
-            found = true;
-            return Ok(IterVisit::Break);
+        match compare_object_eq_bool(_py, obj_from_bits(entry_bits), obj_from_bits(value_bits)) {
+            CompareBoolOutcome::True => {
+                found = true;
+                Ok(IterVisit::Break)
+            }
+            CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {
+                Ok(IterVisit::Continue)
+            }
+            CompareBoolOutcome::Error => Err(MoltObject::none().bits()),
         }
-        Ok(IterVisit::Continue)
     })?;
     Ok(found)
 }
@@ -1310,6 +1316,10 @@ fn protocol_collect_structural_members(
         b"__doc__",
         b"__annotations__",
         b"__annotate__",
+        // CPython 3.14 typing._SPECIAL_NAMES: these visible type namespace
+        // entries are annotation machinery, never Protocol requirements.
+        b"__annotate_func__",
+        b"__annotations_cache__",
         b"_is_protocol",
         b"_is_runtime_protocol",
         b"__protocol_attrs__",
@@ -1521,36 +1531,6 @@ pub extern "C" fn molt_protocol_register(proto_bits: u64, subclass_bits: u64) ->
         // Delegate to the ABC register machinery which already handles
         // registry, cache invalidation, and cycle detection.
         molt_abc_register(proto_bits, subclass_bits)
-    })
-}
-
-/// `molt_abc_abstractmethod_check(cls) -> bool`
-///
-/// Returns True if `cls` has any unimplemented abstract methods (i.e. its
-/// `__abstractmethods__` frozenset is non-empty).  Used at class-creation
-/// time to determine if instantiation should be blocked.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_abc_abstractmethod_check(cls_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let abs_bits = get_attr_default(
-            _py,
-            cls_bits,
-            b"__abstractmethods__",
-            MoltObject::none().bits(),
-        );
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        if obj_from_bits(abs_bits).is_none() {
-            return MoltObject::from_bool(false).bits();
-        }
-        // Check if the frozenset is non-empty by trying to get its length
-        let len_bits = crate::molt_len(abs_bits);
-        if exception_pending(_py) {
-            return MoltObject::from_bool(false).bits();
-        }
-        let len_val = crate::to_i64(obj_from_bits(len_bits)).unwrap_or(0);
-        MoltObject::from_bool(len_val > 0).bits()
     })
 }
 

@@ -7,9 +7,13 @@
 #
 # Bug class (molt tasks #58 / #37): the dynamic-call arg marshalling in the LLVM
 # backend (`emit_call_func_runtime` / `emit_call_bind_runtime` and the
-# `call_method` path) used a raw `ensure_i64` cast instead of
-# `materialize_dynbox_operand`. The direct-call path and `call_builtin` already
+# `call_method` path) used a raw `ensure_i64` cast instead of boxing each
+# argument by representation. The direct-call path and `call_builtin` already
 # boxed correctly — this closes the asymmetric coverage gap on the dynamic path.
+#
+# The same raw cast reached object-ABI operations such as a `getattr` default
+# and `isinstance` with a dynamic class: a raw `0` read back as the float
+# `0.0`, and a raw `5` as a subnormal float.
 #
 # Also covers #61: `frozenset([...])` construction (the LLVM-only missing
 # `frozenset_new` lowering arm) returned `None` entirely.
@@ -53,6 +57,15 @@ def format_of_int():
     return format(42)
 
 
+# ── Raw integer operands of object-ABI operations must arrive boxed ──
+def getattr_default(obj):
+    return getattr(obj, "missing", 0)
+
+
+def isinstance_five(cls):
+    return isinstance(5, cls)
+
+
 def main() -> None:
     print(closure_returns_arg(5))          # 7
     print(closure_base_plus(5))            # 15
@@ -64,6 +77,10 @@ def main() -> None:
 
     print(sum_of_list())                   # 15
     print(format_of_int())                 # 42
+
+    print(getattr_default(object()))       # 0
+    print(isinstance_five(int))            # True
+    print(isinstance_five(str))            # False
 
     # frozenset construction must not collapse to None.
     fs = frozenset([1, 2, 3])

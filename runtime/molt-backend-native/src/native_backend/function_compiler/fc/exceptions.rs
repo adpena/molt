@@ -21,14 +21,13 @@ pub(in crate::native_backend::function_compiler) const HANDLED_KINDS: &[&str] = 
     "exception_kind",
     "exception_class",
     "exception_message",
-    "exception_set_cause",
     "exception_set_last",
     "exception_set_value",
     "exception_context_set",
 ];
 use super::var_get_boxed_overflow_safe_fn;
 
-/// Cranelift codegen handlers for exception-object ops: construction (`exception_new`/`exception_new_builtin*`/`exception_new_from_class`), field access (`kind`/`class`/`message`/`last`/`active`/`current`), mutation (`set_cause`/`set_last`/`set_value`/`context_set`/`clear`), and matching (`match_builtin`/`exceptiongroup_match`/`exceptiongroup_combine`).
+/// Cranelift codegen handlers for exception-object ops: construction (`exception_new`/`exception_new_builtin*`/`exception_new_from_class`), field access (`kind`/`class`/`message`/`last`/`active`/`current`), mutation (`set_last`/`set_value`/`context_set`/`clear`), and matching (`match_builtin`/`exceptiongroup_match`/`exceptiongroup_combine`).
 ///
 /// Extracted verbatim from `compile_func_inner`'s per-op dispatch (M1).
 /// Each arm body is byte-for-byte identical to the original; only the access
@@ -484,44 +483,6 @@ pub(in crate::native_backend::function_compiler) fn handle_exception_op(
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*exc]);
-            let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
-                def_var_named(&mut *builder, vars, out__, res);
-            }
-        }
-        "exception_set_cause" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let exc = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[0],
-                representation_plan,
-            )
-            .expect("Exception not found");
-            let cause = var_get_boxed_overflow_safe(
-                &mut *module,
-                &mut *import_ids,
-                &mut *builder,
-                &mut *import_refs,
-                &mut *sealed_blocks,
-                vars,
-                &args[1],
-                representation_plan,
-            )
-            .expect("Cause not found");
-            let callee = SimpleBackend::import_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                "molt_exception_set_cause",
-                &[types::I64, types::I64],
-                &[types::I64],
-            );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*exc, *cause]);
             let res = builder.inst_results(call)[0];
             if let Some(out__) = op.out.as_ref() {
                 def_var_named(&mut *builder, vars, out__, res);

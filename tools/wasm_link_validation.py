@@ -2,14 +2,137 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-import shutil
 import sys
-import tempfile
 
+from molt import _wasm_runtime_exports as _runtime_exports
+from molt._wasm_abi_generated import WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS
 from molt.wasm_artifact import flatten_wasm_plain_function_rec_groups
+import wasm_link_edit as _edit
+import wasm_link_export_contract as _export_contract
+from wasm_link_fact_provider import WasmFactsProvider, WasmLinkFacts
+import wasm_link_format as _format
 
-from wasm_link_context import WasmValidationContext
+
+_WASM_VALUE_TYPE_ENCODINGS = {
+    "i32": (0x7F,),
+    "i64": (0x7E,),
+    "f32": (0x7D,),
+    "f64": (0x7C,),
+    "v128": (0x7B,),
+    "funcref": (0x70,),
+    "externref": (0x6F,),
+}
+
+
+def _generated_function_type(
+    import_name: str,
+) -> dict[str, object] | None:
+    signature = _runtime_exports.wasm_split_runtime_import_signature(import_name)
+    if signature is None:
+        return None
+    params, results = signature
+    try:
+        encoded_params = tuple(_WASM_VALUE_TYPE_ENCODINGS[value] for value in params)
+        encoded_results = tuple(_WASM_VALUE_TYPE_ENCODINGS[value] for value in results)
+    except KeyError as exc:
+        raise ValueError(
+            f"generated split-runtime signature uses unsupported value type {exc.args[0]!r}"
+        ) from exc
+    return {
+        "kind": "function",
+        "exact": False,
+        "params": encoded_params,
+        "results": encoded_results,
+    }
+
+
+def _canonical_json_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return tuple(
+            sorted(
+                (str(key), _canonical_json_value(item)) for key, item in value.items()
+            )
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_canonical_json_value(item) for item in value)
+    return value
+
+
+def _validate_split_runtime_typed_edges(
+    app_facts: WasmLinkFacts,
+    runtime_facts: WasmLinkFacts,
+) -> str | None:
+    for import_fact in app_facts.imports:
+        if import_fact.module == "env" and (
+            _runtime_exports.wasm_split_runtime_export_name_for_import(import_fact.name)
+            is not None
+            or _format.wasm_runtime_export_name(import_fact.name) is not None
+        ):
+            return (
+                "split-runtime app retains a runtime ABI import in env instead of "
+                f"molt_runtime: {import_fact.name}"
+            )
+        if import_fact.module != "molt_runtime":
+            continue
+        import_name = import_fact.name
+        export_name = _runtime_exports.wasm_split_runtime_export_name_for_import(
+            import_name
+        )
+        if export_name is None:
+            return (
+                "split-runtime app import has no generated ABI export identity: "
+                f"{import_name}"
+            )
+        export_fact = runtime_facts.exports.get(export_name)
+        if export_fact is None:
+            return (
+                "split-runtime app import is absent from staged shared runtime: "
+                f"{import_name} (expected {export_name})"
+            )
+        if _canonical_json_value(import_fact.extern_type) != _canonical_json_value(
+            export_fact.extern_type
+        ):
+            return (
+                "split-runtime ABI type mismatch for "
+                f"{import_name} -> {export_name}: "
+                f"app={dict(import_fact.extern_type)!r}, "
+                f"runtime={dict(export_fact.extern_type)!r}"
+            )
+        try:
+            canonical_import_name = (
+                _runtime_exports.wasm_split_runtime_import_name_for_export(import_name)
+                or import_name
+            )
+            if (
+                WASM_EXTERNAL_NATIVE_LINK_IMPORT_SYMBOL_KINDS.get(canonical_import_name)
+                == "data"
+            ):
+                generated_type = {
+                    "kind": "global",
+                    "value_type": (0x7F,),
+                    "mutable": False,
+                    "shared": False,
+                }
+            else:
+                generated_type = _generated_function_type(import_name)
+        except ValueError as exc:
+            return str(exc)
+        if generated_type is None:
+            return (
+                "split-runtime app import has no generated function signature: "
+                f"{import_name}"
+            )
+        if _canonical_json_value(import_fact.extern_type) != _canonical_json_value(
+            generated_type
+        ):
+            return (
+                "split-runtime app import disagrees with generated ABI signature: "
+                f"{import_name}: app={dict(import_fact.extern_type)!r}, "
+                f"generated={generated_type!r}"
+            )
+    return None
 
 
 def _canonicalize_wasm_ld_output(data: bytes, *, description: str) -> bytes:
@@ -22,24 +145,27 @@ def _canonicalize_wasm_ld_output(data: bytes, *, description: str) -> bytes:
     return data if flattened is None else flattened
 
 
-# Minimal function body: 0 locals, ``unreachable``, ``end``.
-
-
-def _validate_freestanding(context: WasmValidationContext, data: bytes) -> bool:
+def _validate_freestanding(
+    data: bytes,
+    *,
+    facts_provider: WasmFactsProvider,
+) -> bool:
     """Validate a freestanding wasm binary has no prohibited imports.
 
     Returns True if valid, False if critical issues found.
     """
-    try:
-        imports = context["parse_wasm_module_facts"](data).imports
-    except ValueError as exc:
-        print(f"Failed to parse freestanding wasm imports: {exc}", file=sys.stderr)
+    facts = _validate_wasm_structural(
+        data,
+        description="Freestanding wasm",
+        facts_provider=facts_provider,
+    )
+    if facts is None:
         return False
 
     wasi_imports = [
-        (wasm_import.module, wasm_import.name)
-        for wasm_import in imports
-        if wasm_import.module == "wasi_snapshot_preview1"
+        (fact.module, fact.name)
+        for fact in facts.imports
+        if fact.module == "wasi_snapshot_preview1"
     ]
     if wasi_imports:
         for module, name in wasi_imports:
@@ -50,9 +176,9 @@ def _validate_freestanding(context: WasmValidationContext, data: bytes) -> bool:
         return False
 
     runtime_imports = [
-        (wasm_import.module, wasm_import.name)
-        for wasm_import in imports
-        if wasm_import.module == "molt_runtime"
+        (fact.module, fact.name)
+        for fact in facts.imports
+        if fact.module == "molt_runtime"
     ]
     if runtime_imports:
         for module, name in runtime_imports:
@@ -63,117 +189,67 @@ def _validate_freestanding(context: WasmValidationContext, data: bytes) -> bool:
         return False
 
     other_imports = [
-        (wasm_import.module, wasm_import.name)
-        for wasm_import in imports
-        if wasm_import.module != "env"
+        (fact.module, fact.name) for fact in facts.imports if fact.module != "env"
     ]
     for module, name in other_imports:
         print(
-            f"Freestanding validation warning: unexpected import {module}::{name}",
+            f"Freestanding validation error: unexpected import {module}::{name}",
             file=sys.stderr,
         )
+    if other_imports:
+        return False
 
-    return context["_validate_wasm_structural"](
-        data,
-        description="Freestanding wasm",
-    )
+    return True
 
 
 def _validate_wasm_structural(
-    context: WasmValidationContext, data: bytes, *, description: str
-) -> bool:
-    """Run the canonical wasm structural validator when available."""
-    try:
-        section_order_error = context["_standard_section_order_error"](data)
-    except Exception as exc:
-        print(
-            f"{description} canonical section-order validation failed: {exc}",
-            file=sys.stderr,
-        )
-        return False
+    data: bytes,
+    *,
+    description: str,
+    facts_provider: WasmFactsProvider,
+) -> WasmLinkFacts | None:
+    """Run the invocation-scoped, attested Rust structural validator."""
+    section_order_error = _edit._standard_section_order_error(data)
     if section_order_error is not None:
         print(
             f"{description} failed canonical section-order validation: "
             f"{section_order_error}",
             file=sys.stderr,
         )
-        return False
-    exe = shutil.which("wasm-tools")
-    if exe is None:
-        print(
-            f"{description} structural validation unavailable: wasm-tools not found",
-            file=sys.stderr,
-        )
-        return False
+        return None
     try:
-        # The validator may inspect a temporary debug-free view; publication
-        # still owns the only mutation of the artifact's debug sections.
-        validate_data = context["strip_wasm_publication_sections"](
-            data, final_artifact=False, preserve_debug=False
-        )
-    except ValueError as exc:
-        print(
-            f"{description} debug-section stripping warning: {exc}; "
-            "validating original bytes",
-            file=sys.stderr,
-        )
-        validate_data = data
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".wasm", delete=False) as f:
-            f.write(validate_data)
-            f.flush()
-            tmp_path = f.name
-    except OSError as exc:
-        print(
-            f"{description} structural validation staging failed: {exc}",
-            file=sys.stderr,
-        )
-        return False
-    try:
-        result = context["_run_external_tool"](
-            [exe, "validate", tmp_path],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if result.returncode != 0:
-            print(
-                f"{description} failed structural validation: "
-                f"{result.stderr.strip()[:500]}",
-                file=sys.stderr,
-            )
-            return False
+        return facts_provider(data)
     except Exception as exc:
-        print(f"{description} structural validation failed: {exc}", file=sys.stderr)
-        return False
-    finally:
-        try:
-            Path(tmp_path).unlink()
-        except OSError:
-            pass
-    return True
+        print(f"{description} failed structural validation: {exc}", file=sys.stderr)
+        return None
 
 
-def _validate_linked(context: WasmValidationContext, linked: Path) -> bool:
+def _validate_linked(
+    linked: Path,
+    *,
+    facts_provider: WasmFactsProvider,
+) -> bool:
     data = linked.read_bytes()
-    try:
-        facts = context["parse_wasm_module_facts"](data)
-    except ValueError as exc:
-        print(f"Failed to parse linked wasm: {exc}", file=sys.stderr)
+    facts = _validate_wasm_structural(
+        data,
+        description="Linked wasm",
+        facts_provider=facts_provider,
+    )
+    if facts is None:
         return False
     imports = facts.imports
-    if any(wasm_import.module == "molt_runtime" for wasm_import in imports):
+    if any(fact.module == "molt_runtime" for fact in imports):
         print(
             "Linked wasm still imports molt_runtime; link step incomplete.",
             file=sys.stderr,
         )
         return False
     call_indirect = [
-        wasm_import.name
-        for wasm_import in imports
-        if wasm_import.module == "env"
-        and wasm_import.kind == 0
-        and context["is_call_indirect_import_name"](wasm_import.name)
+        fact.name
+        for fact in imports
+        if fact.module == "env"
+        and fact.kind == 0
+        and _format.is_call_indirect_import_name(fact.name)
     ]
     if call_indirect:
         print(
@@ -182,25 +258,39 @@ def _validate_linked(context: WasmValidationContext, linked: Path) -> bool:
             file=sys.stderr,
         )
         return False
-    ok, err = context["_validate_linked_table_import_contract"](imports)
-    if not ok:
-        print(f"Linked wasm table import validation failed: {err}", file=sys.stderr)
+    table_imports = [fact for fact in imports if fact.kind == 1]
+    if len(table_imports) > 1:
+        names = ", ".join(f"{fact.module}::{fact.name}" for fact in table_imports)
+        print(
+            "Linked wasm table import validation failed: Linked wasm imports "
+            f"multiple tables ({names}); only env::__indirect_function_table is "
+            "supported.",
+            file=sys.stderr,
+        )
         return False
-    if any(wasm_import.kind == 1 for wasm_import in imports):
+    if table_imports and (
+        table_imports[0].module != "env"
+        or table_imports[0].name != "__indirect_function_table"
+    ):
+        fact = table_imports[0]
+        print(
+            "Linked wasm table import validation failed: Linked wasm imports "
+            f"unsupported table {fact.module}::{fact.name}; expected "
+            "env::__indirect_function_table.",
+            file=sys.stderr,
+        )
+        return False
+    if table_imports:
         print(
             "Linked wasm retains env::__indirect_function_table under the "
             "host-table contract.",
             file=sys.stderr,
         )
-    memory_imports = [
-        (wasm_import.module, wasm_import.name)
-        for wasm_import in imports
-        if wasm_import.kind == 2
-    ]
+    memory_imports = [fact for fact in imports if fact.kind == 2]
     if memory_imports:
         print("Linked wasm still imports memory.", file=sys.stderr)
         return False
-    custom_names = facts.custom_names
+    custom_names = facts.custom_section_names
     reloc_sections = [name for name in custom_names if name.startswith("reloc.")]
     if reloc_sections:
         print(
@@ -219,17 +309,14 @@ def _validate_linked(context: WasmValidationContext, linked: Path) -> bool:
     if "molt_table" not in exports and "__indirect_function_table" not in exports:
         print("Linked wasm missing exported table.", file=sys.stderr)
         return False
-    if facts.element_validation_error is not None:
-        print(
-            f"Linked wasm element validation failed: {facts.element_validation_error}",
-            file=sys.stderr,
-        )
-        return False
-    return context["_validate_wasm_structural"](data, description="Linked wasm")
+    return True
 
 
 def _validate_split_runtime_outputs(
-    context: WasmValidationContext, app_wasm: Path, rt_wasm: Path
+    app_wasm: Path,
+    rt_wasm: Path,
+    *,
+    facts_provider: WasmFactsProvider,
 ) -> bool:
     try:
         app_data = app_wasm.read_bytes()
@@ -237,27 +324,39 @@ def _validate_split_runtime_outputs(
     except OSError as exc:
         print(f"Failed to read split-runtime staged output: {exc}", file=sys.stderr)
         return False
-    if not context["_is_wasm_binary"](app_data):
+    if not _format._is_wasm_binary(app_data):
         print(
             f"Split-runtime app output is not a wasm binary: {app_wasm}",
             file=sys.stderr,
         )
         return False
-    if not context["_is_wasm_binary"](rt_data):
+    if not _format._is_wasm_binary(rt_data):
         print(
             f"Split-runtime shared runtime output is not a wasm binary: {rt_wasm}",
             file=sys.stderr,
         )
         return False
-    try:
-        app_facts = context["parse_wasm_module_facts"](app_data)
-        rt_facts = context["parse_wasm_module_facts"](rt_data)
-    except ValueError as exc:
-        print(f"Failed to parse split-runtime staged output: {exc}", file=sys.stderr)
+    app_structural_facts = _validate_wasm_structural(
+        app_data,
+        description="Split-runtime app",
+        facts_provider=facts_provider,
+    )
+    if app_structural_facts is None:
         return False
-    app_imports = app_facts.module_imports.get("molt_runtime", frozenset())
-    rt_exports = rt_facts.function_exports
-    app_memory_min = app_facts.memory_import_mins.get(("env", "memory"))
+    runtime_structural_facts = _validate_wasm_structural(
+        rt_data,
+        description="Split-runtime shared runtime",
+        facts_provider=facts_provider,
+    )
+    if runtime_structural_facts is None:
+        return False
+    try:
+        app_memory_min = app_structural_facts.memory_import_minimum(
+            module="env", name="memory"
+        )
+    except ValueError as exc:
+        print(f"Failed to inspect split-runtime staged output: {exc}", file=sys.stderr)
+        return False
     if app_memory_min is None:
         print(
             "Split-runtime app must import env.memory; a private app memory "
@@ -265,9 +364,10 @@ def _validate_split_runtime_outputs(
             file=sys.stderr,
         )
         return False
-    for entry in context["_split_runtime_export_contract"]("app"):
+    for entry in _export_contract._split_runtime_export_contract("app"):
         if any(
-            app_facts.export_kinds.get(name, (None, None))[0] == entry.kind
+            app_structural_facts.exports.get(name) is not None
+            and app_structural_facts.exports[name].kind == entry.kind
             for name in entry.accepted_names
         ):
             continue
@@ -277,30 +377,11 @@ def _validate_split_runtime_outputs(
             file=sys.stderr,
         )
         return False
-    missing: list[str] = []
-    for name in app_imports:
-        export_name = context["wasm_split_runtime_export_name_for_import"](name)
-        if export_name is not None and export_name in rt_exports:
-            continue
-        if export_name is None and name in rt_exports:
-            continue
-        if name in context["_ESSENTIAL_EXPORTS"]:
-            continue
-        missing.append(name)
-    missing.sort()
-    if missing:
-        print(
-            "Split-runtime app imports are absent from staged shared runtime: "
-            f"{', '.join(missing)}",
-            file=sys.stderr,
-        )
-        return False
-    if not context["_validate_wasm_structural"](
-        app_data, description="Split-runtime app"
-    ):
-        return False
-    if not context["_validate_wasm_structural"](
-        rt_data, description="Split-runtime shared runtime"
-    ):
+    typed_edge_error = _validate_split_runtime_typed_edges(
+        app_structural_facts,
+        runtime_structural_facts,
+    )
+    if typed_edge_error is not None:
+        print(typed_edge_error, file=sys.stderr)
         return False
     return True

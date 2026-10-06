@@ -121,6 +121,178 @@ pub const FUNC_DEFAULT_NONE: i64 = 1;
 pub const FUNC_DEFAULT_DICT_POP: i64 = 2;
 pub const FUNC_DEFAULT_DICT_UPDATE: i64 = 3;
 
+// Binding homes of a synchronous Python frame: per code slot, in the code
+// object's localsplus order, a storage kind word then its bits. The homes own
+// the frame's bindings: a compiled store hands its operand's reference to the
+// home, publishes the pair, then releases what the home held; a PEP 667 frame
+// proxy writes the same pairs (molt-runtime builtins/frames/bindings.rs).
+// `molt_frame_homes` lends the base address to the compiled frame.
+pub const FRAME_HOME_WORDS: usize = 2;
+pub const FRAME_HOME_BYTES: i64 = 16;
+pub const FRAME_HOME_KIND_OFFSET: i32 = 0;
+pub const FRAME_HOME_BITS_OFFSET: i32 = 8;
+/// The slot is unbound; the bits are zero.
+pub const FRAME_HOME_UNBOUND: i64 = 0;
+/// The bits are the binding, a boxed object the home owns one reference to.
+pub const FRAME_HOME_PLAIN: i64 = 1;
+/// The bits are the binding's raw i64 value; observers box it.
+pub const FRAME_HOME_RAW_INT: i64 = 2;
+/// The bits are the frame's cell of a variable closures capture (a cellvar or
+/// a freevar), which the home owns a reference to; the binding is its
+/// contents.
+pub const FRAME_HOME_CELL: i64 = 3;
+/// The bits are a cell the compiler keeps for a plain local, which the home
+/// owns a reference to; the binding is its contents, with plain-local proxy
+/// semantics.
+pub const FRAME_HOME_PRIVATE_CELL: i64 = 5;
+/// Set in exactly the kinds that own a reference to their bits.
+pub const FRAME_HOME_HOLDS_REFERENCE: i64 = 1;
+
+/// A compiled function object's entry custody, passed to `molt_func_new` and
+/// `molt_func_new_closure`: the entry adopts every Python argument. Zero: it
+/// borrows them. The closure or runtime-context transport is never adopted.
+pub const ENTRY_CUSTODY_ADOPTS: u64 = 1;
+
+/// Why a function's declared parameter custody has no runtime entry encoding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EntryCustodyError {
+    /// The function object's arity and closure form disagree with the
+    /// referenced function's parameters.
+    Signature,
+    /// The custody vector does not name every parameter.
+    Length,
+    /// The closure transport parameter cannot be adopted.
+    ClosureAdopted,
+    /// Some Python parameters are adopted and others borrowed; the runtime
+    /// encodes one custody for all of them.
+    Mixed,
+}
+
+/// The runtime encoding of a compiled entry's declared parameter custody, for
+/// the function object that `func_new`/`func_new_closure` creates.
+/// `param_count` and `transferred` describe the referenced function's
+/// parameters (`transferred` empty: all borrowed; otherwise one flag per
+/// parameter, a leading closure transport first when `has_closure`);
+/// `python_arity` is the function object's positional arity.
+pub const fn function_entry_custody(
+    has_closure: bool,
+    python_arity: usize,
+    param_count: usize,
+    transferred: &[bool],
+) -> Result<u64, EntryCustodyError> {
+    let closure = if has_closure { 1 } else { 0 };
+    if param_count != python_arity + closure {
+        return Err(EntryCustodyError::Signature);
+    }
+    if transferred.is_empty() {
+        return Ok(0);
+    }
+    if transferred.len() != param_count {
+        return Err(EntryCustodyError::Length);
+    }
+    if has_closure && transferred[0] {
+        return Err(EntryCustodyError::ClosureAdopted);
+    }
+    let mut adopted = 0;
+    let mut index = closure;
+    while index < param_count {
+        if transferred[index] {
+            adopted += 1;
+        }
+        index += 1;
+    }
+    if adopted == 0 {
+        Ok(0)
+    } else if adopted == python_arity {
+        Ok(ENTRY_CUSTODY_ADOPTS)
+    } else {
+        Err(EntryCustodyError::Mixed)
+    }
+}
+
+/// A compiled function's entry custody, derived once from its own parameter
+/// declaration: the function-object shape it was declared for, and the
+/// runtime word or why it has none. Backends key it by function name and
+/// read it at each `func_new`/`func_new_closure` naming the function. A task
+/// constructor (a `func_new` with a task kind) borrows without it: its
+/// arguments enter through the task trampoline, and its target's parameters
+/// describe the task, not the call.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EntryCustodyDeclaration {
+    has_closure: bool,
+    python_arity: usize,
+    custody: Result<u64, EntryCustodyError>,
+}
+
+impl EntryCustodyDeclaration {
+    /// From the declared parameters (`transferred` as for
+    /// [`function_entry_custody`]).
+    pub const fn declare(has_closure: bool, param_count: usize, transferred: &[bool]) -> Self {
+        let python_arity = param_count.saturating_sub(if has_closure { 1 } else { 0 });
+        Self {
+            has_closure,
+            python_arity,
+            custody: function_entry_custody(has_closure, python_arity, param_count, transferred),
+        }
+    }
+
+    /// The runtime word for a function object created with (`has_closure`)
+    /// or without a closure transport and `arity` Python arguments.
+    pub const fn encode(self, has_closure: bool, arity: usize) -> Result<u64, EntryCustodyError> {
+        if self.has_closure != has_closure || self.python_arity != arity {
+            return Err(EntryCustodyError::Signature);
+        }
+        self.custody
+    }
+}
+
+/// Every frame-binding fact generated code hardcodes, one per byte: home words
+/// and bytes, kind and bits offsets, the five kinds (four bits each), the
+/// reference bit and the adopting entry custody. Fingerprinted with the header
+/// facts, so an object and a runtime built with different frame ABIs never
+/// link.
+pub const fn frame_binding_abi_word() -> u64 {
+    (FRAME_HOME_WORDS as u64)
+        | ((FRAME_HOME_BYTES as u64) << 8)
+        | ((FRAME_HOME_KIND_OFFSET as u64) << 16)
+        | ((FRAME_HOME_BITS_OFFSET as u64) << 24)
+        | ((FRAME_HOME_PLAIN as u64) << 32)
+        | ((FRAME_HOME_RAW_INT as u64) << 36)
+        | ((FRAME_HOME_CELL as u64) << 40)
+        | ((FRAME_HOME_PRIVATE_CELL as u64) << 44)
+        | ((FRAME_HOME_UNBOUND as u64) << 48)
+        | ((FRAME_HOME_HOLDS_REFERENCE as u64) << 52)
+        | (ENTRY_CUSTODY_ADOPTS << 56)
+}
+
+const _: () = assert!(
+    FRAME_HOME_WORDS < 256
+        && 0 < FRAME_HOME_BYTES
+        && FRAME_HOME_BYTES < 256
+        && FRAME_HOME_BYTES == (FRAME_HOME_WORDS * 8) as i64
+        && 0 <= FRAME_HOME_KIND_OFFSET
+        && FRAME_HOME_KIND_OFFSET < 256
+        && 0 <= FRAME_HOME_BITS_OFFSET
+        && FRAME_HOME_BITS_OFFSET < 256
+        && 0 <= FRAME_HOME_UNBOUND
+        && FRAME_HOME_UNBOUND < 16
+        && 0 < FRAME_HOME_PLAIN
+        && FRAME_HOME_PLAIN < 16
+        && 0 < FRAME_HOME_RAW_INT
+        && FRAME_HOME_RAW_INT < 16
+        && 0 < FRAME_HOME_CELL
+        && FRAME_HOME_CELL < 16
+        && 0 < FRAME_HOME_PRIVATE_CELL
+        && FRAME_HOME_PRIVATE_CELL < 16
+        && ENTRY_CUSTODY_ADOPTS < 256
+        && FRAME_HOME_PLAIN & FRAME_HOME_HOLDS_REFERENCE != 0
+        && FRAME_HOME_CELL & FRAME_HOME_HOLDS_REFERENCE != 0
+        && FRAME_HOME_PRIVATE_CELL & FRAME_HOME_HOLDS_REFERENCE != 0
+        && FRAME_HOME_RAW_INT & FRAME_HOME_HOLDS_REFERENCE == 0
+        && FRAME_HOME_UNBOUND & FRAME_HOME_HOLDS_REFERENCE == 0,
+    "frame binding ABI facts must fit their fingerprint bytes and reference bit",
+);
+
 pub const HEADER_SIZE_BYTES: i32 = 24;
 pub const HEADER_ALLOC_ALIGN_BYTES: usize = 8;
 pub const HEADER_TYPE_ID_OFFSET: i32 = -HEADER_SIZE_BYTES;
@@ -205,10 +377,11 @@ pub struct GeneratedObjectAbiFacts {
     pub type_id_function: u32,
     pub type_id_type: u32,
     pub type_id_list_bool: u32,
+    pub frame_binding_abi: u64,
 }
 
 impl GeneratedObjectAbiFacts {
-    pub const fn words(self) -> [u64; 57] {
+    pub const fn words(self) -> [u64; 58] {
         [
             self.header_size as i64 as u64,
             self.header_align as u64,
@@ -267,6 +440,7 @@ impl GeneratedObjectAbiFacts {
             self.type_id_function as u64,
             self.type_id_type as u64,
             self.type_id_list_bool as u64,
+            self.frame_binding_abi,
         ]
     }
 
@@ -348,22 +522,25 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
     type_id_function: TYPE_ID_FUNCTION,
     type_id_type: TYPE_ID_TYPE,
     type_id_list_bool: TYPE_ID_LIST_BOOL,
+    frame_binding_abi: frame_binding_abi_word(),
 };
 
 /// Ratchet binding every hardcoded generated-code header fact. A layout/offset
 /// change fails compilation until this value and both link symbols are bumped.
 /// Revision 2 also binds the execution contract: native flags are always
-/// atomic, while the refcount word is selected by concurrency mode. The layout
-/// fingerprint is intentionally unchanged because both words remain u32-sized.
-pub const GENERATED_OBJECT_ABI_FINGERPRINT_V2: u64 = 0x5fce_853b_ad8a_c502;
+/// atomic, while the refcount word is selected by concurrency mode. Revision 3
+/// binds the frame-binding homes and the function-object entry custody that
+/// generated code addresses (`frame_binding_abi_word`); the value continues
+/// revision 2's FNV-1a state over that one appended word.
+pub const GENERATED_OBJECT_ABI_FINGERPRINT_V3: u64 = 0xbf06_a926_9171_acab;
 const _: () = assert!(
-    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V2,
+    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V3,
     "native generated-object ABI changed: bump the fingerprint revision and link symbols",
 );
 pub const GENERATED_OBJECT_ABI_GIL_SYMBOL: &str =
-    "molt_generated_object_abi_5fce853bad8ac502_gil_v2";
+    "molt_generated_object_abi_bf06a9269171acab_gil_v3";
 pub const GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL: &str =
-    "molt_generated_object_abi_5fce853bad8ac502_free_threaded_v2";
+    "molt_generated_object_abi_bf06a9269171acab_free_threaded_v3";
 /// Compile-time authority consumed by runtime storage and generated native
 /// access. Cargo feature unification may enable this through any dependency;
 /// consumers must branch on this value rather than a crate-local feature.
@@ -1264,14 +1441,14 @@ mod tests {
         let canonical = GENERATED_OBJECT_ABI_FACTS.words();
         assert_eq!(
             fingerprint_words(canonical),
-            GENERATED_OBJECT_ABI_FINGERPRINT_V2
+            GENERATED_OBJECT_ABI_FINGERPRINT_V3
         );
         for index in 0..canonical.len() {
             let mut changed = canonical;
             changed[index] ^= 1;
             assert_ne!(
                 fingerprint_words(changed),
-                GENERATED_OBJECT_ABI_FINGERPRINT_V2,
+                GENERATED_OBJECT_ABI_FINGERPRINT_V3,
                 "generated-object ABI word {index} is not fingerprinted"
             );
         }
@@ -1279,14 +1456,54 @@ mod tests {
 
     #[test]
     fn generated_object_link_symbols_embed_fingerprint_and_revision() {
-        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V2);
+        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V3);
         for symbol in [
             GENERATED_OBJECT_ABI_GIL_SYMBOL,
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ] {
             assert!(symbol.contains(&fingerprint), "{symbol}");
-            assert!(symbol.ends_with("_v2"), "{symbol}");
+            assert!(symbol.ends_with("_v3"), "{symbol}");
         }
+    }
+
+    #[test]
+    fn every_frame_binding_fact_changes_its_abi_word() {
+        // Each hardcoded frame fact owns one byte of the fingerprinted word;
+        // the kinds share bytes as nibbles.
+        assert_eq!(frame_binding_abi_word(), 0x0110_5321_0800_1002);
+        assert_eq!(
+            GENERATED_OBJECT_ABI_FACTS.words()[57],
+            frame_binding_abi_word()
+        );
+    }
+
+    #[test]
+    fn entry_custody_encodes_exactly_the_uniform_shapes() {
+        use super::EntryCustodyError::{ClosureAdopted, Length, Mixed, Signature};
+        // All borrowed: the absent vector, or every flag clear.
+        assert_eq!(function_entry_custody(false, 2, 2, &[]), Ok(0));
+        assert_eq!(function_entry_custody(false, 2, 2, &[false, false]), Ok(0));
+        // Every Python parameter adopted, behind a borrowed closure transport.
+        assert_eq!(
+            function_entry_custody(false, 2, 2, &[true, true]),
+            Ok(ENTRY_CUSTODY_ADOPTS)
+        );
+        assert_eq!(
+            function_entry_custody(true, 2, 3, &[false, true, true]),
+            Ok(ENTRY_CUSTODY_ADOPTS)
+        );
+        // Shapes the one-bit runtime word cannot represent.
+        assert_eq!(
+            function_entry_custody(false, 2, 2, &[true, false]),
+            Err(Mixed)
+        );
+        assert_eq!(
+            function_entry_custody(true, 1, 2, &[true, true]),
+            Err(ClosureAdopted)
+        );
+        assert_eq!(function_entry_custody(false, 2, 2, &[true]), Err(Length));
+        assert_eq!(function_entry_custody(true, 2, 2, &[]), Err(Signature));
+        assert_eq!(function_entry_custody(false, 1, 2, &[]), Err(Signature));
     }
 
     #[test]

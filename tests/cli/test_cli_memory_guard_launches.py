@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -229,8 +230,9 @@ def test_ty_check_uses_cli_memory_guard(monkeypatch, tmp_path: Path) -> None:
     assert ok is True
     assert output == "ok"
     assert captured["cmd"] == [
-        "uv",
-        "run",
+        sys.executable,
+        "-I",
+        "-m",
         "ty",
         "check",
         str(tmp_path),
@@ -276,7 +278,7 @@ def test_ty_check_timeout_returns_guarded_failure(
 
     assert ok is False
     assert "ty check timed out after 2.0s" in output
-    assert "guarded hints" in output
+    assert "validation did not complete" in output
 
 
 def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
@@ -365,7 +367,6 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
         socket_path,
         cargo_profile="dev-fast",
         project_root=tmp_path,
-        target_triple=None,
         config_digest="a" * 64,
         startup_timeout=1.0,
         json_output=True,

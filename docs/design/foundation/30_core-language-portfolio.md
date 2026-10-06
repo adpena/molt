@@ -90,7 +90,7 @@ operation is retired; ordinary class allocation preserves heap ownership.
 
 **UPSTREAM.** `visit_Subscript` (frontend:12292–12359). Simple index: `INDEX` op. Slice without step: `SLICE` op (frontend:12319–12321). Slice with step: `SLICE_NEW` → `INDEX` (frontend:12322–12328). Augmented slice assignment: `visit_AugAssign` handles `node.target` as `ast.Subscript` (frontend:14018–14161), emitting `SLICE_NEW` ops. Intrinsic-handle class `getitem_intrinsic` bypass (`:12343–12355`).
 
-**DOWNSTREAM.** INDEX op: native has int-index fast lanes for list/dict/str/bytes. SLICE op: maps to `molt_slice`; always boxed runtime call. LLVM: `"slice"` is in `copy_kind_mints_fresh_owned_ref_table` (op_kinds_generated.rs:154), so it IS in the FreshValue set — the LLVM classifier knows it allocates a new slice object.
+**DOWNSTREAM.** INDEX op: native has int-index fast lanes for list/dict/str/bytes. SLICE op: maps to `molt_slice`; always boxed runtime call. LLVM: `"slice"` is in `copy_kind_mints_owned_value_table` (op_kinds_generated.rs:154), so it IS in the OwnedValue set — the LLVM classifier knows the result owns an independent reference.
 
 **SEMANTICS.** `__getitem__` on user objects: correctly dispatched via `molt_index` → `call_dunder_getitem`. `__setitem__`/`__delitem__`: same pattern. Custom slice semantics (e.g. `__index__` coercion for slice start/stop/step): not specially handled — slice is constructed as `SLICE_NEW` with whatever values the frontend emits; `__index__` calls are not synthesized at the frontend.
 

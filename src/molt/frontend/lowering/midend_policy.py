@@ -17,7 +17,6 @@ from molt.frontend._types import (
     _MIDEND_ENV_KEYS,
     _MIDEND_WORK_BASE_UNITS_PER_MS,
     _MIDEND_WORK_GROWTH_HEADROOM,
-    _MOLT_MODULE_CHUNK_PREFIX,
     _TrackedOpsList,
 )
 from molt.frontend._mixin_base import GeneratorMixinBase
@@ -65,7 +64,6 @@ class MidendPolicyMixin(GeneratorMixinBase):
             "guard_hoist_attempts": 0,
             "guard_hoist_accepted": 0,
             "guard_hoist_rejected": 0,
-            "fused_dict_guard_prunes": 0,
             "phi_edge_trims": 0,
             "gvn_hits": 0,
             "dce_removed_total": 0,
@@ -93,7 +91,6 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 "guard_hoist_attempted": 0,
                 "guard_hoist_accepted": 0,
                 "guard_hoist_rejected": 0,
-                "fused_dict_guard_prunes": 0,
                 "cse_attempted": 0,
                 "cse_accepted": 0,
                 "cse_readheap_attempted": 0,
@@ -282,7 +279,7 @@ class MidendPolicyMixin(GeneratorMixinBase):
         if module_name:
             aliases.add(f"{module_name}::{function_name}")
             aliases.add(f"{module_name}.{function_name}")
-        if function_name == "molt_main":
+        if self._is_module_entry(function_name):
             init_symbol = self.module_init_symbol(module_name or "__main__")
             aliases.add(init_symbol)
             if module_name:
@@ -373,7 +370,7 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 )
 
         op_count = len(ops)
-        if function_name == "molt_main":
+        if self._is_module_entry(function_name):
             if op_count >= 1800:
                 return MidendTierClassification(
                     tier="C",
@@ -386,11 +383,10 @@ class MidendPolicyMixin(GeneratorMixinBase):
                 allow_hot_promotion=True,
             )
 
-        chunk_prefix = f"{self.module_prefix}{_MOLT_MODULE_CHUNK_PREFIX}_"
         if self._source_is_stdlib_module:
             # Stdlib defaults to the lightest tier unless explicitly elevated
             # via A/B overrides above.
-            if function_name.startswith(chunk_prefix):
+            if function_name in self.module_chunk_symbols:
                 return MidendTierClassification(
                     tier="C",
                     source="stdlib_chunk_default",

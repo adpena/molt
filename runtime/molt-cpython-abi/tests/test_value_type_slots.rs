@@ -162,15 +162,47 @@ unsafe extern "C" fn fx_bytes_data(bits: u64, out_len: *mut usize) -> *const u8 
     }
 }
 
+unsafe extern "C" fn fixture_builtin_compare(
+    owner: u64,
+    operation: c_int,
+    left: u64,
+    right: u64,
+) -> molt_cpython_abi::hooks::OwnedHandleResult {
+    use molt_cpython_abi::hooks::OwnedHandleResult;
+    let class = unsafe { molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(owner) };
+    if class != (&raw mut PyUnicode_Type).cast() && class != (&raw mut PyBytes_Type).cast() {
+        return unsafe { support::fake_numbers::compare_builtin(owner, operation, left, right) };
+    }
+    let values = if class == (&raw mut PyUnicode_Type).cast() {
+        &STRS
+    } else {
+        &BYTES
+    };
+    let mut values = values.lock().unwrap();
+    let values = values.get_or_insert_default();
+    match (values.get(&left), values.get(&right)) {
+        (Some(left), Some(right)) => OwnedHandleResult::ok(
+            MoltObject::from_bool(support::fake_numbers::comparison_result(
+                Some(left.cmp(right)),
+                operation,
+            ))
+            .bits(),
+        ),
+        _ => OwnedHandleResult::ok(support::fake_runtime::not_implemented()),
+    }
+}
+
 fn install() {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     hooks.classify_heap = fx_classify_heap;
     hooks.object_hash = fx_object_hash;
+    hooks.object_richcompare_builtin = fixture_builtin_compare;
+    hooks.object_richcompare = support::fake_runtime::richcompare;
     hooks.complex_from_doubles = support::fake_complex::from_doubles;
     hooks.complex_parts = support::fake_complex::parts;
     hooks.str_data = fx_str_data;
     hooks.bytes_data = fx_bytes_data;
-    support::prepare_abi_test_thread(hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 // ── minting molt-native operands ───────────────────────────────────────────
@@ -408,6 +440,19 @@ fn richcompare_via_public_api_over_distinct_objects() {
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     install();
     unsafe {
+        let real = mk_float(1.5);
+        let text = mk_str("x");
+        assert_eq!(PyObject_RichCompareBool(real, text, PY_EQ), 0);
+        assert_eq!(PyObject_RichCompareBool(real, text, PY_NE), 1);
+        assert_eq!(PyObject_RichCompareBool(real, text, PY_LT), -1);
+        assert_eq!(
+            molt_cpython_abi::api::errors::PyErr_ExceptionMatches(
+                (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast()
+            ),
+            1
+        );
+        clear_err();
+        assert_eq!(PyObject_RichCompareBool(mk_int(1), mk_float(1.0), PY_EQ), 1);
         // bytes: distinct-but-equal compare EQUAL. Pre-fix native_value_richcompare
         // did not handle bytes and the slot was NULL, so this fell to identity -> 0.
         let b1 = mk_bytes(b"abc");

@@ -4,6 +4,8 @@ import hashlib
 from dataclasses import replace
 import copy
 import json
+import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -15,7 +17,7 @@ import zipfile
 import pytest
 
 from molt.exact_json import canonical_json_sha256
-from molt.verified_subset import host_coordinate
+from molt.verified_subset import current_host_coordinate, host_coordinate
 
 from tools.release import build_bundle
 from tools.release import fetch_pinned_tool
@@ -23,13 +25,17 @@ from tools.release import release_authority
 from tools.release import release_model
 from tools.release import release_evidence
 from tools import release_exit_gate
+from tools.command_execution import CommandExecutor
 from tools.git_identity import clean_checkout_status_arguments
 from tools.release import update_manifests
 from tools.release import verify_consumer
 from tools.release import compiler_payload
+from tools.release import git_source_snapshot
+from tests.tools.test_release_native_build import native_build_fixture
 
 
 ROOT = Path(__file__).resolve().parents[2]
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 def _wheel(path: Path, version: str = "0.0.1") -> Path:
@@ -42,6 +48,91 @@ def _wheel(path: Path, version: str = "0.0.1") -> Path:
             "Requires-Dist: click>=8.3.1\n",
         )
     return path
+
+
+_FIXTURE_WHEEL_TAGS = {
+    ("windows", "x86_64"): "win_amd64",
+    ("windows", "arm64"): "win_arm64",
+    ("linux", "x86_64"): "manylinux_2_39_x86_64",
+    ("linux", "aarch64"): "manylinux_2_39_aarch64",
+    ("macos", "arm64"): "macosx_15_0_arm64",
+    ("macos", "x86_64"): "macosx_15_0_x86_64",
+}
+
+
+def _fixture_compatibility(_path: Path, *, platform: str, arch: str):
+    from tools.release.binary_compatibility import WheelCompatibility
+
+    return WheelCompatibility(
+        platform, arch, _FIXTURE_WHEEL_TAGS[(platform, arch)], {"fixture": "transport"}
+    )
+
+
+def _runtime_cells(root: Path, *, platform: str, arch: str, snapshot) -> Path:
+    """Transport-shaped runtime inventory; never runtime build evidence."""
+    from molt import compiler_distribution as distribution
+    from molt.cli.runtime_callable_symbols import (
+        _runtime_callable_projection_content,
+        _runtime_callable_projection_name,
+    )
+    from molt.exact_json import write_exact
+    from tools.release.runtime_cells import INVENTORY_NAME
+
+    files = []
+    archive_name = "libmolt_runtime.stdlib_micro.a"
+    archive = b"runtime-archive"
+    projection = _runtime_callable_projection_content(("molt_len",))
+    members = {
+        archive_name: (archive, "runtime_archive"),
+        f"{archive_name}.native-link-deps.json": (b"{}", "native_link_manifest"),
+        _runtime_callable_projection_name(
+            archive_name,
+            archive_sha256=hashlib.sha256(archive).hexdigest(),
+            projection_sha256=hashlib.sha256(projection).hexdigest(),
+        ): (projection, distribution.NATIVE_CALLABLE_PROJECTION_ROLE),
+    }
+    for name, (payload, role) in sorted(members.items()):
+        files.append(
+            {
+                "role": role,
+                "name": name,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+                "size": len(payload),
+            }
+        )
+    key = {
+        "target_triple": "native",
+        "cargo_profile": "release-output",
+        "stdlib_profile": "micro",
+        "runtime_features": ["stdlib_micro"],
+    }
+    cell_id = distribution.runtime_cell_id(distribution.NATIVE_RUNTIME_CELL, key, files)
+    for name, (payload, _role) in members.items():
+        path = root / cell_id / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+    write_exact(
+        root / INVENTORY_NAME,
+        {
+            "schema": distribution.RUNTIME_INVENTORY_SCHEMA,
+            "platform": platform,
+            "arch": arch,
+            "source": {
+                "object_format": snapshot.object_format,
+                "commit": snapshot.source_sha,
+                "tree": snapshot.tree_sha,
+            },
+            "cells": [
+                {
+                    "id": cell_id,
+                    "kind": distribution.NATIVE_RUNTIME_CELL,
+                    "key": key,
+                    "files": files,
+                }
+            ],
+        },
+    )
+    return root
 
 
 def test_release_target_and_download_authority_is_complete_and_exact() -> None:
@@ -77,7 +168,9 @@ def test_release_and_deployment_python_tools_are_exact_hash_locked() -> None:
         "wheel==0.47.0",
     ]
     assert pyproject["dependency-groups"]["release"] == [
+        "auditwheel==6.8.2; sys_platform == 'linux'",
         "build==1.5.0",
+        "delocate==0.13.0; sys_platform == 'darwin'",
         "setuptools==83.0.0",
         "wheel==0.47.0",
     ]
@@ -85,7 +178,9 @@ def test_release_and_deployment_python_tools_are_exact_hash_locked() -> None:
     lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
     packages = {package["name"]: package for package in lock["package"]}
     for name, version in {
+        "auditwheel": "6.8.2",
         "build": "1.5.0",
+        "delocate": "0.13.0",
         "modal": "1.5.2",
         "setuptools": "83.0.0",
         "wheel": "0.47.0",
@@ -273,40 +368,130 @@ def release_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return _prepare_release_source(tmp_path, monkeypatch)
 
 
-def _prepare_release_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def _prepare_release_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, extra_files=None
+):
     root = tmp_path / "source-repo"
     root.mkdir()
     for name in compiler_payload.REQUIRED_MARKERS:
         path = root / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("# fixture\n", encoding="utf-8")
+    (root / "rust-toolchain.toml").write_bytes(b'[toolchain]\nchannel="1.96.1"\n')
+    for name, data in (extra_files or {}).items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
     for args in (
         ("init",),
-        ("add", "."),
+        ("-c", "core.autocrlf=false", "add", "."),
         (
             "-c",
             "user.name=Test",
             "-c",
             "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
             "commit",
             "-m",
             "source",
         ),
     ):
-        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
-    commit = subprocess.check_output(
+        _COMMANDS.run(
+            ["git", *args], cwd=root, check=True, capture_output=True, timeout=30
+        )
+    commit = _COMMANDS.check_output(
         ["git", "rev-parse", "HEAD"], cwd=root, text=True
     ).strip()
     snapshot = compiler_payload.source_snapshot(root, commit)
     # Synthetic transport identities are not semantic/release acceptance proof.
     snapshot = replace(snapshot, source_sha="a" * 40)
     monkeypatch.setattr(build_bundle, "ROOT", root)
+    monkeypatch.setattr(release_authority, "ROOT", root)
     monkeypatch.setattr(
         compiler_payload, "validate_native_binary_architecture", lambda *_: None
     )
     monkeypatch.setattr(release_authority, "source_snapshot", lambda *_: snapshot)
+    # Transport fixtures carry placeholder bytes, not binaries: the binary
+    # audit and receipt/source binding have their own real-input tests.
+    monkeypatch.setattr(
+        build_bundle, "derive_bundle_wheel_compatibility", _fixture_compatibility
+    )
+    monkeypatch.setattr(build_bundle, "audit_wheel", _fixture_compatibility)
+    monkeypatch.setattr(
+        build_bundle, "_verify_runtime_cell_semantics", lambda *_args: None
+    )
 
     return snapshot
+
+
+def test_guarded_git_snapshot_preserves_binary_blobs_beyond_capture_tail(tmp_path):
+    root = tmp_path / "repository"
+    root.mkdir()
+    original = {"payload.bin": bytes(range(256)) * 513, "empty": b""}
+    for name, data in original.items():
+        (root / name).write_bytes(data)
+    git = shutil.which("git")
+    assert git is not None
+    for args in (
+        ("init",),
+        ("-c", "core.autocrlf=false", "add", "."),
+        (
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            f"core.hooksPath={root / 'no-hooks'}",
+            "commit",
+            "-m",
+            "binary source",
+        ),
+    ):
+        _COMMANDS.run(
+            [git, *args], cwd=root, capture_output=True, check=True, timeout=30
+        )
+    commit = _COMMANDS.check_output(
+        [git, "rev-parse", "HEAD"], cwd=root, text=True, timeout=30
+    ).strip()
+    snapshot = git_source_snapshot.capture_git_source_snapshot(
+        root,
+        commit,
+        git=Path(git),
+        environment=os.environ,
+        max_files=len(original),
+        max_bytes=sum(map(len, original.values())),
+    )
+    assert {item.relative.as_posix(): item.sha256 for item in snapshot.files} == {
+        name: hashlib.sha256(data).hexdigest() for name, data in original.items()
+    }
+    # The commit remains the source authority, even if the working file changes.
+    (root / "payload.bin").write_bytes(b"uncommitted replacement")
+    destination = tmp_path / "materialized"
+    git_source_snapshot.materialize_git_source_snapshot(
+        snapshot,
+        destination,
+        repo_root=root,
+        git=Path(git),
+        environment=os.environ,
+    )
+    assert {path.name: path.read_bytes() for path in destination.iterdir()} == original
+    # A missing Git object must fail without publishing a partial source tree.
+    missing = replace(snapshot.files[0], blob_oid="0" * len(snapshot.files[0].blob_oid))
+    invalid = replace(snapshot, files=(missing, *snapshot.files[1:]))
+    rejected = tmp_path / "rejected"
+    with pytest.raises(ValueError, match="blob header is invalid"):
+        git_source_snapshot.materialize_git_source_snapshot(
+            invalid,
+            rejected,
+            repo_root=root,
+            git=Path(git),
+            environment=os.environ,
+        )
+    assert not rejected.exists()
+    assert not list(tmp_path.glob(".source-*"))
 
 
 @pytest.mark.parametrize("platform", ["linux", "windows"])
@@ -318,6 +503,12 @@ def test_bundle_archives_are_byte_reproducible(
     suffix = "zip" if platform == "windows" else "tar.gz"
     first = tmp_path / f"first.{suffix}"
     second = tmp_path / f"second.{suffix}"
+    cells = _runtime_cells(
+        tmp_path / "runtime-cells",
+        platform=platform,
+        arch="x86_64",
+        snapshot=release_source,
+    )
     for output in (first, second):
         build_bundle.build_bundle(
             version="0.0.001",
@@ -330,6 +521,7 @@ def test_bundle_archives_are_byte_reproducible(
             compiler=worker,
             launcher=worker,
             snapshot=release_source,
+            runtime_cells=cells,
         )
     assert first.read_bytes() == second.read_bytes()
     extracted = tmp_path / "extracted"
@@ -399,17 +591,26 @@ def release_evidence_inputs(
     )
 
 
-def _assemble_transport_inputs(tmp_path: Path):
+def _assemble_transport_inputs(tmp_path: Path, snapshot):
     wheel = _wheel(tmp_path / "molt-0.0.001-py3-none-any.whl")
     candidate_root = tmp_path / "candidates"
     candidate_root.mkdir()
     for target in release_model.release_targets():
-        primary = tmp_path / target.id / "primary" / target.worker_filename
-        secondary = tmp_path / target.id / "secondary" / target.worker_filename
-        primary.parent.mkdir(parents=True)
-        secondary.parent.mkdir(parents=True)
-        primary.write_bytes(b"reproducible-worker")
-        secondary.write_bytes(b"reproducible-worker")
+        primary = tmp_path / target.id / "primary"
+        secondary = tmp_path / target.id / "secondary"
+        for native_root in (primary, secondary):
+            native_build_fixture(
+                native_root, snapshot, platform=target.platform, arch=target.arch
+            )
+        cells = {
+            lane: _runtime_cells(
+                tmp_path / target.id / f"runtime-{lane}",
+                platform=target.platform,
+                arch=target.arch,
+                snapshot=snapshot,
+            )
+            for lane in ("primary", "secondary")
+        }
         output = candidate_root / target.id
         candidate = release_authority.assemble_candidate(
             target_id=target.id,
@@ -417,12 +618,10 @@ def _assemble_transport_inputs(tmp_path: Path):
             source_sha="a" * 40,
             source_date_epoch=1_700_000_000,
             wheel=wheel,
-            primary_worker=primary,
-            secondary_worker=secondary,
-            primary_compiler=primary,
-            secondary_compiler=secondary,
-            primary_launcher=primary,
-            secondary_launcher=secondary,
+            primary_native_build=primary,
+            secondary_native_build=secondary,
+            primary_runtime_cells=cells["primary"],
+            secondary_runtime_cells=cells["secondary"],
             output=output,
         )
         release_model.write_json(
@@ -438,8 +637,8 @@ def release_transport_files(tmp_path_factory):
     """Assemble once; expose only immutable bytes, never shared mutable paths."""
     root = tmp_path_factory.mktemp("release-transport")
     with pytest.MonkeyPatch.context() as patch:
-        _prepare_release_source(root, patch)
-        wheel, candidates = _assemble_transport_inputs(root)
+        snapshot = _prepare_release_source(root, patch)
+        wheel, candidates = _assemble_transport_inputs(root, snapshot)
     paths = [wheel, *sorted(path for path in candidates.rglob("*") if path.is_file())]
     return tuple(
         (path.relative_to(root).as_posix(), path.read_bytes()) for path in paths
@@ -612,6 +811,72 @@ def _consumer_transport_receipt(candidate):
             }
         )
     count = len(references) * 4
+    wheel_record = next(
+        record for record in candidate["artifacts"] if record["name"] == "molt-wheel"
+    )
+    first_reference = references[0]
+    first_minor = ".".join(first_reference.split(".")[:2])
+    pip_venv = f"{root}/pip/venv"
+    pip_python = f"{pip_venv}/" + ("Scripts/python.exe" if windows else "bin/python")
+    pip_molt = f"{pip_venv}/" + ("Scripts/molt.exe" if windows else "bin/molt")
+    pip_project = f"{root}/pip/project"
+    pip_output = f"{pip_project}/release_consumer{suffix}"
+    pip_commands = []
+    for role, argv, stdout in (
+        (
+            "pip_environment",
+            ["uv", "venv", "--no-config", "--python", first_reference, pip_venv],
+            "",
+        ),
+        (
+            "pip_install",
+            [
+                "uv",
+                "pip",
+                "install",
+                "--no-config",
+                "--python",
+                pip_python,
+                f"{root}/candidate/{wheel_record['filename']}",
+            ],
+            "",
+        ),
+        (
+            "pip_build_native_release",
+            [
+                pip_molt,
+                "build",
+                "--target",
+                "native",
+                "--profile",
+                "release",
+                "--python-version",
+                first_minor,
+                "--diagnostics-file",
+                f"{pip_project}/diagnostics.json",
+                "--output",
+                pip_output,
+                f"{pip_project}/release_consumer.py",
+            ],
+            "",
+        ),
+        ("pip_run_native_release", [pip_output, *guest_argv], guest_stdout),
+        (
+            "pip_uninstall",
+            ["uv", "pip", "uninstall", "--python", pip_python, "molt"],
+            "",
+        ),
+    ):
+        pip_commands.append(
+            {
+                "role": role,
+                "argv": argv,
+                "returncode": 0,
+                "duration_seconds": 0.125,
+                "stdout_sha256": hashlib.sha256(stdout.encode()).hexdigest(),
+                "stderr_sha256": hashlib.sha256(b"").hexdigest(),
+            }
+        )
     return {
         "schema": release_authority.CONSUMER_SCHEMA,
         "candidate": "candidate.json",
@@ -626,6 +891,15 @@ def _consumer_transport_receipt(candidate):
         "uninstall_verified": True,
         "compiler": candidate["compiler"],
         "launcher": candidate["launcher"],
+        "runtime": candidate["runtime"],
+        "pip_proof": {
+            "wheel": {key: wheel_record[key] for key in ("filename", "sha256", "size")},
+            "python": first_minor,
+            "reference_python": first_reference,
+            "commands": pip_commands,
+            "artifact": {"path": pip_output, "sha256": "e" * 64, "size": 8192},
+            "compiler_sha256": candidate["compiler"]["sha256"],
+        },
         "guest_cells": [
             ["native", "dev"],
             ["native", "release"],
@@ -646,13 +920,13 @@ def test_candidate_matrix_builds_one_collision_free_signed_index(
     publish = tmp_path / "publish"
     manifest = release_authority.assemble_index(**release_inputs, output=publish)
     artifacts = manifest["artifacts"]
-    assert len(artifacts) == 13
-    assert len({artifact["filename"] for artifact in artifacts}) == 13
+    assert len(artifacts) == 19
+    assert len({artifact["filename"] for artifact in artifacts}) == 19
     assert all((publish / artifact["filename"]).is_file() for artifact in artifacts)
-    assert len((publish / "SHA256SUMS").read_text().splitlines()) == 14
+    assert len((publish / "SHA256SUMS").read_text().splitlines()) == 20
     sbom = json.loads((publish / "release.spdx.json").read_text())
     assert sbom["spdxVersion"] == "SPDX-2.3"
-    assert len(sbom["files"]) == 14
+    assert len(sbom["files"]) == 20
     assert (
         manifest["evidence_archive"]["sha256"] == release_inputs["release_exit_sha256"]
     )
@@ -820,6 +1094,93 @@ def test_windows_package_projections_cover_x64_and_arm64() -> None:
         assert template.count("Architecture: arm64") == 1
 
 
+def test_homebrew_projection_preserves_admissible_bundle_layout(tmp_path, monkeypatch):
+    """Real bundle/archive/filesystem admission, not a Homebrew execution receipt."""
+    from molt.compiler_distribution import (
+        COMPILER_BUNDLE_DIRECTORIES,
+        installed_compiler,
+    )
+
+    snapshot = _prepare_release_source(
+        tmp_path, monkeypatch, extra_files={".cargo/config.toml": b"[build]\n"}
+    )
+    platform, arch = current_host_coordinate()
+    suffix = ".exe" if platform == "windows" else ""
+    compiler = tmp_path / f"molt-backend{suffix}"
+    launcher = tmp_path / f"molt{suffix}"
+    compiler.write_bytes(b"transport-compiler")
+    launcher.write_bytes(b"transport-launcher")
+    cells = _runtime_cells(
+        tmp_path / "cells", platform=platform, arch=arch, snapshot=snapshot
+    )
+    archive = tmp_path / ("bundle.zip" if platform == "windows" else "bundle.tar.gz")
+    build_bundle.build_bundle(
+        version="0.0.001",
+        platform=platform,
+        arch=arch,
+        kind="molt",
+        output=archive,
+        source_date_epoch=1_700_000_000,
+        worker=None,
+        compiler=compiler,
+        launcher=launcher,
+        snapshot=snapshot,
+        runtime_cells=cells,
+    )
+    extracted = tmp_path / "extracted"
+    verify_consumer._extract(archive, extracted)
+    bundle = extracted / "molt-0.0.001"
+    artifacts = [
+        {
+            "name": kind,
+            "platform": target.platform,
+            "arch": target.arch,
+            "url": f"https://example.invalid/{kind}-{target.platform}-{target.arch}",
+            "sha256": "a" * 64,
+        }
+        for target in release_model.release_targets()
+        for kind in ("molt", "molt-worker")
+    ]
+    projections = tmp_path / "projections"
+    monkeypatch.setattr(update_manifests, "OUTPUT", projections)
+    update_manifests._render_homebrew(artifacts, "0.0.001")
+    formula = (projections / "homebrew/molt.rb").read_text()
+    # These are the actual arguments emitted to Homebrew's prefix.install.
+    install = next(
+        line.strip()
+        for line in formula.splitlines()
+        if line.strip().startswith("prefix.install ")
+    )
+    directories = json.loads("[" + install.removeprefix("prefix.install ") + "]")
+    assert set(directories) == {entry.name for entry in bundle.iterdir()}
+    assert tuple(directories) == COMPILER_BUNDLE_DIRECTORIES
+    for damage in (None, "missing-runtime", "missing-hidden-source"):
+        prefix = tmp_path / (damage or "installed")
+        for directory in directories:
+            if damage == "missing-runtime" and directory == "runtime":
+                continue
+            shutil.copytree(
+                bundle / directory,
+                prefix / directory,
+                ignore=shutil.ignore_patterns(".cargo")
+                if damage == "missing-hidden-source" and directory == "source"
+                else None,
+            )
+        installed = installed_compiler(prefix / "source")
+        assert installed is not None
+        if damage == "missing-runtime":
+            with pytest.raises((ValueError, FileNotFoundError)):
+                installed.verify_runtime()
+        elif damage == "missing-hidden-source":
+            with pytest.raises(ValueError, match="closure is not exact"):
+                installed.verify_sources()
+        else:
+            assert (prefix / "source/.cargo/config.toml").read_bytes() == b"[build]\n"
+            installed.verify_sources()
+            installed.verify_binary(("native-backend", "wasm-backend"), "release")
+            installed.verify_runtime()
+
+
 def test_package_manager_installs_keep_release_source_immutable() -> None:
     homebrew = (ROOT / "packaging/templates/homebrew/molt.rb").read_text(
         encoding="utf-8"
@@ -827,12 +1188,12 @@ def test_package_manager_installs_keep_release_source_immutable() -> None:
     scoop = json.loads(
         (ROOT / "packaging/templates/scoop/molt.json").read_text(encoding="utf-8")
     )
-    assert 'prefix.install "source"' in homebrew
+    assert "prefix.install {{BUNDLE_DIRECTORIES}}" in homebrew
     assert 'source.install Dir["source/*"]' not in homebrew  # drops .cargo
     assert 'depends_on "uv"' in homebrew
     assert "skip_clean :all" in homebrew
     assert (
-        'libexec.install_symlink Formula["python@3.12"].opt_bin/"python3.12" => "python"'
+        'libexec.install_symlink Formula["python@3.14"].opt_bin/"python3.14" => "python"'
         in homebrew
     )
     assert scoop["extract_dir"] == "molt-{{VERSION}}"
@@ -866,7 +1227,7 @@ def test_package_manager_installs_keep_release_source_immutable() -> None:
 def test_release_workflow_uses_exact_input_cardinality_without_shell_listing() -> None:
     release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
     assert release.count("release_authority select-one") == 4
-    assert "ls " not in release
+    assert re.search(r"(?<![\w.-])ls\s", release) is None
     assert "find dist/wheel" not in release
 
 
@@ -1012,12 +1373,103 @@ def test_candidate_admission_is_typed_and_never_publishes_malformed_proofs(
         payload = copy.deepcopy(valid)
         payload["reproducibility"]["independent_worker_builds"] = count
         variants.append(payload)
+    for field, invalid in (
+        ("schema", "molt.release-worker-build.v1"),
+        ("source_date_epoch", valid["source_date_epoch"] + 1),
+        ("artifacts", {}),
+    ):
+        payload = copy.deepcopy(valid)
+        payload["native_build"][field] = invalid
+        variants.append(payload)
+    payload = copy.deepcopy(valid)
+    payload["native_build"]["artifacts"]["compiler"]["sha256"] = "d" * 64
+    variants.append(payload)
     for i, payload in enumerate(variants):
         candidate_path.write_text(json.dumps(payload))
         output = tmp_path / f"invalid-{i}"
         with pytest.raises(ValueError):
             release_authority.assemble_index(**release_inputs, output=output)
         assert not output.exists()
+
+
+@pytest.mark.parametrize("changed", ["worker", "source"])
+def test_installed_consumer_rejects_extracted_native_receipt_substitution(
+    tmp_path, monkeypatch, release_inputs, changed
+):
+    target = next(
+        target
+        for target in release_model.release_targets()
+        if (target.platform, target.arch) == current_host_coordinate()
+    )
+    candidate_dir = release_inputs["candidate_root"] / target.id
+    original_extract = verify_consumer._extract
+
+    def extract(archive, destination):
+        original_extract(archive, destination)
+        if changed == "worker" and destination.name == "worker":
+            workers = list(destination.glob(f"*/bin/{target.worker_filename}"))
+            assert len(workers) == 1 and workers[0].is_file()
+            binary = workers[0]
+            binary.write_bytes(binary.read_bytes() + b"substituted worker")
+        elif changed == "source" and destination.name == "bundle":
+            manifest_path = next(destination.rglob(compiler_payload.MANIFEST_NAME))
+            manifest = json.loads(manifest_path.read_text())
+            record = manifest["files"][0]
+            source_file = manifest_path.parent / record["path"]
+            data = source_file.read_bytes() + b"substituted source"
+            source_file.write_bytes(data)
+            record.update(sha256=hashlib.sha256(data).hexdigest(), size=len(data))
+            manifest_path.write_text(json.dumps(manifest))
+
+    monkeypatch.setattr(verify_consumer, "_extract", extract)
+    monkeypatch.setattr(
+        verify_consumer, "consumer_python_policy", lambda *_: ([], "unused")
+    )
+    message = (
+        "Bundle worker identity" if changed == "worker" else "Bundle source inventory"
+    )
+    with pytest.raises(ValueError, match=message):
+        verify_consumer.verify(candidate_dir, tmp_path / "consumer.json")
+    assert not (tmp_path / "consumer.json").exists()
+
+
+def test_snapshot_rust_channel_ignores_replacement_blobs(tmp_path, monkeypatch):
+    snapshot = _prepare_release_source(tmp_path, monkeypatch)
+    repo = tmp_path / "source-repo"
+    entry = next(
+        entry
+        for entry in snapshot.files
+        if entry.relative.as_posix() == "rust-toolchain.toml"
+    )
+    replacement = (
+        _COMMANDS.check_output(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=repo,
+            input=b'[toolchain]\nchannel="1.97.0"\n',
+            timeout=30,
+        )
+        .decode()
+        .strip()
+    )
+    _COMMANDS.run(
+        ["git", "replace", entry.blob_oid, replacement],
+        cwd=repo,
+        check=True,
+        timeout=30,
+    )
+    from tools.release.native_build import snapshot_rust_channel
+
+    assert snapshot_rust_channel(repo, snapshot) == "1.96.1"
+    git = Path(shutil.which("git"))
+    data = git_source_snapshot.read_git_source_file(
+        snapshot,
+        "rust-toolchain.toml",
+        repo_root=repo,
+        git=git,
+        environment={**os.environ, "GIT_NO_REPLACE_OBJECTS": "0"},
+        max_bytes=65536,
+    )
+    assert b'channel="1.96.1"' in data
 
 
 @pytest.mark.parametrize("corrupt", [False, True])
@@ -1106,7 +1558,7 @@ def test_consumer_guest_program_stdout_is_its_argv_under_cpython(tmp_path: Path)
     minor = f"{sys.version_info.major}.{sys.version_info.minor}"
     source = tmp_path / "release_consumer.py"
     source.write_bytes(release_authority.consumer_guest_source(minor).encode())
-    result = subprocess.run(
+    result = _COMMANDS.run(
         [sys.executable, "-I", str(source), "--guest-flag", "two words"],
         capture_output=True,
         check=True,

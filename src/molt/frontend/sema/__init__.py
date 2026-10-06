@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 
+from molt.compiler_analysis.python_call_arguments import collect_module_import_names
 from molt.frontend.sema.classgraph import (
     build_class_facts,
     build_class_graph,
@@ -35,13 +36,13 @@ from molt.frontend.sema.funcmeta import (
     FunctionKind,
     StatefulFunctionFramePlan,
     StatefulFunctionTypeHint,
+    StatefulLocalSlot,
+    StatefulLocalsLayout,
     async_generator_contains_return_value,
     async_generator_contains_yield_from,
     collect_module_class_names,
     collect_module_func_defaults,
     collect_module_func_kinds,
-    expression_contains_yield,
-    function_contains_yield,
     normalize_function_kind,
     parse_stateful_function_type_hint,
     signature_contains_yield,
@@ -68,6 +69,8 @@ __all__ = [
     "SemaResult",
     "StatefulFunctionFramePlan",
     "StatefulFunctionTypeHint",
+    "StatefulLocalSlot",
+    "StatefulLocalsLayout",
     "analyze_module",
     "async_generator_contains_return_value",
     "async_generator_contains_yield_from",
@@ -79,8 +82,6 @@ __all__ = [
     "collect_module_const_dicts",
     "collect_module_func_defaults",
     "collect_module_func_kinds",
-    "expression_contains_yield",
-    "function_contains_yield",
     "normalize_function_kind",
     "parse_stateful_function_type_hint",
     "reachable_base_names",
@@ -110,4 +111,5 @@ def analyze_module(node: ast.Module) -> SemaResult:
             declared_classes=collect_module_class_names(node),
             defaults=collect_module_func_defaults(node),
         ),
+        import_names=collect_module_import_names(node),
     )

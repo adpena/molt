@@ -23,6 +23,7 @@ pub(super) fn emit_sequence_runtime_op(
         import_ids,
         locals,
         reloc_enabled,
+        guard_profile_local: None,
     };
 
     match op.kind.as_str() {

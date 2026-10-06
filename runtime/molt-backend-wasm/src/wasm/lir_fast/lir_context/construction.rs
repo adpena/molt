@@ -1,6 +1,5 @@
 use super::LirLowerCtx;
 use super::cfg::validated_topology;
-use super::facts::compute_lir_flat_list_int_values;
 use crate::wasm::body::WasmBodyOps;
 use molt_tir::tir::dominators::{CfgEdgePolicy, reverse_postorder_with};
 use molt_tir::tir::lir::LirFunction;
@@ -17,19 +16,19 @@ impl<'a> LirLowerCtx<'a> {
         } else {
             reverse_postorder_with(&cfg, CfgEdgePolicy::TerminatorOnly)
         };
-        let flat_list_int_values = compute_lir_flat_list_int_values(func);
         Self {
             func,
             value_locals: HashMap::new(),
             value_reprs: HashMap::new(),
             value_types: HashMap::new(),
-            flat_list_int_values,
             local_types: HashMap::new(),
             next_local: local_base,
             instructions: WasmBodyOps::default(),
             rpo,
             cfg,
             operation_owners: None,
+            guard_facts: molt_tir::passes::SsaRuntimeGuardFacts::for_lir(func),
+            guard_profile_local: None,
         }
     }
 }

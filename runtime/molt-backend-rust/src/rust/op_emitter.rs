@@ -41,21 +41,19 @@ impl RustBackend {
             self.clear_alias(&definition);
         }
 
+        if self.emit_op_literal(op) {
+            return;
+        }
         match op.kind.as_str() {
-            "const" | "int_const" => self.emit_op_const(op),
-            "const_float" => self.emit_op_const_float(op),
-            "const_str" | "string_const" => self.emit_op_const_str(op),
-            "const_bool" | "bool_const" => self.emit_op_const_bool(op),
-            "const_none" | "none_const" => self.emit_op_const_none(op),
-            "const_bytes" => self.emit_op_const_bytes(op),
-            "const_bigint" => self.emit_op_const_bigint(op),
             "const_not_implemented" => self.emit_op_const_not_implemented(op),
             "const_ellipsis" => self.emit_op_const_ellipsis(op),
             "box" | "box_from_raw_int" | "unbox" | "unbox_to_raw_int" => {
                 self.emit_op_representation_copy(op)
             }
-            "load_local" | "load_var" | "copy_var" => self.emit_op_local_copy(op),
+            "copy" | "load_local" | "load_var" | "copy_var" | "identity_alias"
+            | "binding_alias" => self.emit_op_local_copy(op),
             "store_var" => self.emit_op_store_var(op),
+            "pos" | "unary_pos" | "type_guard" => self.emit_op_local_copy(op),
             "load" | "guarded_load" => self.emit_op_load(op),
             "closure_load" => self.emit_op_closure_load(op),
             "store_local" => self.emit_op_store_local(op),
@@ -110,6 +108,9 @@ impl RustBackend {
             "end_for" => self.emit_op_end_for(op),
             "break" => self.emit_op_break(op),
             "continue" => self.emit_op_continue(op),
+            "unreachable" => {
+                self.emit_line("unreachable!(\"entered unreachable Molt control flow\");")
+            }
             kind if molt_ir::tir::op_kinds_generated::simpleir_return_shape(kind)
                 == molt_ir::tir::op_kinds_generated::SimpleIrReturnShape::Value =>
             {
@@ -126,7 +127,6 @@ impl RustBackend {
             "callargs_new" => self.emit_op_callargs_new(op),
             "callargs_push_pos" => self.emit_op_callargs_push_pos(op),
             "callargs_expand_star" => self.emit_op_callargs_expand_star(op),
-            "callargs_push_kw" | "callargs_expand_kwstar" => self.emit_op_callargs_push_kw(op),
             "func_new" | "func_new_closure" => self.emit_op_func_new(op),
             "code_new" => self.emit_op_code_new(op),
             "code_slots_init" => self.emit_op_code_slots_init(op),
@@ -146,12 +146,15 @@ impl RustBackend {
             "trace_enter_slot" => self.emit_op_trace_enter_slot(op),
             "trace_exit" => self.emit_op_trace_exit(op),
             "frame_locals_set" => self.emit_op_frame_locals_set(op),
+            "frame_home_store" | "frame_home_cell" | "frame_home_private_cell" => {
+                self.emit_op_frame_home_store(op)
+            }
+            "frame_home_load" => self.emit_op_frame_home_load(op),
+            "frame_home_take" => self.emit_op_frame_home_take(op),
+            "frame_home_clear" => self.emit_op_frame_home_clear(op),
             "builtin_func" => self.emit_op_builtin_func(op),
             "print" | "builtin_print" => self.emit_op_print(op),
             "len" | "builtin_len" => self.emit_op_len(op),
-            "int" | "cast_int" | "builtin_int" => self.emit_op_int(op),
-            "int_from_obj" => self.emit_op_int_from_obj(op),
-            "int_from_str_of_obj" => self.emit_op_int_from_str_of_obj(op),
             "float" | "cast_float" | "builtin_float" => self.emit_op_float(op),
             "float_from_obj" => self.emit_op_float_from_obj(op),
             "str" | "cast_str" | "builtin_str" => self.emit_op_str(op),
@@ -173,56 +176,31 @@ impl RustBackend {
             "set_attr" | "store_attr" | "set_attr_generic_obj" | "set_attr_generic_ptr" => {
                 self.emit_op_set_attr(op)
             }
-            "enumerate" => self.emit_op_enumerate(op),
             "zip" => self.emit_op_zip(op),
             "sorted" | "builtin_sorted" => self.emit_op_sorted(op),
             "reversed" | "builtin_reversed" => self.emit_op_reversed(op),
-            "sum" | "builtin_sum" => self.emit_op_sum(op),
             "any" | "builtin_any" => self.emit_op_any(op),
             "all" | "builtin_all" => self.emit_op_all(op),
-            "range" | "builtin_range" => self.emit_op_range(op),
             "module_new" => self.emit_op_module_new(op),
-            "class_new" | "object_new" | "builtin_type" => self.emit_op_class_new(op),
             "bound_method_new" => self.emit_op_bound_method_new(op),
-            "alloc_class" => self.emit_op_alloc_class(op),
-            "object_set_class" => self.emit_op_object_set_class(op),
-            "class_set_base" => self.emit_op_class_set_base(op),
-            "class_set_layout_version" => self.emit_op_class_set_layout_version(op),
-            "class_merge_layout" => self.emit_op_class_merge_layout(op),
-            "class_apply_set_name"
-            | "class_layout_version"
-            | "class_layout_field_count"
-            | "class_layout_slot_count" => self.emit_op_class_apply_set_name(op),
             "module_cache_get" | "module_load_cached" => self.emit_op_module_cache_get(op),
             "module_cache_set" => self.emit_op_module_cache_set(op),
             "module_cache_del" => self.emit_op_module_cache_del(op),
-            "module_import" | "module_import_from" | "module_import_star" => {
-                self.emit_unsupported_op(op, "requires the Python import protocol")
-            }
             "module_get_attr" | "module_get_name" => self.emit_op_module_get_attr(op),
             "module_set_attr" => self.emit_op_module_set_attr(op),
-            "nop" | "comment" | "debug_label" | "line" | "type_assert" => self.emit_op_nop(op),
+            "nop"
+            | "comment"
+            | "debug_label"
+            | "line"
+            | "type_assert"
+            | "loop_index_end"
+            | "drop_inserted"
+            | "exception_region_drops_inserted" => self.emit_op_nop(op),
+            "warn_stderr" => self.emit_op_warn_stderr(op),
             "str_from_obj" | "repr_from_obj" | "ascii_from_obj" | "bridge_unavailable" => {
                 self.emit_op_runtime_value_call(op)
             }
-            "jump" | "goto" | "br_if" | "branch" | "branch_true" | "branch_false" => {
-                self.emit_op_unstructured_branch(op)
-            }
-            "alloc_task" | "block_on" | "asyncgen_locals_register" | "check_exception" => {
-                self.emit_op_runtime_control_gap(op)
-            }
-            "inc_ref" | "borrow" | "binding_alias" => self.emit_op_inc_ref(op),
-            "dec_ref" | "release" => self.emit_op_dec_ref(op),
-            "alloc_instance" | "init_instance" | "instance_set_field" | "instance_get_field"
-            | "instance_has_field" => self.emit_op_alloc_instance(op),
-            "raise" | "reraise" => self.emit_op_raise(op),
-            "try_start" | "try_end" | "except_start" | "except_end" | "finally_start"
-            | "finally_end" => self.emit_op_try_start(op),
-            "format_string" | "string_format" => self.emit_op_format_string(op),
-            "tuple_new" => self.emit_op_tuple_new(op),
-            "list_fill_new" => self.emit_op_list_fill_new(op),
             "unpack_sequence" => self.emit_op_unpack_sequence(op),
-            "string_join" => self.emit_op_string_join(op),
             _ => self.emit_op_other(op),
         }
     }

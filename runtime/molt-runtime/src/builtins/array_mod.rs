@@ -25,11 +25,10 @@ use crate::object::native_handle::{native_handle_arc, native_handle_new};
 use crate::object::ops::string_obj_to_owned;
 use crate::object::ops_sys::{collect_slice_indices, normalize_slice_indices, slice_error};
 use crate::{
-    MoltObject, PyToken, TYPE_ID_DICT, TYPE_ID_OBJECT, TYPE_ID_SLICE, alloc_bytes, alloc_list,
-    alloc_string, alloc_tuple, dec_ref_bits, dict_get_in_place, inc_ref_bits, instance_dict_bits,
-    int_bits_from_i64, is_missing_bits, obj_from_bits, object_class_bits, object_field_get_ptr_raw,
-    object_type_id, raise_exception, slice_start_bits, slice_step_bits, slice_stop_bits, to_f64,
-    to_i64,
+    MoltObject, PyToken, TYPE_ID_OBJECT, TYPE_ID_SLICE, alloc_bytes, alloc_list, alloc_string,
+    alloc_tuple, dec_ref_bits, inc_ref_bits, instance_dict_bits, int_bits_from_i64,
+    is_missing_bits, obj_from_bits, object_class_bits, object_type_id, raise_exception,
+    slice_start_bits, slice_step_bits, slice_stop_bits, to_f64, to_i64,
 };
 
 // ---------------------------------------------------------------------------
@@ -473,60 +472,57 @@ fn ensure_array_resizable(_py: &PyToken<'_>, handle: &ArrayHandle) -> Result<(),
     }
 }
 
-fn array_cell_from_export_source(_py: &PyToken<'_>, bits: u64) -> Option<Arc<ArrayCell>> {
+/// Resolve the actual typed array handle from sealed physical storage. Buffer
+/// capability checks must not allocate names or run arbitrary attribute/key
+/// equality; acquisition and storage description use this same projection.
+fn array_cell_from_export_source(py: &PyToken<'_>, bits: u64) -> Option<Arc<ArrayCell>> {
     if let Some(cell) = array_arc_from_bits(bits) {
         return Some(cell);
     }
     if let Some(lease) = array_lease_arc_from_bits(bits) {
         return Some(Arc::clone(&lease.cell));
     }
-    let ptr = obj_from_bits(bits).as_ptr()?;
+    let object = obj_from_bits(bits).as_ptr()?;
     unsafe {
-        if object_type_id(ptr) != TYPE_ID_OBJECT {
+        if object_type_id(object) != TYPE_ID_OBJECT {
             return None;
         }
-        let handle_name = crate::builtins::attr::attr_name_bits_from_bytes(_py, b"_handle")?;
-        let handle_bits = object_array_handle_bits(_py, ptr, handle_name);
-        dec_ref_bits(_py, handle_name);
-        let handle_bits = handle_bits?;
-        let cell = array_arc_from_bits(handle_bits);
-        dec_ref_bits(_py, handle_bits);
-        cell
+        let handle = object_array_handle_bits(py, object)?;
+        array_arc_from_bits(handle)
     }
 }
 
-unsafe fn object_array_handle_bits(
-    _py: &PyToken<'_>,
-    obj_ptr: *mut u8,
-    handle_name: u64,
-) -> Option<u64> {
+unsafe fn object_array_handle_bits(py: &PyToken<'_>, object: *mut u8) -> Option<u64> {
+    use crate::object::field_storage::{self, FieldStorage};
+    use crate::object::ops::dict_get_str_bytes_borrowed;
     unsafe {
-        let class_bits = object_class_bits(obj_ptr);
-        if class_bits != 0
-            && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
-            && object_type_id(class_ptr) == crate::TYPE_ID_TYPE
+        if let Some(class) = obj_from_bits(object_class_bits(object)).as_ptr()
+            && object_type_id(class) == crate::TYPE_ID_TYPE
+            && let Some(offsets) =
+                obj_from_bits(crate::object::layout::class_field_offsets_bits(class)).as_ptr()
+            && let Some(offset) = dict_get_str_bytes_borrowed(py, offsets, b"_handle")
             && let Some(offset) =
-                crate::builtins::attr::class_field_offset(_py, class_ptr, handle_name)
+                to_i64(obj_from_bits(offset)).and_then(|n| usize::try_from(n).ok())
+            && let Some(field) = field_storage::field_at_offset(py, object, offset)
         {
-            let bits = object_field_get_ptr_raw(_py, obj_ptr, offset);
-            if is_missing_bits(_py, bits) {
-                dec_ref_bits(_py, bits);
-                return None;
-            }
-            return Some(bits);
+            let slot = object.add(field.offset).cast::<u64>();
+            let bits = match field_storage::resolve(py, object, field.offset, slot)? {
+                FieldStorage::Inline(slot) => *slot,
+                FieldStorage::Dictionary { dictionary, .. } => dict_get_str_bytes_borrowed(
+                    py,
+                    obj_from_bits(dictionary).as_ptr()?,
+                    b"_handle",
+                )?,
+            };
+            return (!is_missing_bits(py, bits)).then_some(bits);
         }
-        let dict_bits = instance_dict_bits(obj_ptr);
-        if dict_bits == 0 || obj_from_bits(dict_bits).is_none() {
-            return None;
-        }
-        let dict_ptr = obj_from_bits(dict_bits).as_ptr()?;
-        if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return None;
-        }
-        let handle_bits = dict_get_in_place(_py, dict_ptr, handle_name)?;
-        inc_ref_bits(_py, handle_bits);
-        Some(handle_bits)
+        let dictionary = obj_from_bits(instance_dict_bits(object)).as_ptr()?;
+        dict_get_str_bytes_borrowed(py, dictionary, b"_handle")
     }
+}
+
+pub(crate) fn array_supports_buffer(py: &PyToken<'_>, bits: u64) -> bool {
+    array_cell_from_export_source(py, bits).is_some()
 }
 
 pub(crate) fn array_storage_from_object_bits(
@@ -537,14 +533,17 @@ pub(crate) fn array_storage_from_object_bits(
         return Err(TypedStridedStorageError::NotBuffer);
     };
     let guard = cell.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if guard.typecode == Typecode::U {
-        return Err(TypedStridedStorageError::InvalidDescriptor);
-    }
     let itemsize = guard.typecode.itemsize();
     let stride =
         isize::try_from(itemsize).map_err(|_| TypedStridedStorageError::InvalidDescriptor)?;
     let data = guard.data.as_ptr().cast_mut();
-    let format = guard.typecode.as_char() as u8;
+    // CPython exports native wchar as u (16-bit) or w (32-bit). The
+    // descriptor is valid even though memoryview scalar access rejects it.
+    let format = if guard.typecode == Typecode::U && itemsize == 4 {
+        b'w'
+    } else {
+        guard.typecode.as_char() as u8
+    };
     let storage =
         TypedStridedStorage::one_dim(data, false, guard.len(), itemsize, stride, 0, bits, 0);
     // C descriptors carry their format inline. No transient Python allocation

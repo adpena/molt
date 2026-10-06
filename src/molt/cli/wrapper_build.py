@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import os
@@ -21,7 +20,14 @@ from molt.cli.backend_diagnostics import (
     _forward_compilation_warnings,
 )
 from molt.cli.build_diagnostics import _emit_build_diagnostics
-from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
+from molt.cli.cache_fingerprints import (
+    _cache_fingerprint,
+    _cache_tooling_fingerprint,
+    _fresh_compiler_identity_inputs,
+    _source_tree_fingerprint_transaction,
+)
+from molt.cli.compiler_identity import CompilerIdentityError
+from molt.backend_executable_names import backend_features_for_target
 from molt.cli.command_runtime import _CLI_MEMORY_GUARD_PREFIX, _run_completed_command
 from molt.cli.config_resolution import (
     STATIC_IMPORT_MODULES_ENV,
@@ -46,7 +52,7 @@ from molt.cli.models import (
 )
 from molt.cli.module_graph import _materialize_import_plan, _prepare_entry_module_graph
 from molt.cli.module_resolution import _stdlib_root_path
-from molt.cli.module_source import _source_content_sha256
+from molt.cli.module_source import PythonSourceChangedError, _source_content_sha256
 from molt.cli.output import (
     coerce_process_text as _coerce_process_text,
     emit_json as _emit_json,
@@ -118,7 +124,7 @@ def _wrapper_build_target(build_args: Sequence[str]) -> str:
     return "native"
 
 
-_WRAPPER_BUILD_CACHE_SCHEMA_VERSION = 2
+_WRAPPER_BUILD_CACHE_SCHEMA_VERSION = 3
 _WRAPPER_BUILD_CACHE_ENV_KEYS = (
     "MOLT_CAPABILITIES",
     "MOLT_CAPABILITY_TIER",
@@ -323,7 +329,15 @@ def _wrapper_build_cache_input(
         "build_args": list(build_args),
         "semantic_env": _wrapper_build_cache_semantic_env(env),
         "capability_config_digest": capability_config_digest,
-        "runtime_backend_fingerprint": _cache_fingerprint(),
+        "runtime_backend_fingerprint": _cache_fingerprint(
+            env=env,
+            backend_features=backend_features_for_target(
+                is_wasm=_wrapper_build_target(build_args).startswith("wasm"),
+                is_luau_transpile=_wrapper_build_target(build_args) == "luau",
+                is_rust_transpile=_wrapper_build_target(build_args) == "rust",
+                env=env,
+            ),
+        ),
         "frontend_tooling_fingerprint": _cache_tooling_fingerprint(),
         "python_cache_tag": sys.implementation.cache_tag,
         "target_python": _wrapper_target_python(
@@ -337,21 +351,9 @@ def _wrapper_build_cache_input(
 
 def _read_wrapper_build_cache_contract(
     *,
-    resolved_build_entry: _ResolvedBuildEntry | None,
-    build_args: Sequence[str],
-    env: Mapping[str, str],
-    project_root: Path,
+    resolved_build_entry: _ResolvedBuildEntry,
+    cache_input: tuple[dict[str, Any], str],
 ) -> _WrapperBuildContract | None:
-    if resolved_build_entry is None:
-        return None
-    cache_input = _wrapper_build_cache_input(
-        resolved_build_entry=resolved_build_entry,
-        build_args=build_args,
-        env=env,
-        project_root=project_root,
-    )
-    if cache_input is None:
-        return None
     _payload, cache_key = cache_input
     cached_bin = _wrapper_build_default_binary_path(resolved_build_entry)
     manifest_path = _wrapper_build_cache_manifest_path(cached_bin)
@@ -394,33 +396,17 @@ def _read_wrapper_build_cache_contract(
 
 def _write_wrapper_build_cache_manifest(
     *,
-    resolved_build_entry: _ResolvedBuildEntry | None,
-    build_args: Sequence[str],
-    env: Mapping[str, str],
-    project_root: Path,
+    resolved_build_entry: _ResolvedBuildEntry,
     contract: _WrapperBuildContract,
+    cache_input: tuple[dict[str, Any], str],
 ) -> None:
-    if resolved_build_entry is None:
-        return
     cached_bin = _wrapper_build_default_binary_path(resolved_build_entry)
-    try:
-        if contract.consumer_output.resolve() != cached_bin.resolve():
-            return
-    except OSError:
+    if contract.consumer_output.resolve() != cached_bin.resolve():
         return
-    cache_input = _wrapper_build_cache_input(
-        resolved_build_entry=resolved_build_entry,
-        build_args=build_args,
-        env=env,
-        project_root=project_root,
-    )
-    if cache_input is None:
-        return
+    # The wrapper owns the input-generation fence. Publication consumes its
+    # retained pre-build identity; it never labels output from a later scan.
     input_payload, cache_key = cache_input
-    try:
-        binary_hash = _sha256_file(cached_bin)
-    except OSError:
-        return
+    binary_hash = _sha256_file(cached_bin)
     manifest: dict[str, Any] = {
         "version": _WRAPPER_BUILD_CACHE_SCHEMA_VERSION,
         "cache_key": cache_key,
@@ -573,6 +559,7 @@ def _emit_wrapper_build_failure(
 
 
 @_progress.finish_after
+@_source_tree_fingerprint_transaction()
 def _run_wrapper_build(
     *,
     file_path: str | None,
@@ -586,20 +573,62 @@ def _run_wrapper_build(
     resolved_build_entry: _ResolvedBuildEntry | None = None,
     memory_guard_prefix: str | None = _CLI_MEMORY_GUARD_PREFIX,
 ) -> tuple[_WrapperBuildContract | None, float, int | None]:
+    # Anchor the caller's lexical file selector before the child changes cwd.
+    # Keep symlinks unresolved so each fence observes live selector resolution.
+    if file_path is not None:
+        file_path = os.fspath(Path(file_path).absolute())
     wrapper_cache_enabled = (
         resolved_build_entry is not None
         and "--no-cache" not in build_args
         and "--rebuild" not in build_args
     )
+    cache_input = None
     if wrapper_cache_enabled:
-        cached_contract = _read_wrapper_build_cache_contract(
-            resolved_build_entry=resolved_build_entry,
+        assert resolved_build_entry is not None
+        selected_entry, selection_error = _build_inputs._resolve_wrapper_build_entry(
+            file_path=file_path,
+            module=module,
+            project_root=project_root,
+            json_output=json_output,
+            command=command,
             build_args=build_args,
             env=env,
-            project_root=project_root,
+            source_cwd=project_root,
         )
-        if cached_contract is not None:
-            return cached_contract, 0.0, None
+        if selection_error is not None:
+            return None, 0.0, selection_error
+        assert selected_entry is not None
+        if (
+            selected_entry.image_scope != resolved_build_entry.image_scope
+            or selected_entry.target_python != resolved_build_entry.target_python
+            or selected_entry.entry_source != resolved_build_entry.entry_source
+        ):
+            return (
+                None,
+                0.0,
+                _fail(
+                    "Build entry selection changed after admission. "
+                    "Run the command again with stable sources and module roots.",
+                    json_output,
+                    command=command,
+                ),
+            )
+        try:
+            cache_input = _wrapper_build_cache_input(
+                resolved_build_entry=resolved_build_entry,
+                build_args=build_args,
+                env=env,
+                project_root=project_root,
+            )
+        except (PythonSourceChangedError, CompilerIdentityError) as exc:
+            return None, 0.0, _fail(str(exc), json_output, command=command)
+        if cache_input is not None:
+            cached_contract = _read_wrapper_build_cache_contract(
+                resolved_build_entry=resolved_build_entry,
+                cache_input=cache_input,
+            )
+            if cached_contract is not None:
+                return cached_contract, 0.0, None
 
     # Show progress when building (no silent hangs).
     if not json_output and not verbose:
@@ -662,14 +691,70 @@ def _run_wrapper_build(
     if contract_error is not None:
         return None, duration, contract_error
     assert contract is not None
-    if wrapper_cache_enabled:
-        with contextlib.suppress(OSError):
+    if cache_input is not None:
+        assert resolved_build_entry is not None
+        current_entry, selection_error = _build_inputs._resolve_wrapper_build_entry(
+            file_path=file_path,
+            module=module,
+            project_root=project_root,
+            json_output=json_output,
+            command=command,
+            build_args=build_args,
+            env=env,
+            source_cwd=project_root,
+        )
+        if selection_error is not None:
+            return None, duration, selection_error
+        assert current_entry is not None
+        try:
+            with _fresh_compiler_identity_inputs():
+                current_input = _wrapper_build_cache_input(
+                    resolved_build_entry=current_entry,
+                    build_args=build_args,
+                    env=env,
+                    project_root=project_root,
+                )
+        except (PythonSourceChangedError, CompilerIdentityError) as exc:
+            return (
+                None,
+                duration,
+                _fail(
+                    f"Build inputs changed during compilation: {exc}. "
+                    "Run the command again with stable sources.",
+                    json_output,
+                    command=command,
+                ),
+            )
+        if current_input is None or current_input[1] != cache_input[1]:
+            return (
+                None,
+                duration,
+                _fail(
+                    "Build inputs changed or could not be verified after compilation. "
+                    "Run the command again with stable sources.",
+                    json_output,
+                    command=command,
+                ),
+            )
+        try:
             _write_wrapper_build_cache_manifest(
                 resolved_build_entry=resolved_build_entry,
-                build_args=build_args,
-                env=env,
-                project_root=project_root,
                 contract=contract,
+                cache_input=cache_input,
+            )
+        except OSError as exc:
+            manifest_path = _wrapper_build_cache_manifest_path(
+                _wrapper_build_default_binary_path(resolved_build_entry)
+            )
+            return (
+                None,
+                duration,
+                _fail(
+                    f"Build completed, but wrapper cache publication failed for "
+                    f"{manifest_path} (output {contract.consumer_output}): {exc}",
+                    json_output,
+                    command=command,
+                ),
             )
     if not json_output:
         _emit_wrapper_build_success_signals(payload)

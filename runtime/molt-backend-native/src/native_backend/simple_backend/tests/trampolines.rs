@@ -55,10 +55,7 @@ fn task_trampoline_clif(
     );
     CompiledFunctionClif {
         function,
-        import_ids: import_ids
-            .iter()
-            .map(|(name, (id, _))| (*name, *id))
-            .collect(),
+        import_ids: declared_import_ids(module),
     }
 }
 
@@ -241,6 +238,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -264,6 +262,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -293,6 +292,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],

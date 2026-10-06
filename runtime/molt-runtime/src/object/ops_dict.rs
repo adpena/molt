@@ -8,10 +8,79 @@ use crate::*;
 use molt_obj_model::MoltObject;
 
 use super::ops::{
-    dict_clear_in_place, dict_del_in_place, dict_find_entry, dict_get_in_place, dict_inc_in_place,
-    dict_inc_prehashed_string_key_in_place, dict_like_bits_from_ptr, dict_rebuild,
-    dict_set_in_place, dict_set_inline_int_in_place, dict_table_capacity, ensure_hashable,
+    dict_clear_in_place, dict_del_in_place, dict_find_entry, dict_get_in_place,
+    dict_increment_exact_statement, dict_like_bits_from_ptr, dict_rebuild, dict_set_in_place,
+    dict_set_inline_int_in_place, dict_setdefault_in_place, dict_table_capacity, ensure_hashable,
 };
+
+#[derive(Clone, Copy)]
+pub(crate) enum DictSnapshotKind {
+    Keys,
+    Values,
+    Items,
+    /// Alternating key/value references from one insertion-order observation.
+    Entries,
+}
+
+/// One insertion-ordered, retained snapshot for C list results, Python list
+/// extension, native argument transport, and rendering. Backing is
+/// resource-accounted; no table borrow crosses an
+/// allocation or a release, and partial results retire through the shared owner.
+pub(crate) unsafe fn dict_snapshot<'a, 'py>(
+    py: &'a PyToken<'py>,
+    dict: *mut u8,
+    kind: DictSnapshotKind,
+) -> Option<super::seq_access::PinnedSequenceSnapshot<'a, 'py>> {
+    unsafe {
+        let length = dict_order(dict).len();
+        let count = length / 2;
+        let capacity = if matches!(kind, DictSnapshotKind::Entries) {
+            length
+        } else {
+            count
+        };
+        let Some(storage) = super::backing::tracked_vec_box_with_capacity::<u64>(capacity) else {
+            record_memory_error_without_allocation(py);
+            return None;
+        };
+        let mut values = super::backing::tracked_vec_box_from_raw(storage);
+        for index in 0..count {
+            let (key, value) = {
+                let entries = dict_order(dict);
+                (entries[2 * index], entries[2 * index + 1])
+            };
+            let item = match kind {
+                DictSnapshotKind::Entries => {
+                    inc_ref_bits(py, key);
+                    inc_ref_bits(py, value);
+                    values.push(key);
+                    values.push(value);
+                    continue;
+                }
+                DictSnapshotKind::Keys => {
+                    inc_ref_bits(py, key);
+                    key
+                }
+                DictSnapshotKind::Values => {
+                    inc_ref_bits(py, value);
+                    value
+                }
+                DictSnapshotKind::Items => {
+                    let pair = alloc_tuple(py, &[key, value]);
+                    if pair.is_null() {
+                        let _partial = super::seq_access::PinnedSequenceSnapshot::from_owned_values(
+                            py, values,
+                        );
+                        return None;
+                    }
+                    MoltObject::from_ptr(pair).bits()
+                }
+            };
+            values.push(item);
+        }
+        Some(super::seq_access::PinnedSequenceSnapshot::from_owned_values(py, values))
+    }
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_update_missing(dict_bits: u64, key_bits: u64, val_bits: u64) -> u64 {
@@ -26,6 +95,9 @@ pub extern "C" fn molt_dict_update_missing(dict_bits: u64, key_bits: u64, val_bi
                 return MoltObject::none().bits();
             };
             let Some(real_dict_bits) = dict_like_bits_from_ptr(_py, container_ptr) else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return raise_exception::<_>(
                     _py,
                     "TypeError",
@@ -69,9 +141,6 @@ pub extern "C" fn molt_dict_contains(container_bits: u64, item_bits: u64) -> u64
                     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
                         return MoltObject::none().bits();
                     };
-                    if !ensure_hashable(_py, item_bits, HashContext::DictKey) {
-                        return MoltObject::none().bits();
-                    }
                     let found = dict_find_entry(_py, dict_ptr, item_bits);
                     if exception_pending(_py) {
                         return MoltObject::none().bits();
@@ -79,6 +148,9 @@ pub extern "C" fn molt_dict_contains(container_bits: u64, item_bits: u64) -> u64
                     return MoltObject::from_bool(found.is_some()).bits();
                 }
             }
+        }
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
         }
         molt_contains(container_bits, item_bits)
     })
@@ -143,7 +215,7 @@ pub(crate) unsafe fn dict_update_apply(
             let item = match iter.next() {
                 Ok(Some(item)) => item,
                 Ok(None) => return MoltObject::none().bits(),
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             let pair = dict_pair_from_item(_py, item);
             dec_ref_bits(_py, item);
@@ -204,6 +276,9 @@ pub extern "C" fn molt_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) ->
                 return dict_bits;
             }
             let Some(real_dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 // Fallback: not a plain dict, use the general store path.
                 if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
                     return MoltObject::none().bits();
@@ -231,23 +306,6 @@ pub extern "C" fn molt_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) ->
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_get(dict_bits: u64, key_bits: u64, default_bits: u64) -> u64 {
-    // Pre-materialize the key object to force pointer resolution and hash
-    // caching before the dict lookup. In Cranelift-compiled binaries, NaN-boxed
-    // key values can produce incorrect hash results without this step.
-    {
-        let key_obj = obj_from_bits(key_bits);
-        if let Some(key_ptr) = key_obj.as_ptr() {
-            unsafe {
-                if object_type_id(key_ptr) == TYPE_ID_STRING {
-                    let len = string_len(key_ptr);
-                    // Force a volatile read of the first byte to prevent elision
-                    if len > 0 {
-                        std::ptr::read_volatile(string_bytes(key_ptr));
-                    }
-                }
-            }
-        }
-    }
     crate::with_gil_entry_nopanic!(_py, {
         let obj = obj_from_bits(dict_bits);
         let Some(ptr) = obj.as_ptr() else {
@@ -255,6 +313,9 @@ pub extern "C" fn molt_dict_get(dict_bits: u64, key_bits: u64, default_bits: u64
         };
         unsafe {
             let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return raise_exception::<_>(_py, "TypeError", "dict.get expects dict");
             };
             let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
@@ -263,10 +324,11 @@ pub extern "C" fn molt_dict_get(dict_bits: u64, key_bits: u64, default_bits: u64
             if object_type_id(dict_ptr) != TYPE_ID_DICT {
                 return raise_exception::<_>(_py, "TypeError", "dict.get expects dict");
             }
-            if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
+            let found = dict_get_in_place(_py, dict_ptr, key_bits);
+            if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            if let Some(val) = dict_get_in_place(_py, dict_ptr, key_bits) {
+            if let Some(val) = found {
                 inc_ref_bits(_py, val);
                 return val;
             }
@@ -276,61 +338,21 @@ pub extern "C" fn molt_dict_get(dict_bits: u64, key_bits: u64, default_bits: u64
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_dict_inc(dict_bits: u64, key_bits: u64, delta_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(dict_bits);
-        let Some(ptr) = obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
-        };
-        unsafe {
-            let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
-                return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
-            };
-            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                return MoltObject::none().bits();
-            };
-            if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
-            }
-            if !dict_inc_in_place(_py, dict_ptr, key_bits, delta_bits) {
-                return MoltObject::none().bits();
-            }
-            MoltObject::none().bits()
-        }
-    })
-}
-
+/// `d[key] = d.get(key, 0) + delta` fused, returning whether it ran: only when
+/// the statement provably runs no Python code (see
+/// `dict_increment_exact_statement`). `False` has done nothing observable and
+/// the caller runs the statement itself.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_str_int_inc(dict_bits: u64, key_bits: u64, delta_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(dict_bits);
-        let Some(ptr) = obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
-        };
-        unsafe {
-            let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
-                return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
-            };
-            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                return MoltObject::none().bits();
-            };
-            if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                return raise_exception::<_>(_py, "TypeError", "dict increment expects dict");
-            }
-            if let Some(done) =
-                dict_inc_prehashed_string_key_in_place(_py, dict_ptr, key_bits, delta_bits)
-            {
+        match unsafe { dict_increment_exact_statement(_py, dict_bits, key_bits, delta_bits) } {
+            Ok(done) => {
                 if !done {
-                    return MoltObject::none().bits();
+                    profile_hit_unchecked(&DICT_STR_INT_PREHASH_DEOPT_COUNT);
                 }
-                return MoltObject::none().bits();
+                MoltObject::from_bool(done).bits()
             }
-            profile_hit_unchecked(&DICT_STR_INT_PREHASH_DEOPT_COUNT);
-            if !dict_inc_in_place(_py, dict_ptr, key_bits, delta_bits) {
-                return MoltObject::none().bits();
-            }
-            MoltObject::none().bits()
+            Err(()) => MoltObject::none().bits(),
         }
     })
 }
@@ -367,6 +389,9 @@ pub extern "C" fn molt_dict_pop(
         };
         unsafe {
             let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return raise_exception::<_>(_py, "TypeError", "dict.pop expects dict");
             };
             let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
@@ -374,9 +399,6 @@ pub extern "C" fn molt_dict_pop(
             };
             if object_type_id(dict_ptr) != TYPE_ID_DICT {
                 return raise_exception::<_>(_py, "TypeError", "dict.pop expects dict");
-            }
-            if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
-                return MoltObject::none().bits();
             }
             let found = dict_find_entry(_py, dict_ptr, key_bits);
             let order = dict_order(dict_ptr);
@@ -400,7 +422,7 @@ pub extern "C" fn molt_dict_pop(
                     (*header_from_obj_ptr(dict_ptr))
                         .fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
                 }
-                crate::object::ops::dict_commit_structure(_py, dict_ptr);
+                crate::object::ops::dict_commit_structure(dict_ptr);
                 dec_ref_bits(_py, key_val);
                 dec_ref_bits(_py, val_val);
                 return val_val;
@@ -423,6 +445,9 @@ pub extern "C" fn molt_dict_setdefault(dict_bits: u64, key_bits: u64, default_bi
         };
         unsafe {
             let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return raise_exception::<_>(_py, "TypeError", "dict.setdefault expects dict");
             };
             let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
@@ -431,19 +456,8 @@ pub extern "C" fn molt_dict_setdefault(dict_bits: u64, key_bits: u64, default_bi
             if object_type_id(dict_ptr) != TYPE_ID_DICT {
                 return raise_exception::<_>(_py, "TypeError", "dict.setdefault expects dict");
             }
-            if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
-                return MoltObject::none().bits();
-            }
-            if let Some(val) = dict_get_in_place(_py, dict_ptr, key_bits) {
-                inc_ref_bits(_py, val);
-                return val;
-            }
-            dict_set_in_place(_py, dict_ptr, key_bits, default_bits);
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            inc_ref_bits(_py, default_bits);
-            default_bits
+            dict_setdefault_in_place(_py, dict_ptr, key_bits, Some(default_bits))
+                .unwrap_or_else(|| MoltObject::none().bits())
         }
     })
 }
@@ -457,6 +471,9 @@ pub extern "C" fn molt_dict_setdefault_empty_list(dict_bits: u64, key_bits: u64)
         };
         unsafe {
             let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return raise_exception::<_>(_py, "TypeError", "dict.setdefault expects dict");
             };
             let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
@@ -465,25 +482,8 @@ pub extern "C" fn molt_dict_setdefault_empty_list(dict_bits: u64, key_bits: u64)
             if object_type_id(dict_ptr) != TYPE_ID_DICT {
                 return raise_exception::<_>(_py, "TypeError", "dict.setdefault expects dict");
             }
-            if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
-                return MoltObject::none().bits();
-            }
-            if let Some(val) = dict_get_in_place(_py, dict_ptr, key_bits) {
-                inc_ref_bits(_py, val);
-                return val;
-            }
-            let default_ptr = alloc_list(_py, &[]);
-            if default_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            let default_bits = MoltObject::from_ptr(default_ptr).bits();
-            dict_set_in_place(_py, dict_ptr, key_bits, default_bits);
-            if exception_pending(_py) {
-                dec_ref_bits(_py, default_bits);
-                return MoltObject::none().bits();
-            }
-            inc_ref_bits(_py, default_bits);
-            default_bits
+            dict_setdefault_in_place(_py, dict_ptr, key_bits, None)
+                .unwrap_or_else(|| MoltObject::none().bits())
         }
     })
 }
@@ -497,6 +497,9 @@ pub extern "C" fn molt_dict_update(dict_bits: u64, other_bits: u64) -> u64 {
         };
         unsafe {
             let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return raise_exception::<_>(_py, "TypeError", "dict.update expects dict");
             };
             dict_update_apply(_py, dict_bits, dict_update_set_in_place, other_bits)
@@ -513,6 +516,9 @@ pub extern "C" fn molt_dict_clear(dict_bits: u64) -> u64 {
         };
         unsafe {
             let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return raise_exception::<_>(_py, "TypeError", "dict.clear expects dict");
             };
             let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
@@ -536,6 +542,9 @@ pub extern "C" fn molt_dict_copy(dict_bits: u64) -> u64 {
         };
         unsafe {
             let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return raise_exception::<_>(_py, "TypeError", "dict.copy expects dict");
             };
             let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
@@ -568,6 +577,9 @@ pub extern "C" fn molt_dict_popitem(dict_bits: u64) -> u64 {
         };
         unsafe {
             let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return raise_exception::<_>(_py, "TypeError", "dict.popitem expects dict");
             };
             let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
@@ -597,7 +609,7 @@ pub extern "C" fn molt_dict_popitem(dict_bits: u64) -> u64 {
                 (*header_from_obj_ptr(dict_ptr))
                     .fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
             }
-            crate::object::ops::dict_commit_structure(_py, dict_ptr);
+            crate::object::ops::dict_commit_structure(dict_ptr);
             dec_ref_bits(_py, key_bits);
             dec_ref_bits(_py, val_bits);
             MoltObject::from_ptr(item_ptr).bits()
@@ -613,6 +625,9 @@ pub extern "C" fn molt_dict_update_kwstar(dict_bits: u64, mapping_bits: u64) -> 
                 return raise_exception::<_>(_py, "TypeError", "dict.update expects dict");
             };
             let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return raise_exception::<_>(_py, "TypeError", "dict.update expects dict");
             };
             let Some(dict) = obj_from_bits(dict_bits).as_ptr() else {
@@ -650,6 +665,9 @@ pub extern "C" fn molt_dict_keys(dict_bits: u64) -> u64 {
         };
         unsafe {
             let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return raise_exception::<_>(_py, "TypeError", "dict.keys expects dict");
             };
             let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
@@ -679,6 +697,9 @@ pub extern "C" fn molt_dict_values(dict_bits: u64) -> u64 {
         };
         unsafe {
             let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return raise_exception::<_>(_py, "TypeError", "dict.values expects dict");
             };
             let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
@@ -708,6 +729,9 @@ pub extern "C" fn molt_dict_items(dict_bits: u64) -> u64 {
         };
         unsafe {
             let Some(dict_bits) = dict_like_bits_from_ptr(_py, ptr) else {
+                if exception_pending(_py) {
+                    return MoltObject::none().bits();
+                }
                 return raise_exception::<_>(_py, "TypeError", "dict.items expects dict");
             };
             let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
@@ -734,48 +758,191 @@ pub extern "C" fn molt_dict_items(dict_bits: u64) -> u64 {
 /// semantics.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_dict_getitem_borrowed(dict_bits: u64, key_bits: u64) -> u64 {
-    // Pre-materialize the key to force pointer resolution and hash caching.
-    {
-        let key_obj = obj_from_bits(key_bits);
-        if let Some(key_ptr) = key_obj.as_ptr() {
-            unsafe {
-                if object_type_id(key_ptr) == TYPE_ID_STRING {
-                    let len = string_len(key_ptr);
-                    if len > 0 {
-                        std::ptr::read_volatile(string_bytes(key_ptr));
-                    }
-                }
-            }
-        }
+    crate::c_api::PyDict_GetItem(dict_bits, key_bits)
+}
+
+struct CountElementOwned<'a, 'py> {
+    py: &'a PyToken<'py>,
+    bits: u64,
+}
+
+impl<'a, 'py> CountElementOwned<'a, 'py> {
+    fn adopt(py: &'a PyToken<'py>, bits: u64) -> Self {
+        Self { py, bits }
     }
-    crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(dict_bits);
-        let Some(ptr) = obj.as_ptr() else {
-            return 0;
+    fn borrow(py: &'a PyToken<'py>, bits: u64) -> Self {
+        inc_ref_bits(py, bits);
+        Self { py, bits }
+    }
+}
+
+impl Drop for CountElementOwned<'_, '_> {
+    fn drop(&mut self) {
+        dec_ref_bits(self.py, self.bits);
+    }
+}
+
+/// Terminal cleanup is a Python-visible sequence, not reverse local scope:
+/// iterator, current key, current new count, then the bound get callable.
+struct CountElementsCustody<'a, 'py> {
+    iter: Option<crate::object::iterable::OwnedIterator<'a, 'py>>,
+    key: Option<CountElementOwned<'a, 'py>>,
+    new_value: Option<CountElementOwned<'a, 'py>>,
+    bound_get: Option<CountElementOwned<'a, 'py>>,
+}
+
+impl Drop for CountElementsCustody<'_, '_> {
+    fn drop(&mut self) {
+        drop(self.iter.take());
+        drop(self.key.take());
+        drop(self.new_value.take());
+        drop(self.bound_get.take());
+    }
+}
+
+/// CPython's _count_elements fast path admits inherited dict descriptors by
+/// actual namespace identity. Instance shadows and callable metadata are not
+/// slot identity; genuine class overrides require normal mapping operations.
+fn count_elements_dict_storage(
+    py: &PyToken<'_>,
+    mapping: u64,
+    get_name: u64,
+) -> Result<Option<*mut u8>, ()> {
+    let class = CountElementOwned::borrow(py, type_of_bits(py, mapping));
+    let Some(class_ptr) = obj_from_bits(class.bits).as_ptr() else {
+        return Ok(None);
+    };
+    let dict = builtin_classes(py).dict;
+    let dict_ptr = obj_from_bits(dict).as_ptr().ok_or(())?;
+    let set_name =
+        CountElementOwned::adopt(py, attr_name_bits_from_bytes(py, b"__setitem__").ok_or(())?);
+    let raw = |owner, name| unsafe {
+        crate::builtins::attr::class_attr_lookup_raw_mro(py, owner, name)
+            .map(|bits| CountElementOwned::borrow(py, bits))
+    };
+    let mapping_get = raw(class_ptr, get_name);
+    if exception_pending(py) {
+        return Err(());
+    }
+    let dict_get = raw(dict_ptr, get_name);
+    if exception_pending(py) {
+        return Err(());
+    }
+    let mapping_setitem = raw(class_ptr, set_name.bits);
+    if exception_pending(py) {
+        return Err(());
+    }
+    let dict_setitem = raw(dict_ptr, set_name.bits);
+    if exception_pending(py) {
+        return Err(());
+    }
+    let same = |left: &Option<CountElementOwned<'_, '_>>,
+                right: &Option<CountElementOwned<'_, '_>>| {
+        matches!((left, right), (Some(left), Some(right)) if left.bits == right.bits)
+    };
+    if same(&mapping_get, &dict_get)
+        && same(&mapping_setitem, &dict_setitem)
+        && let Some(ptr) = obj_from_bits(mapping).as_ptr()
+        && unsafe { object_type_id(ptr) == TYPE_ID_DICT }
+    {
+        return Ok(Some(ptr));
+    }
+    Ok(None)
+}
+
+/// Stream counts into the canonical mapping. No Counter registry, mirrored
+/// key index, borrowed table or registry lock survives a Python callback.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_dict_count_elements(mapping: u64, iterable: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        let _mapping = CountElementOwned::borrow(py, mapping);
+        let _iterable = CountElementOwned::borrow(py, iterable);
+        let Some(iter) = crate::object::iterable::OwnedIterator::new(py, iterable) else {
+            return MoltObject::none().bits();
         };
-        unsafe {
-            let Some(dict_raw) = dict_like_bits_from_ptr(_py, ptr) else {
-                return 0;
-            };
-            let Some(dict_ptr) = obj_from_bits(dict_raw).as_ptr() else {
-                return 0;
-            };
-            if object_type_id(dict_ptr) != TYPE_ID_DICT {
-                return 0;
-            }
-            if !ensure_hashable(_py, key_bits, HashContext::DictKey) {
-                clear_exception(_py);
-                return 0;
-            }
-            if let Some(val) = dict_get_in_place(_py, dict_ptr, key_bits) {
-                // Borrowed: do NOT inc_ref
-                return val;
-            }
-            // Key not found — clear any pending exception and return 0
-            if exception_pending(_py) {
-                clear_exception(_py);
-            }
-            0
+        let mut custody = CountElementsCustody {
+            iter: Some(iter),
+            key: None,
+            new_value: None,
+            bound_get: None,
+        };
+        let Some(name) = attr_name_bits_from_bytes(py, b"get") else {
+            return MoltObject::none().bits();
+        };
+        let name = CountElementOwned::adopt(py, name);
+        let Ok(storage) = count_elements_dict_storage(py, mapping, name.bits) else {
+            return MoltObject::none().bits();
+        };
+        if exception_pending(py) {
+            return MoltObject::none().bits();
         }
+        if storage.is_none() {
+            custody.bound_get = Some(CountElementOwned::adopt(
+                py,
+                molt_get_attr_name(mapping, name.bits),
+            ));
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+        }
+        let zero = MoltObject::from_int(0).bits();
+        let one = MoltObject::from_int(1).bits();
+        loop {
+            custody.key = match custody.iter.as_mut().unwrap().next() {
+                Ok(Some(key)) => Some(CountElementOwned::adopt(py, key)),
+                Ok(None) | Err(molt_runtime_core::ErrorIndicatorSet) => break,
+            };
+            let key = custody.key.as_ref().unwrap().bits;
+            if let Some(dict) = storage {
+                let hash = hash_bits(py, key);
+                if exception_pending(py) {
+                    return MoltObject::none().bits();
+                }
+                let found = unsafe { super::ops::dict_find_entry_with_hash(py, dict, key, hash) };
+                if exception_pending(py) {
+                    return MoltObject::none().bits();
+                }
+                let next = if let Some(index) = found {
+                    let old =
+                        CountElementOwned::borrow(py, unsafe { dict_order(dict)[index * 2 + 1] });
+                    custody.new_value = Some(CountElementOwned::adopt(py, molt_add(old.bits, one)));
+                    drop(old);
+                    custody.new_value.as_ref().unwrap().bits
+                } else {
+                    one
+                };
+                if exception_pending(py) {
+                    return MoltObject::none().bits();
+                }
+                unsafe {
+                    super::ops::dict_set_with_hash_in_place(py, dict, key, next, hash);
+                }
+            } else {
+                let old = CountElementOwned::adopt(py, unsafe {
+                    call_callable2(py, custody.bound_get.as_ref().unwrap().bits, key, zero)
+                });
+                if exception_pending(py) {
+                    return MoltObject::none().bits();
+                }
+                custody.new_value = Some(CountElementOwned::adopt(py, molt_add(old.bits, one)));
+                drop(old);
+                if exception_pending(py) {
+                    return MoltObject::none().bits();
+                }
+                // StoreIndex returns the borrowed mapping on success.
+                let _ = molt_store_index(mapping, key, custody.new_value.as_ref().unwrap().bits);
+            }
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+            // Successful per-item retirement differs from terminal cleanup.
+            drop(custody.new_value.take());
+            drop(custody.key.take());
+            if exception_pending(py) {
+                return MoltObject::none().bits();
+            }
+        }
+        drop(custody);
+        MoltObject::none().bits()
     })
 }

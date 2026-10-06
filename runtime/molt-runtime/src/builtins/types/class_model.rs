@@ -6,8 +6,7 @@ use crate::builtins::exceptions::ExceptionSentinel;
 use crate::object::seq_access::{snapshot, with_immutable_tuple_slice};
 use crate::object::type_ids::TYPE_ID_OBJECT;
 use crate::object::{
-    ClassEdgeOwnership, object_init_class_edge_unpublished, object_payload_size,
-    object_replace_class_edge,
+    ClassEdgeOwnership, object_init_class_edge_unpublished, object_replace_class_edge,
 };
 
 mod hierarchy;
@@ -81,9 +80,15 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
         );
         return false;
     }
-    unsafe { class_set_qualname_bits(_py, class_ptr, qualname_bits) };
+    let published = unsafe { class_set_qualname_bits(_py, class_ptr, qualname_bits) };
     if qualname_owned {
         dec_ref_bits(_py, qualname_bits);
+    }
+    if !published {
+        return false;
+    }
+    if unsafe { !crate::object::class_storage::class_capture_creation_doc(_py, class_ptr) } {
+        return false;
     }
     // CPython only normalizes plain Python functions, never descriptors or
     // native builtin-function objects supplied by a namespace provider.
@@ -98,8 +103,7 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
         if let Some(function) = unsafe { dict_get_in_place(_py, dict_ptr, key_bits) } {
             let plain_function = obj_from_bits(function).as_ptr().is_some_and(|ptr| unsafe {
                 object_type_id(ptr) == TYPE_ID_FUNCTION
-                    && !builtin_classes(_py)
-                        .is_builtin_callable_class(crate::object_class_bits(ptr))
+                    && !builtin_classes(_py).is_native_callable_class(crate::object_class_bits(ptr))
             });
             if plain_function {
                 let descriptor = if static_method {
@@ -117,6 +121,24 @@ pub(crate) unsafe fn class_finalize_namespace_metadata(
         if exception_pending(_py) {
             return false;
         }
+    }
+    // CPython installs the implicit unhashable slot once, from the completed
+    // own namespace. Runtime hash lookup must not repeat this inference after
+    // a later __eq__ assignment, which preserves the inherited __hash__ slot.
+    let hash_name = intern_static_name(_py, &runtime_state(_py).interned.hash_name, b"__hash__");
+    let eq_name = intern_static_name(_py, &runtime_state(_py).interned.eq_name, b"__eq__");
+    if exception_pending(_py) {
+        return false;
+    }
+    unsafe {
+        if dict_get_in_place(_py, dict_ptr, hash_name).is_none()
+            && dict_get_in_place(_py, dict_ptr, eq_name).is_some()
+        {
+            dict_set_in_place(_py, dict_ptr, hash_name, MoltObject::none().bits());
+        }
+    }
+    if exception_pending(_py) {
+        return false;
     }
     // The two compiler cells share validation, ownership, and publication.
     // Populate the class cell first, matching type.__new__, then publish the
@@ -268,19 +290,14 @@ pub extern "C" fn molt_builtin_type(tag_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_type_of(val_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let bits = type_of_bits(_py, val_bits);
-        inc_ref_bits(_py, bits);
-        bits
+        match unsafe { crate::object::class_layout::real_type_bits(_py, val_bits) } {
+            Ok(bits) => bits,
+            Err(()) => {
+                crate::cpython_abi_hooks::propagate_native_failure(_py, "object type");
+                MoltObject::none().bits()
+            }
+        }
     })
-}
-
-/// Returns the type of an object WITHOUT incrementing the refcount.
-/// The type is guaranteed alive because the object holds a strong reference
-/// to its type internally. This is the borrowed-reference equivalent of
-/// `molt_type_of` and mirrors CPython's `Py_TYPE()` semantics.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_type_of_borrowed(val_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, { type_of_bits(_py, val_bits) })
 }
 
 #[unsafe(no_mangle)]
@@ -447,9 +464,15 @@ pub extern "C" fn molt_type_new(
             }
             return MoltObject::none().bits();
         }
-        let Some(slot_declaration) =
-            (unsafe { crate::builtins::attr::prepare_class_slot_declaration(_py, namespace_ptr) })
-        else {
+        let Some(slot_declaration) = (unsafe {
+            crate::builtins::attr::prepare_class_slot_declaration(
+                _py,
+                namespace_ptr,
+                name_bits,
+                &bases_vec,
+                None,
+            )
+        }) else {
             if bases_owned {
                 dec_ref_bits(_py, bases_tuple_bits);
             }
@@ -476,10 +499,6 @@ pub extern "C" fn molt_type_new(
         // separate admission boundary, not a finalizer-suppression state.
         let mut class_owner = crate::PtrDropGuard::new(class_ptr);
         unsafe {
-            crate::object::layout::class_set_slot_declaration_owned(class_ptr, slot_declaration);
-            if let Some(owner) = &mut slot_owner {
-                owner.release();
-            }
             if !object_init_class_edge_unpublished(
                 _py,
                 class_ptr,
@@ -507,11 +526,14 @@ pub extern "C" fn molt_type_new(
             }
             return MoltObject::none().bits();
         }
-        if unsafe { !apply_class_slots_layout(_py, class_ptr) } {
-            if bases_owned {
-                dec_ref_bits(_py, bases_tuple_bits);
-            }
-            return MoltObject::none().bits();
+        // Admission consumed the original names before allocation. Publish its
+        // record only after the hierarchy, so mangled names are never validated
+        // a second time and a published record makes the hierarchy immutable.
+        unsafe {
+            crate::object::layout::class_set_slot_declaration_owned(class_ptr, slot_declaration);
+        }
+        if let Some(owner) = &mut slot_owner {
+            owner.release();
         }
         if unsafe { crate::object::class_finish_definition(_py, class_ptr) }.is_err() {
             if bases_owned {
@@ -592,15 +614,20 @@ pub extern "C" fn molt_type_mro(cls_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_type_instancecheck(cls_bits: u64, inst_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let inst_type = type_of_bits(_py, inst_bits);
-        MoltObject::from_bool(issubclass_bits(inst_type, cls_bits)).bits()
+        match crate::builtins::type_ops::instancecheck_default(_py, inst_bits, cls_bits) {
+            Some(matched) => MoltObject::from_bool(matched).bits(),
+            None => MoltObject::none().bits(),
+        }
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_type_subclasscheck(cls_bits: u64, sub_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        MoltObject::from_bool(issubclass_bits(sub_bits, cls_bits)).bits()
+        match crate::builtins::type_ops::subclasscheck_default(_py, sub_bits, cls_bits) {
+            Some(matched) => MoltObject::from_bool(matched).bits(),
+            None => MoltObject::none().bits(),
+        }
     })
 }
 
@@ -623,43 +650,7 @@ pub extern "C" fn molt_isinstance(val_bits: u64, class_bits: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_issubclass(sub_bits: u64, class_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let obj = obj_from_bits(sub_bits);
-        let Some(ptr) = obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "issubclass() arg 1 must be a class");
-        };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "issubclass() arg 1 must be a class",
-                );
-            }
-        }
-        let mut classes = Vec::new();
-        collect_runtime_classinfo(_py, class_bits, ClassInfoProtocol::Subclass, &mut classes);
-        for class_info in classes {
-            match class_info {
-                RuntimeClassInfo::Type(class_bits) => {
-                    if issubclass_runtime(_py, sub_bits, class_bits) {
-                        return MoltObject::from_bool(true).bits();
-                    }
-                }
-                RuntimeClassInfo::Protocol(class_bits) => {
-                    match runtime_classinfo_protocol_match(
-                        _py,
-                        class_bits,
-                        sub_bits,
-                        ClassInfoProtocol::Subclass,
-                    ) {
-                        Some(true) => return MoltObject::from_bool(true).bits(),
-                        Some(false) => {}
-                        None => break,
-                    }
-                }
-            }
-        }
-        MoltObject::from_bool(false).bits()
+        MoltObject::from_bool(issubclass_runtime(_py, sub_bits, class_bits)).bits()
     })
 }
 
@@ -707,6 +698,16 @@ pub extern "C" fn molt_object_new_bound(cls_bits: u64) -> u64 {
             crate::object::class_instance_type_id(cls_ptr) == TYPE_ID_OBJECT
                 && crate::object::class_instance_shape_id(cls_ptr)
                     == crate::object::ObjectShapeId::Plain
+                && !crate::class_mro_view(_py, cls_ptr)
+                    .iter()
+                    .copied()
+                    .any(|base| {
+                        use crate::object::class_storage::{ClassDeclaration, class_declares};
+                        let base = obj_from_bits(base).as_ptr().expect("sealed class MRO");
+                        class_declares(base, ClassDeclaration::IntrinsicLayout)
+                            || class_declares(base, ClassDeclaration::IntValue)
+                            || class_declares(base, ClassDeclaration::FloatValue)
+                    })
         };
         if !owns_plain_object_layout {
             let class_name = class_name_for_error(cls_bits);
@@ -714,8 +715,86 @@ pub extern "C" fn molt_object_new_bound(cls_bits: u64) -> u64 {
                 format!("object.__new__({class_name}) is not safe, use {class_name}.__new__()");
             return raise_exception::<_>(_py, "TypeError", &msg);
         }
-        unsafe { alloc_instance_for_class(_py, cls_ptr) }
+        unsafe {
+            if reject_abstract_object_new(_py, cls_ptr) {
+                return MoltObject::none().bits();
+            }
+            if let Some(instance) =
+                crate::object::builders::alloc_dataclass_for_class_ptr(_py, cls_ptr, cls_bits)
+            {
+                return instance;
+            }
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
+            alloc_instance_for_class(_py, cls_ptr)
+        }
     })
+}
+
+/// Abstractness constrains object_new, not type_call or custom/native allocators.
+/// Reproduce the iterable/sort/join protocol so its exceptions and live method
+/// names are observed even when the abstract bit was latched before mutation.
+unsafe fn reject_abstract_object_new(py: &PyToken<'_>, class: *mut u8) -> bool {
+    unsafe {
+        if !crate::object::class_storage::class_is_abstract(class) {
+            return false;
+        }
+        let class_bits = MoltObject::from_ptr(class).bits();
+        let methods = crate::builtins::attributes::type_metadata::read(
+            py,
+            class_bits,
+            molt_cpython_abi::api::typeobj::TypeAttributeField::AbstractMethods,
+        );
+        let _methods = obj_from_bits(methods)
+            .as_ptr()
+            .map(crate::PtrDropGuard::preserving);
+        if exception_pending(py) {
+            return true;
+        }
+        let Some(sorted) = crate::object::ops::list_from_iter_bits(py, methods) else {
+            return true;
+        };
+        let sorted_ptr = obj_from_bits(sorted)
+            .as_ptr()
+            .expect("owned abstract method list");
+        let _sorted = crate::PtrDropGuard::preserving(sorted_ptr);
+        crate::molt_list_sort(
+            sorted,
+            MoltObject::none().bits(),
+            MoltObject::from_bool(false).bits(),
+        );
+        if exception_pending(py) {
+            return true;
+        }
+        let separator = alloc_string(py, b"', '");
+        if separator.is_null() {
+            return true;
+        }
+        let _separator = crate::PtrDropGuard::preserving(separator);
+        let joined = crate::molt_string_join(MoltObject::from_ptr(separator).bits(), sorted);
+        let _joined = obj_from_bits(joined)
+            .as_ptr()
+            .map(crate::PtrDropGuard::preserving);
+        if exception_pending(py) {
+            return true;
+        }
+        let joined = string_obj_to_owned(obj_from_bits(joined)).expect("string join result");
+        let plural = if crate::list_len(sorted_ptr) > 1 {
+            "s"
+        } else {
+            ""
+        };
+        raise_exception::<()>(
+            py,
+            "TypeError",
+            &format!(
+                "Can't instantiate abstract class {} without an implementation for abstract method{plural} '{joined}'",
+                class_name_for_error(class_bits),
+            ),
+        );
+        true
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -743,7 +822,9 @@ pub extern "C" fn molt_tuple_new_bound(cls_bits: u64, iterable_bits: u64) -> u64
             return unsafe { tuple_from_iter_bits(_py, iterable_bits) }
                 .unwrap_or_else(|| MoltObject::none().bits());
         }
-        if !unsafe { crate::object::builders::admit_tuple_subclass_layout(_py, cls_ptr) } {
+        if unsafe { crate::object::native_instance::NativePayload::Tuple.admit(_py, cls_bits) }
+            .is_none()
+        {
             return MoltObject::none().bits();
         }
         if iterable_bits == missing_bits(_py) {
@@ -772,24 +853,6 @@ pub extern "C" fn molt_tuple_new_bound(cls_bits: u64, iterable_bits: u64) -> u64
 const CLASS_ATTACHMENT_LAYOUT_ERROR: &str =
     "object class assignment requires an identical sealed instance layout";
 
-unsafe fn class_attachment_fields(
-    _py: &PyToken<'_>,
-    obj_ptr: *mut u8,
-    class_ptr: *mut u8,
-) -> Vec<crate::object::field_storage::InstanceField> {
-    let mut fields = Vec::new();
-    unsafe {
-        crate::object::field_storage::for_each_instance_field(
-            _py,
-            obj_ptr,
-            class_ptr,
-            &mut |field, _| fields.push(field),
-        );
-    }
-    fields.sort_unstable_by_key(|field| field.offset);
-    fields
-}
-
 unsafe fn class_attachment_layouts_match(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
@@ -806,7 +869,7 @@ unsafe fn class_attachment_layouts_match(
             return false;
         };
         if current_size != target_size
-            || object_payload_size(obj_ptr) < target_size
+            || crate::object::native_instance::field_payload_size(obj_ptr) < target_size
             || object_type_id(obj_ptr) != crate::object::class_instance_type_id(current_class)
             || object_type_id(obj_ptr) != crate::object::class_instance_type_id(target_class)
             || crate::object::object_shape_id(obj_ptr)
@@ -819,25 +882,20 @@ unsafe fn class_attachment_layouts_match(
             return false;
         }
 
-        let current_slots = crate::builtins::attr::class_slots_info(_py, current_class)
-            .map(|info| (info.allows_dict, info.allows_weakref));
-        let target_slots = crate::builtins::attr::class_slots_info(_py, target_class)
-            .map(|info| (info.allows_dict, info.allows_weakref));
+        let Some(current_slots) = crate::builtins::attr::class_slots_info(_py, current_class)
+        else {
+            return false;
+        };
+        let Some(target_slots) = crate::builtins::attr::class_slots_info(_py, target_class) else {
+            return false;
+        };
         if exception_pending(_py) || current_slots != target_slots {
             return false;
         }
 
-        let current_fields = class_attachment_fields(_py, obj_ptr, current_class);
-        let target_fields = class_attachment_fields(_py, obj_ptr, target_class);
-        current_fields.len() == target_fields.len()
-            && current_fields
-                .iter()
-                .zip(target_fields.iter())
-                .all(|(current, target)| {
-                    current.offset == target.offset
-                        && current.declared_slot == target.declared_slot
-                        && crate::builtins::attr::exact_string_bits_equal(current.name, target.name)
-                })
+        // Assignment compares concrete rows, not solid-root identity: legal
+        // same-slot sibling classes can exchange identical instance storage.
+        crate::object::class_layout::fields_match(_py, current_class, target_class)
     }
 }
 
@@ -850,7 +908,7 @@ pub(crate) unsafe fn object_set_class(_py: &PyToken<'_>, obj_ptr: *mut u8, class
         if obj_ptr.is_null() {
             return MoltObject::none().bits();
         }
-        if crate::object::object_poll_fn(obj_ptr) != 0 {
+        if crate::object::object_shape_is_task(crate::object::object_shape_id(obj_ptr)) {
             return raise_exception::<_>(_py, "TypeError", "cannot set class on async object");
         }
         if class_bits == 0 || obj_from_bits(class_bits).is_none() {
@@ -875,9 +933,6 @@ pub(crate) unsafe fn object_set_class(_py: &PyToken<'_>, obj_ptr: *mut u8, class
         }
 
         let current_class_bits = object_class_bits(obj_ptr);
-        if current_class_bits == class_bits {
-            return MoltObject::none().bits();
-        }
         if current_class_bits == 0 {
             return reject_class_attachment(_py);
         }
@@ -890,11 +945,34 @@ pub(crate) unsafe fn object_set_class(_py: &PyToken<'_>, obj_ptr: *mut u8, class
         {
             return MoltObject::none().bits();
         }
+        // The exact class's declared immutable policy controls reassignment;
+        // neither bank membership nor static ancestry makes a heap subclass
+        // immutable. Modules retain Python's explicit reassignment exception.
+        let module_assignment = crate::object::class_instance_type_id(current_class)
+            == crate::TYPE_ID_MODULE
+            && crate::object::class_instance_type_id(class_ptr) == crate::TYPE_ID_MODULE;
+        if !module_assignment
+            && (crate::object::class_is_immutable(_py, current_class)
+                || crate::object::class_is_immutable(_py, class_ptr))
+        {
+            return reject_class_attachment(_py);
+        }
+        if current_class_bits == class_bits {
+            return MoltObject::none().bits();
+        }
         if !class_attachment_layouts_match(_py, obj_ptr, current_class, class_ptr) {
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            return reject_class_attachment(_py);
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                &format!(
+                    "__class__ assignment: '{}' object layout differs from '{}'",
+                    class_name_for_error(class_bits),
+                    class_name_for_error(current_class_bits),
+                ),
+            );
         }
         if !object_replace_class_edge(_py, obj_ptr, class_bits, ClassEdgeOwnership::Owned) {
             return reject_class_attachment(_py);

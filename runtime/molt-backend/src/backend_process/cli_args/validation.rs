@@ -23,51 +23,6 @@ pub(crate) fn validate_fact_graph_cli_contract(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::backend_process::NativeArtifactKind;
-
-    #[test]
-    fn native_artifact_cli_kind_is_explicit_and_fail_closed() {
-        for (args, expected) in [
-            (vec![], Some(NativeArtifactKind::Object)),
-            (
-                vec!["--native-output-kind", "object"],
-                Some(NativeArtifactKind::Object),
-            ),
-            (
-                vec!["--native-output-kind", "archive"],
-                Some(NativeArtifactKind::Archive),
-            ),
-            (vec!["--native-output-kind"], None),
-            (vec!["--native-output-kind", "static-library"], None),
-            (
-                vec![
-                    "--native-output-kind",
-                    "object",
-                    "--native-output-kind",
-                    "archive",
-                ],
-                None,
-            ),
-            (
-                vec!["--target", "wasm", "--native-output-kind", "archive"],
-                None,
-            ),
-        ] {
-            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
-            assert_eq!(
-                BackendCliArgs::parse(&args)
-                    .resolved_native_output_kind()
-                    .ok(),
-                expected,
-                "{args:?}"
-            );
-        }
-    }
-}
-
 impl<'a> BackendCliArgs<'a> {
     pub(crate) fn resolved_native_output_kind(
         &self,
@@ -111,6 +66,51 @@ impl<'a> BackendCliArgs<'a> {
             BackendOutputKind::Wasm
         } else {
             BackendOutputKind::Native
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend_process::NativeArtifactKind;
+
+    #[test]
+    fn native_artifact_cli_kind_is_explicit_and_fail_closed() {
+        for (args, expected) in [
+            (vec![], Some(NativeArtifactKind::Object)),
+            (
+                vec!["--native-output-kind", "object"],
+                Some(NativeArtifactKind::Object),
+            ),
+            (
+                vec!["--native-output-kind", "archive"],
+                Some(NativeArtifactKind::Archive),
+            ),
+            (vec!["--native-output-kind"], None),
+            (vec!["--native-output-kind", "static-library"], None),
+            (
+                vec![
+                    "--native-output-kind",
+                    "object",
+                    "--native-output-kind",
+                    "archive",
+                ],
+                None,
+            ),
+            (
+                vec!["--target", "wasm", "--native-output-kind", "archive"],
+                None,
+            ),
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(
+                BackendCliArgs::parse(&args)
+                    .resolved_native_output_kind()
+                    .ok(),
+                expected,
+                "{args:?}"
+            );
         }
     }
 }

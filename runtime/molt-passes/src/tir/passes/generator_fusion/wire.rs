@@ -1,11 +1,11 @@
 //! CFG surgery that wires a cloned generator body into the consumer loop.
 //!
 //! After [`super::clone::clone_and_rewrite_poll`] produces the fresh
-//! [`super::clone::ClonedPoll`], these helpers splice the consumer body at the
-//! yield site, thread slot phis through the loop header, delete the frame
-//! creation ops, and rewire the consumer's loop-entry edges. Split out of
-//! `generator_fusion.rs` as a move-only decomposition; the orchestrating
-//! `apply_fusion` and recognition live in [`super`].
+//! [`super::clone::ClonedPoll`], whose frame slots are already SSA values,
+//! these helpers splice the consumer body at the yield site, delete the frame
+//! creation ops, bind the promoted parameter slots, and rewire the consumer's
+//! loop-entry edges. The orchestrating `apply_fusion` and recognition live in
+//! [`super`].
 
 use std::collections::HashSet;
 
@@ -13,121 +13,43 @@ use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
-use crate::tir::values::{TirValue, ValueId};
+use crate::tir::values::ValueId;
 
 use super::clone::{ClonedPoll, const_int_op};
-use super::{FusionCandidate, SlotInfo, is_get_iter_op};
+use super::{FusionCandidate, is_get_iter_op};
 
 // ---------------------------------------------------------------------------
 // Wire the fused loop
 // ---------------------------------------------------------------------------
 
 /// Wire the cloned (rewritten) poll body into the consumer loop:
-///  * add the slot phis as args on the cloned loop header; thread init values
-///    from the preheader and back-edge values from the loop latch;
-///  * splice the consumer body at the yield site (bind `elem`, `IncRef`, run the
-///    body, return to the post-yield continuation);
+///  * splice the consumer body at the yield site (bind `elem`, run the body,
+///    return to the post-yield continuation);
 ///  * route the cloned exhausted-return to the consumer's loop exit;
-///  * delete the frame-creation ops (`AllocTask`/`GetIter`/`IterNext`) and
-///    redirect the consumer's loop entry to the generator preheader.
+///  * delete the frame-creation ops (`AllocTask`/`GetIter`/`IterNext`), bind
+///    the promoted parameter slots at the top of the generator preheader, and
+///    redirect the consumer's loop entry to it.
 ///
-/// Returns `false` (bail) on any structural surprise (no detectable loop header
-/// for a yield that the recognition required be in a loop, etc.).
+/// The frame slots are already SSA values of the cloned body, joins included
+/// ([`super::slots`]). Returns `false` (bail) on a structural surprise.
 pub(super) fn wire_fused_loop(
     caller: &mut TirFunction,
     candidate: &FusionCandidate,
     clone: &ClonedPoll,
-    slot_infos: &[SlotInfo],
     preheader_init_ops: Vec<TirOp>,
 ) -> bool {
-    let n_slots = slot_infos.len();
-
-    // --- 1. Detect the cloned loop header (the back-edge target). ---
-    // The cloned blocks are NOT yet connected to the caller's CFG (the
-    // preheader is wired in step 5), so a global dominance walk would treat them
-    // as unreachable. Detect the loop header purely WITHIN the cloned subgraph:
-    // a DFS from the cloned entry over cloned successors; a back-edge is an edge
-    // C→H where H is still on the DFS stack (an ancestor of C). H is the loop
-    // header, C the latch. If no back-edge exists the yield is straight-line
-    // (`def g(): yield x`) and the slots flow through without a phi.
-    let cloned_set: HashSet<BlockId> = clone.cloned_blocks.iter().copied().collect();
-    let (loop_header, latch) = detect_cloned_back_edge(caller, clone.entry, &cloned_set);
-
-    // --- 2. Add slot phis as header args + thread the slot values. ---
-    if let Some(header) = loop_header {
-        let Some(latch) = latch else { return false };
-        // Append slot phis to the header's args. Precompute the phi types
-        // BEFORE the mutable header borrow (the type comes from the slot's init
-        // value's recorded fact).
-        let phi_types: Vec<TirType> = (0..n_slots)
-            .map(|i| caller_value_ty(caller_ty_lookup(caller, slot_infos, i)))
-            .collect();
-        {
-            let hdr = caller.blocks.get_mut(&header).unwrap();
-            for (i, &phi) in clone.slot_phis.iter().enumerate() {
-                hdr.args.push(TirValue {
-                    id: phi,
-                    ty: phi_types[i].clone(),
-                });
-            }
-        }
-        // Every predecessor of `header` must now pass `n_slots` extra args.
-        //   * the preheader (cloned entry): the init values.
-        //   * the latch (back-edge): the back-edge values (phi for invariants).
-        //   * any other pred is unexpected for a generator loop → bail.
-        // Compute preds within the cloned subgraph (the cloned blocks are not yet
-        // connected to the rest of the caller).
-        let preds: Vec<BlockId> = cloned_set
-            .iter()
-            .copied()
-            .filter(|&b| block_targets(caller, b, header))
-            .collect();
-        for pred in preds {
-            let init_args: Vec<ValueId> = if pred == clone.entry {
-                slot_infos.iter().map(|s| s.init_caller_val).collect()
-            } else if pred == latch {
-                (0..n_slots)
-                    .map(|i| clone.slot_backedge[i].unwrap_or(clone.slot_phis[i]))
-                    .collect()
-            } else {
-                // A third pred (e.g. an irreducible edge) — Phase-1 bail.
-                return false;
-            };
-            append_branch_args(caller, pred, header, &init_args);
-        }
-    } else {
-        // No loop: the slots are straight-line. Replace each slot phi's uses by
-        // its init value directly (no phi needed). We do this by retargeting the
-        // value in every cloned op — but since the clone already substituted
-        // closure-loads to the phi id, we instead seed the phi as a Copy of the
-        // init at the entry. Insert `phi = Copy(init)` at the cloned entry top.
-        let entry = clone.entry;
-        let entry_block = caller.blocks.get_mut(&entry).unwrap();
-        for (i, &phi) in clone.slot_phis.iter().enumerate() {
-            entry_block.ops.insert(
-                0,
-                TirOp {
-                    dialect: Dialect::Molt,
-                    opcode: OpCode::Copy,
-                    operands: vec![slot_infos[i].init_caller_val],
-                    results: vec![phi],
-                    attrs: AttrDict::new(),
-                    source_span: None,
-                },
-            );
-        }
-    }
-
-    // --- 3. Splice the consumer body at the yield site. ---
+    // --- 1. Splice the consumer body at the yield site. ---
     // Split the cloned yield block into [pre-yield | post-yield].
     let (pre_block, post_block) = match split_block_at(caller, clone.yield_block, clone.yield_idx) {
         Some(pair) => pair,
         None => return false,
     };
     // pre_block ends (currently) with a Branch to post_block (from split). We
-    // instead: extract elem = Index(yield_pair, 0), IncRef(elem), branch to the
-    // consumer body. The consumer body (the caller's body_block) on continue
-    // branches to post_block.
+    // instead extract elem = Index(yield_pair, 0) and branch to the consumer
+    // body. The runtime returns the element owned, as it did the eliminated
+    // `IterNext` pair's element, and the drop plane releases that result once:
+    // fusion places no reference operation (design 20 §1.2). The consumer body
+    // (the caller's body_block) on continue branches to post_block.
     let elem_index_op = TirOp {
         dialect: Dialect::Molt,
         opcode: OpCode::Index,
@@ -140,18 +62,9 @@ pub(super) fn wire_fused_loop(
         },
         source_span: None,
     };
-    let incref_op = TirOp {
-        dialect: Dialect::Molt,
-        opcode: OpCode::IncRef,
-        operands: vec![candidate.elem_val],
-        results: vec![],
-        attrs: AttrDict::new(),
-        source_span: None,
-    };
     {
         let pb = caller.blocks.get_mut(&pre_block).unwrap();
         pb.ops.push(elem_index_op);
-        pb.ops.push(incref_op);
         pb.terminator = Terminator::Branch {
             target: candidate.body_block,
             args: Vec::new(),
@@ -163,18 +76,25 @@ pub(super) fn wire_fused_loop(
     // now bound by `pre_block`).
     remove_orig_elem_index(caller, candidate);
 
-    // --- 4. Route the cloned exhausted-return blocks to the loop exit. ---
+    // --- 2. Route the cloned exhausted-return blocks to the loop exit. A
+    //        straight-line poll returns from its yield block, whose terminator
+    //        the split moved to the post-yield half. ---
     for &rb in &clone.return_blocks {
+        let rb = if rb == clone.yield_block {
+            post_block
+        } else {
+            rb
+        };
         caller.blocks.get_mut(&rb).unwrap().terminator = Terminator::Branch {
             target: candidate.exit_block,
             args: Vec::new(),
         };
     }
 
-    // --- 5. Delete the frame-creation ops. ---
+    // --- 3. Delete the frame-creation ops and bind the parameter slots. ---
     delete_frame_creation_ops(caller, candidate, clone.entry, preheader_init_ops);
 
-    // --- 6. Rewire the consumer's old loop header edges. The old loop header
+    // --- 4. Rewire the consumer's old loop header edges. The old loop header
     //        (`loop_header`, e.g. the `loop_start` block) had two kinds of
     //        predecessor: the loop ENTRY (from outside the loop) and the
     //        CONTINUE back-edge (from the consumer body). After fusion:
@@ -187,10 +107,10 @@ pub(super) fn wire_fused_loop(
         return false;
     }
 
-    // --- 7. Prune the now-unreachable old consumer-loop blocks. After the
-    //        rewiring, the consumer's old loop header + cond block (with its
-    //        `IterNext`/done-`Index` on the deleted pair) are unreachable from
-    //        entry. `verify_function` skips unreachable blocks, but the
+    // --- 5. Prune the now-unreachable blocks: the consumer's old loop header
+    //        and cond block (with its `IterNext`/done-`Index` on the deleted
+    //        pair), and any cloned poll block the poll itself never entered.
+    //        `verify_function` skips unreachable blocks, but the
     //        TIR→SimpleIR back-conversion would still emit their `jump`/`label`
     //        ops + dangling uses of the deleted pair value — which the native
     //        codegen's `jump` handler rejects (`label_blocks[&target_id]` panic).
@@ -206,88 +126,12 @@ pub(super) fn wire_fused_loop(
     true
 }
 
-/// Detect the loop header + latch within the cloned subgraph via a DFS from the
-/// cloned entry. A back-edge is an edge `C -> H` where `H` is on the DFS stack
-/// when `C`'s successors are walked (`H` is an ancestor of `C`). Returns
-/// `(Some(header), Some(latch))` for the FIRST back-edge found, or `(None, None)`
-/// if the cloned region is acyclic (a straight-line yield).
-fn detect_cloned_back_edge(
-    caller: &TirFunction,
-    entry: BlockId,
-    cloned: &HashSet<BlockId>,
-) -> (Option<BlockId>, Option<BlockId>) {
-    let succs = |b: BlockId| -> Vec<BlockId> {
-        caller
-            .blocks
-            .get(&b)
-            .map(|block| block.terminator.successors())
-            .unwrap_or_default()
-    };
-    // Iterative DFS tracking the current path stack (ancestors).
-    let mut visited: HashSet<BlockId> = HashSet::new();
-    let mut on_stack: HashSet<BlockId> = HashSet::new();
-    // Stack frames: (block, next-successor-index, successor-list).
-    let mut stack: Vec<(BlockId, usize, Vec<BlockId>)> = Vec::new();
-    visited.insert(entry);
-    on_stack.insert(entry);
-    stack.push((entry, 0, succs(entry)));
-    while !stack.is_empty() {
-        let (node, i, s) = {
-            let top = stack.last().unwrap();
-            (top.0, top.1, top.2.clone())
-        };
-        if i < s.len() {
-            stack.last_mut().unwrap().1 += 1;
-            let next = s[i];
-            if !cloned.contains(&next) {
-                continue; // an edge leaving the cloned region — ignore.
-            }
-            if on_stack.contains(&next) {
-                // Back-edge node -> next: next is the header, node the latch.
-                return (Some(next), Some(node));
-            }
-            if visited.insert(next) {
-                on_stack.insert(next);
-                let ns = succs(next);
-                stack.push((next, 0, ns));
-            }
-        } else {
-            on_stack.remove(&node);
-            stack.pop();
-        }
-    }
-    (None, None)
-}
-
-/// The TirType to record for slot `i`'s phi — derived from the slot's init
-/// value's known type (param args carry their own type; const ints are I64).
-fn caller_ty_lookup(caller: &TirFunction, slot_infos: &[SlotInfo], i: usize) -> Option<TirType> {
-    caller
-        .value_types
-        .get(&slot_infos[i].init_caller_val)
-        .cloned()
-}
-
-fn caller_value_ty(t: Option<TirType>) -> TirType {
-    t.unwrap_or(TirType::DynBox)
-}
-
 /// True if `block`'s terminator targets `target`.
 fn block_targets(caller: &TirFunction, block: BlockId, target: BlockId) -> bool {
     caller
         .blocks
         .get(&block)
         .is_some_and(|block| block.terminator.has_successor(target))
-}
-
-/// Append `extra` args to `pred`'s branch terminator edge that targets `header`.
-fn append_branch_args(caller: &mut TirFunction, pred: BlockId, header: BlockId, extra: &[ValueId]) {
-    let block = caller.blocks.get_mut(&pred).unwrap();
-    block.terminator.for_each_edge_mut(|target, args| {
-        if *target == header {
-            args.extend_from_slice(extra);
-        }
-    });
 }
 
 /// Materialize a `ConstInt(0)` in the caller (for the `Index(pair, 0)` element
@@ -357,9 +201,10 @@ fn remove_orig_elem_index(caller: &mut TirFunction, candidate: &FusionCandidate)
 }
 
 /// Delete the frame-creation ops (`AllocTask`, `GetIter`/`iter`, `IterNext`) and
-/// seed the generator preheader's slot-init constants. The `GetIter` result is
-/// replaced by a non-`None` sentinel const so the consumer's `is(iter, None)`
-/// not-iterable guard folds False (the iterator never escapes after fusion).
+/// bind the promoted parameter slots at the top of the generator preheader. The
+/// `GetIter` result is replaced by a non-`None` sentinel const so the consumer's
+/// `is(iter, None)` not-iterable guard folds False (the iterator never escapes
+/// after fusion).
 fn delete_frame_creation_ops(
     caller: &mut TirFunction,
     candidate: &FusionCandidate,
@@ -388,8 +233,8 @@ fn delete_frame_creation_ops(
             !(op.opcode == OpCode::IterNext && op.results.first() == Some(&candidate.pair_val))
         });
     }
-    // (d) Prepend the preheader slot-init ops at the TOP of the cloned preheader
-    //     (so they dominate the loop-header phi-arg uses).
+    // (d) Prepend the parameter-slot bindings at the TOP of the cloned
+    //     preheader, so they dominate every promoted read.
     if !preheader_init_ops.is_empty()
         && let Some(pre) = caller.blocks.get_mut(&preheader)
     {

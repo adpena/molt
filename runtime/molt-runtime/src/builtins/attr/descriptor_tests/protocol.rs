@@ -257,7 +257,7 @@ fn wrapped_bits(_py: &PyToken<'_>, function_bits: u64, classmethod: bool) -> u64
 }
 
 fn descriptor_instance_bits(_py: &PyToken<'_>, name: &[u8], attrs: &[(&[u8], u64)]) -> (u64, u64) {
-    let class_bits = test_class_bits(_py, name, attrs);
+    let class_bits = test_class_bits(_py, name, &[], attrs);
     let class_ptr = obj_from_bits(class_bits)
         .as_ptr()
         .expect("descriptor class");
@@ -363,6 +363,7 @@ fn assert_mutation_binding_errors(_py: &PyToken<'_>, hook_bits: u64, expected: &
     let setter_class = test_class_bits(
         _py,
         b"SetattrBindingError",
+        &[],
         &[
             (b"__setattr__", hook_bits),
             (b"target", MoltObject::from_int(88).bits()),
@@ -384,8 +385,12 @@ fn assert_mutation_binding_errors(_py: &PyToken<'_>, hook_bits: u64, expected: &
     dec_ref_bits(_py, setter_bits);
     dec_ref_bits(_py, setter_class);
 
-    let deleter_class =
-        test_class_bits(_py, b"DelattrBindingError", &[(b"__delattr__", hook_bits)]);
+    let deleter_class = test_class_bits(
+        _py,
+        b"DelattrBindingError",
+        &[],
+        &[(b"__delattr__", hook_bits)],
+    );
     let deleter_class_ptr = obj_from_bits(deleter_class)
         .as_ptr()
         .expect("deleter binding class");
@@ -793,6 +798,7 @@ fn standalone_staticmethod_callability_forwards_every_call_lane() {
         let owner_bits = test_class_bits(
             _py,
             b"StandaloneStaticmethodOwner",
+            &[],
             &[(b"wrapped", lifetime_wrapper)],
         );
         STATICMETHOD_OWNER.store(owner_bits, Ordering::SeqCst);
@@ -856,6 +862,7 @@ fn descriptor_binding_errors_survive_call_and_mutation_consumers() {
             let callable_class = test_class_bits(
                 _py,
                 b"PropertyCallBindingError",
+                &[],
                 &[(b"__call__", property_bits)],
             );
             let callable_class_ptr = obj_from_bits(callable_class)
@@ -894,6 +901,7 @@ fn descriptor_binding_errors_survive_call_and_mutation_consumers() {
             let callable_class = test_class_bits(
                 _py,
                 b"CustomDescriptorCallBindingError",
+                &[],
                 &[(b"__call__", descriptor_bits)],
             );
             let callable_class_ptr = obj_from_bits(callable_class)
@@ -1269,6 +1277,7 @@ fn class_objects_use_metaclass_descriptor_hooks_and_ignore_class_local_lookalike
         let misleading_class = test_class_bits(
             _py,
             b"ClassLocalDescriptorLookalike",
+            &[],
             &[
                 (b"__get__", get_bits),
                 (b"__set__", set_bits),
@@ -1327,6 +1336,7 @@ fn class_access_obeys_descriptor_and_metaclass_getattribute_authority() {
         let owner_bits = test_class_bits(
             _py,
             b"ClassAccessOwner",
+            &[],
             &[(b"controlled", descriptor_bits)],
         );
         let controlled_name = string_bits(_py, b"controlled");
@@ -1414,6 +1424,7 @@ fn custom_getattribute_captures_fallback_and_observes_literal_hook_names() {
         let class_bits = test_class_bits(
             _py,
             b"CapturedFallbackOwner",
+            &[],
             &[
                 (b"__getattribute__", primary_bits),
                 (b"__getattr__", original_bits),
@@ -1462,6 +1473,7 @@ fn custom_getattribute_captures_fallback_and_observes_literal_hook_names() {
         let literal_class = test_class_bits(
             _py,
             b"LiteralHookNameOwner",
+            &[],
             &[(b"__getattribute__", literal_bits)],
         );
         let literal_class_ptr = obj_from_bits(literal_class)

@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from tests.compiler_identity_helper import (
+    compiler_build_admission,
+    stub_compiler_admission,
+    write_compiler_lock,
+)
+
 from functools import partial
 
 import importlib
@@ -15,7 +21,7 @@ from molt.cli import wasm_link_inputs
 from molt.cli.models import _RuntimeArtifactState
 from molt.cli import runtime_wasm_pair_build as RUNTIME_WASM_PAIR
 from molt.cli import artifact_state as ARTIFACT_STATE
-from molt.cli import runtime_build_identity as BUILD_IDENTITY
+from molt.cli import runtime_identity_schema as RUNTIME_SCHEMA
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
     bind_runtime_wasm_specs,
@@ -356,8 +362,10 @@ def test_run_subprocess_captured_to_tempfiles_respects_cwd(tmp_path: Path) -> No
 def test_backend_fingerprint_recomputes_when_rustflags_change(
     tmp_path: Path, monkeypatch
 ) -> None:
+    stub_compiler_admission(monkeypatch)
     project_root = tmp_path / "repo"
     project_root.mkdir()
+    write_compiler_lock(project_root)
 
     monkeypatch.setattr(
         cli_backend_binary, "_backend_source_paths", lambda *_args: (), raising=True
@@ -368,14 +376,13 @@ def test_backend_fingerprint_recomputes_when_rustflags_change(
         lambda *args, **kwargs: ("same-inputs", 0),
         raising=True,
     )
-    monkeypatch.setattr(
-        cli_backend_binary, "_rustc_version", lambda: "rustc test", raising=True
-    )
 
     first = cli_backend_binary._backend_fingerprint(
         project_root,
         cargo_profile="dev-fast",
-        rustflags="-C link-arg=--export-if-defined=molt_a",
+        build_admission=compiler_build_admission(
+            environment={"RUSTFLAGS": "-C link-arg=--export-if-defined=molt_a"}
+        ),
         backend_features=("wasm-backend",),
         stored_fingerprint=None,
     )
@@ -384,7 +391,9 @@ def test_backend_fingerprint_recomputes_when_rustflags_change(
     second = cli_backend_binary._backend_fingerprint(
         project_root,
         cargo_profile="dev-fast",
-        rustflags="-C link-arg=--export-if-defined=molt_b",
+        build_admission=compiler_build_admission(
+            environment={"RUSTFLAGS": "-C link-arg=--export-if-defined=molt_b"}
+        ),
         backend_features=("wasm-backend",),
         stored_fingerprint=first,
     )
@@ -484,6 +493,10 @@ def test_link_runtime_staticlib_to_reloc_wasm_uses_absolute_paths(
 
     cmd = captured["cmd"]
     response_arg = next(arg for arg in cmd if arg.startswith("@"))
+    assert [arg for arg in cmd if arg.startswith("--soname=")] == [
+        "--soname=molt_runtime_reloc.wasm"
+    ]
+    assert Path(cmd[cmd.index("-o") + 1]).name != output.name
     assert Path(response_arg[1:]).is_absolute()
     assert Path(cmd[cmd.index("-o") + 1]).is_absolute()
     assert Path(cmd[cmd.index("--whole-archive") + 1]).is_absolute()
@@ -528,7 +541,6 @@ def test_runtime_build_scripts_share_wasi_sysroot_authority() -> None:
     assert "/usr/include/wasm32-wasi" in shared_text
     assert "wasm32-wasi" in shared_text
     assert "include_dir: Some" in shared_text
-    assert "pub fn sysroot_flag(&self) -> String" in shared_text
     assert 'sysroot.lib_dir("wasm32-wasip1")' in runtime_text
     assert shared_text.index("target_include_layout(&root") < shared_text.index(
         'root.join("include").join("errno.h")'
@@ -540,9 +552,10 @@ def test_runtime_build_scripts_share_wasi_sysroot_authority() -> None:
     assert "WASI_SDK_PREFIX" in python_wasm_link_inputs
     assert "mod wasi_sysroot" in runtime_text
     assert "mod wasi_sysroot" in abi_text
-    assert "build.flag(sysroot.sysroot_flag())" in runtime_text
-    assert "build.flag(sysroot.sysroot_flag())" in abi_text
-    assert "build.include(include_dir)" in runtime_text
+    # The ABI provider owns both C translation units and keeps the sysroot a
+    # typed path through cc::Build. The runtime consumes its provider library.
+    assert 'build.flag("--sysroot").flag(&sysroot.root)' in abi_text
+    assert 'build.flag("--sysroot").flag(&provider.root)' in abi_text
     assert "build.include(include_dir)" in abi_text
     assert "fn resolve_wasi_sysroot" not in runtime_text
     assert "fn resolve_wasi_sysroot" not in abi_text
@@ -940,7 +953,7 @@ def test_shared_allowlist_is_response_content_not_compile_rustflags(
     validation_specs,
 ) -> None:
     _root, _target, state_root, shared, _reloc = validation_specs(
-        required_exports={"add", "abc_abstractmethod_check"}
+        required_exports={"add", "typing_get_origin"}
     )
     plan = shared.cargo_plan
     assert plan is not None
@@ -957,7 +970,7 @@ def test_shared_allowlist_is_response_content_not_compile_rustflags(
         "--import-table",
         "--growable-table",
         "--export-if-defined=molt_add",
-        "--export-if-defined=molt_abc_abstractmethod_check",
+        "--export-if-defined=molt_typing_get_origin",
     ):
         assert required in text
     assert "--export-dynamic" not in text
@@ -987,14 +1000,14 @@ def test_runtime_fingerprint_recomputes_when_rustflags_change() -> None:
     payload = original.to_dict()
     family = payload["payload"]["family"]
     family["compile"]["common_config"]["base_rustflags"] = ["-C", "panic=abort"]
-    family["compile_digest"] = BUILD_IDENTITY._digest(family["compile"])
-    changed = BUILD_IDENTITY.RuntimeBuildIdentity(
-        BUILD_IDENTITY._digest(payload["payload"]),
+    family["compile_digest"] = RUNTIME_SCHEMA._digest(family["compile"])
+    changed = RUNTIME_SCHEMA.RuntimeBuildIdentity(
+        RUNTIME_SCHEMA._digest(payload["payload"]),
         family["compile_digest"],
-        BUILD_IDENTITY._digest(family),
+        RUNTIME_SCHEMA._digest(family),
         payload["payload"],
     )
     assert (
-        BUILD_IDENTITY.runtime_build_fingerprint(original)["hash"]
-        != BUILD_IDENTITY.runtime_build_fingerprint(changed)["hash"]
+        RUNTIME_SCHEMA.runtime_build_fingerprint(original)["hash"]
+        != RUNTIME_SCHEMA.runtime_build_fingerprint(changed)["hash"]
     )

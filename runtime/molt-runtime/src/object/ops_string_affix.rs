@@ -209,103 +209,6 @@ pub extern "C" fn molt_string_rstrip(hay_bits: u64, chars_bits: u64) -> u64 {
     })
 }
 
-#[cfg(test)]
-mod whitespace_contract_tests {
-    use super::*;
-
-    #[test]
-    fn split_contract_ascii_scalar_and_vector_predicates_match_generated_authority() {
-        for code in 0u8..128 {
-            for len in [1, 15, 16, 17, 33] {
-                let data = vec![code; len];
-                assert_eq!(
-                    simd_is_all_ascii_text_whitespace(&data),
-                    unicode_space_table::is_space(u32::from(code)),
-                    "text code={code} len={len}"
-                );
-                assert_eq!(
-                    crate::object::ops::simd_is_all_ascii_whitespace(&data),
-                    crate::object::ops_bytes::bytes_ascii_space(code),
-                    "bytes code={code} len={len}"
-                );
-            }
-        }
-        assert!(!simd_is_all_ascii_text_whitespace(b""));
-    }
-
-    #[test]
-    fn split_contract_text_trim_and_isspace_share_wtf8_whitespace() {
-        let _transaction = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(py, {
-            let none = MoltObject::none().bits();
-            for whitespace in [
-                b"\x0b".as_slice(),
-                b"\x1c",
-                b"\x1d",
-                b"\x1e",
-                b"\x1f",
-                b"\xc2\xa0",
-                b"\xe2\x80\x83",
-            ] {
-                let bytes = [whitespace, b"\xed\xa0\x80x", whitespace].concat();
-                let hay = alloc_string(py, &bytes);
-                assert!(!hay.is_null());
-                let hay = MoltObject::from_ptr(hay).bits();
-                let space = alloc_string(py, whitespace);
-                assert!(!space.is_null());
-                let space = MoltObject::from_ptr(space).bits();
-                assert_eq!(
-                    molt_string_isspace(space),
-                    MoltObject::from_bool(true).bits()
-                );
-                assert_eq!(
-                    molt_string_isspace(hay),
-                    MoltObject::from_bool(false).bits()
-                );
-                let methods: [(extern "C" fn(u64, u64) -> u64, Vec<u8>); 3] = [
-                    (molt_string_strip, b"\xed\xa0\x80x".to_vec()),
-                    (
-                        molt_string_lstrip,
-                        [b"\xed\xa0\x80x".as_slice(), whitespace].concat(),
-                    ),
-                    (molt_string_rstrip, [whitespace, b"\xed\xa0\x80x"].concat()),
-                ];
-                for (trim, expected) in methods {
-                    let result = trim(hay, none);
-                    assert!(!exception_pending(py));
-                    let ptr = obj_from_bits(result).as_ptr().unwrap();
-                    unsafe {
-                        assert_eq!(
-                            std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)),
-                            expected
-                        );
-                    }
-                    dec_ref_bits(py, result);
-                }
-                dec_ref_bits(py, space);
-                dec_ref_bits(py, hay);
-            }
-            let chars = alloc_string(py, b"\xed\xa0\x80");
-            let hay = alloc_string(py, b"\xed\xa0\x80x\xed\xa0\x80");
-            assert!(!chars.is_null() && !hay.is_null());
-            let chars = MoltObject::from_ptr(chars).bits();
-            let hay = MoltObject::from_ptr(hay).bits();
-            let result = molt_string_strip(hay, chars);
-            assert!(!exception_pending(py));
-            let ptr = obj_from_bits(result).as_ptr().unwrap();
-            unsafe {
-                assert_eq!(
-                    std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)),
-                    b"x"
-                );
-            }
-            for bits in [result, hay, chars] {
-                dec_ref_bits(py, bits);
-            }
-        });
-    }
-}
-
 fn parse_string_fillchar_arg(_py: &PyToken<'_>, fill_bits: u64) -> Result<char, u64> {
     if fill_bits == missing_bits(_py) {
         return Ok(' ');
@@ -1108,4 +1011,101 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
             out_bits
         }
     })
+}
+
+#[cfg(test)]
+mod whitespace_contract_tests {
+    use super::*;
+
+    #[test]
+    fn split_contract_ascii_scalar_and_vector_predicates_match_generated_authority() {
+        for code in 0u8..128 {
+            for len in [1, 15, 16, 17, 33] {
+                let data = vec![code; len];
+                assert_eq!(
+                    simd_is_all_ascii_text_whitespace(&data),
+                    unicode_space_table::is_space(u32::from(code)),
+                    "text code={code} len={len}"
+                );
+                assert_eq!(
+                    crate::object::ops::simd_is_all_ascii_whitespace(&data),
+                    crate::object::ops_bytes::bytes_ascii_space(code),
+                    "bytes code={code} len={len}"
+                );
+            }
+        }
+        assert!(!simd_is_all_ascii_text_whitespace(b""));
+    }
+
+    #[test]
+    fn split_contract_text_trim_and_isspace_share_wtf8_whitespace() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let none = MoltObject::none().bits();
+            for whitespace in [
+                b"\x0b".as_slice(),
+                b"\x1c",
+                b"\x1d",
+                b"\x1e",
+                b"\x1f",
+                b"\xc2\xa0",
+                b"\xe2\x80\x83",
+            ] {
+                let bytes = [whitespace, b"\xed\xa0\x80x", whitespace].concat();
+                let hay = alloc_string(py, &bytes);
+                assert!(!hay.is_null());
+                let hay = MoltObject::from_ptr(hay).bits();
+                let space = alloc_string(py, whitespace);
+                assert!(!space.is_null());
+                let space = MoltObject::from_ptr(space).bits();
+                assert_eq!(
+                    molt_string_isspace(space),
+                    MoltObject::from_bool(true).bits()
+                );
+                assert_eq!(
+                    molt_string_isspace(hay),
+                    MoltObject::from_bool(false).bits()
+                );
+                let methods: [(extern "C" fn(u64, u64) -> u64, Vec<u8>); 3] = [
+                    (molt_string_strip, b"\xed\xa0\x80x".to_vec()),
+                    (
+                        molt_string_lstrip,
+                        [b"\xed\xa0\x80x".as_slice(), whitespace].concat(),
+                    ),
+                    (molt_string_rstrip, [whitespace, b"\xed\xa0\x80x"].concat()),
+                ];
+                for (trim, expected) in methods {
+                    let result = trim(hay, none);
+                    assert!(!exception_pending(py));
+                    let ptr = obj_from_bits(result).as_ptr().unwrap();
+                    unsafe {
+                        assert_eq!(
+                            std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)),
+                            expected
+                        );
+                    }
+                    dec_ref_bits(py, result);
+                }
+                dec_ref_bits(py, space);
+                dec_ref_bits(py, hay);
+            }
+            let chars = alloc_string(py, b"\xed\xa0\x80");
+            let hay = alloc_string(py, b"\xed\xa0\x80x\xed\xa0\x80");
+            assert!(!chars.is_null() && !hay.is_null());
+            let chars = MoltObject::from_ptr(chars).bits();
+            let hay = MoltObject::from_ptr(hay).bits();
+            let result = molt_string_strip(hay, chars);
+            assert!(!exception_pending(py));
+            let ptr = obj_from_bits(result).as_ptr().unwrap();
+            unsafe {
+                assert_eq!(
+                    std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)),
+                    b"x"
+                );
+            }
+            for bits in [result, hay, chars] {
+                dec_ref_bits(py, bits);
+            }
+        });
+    }
 }

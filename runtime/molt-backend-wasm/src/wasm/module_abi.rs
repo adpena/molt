@@ -7,6 +7,7 @@ use runtime_surface::WasmRuntimeSurfacePlan;
 
 use crate::SimpleIR;
 use crate::wasm_abi::emit_static_type_section;
+use crate::wasm_plan::{WasmStageAudit, emit_wasm_stage_audit, simple_ir_stage_shape};
 
 pub(in crate::wasm) mod callable_table;
 mod finalize;
@@ -26,9 +27,10 @@ use type_layout::WasmModuleTypeLayout;
 impl WasmBackend {
     pub(super) fn emit_wasm_module(
         mut self,
-        ir: SimpleIR,
+        ir: &SimpleIR,
         lir_lowering_plans: crate::wasm::lir_fast::WasmFunctionLoweringPlans,
         analysis: WasmTrampolineAnalysis,
+        stage_audit: WasmStageAudit,
     ) -> WasmCompileOutput {
         let WasmTrampolineAnalysis {
             escaped_callable_targets,
@@ -36,6 +38,7 @@ impl WasmBackend {
             task_closure_sizes,
             default_trampoline_spec,
             function_abi_returns_value,
+            function_entry_custody,
         } = analysis;
 
         emit_static_type_section(&mut self.types);
@@ -45,11 +48,11 @@ impl WasmBackend {
         let WasmRuntimeImportEmission {
             runtime_surface,
             next_type_idx: next_type_idx_after_runtime,
-        } = self.emit_runtime_import_surface(&ir);
+        } = self.emit_runtime_import_surface(ir);
         let WasmNativeCallableImportEmission {
             imports: native_callable_imports,
             next_type_idx,
-        } = self.emit_native_callable_import_surface(&ir, next_type_idx_after_runtime);
+        } = self.emit_native_callable_import_surface(ir, next_type_idx_after_runtime);
         let WasmRuntimeSurfacePlan {
             max_func_arity,
             max_call_arity,
@@ -69,12 +72,12 @@ impl WasmBackend {
 
         let type_layout = WasmModuleTypeLayout::build(
             &mut self,
-            &ir,
+            ir,
             next_type_idx,
             max_func_arity,
             max_call_arity,
         );
-        let user_function_imports = self.emit_user_function_import_surface(&ir, &type_layout);
+        let user_function_imports = self.emit_user_function_import_surface(ir, &type_layout);
         self.func_import_count = self.func_count;
         let sentinel_func_idx =
             type_layout.emit_call_indirect_exports_and_sentinel(&mut self, reloc_enabled);
@@ -82,7 +85,7 @@ impl WasmBackend {
         // Callable table ABI: function indices, table slots, trampolines,
         // and relocatable element payloads share one layout authority.
         let callable_table = self.build_table_abi(
-            &ir,
+            ir,
             &builtin_trampoline_specs,
             &direct_import_call_specs,
             &default_trampoline_spec,
@@ -96,13 +99,14 @@ impl WasmBackend {
             sentinel_func_idx,
             &host_surface.intrinsic_manifest_names,
         );
-        callable_table.validate_ir_call_target_closure(&ir);
+        callable_table.validate_ir_call_target_closure(ir);
 
         let import_ids = self.import_ids.clone();
         let compile_ctx = CompileFuncContext {
             call_site_abi: callable_table.call_site_abi(
                 &escaped_callable_targets,
                 host_surface.call_func_spill_offset,
+                &function_entry_custody,
             ),
             import_ids: &import_ids,
             native_callable_imports: &native_callable_imports,
@@ -115,9 +119,38 @@ impl WasmBackend {
             if func_ir.is_extern {
                 continue;
             }
+            let audit_start = stage_audit.start();
+            emit_wasm_stage_audit(
+                stage_audit,
+                "before-function-emission",
+                || simple_ir_stage_shape(std::slice::from_ref(func_ir)),
+                None,
+                None,
+                None,
+                || Some(0),
+            );
             let type_idx = type_layout.type_idx_for_function(func_ir);
             self.compile_func(func_ir, type_idx, &compile_ctx);
+            emit_wasm_stage_audit(
+                stage_audit,
+                "after-function-emission",
+                || simple_ir_stage_shape(std::slice::from_ref(func_ir)),
+                None,
+                None,
+                None,
+                || audit_start.map(|start| start.elapsed().as_millis()),
+            );
         }
+        let finalization_start = stage_audit.start();
+        emit_wasm_stage_audit(
+            stage_audit,
+            "before-module-finalization",
+            || simple_ir_stage_shape(&ir.functions),
+            None,
+            None,
+            None,
+            || Some(0),
+        );
         self.emit_app_callable_resolver(&callable_table, reloc_enabled);
 
         self.emit_table_abi_trampolines(&callable_table, reloc_enabled);
@@ -130,10 +163,70 @@ impl WasmBackend {
         );
         self.emit_module_registry_dispatch(&callable_table, reloc_enabled);
 
-        self.finalize_wasm_module(WasmModuleFinalizationInput {
+        let output = self.finalize_wasm_module(WasmModuleFinalizationInput {
+            stage_audit,
             functions: &ir.functions,
             callable_table_elements,
             reloc_enabled,
-        })
+        });
+        emit_wasm_stage_audit(
+            stage_audit,
+            "after-module-finalization",
+            || simple_ir_stage_shape(&ir.functions),
+            Some(output.wasm.len()),
+            None,
+            None,
+            || finalization_start.map(|start| start.elapsed().as_millis()),
+        );
+        output
+    }
+}
+
+#[cfg(test)]
+mod audit_tests {
+    use super::*;
+    use crate::{FunctionIR, OpIR};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn stage_audit_request_selection_preserves_valid_emitted_bytes() {
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "molt_main".into(),
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                ops: vec![
+                    OpIR {
+                        kind: "const".into(),
+                        value: Some(41),
+                        out: Some("value".into()),
+                        ..Default::default()
+                    },
+                    OpIR {
+                        kind: "ret".into(),
+                        args: Some(vec!["value".into()]),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            profile: None,
+        };
+        let emit = |enabled| {
+            let analysis = super::super::trampoline_analysis::analyze_wasm_trampolines(&ir);
+            WasmBackend::new().emit_wasm_module(
+                &ir,
+                BTreeMap::new(),
+                analysis,
+                WasmStageAudit::for_test(enabled),
+            )
+        };
+        let ordinary = emit(false);
+        let observed = emit(true);
+        let next_request = emit(false);
+        wasmparser::Validator::new()
+            .validate_all(&ordinary.wasm)
+            .unwrap();
+        assert_eq!(ordinary, observed);
+        assert_eq!(ordinary, next_request);
     }
 }

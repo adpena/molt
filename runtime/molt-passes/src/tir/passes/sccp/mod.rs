@@ -457,18 +457,18 @@ fn seed_constant_lattice_value(op: &TirOp) -> Option<LatticeValue> {
             Some(AttrValue::Bool(v)) => LatticeValue::Constant(ConstVal::Bool(*v)),
             _ => LatticeValue::Bottom,
         }),
-        SccpConstantSeedRule::StrAttr => Some(match attrs.get("s_value") {
-            Some(AttrValue::Str(v)) if v.len() <= MAX_COMPOUND_ELEMENTS => {
-                LatticeValue::Constant(ConstVal::Str(v.clone()))
-            }
-            Some(AttrValue::Str(_)) => LatticeValue::Bottom,
-            _ => match attrs.get("value") {
-                Some(AttrValue::Str(v)) if v.len() <= MAX_COMPOUND_ELEMENTS => {
-                    LatticeValue::Constant(ConstVal::Str(v.clone()))
+        SccpConstantSeedRule::StrAttr => {
+            use molt_ir::literal_payload::LiteralPayload;
+            let payload = LiteralPayload::from_tir(op).unwrap_or_else(|error| panic!("{error}"));
+            Some(match payload {
+                LiteralPayload::Text(value) if value.len() <= MAX_COMPOUND_ELEMENTS => {
+                    LatticeValue::Constant(ConstVal::Str(value.to_owned()))
                 }
-                _ => LatticeValue::Bottom,
-            },
-        }),
+                // Rust str cannot represent Python surrogate code points.
+                // Preserve the admitted byte carrier; never seed a lossy string.
+                LiteralPayload::Text(_) | LiteralPayload::Bytes(_) => LatticeValue::Bottom,
+            })
+        }
         SccpConstantSeedRule::NoneSingleton => Some(LatticeValue::Constant(ConstVal::None)),
     }
 }

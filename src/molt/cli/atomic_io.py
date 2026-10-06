@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 import zipfile
 
-from molt import artifact_publication, file_publication
+from molt import file_publication
+from molt.toolchain_identity import StableRegularFileIdentity
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -76,9 +77,14 @@ def _atomic_copy_file(
     *,
     codesign: bool = False,
     expected_sha256: str | None = None,
+    observed: StableRegularFileIdentity | None = None,
 ) -> None:
     with _staged_copy_file(
-        src, dst, codesign=codesign, expected_sha256=expected_sha256
+        src,
+        dst,
+        codesign=codesign,
+        expected_sha256=expected_sha256,
+        observed=observed,
     ) as tmp_path:
         file_publication.durable_replace(tmp_path, dst)
 
@@ -90,13 +96,17 @@ def _staged_copy_file(
     *,
     codesign: bool = False,
     expected_sha256: str | None = None,
+    observed: StableRegularFileIdentity | None = None,
 ) -> Iterator[Path]:
     """Own the final byte/mode copy until its caller publishes or abandons it."""
+    from molt import artifact_publication
+
     with artifact_publication.staged_copy_file(
         src,
         dst,
         prepare=_codesign_atomic_copy_temp if codesign else None,
         expected_sha256=expected_sha256,
+        observed=observed,
     ) as candidate:
         yield candidate
 

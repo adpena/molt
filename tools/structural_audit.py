@@ -54,9 +54,19 @@ ROOT_DEFAULT = bind_repository_imports(__file__)
 
 from molt.rust_source_scan import (  # noqa: E402
     mask_rust_comments_and_strings,
+    mask_rust_test_items,
+    rust_test_only_source_files,
     project_rust_source,
 )
 from tools import release_criterion_receipt as release_receipt  # noqa: E402
+from tools import compatibility_error_protocol as compatibility_errors  # noqa: E402
+from tools.structural_audit_rust_admission import (  # noqa: E402
+    proven_admitted_wire_domain,
+)
+from tools.structural_audit_rust_domains import (  # noqa: E402
+    BranchProjection,
+    proven_branch_projection,
+)
 
 BASELINE_PATH_REL = "tools/structural_audit_baseline.json"
 BOARD_PATH_REL = "docs/design/foundation/STRUCTURAL_AUDIT_BOARD.md"
@@ -324,15 +334,6 @@ _COHESIVE_DECOMPOSITION_CEILING_FACTOR = 1.5
 
 # --- robust Rust scanning -------------------------------------------------
 
-_COMMENT_RE = re.compile(r"//.*?$", re.MULTILINE)
-
-
-def _strip_line_comments(text: str) -> str:
-    # Good enough for arm/brace counting: drop // comments (not string-aware,
-    # but match arms in this codebase do not embed `//` inside string literals
-    # on the arm lines we inspect). Block comments are rare in match bodies.
-    return _COMMENT_RE.sub("", text)
-
 
 def _balanced_block(text: str, open_idx: int) -> tuple[int, str]:
     """Return (end_index, block_text) for the brace block starting at open_idx
@@ -360,7 +361,6 @@ _MATCH_HEAD_RE = re.compile(
 _OPCODE_ARM_RE = re.compile(r"\bOpCode::[A-Za-z0-9_]+")
 _KIND_SCRUTINEE_RE = re.compile(r"\.opcode\b|\.kind\b|_original_kind|opcode\b|kind\b")
 _GENERATED_OPCODE_TABLE_SCRUTINEE_RE = re.compile(r"\bopcode_[A-Za-z0-9_]*_table\s*\(")
-_WILDCARD_ARM_RE = re.compile(r"(^|\n)\s*_\s*(=>|if\b)")
 # matches!(scrutinee, PATTERN) — capture the whole call's argument region.
 _MATCHES_MACRO_RE = re.compile(r"\bmatches!\s*\(")
 
@@ -426,14 +426,18 @@ def _top_level_wildcard_arm_start(block: str) -> int | None:
     n = len(block)
     while i < n:
         c = block[i]
+        if c == "," and depth == 1:
+            line_start = True
+            i += 1
+            continue
         if c in "([{":
             depth += 1
-            line_start = False
+            line_start = depth == 1
             i += 1
             continue
         if c in ")]}":
             depth = max(depth - 1, 0)
-            line_start = False
+            line_start = c == "}" and depth == 1
             i += 1
             continue
         if c == "\n":
@@ -447,7 +451,7 @@ def _top_level_wildcard_arm_start(block: str) -> int | None:
             j = i + 1
             while j < n and block[j] in " \t\r\n":
                 j += 1
-            if block.startswith("=>", j) or block.startswith("if", j):
+            if block.startswith("=>", j):
                 return i
         line_start = False
         i += 1
@@ -532,25 +536,24 @@ def _line_start_for_offset(text: str, offset: int) -> int:
 
 
 _RUST_TOP_LEVEL_ITEM_RE = re.compile(
-    r"(?m)^\s*"
+    r"(?m)^[^\S\r\n]*"
     r"(?:pub(?:\([^)]*\))?\s+)?"
-    r"(?:async\s+|unsafe\s+|extern\s+\"[^\"]+\"\s+)*"
+    r"(?:async\s+|unsafe\s+|extern\s+)*"
     r"(?P<kind>fn|impl|trait|struct|enum|mod)\b"
 )
 
 
 def _rust_top_level_regions(text: str) -> list[SourceRegion]:
-    depths = _line_start_depths(text)
+    code = mask_rust_comments_and_strings(mask_rust_test_items(text))
+    depths = _line_start_depths(code)
     regions: list[SourceRegion] = []
-    for m in _RUST_TOP_LEVEL_ITEM_RE.finditer(text):
+    for m in _RUST_TOP_LEVEL_ITEM_RE.finditer(code):
         line_start = _line_start_for_offset(text, m.start())
         if depths.get(line_start, 0) != 0:
             continue
         kind = m.group("kind")
         name = _rust_region_name(text, m.end(), kind)
-        if _is_cfg_test_module(text, m.start(), kind, name):
-            continue
-        end_offset = _rust_region_end(text, m.end())
+        end_offset = _rust_region_end(code, m.end())
         regions.append(
             SourceRegion(
                 kind=kind,
@@ -571,12 +574,6 @@ def _rust_region_name(text: str, start: int, kind: str) -> str:
         return " ".join(tail.split())[:80] or "impl"
     m = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", tail)
     return m.group(1) if m else kind
-
-
-def _is_cfg_test_module(text: str, start: int, kind: str, _name: str) -> bool:
-    if kind != "mod":
-        return False
-    return "#[cfg(test)]" in text[max(0, start - 300) : start]
 
 
 def _rust_region_end(text: str, start: int) -> int:
@@ -680,9 +677,12 @@ def _large_source_files(
     py_ceiling: int = 2500,
 ) -> list[LargeSourceFile]:
     files: list[LargeSourceFile] = []
+    test_paths = _rust_test_source_paths(root)
     for suffix, lang_ceiling in ((".rs", ceiling), (".py", py_ceiling)):
         for path in _iter_source_files(root, (suffix,)):
-            if _is_generated(path):
+            if _is_generated(path) or (
+                suffix == ".rs" and path.resolve() in test_paths
+            ):
                 continue
             try:
                 text = path.read_text(errors="replace")
@@ -742,8 +742,9 @@ def probe_semantic_fallthroughs(root: Path) -> list[Finding]:
     a drift point. EXHAUSTIVE matches (no wildcard) are rustc-gated and SKIPPED —
     they cannot drift, so flagging them would be noise."""
     findings: list[Finding] = []
+    test_paths = _rust_test_source_paths(root)
     for path in _iter_source_files(root, (".rs",)):
-        if _is_generated(path):
+        if _is_generated(path) or path.resolve() in test_paths:
             continue
         try:
             raw = path.read_text(errors="replace")
@@ -751,7 +752,7 @@ def probe_semantic_fallthroughs(root: Path) -> list[Finding]:
             continue
         if "OpCode::" not in raw:
             continue
-        text = _strip_line_comments(raw)
+        text = mask_rust_comments_and_strings(mask_rust_test_items(raw))
         rel = path.relative_to(root).as_posix()
         critical = _file_is_critical(path)
 
@@ -1168,6 +1169,51 @@ def _python_stub_surface_hits(path: Path, text: str) -> list[ImplementationGapHi
     )
 
 
+def _compatibility_findings(path: Path, root: Path, inventory) -> list[Finding]:
+    return [
+        Finding(
+            probe="compatibility_error_outcome"
+            if hit.proved
+            else "compatibility_error_applicability",
+            severity="info" if hit.proved else "high",
+            title=(
+                "proved CPython error outcome"
+                if hit.proved
+                else "unproved compatibility error"
+            )
+            + ": "
+            + hit.outcome,
+            location=f"{path.relative_to(root).as_posix()}:{hit.line}",
+            detail=hit.detail,
+            suggested_action="retain the canonical runtime predicate and differential witness"
+            if hit.proved
+            else "restore the canonical protocol and prove this outcome",
+            class_retired="compatibility-error-applicability",
+            metric=0 if hit.proved else 1,
+        )
+        for hit in inventory
+    ]
+
+
+def _compatibility_projection_inventory(path: Path, root: Path, proved: bool):
+    rel = path.relative_to(root).as_posix()
+    if rel not in compatibility_errors.projections():
+        return None
+    python = rel == compatibility_errors.PYTHON_PATH
+    return [
+        compatibility_errors.InventoryHit(
+            1,
+            name,
+            proved,
+            compatibility_errors.describe(name)
+            if proved
+            else "unproved runtime compatibility projection: " + name,
+        )
+        for name in compatibility_errors.OUTCOMES
+        if name.startswith("Memoryview") != python
+    ]
+
+
 def probe_python_stub_surfaces(root: Path) -> list[Finding]:
     """Python implementation-gap surfaces as a first-class ratchet.
 
@@ -1177,14 +1223,39 @@ def probe_python_stub_surfaces(root: Path) -> list[Finding]:
     a broad marker count.
     """
     findings: list[Finding] = []
+    compatibility_proved = not compatibility_errors.projection_errors(root)
     for path in _iter_source_files(root, (".py",)):
-        if _is_generated(path):
+        if (
+            _is_generated(path)
+            and path.relative_to(root).as_posix()
+            not in compatibility_errors.projections()
+        ):
             continue
         try:
             text = path.read_text(errors="replace")
         except OSError:
             continue
-        hits = _python_stub_surface_hits(path, text)
+        projection = _compatibility_projection_inventory(
+            path, root, compatibility_proved
+        )
+        inventory = (
+            projection
+            if projection is not None
+            else compatibility_errors.python_inventory(text, compatibility_proved)
+        )
+        findings.extend(_compatibility_findings(path, root, inventory))
+        # Exact canonical emitters are classified, never skipped by a generated
+        # filename/header exemption. Invalid projection/calls consume stub debt.
+        hits = (
+            []
+            if projection is not None and compatibility_proved
+            else _python_stub_surface_hits(path, text)
+        )
+        hits.extend(
+            ImplementationGapHit(hit.line, "unproved compatibility: " + hit.outcome)
+            for hit in inventory
+            if not hit.proved
+        )
         if not hits:
             continue
         rel = path.relative_to(root).as_posix()
@@ -1209,18 +1280,15 @@ def probe_python_stub_surfaces(root: Path) -> list[Finding]:
     return findings
 
 
-def _is_test_source_path(path: Path, root: Path) -> bool:
-    try:
-        rel = path.relative_to(root)
-    except ValueError:
-        return True
-    parts = rel.parts
-    return (
-        "tests" in parts
-        or path.name == "tests.rs"
-        or path.name.endswith("_tests.rs")
-        or path.name.startswith("test_")
-    )
+def _rust_test_source_paths(root: Path) -> set[Path]:
+    # Ownership must see declarations outside a --path diagnostic selection.
+    paths = [
+        path
+        for sub in _SOURCE_ROOTS
+        if (root / sub).is_dir()
+        for path in _iter_pruned_files(root / sub, root, (".rs",))
+    ]
+    return rust_test_only_source_files(paths)
 
 
 def _rust_line_is_comment_only(line: str) -> bool:
@@ -1235,74 +1303,6 @@ def _rust_line_is_comment_only(line: str) -> bool:
 # Rust Pattern_White_Space, including bidi marks absent from Python's \s.
 _RUST_WS_CHARS = "\t\n\v\f\r \x85\u200e\u200f\u2028\u2029"
 _RUST_WS = r"[\t\n\v\f\r \x85\u200e\u200f\u2028\u2029]"
-
-
-def _rust_cfg_test_line_numbers(text: str) -> set[int]:
-    # Classify actual code, not attributes/braces spoofed inside literals, and
-    # keep physical LF coordinates shared by all Rust lexical consumers.
-    lines = mask_rust_comments_and_strings(text).split("\n")
-    test_lines: set[int] = set()
-    pending_cfg_test = False
-    pending_parens = pending_brackets = 0
-    test_depth: int | None = None
-    for line_no, line in enumerate(lines, start=1):
-        stripped = line.strip(_RUST_WS_CHARS)
-        if test_depth is not None:
-            test_lines.add(line_no)
-            for index, char in enumerate(line):
-                test_depth += (char == "{") - (char == "}")
-                if test_depth <= 0:
-                    if line[index + 1 :].strip(_RUST_WS_CHARS + ";,"):
-                        test_lines.discard(line_no)
-                    test_depth = None
-                    break
-            continue
-        if stripped.startswith("#[cfg(test)]"):
-            pending_cfg_test = True
-            pending_parens = pending_brackets = 0
-            test_lines.add(line_no)
-            stripped = stripped[len("#[cfg(test)]") :].strip()
-            if not stripped:
-                continue
-        if not pending_cfg_test:
-            continue
-        test_lines.add(line_no)
-        if not stripped or stripped.startswith("#"):
-            continue
-        for index, char in enumerate(stripped):
-            if char == "(":
-                pending_parens += 1
-            elif char == ")":
-                pending_parens = max(0, pending_parens - 1)
-            elif char == "[":
-                pending_brackets += 1
-            elif char == "]":
-                pending_brackets = max(0, pending_brackets - 1)
-            elif pending_parens == pending_brackets == 0:
-                if char in ";,}":
-                    pending_cfg_test = False
-                    if stripped[index + 1 :].strip(_RUST_WS_CHARS + ";,"):
-                        test_lines.discard(line_no)
-                    break
-                if char == "{":
-                    depth = 0
-                    for end in range(index, len(stripped)):
-                        depth += (stripped[end] == "{") - (stripped[end] == "}")
-                        if depth == 0:
-                            if stripped[end + 1 :].strip(_RUST_WS_CHARS + ";,"):
-                                test_lines.discard(line_no)
-                            break
-                    test_depth = depth if depth > 0 else None
-                    pending_cfg_test = False
-                    break
-    return test_lines
-
-
-def _blank_lines(lines: list[str], blank_line_numbers: set[int]) -> str:
-    return "\n".join(
-        "" if line_no in blank_line_numbers else line
-        for line_no, line in enumerate(lines, start=1)
-    )
 
 
 _RUST_NOTIMPLEMENTED_STUB_CONTEXT_RE = re.compile(
@@ -1329,9 +1329,8 @@ def _rust_line_raises_notimplemented(lines: list[str], index: int) -> bool:
 
 def _rust_stub_surface_hits(text: str) -> list[ImplementationGapHit]:
     hits: list[ImplementationGapHit] = []
-    lines = text.split("\n")
-    test_lines = _rust_cfg_test_line_numbers(text)
-    live_text = _blank_lines(lines, test_lines)
+    live_text = mask_rust_test_items(text)
+    lines = live_text.split("\n")
     code_without_comments_or_strings = mask_rust_comments_and_strings(live_text)
     for match in _CODE_DEBT_RE.finditer(code_without_comments_or_strings):
         hits.append(
@@ -1341,8 +1340,6 @@ def _rust_stub_surface_hits(text: str) -> list[ImplementationGapHit]:
             )
         )
     for line_no, line in enumerate(lines, start=1):
-        if line_no in test_lines:
-            continue
         if _rust_line_is_comment_only(line):
             continue
         if "MOLT_STUB" in line:
@@ -1370,14 +1367,44 @@ def probe_rust_stub_surfaces(root: Path) -> list[Finding]:
     implementation debt, not intentionally fake harness inputs.
     """
     findings: list[Finding] = []
+    compatibility_proved = not compatibility_errors.projection_errors(root)
+    test_paths = _rust_test_source_paths(root)
     for path in _iter_source_files(root, (".rs",)):
-        if _is_generated(path) or _is_test_source_path(path, root):
+        if (
+            _is_generated(path)
+            and path.relative_to(root).as_posix()
+            not in compatibility_errors.projections()
+        ) or path.resolve() in test_paths:
             continue
         try:
             text = path.read_text(errors="replace")
         except OSError:
             continue
-        hits = _rust_stub_surface_hits(text)
+        projection = _compatibility_projection_inventory(
+            path, root, compatibility_proved
+        )
+        inventory = (
+            projection
+            if projection is not None
+            else compatibility_errors.rust_inventory(
+                text,
+                mask_rust_comments_and_strings(mask_rust_test_items(text)),
+                compatibility_proved,
+            )
+        )
+        findings.extend(_compatibility_findings(path, root, inventory))
+        # Exact canonical emitters are classified, never skipped by a generated
+        # filename/header exemption. Invalid projection/calls consume stub debt.
+        hits = (
+            []
+            if projection is not None and compatibility_proved
+            else _rust_stub_surface_hits(text)
+        )
+        hits.extend(
+            ImplementationGapHit(hit.line, "unproved compatibility: " + hit.outcome)
+            for hit in inventory
+            if not hit.proved
+        )
         if not hits:
             continue
         rel = path.relative_to(root).as_posix()
@@ -1790,7 +1817,9 @@ def _rust_refusal_protocol_proven(
     return True
 
 
-def _rust_rejection_family(root: Path) -> tuple[set[str], list[Finding]]:
+def _rust_rejection_family(
+    root: Path,
+) -> tuple[set[str], list[Finding], BranchProjection | None]:
     """Inventory production method rejections across sibling lowering modules.
 
     Only syntactically rejection-only bodies grant a definite dispatch-path
@@ -1803,6 +1832,8 @@ def _rust_rejection_family(root: Path) -> tuple[set[str], list[Finding]]:
     family = root / "runtime/molt-backend-rust/src/rust"
     full_backend = (root / "runtime/molt-backend-rust/Cargo.toml").is_file()
     methods: dict[str, tuple[str, int, str]] = {}
+    raw_bodies: dict[str, str] = {}
+    body_starts: dict[str, int] = {}
     ambiguous: set[str] = set()
     referenced: set[str] = set()
     reference_locations: dict[str, str] = {}
@@ -1810,15 +1841,12 @@ def _rust_rejection_family(root: Path) -> tuple[set[str], list[Finding]]:
     family_sources: list[str] = []
     root_code = ""
     paths = [root / "runtime/molt-backend-rust/src/rust.rs", *family.rglob("*.rs")]
+    test_paths = _rust_test_source_paths(root)
     for path in sorted(path for path in paths if path.is_file()):
-        if path.name == "tests.rs" or (
-            path.is_relative_to(family) and "tests" in path.relative_to(family).parts
-        ):
+        if path.resolve() in test_paths:
             continue
         text = path.read_text(errors="replace")
-        code = mask_rust_comments_and_strings(text)
-        test_lines = _rust_cfg_test_line_numbers(code)
-        code = _blank_lines(code.split("\n"), test_lines)
+        code = mask_rust_comments_and_strings(mask_rust_test_items(text))
         family_sources.append(code)
         if path == root / "runtime/molt-backend-rust/src/rust.rs":
             root_code = code
@@ -1833,8 +1861,6 @@ def _rust_rejection_family(root: Path) -> tuple[set[str], list[Finding]]:
             code,
         ):
             line = code.count("\n", 0, match.start()) + 1
-            if line in test_lines:
-                continue
             opening = code.find("{", match.end())
             semicolon = code.find(";", match.end())
             if opening < 0 or 0 <= semicolon < opening:
@@ -1842,6 +1868,8 @@ def _rust_rejection_family(root: Path) -> tuple[set[str], list[Finding]]:
             end, _ = _balanced_block(code, opening)
             body = code[opening + 1 : end - 1]
             name = match[1]
+            raw_bodies[name] = text[opening + 1 : end - 1]
+            body_starts[name] = opening + 1
             if name in methods:
                 # Ambiguous names cannot establish a forwarding proof.
                 ambiguous.add(name)
@@ -1980,21 +2008,48 @@ def _rust_rejection_family(root: Path) -> tuple[set[str], list[Finding]]:
         if not added:
             break
         rejected.update(added)
+    domain = proven_admitted_wire_domain(root, consumer) if protocol_proven else None
+    projection = (
+        proven_branch_projection(root, raw_bodies, domain)
+        if domain is not None
+        else None
+    )
+    # One edge graph owns both reachability directions. An unreachable refusal
+    # must not leak back into every wrapper after its forward edge was pruned.
+    edges = {
+        name: {
+            reference["name"]
+            for reference in _rust_self_reference_matches(body)
+            if projection is None or not projection.excludes(name, reference.start())
+        }
+        for name, (_, _, body) in methods.items()
+    }
+    admitted_reachable: set[str] | None = None
+    if projection is not None:
+        admitted_reachable = set()
+        pending = ["compile_checked"]
+        while pending:
+            caller = pending.pop()
+            if caller in admitted_reachable:
+                continue
+            admitted_reachable.add(caller)
+            pending.extend(edges.get(caller, ()))
+
     # Reachability grants only an applicability obligation, never a claim that
     # every path or valid operand is rejected. Keep upstream mixed callers visible
     # when a rejection moves laterally into a helper or through multiple helpers.
     reachable = set(rejected) | recording | exposed
     while True:
         added = {
-            name
-            for name, (_, _, body) in methods.items()
-            if _rust_self_reference_names(body) & reachable
+            name for name, (_, _, body) in methods.items() if edges[name] & reachable
         } - reachable
         if not added:
             break
         reachable.update(added)
     for name, (rel, line, body) in sorted(methods.items()):
         if name in rejected or name not in reachable:
+            continue
+        if admitted_reachable is not None and name not in admitted_reachable:
             continue
         findings.append(
             Finding(
@@ -2040,7 +2095,12 @@ def _rust_rejection_family(root: Path) -> tuple[set[str], list[Finding]]:
                         metric=0,
                     )
                 )
-    return rejected, findings
+    if projection is not None:
+        offset = body_starts.get("emit_op", 0)
+        projection.dispatch = [
+            (start + offset, end + offset) for start, end in projection.dispatch
+        ]
+    return rejected, findings, projection
 
 
 def probe_rust_backend_lowering_gaps(root: Path) -> list[Finding]:
@@ -2074,12 +2134,15 @@ def probe_rust_backend_lowering_gaps(root: Path) -> list[Finding]:
         return []
     lines = mask_rust_comments_and_strings(text, preserve_literals=True).split("\n")
     code_lines = mask_rust_comments_and_strings(text).split("\n")
-    rejected, applicability = _rust_rejection_family(root)
+    rejected, applicability, projection = _rust_rejection_family(root)
+    excluded = projection.dispatch if projection is not None else []
     findings: list[Finding] = []
     seen: set[tuple[str, str]] = set()
     code = "\n".join(code_lines)
     for call in _rust_self_reference_matches(code):
         if call["name"] not in rejected:
+            continue
+        if any(start <= call.start() < end for start, end in excluded):
             continue
         line_no = code.count("\n", 0, call.start()) + 1
         if call["instance"] is None or call["call"] is None:
@@ -2287,25 +2350,18 @@ def probe_duplicate_authorities(root: Path) -> list[Finding]:
         "opcode_escapes": "escape_analysis",
         "is_leaf_call": "leaf",
     }
+    test_paths = _rust_test_source_paths(root)
     for path in _iter_source_files(root, (".rs",)):
-        if _is_generated(path):
+        if _is_generated(path) or path.resolve() in test_paths:
             continue
         rel_path = path.relative_to(root)
-        if path.name == "tests.rs" or "tests" in rel_path.parts:
-            continue
         try:
             text = path.read_text(errors="replace")
         except OSError:
             continue
         rel = rel_path.as_posix()
-        # Test code is not a semantic authority: predicates inside the file's test
-        # module (`#[cfg(test)]` / `mod tests`) are regression fixtures whose names
-        # happen to match a property keyword (e.g. `side_effecting_ops_preserved`).
-        test_offsets = [text.find("#[cfg(test)]"), text.find("mod tests")]
-        test_boundary = min((o for o in test_offsets if o >= 0), default=len(text))
+        text = mask_rust_comments_and_strings(mask_rust_test_items(text))
         for m in _PREDICATE_RE.finditer(text):
-            if m.start() >= test_boundary:
-                continue  # test-module fixture, not a classifier
             fn = m.group(1)
             # require opcode/kind context in the function body window
             window = text[m.end() : m.end() + 800]
@@ -2354,11 +2410,12 @@ def _count_enum_variants(rust_text: str, enum_name: str) -> set[str]:
     takes the leading CamelCase identifier of each segment after stripping
     attributes/doc-comments. Robust to tuple/struct variants and `= discriminant`.
     """
-    m = re.search(rf"\benum\s+{re.escape(enum_name)}\s*\{{", rust_text)
+    code = mask_rust_comments_and_strings(rust_text)
+    m = re.search(rf"\benum\s+{re.escape(enum_name)}\s*(?:<[^{{}};]*>)?\s*\{{", code)
     if not m:
         return set()
     _, block = _balanced_block(rust_text, m.end() - 1)
-    body = _strip_line_comments(block)[1:-1]  # drop the outer { }
+    body = mask_rust_comments_and_strings(block)[1:-1]  # drop the outer { }
     segments: list[str] = []
     depth = 0
     seg_start = 0
@@ -2972,7 +3029,7 @@ def main(argv: list[str] | None = None) -> int:
         if path_scope is not None:
             payload["path_scope"] = sorted(path_scope)
         print(json.dumps(payload, indent=2))
-        return 1 if receipt_destination is not None and regressions else 0
+        return 1 if regressions else 0
 
     if args.check or receipt_destination is not None:
         if regressions:

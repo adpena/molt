@@ -479,13 +479,15 @@ def test_nightly_uses_canonical_program_selection_and_binds_imported_fixtures(tm
     assert discovered == nightly_sharding._current_corpus_paths(root, "differential")
     assert len(discovered) == 17
     inputs = {
-        row["path"]: row["sha256"] for row in nightly_sharding._authority_inputs(root)
+        row["path"]: row["sha256"]
+        for row in nightly_sharding._authority_inputs(root).files
     }
     relative = helper.relative_to(root).as_posix()
     assert relative in inputs
     _write(helper, "VALUE = 2\n")
     changed = {
-        row["path"]: row["sha256"] for row in nightly_sharding._authority_inputs(root)
+        row["path"]: row["sha256"]
+        for row in nightly_sharding._authority_inputs(root).files
     }
     assert changed[relative] != inputs[relative]
 
@@ -507,7 +509,8 @@ def test_new_discovery_import_is_automatically_bound_by_shared_source_closure(tm
     _write(extra, "VALUE = 1\n")
     before = _plan(root)
     inputs = {
-        row["path"]: row["sha256"] for row in nightly_sharding._authority_inputs(root)
+        row["path"]: row["sha256"]
+        for row in nightly_sharding._authority_inputs(root).files
     }
     assert "src/molt/discovery_probe.py" in inputs
     _write(extra, "VALUE = 2\n")
@@ -523,3 +526,22 @@ def test_unknown_dynamic_discovery_import_cannot_produce_a_partial_plan(tmp_path
     )
     with pytest.raises(ValueError, match="dynamic"):
         _plan(root)
+
+
+def test_namespace_only_topology_invalidates_plan_and_measurement_contract(tmp_path):
+    root = _repo(tmp_path)
+    seed = root / nightly_sharding.DISCOVERY_SOURCE_SEEDS[0]
+    seed.write_text(
+        seed.read_text() + "\n__package__ = unknown\nfrom .missing import member\n"
+    )
+    before = nightly_sharding._authority_inputs(root)
+    plan = _plan(root)
+    (root / "namespace_only").mkdir()
+    after = nightly_sharding._authority_inputs(root)
+    assert before.files == after.files
+    assert before.topology_digest != after.topology_digest
+    assert nightly_sharding._measurement_contract_digest(
+        before
+    ) != nightly_sharding._measurement_contract_digest(after)
+    with pytest.raises(ValueError, match="authority inputs drift"):
+        nightly_sharding.validate_plan_envelope(plan, root)

@@ -178,8 +178,9 @@ Physical build storage and proof evidence are separate authorities. Use
 `--cargo-output-root` (submission field `cargo_output_root`) to select an existing
 absolute output directory for a Cargo proof. The selection is frozen at
 admission and survives queued or detached execution. Without an explicit
-selection, outputs remain on the result-root volume. A missing selected
-volume is an error, never a request to fall back to the system drive.
+selection, payload outputs remain on the result-root volume. Supervisor
+bootstrap intermediates use the implementation checkout's existing custody root.
+A missing selected volume is an error, never a request to fall back to the system drive.
 Queued submission logs project the persisted command and storage declaration;
 they do not reconstruct an incomplete envelope from command-line arguments.
 
@@ -189,6 +190,35 @@ generation owners and locks, immutable receipts, content-addressed evidence,
 source and toolchain custody remain at their existing canonical locations.
 The supervisor executable is copied into the existing evidence CAS before
 execution; relocating its intermediate build does not relocate that authority.
+
+Supervisor bootstrap builds share one source-path-bound store below the selected
+output root, or the implementation checkout's verified custody root when no
+output tier was declared. A fresh result directory never creates another Cargo
+build directory. If that store overlaps source or receipt custody, select an
+external output root; there is no placement fallback. One existing file lock
+serializes input capture, Cargo freshness and immutable publication. The atomic
+publication pin covers file operations only, since it forbids subprocess entry.
+One existing repository-observer scope covers the complete supervisor setup
+transaction and borrows an already active scope when present. Its nested metadata
+and linker probes still use each command's `memory_guard.run_guarded`, including
+pre-entry identity, descendant closure and scratch cleanup. The setup scope does
+not drain unrelated processes, publish an ambient sentinel marker, or cache
+linker selections across invocations. This avoids repeated Windows process-table
+baselines and sentinel start/stop cycles for each setup probe.
+Every selection still executes `cargo build --locked`; retained generation records
+never bypass Cargo. Source/local dependency files, toolchain and linker images,
+Cargo configuration, release profile and the effective environment are bound
+before the build and checked before publication. Cargo remains the only build
+freshness authority, including third-party dependencies and build scripts.
+
+The executable and generation record are published through the existing CAS.
+Each execution copies both into its own evidence root and independently checks
+the generation-to-binary binding; replay does not require the shared build store.
+Provision telemetry records fresh and compiled Cargo artifact counts. A failed
+build or changed captured input cannot publish a new generation. This bootstrap
+tool reuse does not admit warm payload Cargo targets, relax interruption closure,
+or replace native supervisor capability checks. The Python fixture cache has no
+supervisor placement or provisioning authority.
 
 Capacity admission measures the actual build-output volume against the same
 25 GiB default floor. Root identity, exact generation paths and ownership are
@@ -324,7 +354,7 @@ on both success and failure. Process cleanup lives in
 `memory_guard_core.process_custody`; guard entrypoints must not rebind that
 module's callbacks. Tests inject samplers or patch the owning module directly.
 
-Native supervisor capability v2 owns the required launch environment. The queue
+Native supervisor capability v3 owns the required launch environment. The queue
 reads it from the captured supervisor binary before toolchain, process-image,
 and source capture; both inventory and proof policies seal the effective values.
 Native policy admission rejects missing or conflicting requirements. Windows
@@ -333,6 +363,15 @@ heap debug checks or disable the low-fragmentation heap. `DEBUG_PROCESS`, job
 containment, pre-entry image admission, and descendant accounting remain active.
 Other platforms advertise their own requirements rather than inheriting a
 Windows setting. Do not replace this contract with a host environment tweak.
+
+Unavailable native launch capabilities are terminal prelaunch refusals. The
+failed execution record retains the supervisor's validated capability report
+and exact reason; no command return code, transcript, supervisor policy/receipt,
+or attested execution context is published. Queue terminal metadata remains
+explicitly non-evidence. Real queue tests use the shared capability-aware adapter
+in `tests/proof_queue_custody_test_support.py`: available capabilities retain all
+execution assertions, while unavailable capabilities must prove this refusal
+contract. Neither host-name checks nor skips/xfails replace execution coverage.
 
 Executable and derived-root identities use canonical native paths at live
 filesystem boundaries. Safe Windows prefix simplification must preserve device
@@ -368,10 +407,19 @@ reconstructing host flags or admitting every installed linker. Receipts retain
 each unit's selection provenance and frozen images; verification rehashes those
 images without repeating compiler selection. Missing custody fails before the
 requested build rather than falling back to PATH changes or copied aliases.
+Rust command-debug output may prefix the quoted driver with quoted environment
+assignments (including Linux `LC_ALL` and `PATH`). Decode those assignments before
+selecting the driver argv in both target and host-unit probes; assignment-only,
+malformed, missing, and multiple-command selections still fail closed.
 
 Guard scratch is owned by `src/molt/temporary_artifacts.py`. The parent allocates
 one short `pt-*` directory before child launch and passes it through
 `MOLT_GUARD_SCRATCH_ROOT`; pytest and guarded helpers consume that allocation.
+Scratch generation, marker and target identities use `resolve_owned_path` on
+both sides of each receipt/environment comparison. This authority rejects
+lexical links/reparse points before resolution and gives Windows DOS/UNC paths
+one spelling regardless of an extended-length prefix. Receipt digests still
+bind the original serialized bytes; parent allocation records remain immutable.
 Keep human-readable run/platform identity in receipts, not every scratch path:
 native compiler/linker descendants still have classic path-length limits.
 Nested guards rebind an inherited guard-default pytest root to their new lease;
@@ -384,7 +432,11 @@ Shared lock files are content-neutral: OS lock arbitration precedes any protecte
 work, and unused PID publication cannot race a contender's lock initialization.
 Windows requires completed empty-Job accounting; POSIX records sampled/process-
 group closure with a final sample and positive-bounded liveness probe, not a
-kernel-equivalent tree guarantee. Indeterminate closure preserves the allocation.
+kernel-equivalent tree guarantee. The guard records the original POSIX process
+group and session before its independent exit-clock reaper starts, while the
+owned child PID is still reserved. A completed child never authorizes querying
+a recycled PID or inventing missing group identity. Indeterminate closure
+preserves the allocation.
 After proven closure the parent exclusively retires the payload into its own
 `gs/<guard-token>/payload`. Only this nested payload is reclaimable from persisted
 receipts; forged metadata cannot redirect cleanup to a legacy sibling `pt-*`.
@@ -520,6 +572,23 @@ receipts remain immutable and require replay, not an acceptance fallback.
 An attributed known failure cannot mask a partial cohort, timeout, abnormal
 termination, or unexecuted isolated test. Preserve those identities as diagnostics;
 only complete execution accounting can enter the known-red acceptance check.
+
+Runtime tests that re-execute their own Cargo test image (process exit with and
+without an execution lease, the intentional pending-exception trap, cold scratch
+allocation denial, and the three call-binding trace children) run those children
+through `runtime/test_support/captured_runtime_children.rs`. It retains each
+child's complete streams in Cargo test-image custody and writes one
+source/image-bound record straight to the owning test's stderr, so libtest output
+capture cannot drop it and stdout accounting never interleaves with it.
+`tools/runtime_descendant_receipts.py` is the one consumer authority for the
+binary runner, the Cargo truth loader, and the runtime gate: each re-hashes the
+parent's full captures, re-derives its libtest rows, requires one record per
+passing owner and mode, and re-binds the image, exact argv, typed termination
+(POSIX `SIGABRT` and the Windows fast-fail status stay distinct), and retained
+streams. Saved summaries are never evidence. A descendant failure demotes only a
+binary that would otherwise succeed; an existing failure keeps its attribution.
+These receipts carry no CPython target-minor coordinate; a requested minor fails
+closed.
 
 Public ownership/memory pass contracts live in the `ownership_memory_contracts`
 Cargo integration target and link the ordinary `molt-passes` library; private
@@ -1080,11 +1149,27 @@ cache, a broad selector, or a stale generated file.
   output is a structural DX defect, not background noise.
 - If a proof lane is already active, monitor it instead of stacking another
   Cargo/WASM proof unless the new command is independent and cheap.
-- The native proof supervisor is provisioned for its run through the existing
-  Cargo custody path. Source digests and a rustc version string alone do not
-  prove a reusable build: configuration, wrappers, linkers, environment and
-  build-script inputs also matter. Do not adopt a shared supervisor binary
-  until the complete input identity is proven by the owning Cargo authority.
+- The native proof supervisor uses one source-bound bootstrap Cargo store.
+  Explicit output declarations keep their existing custody. Without a declaration,
+  canonical external checkout custody is reused; plain clones and temporary
+  sources place the store beside the source. Source and receipt overlap, links,
+  and Windows path-budget violations are rejected before provisioning.
+  Synthetic layout tests model the implementation source, receipts, and declared
+  output roots as siblings through the layout's implementation-source authority;
+  pytest temporary directories may themselves be inside the real checkout.
+- Every supervisor selection runs Cargo `build --locked`. The direct driver and
+  proof producer share the same captured-input build authority. Each local crate
+  receives its own content digest through Cargo's tracked environment inputs;
+  restored source mtimes cannot bind a new generation to an old build. Cargo
+  owns dependency propagation and registry freshness. The supervisor build script
+  tracks its digest both while compiling the script and while generating protocol
+  constants; the local publication crate tracks its digest in rustc dep-info.
+- Compiler/linker image bytes, Cargo configuration, profile, target, manifests,
+  lockfile and compiled source bytes enter the build projection. Receipt roots,
+  guard tokens and scheduling fields stay outside that projection. The complete
+  effective environment remains independently bound in the immutable generation
+  receipt. Generation and binary copies in each result CAS remain replayable
+  independently of the retained bootstrap store.
 
 ## TOML DSL
 

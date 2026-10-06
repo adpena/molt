@@ -1,5 +1,52 @@
 use super::*;
 
+/// A raw storage view must not span Python's __index__ callbacks. Promote
+/// before such a callback, including slice components; inert keys keep raw IO.
+unsafe fn specialized_key_requires_boxed_list(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    key_bits: u64,
+    expected: u32,
+) -> bool {
+    unsafe {
+        if object_type_id(ptr) != expected {
+            return true;
+        }
+        let inert = |bits| {
+            let value = obj_from_bits(bits);
+            value.is_none()
+                || index_i64_integral_bits(bits).is_some()
+                || bigint_ptr_from_bits(bits).is_some()
+                || int_subclass_value_bits_raw(bits).is_some()
+        };
+        let key = obj_from_bits(key_bits);
+        let direct = (!key.is_none() && inert(key_bits))
+            || key.as_ptr().is_some_and(|slice| {
+                object_type_id(slice) == TYPE_ID_SLICE
+                    && inert(slice_start_bits(slice))
+                    && inert(slice_stop_bits(slice))
+                    && inert(slice_step_bits(slice))
+            });
+        if !direct {
+            crate::object::ops_list::promote_specialized_list_to_list(py, ptr);
+        }
+        !direct
+    }
+}
+
+/// Physical ABI entrypoints require a live flat-storage object. A semantic
+/// list[int] annotation never permits interpreting an ordinary Vec as storage.
+fn flat_list_int_ptr(list_bits: u64) -> Option<*mut u8> {
+    if let Some(ptr) = obj_from_bits(list_bits).as_ptr()
+        && unsafe { object_type_id(ptr) == TYPE_ID_LIST_INT }
+    {
+        return Some(ptr);
+    }
+    crate::with_gil_entry_nopanic!(py, {
+        raise_exception::<Option<*mut u8>>(py, "SystemError", "flat list storage contract violated")
+    })
+}
+
 fn list_specialized_index_from_bits(index_bits: u64) -> Option<i64> {
     if let Some(i) = index_i64_integral_bits(index_bits) {
         return Some(i);
@@ -136,58 +183,65 @@ unsafe fn alloc_list_bool_from_normalized_slice(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_getitem(list_bits: u64, index_bits: u64) -> u64 {
-    let list_obj = obj_from_bits(list_bits);
-    let Some(ptr) = list_obj.as_ptr() else {
-        return MoltObject::none().bits();
-    };
-    unsafe {
-        let index_obj = obj_from_bits(index_bits);
-        if let Some(slice_ptr) = index_obj.as_ptr()
-            && object_type_id(slice_ptr) == TYPE_ID_SLICE
-        {
-            return crate::with_gil_entry_nopanic!(_py, {
-                list_int_slice_to_flat_list(_py, ptr, slice_ptr)
-            });
-        }
-        let Some(mut idx) = list_specialized_index_from_bits(index_bits) else {
+    list_int_getitem_impl(list_bits, index_bits, true)
+}
+
+pub(super) fn list_int_getitem_impl(
+    list_bits: u64,
+    index_bits: u64,
+    normalize_negative: bool,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        if exception_pending(py) {
             return MoltObject::none().bits();
+        }
+        let Some(ptr) = obj_from_bits(list_bits).as_ptr() else {
+            return if normalize_negative {
+                molt_index(list_bits, index_bits)
+            } else {
+                molt_sequence_item_builtin(list_bits, index_bits)
+            };
         };
-        let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
-        let len = storage.len as i64;
-        if idx < 0 {
-            idx += len;
+        unsafe {
+            if specialized_key_requires_boxed_list(py, ptr, index_bits, TYPE_ID_LIST_INT) {
+                if exception_pending(py) {
+                    return MoltObject::none().bits();
+                }
+                return if normalize_negative {
+                    molt_index(list_bits, index_bits)
+                } else {
+                    molt_sequence_item_builtin(list_bits, index_bits)
+                };
+            }
+            if let Some(slice) = obj_from_bits(index_bits).as_ptr()
+                && object_type_id(slice) == TYPE_ID_SLICE
+            {
+                return list_int_slice_to_flat_list(py, ptr, slice);
+            }
+            let Some(mut index) = list_specialized_index_from_bits(index_bits) else {
+                return MoltObject::none().bits();
+            };
+            let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
+            let len = storage.len as i64;
+            if normalize_negative && index < 0 {
+                index += len;
+            }
+            if index < 0 || index >= len {
+                return list_index_out_of_range_error();
+            }
+            let raw = *storage.data.add(index as usize);
+            MoltObject::from_int(raw).bits()
         }
-        if idx < 0 || idx >= len {
-            return list_index_out_of_range_error();
-        }
-        let raw_val = *storage.data.add(idx as usize);
-        MoltObject::from_int(raw_val).bits()
-    }
+    })
 }
 
 /// Raw-register fast path for list[int] getitem.
 /// Takes a raw i64 index (NOT NaN-boxed) and returns a raw i64 value (NOT NaN-boxed).
 /// Eliminates NaN-box/unbox round-trips when both index and result stay in raw_int_shadow.
-/// Returns 0 on out-of-bounds (matching Python's behavior for sieve-like patterns where
-/// the caller checks truthiness — 0 is falsy).
+/// Uses the same bounds and physical-layout contract as the checked ABI.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_getitem_raw(list_bits: u64, raw_index: i64) -> i64 {
-    let list_obj = obj_from_bits(list_bits);
-    let Some(ptr) = list_obj.as_ptr() else {
-        return 0;
-    };
-    unsafe {
-        let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
-        let len = storage.len as i64;
-        let mut idx = raw_index;
-        if idx < 0 {
-            idx += len;
-        }
-        if idx < 0 || idx >= len {
-            return 0;
-        }
-        *storage.data.add(idx as usize)
-    }
+    molt_list_int_getitem_raw_checked(list_bits, raw_index)
 }
 
 /// Raw-register list[int] getitem with Python exception semantics.
@@ -197,22 +251,22 @@ pub extern "C" fn molt_list_int_getitem_raw(list_bits: u64, raw_index: i64) -> i
 /// an exception-continuation sentinel.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_getitem_raw_checked(list_bits: u64, raw_index: i64) -> i64 {
-    let list_obj = obj_from_bits(list_bits);
-    let Some(ptr) = list_obj.as_ptr() else {
+    let Some(ptr) = flat_list_int_ptr(list_bits) else {
         return 0;
     };
     unsafe {
         let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
         let len = storage.len as i64;
-        let mut idx = raw_index;
-        if idx < 0 {
-            idx += len;
-        }
-        if idx < 0 || idx >= len {
+        let index = if raw_index < 0 {
+            raw_index + len
+        } else {
+            raw_index
+        };
+        if index < 0 || index >= len {
             let _ = list_index_out_of_range_error();
             return 0;
         }
-        *storage.data.add(idx as usize)
+        *storage.data.add(index as usize)
     }
 }
 
@@ -220,46 +274,47 @@ pub extern "C" fn molt_list_int_getitem_raw_checked(list_bits: u64, raw_index: i
 /// Expects a NaN-boxed int value — extracts raw i64 and stores directly.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_setitem(list_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
-    let list_obj = obj_from_bits(list_bits);
-    let Some(ptr) = list_obj.as_ptr() else {
-        return MoltObject::none().bits();
-    };
-    let index_obj = obj_from_bits(index_bits);
-    if let Some(slice_ptr) = index_obj.as_ptr()
-        && unsafe { object_type_id(slice_ptr) == TYPE_ID_SLICE }
-    {
-        crate::with_gil_entry_nopanic!(_py, {
-            unsafe {
-                crate::object::ops_list::promote_specialized_list_to_list(_py, ptr);
-            }
-        });
-        return molt_store_index(list_bits, index_bits, value_bits);
-    }
-    let value_obj = obj_from_bits(value_bits);
-    if !value_obj.is_int() {
-        crate::with_gil_entry_nopanic!(_py, {
-            unsafe {
-                crate::object::ops_list::promote_specialized_list_to_list(_py, ptr);
-            }
-        });
-        return molt_store_index(list_bits, index_bits, value_bits);
-    }
-    unsafe {
-        let Some(mut idx) = list_specialized_index_from_bits(index_bits) else {
+    crate::with_gil_entry_nopanic!(py, {
+        if exception_pending(py) {
             return MoltObject::none().bits();
+        }
+        let Some(ptr) = obj_from_bits(list_bits).as_ptr() else {
+            return molt_store_index(list_bits, index_bits, value_bits);
         };
-        let raw_value = value_obj.as_int_unchecked();
-        let storage = &mut *crate::object::layout::list_int_storage_ptr(ptr);
-        let len = storage.len as i64;
-        if idx < 0 {
-            idx += len;
+        unsafe {
+            if specialized_key_requires_boxed_list(py, ptr, index_bits, TYPE_ID_LIST_INT) {
+                if exception_pending(py) {
+                    return MoltObject::none().bits();
+                }
+                return molt_store_index(list_bits, index_bits, value_bits);
+            }
+            let slice = obj_from_bits(index_bits)
+                .as_ptr()
+                .is_some_and(|key| object_type_id(key) == TYPE_ID_SLICE);
+            let admitted = crate::object::layout::InlineListInt::from_bits(value_bits);
+            if slice || admitted.is_none() {
+                crate::object::ops_list::promote_specialized_list_to_list(py, ptr);
+                if exception_pending(py) {
+                    return MoltObject::none().bits();
+                }
+                return molt_store_index(list_bits, index_bits, value_bits);
+            }
+            let value = admitted.unwrap();
+            let Some(mut index) = list_specialized_index_from_bits(index_bits) else {
+                return MoltObject::none().bits();
+            };
+            let storage = &mut *crate::object::layout::list_int_storage_ptr(ptr);
+            let len = storage.len as i64;
+            if index < 0 {
+                index += len;
+            }
+            if index < 0 || index >= len {
+                return list_assignment_out_of_range_error();
+            }
+            *storage.data.add(index as usize) = value.raw();
+            list_bits
         }
-        if idx < 0 || idx >= len {
-            return list_assignment_out_of_range_error();
-        }
-        *storage.data.add(idx as usize) = raw_value;
-        list_bits
-    }
+    })
 }
 
 /// Get element from a specialized list[bool].
@@ -267,149 +322,145 @@ pub extern "C" fn molt_list_int_setitem(list_bits: u64, index_bits: u64, value_b
 /// No refcounting needed -- bools are inline NaN-boxed values.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_bool_getitem(list_bits: u64, index_bits: u64) -> u64 {
-    let list_obj = obj_from_bits(list_bits);
-    let Some(ptr) = list_obj.as_ptr() else {
-        return MoltObject::none().bits();
-    };
-    unsafe {
-        let index_obj = obj_from_bits(index_bits);
-        if let Some(slice_ptr) = index_obj.as_ptr()
-            && object_type_id(slice_ptr) == TYPE_ID_SLICE
-        {
-            return crate::with_gil_entry_nopanic!(_py, {
-                list_bool_slice_to_flat_list(_py, ptr, slice_ptr)
-            });
-        }
-        let Some(mut idx) = list_specialized_index_from_bits(index_bits) else {
+    list_bool_getitem_impl(list_bits, index_bits, true)
+}
+
+pub(super) fn list_bool_getitem_impl(
+    list_bits: u64,
+    index_bits: u64,
+    normalize_negative: bool,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(py, {
+        if exception_pending(py) {
             return MoltObject::none().bits();
+        }
+        let Some(ptr) = obj_from_bits(list_bits).as_ptr() else {
+            return if normalize_negative {
+                molt_index(list_bits, index_bits)
+            } else {
+                molt_sequence_item_builtin(list_bits, index_bits)
+            };
         };
-        let storage = &*crate::object::layout::list_bool_storage_ptr(ptr);
-        let len = storage.len as i64;
-        if idx < 0 {
-            idx += len;
+        unsafe {
+            if specialized_key_requires_boxed_list(py, ptr, index_bits, TYPE_ID_LIST_BOOL) {
+                if exception_pending(py) {
+                    return MoltObject::none().bits();
+                }
+                return if normalize_negative {
+                    molt_index(list_bits, index_bits)
+                } else {
+                    molt_sequence_item_builtin(list_bits, index_bits)
+                };
+            }
+            if let Some(slice) = obj_from_bits(index_bits).as_ptr()
+                && object_type_id(slice) == TYPE_ID_SLICE
+            {
+                return list_bool_slice_to_flat_list(py, ptr, slice);
+            }
+            let Some(mut index) = list_specialized_index_from_bits(index_bits) else {
+                return MoltObject::none().bits();
+            };
+            let storage = &*crate::object::layout::list_bool_storage_ptr(ptr);
+            let len = storage.len as i64;
+            if normalize_negative && index < 0 {
+                index += len;
+            }
+            if index < 0 || index >= len {
+                return list_index_out_of_range_error();
+            }
+            let raw = *storage.data.add(index as usize);
+            MoltObject::from_bool(raw != 0).bits()
         }
-        if idx < 0 || idx >= len {
-            return list_index_out_of_range_error();
-        }
-        let raw_val = *storage.data.add(idx as usize);
-        MoltObject::from_bool(raw_val != 0).bits()
-    }
+    })
 }
 
 /// Set element in a specialized list[bool].
-/// Accepts NaN-boxed bool or int value -- converts to u8 (0 or 1).
+/// Accepts exact bools; every other owner promotes into canonical boxed storage.
 /// No refcounting needed -- bools are inline NaN-boxed values.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_bool_setitem(list_bits: u64, index_bits: u64, value_bits: u64) -> u64 {
-    let list_obj = obj_from_bits(list_bits);
-    let Some(ptr) = list_obj.as_ptr() else {
-        return MoltObject::none().bits();
-    };
-    let index_obj = obj_from_bits(index_bits);
-    if let Some(slice_ptr) = index_obj.as_ptr()
-        && unsafe { object_type_id(slice_ptr) == TYPE_ID_SLICE }
-    {
-        crate::with_gil_entry_nopanic!(_py, {
-            unsafe {
-                crate::object::ops_list::promote_specialized_list_to_list(_py, ptr);
-            }
-        });
-        return molt_store_index(list_bits, index_bits, value_bits);
-    }
-    let value_obj = obj_from_bits(value_bits);
-    let Some(value_bool) = value_obj.as_bool() else {
-        crate::with_gil_entry_nopanic!(_py, {
-            unsafe {
-                crate::object::ops_list::promote_specialized_list_to_list(_py, ptr);
-            }
-        });
-        return molt_store_index(list_bits, index_bits, value_bits);
-    };
-    unsafe {
-        let Some(mut idx) = list_specialized_index_from_bits(index_bits) else {
+    crate::with_gil_entry_nopanic!(py, {
+        if exception_pending(py) {
             return MoltObject::none().bits();
+        }
+        let Some(ptr) = obj_from_bits(list_bits).as_ptr() else {
+            return molt_store_index(list_bits, index_bits, value_bits);
         };
-        let raw_value: u8 = if value_bool { 1 } else { 0 };
-        let storage = &mut *crate::object::layout::list_bool_storage_ptr(ptr);
-        let len = storage.len as i64;
-        if idx < 0 {
-            idx += len;
+        unsafe {
+            if specialized_key_requires_boxed_list(py, ptr, index_bits, TYPE_ID_LIST_BOOL) {
+                if exception_pending(py) {
+                    return MoltObject::none().bits();
+                }
+                return molt_store_index(list_bits, index_bits, value_bits);
+            }
+            let slice = obj_from_bits(index_bits)
+                .as_ptr()
+                .is_some_and(|key| object_type_id(key) == TYPE_ID_SLICE);
+            let admitted = obj_from_bits(value_bits).as_bool();
+            if slice || admitted.is_none() {
+                crate::object::ops_list::promote_specialized_list_to_list(py, ptr);
+                if exception_pending(py) {
+                    return MoltObject::none().bits();
+                }
+                return molt_store_index(list_bits, index_bits, value_bits);
+            }
+            let value = admitted.unwrap();
+            let Some(mut index) = list_specialized_index_from_bits(index_bits) else {
+                return MoltObject::none().bits();
+            };
+            let storage = &mut *crate::object::layout::list_bool_storage_ptr(ptr);
+            let len = storage.len as i64;
+            if index < 0 {
+                index += len;
+            }
+            if index < 0 || index >= len {
+                return list_assignment_out_of_range_error();
+            }
+            *storage.data.add(index as usize) = u8::from(value);
+            list_bits
         }
-        if idx < 0 || idx >= len {
-            return list_assignment_out_of_range_error();
-        }
-        *storage.data.add(idx as usize) = raw_value;
-        list_bits
-    }
+    })
 }
 
-/// Return the raw data pointer of a list (regular or list_int).
-///
-/// For list_int: reads from `ListIntStorage.data` (`#[repr(C)]`, offset 0).
-/// For regular lists: reads from `Vec<u64>.as_ptr()`.
-/// The returned pointer is valid only as long as the list is not resized.
+/// Borrow the flat inline-integer data pointer until mutation or escape.
+/// The caller must hold a current physical storage proof, not a semantic type.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_data(list_bits: u64) -> u64 {
-    let list_obj = obj_from_bits(list_bits);
-    let Some(ptr) = list_obj.as_ptr() else {
+    let Some(ptr) = flat_list_int_ptr(list_bits) else {
         return 0;
     };
-    unsafe {
-        // Check if this is a list_int (ListIntStorage) or regular list (Vec<u64>)
-        let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
-        storage.data as u64
-    }
+    unsafe { (*crate::object::layout::list_int_storage_ptr(ptr)).data as u64 }
 }
 
-/// Return the length of a list (regular or list_int) as a raw u64.
+/// Return the length of an admitted flat inline-integer list as a raw u64.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_len_raw(list_bits: u64) -> u64 {
-    let list_obj = obj_from_bits(list_bits);
-    let Some(ptr) = list_obj.as_ptr() else {
+    let Some(ptr) = flat_list_int_ptr(list_bits) else {
         return 0;
     };
-    unsafe {
-        let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
-        storage.len as u64
-    }
+    unsafe { (*crate::object::layout::list_int_storage_ptr(ptr)).len as u64 }
 }
 
 /// Get length of a specialized list[int].
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_len(list_bits: u64) -> u64 {
-    let list_obj = obj_from_bits(list_bits);
-    let Some(ptr) = list_obj.as_ptr() else {
-        return MoltObject::from_int(0).bits();
-    };
-    unsafe {
-        let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
-        MoltObject::from_int(storage.len as i64).bits()
-    }
+    molt_len(list_bits)
 }
 
 /// Check if value is truthy in a specialized list[int] element context.
 /// Raw i64: 0 is falsy, everything else is truthy.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_getitem_truthy(list_bits: u64, index_bits: u64) -> u64 {
-    let list_obj = obj_from_bits(list_bits);
-    let Some(ptr) = list_obj.as_ptr() else {
-        return MoltObject::from_bool(false).bits();
-    };
-    unsafe {
-        let Some(mut idx) = list_specialized_index_from_bits(index_bits) else {
-            return MoltObject::from_bool(false).bits();
-        };
-        let storage = &*crate::object::layout::list_int_storage_ptr(ptr);
-        let len = storage.len as i64;
-        if idx < 0 {
-            idx += len;
+    crate::with_gil_entry_nopanic!(_py, {
+        let item = molt_list_int_getitem(list_bits, index_bits);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, item);
+            return MoltObject::none().bits();
         }
-        if idx < 0 || idx >= len {
-            return MoltObject::from_bool(false).bits();
-        }
-        let raw_val = *storage.data.add(idx as usize);
-        MoltObject::from_bool(raw_val != 0).bits()
-    }
+        let result = MoltObject::from_bool(is_truthy(_py, obj_from_bits(item))).bits();
+        dec_ref_bits(_py, item);
+        result
+    })
 }
 
 /// Unchecked list getitem — used when BCE (Bounds Check Elimination) has proven
@@ -417,7 +468,8 @@ pub extern "C" fn molt_list_int_getitem_truthy(list_bits: u64, index_bits: u64) 
 ///
 /// # Safety
 /// The caller guarantees:
-///   - `list_bits` is a valid NaN-boxed heap pointer to a TYPE_ID_LIST object.
+///   - `list_bits` is a valid NaN-boxed heap pointer to an exact builtin list
+///     with TYPE_ID_LIST storage; a List type hint does not establish this.
 ///   - `0 <= index < len(list)` — no bounds check is performed.
 ///   - The list is not mutated concurrently (GIL must be held by the caller).
 ///
@@ -464,6 +516,11 @@ pub extern "C" fn molt_list_getitem_int_fast(list_bits: u64, index_bits: u64) ->
         return molt_index(list_bits, index_bits);
     };
     unsafe {
+        // A semantic List hint does not prove the builtin Python class.
+        // Class-bearing receivers re-enter source special-method dispatch.
+        if object_class_bits(ptr) != 0 {
+            return molt_index(list_bits, index_bits);
+        }
         // 3. Must actually be a list (regular or specialized).
         let tid = object_type_id(ptr);
         if tid == TYPE_ID_LIST_BOOL {
@@ -514,30 +571,32 @@ pub extern "C" fn molt_list_getitem_int_fast(list_bits: u64, index_bits: u64) ->
 #[unsafe(no_mangle)]
 #[inline(never)]
 pub extern "C" fn molt_list_getitem_raw_idx(list_bits: u64, raw_idx: i64) -> u64 {
-    let list_obj = obj_from_bits(list_bits);
-    let Some(ptr) = list_obj.as_ptr() else {
-        // Not a pointer — fall back to generic path by boxing the index
-        return molt_list_getitem_int_fast(list_bits, MoltObject::from_int(raw_idx).bits());
-    };
-    unsafe {
-        if object_type_id(ptr) != TYPE_ID_LIST {
-            return molt_list_getitem_int_fast(list_bits, MoltObject::from_int(raw_idx).bits());
+    if let Some(ptr) = obj_from_bits(list_bits).as_ptr() {
+        unsafe {
+            if object_type_id(ptr) == TYPE_ID_LIST && object_class_bits(ptr) == 0 {
+                let len = crate::object::seq_access::len(ptr) as i64;
+                let index = if raw_idx < 0 { raw_idx + len } else { raw_idx };
+                if index >= 0 && index < len {
+                    let mut value = 0;
+                    if crate::object::seq_access::read_item_owned(ptr, index as usize, &mut value)
+                        != 0
+                    {
+                        return value;
+                    }
+                }
+            }
         }
-        let mut idx = raw_idx;
-        let len = crate::object::seq_access::len(ptr) as i64;
-        if idx < 0 {
-            idx += len;
-        }
-        if idx < 0 || idx >= len {
-            // Out of bounds — fall back to generic path which raises IndexError
-            return molt_list_getitem_int_fast(list_bits, MoltObject::from_int(raw_idx).bits());
-        }
-        let mut val = 0;
-        if crate::object::seq_access::read_item_owned(ptr, idx as usize, &mut val) == 0 {
-            return molt_list_getitem_int_fast(list_bits, MoltObject::from_int(raw_idx).bits());
-        }
-        val
     }
+    crate::with_gil_entry_nopanic!(_py, {
+        let index = int_bits_from_i64(_py, raw_idx);
+        if exception_pending(_py) {
+            dec_ref_bits(_py, index);
+            return MoltObject::none().bits();
+        }
+        let value = molt_index(list_bits, index);
+        dec_ref_bits(_py, index);
+        value
+    })
 }
 
 // ── Specialized list[int] operations ────────────────────────────────
@@ -545,46 +604,16 @@ pub extern "C" fn molt_list_getitem_raw_idx(list_bits: u64, raw_idx: i64) -> u64
 // When the compiler proves a list contains only integers, it uses these
 // specialized functions that store raw i64 values without NaN-boxing.
 // Element access is a single array load + box_int on return.
-// No refcounting needed (ints are NaN-boxed inline, not heap-allocated).
-
-/// Allocate a specialized list[int] with raw i64 storage.
-/// Elements are stored as raw i64 (NOT NaN-boxed).
-/// Returns a NaN-boxed pointer to the list object.
+// A supplied inline integer selects flat storage. Every other Python value
+// remains in boxed list storage with its original object ownership.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_int_new(count: u64, fill_value: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        // Both arguments are NaN-boxed — unbox the count
-        let count_obj = obj_from_bits(count);
-        let n = if count_obj.is_int() {
-            let v = count_obj.as_int_unchecked();
-            if v < 0 { 0usize } else { v as usize }
-        } else if count_obj.is_bool() {
-            if count_obj.as_bool().unwrap_or(false) {
-                1
-            } else {
-                0
-            }
-        } else {
+        let Some(count) = crate::object::ops_arith::sequence_repeat_count(_py, count) else {
             return MoltObject::none().bits();
         };
-        // Extract raw int from the NaN-boxed fill value
-        let fill_obj = obj_from_bits(fill_value);
-        let fill_raw = if fill_obj.is_none() {
-            0i64
-        } else if fill_obj.is_int() {
-            fill_obj.as_int_unchecked()
-        } else if fill_obj.is_bool() {
-            if fill_obj.as_bool().unwrap_or(false) {
-                1i64
-            } else {
-                0i64
-            }
-        } else {
-            // Not an int — fall back to regular list
-            return MoltObject::none().bits();
-        };
-
-        match crate::object::builders::alloc_list_int_filled(_py, n, fill_raw) {
+        let len = count.max(0) as usize;
+        match crate::object::builders::alloc_list_int_from_fill(_py, len, fill_value) {
             Ok(ptr) => MoltObject::from_ptr(ptr).bits(),
             Err(bits) => bits,
         }
@@ -594,52 +623,22 @@ pub extern "C" fn molt_list_int_new(count: u64, fill_value: u64) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_list_fill_new(count: u64, fill_value: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let count_obj = obj_from_bits(count);
-        let n = if let Some(v) = count_obj.as_int() {
-            if v < 0 { 0usize } else { v as usize }
-        } else if count_obj.is_bool() {
-            if count_obj.as_bool().unwrap_or(false) {
-                1usize
-            } else {
-                0usize
-            }
-        } else {
+        let Some(count) = crate::object::ops_arith::sequence_repeat_count(_py, count) else {
             return MoltObject::none().bits();
         };
-
-        let total = std::mem::size_of::<crate::object::MoltHeader>()
-            + std::mem::size_of::<*mut crate::object::DataclassDesc>()
-            + std::mem::size_of::<*mut Vec<u64>>()
-            + std::mem::size_of::<u64>();
-        let ptr =
-            alloc_object_with_aux(_py, total, TYPE_ID_LIST, ObjectAuxPreselection::ClassInline);
+        let ptr = crate::object::builders::alloc_list_filled(
+            _py,
+            count.max(0) as usize,
+            obj_from_bits(fill_value),
+        );
         if ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        unsafe {
-            let Some(vec_ptr) = crate::object::backing::tracked_vec_box_with_capacity::<u64>(n)
-            else {
-                dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-                return raise_exception::<_>(_py, "MemoryError", "list allocation failed");
-            };
-            (*vec_ptr).resize(n, fill_value);
-            crate::object::backing::tracked_vec_set_heap_edge_count(
-                vec_ptr,
-                usize::from(crate::object::refcount_opt::is_heap_ref(fill_value)).saturating_mul(n),
-            );
-            *(ptr as *mut *mut Vec<u64>) = vec_ptr;
-            if let Some(fill_ptr) = obj_from_bits(fill_value).as_ptr() {
-                let mut remaining = n;
-                while remaining > 0 {
-                    let batch = remaining.min(u32::MAX as usize) as u32;
-                    crate::object::inc_ref_n_ptr(_py, fill_ptr, batch);
-                    remaining -= batch as usize;
-                }
-                (*header_from_obj_ptr(ptr))
-                    .fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+            if !exception_pending(_py) {
+                crate::record_memory_error_without_allocation(_py);
             }
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
         }
-        MoltObject::from_ptr(ptr).bits()
     })
 }
 
@@ -716,6 +715,176 @@ mod tests {
 
             dec_ref_bits(_py, copy_bits);
             dec_ref_bits(_py, source_bits);
+        });
+    }
+
+    fn owner_count(bits: u64) -> u32 {
+        unsafe {
+            (*header_from_obj_ptr(obj_from_bits(bits).as_ptr().unwrap())).ref_count_snapshot()
+        }
+    }
+
+    #[test]
+    fn heap_fill_copy_slice_repeat_retain_original_owner() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let fill = int_bits_from_i64(py, 1_i64 << 62);
+            let list = molt_list_int_new(MoltObject::from_int(3).bits(), fill);
+            assert_eq!(
+                unsafe { object_type_id(obj_from_bits(list).as_ptr().unwrap()) },
+                TYPE_ID_LIST
+            );
+            let copy = crate::object::ops_list::molt_list_copy(list);
+            let slice = molt_slice_new(
+                MoltObject::none().bits(),
+                MoltObject::none().bits(),
+                MoltObject::none().bits(),
+            );
+            let sliced = molt_list_int_getitem(list, slice);
+            let repeated = crate::object::ops_arith::molt_mul(list, MoltObject::from_int(2).bits());
+            assert!(!exception_pending(py));
+            assert_eq!(
+                owner_count(fill),
+                16,
+                "external owner and 3 + 3 + 3 + 6 list slots"
+            );
+            for container in [list, copy, sliced, repeated] {
+                let later = molt_list_int_getitem(container, MoltObject::from_int(-1).bits());
+                assert_eq!(later, fill);
+                dec_ref_bits(py, later);
+            }
+            for bits in [repeated, sliced, slice, copy, list] {
+                dec_ref_bits(py, bits);
+            }
+            assert_eq!(owner_count(fill), 1);
+            dec_ref_bits(py, fill);
+        });
+    }
+
+    #[test]
+    fn raw_builder_family_boxes_occurrences_once_and_repeats_owners() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let wide = 1_i64 << 62;
+            let mut visited = Vec::new();
+            let iter = crate::object::builders::alloc_list_int_from_raw_iter(py, 3, |index| {
+                visited.push(index);
+                [1, wide, wide][index]
+            })
+            .unwrap();
+            assert_eq!(visited, [0, 1, 2]);
+            assert_eq!(unsafe { object_type_id(iter) }, TYPE_ID_LIST);
+            let repeated = crate::object::builders::alloc_list_int_from_repeated_raw_slice(
+                py,
+                &[wide, wide],
+                2,
+            )
+            .unwrap();
+            let bits = MoltObject::from_ptr(repeated).bits();
+            let first = molt_list_int_getitem(bits, MoltObject::from_int(0).bits());
+            let second = molt_list_int_getitem(bits, MoltObject::from_int(1).bits());
+            let again = molt_list_int_getitem(bits, MoltObject::from_int(2).bits());
+            assert_eq!(first, again);
+            assert_ne!(
+                first, second,
+                "equal raw source occurrences acquire distinct owners"
+            );
+            assert_eq!(owner_count(first), 4, "two list slots and two read owners");
+            for value in [
+                first,
+                second,
+                again,
+                bits,
+                MoltObject::from_ptr(iter).bits(),
+            ] {
+                dec_ref_bits(py, value);
+            }
+            let filled = crate::object::builders::alloc_list_int_filled(py, 3, wide).unwrap();
+            let bits = MoltObject::from_ptr(filled).bits();
+            let first = molt_list_int_getitem(bits, MoltObject::from_int(0).bits());
+            let last = molt_list_int_getitem(bits, MoltObject::from_int(2).bits());
+            assert_eq!(first, last, "raw fill materializes one shared owner");
+            for value in [first, last, bits] {
+                dec_ref_bits(py, value);
+            }
+            let empty =
+                crate::object::builders::alloc_list_int_from_repeated_raw_slice(py, &[wide], 0)
+                    .unwrap();
+            assert_eq!(unsafe { crate::list_len(empty) }, 0);
+            dec_ref_bits(py, MoltObject::from_ptr(empty).bits());
+            assert!(!exception_pending(py));
+        });
+    }
+
+    #[test]
+    fn promoted_storage_redispatches_boxed_access_and_rejects_raw_abi() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let fill = int_bits_from_i64(py, 1_i64 << 62);
+            for boolean in [false, true] {
+                let ptr = if boolean {
+                    crate::object::builders::alloc_list_bool_from_raw_slice(py, &[0, 1]).unwrap()
+                } else {
+                    crate::object::builders::alloc_list_int_from_raw_slice(py, &[0, 1]).unwrap()
+                };
+                let bits = MoltObject::from_ptr(ptr).bits();
+                let index = MoltObject::from_int(0).bits();
+                if boolean {
+                    molt_list_bool_setitem(bits, index, fill);
+                } else {
+                    molt_list_int_setitem(bits, index, fill);
+                }
+                assert_eq!(unsafe { object_type_id(ptr) }, TYPE_ID_LIST);
+                let read = if boolean {
+                    molt_list_bool_getitem(bits, index)
+                } else {
+                    molt_list_int_getitem(bits, index)
+                };
+                assert_eq!(read, fill);
+                dec_ref_bits(py, read);
+                assert_eq!(molt_list_int_data(bits), 0);
+                assert!(exception_pending(py));
+                clear_exception(py);
+                assert_eq!(molt_list_int_getitem_raw_checked(bits, 0), 0);
+                assert!(exception_pending(py));
+                clear_exception(py);
+                dec_ref_bits(py, bits);
+            }
+            assert_eq!(owner_count(fill), 1);
+            dec_ref_bits(py, fill);
+        });
+    }
+
+    #[test]
+    fn denied_promotion_keeps_original_flat_payload_and_owners() {
+        use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                set_tracker(Box::new(UnlimitedTracker));
+            }
+        }
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let ptr = crate::object::builders::alloc_list_int_from_raw_slice(py, &[1, 2]).unwrap();
+            let bits = MoltObject::from_ptr(ptr).bits();
+            let fill = int_bits_from_i64(py, 1_i64 << 62);
+            let data = molt_list_int_data(bits);
+            set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
+                max_memory: Some(0),
+                ..Default::default()
+            })));
+            let reset = Reset;
+            molt_list_int_setitem(bits, MoltObject::from_int(0).bits(), fill);
+            assert!(exception_pending(py));
+            drop(reset);
+            clear_exception(py);
+            assert_eq!(unsafe { object_type_id(ptr) }, TYPE_ID_LIST_INT);
+            assert_eq!(molt_list_int_data(bits), data);
+            assert_eq!(molt_list_int_getitem_raw_checked(bits, 0), 1);
+            assert_eq!(owner_count(fill), 1);
+            dec_ref_bits(py, bits);
+            dec_ref_bits(py, fill);
         });
     }
 }

@@ -1,14 +1,56 @@
 use super::class_storage::ClassReferenceSlot;
 use crate::{
-    MoltObject, PyToken, TYPE_ID_CLASSMETHOD, TYPE_ID_CODE, TYPE_ID_DICT,
+    MoltObject, PyToken, TYPE_ID_CLASSMETHOD, TYPE_ID_CODE, TYPE_ID_LIST, TYPE_ID_MODULE,
     TYPE_ID_NATIVE_DESCRIPTOR, TYPE_ID_PROPERTY, TYPE_ID_STATICMETHOD, TYPE_ID_STRING,
     TYPE_ID_TUPLE, alloc_code_obj, alloc_string, alloc_tuple, builtin_classes_if_initialized,
-    dec_ref_bits, dict_get_in_place, inc_ref_bits, intern_static_name, obj_from_bits,
-    object_class_bits, object_type_id, runtime_state, string_bytes, string_len,
+    dec_ref_bits, inc_ref_bits, obj_from_bits, object_class_bits, object_type_id, string_bytes,
+    string_len,
 };
 
 pub(crate) unsafe fn seq_vec_ptr(ptr: *mut u8) -> *mut Vec<u64> {
     unsafe { *(ptr as *mut *mut Vec<u64>) }
+}
+
+/// Inline string/bytes storage is `[len, data[0..len], 0]` after MoltHeader.
+/// The trailing NUL is owned storage outside the logical byte length. Native
+/// subtype fields start after this complete extent, including the terminator.
+#[repr(C)]
+pub(crate) struct InlineBytesStorage {
+    len: usize,
+    data: [u8; 0],
+}
+
+impl InlineBytesStorage {
+    #[inline]
+    pub(crate) fn payload_size(len: usize) -> Option<usize> {
+        std::mem::size_of::<Self>().checked_add(len)?.checked_add(1)
+    }
+
+    #[inline]
+    pub(crate) fn object_size(len: usize) -> Option<usize> {
+        super::checked_object_total_size(Self::payload_size(len)?)
+    }
+
+    #[inline]
+    pub(crate) unsafe fn len(object: *mut u8) -> usize {
+        unsafe { (*object.cast::<Self>()).len }
+    }
+
+    #[inline]
+    pub(crate) unsafe fn data(object: *mut u8) -> *mut u8 {
+        unsafe { object.add(std::mem::size_of::<Self>()) }
+    }
+
+    /// The allocation must hold payload_size(len) writable bytes. Set only on
+    /// unpublished storage or a uniquely owned exact string whose size changes;
+    /// a native subtype's immutable length fixes its field offset permanently.
+    #[inline]
+    pub(crate) unsafe fn set_len(object: *mut u8, len: usize) {
+        unsafe {
+            Self::data(object).add(len).write(0);
+            (*object.cast::<Self>()).len = len;
+        }
+    }
 }
 
 /// Exact inline storage for `TYPE_ID_TUPLE` objects.
@@ -54,7 +96,25 @@ pub(crate) unsafe fn tuple_storage_items_mut(ptr: *mut u8) -> *mut u64 {
     unsafe { ptr.add(std::mem::size_of::<TupleStorage>()).cast::<u64>() }
 }
 
+/// Admission token for a raw list slot. Heap integers retain their Python
+/// owners in ordinary lists; numerical equality cannot reconstruct that owner.
+#[derive(Clone, Copy)]
+pub(crate) struct InlineListInt(i64);
+
+impl InlineListInt {
+    pub(crate) fn from_raw(value: i64) -> Option<Self> {
+        molt_codegen_abi::fits_inline_int(value).then_some(Self(value))
+    }
+    pub(crate) fn from_bits(bits: u64) -> Option<Self> {
+        MoltObject::from_bits(bits).as_int().map(Self)
+    }
+    pub(crate) fn raw(self) -> i64 {
+        self.0
+    }
+}
+
 /// Layout-stable storage for `TYPE_ID_LIST_INT` objects.
+/// Every slot is admitted by InlineListInt; no heap owner is erased.
 ///
 /// `#[repr(C)]` guarantees field order: `[data, len, cap]` at offsets `[0, 8, 16]`.
 /// The Cranelift inline codegen depends on these offsets for direct load/store
@@ -112,44 +172,13 @@ impl ListIntStorage {
         Self::from_reserved_vec(vec, Self::owner_bytes(), actual_buffer)
     }
 
-    pub fn filled(len: usize, value: i64) -> Option<*mut ListIntStorage> {
+    pub(crate) fn filled(len: usize, value: InlineListInt) -> Option<*mut ListIntStorage> {
         let ptr = Self::with_capacity(len)?;
         unsafe {
             let storage = &mut *ptr;
             let vec = Vec::from_raw_parts(storage.data, storage.len, storage.cap);
             let mut vec = vec;
-            vec.resize(len, value);
-            storage.data = vec.as_mut_ptr();
-            storage.len = vec.len();
-            storage.cap = vec.capacity();
-            std::mem::forget(vec);
-        }
-        Some(ptr)
-    }
-
-    pub fn from_slice(slice: &[i64]) -> Option<*mut ListIntStorage> {
-        let ptr = Self::with_capacity(slice.len())?;
-        unsafe {
-            let storage = &mut *ptr;
-            let mut vec = Vec::from_raw_parts(storage.data, storage.len, storage.cap);
-            vec.extend_from_slice(slice);
-            storage.data = vec.as_mut_ptr();
-            storage.len = vec.len();
-            storage.cap = vec.capacity();
-            std::mem::forget(vec);
-        }
-        Some(ptr)
-    }
-
-    pub fn repeated_slice(slice: &[i64], times: usize) -> Option<*mut ListIntStorage> {
-        let total = slice.len().checked_mul(times)?;
-        let ptr = Self::with_capacity(total)?;
-        unsafe {
-            let storage = &mut *ptr;
-            let mut vec = Vec::from_raw_parts(storage.data, storage.len, storage.cap);
-            for _ in 0..times {
-                vec.extend_from_slice(slice);
-            }
+            vec.resize(len, value.raw());
             storage.data = vec.as_mut_ptr();
             storage.len = vec.len();
             storage.cap = vec.capacity();
@@ -257,12 +286,12 @@ impl ListIntStorage {
     /// # Safety
     /// `self` must be a valid, heap-allocated `ListIntStorage` whose `data`
     /// pointer owns its buffer (as established by `from_vec`).
-    pub unsafe fn push(&mut self, value: i64) -> bool {
+    pub(crate) unsafe fn push(&mut self, value: InlineListInt) -> bool {
         if self.len == self.cap && !unsafe { self.reserve_for_len(self.len.saturating_add(1)) } {
             return false;
         }
         unsafe {
-            std::ptr::write(self.data.add(self.len), value);
+            std::ptr::write(self.data.add(self.len), value.raw());
         }
         self.len += 1;
         true
@@ -854,39 +883,32 @@ pub(crate) unsafe fn function_arity_usize(ptr: *mut u8) -> Option<usize> {
     unsafe { usize::try_from(function_arity(ptr)).ok() }
 }
 
-#[allow(dead_code)]
+/// Physical dictionary slot shared by public attributes, instance storage,
+/// and lifecycle traversal. Typed callable metadata is separate. Capability is a class
+/// declaration; the physical slot alone does not expose a public __dict__.
+pub(crate) unsafe fn function_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
+    unsafe { ptr.add(2 * std::mem::size_of::<u64>()).cast() }
+}
+
+#[cfg(test)]
 pub(crate) unsafe fn function_dict_bits(ptr: *mut u8) -> u64 {
-    unsafe { *(ptr.add(2 * std::mem::size_of::<u64>()) as *const u64) }
+    unsafe { *function_dict_bits_ptr(ptr) }
 }
 
 pub(crate) unsafe fn function_name_bits(_py: &PyToken<'_>, ptr: *mut u8) -> u64 {
+    use super::function_metadata::FunctionMetadataField as Field;
     unsafe {
-        let dict_bits = function_dict_bits(ptr);
-        if dict_bits != 0
-            && let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
-            && object_type_id(dict_ptr) == TYPE_ID_DICT
-        {
-            let qual_bits = intern_static_name(
-                _py,
-                &runtime_state(_py).interned.qualname_name,
-                b"__qualname__",
-            );
-            if let Some(bits) = dict_get_in_place(_py, dict_ptr, qual_bits) {
-                return bits;
-            }
-            let name_bits =
-                intern_static_name(_py, &runtime_state(_py).interned.name_name, b"__name__");
-            if let Some(bits) = dict_get_in_place(_py, dict_ptr, name_bits) {
-                return bits;
-            }
-        }
-        MoltObject::none().bits()
+        Field::QualName
+            .load(ptr)
+            .or_else(|| Field::Name.load(ptr))
+            .unwrap_or_else(|| MoltObject::none().bits())
     }
 }
 
+#[cfg(test)]
 pub(crate) unsafe fn function_set_dict_bits(ptr: *mut u8, bits: u64) {
     unsafe {
-        *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = bits;
+        *function_dict_bits_ptr(ptr) = bits;
     }
 }
 
@@ -919,14 +941,103 @@ impl FunctionCallAbi {
     }
 }
 
-pub(crate) unsafe fn function_call_abi(ptr: *mut u8) -> FunctionCallAbi {
+/// Custody of the Python arguments at a compiled direct entry, published with
+/// its executable identity. An adopting entry owns each Python parameter from
+/// entry until its frame releases it: the runtime retains borrowed arguments
+/// before invoking it and moves a call instruction's adopted arguments into
+/// it. The execution closure or runtime context argument is never adopted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EntryCustody {
+    Borrowing,
+    Adopting,
+}
+
+/// A call-ABI word holds the `FunctionCallAbi` discriminant with the entry
+/// custody in bit 8; every other bit is zero. Function slot 12 and code slot
+/// 21 share the encoding.
+const CALL_ABI_ADOPTING_BIT: u64 = 1 << 8;
+
+fn call_abi_word(call_abi: FunctionCallAbi, custody: EntryCustody) -> u64 {
+    let adopting = match custody {
+        EntryCustody::Borrowing => 0,
+        EntryCustody::Adopting => CALL_ABI_ADOPTING_BIT,
+    };
+    call_abi as u64 | adopting
+}
+
+fn decode_call_abi_word(raw: u64, owner: &str) -> (FunctionCallAbi, EntryCustody) {
+    let call_abi = match raw & !CALL_ABI_ADOPTING_BIT {
+        0 => FunctionCallAbi::Positional,
+        1 => FunctionCallAbi::LexicalClosureFirst,
+        2 => FunctionCallAbi::OpaqueContextFirst,
+        _ => panic!("invalid {owner} call ABI {raw}"),
+    };
+    let custody = if raw & CALL_ABI_ADOPTING_BIT == 0 {
+        EntryCustody::Borrowing
+    } else {
+        EntryCustody::Adopting
+    };
+    (call_abi, custody)
+}
+
+unsafe fn function_call_abi_word(ptr: *mut u8) -> (FunctionCallAbi, EntryCustody) {
     unsafe {
-        match *(ptr.add(12 * std::mem::size_of::<u64>()) as *const u64) {
-            0 => FunctionCallAbi::Positional,
-            1 => FunctionCallAbi::LexicalClosureFirst,
-            2 => FunctionCallAbi::OpaqueContextFirst,
-            raw => panic!("invalid function call ABI {raw}"),
+        decode_call_abi_word(
+            *(ptr.add(12 * std::mem::size_of::<u64>()) as *const u64),
+            "function",
+        )
+    }
+}
+
+unsafe fn function_store_call_abi_word(
+    ptr: *mut u8,
+    call_abi: FunctionCallAbi,
+    custody: EntryCustody,
+) {
+    unsafe {
+        *(ptr.add(12 * std::mem::size_of::<u64>()) as *mut u64) = call_abi_word(call_abi, custody);
+    }
+}
+
+pub(crate) unsafe fn function_call_abi(ptr: *mut u8) -> FunctionCallAbi {
+    unsafe { function_call_abi_word(ptr).0 }
+}
+
+/// The custody of the function's direct entry. Runtime and builtin callables
+/// borrow; a compiled Python frame's entry adopts as its creation
+/// (`molt_func_new`, `molt_func_new_closure`) declares from the function's own
+/// parameter declaration.
+pub(crate) unsafe fn function_entry_custody(ptr: *mut u8) -> EntryCustody {
+    unsafe { function_call_abi_word(ptr).1 }
+}
+
+/// Publish the direct entry's custody: at a compiled function's creation, or
+/// a reconstruction from its code's callable identity, before any code object
+/// pairs with the function. Only a Python frame's entry adopts; an opaque
+/// runtime context is transport.
+/// An adopting entry needs its trampoline: every runtime-originated call
+/// reaches a compiled Python function through that borrowed lane, which is
+/// the one place the runtime retains for it.
+pub(crate) unsafe fn function_publish_entry_custody(
+    ptr: *mut u8,
+    custody: EntryCustody,
+) -> Result<(), &'static str> {
+    unsafe {
+        crate::gil_assert();
+        if function_code_bits(ptr) != 0 {
+            return Err("entry custody is published before a code object pairs with the entry");
         }
+        let call_abi = function_call_abi(ptr);
+        if custody == EntryCustody::Adopting {
+            if !call_abi.is_reconstructible() {
+                return Err("an opaque runtime-context entry cannot adopt Python arguments");
+            }
+            if function_trampoline_ptr(ptr) == 0 {
+                return Err("an adopting entry needs a trampoline for borrowed invocation");
+            }
+        }
+        function_store_call_abi_word(ptr, call_abi, custody);
+        Ok(())
     }
 }
 
@@ -935,10 +1046,11 @@ pub(crate) unsafe fn function_call_abi(ptr: *mut u8) -> FunctionCallAbi {
 pub(crate) unsafe fn function_execution_closure_bits(ptr: *mut u8) -> u64 {
     unsafe {
         let bits = function_closure_bits(ptr);
-        function_call_abi(ptr)
-            .requires_context()
-            .then_some(bits)
-            .unwrap_or(0)
+        if function_call_abi(ptr).requires_context() {
+            bits
+        } else {
+            0
+        }
     }
 }
 
@@ -963,7 +1075,7 @@ pub(crate) unsafe fn function_set_closure_bits(
         }
         let closure_slot = ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64;
         let old_bits = closure_slot.replace(bits);
-        *(ptr.add(12 * std::mem::size_of::<u64>()) as *mut u64) = call_abi as u64;
+        function_store_call_abi_word(ptr, call_abi, function_entry_custody(ptr));
         if old_bits != 0 {
             dec_ref_bits(_py, old_bits);
         }
@@ -1043,7 +1155,7 @@ pub(crate) unsafe fn function_replace_callable_identity(
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = identity.arity;
         *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = identity.trampoline_ptr;
         *(ptr.add(8 * std::mem::size_of::<u64>()) as *mut *const ()) = call_target;
-        *(ptr.add(12 * std::mem::size_of::<u64>()) as *mut u64) = identity.call_abi as u64;
+        function_store_call_abi_word(ptr, identity.call_abi, identity.custody);
     }
 }
 
@@ -1074,6 +1186,7 @@ pub(crate) unsafe fn prepare_function_code_bits(
                 trampoline_ptr: function_trampoline_ptr(ptr),
                 arity: function_arity(ptr),
                 call_abi: function_call_abi(ptr),
+                custody: function_entry_custody(ptr),
             });
             let identity_was_unpublished = code_callable_identity(code_ptr).is_none();
             if code_validate_callable_identity(code_ptr, identity).is_err() {
@@ -1112,6 +1225,7 @@ pub(crate) struct PreparedFunctionCode {
 pub(crate) struct DisplacedFunctionCode {
     code: u64,
     signature: [u64; 5],
+    setup_signature: [u64; 5],
     lexical: [u64; 2],
 }
 
@@ -1167,9 +1281,17 @@ impl PreparedFunctionCode {
                 code_publish_callable_identity_unchecked(code_ptr, identity);
             }
             *slot = self.bits;
+            let setup_signature =
+                if function_code_signature_metadata_bits(ptr, b"__molt_arg_names__").is_some() {
+                    super::function_metadata::FunctionMetadataField::SIGNATURE
+                        .map(|field| field.take(ptr))
+                } else {
+                    [0; 5]
+                };
             DisplacedFunctionCode {
                 code: if old_bits != self.bits { old_bits } else { 0 },
                 signature: displaced_signature,
+                setup_signature,
                 lexical: displaced_lexical,
             }
         }
@@ -1178,16 +1300,19 @@ impl PreparedFunctionCode {
 
 impl DisplacedFunctionCode {
     pub(crate) fn release(self, py: &PyToken<'_>) {
-        for bits in self
-            .signature
-            .into_iter()
-            .chain(self.lexical)
-            .chain([self.code])
-        {
-            if bits != 0 {
-                dec_ref_bits(py, bits);
+        molt_cpython_abi::api::errors::with_preserved_error(|| {
+            for bits in self
+                .signature
+                .into_iter()
+                .chain(self.setup_signature)
+                .chain(self.lexical)
+                .chain([self.code])
+            {
+                if bits != 0 {
+                    dec_ref_bits(py, bits);
+                }
             }
-        }
+        });
     }
 }
 
@@ -1233,10 +1358,10 @@ pub(crate) unsafe fn function_set_globals_bits(_py: &PyToken<'_>, ptr: *mut u8, 
 
 /// Read the callable-shape mutation version stamp (slot 10).
 ///
-/// 0 means neither defaults nor executable code have changed since creation, so
-/// compile-time-baked call shape remains observably correct. Any non-zero value
-/// means a defaults or `__code__` reassignment occurred and calls/caches must
-/// consult the live function and code authorities.
+/// 0 means no callable-shape attribute setter has changed the function since
+/// creation. Direct metadata-dictionary writes bypass setters: reuse guards
+/// must also consult the live binding metadata. A non-zero value requires
+/// consulting the live function and code authorities.
 pub(crate) unsafe fn function_mutation_version(ptr: *mut u8) -> u64 {
     unsafe { *(ptr.add(10 * std::mem::size_of::<u64>()) as *const u64) }
 }
@@ -1392,12 +1517,15 @@ const CODE_CALL_ABI_UNPUBLISHED: u64 = u64::MAX;
 /// `call_abi` is provenance, not an inference from public `co_freevars`: a
 /// lexical closure can be safely reconstructed with cells, while an opaque
 /// runtime context must never be recreated as a positional Python function.
+/// `custody` belongs to the same compiled entry, so a function reconstructed
+/// from the code, or retargeted to it, adopts exactly as its compiler declared.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CodeCallableIdentity {
     pub(crate) fn_ptr: u64,
     pub(crate) trampoline_ptr: u64,
     pub(crate) arity: u64,
     pub(crate) call_abi: FunctionCallAbi,
+    pub(crate) custody: EntryCustody,
 }
 
 pub(crate) unsafe fn code_callable_identity(ptr: *mut u8) -> Option<CodeCallableIdentity> {
@@ -1411,28 +1539,25 @@ pub(crate) unsafe fn code_callable_identity(ptr: *mut u8) -> Option<CodeCallable
             );
             return None;
         }
-        let call_abi = match raw_abi {
-            0 => FunctionCallAbi::Positional,
-            1 => FunctionCallAbi::LexicalClosureFirst,
-            2 => FunctionCallAbi::OpaqueContextFirst,
-            raw => panic!("invalid code call ABI {raw}"),
-        };
+        let (call_abi, custody) = decode_call_abi_word(raw_abi, "code");
         Some(CodeCallableIdentity {
             fn_ptr,
             trampoline_ptr: code_callable_trampoline_ptr(ptr),
             arity: code_callable_arity(ptr),
             call_abi,
+            custody,
         })
     }
 }
 
 /// Project immutable signature facts from a published reconstructible code
-/// object. Returning `None` means the function's explicit metadata dictionary
-/// remains authoritative (runtime/native setup or unpublished code metadata).
+/// object. Returning `None` leaves the typed function setup field authoritative
+/// for runtime/native setup or unpublished code metadata.
 pub(crate) unsafe fn function_code_signature_metadata_bits(
     ptr: *mut u8,
     name: &[u8],
 ) -> Option<u64> {
+    use crate::call::function::FunctionBindingField;
     unsafe {
         let code_ptr = obj_from_bits(function_code_bits(ptr)).as_ptr()?;
         if object_type_id(code_ptr) != TYPE_ID_CODE
@@ -1444,12 +1569,12 @@ pub(crate) unsafe fn function_code_signature_metadata_bits(
         {
             return None;
         }
-        match name {
-            b"__molt_arg_names__" => Some(code_arg_names_bits(code_ptr)),
-            b"__molt_posonly__" => Some(code_signature_posonly_bits(code_ptr)),
-            b"__molt_kwonly_names__" => Some(code_kwonly_names_bits(code_ptr)),
-            b"__molt_vararg__" => Some(code_vararg_bits(code_ptr)),
-            b"__molt_varkw__" => Some(code_varkw_bits(code_ptr)),
+        match FunctionBindingField::from_name(name)? {
+            FunctionBindingField::ArgumentNames => Some(code_arg_names_bits(code_ptr)),
+            FunctionBindingField::PositionalOnly => Some(code_signature_posonly_bits(code_ptr)),
+            FunctionBindingField::KeywordOnlyNames => Some(code_kwonly_names_bits(code_ptr)),
+            FunctionBindingField::Varargs => Some(code_vararg_bits(code_ptr)),
+            FunctionBindingField::VarKeywords => Some(code_varkw_bits(code_ptr)),
             _ => None,
         }
     }
@@ -1812,34 +1937,29 @@ unsafe fn prepare_code_signature_from_function_attrs(
     _py: &PyToken<'_>,
     func_ptr: *mut u8,
 ) -> Result<Option<PreparedCodeSignature>, ()> {
+    use crate::call::function::FunctionBindingField;
     unsafe {
         if let Some(classes) = builtin_classes_if_initialized(_py)
-            && classes.is_builtin_callable_class(object_class_bits(func_ptr))
+            && classes.is_native_callable_class(object_class_bits(func_ptr))
         {
             return Ok(None);
         }
 
-        let dict_bits = function_dict_bits(func_ptr);
-        let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+        // Before code publication, typed setup fields own the signature.
+        // Published immutable code remains the sole signature read authority.
+        let get = |field: FunctionBindingField| field.metadata_field().load(func_ptr);
+        let Some(arg_names_bits) = get(FunctionBindingField::ArgumentNames) else {
             return Ok(None);
         };
-        if object_type_id(dict_ptr) != TYPE_ID_DICT {
-            return Ok(None);
-        }
-
-        // Metadata lookup must not call equality/hash hooks or allocate interned
-        // names while holding borrowed edges from this same dictionary.
-        let get = |name| crate::object::ops::dict_get_str_bytes_borrowed(_py, dict_ptr, name);
-        let Some(arg_names_bits) = get(b"__molt_arg_names__") else {
+        let Some(kwonly_bits) = get(FunctionBindingField::KeywordOnlyNames) else {
             return Ok(None);
         };
-        let Some(kwonly_bits) = get(b"__molt_kwonly_names__") else {
-            return Ok(None);
-        };
-        let posonly_bits =
-            get(b"__molt_posonly__").unwrap_or_else(|| MoltObject::from_int(0).bits());
-        let vararg_bits = get(b"__molt_vararg__").unwrap_or_else(|| MoltObject::none().bits());
-        let varkw_bits = get(b"__molt_varkw__").unwrap_or_else(|| MoltObject::none().bits());
+        let posonly_bits = get(FunctionBindingField::PositionalOnly)
+            .unwrap_or_else(|| MoltObject::from_int(0).bits());
+        let vararg_bits =
+            get(FunctionBindingField::Varargs).unwrap_or_else(|| MoltObject::none().bits());
+        let varkw_bits =
+            get(FunctionBindingField::VarKeywords).unwrap_or_else(|| MoltObject::none().bits());
 
         prepare_code_signature(
             _py,
@@ -1893,16 +2013,58 @@ unsafe fn code_publish_callable_identity_unchecked(ptr: *mut u8, identity: CodeC
         *(ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64) = identity.fn_ptr;
         *(ptr.add(10 * std::mem::size_of::<u64>()) as *mut u64) = identity.trampoline_ptr;
         *(ptr.add(11 * std::mem::size_of::<u64>()) as *mut u64) = identity.arity;
-        *(ptr.add(21 * std::mem::size_of::<u64>()) as *mut u64) = identity.call_abi as u64;
+        *(ptr.add(21 * std::mem::size_of::<u64>()) as *mut u64) =
+            call_abi_word(identity.call_abi, identity.custody);
     }
 }
 
+/// Portable bound-callable payload. ABI consumers use accessors; this
+/// declaration owns allocation size, field positions and lifecycle edges.
+#[repr(C)]
+pub(crate) struct BoundMethodPayload {
+    pub(crate) function: u64,
+    pub(crate) receiver: u64,
+    pub(crate) module: u64,
+}
+
 pub(crate) unsafe fn bound_method_func_bits(ptr: *mut u8) -> u64 {
-    unsafe { *(ptr as *const u64) }
+    unsafe { (*ptr.cast::<BoundMethodPayload>()).function }
 }
 
 pub(crate) unsafe fn bound_method_self_bits(ptr: *mut u8) -> u64 {
-    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
+    unsafe { (*ptr.cast::<BoundMethodPayload>()).receiver }
+}
+
+pub(crate) unsafe fn bound_method_module_bits(ptr: *mut u8) -> u64 {
+    unsafe { (*ptr.cast::<BoundMethodPayload>()).module }
+}
+
+pub(crate) unsafe fn bound_method_set_module_bits(py: &PyToken<'_>, ptr: *mut u8, value: u64) {
+    inc_ref_bits(py, value);
+    let previous =
+        unsafe { std::mem::replace(&mut (*ptr.cast::<BoundMethodPayload>()).module, value) };
+    dec_ref_bits(py, previous);
+}
+
+pub(crate) unsafe fn bound_method_take_module(ptr: *mut u8) -> u64 {
+    unsafe {
+        std::mem::replace(
+            &mut (*ptr.cast::<BoundMethodPayload>()).module,
+            MoltObject::none().bits(),
+        )
+    }
+}
+
+pub(crate) unsafe fn bound_method_take_edges(ptr: *mut u8) -> [u64; 3] {
+    unsafe {
+        let payload = &mut *ptr.cast::<BoundMethodPayload>();
+        let absent = MoltObject::none().bits();
+        [
+            std::mem::replace(&mut payload.function, absent),
+            std::mem::replace(&mut payload.receiver, absent),
+            std::mem::replace(&mut payload.module, absent),
+        ]
+    }
 }
 
 pub(crate) unsafe fn module_name_bits(ptr: *mut u8) -> u64 {
@@ -1910,17 +2072,56 @@ pub(crate) unsafe fn module_name_bits(ptr: *mut u8) -> u64 {
 }
 
 pub(crate) unsafe fn module_dict_bits(ptr: *mut u8) -> u64 {
-    unsafe { *(ptr.add(std::mem::size_of::<u64>()) as *const u64) }
+    unsafe { super::instance_dict_bits(ptr) }
+}
+
+pub(crate) unsafe fn module_set_name_bits(py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
+    inc_ref_bits(py, bits);
+    let previous = unsafe { ptr.cast::<u64>().replace(bits) };
+    dec_ref_bits(py, previous);
 }
 
 pub(crate) unsafe fn class_name_bits(ptr: *mut u8) -> u64 {
     unsafe { ClassReferenceSlot::Name.load(ptr) }
 }
 
-pub(crate) unsafe fn class_set_name_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
-    unsafe {
-        ClassReferenceSlot::Name.replace_borrowed(_py, ptr, bits);
+/// One admission boundary for class creation and __name__ replacement.
+/// __qualname__ and __module__ are Python text and do not use this C-name rule.
+pub(crate) fn validate_class_name(py: &PyToken<'_>, bits: u64) -> bool {
+    if !super::ops_string::require_strict_utf8(py, bits) {
+        return false;
     }
+    let name_ptr = obj_from_bits(bits)
+        .as_ptr()
+        .expect("validated type name string");
+    let name = unsafe { std::slice::from_raw_parts(string_bytes(name_ptr), string_len(name_ptr)) };
+    if name.contains(&0) {
+        crate::raise_exception::<()>(
+            py,
+            "ValueError",
+            "type name must not contain null characters",
+        );
+        return false;
+    }
+    true
+}
+
+#[must_use]
+pub(crate) unsafe fn class_set_name_bits(py: &PyToken<'_>, ptr: *mut u8, bits: u64) -> bool {
+    if !validate_class_name(py, bits) {
+        return false;
+    }
+    unsafe {
+        if !molt_cpython_abi::bridge::GLOBAL_BRIDGE.update_type_identity_view(
+            MoltObject::from_ptr(ptr).bits(),
+            bits,
+            false,
+        ) {
+            return false;
+        }
+        ClassReferenceSlot::Name.replace_borrowed(py, ptr, bits);
+    }
+    true
 }
 
 pub(crate) unsafe fn class_dict_bits(ptr: *mut u8) -> u64 {
@@ -1964,9 +2165,9 @@ pub(crate) unsafe fn class_cached_layout_size(ptr: *mut u8) -> Option<usize> {
     }
 }
 
-/// Original slot declarations belong to the physical class layout, not the
-/// mutable Python namespace. Zero exists only while the class is being built;
-/// None records absence and a private immutable tuple records declared names.
+/// The private slot record owns declaration provenance and sealed admission
+/// policy. Zero exists only during construction. Its first edge is None for
+/// absence or an immutable name tuple; its second edge is the typed policy.
 #[derive(Clone, Copy)]
 pub(crate) enum ClassSlotDeclaration {
     Uninitialized,
@@ -1974,26 +2175,60 @@ pub(crate) enum ClassSlotDeclaration {
     Names(u64),
 }
 
-pub(crate) const CLASS_FIELD_OFFSETS_WORD: usize = ClassReferenceSlot::FieldOffsets as usize;
-pub(crate) const CLASS_PAYLOAD_WORDS: usize = CLASS_FIELD_OFFSETS_WORD + 1;
+/// Cold semantic declarations; existing class field and ABI offsets stay fixed.
+// Annotation values and evaluators belong to Dictionary. Reclaimed words 5/6
+// hold slot declarations and physical rows; policy8 and cached size9 stay fixed.
+pub(crate) const CLASS_DECLARATIONS_WORD: usize = 10;
+// Static generic attributes own a separate reference after semantic facts.
+pub(crate) const CLASS_PAYLOAD_WORDS: usize = ClassReferenceSlot::CreationDoc as usize + 1;
 
 pub(crate) unsafe fn class_slot_declaration_bits(ptr: *mut u8) -> u64 {
     unsafe { ClassReferenceSlot::SlotDeclaration.load(ptr) }
 }
 
-pub(crate) unsafe fn class_slot_declaration(ptr: *mut u8) -> ClassSlotDeclaration {
-    let bits = unsafe { class_slot_declaration_bits(ptr) };
-    if bits == 0 {
-        ClassSlotDeclaration::Uninitialized
-    } else if obj_from_bits(bits).is_none() {
-        ClassSlotDeclaration::Absent
-    } else {
-        ClassSlotDeclaration::Names(bits)
+pub(crate) unsafe fn slot_record_parts(bits: u64) -> (u64, super::class_storage::ClassSlotPolicy) {
+    unsafe {
+        let record = obj_from_bits(bits).as_ptr().expect("sealed slot record");
+        super::seq_access::with_immutable_tuple_slice(record, |record| {
+            assert_eq!(record.len(), 2, "invalid sealed slot record");
+            (
+                record[0],
+                super::class_storage::ClassSlotPolicy::decode(record[1]),
+            )
+        })
+        .expect("sealed slot record must be an exact tuple")
     }
 }
 
-/// Publish one owned, validated declaration. The private tuple is never exposed
-/// as a Python attribute; later __slots__ assignment cannot alter this record.
+pub(crate) unsafe fn class_slot_declaration(ptr: *mut u8) -> ClassSlotDeclaration {
+    unsafe {
+        let record = class_slot_declaration_bits(ptr);
+        if record == 0 {
+            return ClassSlotDeclaration::Uninitialized;
+        }
+        if obj_from_bits(record).is_none() {
+            return ClassSlotDeclaration::Absent;
+        }
+        let (names, _) = slot_record_parts(record);
+        if obj_from_bits(names).is_none() {
+            ClassSlotDeclaration::Absent
+        } else {
+            ClassSlotDeclaration::Names(names)
+        }
+    }
+}
+
+pub(crate) unsafe fn class_slot_policy(
+    ptr: *mut u8,
+) -> Option<super::class_storage::ClassSlotPolicy> {
+    unsafe {
+        let record = class_slot_declaration_bits(ptr);
+        (record != 0 && !obj_from_bits(record).is_none()).then(|| slot_record_parts(record).1)
+    }
+}
+
+/// Publish one owned admission record. Later __slots__ rebinding changes no
+/// declaration or capability in this private immutable record.
 pub(crate) unsafe fn class_set_slot_declaration_owned(ptr: *mut u8, bits: u64) {
     unsafe {
         crate::gil_assert();
@@ -2002,9 +2237,10 @@ pub(crate) unsafe fn class_set_slot_declaration_owned(ptr: *mut u8, bits: u64) {
             0,
             "class slots already captured"
         );
+        let (names, _) = slot_record_parts(bits);
         assert!(
-            obj_from_bits(bits).is_none()
-                || obj_from_bits(bits)
+            obj_from_bits(names).is_none()
+                || obj_from_bits(names)
                     .as_ptr()
                     .is_some_and(|tuple| object_type_id(tuple) == TYPE_ID_TUPLE)
         );
@@ -2013,31 +2249,35 @@ pub(crate) unsafe fn class_set_slot_declaration_owned(ptr: *mut u8, bits: u64) {
     }
 }
 
-/// Private physical-layout authority retained at class seal. Zero is reserved
-/// for unfinished construction, `None` records a sealed class with no map, and
-/// every other value is the exact frozen dict also published in the namespace.
-pub(crate) unsafe fn class_field_offsets_bits(ptr: *mut u8) -> u64 {
-    unsafe { ClassReferenceSlot::FieldOffsets.load(ptr) }
+/// One private immutable physical record, retained only after complete seal.
+pub(crate) unsafe fn class_field_layout_bits(ptr: *mut u8) -> u64 {
+    unsafe { ClassReferenceSlot::FieldLayout.load(ptr) }
 }
 
-/// Publish one owned, validated field-offset map edge. The caller transfers an
-/// existing owned reference; TYPE lifecycle tracing and detachment own it from
-/// this point onward.
-pub(crate) unsafe fn class_set_field_offsets_owned(ptr: *mut u8, bits: u64) {
+/// The public map is a projection of the record, never an independent physical
+/// authority. Zero is reserved for unfinished construction.
+pub(crate) unsafe fn class_field_offsets_bits(ptr: *mut u8) -> u64 {
+    unsafe {
+        let record = class_field_layout_bits(ptr);
+        if record == 0 {
+            0
+        } else {
+            super::class_layout::projection_parts(record).0
+        }
+    }
+}
+
+/// Transfer the already validated immutable record into the existing TYPE edge.
+pub(crate) unsafe fn class_set_field_layout_owned(ptr: *mut u8, bits: u64) {
     unsafe {
         crate::gil_assert();
         assert_eq!(
-            class_field_offsets_bits(ptr),
+            class_field_layout_bits(ptr),
             0,
-            "class field offsets already captured"
+            "class physical layout already captured"
         );
-        assert!(
-            obj_from_bits(bits).is_none()
-                || obj_from_bits(bits)
-                    .as_ptr()
-                    .is_some_and(|map| object_type_id(map) == TYPE_ID_DICT)
-        );
-        let old = ClassReferenceSlot::FieldOffsets.exchange_owned(ptr, bits);
+        let _ = super::class_layout::projection_parts(bits);
+        let old = ClassReferenceSlot::FieldLayout.exchange_owned(ptr, bits);
         debug_assert_eq!(old, 0);
     }
 }
@@ -2058,33 +2298,22 @@ pub(crate) unsafe fn class_set_cached_layout_size(ptr: *mut u8, size: usize) {
     }
 }
 
-pub(crate) unsafe fn class_annotations_bits(ptr: *mut u8) -> u64 {
-    unsafe { ClassReferenceSlot::Annotations.load(ptr) }
-}
-
-pub(crate) unsafe fn class_set_annotations_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
-    unsafe {
-        ClassReferenceSlot::Annotations.replace_borrowed(_py, ptr, bits);
-    }
-}
-
-pub(crate) unsafe fn class_annotate_bits(ptr: *mut u8) -> u64 {
-    unsafe { ClassReferenceSlot::Annotate.load(ptr) }
-}
-
-pub(crate) unsafe fn class_set_annotate_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
-    unsafe {
-        ClassReferenceSlot::Annotate.replace_borrowed(_py, ptr, bits);
-    }
-}
-
 pub(crate) unsafe fn class_qualname_bits(ptr: *mut u8) -> u64 {
     unsafe { ClassReferenceSlot::Qualname.load(ptr) }
 }
 
-pub(crate) unsafe fn class_set_qualname_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
+#[must_use]
+pub(crate) unsafe fn class_set_qualname_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) -> bool {
     unsafe {
+        if !molt_cpython_abi::bridge::GLOBAL_BRIDGE.update_type_identity_view(
+            MoltObject::from_ptr(ptr).bits(),
+            bits,
+            true,
+        ) {
+            return false;
+        }
         ClassReferenceSlot::Qualname.replace_borrowed(_py, ptr, bits);
+        true
     }
 }
 
@@ -2160,7 +2389,11 @@ impl WrapperKind {
 }
 
 #[inline(always)]
-pub(crate) const fn wrapper_prefix_size_for_type_id(type_id: u32) -> usize {
+pub(crate) const fn class_native_prefix_size_for_type_id(type_id: u32) -> usize {
+    if type_id == TYPE_ID_MODULE || type_id == TYPE_ID_LIST {
+        // Native prefixes remain u64-aligned on wasm32 as well as native.
+        return std::mem::size_of::<u64>();
+    }
     match WrapperKind::from_type_id(type_id) {
         Some(kind) => kind.prefix_size(),
         None => 0,
@@ -2204,13 +2437,36 @@ pub(crate) fn wrapper_empty_reference_bits(
     Some(MoltObject::none().bits())
 }
 
-/// Initialize the hidden native prefix before any declared field or GC
-/// publication can observe the object. Zero is reserved for allocation failure
+/// Initialize native storage before any declared field or GC publication can
+/// observe the object. The class allocator separately prepares and commits the
+/// module namespace through the shared trailing dictionary slot, after the class
+/// edge makes that slot addressable. Zero is reserved for allocation failure
 /// cleanup and never represents a Python value. Class/static wrappers use the
 /// missing singleton so an uninitialized wrapper remains distinct from one
 /// explicitly initialized with None; property exposes absent accessors as None.
 #[must_use]
-pub(crate) unsafe fn wrapper_initialize_prefix_unpublished(py: &PyToken<'_>, ptr: *mut u8) -> bool {
+pub(crate) unsafe fn class_initialize_native_prefix_unpublished(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+) -> bool {
+    if unsafe { object_type_id(ptr) } == TYPE_ID_LIST {
+        if unsafe { super::object_payload_size(ptr) } < 2 * std::mem::size_of::<u64>() {
+            return false;
+        }
+        let Some(values) = super::backing::tracked_vec_box_with_capacity::<u64>(0) else {
+            let _ = crate::raise_exception::<u64>(py, "MemoryError", "list allocation failed");
+            return false;
+        };
+        unsafe { *ptr.cast::<*mut Vec<u64>>() = values };
+        return true;
+    }
+    if unsafe { object_type_id(ptr) } == TYPE_ID_MODULE {
+        if unsafe { super::object_payload_size(ptr) } < 2 * std::mem::size_of::<u64>() {
+            return false;
+        }
+        unsafe { *ptr.cast::<u64>() = MoltObject::none().bits() };
+        return true;
+    }
     let Some(kind) = WrapperKind::from_type_id(unsafe { object_type_id(ptr) }) else {
         return true;
     };
@@ -2357,13 +2613,19 @@ pub(crate) unsafe fn property_set_getter_doc(ptr: *mut u8, getter_doc: bool) {
 }
 
 /// Immutable representation shared by builtin member and getset descriptors.
-/// The class edge owns the public descriptor type identity; this immediate is
-/// the protocol/error-policy discriminator and never a Python reference.
+/// The class edge owns the public descriptor type identity. Flavor and the
+/// callback's operation tag share one immediate control word, never a Python
+/// reference; public names remain metadata rather than callback dispatch keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u64)]
 pub(crate) enum NativeDescriptorFlavor {
     Member = 1,
     GetSet = 2,
+    /// Physical declared slot owned by the descriptor's sealed declaring class.
+    ManagedSlot = 3,
+    InstanceDictionary = 4,
+    CallableMetadata = 5,
+    RootMetadata = 6,
 }
 
 impl NativeDescriptorFlavor {
@@ -2372,6 +2634,10 @@ impl NativeDescriptorFlavor {
         match raw {
             1 => Some(Self::Member),
             2 => Some(Self::GetSet),
+            3 => Some(Self::ManagedSlot),
+            4 => Some(Self::InstanceDictionary),
+            5 => Some(Self::CallableMetadata),
+            6 => Some(Self::RootMetadata),
             _ => None,
         }
     }
@@ -2433,13 +2699,32 @@ pub(crate) unsafe fn native_descriptor_deleter_bits(ptr: *mut u8) -> u64 {
 }
 
 #[inline]
-pub(crate) unsafe fn native_descriptor_flavor(ptr: *mut u8) -> Option<NativeDescriptorFlavor> {
+pub(crate) const fn native_descriptor_control(
+    flavor: NativeDescriptorFlavor,
+    operation: u32,
+) -> u64 {
+    (flavor as u64) | ((operation as u64) << 8)
+}
+
+#[inline]
+unsafe fn native_descriptor_control_parts(ptr: *mut u8) -> Option<(NativeDescriptorFlavor, u32)> {
     if !native_descriptor_storage_is_valid(ptr) {
         return None;
     }
-    NativeDescriptorFlavor::from_raw(unsafe {
-        *ptr.cast::<u64>().add(NATIVE_DESCRIPTOR_REFERENCE_WORDS)
-    })
+    let control = unsafe { *ptr.cast::<u64>().add(NATIVE_DESCRIPTOR_REFERENCE_WORDS) };
+    let operation = u32::try_from(control >> 8).ok()?;
+    let flavor = NativeDescriptorFlavor::from_raw(control & 0xff)?;
+    Some((flavor, operation))
+}
+
+#[inline]
+pub(crate) unsafe fn native_descriptor_flavor(ptr: *mut u8) -> Option<NativeDescriptorFlavor> {
+    unsafe { native_descriptor_control_parts(ptr).map(|(flavor, _)| flavor) }
+}
+
+#[inline]
+pub(crate) unsafe fn native_descriptor_operation(ptr: *mut u8) -> Option<u32> {
+    unsafe { native_descriptor_control_parts(ptr).map(|(_, operation)| operation) }
 }
 
 pub(crate) unsafe fn super_type_bits(ptr: *mut u8) -> u64 {
@@ -2472,6 +2757,25 @@ pub(crate) fn range_len_i64(start: i64, stop: i64, step: i64) -> i64 {
     let step_abs = -step;
     let span = start - stop - 1;
     1 + span / step_abs
+}
+
+pub(crate) const DICT_SUBCLASS_RESERVED_TAIL: usize = 2 * std::mem::size_of::<u64>();
+
+/// The DictSubclass shape owns its backing dictionary immediately before the
+/// ordinary instance dictionary. Allocation, seal, access and lifecycle share
+/// this one tail extent; there is no side-table representation for small objects.
+pub(crate) unsafe fn dict_subclass_storage_slot(ptr: *mut u8) -> Option<*mut u64> {
+    unsafe {
+        if super::object_shape_id(ptr) != super::ObjectShapeId::DictSubclass {
+            return None;
+        }
+        let payload = super::object_payload_size(ptr);
+        assert!(
+            payload >= DICT_SUBCLASS_RESERVED_TAIL,
+            "dict subclass lacks its sealed tail"
+        );
+        Some(ptr.add(payload - DICT_SUBCLASS_RESERVED_TAIL).cast())
+    }
 }
 
 #[cfg(test)]
@@ -2548,7 +2852,10 @@ mod tests {
         })));
         let _reset = TrackerReset;
 
-        let ptr = ListIntStorage::from_slice(&[1, 2, 3, 4]).expect("storage");
+        let ptr = ListIntStorage::with_capacity(4).expect("storage");
+        for value in [1, 2, 3, 4] {
+            assert!(unsafe { (*ptr).push(super::InlineListInt::from_raw(value).unwrap()) });
+        }
         unsafe {
             let storage = &mut *ptr;
             let original_data = storage.data;
@@ -2640,19 +2947,16 @@ mod tests {
                 let arg_key_bits = MoltObject::from_ptr(arg_key).bits();
                 let kw_key_bits = MoltObject::from_ptr(kw_key).bits();
                 let varkw_key_bits = MoltObject::from_ptr(varkw_key).bits();
-                let dict = crate::alloc_dict_with_pairs(
-                    py,
-                    &[
-                        arg_key_bits,
-                        empty_bits,
-                        kw_key_bits,
-                        empty_bits,
-                        varkw_key_bits,
-                        invalid_bits,
-                    ],
-                );
-                assert!(!dict.is_null());
-                super::function_set_dict_bits(function, MoltObject::from_ptr(dict).bits());
+                for (key, value) in [
+                    (arg_key_bits, empty_bits),
+                    (kw_key_bits, empty_bits),
+                    (varkw_key_bits, invalid_bits),
+                ] {
+                    assert!(crate::call::class_init::function_set_attr_bits(
+                        py, function, key, value
+                    ));
+                }
+                assert_eq!(super::function_dict_bits(function), 0);
                 let epoch = super::function_mutation_version(function);
                 let tuple_refs = ref_count(empty);
                 let invalid_refs = ref_count(invalid);
@@ -2675,7 +2979,12 @@ mod tests {
                     );
                 }
 
-                crate::dict_set_in_place(py, dict, varkw_key_bits, MoltObject::none().bits());
+                assert!(crate::call::class_init::function_set_attr_bits(
+                    py,
+                    function,
+                    varkw_key_bits,
+                    MoltObject::none().bits(),
+                ));
                 assert!(!crate::exception_pending(py));
                 assert!(function_set_code_bits(py, function, code_bits));
                 assert_eq!(super::code_callable_identity(code).unwrap().fn_ptr, 0xF00D);
@@ -2684,17 +2993,32 @@ mod tests {
                 assert_eq!(function_code_bits(function), code_bits);
                 assert_eq!(ref_count(code), 2);
                 assert_eq!(ref_count(original_ptr), 1);
-                assert_eq!(ref_count(empty), tuple_refs + 2);
+                assert_eq!(ref_count(empty), tuple_refs);
                 assert_eq!(ref_count(invalid), invalid_refs - 1);
 
+                for field in crate::object::function_metadata::FunctionMetadataField::SIGNATURE {
+                    assert!(field.load(function).is_none());
+                }
+
                 // Once identity is published, the code's signature owns the
-                // facts; replay must not reinterpret stale function metadata.
-                crate::dict_set_in_place(py, dict, varkw_key_bits, invalid_bits);
+                // facts; replay must not reinterpret or retain stale setup facts.
+                assert!(crate::call::class_init::function_set_attr_bits(
+                    py,
+                    function,
+                    varkw_key_bits,
+                    invalid_bits,
+                ));
                 assert!(function_set_code_bits(py, function, code_bits));
                 assert!(!crate::exception_pending(py));
                 assert_eq!(super::code_varkw_bits(code), MoltObject::none().bits());
+                assert_eq!(ref_count(invalid), invalid_refs - 1);
+                assert!(
+                    crate::object::function_metadata::FunctionMetadataField::VarKeywords
+                        .load(function)
+                        .is_none()
+                );
                 assert_eq!(ref_count(code), 2);
-                assert_eq!(ref_count(empty), tuple_refs + 2);
+                assert_eq!(ref_count(empty), tuple_refs);
 
                 for bits in [
                     function_bits,

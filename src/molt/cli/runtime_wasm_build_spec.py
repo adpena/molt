@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.runtime_build_python import BuildPythonAdmission
+
 import os
 import shlex
 import time
@@ -22,6 +24,7 @@ from molt._wasm_abi_generated import (
 )
 from molt._wasm_runtime_exports import (
     wasm_cpython_abi_requested_data_export_names,
+    wasm_cpython_abi_distribution_export_names,
     wasm_cpython_abi_requested_export_names,
     wasm_runtime_export_link_args,
     wasm_runtime_export_name_for_import,
@@ -44,11 +47,12 @@ from molt.cli.runtime_artifact_selection import (
     RuntimeArtifactSelection,
 )
 from molt.cli.runtime_build_identity import (
-    RuntimeBuildIdentity,
-    RuntimeBuildMemberPlan,
     _tree_hash_worker_count,
     resolve_wasm_runtime_build_family_identities,
-    runtime_build_tooling_authority,
+)
+from molt.cli.runtime_identity_schema import (
+    RuntimeBuildIdentity,
+    RuntimeBuildMemberPlan,
 )
 from molt.cli.runtime_cargo_plan import (
     CargoResourceRoot,
@@ -58,6 +62,7 @@ from molt.cli.runtime_cargo_plan import (
 from molt.cli.runtime_features import (
     _runtime_builtin_features_for_profile,
     _wasm_runtime_feature_plan,
+    profile_link_features,
 )
 from molt.cli.runtime_fingerprints import (
     _read_runtime_fingerprint,
@@ -88,12 +93,6 @@ from molt.cli.wasm_link_args import (
     wasm_link_args_from_rustflags,
     write_wasm_link_args_response_file,
 )
-
-
-def _runtime_wasm_publication_authority(root: Path) -> dict[str, object]:
-    """Return the shared complete runtime planning/publication authority."""
-
-    return runtime_build_tooling_authority(root)
 
 
 class _RuntimeWasmBuildSpec(NamedTuple):
@@ -230,6 +229,8 @@ def _resolved_runtime_wasm_family_identities(
     root: Path,
     shared_spec: _RuntimeWasmBuildSpec,
     reloc_spec: _RuntimeWasmBuildSpec,
+    *,
+    build_python_admission: BuildPythonAdmission | None = None,
 ) -> tuple[RuntimeBuildIdentity, RuntimeBuildIdentity]:
     if (
         shared_spec.cargo_profile != reloc_spec.cargo_profile
@@ -255,7 +256,6 @@ def _resolved_runtime_wasm_family_identities(
         base_rustflags=shared_spec.cargo_rustflags,
         cargo_command=shared_spec.cargo_plan.command,
         producer_artifact_selection=RUNTIME_WASM_COMBINED_ARTIFACTS,
-        publication_authority=_runtime_wasm_publication_authority(root),
         members=(
             RuntimeBuildMemberPlan(
                 kind="shared",
@@ -279,6 +279,7 @@ def _resolved_runtime_wasm_family_identities(
         wasi_libc_archive=inputs.libc.path,
         rust_builtins_archive=inputs.rust_builtins.path,
         cargo_plan=shared_spec.cargo_plan,
+        build_python_admission=build_python_admission,
     )
     if len(identities) != 2:
         raise ValueError("runtime WASM build family must contain shared and reloc")
@@ -347,6 +348,51 @@ def _timed_runtime_identity_phase(
         )
 
 
+def _wasm_required_link_features(
+    required_exports: set[str] | frozenset[str] | None,
+    required_link_features: set[str] | frozenset[str],
+) -> frozenset[str]:
+    """Close link features over every required export's generated feature gate."""
+    export_link_features = frozenset(
+        feature
+        for import_name in required_exports or ()
+        if (runtime_symbol := wasm_runtime_export_name_for_import(import_name))
+        is not None
+        if (feature := link_affecting_feature_gate_for_symbol(runtime_symbol))
+        is not None
+    )
+    return frozenset(required_link_features) | export_link_features
+
+
+def runtime_wasm_distribution_surface(
+    stdlib_profile: str,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Required exports and link features of one distributed WASM runtime cell.
+
+    Distribution is the canonical selector with its complete requirement set:
+    every CPython C-API link import plus the stdlib tier's feature ceiling.
+    """
+    return (
+        frozenset(wasm_cpython_abi_distribution_export_names()),
+        frozenset(profile_link_features(stdlib_profile, target_triple="wasm32-wasip1")),
+    )
+
+
+def runtime_wasm_distribution_features(
+    stdlib_profile: str, *, freestanding: bool
+) -> tuple[str, ...]:
+    """Fingerprint features the distributed cell's identity must record."""
+    exports, ceiling = runtime_wasm_distribution_surface(stdlib_profile)
+    _no_default, _cargo, fingerprint = _wasm_runtime_feature_plan(
+        stdlib_profile=stdlib_profile,
+        runtime_features=("wasm_freestanding",) if freestanding else (),
+        builtin_features=(),
+        resolved_modules=None,
+        required_link_features=_wasm_required_link_features(exports, ceiling),
+    )
+    return fingerprint
+
+
 def _compute_runtime_wasm_build_spec(
     root: Path,
     runtime_wasm: Path,
@@ -369,15 +415,9 @@ def _compute_runtime_wasm_build_spec(
     # generated symbol->feature authority and close the feature plan here, so
     # Cargo can never build an artifact that the immediately following export
     # validator proves insufficient.
-    export_link_features = frozenset(
-        feature
-        for import_name in required_exports or ()
-        if (runtime_symbol := wasm_runtime_export_name_for_import(import_name))
-        is not None
-        if (feature := link_affecting_feature_gate_for_symbol(runtime_symbol))
-        is not None
+    required_link_features = _wasm_required_link_features(
+        required_exports, required_link_features
     )
-    required_link_features = frozenset(required_link_features) | export_link_features
     requested_cargo_profile = cargo_profile
     cargo_profile = _resolve_wasm_cargo_profile(cargo_profile)
     profile_dir = _cargo_profile_dir(cargo_profile)

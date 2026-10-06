@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,21 @@ def _rust_function(source: str, name: str) -> str:
     return body.split("\n}", 1)[0]
 
 
+def _rust_attributes(source: str, name: str) -> list[str]:
+    """Attributes directly above one uniquely named function or method."""
+    signature = f"fn {name}("
+    assert source.count(signature) == 1, f"expected one owning function {name}"
+    head = source.split(signature, 1)[0].rsplit("\n", 1)[0]
+    attributes: list[str] = []
+    for line in reversed(head.splitlines()):
+        stripped = line.strip()
+        if stripped.startswith("#["):
+            attributes.append(stripped)
+        elif not stripped.startswith("///"):
+            break
+    return attributes
+
+
 def test_generated_outputs_are_byte_exact() -> None:
     gen = _gen()
     rendered = gen.render_all(gen.load_table())
@@ -40,12 +56,13 @@ def test_inventory_preserves_active_ids_and_retires_holes() -> None:
         ("OBJECT", 100)
     ]
     dense = [row["id"] for row in kinds if row["id"] >= 200]
-    assert dense == [value for value in range(200, 259) if value not in (205, 231)]
+    assert dense == [value for value in range(200, 260) if value not in (205, 220, 231)]
     assert next(row for row in kinds if row["name"] == "CELL")["id"] == 258
     by_name = {row["name"]: row for row in kinds}
     assert by_name["WEAKREF"]["id"] == 256
     assert by_name["NATIVE_DESCRIPTOR"]["id"] == 257
-    assert kinds[-1]["name"] == "CELL"
+    assert by_name["FRAME_BINDINGS"]["id"] == 259
+    assert kinds[-1]["name"] == "FRAME_BINDINGS"
 
 
 def test_green_reference_holders_carry_closed_acyclic_capabilities() -> None:
@@ -77,21 +94,27 @@ def test_green_reference_holders_carry_closed_acyclic_capabilities() -> None:
     assert by_name["BUFFER2D"]["acyclic_slots"] == {"cell": "int"}
 
 
-def test_retired_heap_ids_cannot_be_reused_or_silently_removed(tmp_path: Path) -> None:
+@pytest.mark.parametrize("retired_id", [205, 220, 231])
+def test_retired_heap_ids_cannot_be_reused_or_silently_removed(
+    tmp_path: Path, retired_id: int
+) -> None:
     gen = _gen()
     source = gen.TABLE.read_text(encoding="utf-8")
     table = tmp_path / "heap_kinds.toml"
-    table.write_text(source.replace("id = 206", "id = 205", 1), encoding="utf-8")
+    table.write_text(
+        source.replace("id = 206", f"id = {retired_id}", 1), encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="never be reused"):
         gen.load_table(table)
     table.write_text(
-        source.replace("retired_ids = [205, 231]", "retired_ids = []"), encoding="utf-8"
+        source.replace("retired_ids = [205, 220, 231]", "retired_ids = []"),
+        encoding="utf-8",
     )
     with pytest.raises(ValueError, match="allocated ABI domain"):
         gen.load_table(table)
     rendered = gen.render_all(gen.load_table())
-    assert rendered[gen.OUT_RUNTIME].count("None, // Retired ABI slot") == 2
-    assert json.loads(rendered[gen.OUT_AUDIT])["retired_ids"] == [205, 231]
+    assert rendered[gen.OUT_RUNTIME].count("None, // Retired ABI slot") == 3
+    assert json.loads(rendered[gen.OUT_AUDIT])["retired_ids"] == [205, 220, 231]
     for output in rendered.values():
         assert "DICT_BUILDER" not in output and "SET_BUILDER" not in output
         assert "DictBuilder" not in output and "SetBuilder" not in output
@@ -115,30 +138,33 @@ def test_cpython_weakref_policy_is_explicit_and_exact() -> None:
     }
     assert {name for name, row in by_name.items() if row["weakref"] == "class"} == {
         "OBJECT",
+        "LIST",
         "FOREIGN",
         "CLASSMETHOD",
         "STATICMETHOD",
         "PROPERTY",
     }
-    for descriptor in ("CLASSMETHOD", "STATICMETHOD", "PROPERTY"):
+    for descriptor in ("LIST", "CLASSMETHOD", "STATICMETHOD", "PROPERTY"):
         assert by_name[descriptor]["layout"] == "object"
         assert by_name[descriptor]["shape"] == "class"
-    for denied in ("LIST", "DICT", "EXCEPTION", "SUPER", "UNION", "NATIVE_DESCRIPTOR"):
+    for denied in ("DICT", "EXCEPTION", "SUPER", "UNION", "NATIVE_DESCRIPTOR"):
         assert by_name[denied]["weakref"] == "deny"
-    # Class-governed is not an unconditional allow: builtin descriptors remain
-    # denied, while user subclasses consult the runtime class-slot authority.
+    # The generated facts enter native construction once. All registration,
+    # including exact builtins, projects the sealed class-owned admission.
+    storage = (ROOT / "runtime/molt-runtime/src/object/class_storage.rs").read_text(
+        encoding="utf-8"
+    )
+    native = _rust_function(storage, "native")
+    assert "heap_weakref_policy(type_id)" in native
+    assert "HeapWeakrefPolicy::Allow" in native
     weakref = (ROOT / "runtime/molt-runtime/src/object/weakref.rs").read_text(
         encoding="utf-8"
     )
     supports = _rust_function(weakref, "object_supports_weakrefs")
-    assert "heap_weakref_policy(type_id)" in supports
-    assert ".unwrap_or(crate::object::HeapWeakrefPolicy::Deny)" in supports
-    assert "!crate::is_builtin_class_bits(_py, class_bits)" in supports
+    assert "heap_weakref_policy" not in supports
+    assert "is_builtin_class_bits" not in supports
     assert "class_slots_info(_py, class_ptr)" in supports
-    assert ".is_none_or(|info| info.allows_weakref)" in supports
-    assert supports.rstrip().endswith(
-        "policy == crate::object::HeapWeakrefPolicy::Allow"
-    )
+    assert ".is_some_and(|info| info.allows_weakref)" in supports
 
 
 def test_cycle_policy_models_cpython_dynamic_container_tracking() -> None:
@@ -190,18 +216,19 @@ def test_runtime_visit_and_clear_dispatch_are_exhaustive_without_wildcards() -> 
     source = (ROOT / "runtime/molt-runtime/src/object/heap_lifecycle.rs").read_text(
         encoding="utf-8"
     )
-    visit = source.split("pub(crate) unsafe fn visit_owned_values", 1)[1].split(
-        "pub(crate) unsafe fn visit_owned_edges", 1
-    )[0]
-    clear = source.split("pub(crate) unsafe fn clear_cycle_edges_with_sink", 1)[
-        1
-    ].split("pub(crate) unsafe fn detach_terminal_owned_edges", 1)[0]
+    visit = _rust_function(source, "visit_payload_owned_values")
+    clear = _rust_function(source, "clear_cycle_edges_with_sink")
     for row in gen.load_table():
         variant = f"HeapLifecycleHandler::{gen._variant(str(row['name']).lower())}"
         assert variant in visit, f"visit dispatch omits {row['name']}"
         assert variant in clear, f"clear dispatch omits {row['name']}"
     assert "_ =>" not in visit
     assert "_ =>" not in clear
+    projection = _rust_function(source, "visit_owned_values")
+    local_edges = _rust_function(source, "visit_local_owned_gc_edges")
+    assert "visit_local_owned_gc_edges(py, ptr," in projection
+    assert "visit_payload_owned_values(py, ptr," in local_edges
+    assert "visit_physical_owned_edges(ptr, visit)" in local_edges
 
 
 def test_gc_deleted_legacy_type_id_traverse_and_clear_switches() -> None:
@@ -390,8 +417,12 @@ def test_variable_gc_edges_use_one_prereserved_detach_sink() -> None:
     clear_pos = delete_garbage.index("clear_node(")
     release_pos = delete_garbage.index("detached.release_all(py)")
     assert reserve_pos < revalidate_pos < clear_pos < release_pos
+    release_boundary = "molt_cpython_abi::api::errors::with_preserved_error(|| detached.release_all(py))"
+    assert release_boundary in delete_garbage
     detach_loop = delete_garbage[
-        delete_garbage.rfind("for &candidate_index", 0, clear_pos) : release_pos
+        delete_garbage.rfind(
+            "for &candidate_index", 0, clear_pos
+        ) : delete_garbage.index(release_boundary)
     ]
     assert "&scratch.final_unreachable" in detach_loop
     assert detach_loop.rstrip().endswith("}"), (
@@ -475,6 +506,53 @@ def test_terminal_metrics_commit_only_after_no_unwind_resource_teardown() -> Non
     assert "std::process::abort()" in guard
 
 
+def test_refcount_edges_inline_only_the_release_fast_path() -> None:
+    """Every runtime ``dec_ref``/``inc_ref`` call site inlines these edges.
+
+    Rejected-header aborts, C-view bridge transactions, diagnostics and the
+    rc->0 finalize/free transaction stay out of line: an inlined copy of the
+    terminal transaction costs kilobytes of code at every call site.
+    """
+    source = (ROOT / "runtime/molt-runtime/src/object/mod.rs").read_text(
+        encoding="utf-8"
+    )
+    release = _rust_function(source, "dec_ref_ptr_with_validated_type_id")
+    retain = _rust_function(source, "inc_ref_ptr")
+    for edge in (release, retain):
+        for cold in (
+            "eprintln!",
+            "std::env::var",
+            "Backtrace",
+            "GLOBAL_BRIDGE",
+            "run_object_finalizer_in_revival_window",
+            "weakref_clear_for_ptr",
+            "heap_drop_policy",
+        ):
+            assert cold not in edge, f"inlined refcount edge carries {cold}"
+    # The inline(always) header transitions those edges expand stay cold-free.
+    for method in ("retain_owned_mirrored", "release_owned"):
+        assert source.count(f"fn {method}(") == 1
+        body = source.split(f"fn {method}(", 1)[1].split("\n    }\n", 1)[0]
+        assert "eprintln!" not in body and "GLOBAL_BRIDGE" not in body
+    assert "dec_ref_ptr_terminal(" in release
+    for outlined in (
+        "dec_ref_ptr_terminal",
+        "release_abi_view_owner",
+        "retain_owned_abi_view",
+    ):
+        assert "#[inline(never)]" in _rust_attributes(source, outlined)
+    # One cached gate admits the outlined tracers; a knob outside it is dead.
+    knob = re.compile(r"\b((?:trace|debug)_[a-z_]+)\(\)")
+    gate = set(knob.findall(_rust_function(source, "rc_transition_trace_enabled")))
+    for tracer in (
+        "trace_dec_ref_transition",
+        "trace_inc_ref_before",
+        "trace_inc_ref_after",
+    ):
+        used = set(knob.findall(_rust_function(source, tracer)))
+        assert used and used <= gate, f"{tracer} reads knobs outside the gate"
+
+
 def test_opaque_external_custody_is_explicit_not_silently_dynamic() -> None:
     by_name = {row["name"]: row for row in _gen().load_table()}
     assert by_name["NATIVE_HANDLE"]["external_gc"] == "opaque_rust_arc"
@@ -516,7 +594,11 @@ def test_opaque_external_custody_is_explicit_not_silently_dynamic() -> None:
     assert "super::TYPE_ID_FOREIGN" in traverse
     assert "if native_gc_is_enrolled(address)" in traverse
     assert "visit(GcNode::Native(address))" in traverse
-    assert "molt_cpython_abi::native_gc_node_visit(" in traverse
+    assert "visit_native_owned_edges(address," in traverse
+    native_visit = _rust_function(gc, "visit_native_owned_edges")
+    assert "molt_cpython_abi::native_gc_node_visit(" in native_visit
+    assert "native_gc_visit_edge" in native_visit
+    assert "result == 0" in native_visit
     assert "tp_is_gc" in bridge and "Py_TPFLAGS_HAVE_GC" in bridge
     native = (ROOT / "runtime/molt-runtime/src/object/native_handle.rs").read_text(
         encoding="utf-8"

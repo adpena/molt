@@ -10,7 +10,12 @@ from pathlib import Path
 import pytest
 
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
-from molt.frontend._types import BUILTIN_TYPE_TAGS, _SCCP_OVERDEFINED
+from molt.frontend._types import (
+    _MOLT_CLOSURE_PARAM,
+    BUILTIN_TYPE_TAGS,
+    CodeSlotDeclaration,
+    _SCCP_OVERDEFINED,
+)
 from molt.frontend.cfg_analysis import BasicBlock, CFGEdgeKind, CFGGraph, build_cfg
 from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
@@ -892,11 +897,12 @@ def test_canonicalization_uses_current_unique_producers_and_restores_emitter_ind
 
 
 @pytest.mark.parametrize(
-    ("enclosing_source", "owner_name", "has_closure"),
+    ("enclosing_source", "owner_name", "has_closure", "async_outer"),
     [
         pytest.param(
             "gen = (value for value in outer())\n",
             "molt_main",
+            False,
             False,
             id="without-lexical-capture",
         ),
@@ -904,19 +910,50 @@ def test_canonicalization_uses_current_unique_producers_and_restores_emitter_ind
             "def make(captured):\n    return (value + captured for value in outer())\n",
             "genexpr_eager__make",
             True,
+            False,
             id="with-lexical-capture",
+        ),
+        pytest.param(
+            "globals()['outer'] = [1, 2]\ngen = (value for value in outer)\n",
+            "molt_main",
+            False,
+            False,
+            id="invalidated-global-name",
+        ),
+        pytest.param(
+            "class Owner:\n    values = [1, 2]\n    gen = (v for v in values)\n",
+            "molt_main",
+            False,
+            False,
+            id="class-namespace-outer",
+        ),
+        pytest.param(
+            "async def make(outer):\n    return (v async for v in outer)\n",
+            "genexpr_eager__make_poll",
+            False,
+            True,
+            id="async-iterator",
+        ),
+        pytest.param(
+            "async def make(outer, captured):\n"
+            "    return (v + captured async for v in outer)\n",
+            "genexpr_eager__make_poll",
+            True,
+            True,
+            id="async-iterator-with-lexical-capture",
         ),
     ],
 )
 def test_genexpr_outer_iterator_is_eager_and_frame_owned(
-    enclosing_source: str, owner_name: str, has_closure: bool
+    enclosing_source: str, owner_name: str, has_closure: bool, async_outer: bool
 ) -> None:
     source = "def outer():\n    return [1, 2]\n" + enclosing_source
     gen = SimpleTIRGenerator(module_name="genexpr_eager", source_path="probe.py")
     gen.visit(ast.parse(source))
     functions = {fn["name"]: fn for fn in gen.to_json()["functions"]}
     owner_ops = functions[owner_name]["ops"]
-    (definition,) = (op for op in owner_ops if op.get("task_kind") == "generator")
+    task_kind = "async_generator" if async_outer else "generator"
+    (definition,) = (op for op in owner_ops if op.get("task_kind") == task_kind)
     assert definition["kind"] == ("func_new_closure" if has_closure else "func_new")
     plan = gen.funcs_map[definition["s_value"]]["stateful_frame_plan"]
     assert plan.poll_symbol == definition["s_value"]
@@ -932,7 +969,7 @@ def test_genexpr_outer_iterator_is_eager_and_frame_owned(
     assert len(generator_call["args"]) == 2
     producers = {op["out"]: op for op in owner_ops if "out" in op}
     iterator = producers[generator_call["args"][1]]
-    assert iterator["kind"] == "iter"
+    assert iterator["kind"] == ("aiter" if async_outer else "iter")
     assert owner_ops.index(iterator) < owner_ops.index(generator_call)
 
     # The hidden .0 parameter follows any lexical closure in the shared frame
@@ -951,6 +988,9 @@ def test_genexpr_outer_iterator_is_eager_and_frame_owned(
     )
     assert not _module_global_reads_named(poll_ops, "outer"), (
         "outer iterable expression must not be deferred into the poll state machine"
+    )
+    assert not any(op["kind"] in {"iter", "aiter"} for op in poll_ops), (
+        "the frame must consume its acquired iterator, not reacquire a source name"
     )
 
 
@@ -1098,27 +1138,81 @@ def _module_global_reads_named(ops: list[dict], name: str) -> list[dict]:
     ]
 
 
-def test_bound_local_serializes_for_all_absorbing_container_constructors() -> None:
-    constructors = {
-        "LIST_NEW": "list_new",
-        "TUPLE_NEW": "tuple_new",
-        "DICT_NEW": "dict_new",
-        "SET_NEW": "set_new",
-        "FROZENSET_NEW": "frozenset_new",
-    }
-    for frontend_kind, wire_kind in constructors.items():
-        lowered = _lower_ops(
-            [
-                MoltOp(
-                    kind=frontend_kind,
-                    args=[],
-                    result=MoltValue(f"{wire_kind}_result"),
-                    metadata={"bound_local": True},
-                )
-            ]
-        )
-        emitted = next(op for op in lowered if op.get("kind") == wire_kind)
-        assert emitted.get("bound_local") is True
+def test_frame_home_ops_serialize_their_code_slot() -> None:
+    # Serialization alone: an unused home read is legitimately removable.
+    lowered = SimpleTIRGenerator().map_ops_to_json(
+        [
+            MoltOp(
+                kind="FRAME_HOME_STORE",
+                args=[MoltValue("value")],
+                result=MoltValue("view"),
+                metadata={"slot": 2},
+            ),
+            MoltOp(
+                kind="FRAME_HOME_CELL",
+                args=[MoltValue("cell")],
+                result=MoltValue("cell_view"),
+                metadata={"slot": 3},
+            ),
+            MoltOp(
+                kind="FRAME_HOME_PRIVATE_CELL",
+                args=[MoltValue("private")],
+                result=MoltValue("private_view"),
+                metadata={"slot": 4},
+            ),
+            MoltOp(
+                kind="FRAME_HOME_LOAD",
+                args=[],
+                result=MoltValue("loaded"),
+                metadata={"slot": 2},
+            ),
+            MoltOp(
+                kind="FRAME_HOME_TAKE",
+                args=[],
+                result=MoltValue("taken"),
+                metadata={"slot": 5},
+            ),
+            MoltOp(
+                kind="FRAME_HOME_CLEAR",
+                args=[],
+                result=MoltValue("none"),
+                metadata={"slot": 2},
+            ),
+            MoltOp(
+                kind="FRAME_LOCALS",
+                args=[MoltValue("key"), MoltValue("view")],
+                result=MoltValue("shared_locals"),
+                metadata={"shared": True},
+            ),
+            MoltOp(
+                kind="FRAME_LOCALS",
+                args=[],
+                result=MoltValue("snapshot_locals"),
+                metadata={"shared": False},
+            ),
+        ],
+        run_midend=False,
+    )
+    assert [op for op in lowered if op["kind"].startswith("frame_")] == [
+        {"kind": "frame_home_store", "value": 2, "args": ["value"], "out": "view"},
+        {"kind": "frame_home_cell", "value": 3, "args": ["cell"], "out": "cell_view"},
+        {
+            "kind": "frame_home_private_cell",
+            "value": 4,
+            "args": ["private"],
+            "out": "private_view",
+        },
+        {"kind": "frame_home_load", "value": 2, "out": "loaded"},
+        {"kind": "frame_home_take", "value": 5, "out": "taken"},
+        {"kind": "frame_home_clear", "value": 2},
+        {
+            "kind": "frame_locals",
+            "args": ["key", "view"],
+            "value": 1,
+            "out": "shared_locals",
+        },
+        {"kind": "frame_locals", "args": [], "value": 0, "out": "snapshot_locals"},
+    ]
 
 
 def test_source_line_serializes_and_survives_split_field_rewrites() -> None:
@@ -1813,7 +1907,7 @@ def test_cfg_gvn_reuses_pure_int_arithmetic() -> None:
     assert final_add["args"][0] == "x"
 
 
-def test_cfg_dedupes_redundant_guard_tag_after_first_guard() -> None:
+def test_cfg_preserves_repeated_runtime_guard_profile_events() -> None:
     lowered = _lower_ops(
         [
             MoltOp(kind="MISSING", args=[], result=MoltValue("value")),
@@ -1832,7 +1926,7 @@ def test_cfg_dedupes_redundant_guard_tag_after_first_guard() -> None:
     )
 
     guards = [op for op in lowered if op.get("kind") == "guard_tag"]
-    assert len(guards) == 1
+    assert len(guards) == 2
 
 
 def test_cfg_dedupes_redundant_guard_dict_shape_after_first_guard() -> None:
@@ -1984,42 +2078,6 @@ def test_dce_lattice_keeps_guard_results_even_when_unused() -> None:
     )
 
     assert any(op.get("kind") == "guard_dict_shape" for op in lowered)
-
-
-def test_fused_dict_increment_prunes_redundant_unused_dict_guard() -> None:
-    lowered = _lower_ops(
-        [
-            MoltOp(kind="DICT_NEW", args=[], result=MoltValue("obj")),
-            MoltOp(kind="CONST", args=[10], result=MoltValue("dict_type_tag")),
-            MoltOp(
-                kind="BUILTIN_TYPE",
-                args=[MoltValue("dict_type_tag")],
-                result=MoltValue("dict_type"),
-            ),
-            MoltOp(
-                kind="CLASS_VERSION",
-                args=[MoltValue("dict_type")],
-                result=MoltValue("shape_ver"),
-            ),
-            MoltOp(kind="CONST_STR", args=["k"], result=MoltValue("key")),
-            MoltOp(kind="CONST", args=[1], result=MoltValue("delta")),
-            MoltOp(
-                kind="GUARD_DICT_SHAPE",
-                args=[MoltValue("obj"), MoltValue("dict_type"), MoltValue("shape_ver")],
-                result=MoltValue("guard_result"),
-            ),
-            MoltOp(
-                kind="DICT_STR_INT_INC",
-                args=[MoltValue("obj"), MoltValue("key"), MoltValue("delta")],
-                result=MoltValue("none"),
-            ),
-        ]
-    )
-
-    assert all(op.get("kind") != "guard_dict_shape" for op in lowered)
-    assert all(op.get("kind") != "class_layout_version" for op in lowered)
-    assert all(op.get("kind") != "builtin_type" for op in lowered)
-    assert any(op.get("kind") == "dict_str_int_inc" for op in lowered)
 
 
 def test_cfg_gvn_reuses_type_of_and_is() -> None:
@@ -2339,7 +2397,54 @@ def test_range_loop_lowering_keeps_loop_index_control_within_loop_markers() -> N
     gen._ensure_structural_cfg_validity(ops, stage="unit_test")
 
 
-def test_known_guard_failure_preserves_pending_exception_routing() -> None:
+@pytest.mark.parametrize(
+    "kind", ["LIST_NEW", "TUPLE_NEW", "DICT_NEW", "SET_NEW", "SLICE_NEW"]
+)
+def test_aggregate_construction_preserves_its_exception_edge(kind: str) -> None:
+    gen = SimpleTIRGenerator()
+    gen.current_ops = []
+    gen.function_exception_label = 99
+    gen._expr_col = (4, 11)
+    gen.emit(MoltOp(kind, [], MoltValue("aggregate")))
+    assert [op.kind for op in gen.current_ops] == [kind, "CHECK_EXCEPTION"]
+    assert gen.current_ops[1].args == [99]
+    # The canonical throw fact also owns the traceback caret and the frontend
+    # may-raise query; construction is never classified as nothrow.
+    constructed = gen.current_ops[0]
+    assert (constructed.col_offset, constructed.end_col_offset) == (4, 11)
+    assert not gen._op_instance_cannot_raise(constructed, {})
+    ops = [
+        *gen.current_ops,
+        MoltOp("RETURN", [MoltValue("aggregate")], MoltValue("none")),
+        MoltOp("LABEL", [99], MoltValue("none")),
+        MoltOp("RETURN", [MoltValue("none")], MoltValue("none")),
+    ]
+    cfg = build_cfg(ops)
+    sccp = gen._compute_sccp(ops, cfg)
+    assert cfg.index_to_block[3] in sccp.executable_blocks
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "CALLARGS_NEW",
+        "CALLARGS_PUSH_POS",
+        "CALLARGS_PUSH_KW",
+        "CALLARGS_EXPAND_STAR",
+        "CALLARGS_EXPAND_KWSTAR",
+    ],
+)
+def test_call_argument_preparation_preserves_its_exception_edge(kind: str) -> None:
+    gen = SimpleTIRGenerator()
+    gen.current_ops = []
+    gen.function_exception_label = 99
+    gen.emit(MoltOp(kind, [], MoltValue("prepared")))
+    assert [op.kind for op in gen.current_ops] == [kind, "CHECK_EXCEPTION"]
+    assert gen.current_ops[1].args == [99]
+    assert not gen._op_instance_cannot_raise(gen.current_ops[0], {})
+
+
+def test_guard_mismatch_preserves_pending_exception_routing() -> None:
     ops = [
         MoltOp("CONST", [10], MoltValue("value")),
         MoltOp("CONST", [2], MoltValue("float_tag")),
@@ -2551,7 +2656,7 @@ def test_try_except_join_normalization_threads_deep_check_ladders() -> None:
     assert any(op.kind == "JUMP" and op.args and op.args[0] == 30 for op in rewritten)
 
 
-def test_region_wide_guard_elision_removes_post_join_duplicate_guard() -> None:
+def test_region_wide_guard_elision_preserves_post_join_profile_event() -> None:
     ops = [
         MoltOp(kind="MISSING", args=[], result=MoltValue("cond")),
         MoltOp(kind="MISSING", args=[], result=MoltValue("value")),
@@ -2580,10 +2685,8 @@ def test_region_wide_guard_elision_removes_post_join_duplicate_guard() -> None:
     gen = SimpleTIRGenerator()
     rewritten, attempted, accepted, rejected = gen._eliminate_redundant_guards_cfg(ops)
     guards = [op for op in rewritten if op.kind == "GUARD_TAG"]
-    assert len(guards) == 2
-    assert attempted >= 3
-    assert accepted >= 1
-    assert rejected == attempted - accepted
+    assert len(guards) == 3
+    assert attempted == accepted == rejected == 0
 
 
 def test_sccp_preserves_non_raising_region_metadata_for_tir() -> None:
@@ -2602,7 +2705,7 @@ def test_sccp_preserves_non_raising_region_metadata_for_tir() -> None:
     ]
 
 
-def test_guard_failure_retains_region_metadata_while_dce_removes_unused_data() -> None:
+def test_guard_mismatch_retains_region_metadata_while_dce_removes_unused_data() -> None:
     lowered = _lower_ops(
         [
             MoltOp(kind="CONST", args=[10], result=MoltValue("value")),
@@ -4425,206 +4528,266 @@ def f(xs):
     assert all(op.get("value") != try_label for op in cleanup_checks)
 
 
-def test_return_transfers_local_owner_without_frontend_retain() -> None:
-    source = """
-def f(value):
-    other = object()
-    return value
-"""
-    gen = SimpleTIRGenerator(module_name="__main__")
-    gen.visit(ast.parse(source))
-    ir = gen.to_json()
-    ops = next(func["ops"] for func in ir["functions"] if func["name"].endswith("f"))
-    ret_index = next(index for index, op in enumerate(ops) if op.get("kind") == "ret")
-    returned = ops[ret_index]["args"][0]
-
-    assert not any(
-        op.get("kind") == "inc_ref" and op.get("args") == [returned]
-        for op in ops[:ret_index]
-    ), "callee result ownership is published once by the shared TIR authority"
-    assert not any(
-        op.get("kind") == "del_boundary" and op.get("s_value") == "value"
-        for op in ops[:ret_index]
-    ), "the returned binding transfers its owner instead of releasing it"
-    assert any(
-        op.get("kind") == "del_boundary" and op.get("s_value") == "other"
-        for op in ops[:ret_index]
-    ), "unreturned locals still release at the same scope-exit boundary"
-
-
-def test_function_scope_exit_boundaries_reload_loop_target_slot() -> None:
-    source = """
-def f(seq):
-    out = []
-    for entry in seq:
-        out.append(entry)
-    return out
-"""
-    gen = SimpleTIRGenerator(module_name="__main__")
-    gen.visit(ast.parse(source))
-    ir = gen.to_json()
-    ops = next(func["ops"] for func in ir["functions"] if func["name"].endswith("f"))
-    producers = {
-        op["out"]: op for op in ops if isinstance(op.get("out"), str) and op["out"]
-    }
-
-    entry_del = next(
-        op
-        for op in ops
-        if op.get("kind") == "del_boundary" and op.get("s_value") == "entry"
-    )
-    boundary_arg = entry_del["args"][0]
-    producer = producers[boundary_arg]
-
-    assert producer.get("kind") == "load_var"
-    assert producer.get("var") == "entry"
-
-
-def test_nested_branch_loop_targets_share_slot_based_scope_exit_boundaries() -> None:
-    source = """
-def f(target, mapping):
-    if hasattr(mapping, "items"):
-        for key, item in mapping.items():
-            target[key] = item
-    else:
-        for key, item in mapping:
-            target[key] = item
-"""
-    gen = SimpleTIRGenerator(module_name="__main__")
-    gen.visit(ast.parse(source))
-    ir = gen.to_json()
-    ops = next(func["ops"] for func in ir["functions"] if func["name"].endswith("f"))
-    producers = {
-        op["out"]: op for op in ops if isinstance(op.get("out"), str) and op["out"]
-    }
-
-    assert sum(op.get("kind") == "loop_start" for op in ops) == 2
-    final_join = max(idx for idx, op in enumerate(ops) if op.get("kind") == "end_if")
-    for name in ("key", "item"):
-        assert (
-            sum(op.get("kind") == "store_var" and op.get("var") == name for op in ops)
-            >= 3
+def _cpython_code(source: str, name: str) -> types.CodeType:
+    pending = [compile(source, "<frame-homes>", "exec")]
+    while pending:
+        code = pending.pop()
+        if code.co_name == name:
+            return code
+        pending.extend(
+            const for const in code.co_consts if isinstance(const, types.CodeType)
         )
-        boundaries = [
-            op
-            for idx, op in enumerate(ops)
-            if idx > final_join
-            and op.get("kind") == "del_boundary"
-            and op.get("s_value") == name
-        ]
-        assert len(boundaries) == 1
-        producer = producers[boundaries[0]["args"][0]]
-        assert producer.get("kind") == "load_var"
-        assert producer.get("var") == name
+    raise AssertionError(f"no code object named {name!r}")
 
 
-def test_function_loop_rebind_boundary_reloads_current_local_slot() -> None:
-    source = """
-def f(seq):
-    value = "seed"
-    for value in seq:
-        pass
-    return value
-"""
-    gen = SimpleTIRGenerator(module_name="__main__")
+def _cpython_code_slots(source: str, name: str) -> tuple[str, ...]:
+    """CPython's localsplus layout: locals, cells that are not locals, frees."""
+    code = _cpython_code(source, name)
+    return (
+        code.co_varnames
+        + tuple(cell for cell in code.co_cellvars if cell not in code.co_varnames)
+        + code.co_freevars
+    )
+
+
+def _home_slots(ops: list[dict], kind: str) -> set[int]:
+    return {op["value"] for op in ops if op.get("kind") == kind}
+
+
+def _lowered_function(source: str, suffix: str, **options: object) -> dict:
+    gen = SimpleTIRGenerator(module_name="__main__", **options)
     gen.visit(ast.parse(source))
-    ir = gen.to_json()
-    ops = next(func["ops"] for func in ir["functions"] if func["name"].endswith("f"))
-    producers = {
-        op["out"]: (idx, op)
-        for idx, op in enumerate(ops)
-        if isinstance(op.get("out"), str) and op["out"]
+    return next(
+        func for func in gen.to_json()["functions"] if func["name"].endswith(suffix)
+    )
+
+
+def test_sync_frame_homes_follow_the_cpython_code_slot_layout() -> None:
+    source = """
+def outer(a, b, *args, c, **kw):
+    x = a
+    def inner():
+        return x + b
+    y = [z for z in args]
+    del y
+    return inner
+"""
+    slot = _cpython_code_slots(source, "outer").index
+    ops = _lowered_function(source, "__outer")["ops"]
+    # Plain parameters and locals bind in their homes, a captured variable's
+    # home holds its cell, and PEP 709 moves the comprehension's slot aside.
+    assert {slot(name) for name in ("a", "args", "c", "kw", "y", "z")} <= (
+        _home_slots(ops, "frame_home_store")
+    )
+    assert _home_slots(ops, "frame_home_cell") == {slot("x"), slot("b")}
+    assert _home_slots(ops, "frame_home_take") == {slot("z")}
+    assert _home_slots(ops, "frame_home_clear") == {slot("y")}
+    inner_slot = _cpython_code_slots(source, "inner").index
+    inner_ops = _lowered_function(source, "__inner")["ops"]
+    assert _home_slots(inner_ops, "frame_home_cell") == {
+        inner_slot("x"),
+        inner_slot("b"),
     }
 
-    loop_start = next(
-        idx for idx, op in enumerate(ops) if op.get("kind") == "loop_start"
-    )
-    rebind_boundary_idx, rebind_boundary = next(
-        (idx, op)
-        for idx, op in enumerate(ops)
-        if idx > loop_start
-        and op.get("kind") == "del_boundary"
-        and op.get("s_value") == "value"
-    )
-    boundary_arg = rebind_boundary["args"][0]
-    producer_idx, producer = producers[boundary_arg]
 
-    assert producer_idx < rebind_boundary_idx
-    assert producer.get("kind") == "load_var"
-    assert producer.get("var") == "value"
-
-
-def test_first_syntactic_loop_assignment_releases_previous_iteration_slot() -> None:
+def test_sync_frame_bindings_are_released_only_by_their_homes() -> None:
     source = """
-def f(seq):
+def f(value, seq):
+    other = object()
     for item in seq:
-        value = RuntimeError(item)
+        other = item
+    del other
     return value
+"""
+    ops = _lowered_function(source, "__f")["ops"]
+    kinds = [op.get("kind") for op in ops]
+    assert "del_boundary" not in kinds
+    assert "delete_var" not in kinds
+    assert not any(op.get("bound_local") for op in ops)
+    ret_index = kinds.index("ret")
+    assert kinds[ret_index - 1] == "trace_exit"
+    producers = {op["out"]: op for op in ops if isinstance(op.get("out"), str)}
+    # The frame's exit releases its homes, so the returned binding is first
+    # captured as an owned value.
+    assert producers[ops[ret_index]["args"][0]].get("kind") == "binding_alias"
+
+
+def test_sync_frame_entries_adopt_their_python_arguments() -> None:
+    source = """
+def f(a, b):
+    def g(c):
+        return a + c
+    return g
+
+def make(x):
+    yield x
 """
     gen = SimpleTIRGenerator(module_name="__main__")
     gen.visit(ast.parse(source))
-    ir = gen.to_json()
-    ops = next(func["ops"] for func in ir["functions"] if func["name"].endswith("f"))
-    producers = {
-        op["out"]: (idx, op)
-        for idx, op in enumerate(ops)
-        if isinstance(op.get("out"), str) and op["out"]
-    }
-
-    loop_start = next(
-        idx for idx, op in enumerate(ops) if op.get("kind") == "loop_start"
-    )
-    boundary_idx, boundary = next(
-        (idx, op)
-        for idx, op in enumerate(ops)
-        if idx > loop_start
-        and op.get("kind") == "del_boundary"
-        and op.get("s_value") == "value"
-    )
-    producer_idx, producer = producers[boundary["args"][0]]
-    store_idx = next(
-        idx
-        for idx, op in enumerate(ops[producer_idx + 1 : boundary_idx], producer_idx + 1)
-        if op.get("kind") == "store_var" and op.get("var") == "value"
+    functions = gen.to_json()["functions"]
+    f = next(func for func in functions if func["name"].endswith("__f"))
+    g = next(func for func in functions if func["name"].endswith("__g"))
+    assert f["parameter_custody"] == ["transferred", "transferred"]
+    # The function object lends the closure transport parameter.
+    assert g["params"][0] == _MOLT_CLOSURE_PARAM
+    assert g["parameter_custody"] == ["borrowed", "transferred"]
+    # A stateful poll entry and module code borrow.
+    assert all(
+        "parameter_custody" not in func
+        for func in functions
+        if func["name"].endswith("_poll") or func["name"] == "molt_main"
     )
 
-    assert producer_idx < store_idx < boundary_idx
-    assert producer.get("kind") == "load_var"
-    assert producer.get("var") == "value"
 
+@pytest.mark.parametrize("midend_stage", ["pre-midend", "post-midend"])
+def test_frame_entry_custody_omits_entries_that_transfer_no_arguments(
+    midend_stage: str,
+) -> None:
+    source = """
+def empty():
+    local = 1
+    return local
 
-def test_local_rebind_publishes_locals_cache_before_release() -> None:
-    source = "def f(value):\n    cache = locals()\n    value = None\n    return value\n"
+def outer(value):
+    def closed():
+        return value
+    def variadic(*args, **kwargs):
+        return value, args, kwargs
+    return closed, variadic
+
+def suspended():
+    yield 1
+"""
     gen = SimpleTIRGenerator(module_name="__main__")
     gen.visit(ast.parse(source))
-    ops = next(
-        func["ops"]
-        for func in gen.to_json()["functions"]
-        if func["name"] == "__main____f"
-    )
-    producers = {
-        op["out"]: (idx, op)
-        for idx, op in enumerate(ops)
-        if isinstance(op.get("out"), str)
+    functions = gen.to_json(midend_stage=midend_stage)["functions"]
+
+    def by_suffix(suffix: str) -> dict:
+        return next(func for func in functions if func["name"].endswith(suffix))
+
+    empty = by_suffix("__empty")
+    closed = by_suffix("__closed")
+    assert empty["params"] == []
+    assert closed["params"] == [_MOLT_CLOSURE_PARAM]
+    assert "parameter_custody" not in empty
+    assert "parameter_custody" not in closed
+    # Omitting entry custody must not remove ownership of the frame's locals.
+    assert any(op["kind"] == "frame_home_store" for op in empty["ops"])
+    assert any(op["kind"] == "frame_home_cell" for op in closed["ops"])
+    assert by_suffix("__outer")["parameter_custody"] == ["transferred"]
+    assert by_suffix("__variadic")["parameter_custody"] == [
+        "borrowed",
+        "transferred",
+        "transferred",
+    ]
+    for func in functions:
+        if "parameter_custody" in func:
+            assert len(func["parameter_custody"]) == len(func["params"])
+            assert "transferred" in func["parameter_custody"]
+        if func["name"].endswith("_poll") or func["name"] == "molt_main":
+            assert "parameter_custody" not in func
+
+
+@pytest.mark.parametrize("target_python", [(3, 12), (3, 13), (3, 14)])
+def test_local_read_after_a_callback_comes_from_its_home_from_313(
+    target_python: tuple[int, int],
+) -> None:
+    source = """
+def f(callback):
+    value = object()
+    callback()
+    return value
+"""
+    slot = _cpython_code_slots(source, "f").index("value")
+    ops = _lowered_function(source, "__f", target_python=target_python)["ops"]
+    loads = _home_slots(ops, "frame_home_load")
+    if target_python >= (3, 13):
+        # A PEP 667 frame proxy may have rebound it during the callback.
+        assert loads == {slot}
+    else:
+        assert loads == set()
+
+
+def test_comprehension_puts_the_enclosing_binding_back_on_both_exits() -> None:
+    source = """
+def f(items):
+    item = "outer"
+    names = [str(item) for item in items]
+    return item, names
+"""
+    slot = _cpython_code_slots(source, "f").index("item")
+    ops = _lowered_function(source, "__f")["ops"]
+    (take,) = [op for op in ops if op.get("kind") == "frame_home_take"]
+    assert take["value"] == slot
+    restores = [
+        index
+        for index, op in enumerate(ops)
+        if op.get("kind") == "frame_home_store"
+        and op.get("args") == [take["out"]]
+        and op["value"] == slot
+    ]
+    assert len(restores) == 2
+    # One restore is the normal exit. The other runs at the cleanup label that
+    # the comprehension body's exception checks target.
+    check_targets = {
+        op.get("value") for op in ops if op.get("kind") == "check_exception"
     }
-    boundary_idx, boundary = next(
-        (idx, op)
-        for idx, op in enumerate(ops)
-        if op.get("kind") == "del_boundary" and op.get("s_value") == "value"
+    assert (
+        sum(
+            ops[index - 1].get("kind") == "label"
+            and ops[index - 1].get("value") in check_targets
+            for index in restores
+        )
+        == 1
     )
-    capture_idx, capture = producers[boundary["args"][0]]
-    assert capture.get("kind") == "load_var" and capture.get("var") == "value"
-    store_idx, store = next(
-        (idx, op)
-        for idx, op in enumerate(ops[capture_idx + 1 : boundary_idx], capture_idx + 1)
-        if op.get("kind") == "store_var" and op.get("var") == "value"
+
+
+def test_home_backed_locals_carry_no_missing_transport() -> None:
+    source = """
+def f(flag, n):
+    if flag:
+        seen = n
+    while n > 0:
+        n = n - 1
+    return seen
+"""
+    slot = _cpython_code_slots(source, "f").index
+    ops = _lowered_function(source, "__f", target_python=(3, 12))["ops"]
+    missing = {op["out"] for op in ops if op.get("kind") == "missing"}
+    # No missing value seeds a home-backed local's SSA transport: its home is
+    # the canonical unbound state.
+    assert not any(
+        op.get("kind") == "store_var" and set(op.get("args") or []) & missing
+        for op in ops
     )
-    assert any(
-        op.get("kind") == "dict_set"
-        and op["args"][2] == store["args"][0]
-        and producers[op["args"][1]][1].get("s_value") == "value"
-        for op in ops[store_idx + 1 : boundary_idx]
-    ), "the frame-locals projection must publish before displaced-owner callbacks"
+    # Only the read that may precede its store loads the home. A parameter is
+    # bound from entry, so the loop reads its transport, not the home.
+    assert _home_slots(ops, "frame_home_load") == {slot("seen")}
+
+
+@pytest.mark.parametrize(
+    ("target_python", "shared"), [((3, 12), True), ((3, 13), False), ((3, 14), False)]
+)
+def test_function_locals_dict_is_read_from_the_runtime_frame(
+    target_python: tuple[int, int], shared: bool
+) -> None:
+    gen = SimpleTIRGenerator(target_python=target_python)
+    gen.start_function(
+        "f",
+        params=["value"],
+        code_slots=CodeSlotDeclaration(("value",), ("value",), (), ()),
+    )
+    gen.locals["value"] = MoltValue("value", type_hint="Any")
+    gen.parameter_bindings = {"value": "value"}
+    result = gen._emit_locals_dict()
+    (frame_locals,) = [op for op in gen.current_ops if op.kind == "FRAME_LOCALS"]
+    assert frame_locals.result is result
+    # Before PEP 667 an activation's locals() is one refreshed dict.
+    assert frame_locals.metadata == {"shared": shared}
+    assert not any(
+        op.kind in {"DICT_NEW", "DICT_SET", "DICT_UPDATE_MISSING", "FRAME_LOCALS_SET"}
+        for op in gen.current_ops
+    )
 
 
 @pytest.mark.parametrize("target_python", [(3, 12), (3, 13), (3, 14)])
@@ -5513,7 +5676,7 @@ def test_collect_type_facts_reads_python_sources_as_utf8(tmp_path: Path) -> None
     path = tmp_path / "typed_utf8_source.py"
     path.write_text("# source sentinel: ā\nvalue: int = 1\n", encoding="utf-8")
 
-    facts = collect_type_facts_from_paths([path], "guarded", infer=True)
+    facts = collect_type_facts_from_paths([path], "guarded")
 
     assert facts.modules["typed_utf8_source"].globals["value"].type == "int"
 
@@ -5524,7 +5687,7 @@ def test_collect_type_facts_uses_python_source_encoding_for_utf8_bom(
     path = tmp_path / "typed_bom_source.py"
     path.write_bytes(b"\xef\xbb\xbfvalue: int = 1\n")
 
-    facts = collect_type_facts_from_paths([path], "guarded", infer=True)
+    facts = collect_type_facts_from_paths([path], "guarded")
 
     assert facts.modules["typed_bom_source"].globals["value"].type == "int"
 
@@ -5738,7 +5901,7 @@ def test_midend_monolith_pressure_tracks_new_ops_incrementally() -> None:
         optimization_profile="release",
         module_name="pkg.mod",
     )
-    gen.start_function("helper")
+    gen.start_function("helper", code_slots=CodeSlotDeclaration((), (), (), ()))
     gen.emit(MoltOp(kind="CONST", args=[1], result=MoltValue("a", type_hint="int")))
     initial_total_ops = sum(len(info["ops"]) for info in gen.funcs_map.values())
 
@@ -5967,3 +6130,77 @@ def test_full_pipeline_rejects_missing_leak_through_phi() -> None:
                         f"MISSING-tainted value {arg.name!r} leaked into "
                         f"{op.kind} after mid-end pipeline"
                     )
+
+
+def test_cse_projected_inputs_invalidate_predecessor_signature() -> None:
+    class CheckedInputs(SimpleTIRGenerator):
+        def _canonicalize_block_with_state(self, ops, in_state, **kwargs):
+            observed = self._canonicalization_state_signature(in_state)
+            fresh = self._clone_canonicalization_state(in_state)
+            self._invalidate_canonicalization_state_signature(fresh)
+            assert observed == self._canonicalization_state_signature(fresh)
+            return super()._canonicalize_block_with_state(ops, in_state, **kwargs)
+
+    a, b = MoltValue("a"), MoltValue("b")
+    ops = [
+        MoltOp(kind="CONST", args=[1], result=a),
+        MoltOp(kind="CONST", args=[1], result=b),
+        MoltOp(kind="JUMP", args=[1], result=MoltValue("none")),
+        MoltOp(kind="LABEL", args=[1], result=MoltValue("none")),
+        MoltOp(kind="RETURN", args=[b], result=MoltValue("none")),
+    ]
+    # Single-predecessor cloning preserves a cached signature; the must-fact
+    # projection removes its alias before this block's transfer executes.
+    lowered, _ = CheckedInputs()._run_cse_canonicalization_round(
+        ops, allow_cross_block_const_dedupe=False
+    )
+    assert lowered[-1].kind == "RETURN"
+    assert lowered[-1].args == [a]
+
+
+@pytest.mark.parametrize("kind", ["GUARD_TAG", "GUARD_TYPE"])
+def test_proven_runtime_guard_keeps_a_used_alias_result(kind: str) -> None:
+    lowered = _lower_ops(
+        [
+            MoltOp(kind="CONST", args=[7], result=MoltValue("source")),
+            MoltOp(kind="CONST", args=[1], result=MoltValue("tag")),
+            MoltOp(
+                kind=kind,
+                args=[MoltValue("source"), MoltValue("tag")],
+                result=MoltValue("checked"),
+            ),
+            MoltOp(
+                kind="RETURN", args=[MoltValue("checked")], result=MoltValue("none")
+            ),
+        ]
+    )
+    assert any(
+        op.get("kind") == kind.lower() and op.get("out") == "checked" for op in lowered
+    )
+
+
+@pytest.mark.parametrize("kind", ["GUARD_TAG", "GUARD_TYPE"])
+def test_runtime_guard_mismatch_continues_sccp_and_preserves_source_type(
+    kind: str,
+) -> None:
+    source, tag, checked, later = map(MoltValue, ["source", "tag", "checked", "later"])
+    ops = [
+        MoltOp("CONST", [7], source),
+        MoltOp("CONST", [BUILTIN_TYPE_TAGS["float"]], tag),
+        MoltOp(kind, [source, tag], checked),
+        MoltOp("CONST", [11], later),
+        MoltOp("RETURN", [later], MoltValue("none")),
+    ]
+    gen = SimpleTIRGenerator()
+    cfg = build_cfg(ops)
+    sccp = gen._compute_sccp(ops, cfg)
+    after = sccp.out_values[cfg.index_to_block[3]]
+    assert after["checked"] == 7
+    assert after["later"] == 11
+    _, canonical = gen._canonicalize_block_with_state(
+        ops[:-1], gen._empty_canonicalization_state(), induction_steps={}
+    )
+    assert canonical["value_type_tags"]["source"] == BUILTIN_TYPE_TAGS["int"]
+    # The guard's result may propagate, but its mismatch event remains.
+    lowered = _lower_ops(ops)
+    assert any(op.get("kind") == kind.lower() for op in lowered)

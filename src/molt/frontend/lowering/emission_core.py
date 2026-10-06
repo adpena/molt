@@ -56,6 +56,10 @@ class EmissionCoreMixin(GeneratorMixinBase):
                 finally:
                     if col is not None and end_col is not None:
                         self._expr_col = prev
+                if isinstance(node, ast.Call):
+                    # The instruction that evaluates a source call adopts its
+                    # operands, as CPython's CALL does.
+                    self._mark_source_call(result)
                 fact = (
                     self.python_binding_index.expression_fact(node)
                     if self.python_binding_index is not None
@@ -116,6 +120,11 @@ class EmissionCoreMixin(GeneratorMixinBase):
                         )
 
     def emit(self, op: MoltOp) -> None:
+        if op.kind in {"COPY", "IDENTITY_ALIAS", "PHI"} and op.result is not None:
+            op.result.borrows_binding |= any(
+                isinstance(value, MoltValue) and value.borrows_binding
+                for value in op.args
+            )
         # Auto-attach expression column offsets to raising ops. RAISING_KIND_NAMES
         # is generated from runtime/molt-ir/src/tir/op_kinds.toml (the
         # [[frontend_raising_kind]] table cross-checked against the [[opcode]]

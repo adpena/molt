@@ -8,12 +8,11 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use super::{callable_ops, container_ops, direct_ops, vector_reductions};
+use super::{callable_ops, container_ops, direct_ops};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub(super) enum LlvmPreservedOpFamily {
     Direct,
-    VectorReduction,
     Container,
     Callable,
 }
@@ -41,14 +40,6 @@ fn family_map() -> &'static HashMap<&'static str, LlvmPreservedOpFamily> {
                 }
             }
         }
-        for &(kind, _) in vector_reductions::VEC_REDUCTION_OPS {
-            if let Some(existing) = map.insert(kind, LlvmPreservedOpFamily::VectorReduction) {
-                panic!(
-                    "LLVM preserved-op family table is not disjoint: vector reduction \
-                     kind `{kind}` is also claimed by {existing:?}",
-                );
-            }
-        }
         map
     })
 }
@@ -74,12 +65,6 @@ mod tests {
                 );
             }
         }
-        for &(kind, _) in vector_reductions::VEC_REDUCTION_OPS {
-            assert!(
-                seen.insert(kind),
-                "vector reduction kind `{kind}` also appears in a preserved-op family",
-            );
-        }
         let _ = family_map();
     }
 
@@ -91,10 +76,6 @@ mod tests {
                 "LLVM preserved-op family {family:?} has no routed kinds",
             );
         }
-        assert!(
-            !vector_reductions::VEC_REDUCTION_OPS.is_empty(),
-            "LLVM vector reduction family has no routed kinds",
-        );
     }
 
     #[test]
@@ -102,10 +83,6 @@ mod tests {
         assert_eq!(
             llvm_preserved_op_family("floordiv"),
             Some(LlvmPreservedOpFamily::Direct),
-        );
-        assert_eq!(
-            llvm_preserved_op_family("vec_sum_int_range_iter_trusted"),
-            Some(LlvmPreservedOpFamily::VectorReduction),
         );
         assert_eq!(
             llvm_preserved_op_family("dict_new"),
@@ -176,6 +153,87 @@ mod tests {
                 llvm_preserved_op_family(kind),
                 Some(LlvmPreservedOpFamily::Container),
                 "custom container protocol `{kind}` must keep dedicated lowering",
+            );
+        }
+    }
+
+    #[test]
+    fn vector_reductions_use_the_shared_owned_boxed_abi() {
+        use molt_ir::runtime_boxed_abi_generated::{RuntimeBoxedReturn, runtime_boxed_abi};
+
+        for kind in ["vec_sum", "vec_prod", "vec_min", "vec_max"] {
+            assert_eq!(llvm_preserved_op_family(kind), None);
+            let symbol = format!("molt_{kind}");
+            let abi = runtime_boxed_abi(&symbol, 3)
+                .unwrap_or_else(|| panic!("{kind} must have a three-object boxed ABI"));
+            assert_eq!(abi.result, RuntimeBoxedReturn::OwnedValue);
+            for arity in [0, 2, 4] {
+                assert!(
+                    runtime_boxed_abi(&symbol, arity).is_none(),
+                    "{kind} must reject arity {arity}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exact_boxed_runtime_kinds_bypass_direct_and_callable_family_routing() {
+        for (kind, arity) in [
+            ("aiter", 1),
+            ("context_exit", 2),
+            ("module_new", 1),
+            ("module_cache_get", 1),
+            ("module_cache_set", 2),
+            ("module_cache_del", 1),
+            ("module_get_attr", 2),
+            ("module_import_from", 2),
+            ("module_get_global", 2),
+            ("module_set_attr", 3),
+            ("module_del_global", 2),
+            ("module_del_global_if_present", 2),
+            ("exception_class", 1),
+            ("exception_new", 2),
+            ("exception_stack_set_depth", 1),
+            ("exception_stack_exit", 1),
+            ("exception_enter_handler", 1),
+            ("exception_resolve_captured", 1),
+            ("exception_set_last", 1),
+            ("exception_context_set", 1),
+            ("class_apply_set_name", 1),
+            ("class_merge_layout", 3),
+            ("str_from_obj", 1),
+            ("repr_from_obj", 1),
+            ("int_from_obj", 3),
+            ("float_from_obj", 1),
+            ("ascii_from_obj", 1),
+            ("complex_from_obj", 3),
+            ("int_from_str_of_obj", 3),
+            ("ord", 1),
+            ("ord_at", 2),
+            ("string_join", 2),
+            ("isinstance", 2),
+            ("issubclass", 2),
+            ("has_attr_name", 2),
+            ("is_callable", 1),
+            ("context_unwind_to", 2),
+            ("code_new", 9),
+            ("callargs_push_pos", 2),
+            ("callargs_push_kw", 3),
+            ("callargs_expand_star", 2),
+            ("callargs_expand_kwstar", 2),
+        ] {
+            assert_eq!(
+                llvm_preserved_op_family(kind),
+                None,
+                "exact runtime kind `{kind}` must reach the admitted boxed-call route",
+            );
+            assert!(
+                molt_ir::runtime_boxed_abi_generated::runtime_boxed_abi(
+                    &format!("molt_{kind}"),
+                    arity,
+                )
+                .is_some(),
+                "retired handler `{kind}` must have an exact generated boxed ABI",
             );
         }
     }

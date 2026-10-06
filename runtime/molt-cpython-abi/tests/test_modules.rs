@@ -22,14 +22,14 @@ use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 // `molt-lang-cpython-abi` deliberately does not depend on `molt-lang-runtime`
 // (avoids a circular dep), so integration tests in this crate cannot pull in
 // the real runtime's hook implementations.  Instead we install a minimal
-// counter-backed vtable that hands out monotonically increasing non-zero
-// "handle bits" — enough for `PyModule_New` / `PyModule_Create2` to return a
-// non-null wrapped `*mut PyObject` so the bridge logic itself can be exercised.
+// hook vtable whose allocators all use the shared fixture owner registry.
+// Module C-API state, call dispatch and rejection probes remain local
+// observations; strings, dictionaries, modules and foreign edges have one
+// allocator and terminal-retirement authority.
 //
 // The real runtime overrides this in production via
 // `molt_cpython_abi_register_hooks`.
 
-static FAKE_HANDLE_COUNTER: AtomicU64 = AtomicU64::new(0x1000);
 static FAKE_BUFFER_RELEASES: AtomicU64 = AtomicU64::new(0);
 static MODULE_EXEC_CALLED: AtomicU64 = AtomicU64::new(0);
 static MODULE_EXEC_STATE_BYTE: AtomicU64 = AtomicU64::new(0);
@@ -53,8 +53,6 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 static FAKE_BUFFER: [u8; 4] = [1, 2, 3, 4];
 static FAKE_MODULE_STATE: LazyLock<Mutex<FakeModuleState>> =
     LazyLock::new(|| Mutex::new(FakeModuleState::default()));
-static FAKE_REFCOUNTS: LazyLock<Mutex<HashMap<u64, usize>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 static FAKE_CLASS_OVERRIDES: LazyLock<Mutex<HashMap<u64, u64>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static FAKE_CALLABLE_BITS: LazyLock<Mutex<HashSet<u64>>> =
@@ -63,31 +61,6 @@ static FAKE_CALL_ENABLED: AtomicBool = AtomicBool::new(false);
 static FAKE_CALLS: AtomicU64 = AtomicU64::new(0);
 static FAKE_LAST_CALLED: AtomicU64 = AtomicU64::new(0);
 static SEMANTIC_CALL_SLOT_CALLS: AtomicU64 = AtomicU64::new(0);
-struct FakeClassBindings {
-    type_class: u64,
-    str_class: u64,
-    module_class: u64,
-    dict_class: u64,
-    other_class: u64,
-}
-static FAKE_CLASS_BINDINGS: LazyLock<FakeClassBindings> = LazyLock::new(|| {
-    let bind = |type_object: *mut PyTypeObject| {
-        let bits = next_fake_handle();
-        unsafe {
-            molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                .bind_static_pyobj_to_runtime_handle(type_object.cast(), bits, true)
-                .expect("bind fake runtime class to its canonical static ABI type");
-        }
-        bits
-    };
-    FakeClassBindings {
-        type_class: bind(&raw mut PyType_Type),
-        str_class: bind(&raw mut PyUnicode_Type),
-        module_class: bind(&raw mut PyModule_Type),
-        dict_class: bind(&raw mut PyDict_Type),
-        other_class: bind(&raw mut MoltManaged_Type),
-    }
-});
 static CROSSING_TEST: AtomicBool = AtomicBool::new(false);
 static CROSSING_FAIL: AtomicBool = AtomicBool::new(false);
 static CROSSING_CLEANUP_ERROR: AtomicBool = AtomicBool::new(false);
@@ -96,7 +69,8 @@ static CROSSING_DEALLOCS: AtomicU64 = AtomicU64::new(0);
 static CROSSING_ERROR_VALUE: AtomicUsize = AtomicUsize::new(0);
 static CROSSING_FOREIGN: LazyLock<Mutex<HashMap<u64, usize>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-static CROSSING_STORED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+// Observations only; each dictionary is the sole owner of its entries.
+static CROSSING_STORED: Mutex<Vec<(u64, Vec<u8>, u64)>> = Mutex::new(Vec::new());
 
 // Borrowed, exact C tuple layout for call-path tests. The fake runtime tuple
 // hooks intentionally do not model tuple contents, so these stack values
@@ -124,10 +98,6 @@ impl<const N: usize> CallTuple<N> {
 
 #[derive(Default)]
 struct FakeModuleState {
-    dict_by_module: HashMap<u64, u64>,
-    /// Module dict contents by name, keyed by dict handle. Values are borrowed
-    /// records; runtime ownership stays with the crossing fixture.
-    attrs_by_dict: HashMap<u64, Vec<(Vec<u8>, u64)>>,
     capi_by_module: HashMap<u64, FakeModuleCapi>,
     by_def: HashMap<usize, u64>,
 }
@@ -140,27 +110,14 @@ struct FakeModuleCapi {
     entered: bool,
 }
 
-fn next_fake_handle() -> u64 {
-    // NaN-boxed pointers are 50-bit aligned to ≥2-byte boundaries; bumping
-    // by 8 keeps the sequence well clear of inline-int / inline-bool / None
-    // bit patterns and stays inside the heap-pointer space.
-    let address = FAKE_HANDLE_COUNTER.fetch_add(8, Ordering::Relaxed) as usize;
-    let bits = MoltObject::from_ptr(ptr::with_exposed_provenance_mut(address)).bits();
-    FAKE_REFCOUNTS.lock().unwrap().insert(bits, 1);
-    bits
-}
-
-unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
-    unsafe { support::fake_strings::alloc_str(data, len) }
-}
 unsafe extern "C" fn fake_alloc_bytes(_data: *const u8, _len: usize) -> u64 {
-    next_fake_handle()
+    support::fake_runtime::fresh_handle()
 }
 unsafe extern "C" fn fake_int_from_i64(_value: i64) -> u64 {
-    next_fake_handle()
+    support::fake_runtime::fresh_handle()
 }
 unsafe extern "C" fn fake_int_from_u64(_value: u64) -> u64 {
-    next_fake_handle()
+    support::fake_runtime::fresh_handle()
 }
 unsafe extern "C" fn fake_int_as_i64(_bits: u64) -> i64 {
     -1
@@ -194,7 +151,7 @@ unsafe extern "C" fn fake_int_from_bytes(
     _little_endian: std::os::raw::c_int,
     _signed: std::os::raw::c_int,
 ) -> u64 {
-    next_fake_handle()
+    support::fake_runtime::fresh_handle()
 }
 
 unsafe extern "C" fn fake_int_from_digits(
@@ -248,10 +205,10 @@ unsafe extern "C" fn fake_complex_parts(_bits: u64, _real: *mut f64, _imag: *mut
     -1
 }
 unsafe extern "C" fn fake_alloc_list() -> u64 {
-    next_fake_handle()
+    support::fake_runtime::fresh_handle()
 }
 unsafe extern "C" fn fake_alloc_list_presized(_len: usize) -> u64 {
-    next_fake_handle()
+    support::fake_runtime::fresh_handle()
 }
 unsafe extern "C" fn fake_list_append(
     _list_bits: u64,
@@ -291,14 +248,15 @@ unsafe extern "C" fn fake_list_set_slice(
     _list_bits: u64,
     _ilow: isize,
     _ihigh: isize,
-    _itemlist_bits: u64,
+    _replacement: *const u64,
+    _replacement_len: usize,
     _future_pointers: *const *mut molt_cpython_abi::abi_types::PyObject,
     _future_len: usize,
 ) -> std::os::raw::c_int {
     -1
 }
 unsafe extern "C" fn fake_alloc_tuple(_arity: usize) -> u64 {
-    next_fake_handle()
+    support::fake_runtime::fresh_handle()
 }
 unsafe extern "C" fn fake_tuple_set(
     _bits: u64,
@@ -314,50 +272,7 @@ unsafe extern "C" fn fake_tuple_len(_bits: u64) -> usize {
 unsafe extern "C" fn fake_tuple_item(_bits: u64, _i: usize) -> BorrowedHandleResult {
     BorrowedHandleResult::missing()
 }
-unsafe extern "C" fn fake_alloc_dict() -> u64 {
-    next_fake_handle()
-}
-unsafe extern "C" fn fake_dict_set(_d: u64, _k: u64, _v: u64) -> i32 {
-    unsafe {
-        fake_inc_ref(_k);
-        fake_inc_ref(_v);
-    }
-    0
-}
-unsafe extern "C" fn fake_dict_get(dict: u64, key: u64) -> BorrowedHandleResult {
-    let mut len = 0;
-    let data = unsafe { support::fake_strings::str_data(key, &raw mut len) };
-    if data.is_null() {
-        return BorrowedHandleResult::missing();
-    }
-    let key = unsafe { std::slice::from_raw_parts(data, len) };
-    FAKE_MODULE_STATE
-        .lock()
-        .unwrap()
-        .attrs_by_dict
-        .get(&dict)
-        .and_then(|attrs| attrs.iter().find(|(name, _)| name.as_slice() == key))
-        .map_or_else(BorrowedHandleResult::missing, |&(_, value)| {
-            BorrowedHandleResult::ok(value)
-        })
-}
-unsafe extern "C" fn fake_dict_del(_d: u64, _k: u64) -> std::os::raw::c_int {
-    0
-}
-unsafe extern "C" fn fake_dict_len(_bits: u64) -> usize {
-    0
-}
-unsafe extern "C" fn fake_dict_entry(
-    _dict_bits: u64,
-    _index: usize,
-    _out_key: *mut u64,
-    _out_val: *mut u64,
-) -> std::os::raw::c_int {
-    0
-}
-unsafe extern "C" fn fake_str_data(bits: u64, out_len: *mut usize) -> *const u8 {
-    unsafe { support::fake_strings::str_data(bits, out_len) }
-}
+
 unsafe extern "C" fn fake_bytes_data(_bits: u64, out_len: *mut usize) -> *const u8 {
     if !out_len.is_null() {
         unsafe {
@@ -400,25 +315,33 @@ unsafe extern "C" fn fake_buffer_release(view: *mut MoltBufferView) -> std::os::
     }
     0
 }
-unsafe extern "C" fn fake_object_get_attr(obj: u64, name: u64) -> OwnedHandleResult {
-    let mut len = 0;
-    let data = unsafe { fake_str_data(name, &mut len) };
-    if data.is_null() {
+unsafe extern "C" fn fake_object_get_attr(
+    obj: u64,
+    name: u64,
+    _access: molt_cpython_abi::hooks::AttributeAccess,
+    _dictionary: *const u64,
+    _suppress: bool,
+) -> OwnedHandleResult {
+    let molt_cpython_abi::hooks::DecodedHandleResult::Ok(dict) =
+        (unsafe { support::fake_runtime::module_get_dict(obj) }).decode()
+    else {
         return OwnedHandleResult::error();
+    };
+    match unsafe {
+        support::fake_runtime::dict_get(
+            dict,
+            name,
+            molt_cpython_abi::hooks::DictHashSource::Compute,
+            0,
+        )
     }
-    let name = unsafe { std::slice::from_raw_parts(data, len) };
-    let state = FAKE_MODULE_STATE.lock().unwrap();
-    let value = state
-        .dict_by_module
-        .get(&obj)
-        .and_then(|dict| state.attrs_by_dict.get(dict))
-        .and_then(|attrs| attrs.iter().find(|(key, _)| key == name))
-        .map(|(_, value)| *value);
-    if let Some(value) = value {
-        unsafe { fake_inc_ref(value) };
-        OwnedHandleResult::ok(value)
-    } else {
-        OwnedHandleResult::error()
+    .decode()
+    {
+        molt_cpython_abi::hooks::DecodedHandleResult::Ok(value) => {
+            unsafe { support::fake_runtime::inc_ref(value) };
+            OwnedHandleResult::ok(value)
+        }
+        _ => OwnedHandleResult::error(),
     }
 }
 unsafe extern "C" fn fake_module_exec_begin(module: u64, _def: usize) -> i32 {
@@ -436,96 +359,25 @@ unsafe extern "C" fn fake_object_set_attr(
     _name: u64,
     _value: u64,
     _delete: bool,
+    _access: molt_cpython_abi::hooks::AttributeMutation,
 ) -> std::os::raw::c_int {
     0
 }
 unsafe extern "C" fn fake_object_format(_obj: u64, _spec: u64) -> OwnedHandleResult {
-    OwnedHandleResult::ok(next_fake_handle())
+    OwnedHandleResult::ok(support::fake_runtime::fresh_handle())
 }
 unsafe extern "C" fn fake_sys_get_object_borrowed(
     _data: *const u8,
     _len: usize,
+    _policy: molt_cpython_abi::hooks::SysLookupPolicy,
 ) -> BorrowedHandleResult {
     BorrowedHandleResult::missing()
-}
-unsafe extern "C" fn fake_classify_heap(bits: u64) -> u8 {
-    if support::fake_strings::contains(bits) {
-        return MoltTypeTag::Str as u8;
-    }
-    let state = FAKE_MODULE_STATE.lock().unwrap();
-    if state.dict_by_module.contains_key(&bits) {
-        MoltTypeTag::Module as u8
-    } else if state.attrs_by_dict.contains_key(&bits) {
-        MoltTypeTag::Dict as u8
-    } else {
-        MoltTypeTag::Other as u8
-    }
-}
-unsafe extern "C" fn fake_inc_ref(bits: u64) {
-    if let Some(count) = FAKE_REFCOUNTS.lock().unwrap().get_mut(&bits) {
-        *count = count.checked_add(1).expect("fake refcount overflow");
-    }
-}
-unsafe extern "C" fn fake_dec_ref(bits: u64) {
-    let retired = {
-        let mut counts = FAKE_REFCOUNTS.lock().unwrap();
-        if let Some(count) = counts.get_mut(&bits) {
-            assert!(*count > 0, "fake refcount underflow");
-            *count -= 1;
-            *count == 0
-        } else {
-            false
-        }
-    };
-    if retired {
-        let address = CROSSING_FOREIGN.lock().unwrap().remove(&bits);
-        if let Some(address) = address {
-            unsafe { molt_cpython_abi::bridge::molt_foreign_object_release(address) };
-            if CROSSING_CLEANUP_ERROR.load(Ordering::Relaxed) {
-                unsafe {
-                    molt_cpython_abi::api::errors::PyErr_SetString(
-                        (&raw mut PyExc_KeyError).cast(),
-                        c"crossing cleanup error".as_ptr(),
-                    )
-                };
-            }
-        }
-    }
-}
-unsafe extern "C" fn fake_ref_count(bits: u64) -> usize {
-    FAKE_REFCOUNTS
-        .lock()
-        .unwrap()
-        .get(&bits)
-        .copied()
-        .unwrap_or(0)
 }
 unsafe extern "C" fn fake_try_mark_abi_view(
     _bits: u64,
     _present: std::os::raw::c_int,
 ) -> std::os::raw::c_int {
     1
-}
-unsafe extern "C" fn fake_alloc_module(data: *const u8, len: usize) -> u64 {
-    let module_bits = next_fake_handle();
-    let dict_bits = next_fake_handle();
-    // Like CPython module initialization, the fresh dict carries `__name__`.
-    let name_bits = unsafe { support::fake_strings::alloc_str(data, len) };
-    let mut state = FAKE_MODULE_STATE.lock().unwrap();
-    state.dict_by_module.insert(module_bits, dict_bits);
-    state
-        .attrs_by_dict
-        .insert(dict_bits, vec![(b"__name__".to_vec(), name_bits)]);
-    module_bits
-}
-unsafe extern "C" fn fake_module_get_dict(module_bits: u64) -> BorrowedHandleResult {
-    FAKE_MODULE_STATE
-        .lock()
-        .unwrap()
-        .dict_by_module
-        .get(&module_bits)
-        .copied()
-        .map_or_else(BorrowedHandleResult::error, BorrowedHandleResult::ok)
 }
 unsafe extern "C" fn fake_import_add_module_borrowed(
     _data: *const u8,
@@ -544,15 +396,8 @@ unsafe extern "C" fn fake_module_set_attr(
 ) -> std::os::raw::c_int {
     if CROSSING_TEST.load(Ordering::Relaxed) {
         CROSSING_SET_CALLS.fetch_add(1, Ordering::Relaxed);
-        if !FAKE_MODULE_STATE
-            .lock()
-            .unwrap()
-            .dict_by_module
-            .contains_key(&module)
-        {
-            return -1;
-        }
     }
+
     if !data.is_null() {
         let name = unsafe { std::slice::from_raw_parts(data, len) };
         if name == b"reject_attr" {
@@ -573,26 +418,33 @@ unsafe extern "C" fn fake_module_set_attr(
             return -1;
         }
     }
-    if !data.is_null() {
-        let name = unsafe { std::slice::from_raw_parts(data, len) };
-        let mut state = FAKE_MODULE_STATE.lock().unwrap();
-        if let Some(&dict) = state.dict_by_module.get(&module) {
-            let attrs = state.attrs_by_dict.entry(dict).or_default();
-            attrs.retain(|(existing, _)| existing.as_slice() != name);
-            attrs.push((name.to_vec(), value));
-        }
+    let molt_cpython_abi::hooks::DecodedHandleResult::Ok(dict) =
+        (unsafe { support::fake_runtime::module_get_dict(module) }).decode()
+    else {
+        return -1;
+    };
+    let key = unsafe { support::fake_runtime::alloc_str(data, len) };
+    let status =
+        unsafe { support::fake_runtime::dict_mutate(dict, key, value, 0, None, ptr::null_mut()) };
+    molt_cpython_abi::api::errors::with_preserved_error(|| unsafe {
+        support::fake_runtime::dec_ref(key)
+    });
+    if status == 0 && CROSSING_TEST.load(Ordering::Relaxed) {
+        let name = if data.is_null() {
+            Vec::new()
+        } else {
+            unsafe { std::slice::from_raw_parts(data, len) }.to_vec()
+        };
+        CROSSING_STORED.lock().unwrap().push((dict, name, value));
     }
-    if CROSSING_TEST.load(Ordering::Relaxed) {
-        unsafe { fake_inc_ref(value) };
-        CROSSING_STORED.lock().unwrap().push(value);
-    }
-    0
+    status
 }
 unsafe extern "C" fn fake_module_capi_register(
     module_bits: u64,
     module_def_ptr: usize,
     module_state_size: u64,
     defer_state: bool,
+    _callbacks: molt_cpython_abi::hooks::ModuleGcCallbacks,
 ) -> std::os::raw::c_int {
     let Ok(size) = usize::try_from(module_state_size) else {
         return -1;
@@ -647,9 +499,9 @@ unsafe extern "C" fn fake_module_state_add(
         .by_def
         .insert(module_def_ptr, module_bits);
     if replaced != Some(module_bits) {
-        unsafe { fake_inc_ref(module_bits) };
+        unsafe { support::fake_runtime::inc_ref(module_bits) };
         if let Some(old_bits) = replaced {
-            unsafe { fake_dec_ref(old_bits) };
+            unsafe { support::fake_runtime::dec_ref(old_bits) };
         }
     }
     0
@@ -673,7 +525,7 @@ unsafe extern "C" fn fake_module_state_remove(module_def_ptr: usize) -> std::os:
         .by_def
         .remove(&module_def_ptr)
     {
-        unsafe { fake_dec_ref(bits) };
+        unsafe { support::fake_runtime::dec_ref(bits) };
         0
     } else {
         -1
@@ -703,7 +555,17 @@ unsafe extern "C" fn fake_register_c_function(
             return 0;
         }
     }
-    next_fake_handle()
+    unsafe {
+        support::fake_runtime::register_c_function(
+            _meth,
+            _flags,
+            _self_bits,
+            _self_is_null,
+            _defining_class_bits,
+            data,
+            len,
+        )
+    }
 }
 
 unsafe extern "C" fn fake_import_module(_data: *const u8, _len: usize) -> u64 {
@@ -724,17 +586,6 @@ unsafe extern "C" fn fake_report_unraisable(
     _err_msg_len: usize,
     _has_err_msg: std::os::raw::c_int,
 ) {
-}
-unsafe extern "C" fn fake_normalize_exception(
-    _requested_class_bits: u64,
-    _args_bits: u64,
-    _value_bits: u64,
-    _has_value: std::os::raw::c_int,
-    _traceback_bits: u64,
-    _has_traceback: std::os::raw::c_int,
-    _actual_class_bits: *mut u64,
-) -> OwnedHandleResult {
-    OwnedHandleResult::error()
 }
 unsafe extern "C" fn fake_exception_set_field(
     _exception_bits: u64,
@@ -759,26 +610,7 @@ unsafe extern "C" fn fake_runtime_class_borrowed(value_bits: u64) -> BorrowedHan
     {
         return BorrowedHandleResult::ok(class_bits);
     }
-    let classes = &*FAKE_CLASS_BINDINGS;
-    let class_bits = if [
-        classes.type_class,
-        classes.str_class,
-        classes.module_class,
-        classes.dict_class,
-        classes.other_class,
-    ]
-    .contains(&value_bits)
-    {
-        classes.type_class
-    } else {
-        match unsafe { fake_classify_heap(value_bits) } {
-            x if x == MoltTypeTag::Str as u8 => classes.str_class,
-            x if x == MoltTypeTag::Module as u8 => classes.module_class,
-            x if x == MoltTypeTag::Dict as u8 => classes.dict_class,
-            _ => classes.other_class,
-        }
-    };
-    BorrowedHandleResult::ok(class_bits)
+    unsafe { support::fake_runtime::runtime_class_borrowed(value_bits) }
 }
 unsafe extern "C" fn fake_take_pending_exception(
     _actual_class_bits: *mut u64,
@@ -809,6 +641,17 @@ unsafe extern "C" fn fake_attached_runtime_context() -> u32 {
 unsafe extern "C" fn fake_pending_call_error(_reason: u32) {}
 unsafe extern "C" fn fake_clear_pending_exception() {}
 
+unsafe extern "C" fn fake_type_dict_borrowed(_type: u64) -> BorrowedHandleResult {
+    BorrowedHandleResult::error()
+}
+unsafe extern "C" fn fake_type_lookup_borrowed(
+    _type: u64,
+    _name: u64,
+    _mro: u8,
+) -> BorrowedHandleResult {
+    BorrowedHandleResult::missing()
+}
+
 const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     abi_magic: molt_cpython_abi::hooks::RUNTIME_HOOKS_ABI_MAGIC,
     abi_version: molt_cpython_abi::hooks::RUNTIME_HOOKS_ABI_VERSION,
@@ -823,7 +666,7 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     thread_state_drop_leave: fake_thread_state_drop_leave,
     attached_runtime_context: fake_attached_runtime_context,
     pending_call_error: fake_pending_call_error,
-    alloc_str: fake_alloc_str,
+    alloc_str: support::fake_runtime::alloc_str,
     alloc_bytes: fake_alloc_bytes,
     int_from_i64: fake_int_from_i64,
     int_from_u64: fake_int_from_u64,
@@ -854,30 +697,33 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     tuple_set: fake_tuple_set,
     tuple_len: fake_tuple_len,
     tuple_item: fake_tuple_item,
-    alloc_dict: fake_alloc_dict,
-    dict_set: fake_dict_set,
-    dict_get: fake_dict_get,
-    dict_del: fake_dict_del,
-    dict_len: fake_dict_len,
-    dict_entry: fake_dict_entry,
-    str_data: fake_str_data,
+    alloc_dict: support::fake_runtime::alloc_dict,
+    dict_resolve: support::fake_runtime::dict_resolve,
+    dict_mutate: support::fake_runtime::dict_mutate,
+    dict_get: support::fake_runtime::dict_get,
+    dict_pop: support::fake_runtime::dict_pop,
+    dict_len: support::fake_runtime::dict_len,
+    dict_entry: support::fake_runtime::dict_entry,
+    str_data: support::fake_runtime::str_data,
     bytes_data: fake_bytes_data,
     buffer_acquire: fake_buffer_acquire,
     buffer_release: fake_buffer_release,
     object_get_attr: fake_object_get_attr,
+    type_dict_borrowed: fake_type_dict_borrowed,
+    type_lookup_borrowed: fake_type_lookup_borrowed,
     object_set_attr: fake_object_set_attr,
     object_format: fake_object_format,
-    object_str: support::fake_strings::object_str,
-    object_repr: support::fake_strings::object_repr,
+    object_str: support::fake_runtime::object_str,
+    object_repr: support::fake_runtime::object_repr,
     sys_get_object_borrowed: fake_sys_get_object_borrowed,
     eval_get_builtins_borrowed: fake_eval_get_builtins_borrowed,
-    classify_heap: fake_classify_heap,
-    inc_ref: fake_inc_ref,
-    dec_ref: fake_dec_ref,
-    ref_count: fake_ref_count,
+    classify_heap: support::fake_runtime::classify_heap,
+    inc_ref: support::fake_runtime::inc_ref,
+    dec_ref: support::fake_runtime::dec_ref,
+    ref_count: support::fake_runtime::ref_count,
     try_mark_abi_view: fake_try_mark_abi_view,
-    alloc_module: fake_alloc_module,
-    module_get_dict_borrowed: fake_module_get_dict,
+    alloc_module: support::fake_runtime::alloc_module,
+    module_get_dict_borrowed: support::fake_runtime::module_get_dict,
     import_add_module_borrowed: fake_import_add_module_borrowed,
     module_set_attr: fake_module_set_attr,
     module_capi_register: fake_module_capi_register,
@@ -893,7 +739,7 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     number_binary_op: fake_number_binary_op,
     number_unary_op: fake_number_unary_op,
     number_power: fake_number_power,
-    dict_op: fake_dict_op,
+    dict_op: support::fake_runtime::dict_op,
     set_op: fake_set_op,
     set_new: fake_set_new,
     set_size: fake_set_size,
@@ -905,12 +751,13 @@ const TEST_HOOKS: RuntimeHooks = RuntimeHooks {
     object_is_callable: fake_object_is_callable,
     foreign_new: fake_foreign_new,
     report_unraisable: fake_report_unraisable,
-    normalize_exception: fake_normalize_exception,
     exception_set_field: fake_exception_set_field,
     exception_get_field: fake_exception_get_field,
     runtime_class_borrowed: fake_runtime_class_borrowed,
     take_pending_exception: fake_take_pending_exception,
     clear_pending_exception: fake_clear_pending_exception,
+    with_preserved_pending_exception: molt_cpython_abi::hooks::STUB_HOOKS
+        .with_preserved_pending_exception,
     ..molt_cpython_abi::hooks::STUB_HOOKS
 };
 
@@ -922,7 +769,7 @@ unsafe extern "C" fn fake_object_call(
     if FAKE_CALL_ENABLED.load(Ordering::Relaxed) {
         FAKE_LAST_CALLED.store(callable, Ordering::Relaxed);
         FAKE_CALLS.fetch_add(1, Ordering::Relaxed);
-        return OwnedHandleResult::ok(next_fake_handle());
+        return OwnedHandleResult::ok(support::fake_runtime::fresh_handle());
     }
     OwnedHandleResult::error()
 }
@@ -939,6 +786,17 @@ unsafe extern "C" fn semantic_call_slot(
     SEMANTIC_CALL_SLOT_CALLS.fetch_add(1, Ordering::Relaxed);
     ptr::null_mut()
 }
+fn observe_foreign_retirement(bits: u64) {
+    assert!(CROSSING_FOREIGN.lock().unwrap().remove(&bits).is_some());
+    if CROSSING_CLEANUP_ERROR.load(Ordering::Relaxed) {
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_SetString(
+                (&raw mut PyExc_KeyError).cast(),
+                c"crossing cleanup error".as_ptr(),
+            );
+        }
+    }
+}
 unsafe extern "C" fn fake_foreign_new(c_ptr: usize) -> u64 {
     if CROSSING_TEST.load(Ordering::Relaxed) && CROSSING_FAIL.load(Ordering::Relaxed) {
         unsafe {
@@ -949,9 +807,10 @@ unsafe extern "C" fn fake_foreign_new(c_ptr: usize) -> u64 {
         };
         return 0;
     }
-    let bits = next_fake_handle();
+    let bits = unsafe { support::fake_runtime::foreign_new(c_ptr) };
     if CROSSING_TEST.load(Ordering::Relaxed) {
         CROSSING_FOREIGN.lock().unwrap().insert(bits, c_ptr);
+        support::fake_runtime::observe_retirement(bits, observe_foreign_retirement);
     }
     bits
 }
@@ -964,7 +823,7 @@ unsafe extern "C" fn fake_number_unary_op(_op: u32, _a: u64) -> OwnedHandleResul
 unsafe extern "C" fn fake_number_power(_a: u64, _b: u64, _mod_bits: u64) -> OwnedHandleResult {
     OwnedHandleResult::error()
 }
-unsafe extern "C" fn fake_set_new(_iterable: u64) -> u64 {
+unsafe extern "C" fn fake_set_new(_iterable: BorrowedHandleResult, _frozen: bool) -> u64 {
     0
 }
 unsafe extern "C" fn fake_set_size(_set: u64) -> std::os::raw::c_int {
@@ -979,14 +838,11 @@ unsafe extern "C" fn fake_set_add(_set: u64, _key: u64) -> std::os::raw::c_int {
 unsafe extern "C" fn fake_set_discard(_set: u64, _key: u64) -> std::os::raw::c_int {
     -1
 }
-unsafe extern "C" fn fake_dict_op(_op: u32, _dict: u64) -> u64 {
-    0
-}
 unsafe extern "C" fn fake_set_op(_op: u32, _set: u64) -> OwnedHandleResult {
     OwnedHandleResult::error()
 }
-unsafe extern "C" fn fake_object_dir(_obj: u64) -> u64 {
-    0
+unsafe extern "C" fn fake_object_dir(_obj: u64) -> OwnedHandleResult {
+    OwnedHandleResult::error()
 }
 
 /// Acquire the binary-wide serialization guard (poison-tolerant, so one test's
@@ -997,13 +853,14 @@ unsafe extern "C" fn fake_object_dir(_obj: u64) -> u64 {
 fn init() -> MutexGuard<'static, ()> {
     let guard = TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     support::prepare_abi_test_thread(TEST_HOOKS);
+    support::fake_runtime::prepare_class_bindings();
     guard
 }
 
 #[test]
 fn generic_managed_instance_reports_runtime_class_without_layout_stamping() {
     let _guard = init();
-    let class_bits = next_fake_handle();
+    let class_bits = support::fake_runtime::fresh_handle();
     let mut class: Box<PyTypeObject> = Box::new(unsafe { std::mem::zeroed() });
     class.ob_base.ob_base.ob_refcnt = 1;
     class.ob_base.ob_base.ob_type = &raw mut PyType_Type;
@@ -1015,7 +872,7 @@ fn generic_managed_instance_reports_runtime_class_without_layout_stamping() {
             .bind_static_pyobj_to_runtime_handle(class_ptr.cast(), class_bits, true)
             .expect("bind a custom runtime class to its existing ABI Type view");
     }
-    let instance_bits = next_fake_handle();
+    let instance_bits = support::fake_runtime::fresh_handle();
     FAKE_CLASS_OVERRIDES
         .lock()
         .unwrap()
@@ -1044,13 +901,13 @@ fn generic_managed_instance_reports_runtime_class_without_layout_stamping() {
         molt_cpython_abi::bridge::GLOBAL_BRIDGE
             .unbind_static_pyobj_from_runtime_handle(class_ptr.cast(), class_bits)
     });
-    unsafe { fake_dec_ref(class_bits) };
+    unsafe { support::fake_runtime::dec_ref(class_bits) };
 }
 
 #[test]
 fn managed_call_dispatch_ignores_semantic_class_slots_but_type_reports_that_class() {
     let _guard = init();
-    let class_bits = next_fake_handle();
+    let class_bits = support::fake_runtime::fresh_handle();
     let mut class: Box<PyTypeObject> = Box::new(unsafe { std::mem::zeroed() });
     class.ob_base.ob_base.ob_refcnt = 1;
     class.ob_base.ob_base.ob_type = &raw mut PyType_Type;
@@ -1062,7 +919,7 @@ fn managed_call_dispatch_ignores_semantic_class_slots_but_type_reports_that_clas
             .bind_static_pyobj_to_runtime_handle(class_ptr.cast(), class_bits, true)
             .expect("bind semantic class view");
     }
-    let instance_bits = next_fake_handle();
+    let instance_bits = support::fake_runtime::fresh_handle();
     FAKE_CLASS_OVERRIDES
         .lock()
         .unwrap()
@@ -1124,14 +981,14 @@ fn managed_call_dispatch_ignores_semantic_class_slots_but_type_reports_that_clas
         molt_cpython_abi::bridge::GLOBAL_BRIDGE
             .unbind_static_pyobj_from_runtime_handle(class_ptr.cast(), class_bits)
     });
-    unsafe { fake_dec_ref(class_bits) };
+    unsafe { support::fake_runtime::dec_ref(class_bits) };
 }
 
 #[test]
 fn bound_type_shell_uses_runtime_constructor_when_native_tp_new_is_absent() {
     let _guard = init();
-    let _ = &*FAKE_CLASS_BINDINGS;
-    assert!(unsafe { (*(&raw mut PyType_Type)).tp_new.is_none() });
+    let canonical_new = unsafe { PyType_Type.tp_new };
+    assert!(canonical_new.is_none());
     FAKE_CALLS.store(0, Ordering::Relaxed);
     FAKE_CALL_ENABLED.store(true, Ordering::Relaxed);
     unsafe {
@@ -1147,7 +1004,10 @@ fn bound_type_shell_uses_runtime_constructor_when_native_tp_new_is_absent() {
         assert_eq!(FAKE_CALLS.load(Ordering::Relaxed), 1);
         assert_eq!(
             FAKE_LAST_CALLED.load(Ordering::Relaxed),
-            FAKE_CLASS_BINDINGS.type_class
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .molt_handle_for_pyobj((&raw mut PyType_Type).cast())
+                .unwrap()
+                .bits()
         );
 
         // A direct invocation of the metatype slot has the same authority.
@@ -1167,7 +1027,7 @@ fn bound_type_shell_uses_runtime_constructor_when_native_tp_new_is_absent() {
 #[test]
 fn missing_managed_class_identity_stops_type_call_and_attribute_dispatch() {
     let _guard = init();
-    let instance_bits = next_fake_handle();
+    let instance_bits = support::fake_runtime::fresh_handle();
     FAKE_CLASS_OVERRIDES
         .lock()
         .unwrap()
@@ -1203,9 +1063,11 @@ fn dict_set_item_anchors_key_and_value_proxies() {
     let _guard = init();
     let (recv, key, value) = unsafe {
         (
-            molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(next_fake_handle()),
-            molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(next_fake_handle()),
-            molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(next_fake_handle()),
+            molt_cpython_abi::api::mapping::PyDict_New(),
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .owned_handle_to_pyobj(support::fake_runtime::fresh_handle()),
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .owned_handle_to_pyobj(support::fake_runtime::fresh_handle()),
         )
     };
     assert_eq!(
@@ -1228,16 +1090,17 @@ fn dict_set_item_anchors_key_and_value_proxies() {
             .is_some(),
         "value mapping severed by the extension's balancing DECREF"
     );
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(recv) };
 }
 
 #[test]
 fn dict_set_item_gives_foreign_custody_to_key() {
     let _guard = init();
-    let recv = unsafe {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(next_fake_handle())
-    };
+    let _fixture = CrossingFixture::new();
+    let recv = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
     let value = unsafe {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(next_fake_handle())
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .owned_handle_to_pyobj(support::fake_runtime::fresh_handle())
     };
     let mut foreign_key = PyObject {
         ob_refcnt: 1,
@@ -1258,16 +1121,22 @@ fn dict_set_item_gives_foreign_custody_to_key() {
     assert_eq!(round_trip, key, "foreign key wrapper lost pointer identity");
     unsafe {
         molt_cpython_abi::api::refcount::Py_DECREF(round_trip);
-        fake_dec_ref(bits);
-        molt_cpython_abi::bridge::molt_foreign_object_release(key as usize);
+        molt_cpython_abi::api::refcount::Py_DECREF(value);
+        molt_cpython_abi::api::refcount::Py_DECREF(recv);
     }
+    assert_eq!(
+        foreign_key.ob_refcnt, 1,
+        "dictionary retirement releases its key custody"
+    );
+    assert!(CROSSING_FOREIGN.lock().unwrap().is_empty());
 }
 
 #[test]
 fn test_getbuffer_uses_runtime_typed_descriptor() {
     let _guard = init();
     let obj = unsafe {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(next_fake_handle())
+        molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .owned_handle_to_pyobj(support::fake_runtime::fresh_handle())
     };
     let mut view: Py_buffer = unsafe { std::mem::zeroed() };
     let flags = PyBUF_FORMAT | PyBUF_STRIDES;
@@ -1372,45 +1241,6 @@ fn test_fillinfo_rejects_writable_request_for_readonly_raw_buffer() {
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 }
 
-#[test]
-fn test_memoryview_uses_runtime_buffer_lifetime() {
-    let _guard = init();
-    FAKE_BUFFER_RELEASES.store(0, Ordering::Relaxed);
-    let obj = unsafe {
-        molt_cpython_abi::bridge::GLOBAL_BRIDGE.owned_handle_to_pyobj(next_fake_handle())
-    };
-    let rc_before = unsafe { (*obj).ob_refcnt };
-    let memoryview = unsafe { molt_cpython_abi::api::memory::PyMemoryView_FromObject(obj) };
-    assert!(!memoryview.is_null());
-    assert_eq!(
-        unsafe { molt_cpython_abi::api::memory::PyMemoryView_Check(memoryview) },
-        1
-    );
-    assert_eq!(unsafe { (*obj).ob_refcnt }, rc_before + 1);
-
-    let view = unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BUFFER(memoryview) };
-    assert!(!view.is_null());
-    unsafe {
-        assert_eq!((*view).len, 4);
-        assert_eq!((*view).itemsize, 1);
-        assert_eq!((*view).readonly, 0);
-        assert_eq!((*view).ndim, 2);
-        assert_eq!(*(*view).shape.add(0), 2);
-        assert_eq!(*(*view).shape.add(1), 2);
-        assert_eq!(*(*view).strides.add(0), 2);
-        assert_eq!(*(*view).strides.add(1), 1);
-    }
-    assert_eq!(
-        unsafe { molt_cpython_abi::api::memory::PyMemoryView_GET_BASE(memoryview) },
-        obj
-    );
-
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(memoryview) };
-    assert_eq!(FAKE_BUFFER_RELEASES.load(Ordering::Relaxed), 1);
-    assert_eq!(unsafe { (*obj).ob_refcnt }, rc_before);
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(obj) };
-}
-
 // ---------------------------------------------------------------------------
 // PyModule_New
 // ---------------------------------------------------------------------------
@@ -1418,9 +1248,42 @@ fn test_memoryview_uses_runtime_buffer_lifetime() {
 #[test]
 fn test_module_new_non_null() {
     let _guard = init();
-    let m = unsafe { molt_cpython_abi::api::modules::PyModule_New(c"testmod".as_ptr()) };
-    assert!(!m.is_null());
-    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(m) };
+    unsafe {
+        use molt_cpython_abi::api::{modules, refcount, strings};
+        use molt_cpython_abi::hooks::DecodedHandleResult;
+        let m = modules::PyModule_New(c"testmod".as_ptr());
+        assert!(!m.is_null());
+        let module_bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(m)
+            .unwrap()
+            .bits();
+        let DecodedHandleResult::Ok(dict) =
+            support::fake_runtime::module_get_dict(module_bits).decode()
+        else {
+            panic!("module owns a dictionary");
+        };
+        let (mut name_key, mut name_value) = (0, 0);
+        assert_eq!(
+            support::fake_runtime::dict_entry(dict, 0, &mut name_key, &mut name_value),
+            1
+        );
+        let text = strings::PyUnicode_FromString(c"projected string lifetime".as_ptr());
+        assert!(!text.is_null());
+        let text_bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .molt_handle_for_pyobj(text)
+            .unwrap()
+            .bits();
+        assert!(support::fake_runtime::ref_count(text_bits) > 0);
+        refcount::Py_DECREF(text);
+        assert!(!support::fake_runtime::contains(text_bits));
+        refcount::Py_DECREF(m);
+        for bits in [module_bits, dict, name_key, name_value] {
+            assert!(
+                !support::fake_runtime::contains(bits),
+                "module teardown retires the complete owned namespace"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1479,8 +1342,20 @@ impl CrossingFixture {
 
     fn remove_values(&self) {
         let values = std::mem::take(&mut *CROSSING_STORED.lock().unwrap());
-        for value in values {
-            unsafe { fake_dec_ref(value) };
+        for (dict, name, _) in values {
+            // Name bytes are observations, not borrowed runtime identities:
+            // an equal replacement key may already have retired its handle.
+            if support::fake_runtime::contains(dict) {
+                let key = unsafe { support::fake_runtime::alloc_str(name.as_ptr(), name.len()) };
+                assert!(
+                    unsafe {
+                        support::fake_runtime::dict_mutate(dict, key, 0, 1, None, ptr::null_mut())
+                    } >= 0
+                );
+                molt_cpython_abi::api::errors::with_preserved_error(|| unsafe {
+                    support::fake_runtime::dec_ref(key)
+                });
+            }
         }
     }
 }
@@ -1527,9 +1402,9 @@ fn module_insertion_balances_foreign_temporary_and_exact_native_steal() {
                 )
             };
             assert_eq!(result, 0);
-            let stored = CROSSING_STORED.lock().unwrap()[0];
+            let stored = CROSSING_STORED.lock().unwrap()[0].2;
             assert_eq!(
-                fake_ref_count(stored),
+                support::fake_runtime::ref_count(stored),
                 1,
                 "only the module's runtime edge remains"
             );
@@ -1659,7 +1534,7 @@ fn module_receiver_crossings_retire_locals_for_lookup_and_state_registration() {
             .get(&((&raw mut def) as usize))
             .unwrap();
         assert_eq!(
-            fake_ref_count(stored),
+            support::fake_runtime::ref_count(stored),
             1,
             "registry owns its edge, local wrapper retired"
         );
@@ -2561,12 +2436,20 @@ fn test_module_create2_methods_are_canonical_cfunction_views_that_outlive_constr
                 .molt_handle_for_pyobj(function)
                 .expect("module function keeps its runtime identity")
                 .bits();
+            let mut gc_edges = Vec::new();
+            molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .visit_physical_owned_edges_for_gc(bits, &mut |edge| gc_edges.push(edge));
+            assert_eq!(gc_edges.len(), 1, "m_module is the only independent C edge");
             assert_eq!(
-                molt_cpython_abi::bridge::GLOBAL_BRIDGE.cfunction_view_handles_for_gc(bits),
+                gc_edges[0].kind,
+                molt_cpython_abi::NativeGcEdgeKind::ManagedHandle as u8
+            );
+            assert_eq!(
+                gc_edges[0].value,
                 molt_cpython_abi::bridge::GLOBAL_BRIDGE
                     .molt_handle_for_pyobj(module_name)
-                    .map(|value| value.bits()),
-                "m_module is the callable view's only independently traversed edge"
+                    .unwrap()
+                    .bits(),
             );
         }
         assert_eq!(
@@ -2589,5 +2472,175 @@ fn test_module_create2_methods_are_canonical_cfunction_views_that_outlive_constr
             molt_cpython_abi::api::modules::PyState_FindModule(&mut def).is_null(),
             "constructor-owned C functions do not imply PyState registry custody"
         );
+    }
+}
+
+struct ModulePublicationObservation {
+    dict: u64,
+    key: u64,
+    expected: Option<u64>,
+    displaced: u64,
+    committed: bool,
+    owner_alive: bool,
+    deallocs: u64,
+    calls: usize,
+    fail: bool,
+    error_value: usize,
+}
+
+unsafe extern "C" fn observe_module_publication(context: *mut c_void) -> i32 {
+    use molt_cpython_abi::hooks::{DecodedHandleResult, DictHashSource};
+    let observation = unsafe { &mut *context.cast::<ModulePublicationObservation>() };
+    let hooks = molt_cpython_abi::hooks::hooks_or_stubs();
+    observation.calls += 1;
+    observation.committed = match unsafe {
+        (hooks.dict_get)(
+            observation.dict,
+            observation.key,
+            DictHashSource::Compute,
+            0,
+        )
+    }
+    .decode()
+    {
+        DecodedHandleResult::Ok(value) => observation.expected == Some(value),
+        DecodedHandleResult::Missing => observation.expected.is_none(),
+        DecodedHandleResult::Error => false,
+    };
+    observation.owner_alive = unsafe { (hooks.ref_count)(observation.displaced) == 1 };
+    observation.deallocs = CROSSING_DEALLOCS.load(Ordering::Relaxed);
+    if observation.fail {
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_SetString(
+                (&raw mut PyExc_ValueError).cast(),
+                c"module publication rejected".as_ptr(),
+            );
+        }
+        let error = molt_cpython_abi::api::errors::take_current_error().unwrap();
+        observation.error_value = error.value.addr();
+        molt_cpython_abi::api::errors::restore_current_error_exact(error);
+        -1
+    } else {
+        0
+    }
+}
+
+#[test]
+fn module_dictionary_publication_precedes_foreign_retirement_and_preserves_error() {
+    let _guard = init();
+    let _fixture = CrossingFixture::new();
+    let hooks = molt_cpython_abi::hooks::hooks_or_stubs();
+    let mut typ: PyTypeObject = unsafe { std::mem::zeroed() };
+    unsafe {
+        use molt_cpython_abi::hooks::{DecodedHandleResult, DictHashSource};
+        let module = molt_cpython_abi::api::modules::PyModule_New(c"publication".as_ptr());
+        let old_object = crossing_object(&mut typ);
+        assert_eq!(
+            molt_cpython_abi::api::modules::PyModule_AddObject(
+                module,
+                c"value".as_ptr(),
+                old_object
+            ),
+            0
+        );
+        let (dict, old) = {
+            let stored = CROSSING_STORED.lock().unwrap();
+            (stored[0].0, stored[0].2)
+        };
+        let (mut original_key, mut original_value) = (0, 0);
+        assert_eq!(
+            (hooks.dict_entry)(dict, 1, &mut original_key, &mut original_value),
+            1
+        );
+        assert_eq!(original_value, old);
+        // A separately allocated equal name exercises the namespace's content
+        // lookup while preserving the original dictionary key owner.
+        let key = support::fake_runtime::alloc_str(b"value".as_ptr(), 5);
+        assert_ne!(key, original_key);
+        let replacement = support::fake_runtime::fresh_handle();
+        let mut observation = ModulePublicationObservation {
+            dict,
+            key,
+            expected: Some(replacement),
+            displaced: old,
+            committed: false,
+            owner_alive: false,
+            deallocs: 0,
+            calls: 0,
+            fail: true,
+            error_value: 0,
+        };
+        CROSSING_CLEANUP_ERROR.store(true, Ordering::Relaxed);
+        assert_eq!(
+            (hooks.dict_mutate)(
+                dict,
+                key,
+                replacement,
+                0,
+                Some(observe_module_publication),
+                (&raw mut observation).cast()
+            ),
+            -1
+        );
+        assert!(observation.committed && observation.owner_alive);
+        assert_eq!(observation.calls, 1);
+        assert_eq!(observation.deallocs, 0);
+        assert_eq!(CROSSING_DEALLOCS.load(Ordering::Relaxed), 1);
+        assert_eq!(support::fake_runtime::ref_count(old), 0);
+        let error = molt_cpython_abi::api::errors::take_current_error().unwrap();
+        assert_eq!(error.exc_type, (&raw mut PyExc_ValueError).cast());
+        assert_eq!(
+            error.value.addr(),
+            observation.error_value,
+            "retirement's KeyError must not replace the publication error"
+        );
+        drop(error);
+        CROSSING_CLEANUP_ERROR.store(false, Ordering::Relaxed);
+        assert!(
+            matches!((hooks.dict_get)(dict, original_key, DictHashSource::Compute, 0).decode(), DecodedHandleResult::Ok(value) if value == replacement)
+        );
+        let mut stored_key = 0;
+        let mut stored_value = 0;
+        assert_eq!(
+            (hooks.dict_entry)(dict, 1, &mut stored_key, &mut stored_value),
+            1
+        );
+        assert_eq!(stored_key, original_key);
+        assert_eq!(stored_value, replacement);
+        assert_eq!((hooks.dict_len)(dict), 2);
+        support::fake_runtime::dec_ref(replacement);
+        observation.expected = None;
+        observation.displaced = replacement;
+        observation.fail = false;
+        assert_eq!(
+            (hooks.dict_mutate)(
+                dict,
+                key,
+                0,
+                1,
+                Some(observe_module_publication),
+                (&raw mut observation).cast()
+            ),
+            0
+        );
+        assert!(observation.committed && observation.owner_alive);
+        assert_eq!(observation.calls, 2);
+        assert_eq!(support::fake_runtime::ref_count(replacement), 0);
+        assert_eq!((hooks.dict_len)(dict), 1);
+        assert_eq!(
+            (hooks.dict_mutate)(
+                dict,
+                key,
+                0,
+                1,
+                Some(observe_module_publication),
+                (&raw mut observation).cast()
+            ),
+            1
+        );
+        assert_eq!(observation.calls, 2);
+        support::fake_runtime::dec_ref(key);
+        molt_cpython_abi::api::refcount::Py_DECREF(module);
+        assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
     }
 }

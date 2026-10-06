@@ -79,7 +79,7 @@ fn mixed_f64_dynbox_add_boxes_float_without_generic_bail() {
             opcode: OpCode::ConstFloat,
             operands: vec![],
             results: vec![float_value],
-            attrs: AttrDict::from([("value".into(), AttrValue::Float(1.25))]),
+            attrs: AttrDict::from([("f_value".into(), AttrValue::Float(1.25))]),
             source_span: None,
         },
     );

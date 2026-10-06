@@ -1,11 +1,11 @@
 use super::WasmConstOpPolicy;
 use crate::OpIR;
 use crate::wasm_abi_generated::{
-    WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstLiteralPayload, WasmConstRawIntEffect,
-    WasmRuntimeImport,
+    WasmConstInlineSeed, WasmConstLirFastPolicy, WasmConstRawIntEffect, WasmRuntimeImport,
 };
 use crate::wasm_values::{box_bool, box_int, box_none};
 use molt_codegen_abi::box_float_bits as box_float;
+use molt_tir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
 
 fn op(kind: &str) -> OpIR {
     OpIR {
@@ -82,19 +82,19 @@ fn const_policy_classifies_runtime_seed_and_literal_scratch() {
     for (kind, payload, import, lir_policy) in [
         (
             "const_str",
-            WasmConstLiteralPayload::String,
+            OwnedLiteralPayloadKind::String,
             WasmRuntimeImport::StringFromBytes,
             WasmConstLirFastPolicy::Materialize,
         ),
         (
             "const_bigint",
-            WasmConstLiteralPayload::BigintDecimal,
+            OwnedLiteralPayloadKind::BigintDecimal,
             WasmRuntimeImport::BigintFromStr,
             WasmConstLirFastPolicy::Materialize,
         ),
         (
             "const_bytes",
-            WasmConstLiteralPayload::Bytes,
+            OwnedLiteralPayloadKind::Bytes,
             WasmRuntimeImport::BytesFromBytes,
             WasmConstLirFastPolicy::Materialize,
         ),
@@ -104,7 +104,7 @@ fn const_policy_classifies_runtime_seed_and_literal_scratch() {
             policy.needs_literal_scratch(),
             "{kind} must allocate literal scratch"
         );
-        assert_eq!(policy.literal_payload(), payload);
+        assert_eq!(policy.literal_payload(), Some(payload));
         assert_eq!(policy.materializer_import(), Some(import));
         assert_eq!(policy.lir_fast_policy(), lir_policy);
         assert!(
@@ -119,7 +119,7 @@ fn const_policy_classifies_runtime_seed_and_literal_scratch() {
             !policy.needs_literal_scratch(),
             "{kind} must not allocate literal scratch"
         );
-        assert_eq!(policy.literal_payload(), WasmConstLiteralPayload::None);
+        assert_eq!(policy.literal_payload(), None);
         assert!(policy.materializer_import().is_some());
         assert_eq!(
             policy.lir_fast_policy(),

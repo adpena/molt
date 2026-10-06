@@ -301,6 +301,47 @@ impl FunctionReturnAbi {
     }
 }
 
+/// Who holds the reference behind a callable's parameter, and behind a call
+/// operand. Custody is declared, never inferred from names, hints or a lookup
+/// of the callee.
+#[derive(Debug, Default, Deserialize, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParameterCustody {
+    /// The holder keeps its reference and the callee borrows it (`+0`).
+    #[default]
+    Borrowed = 0,
+    /// The reference moves. A parameter's belongs to its activation, which
+    /// releases it at the binding's boundaries. An operand's belongs to its
+    /// call instruction on both continuations, whether or not a callee runs.
+    /// The invocation moves an adopted argument into a `Transferred`
+    /// parameter, or releases it once a borrowing callee returns, and it
+    /// releases an adopted callable, a bound method before its callee runs.
+    Transferred = 1,
+}
+
+impl ParameterCustody {
+    /// The TIR attribute encoding of a custody vector: one byte per entry, or
+    /// `None` when every entry is borrowed, which is the absent attribute.
+    pub fn encode(custody: &[Self]) -> Option<Vec<u8>> {
+        custody
+            .contains(&Self::Transferred)
+            .then(|| custody.iter().map(|&entry| entry as u8).collect())
+    }
+
+    /// Entry `index` of an encoded custody vector that must name exactly `len`
+    /// entries; `None` for a malformed encoding.
+    pub fn decode(encoded: &[u8], len: usize, index: usize) -> Option<Self> {
+        if encoded.len() != len {
+            return None;
+        }
+        match *encoded.get(index)? {
+            0 => Some(Self::Borrowed),
+            1 => Some(Self::Transferred),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Default, Deserialize, Clone, serde::Serialize)]
 pub struct FunctionIR {
     pub name: String,
@@ -324,6 +365,15 @@ pub struct FunctionIR {
     /// optimization shrinks the body; symbol spelling carries no authority.
     #[serde(default)]
     pub codegen_partition: bool,
+    /// Reference custody of each entry parameter, aligned with `params`
+    /// (design 20 §1.6). Empty means every parameter is borrowed. Otherwise it
+    /// names every parameter and at least one `Transferred`: the activation
+    /// owns that argument and releases it at its Python boundaries. Direct
+    /// calls, inlining admission and every rebuild of this entry (extern
+    /// declarations, megafunction stubs, native linkage rows) read this one
+    /// fact.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameter_custody: Vec<ParameterCustody>,
 }
 
 /// Stream the complete versioned FunctionIR contract into a cache digest or
@@ -332,7 +382,7 @@ pub fn write_function_ir_contract(
     function: &FunctionIR,
     writer: &mut dyn std::io::Write,
 ) -> Result<(), String> {
-    const FUNCTION_IR_CONTRACT_VERSION: &[u8] = b"molt-function-ir-contract-v2\0";
+    const FUNCTION_IR_CONTRACT_VERSION: &[u8] = b"molt-function-ir-contract-v3\0";
     // MessagePack's f64 carrier is total and bit-preserving for every legal IR
     // value, including NaN payloads, infinities, and signed zero. JSON is not:
     // JSON cannot represent their complete bit patterns. Named struct
@@ -354,6 +404,11 @@ fn bool_is_false(value: &bool) -> bool {
 pub struct OpIR {
     pub kind: String,
     pub value: Option<i64>,
+    /// Exact saved-state -> control-label projection of TIR StateDispatch.
+    /// Only state_switch carries it. Empty Some is an explicit empty map;
+    /// None belongs to source IR before the canonical CFG/SSA lift.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_targets: Option<Vec<(i64, i64)>>,
     #[serde(default, with = "float_transport")]
     pub f_value: Option<f64>,
     pub s_value: Option<String>,
@@ -419,6 +474,13 @@ pub struct OpIR {
     /// object to the existing finally-replacement arbitration.
     #[serde(default, skip_serializing_if = "bool_is_false")]
     pub async_work_poll: bool,
+    /// Operand custody of a source Python call instruction, aligned with
+    /// `args` (design 20 §1.6). The instruction adopts each `Transferred`
+    /// operand on both continuations, whether or not a callee runs. Absent
+    /// means every operand is borrowed; present, it names every operand and
+    /// at least one transfer. Generated `[[source_call_kind]]` rows admit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument_custody: Option<Vec<ParameterCustody>>,
     /// Transitional semantic hint preserved on the transport surface for
     /// compatibility consumers. The canonical representation contract lives in
     /// TIR/LIR, not this field.
@@ -532,6 +594,7 @@ impl FunctionIR {
             is_extern: true,
             execution_context: self.execution_context,
             codegen_partition: self.codegen_partition,
+            parameter_custody: self.parameter_custody.clone(),
         })
     }
 }
@@ -612,6 +675,165 @@ pub fn validate_extern_call_abis(ir: &SimpleIR) -> Result<(), String> {
                 return Err(format!(
                     "extern call ABI mismatch: caller `{}` supplies {caller_arity} parameter(s) to declaration `{target}`, which requires {}",
                     caller.name, signature.arity
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A function's entry custody names each parameter. The lexical closure
+/// parameter is a transport that its callee never owns.
+fn validate_parameter_custody(func: &FunctionIR) -> Result<(), String> {
+    if func.parameter_custody.is_empty() {
+        return Ok(());
+    }
+    ir_schema::validate_custody_projection(
+        &func.parameter_custody,
+        func.params.len(),
+        &format!("function `{}` parameter_custody", func.name),
+    )?;
+    if func
+        .params
+        .iter()
+        .zip(&func.parameter_custody)
+        .any(|(param, &custody)| {
+            custody == ParameterCustody::Transferred && param == crate::MOLT_CLOSURE_PARAM_NAME
+        })
+    {
+        return Err(format!(
+            "function `{}` cannot transfer its closure parameter",
+            func.name
+        ));
+    }
+    Ok(())
+}
+
+/// A raw direct call enters its target's machine entry, which owns exactly the
+/// parameters its declaration transfers. Its operand custody therefore equals
+/// the target's parameter custody position by position; the callee supplies a
+/// leading closure parameter itself. A runtime entry in the boxed runtime ABI
+/// never adopts. A guarded call binds a speculative candidate, so only its own
+/// instruction custody applies, and a target outside this document is checked
+/// where it is declared.
+fn validate_direct_call_custody(ir: &SimpleIR) -> Result<(), String> {
+    let targets: BTreeMap<&str, &FunctionIR> = ir
+        .functions
+        .iter()
+        .map(|function| (function.name.as_str(), function))
+        .collect();
+    for caller in ir.functions.iter().filter(|function| !function.is_extern) {
+        for (op_index, op) in caller.ops.iter().enumerate() {
+            if !matches!(
+                simpleir_call_target_role(&op.kind),
+                Some(
+                    SimpleIrCallTargetRole::InternalRequired
+                        | SimpleIrCallTargetRole::ExternalOrRuntime
+                )
+            ) {
+                continue;
+            }
+            let Some(symbol) = op.s_value.as_deref() else {
+                continue;
+            };
+            let arity = op.args.as_ref().map_or(0, Vec::len);
+            let Some(target) = targets.get(symbol) else {
+                if op.argument_custody.is_some()
+                    && crate::runtime_boxed_abi_generated::runtime_boxed_abi(symbol, arity)
+                        .is_some()
+                {
+                    return Err(format!(
+                        "function `{}` op#{op_index}: runtime entry `{symbol}` borrows its operands; argument_custody names a source call",
+                        caller.name
+                    ));
+                }
+                continue;
+            };
+            let closure = usize::from(
+                target
+                    .params
+                    .first()
+                    .is_some_and(|param| param == crate::MOLT_CLOSURE_PARAM_NAME),
+            );
+            for position in 0..arity {
+                let operand = op
+                    .argument_custody
+                    .as_ref()
+                    .and_then(|custody| custody.get(position))
+                    .copied()
+                    .unwrap_or_default();
+                let parameter = target
+                    .parameter_custody
+                    .get(position + closure)
+                    .copied()
+                    .unwrap_or_default();
+                if operand != parameter {
+                    return Err(format!(
+                        "function `{}` op#{op_index}: operand {position} custody {operand:?} disagrees with parameter custody {parameter:?} of `{symbol}`",
+                        caller.name
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// An ordinary source call (CPython's CALL) adopts its callable, so the
+/// invocation can release a temporary bound method before its callee runs. An
+/// expanded call (CALL_FUNCTION_EX) keeps its callable through the invocation.
+/// A builder call's form is its builder's `CallArgumentForm`, so its callable
+/// custody must match the `callargs_new` that made the builder. A split chunk
+/// that receives its builder through the split frame was checked before the
+/// split.
+fn validate_source_call_forms(ir: &SimpleIR) -> Result<(), String> {
+    use crate::tir::op_kinds_generated::{
+        kind_consumed_operand_table, kind_source_call_callable_operand,
+    };
+    for func in ir.functions.iter().filter(|function| !function.is_extern) {
+        let mut forms: BTreeMap<&str, Option<crate::CallArgumentForm>> = BTreeMap::new();
+        for op in func.ops.iter().filter(|op| op.kind == "callargs_new") {
+            let Some(builder) = op.out.as_deref() else {
+                continue;
+            };
+            let form = op
+                .call_argument_form()
+                .map_err(|error| format!("function `{}`: {error}", func.name))?;
+            forms
+                .entry(builder)
+                .and_modify(|known| {
+                    if *known != Some(form) {
+                        *known = None;
+                    }
+                })
+                .or_insert(Some(form));
+        }
+        for (op_index, op) in func.ops.iter().enumerate() {
+            let (Some(custody), Some(callable)) = (
+                op.argument_custody.as_deref(),
+                kind_source_call_callable_operand(&op.kind),
+            ) else {
+                continue;
+            };
+            let Some(builder) = kind_consumed_operand_table(&op.kind, custody.len()) else {
+                continue;
+            };
+            let Some(&Some(form)) = op
+                .args
+                .as_ref()
+                .and_then(|args| args.get(builder))
+                .and_then(|name| forms.get(name.as_str()))
+            else {
+                continue;
+            };
+            let expected = match form {
+                crate::CallArgumentForm::Stack => ParameterCustody::Transferred,
+                crate::CallArgumentForm::Expanded => ParameterCustody::Borrowed,
+            };
+            if custody.get(callable) != Some(&expected) {
+                return Err(format!(
+                    "function `{}` op#{op_index} `{}`: {form:?} call form requires callable custody {expected:?}",
+                    func.name, op.kind
                 ));
             }
         }
@@ -946,6 +1168,11 @@ impl FunctionIR {
                 .map(|s| s.to_string()),
             is_extern: optional_bool(obj, "is_extern", ctx)?.unwrap_or(false),
             codegen_partition: optional_bool(obj, "codegen_partition", ctx)?.unwrap_or(false),
+            parameter_custody: match obj.get("parameter_custody") {
+                None | Some(JsonValue::Null) => Vec::new(),
+                Some(custody) => Vec::<ParameterCustody>::deserialize(custody)
+                    .map_err(|error| format!("{ctx}.parameter_custody: {error}"))?,
+            },
             execution_context: obj
                 .get("execution_context")
                 .and_then(|value| value.as_str())
@@ -1035,6 +1262,9 @@ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
             &func.params,
             func.param_types.as_deref(),
         )?;
+        validate_parameter_custody(func)?;
+        ir_schema::validate_state_dispatch(&func.ops)
+            .map_err(|error| format!("function `{}`: {error}", func.name))?;
         // Externs retain signature and execution-context ABI metadata but no
         // executable body. Callers still obey the declared context policy.
         if func.is_extern {
@@ -1222,7 +1452,9 @@ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
             }
         }
     }
-    validate_extern_call_abis(ir)
+    validate_extern_call_abis(ir)?;
+    validate_direct_call_custody(ir)?;
+    validate_source_call_forms(ir)
 }
 
 fn simple_ir_op_dominates(
@@ -1333,6 +1565,7 @@ mod json_parse_tests {
             source_file: Some("float_contract.py".to_string()),
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: super::ExecutionContextPolicy::None,
         };
         let cases = [
@@ -1357,7 +1590,7 @@ mod json_parse_tests {
                 let first = contract_bytes(&function);
                 assert_eq!(first, contract_bytes(&function));
                 let payload = first
-                    .strip_prefix(b"molt-function-ir-contract-v2\0")
+                    .strip_prefix(b"molt-function-ir-contract-v3\0")
                     .expect("versioned contract");
                 let decoded: FunctionIR = rmp_serde::from_slice(payload).expect("decode contract");
                 assert_eq!(decoded.ops[0].f_value.unwrap().to_bits(), value.to_bits());
@@ -1446,6 +1679,7 @@ mod json_parse_tests {
             bound_local: Some(false),
             task_kind: Some("coroutine".to_string()),
             task_closure_size: Some(48),
+            state_targets: Some(vec![(0, 17), (3, 23)]),
             container_type: Some("list".to_string()),
             native_callable_export: Some("export".to_string()),
             native_callable_binding: Some("binding".to_string()),
@@ -1456,6 +1690,10 @@ mod json_parse_tests {
             runtime_requirement_bits: 3,
             passes_execution_context: true,
             async_work_poll: true,
+            argument_custody: Some(vec![
+                super::ParameterCustody::Borrowed,
+                super::ParameterCustody::Transferred,
+            ]),
             type_hint: Some("int".to_string()),
             source_op_idx: Some(12),
             col_offset: Some(13),
@@ -1615,6 +1853,7 @@ mod json_parse_tests {
             source_file: Some("sys.py".to_string()),
             is_extern: true,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: super::ExecutionContextPolicy::Local,
         };
         let inherited_declaration = FunctionIR {
@@ -1626,6 +1865,7 @@ mod json_parse_tests {
             source_file: Some("sys.py".to_string()),
             is_extern: true,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: super::ExecutionContextPolicy::Inherited,
         };
         let local_caller = FunctionIR {
@@ -1657,6 +1897,7 @@ mod json_parse_tests {
             source_file: Some("app.py".to_string()),
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: super::ExecutionContextPolicy::Local,
         };
         let ir = SimpleIR {
@@ -1704,6 +1945,7 @@ mod json_parse_tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: super::ExecutionContextPolicy::None,
         };
         value_declaration
@@ -2139,8 +2381,16 @@ mod json_parse_tests {
         let enter = r#"{"kind":"trace_enter_slot","value":1}"#;
         let exit = r#"{"kind":"trace_exit"}"#;
         let ret = r#"{"kind":"ret_void"}"#;
-        for symbol in ["molt_frame_context_set", "molt_super_from_frame"] {
-            let call = format!(r#"{{"kind":"call_internal","s_value":"{symbol}"}}"#);
+        for (symbol, call) in [
+            (
+                "frame_context_set",
+                r#"{"kind":"frame_context_set","args":["arg0","kind","class_cell"]}"#,
+            ),
+            (
+                "molt_super_from_frame",
+                r#"{"kind":"call_internal","s_value":"molt_super_from_frame"}"#,
+            ),
+        ] {
             let error = parse("none", &format!("{call},{ret}"))
                 .expect_err("executing a frame intrinsic needs a live execution context");
             assert!(
@@ -2175,6 +2425,63 @@ mod json_parse_tests {
             )
             .expect("a string equal to a runtime symbol does not execute the symbol");
         }
+    }
+
+    #[test]
+    fn backend_frame_publication_rejects_generic_callable_transport() {
+        use crate::tir::op_kinds_generated::SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS;
+        let symbol = "molt_frame_context_set";
+        let mut carriers: Vec<_> = [
+            "call",
+            "call_internal",
+            "call_guarded",
+            "call_builtin",
+            "func_new",
+            "func_new_closure",
+            "builtin_func",
+        ]
+        .into_iter()
+        .map(|kind| OpIR {
+            kind: kind.into(),
+            s_value: Some(symbol.into()),
+            ..Default::default()
+        })
+        .collect();
+        carriers.extend(
+            SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS
+                .iter()
+                .map(|kind| OpIR {
+                    kind: (*kind).into(),
+                    runtime_symbol: Some(symbol.into()),
+                    ..Default::default()
+                }),
+        );
+        carriers.push(OpIR {
+            kind: "builtin_func".into(),
+            builtin_name: Some(symbol.into()),
+            ..Default::default()
+        });
+        carriers.push(OpIR {
+            kind: "invoke_ffi".into(),
+            native_callable_binding: Some("direct_symbol".into()),
+            native_callable_symbol: Some(symbol.into()),
+            ..Default::default()
+        });
+        for op in carriers {
+            let error = super::ir_schema::validate_required_fields(&op)
+                .expect_err("backend publication must use its typed service");
+            assert!(
+                error.contains("use `frame_context_set` operation"),
+                "{error}"
+            );
+        }
+        super::ir_schema::validate_required_fields(&OpIR {
+            kind: "const_str".into(),
+            s_value: Some(symbol.into()),
+            out: Some("literal".into()),
+            ..Default::default()
+        })
+        .expect("ordinary string data does not execute a backend service");
     }
 
     #[test]
@@ -2232,7 +2539,7 @@ mod json_parse_tests {
                 op.kind
             );
         };
-        for symbol in ["molt_frame_context_set", "molt_super_from_frame"] {
+        for symbol in ["molt_super_from_frame"] {
             for &kind in SIMPLEIR_RUNTIME_SYMBOL_CARRIER_KINDS {
                 assert_acquisition(parse(serde_json::json!({
                     "kind": kind, "runtime_symbol": symbol, "out": "callable"
@@ -2967,5 +3274,288 @@ mod json_parse_tests {
         )
         .unwrap();
         assert!(!defaulted.functions[0].codegen_partition);
+    }
+
+    #[test]
+    fn parameter_custody_survives_all_transports_and_changes_contract() {
+        use super::ParameterCustody::{Borrowed, Transferred};
+        let function = FunctionIR {
+            return_abi: crate::FunctionReturnAbi::Void,
+            name: "owns_second".into(),
+            params: vec!["first".into(), "second".into()],
+            parameter_custody: vec![Borrowed, Transferred],
+            ops: vec![OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            }],
+            ..FunctionIR::default()
+        };
+        let ir = SimpleIR {
+            functions: vec![function.clone()],
+            profile: None,
+        };
+        let json = serde_json::to_string(&ir).unwrap();
+        assert!(
+            json.contains(r#""parameter_custody":["borrowed","transferred"]"#),
+            "{json}"
+        );
+        let mut record = serde_json::to_value(&function).unwrap();
+        record["kind"] = serde_json::json!("function");
+        let ndjson = format!(
+            "{{\"kind\":\"ir_stream_start\"}}\n{}\n{{\"kind\":\"ir_stream_end\"}}\n",
+            record,
+        );
+        let manual = SimpleIR::from_json_str(&json).unwrap();
+        let serde: SimpleIR = serde_json::from_str(&json).unwrap();
+        let stream = SimpleIR::from_ndjson_reader(ndjson.as_bytes()).unwrap();
+        let binary: SimpleIR =
+            rmp_serde::from_slice(&rmp_serde::to_vec_named(&ir).unwrap()).unwrap();
+        for restored in [
+            &manual.functions[0],
+            &serde.functions[0],
+            &stream.functions[0],
+            &binary.functions[0],
+        ] {
+            assert_eq!(restored.parameter_custody, function.parameter_custody);
+            assert_eq!(contract_bytes(restored), contract_bytes(&function));
+            assert_eq!(
+                restored.extern_declaration().unwrap().parameter_custody,
+                function.parameter_custody
+            );
+        }
+        let mut borrowed = function.clone();
+        borrowed.parameter_custody.clear();
+        assert_ne!(contract_bytes(&function), contract_bytes(&borrowed));
+        assert!(
+            !serde_json::to_string(&borrowed)
+                .unwrap()
+                .contains("parameter_custody"),
+            "all-borrowed custody is the absent field"
+        );
+    }
+
+    #[test]
+    fn custody_projections_reject_malformed_or_non_canonical_vectors() {
+        use super::ParameterCustody::{Borrowed, Transferred};
+        let entry = |params: &[&str], custody: Vec<super::ParameterCustody>| SimpleIR {
+            functions: vec![FunctionIR {
+                return_abi: crate::FunctionReturnAbi::Void,
+                name: "entry".into(),
+                params: params.iter().map(|param| param.to_string()).collect(),
+                parameter_custody: custody,
+                ops: vec![OpIR {
+                    kind: "ret_void".into(),
+                    ..OpIR::default()
+                }],
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        };
+        let closure = crate::MOLT_CLOSURE_PARAM_NAME;
+        for (params, custody, expected) in [
+            (
+                &["a", "b"][..],
+                vec![Transferred],
+                "names 1 entries for 2 positions",
+            ),
+            (&["a"][..], vec![Borrowed], "transfers nothing"),
+            (
+                &[closure, "a"][..],
+                vec![Transferred, Transferred],
+                "cannot transfer its closure parameter",
+            ),
+        ] {
+            let error = super::validate_simple_ir(&entry(params, custody)).unwrap_err();
+            assert!(error.contains(expected), "{error}");
+        }
+        super::validate_simple_ir(&entry(&[closure, "a"], vec![Borrowed, Transferred]))
+            .expect("a Python binding beside the closure transport may transfer");
+
+        let call = |kind: &str, custody: Vec<super::ParameterCustody>| SimpleIR {
+            functions: vec![FunctionIR {
+                return_abi: crate::FunctionReturnAbi::Void,
+                name: "caller".into(),
+                params: vec!["callable".into(), "value".into()],
+                ops: vec![
+                    OpIR {
+                        kind: kind.into(),
+                        args: Some(vec!["callable".into(), "value".into()]),
+                        argument_custody: Some(custody),
+                        out: Some("result".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".into(),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        };
+        for kind in ["call_func", "call_guarded", "call_method"] {
+            super::validate_simple_ir(&call(kind, vec![Transferred, Transferred]))
+                .expect("an ordinary source call adopts its callable and its argument");
+        }
+        for (kind, custody, expected) in [
+            (
+                "call_func",
+                vec![Borrowed, Transferred],
+                "operand 0 custody Borrowed disagrees with its source call, which adopts it",
+            ),
+            (
+                "call_method",
+                vec![Transferred, Borrowed],
+                "operand 1 custody Borrowed disagrees with its source call, which adopts it",
+            ),
+            (
+                "call_super_method_ic",
+                vec![Transferred, Transferred],
+                "operand 0 custody Transferred disagrees with its source call, which borrows it",
+            ),
+            (
+                "call_func",
+                vec![Transferred],
+                "names 1 entries for 2 positions",
+            ),
+            ("call_func", vec![Borrowed, Borrowed], "transfers nothing"),
+            (
+                "invoke_ffi",
+                vec![Borrowed, Transferred],
+                "cannot carry argument_custody",
+            ),
+            (
+                "call_function",
+                vec![Borrowed, Transferred],
+                "cannot carry argument_custody",
+            ),
+        ] {
+            let error = super::validate_simple_ir(&call(kind, custody)).unwrap_err();
+            assert!(error.contains(expected), "{kind}: {error}");
+        }
+    }
+
+    /// CALL adopts its callable, so a temporary bound method can go before its
+    /// callee runs; CALL_FUNCTION_EX keeps its callable through the call. A
+    /// builder call's callable custody follows its builder's call form.
+    #[test]
+    fn builder_call_callable_custody_follows_its_call_form() {
+        use super::ParameterCustody::{Borrowed, Transferred};
+        let bind = |form: Option<&str>, custody: Vec<super::ParameterCustody>| SimpleIR {
+            functions: vec![FunctionIR {
+                return_abi: crate::FunctionReturnAbi::Void,
+                name: "caller".into(),
+                params: vec!["callable".into()],
+                ops: vec![
+                    OpIR {
+                        kind: "callargs_new".into(),
+                        s_value: form.map(str::to_string),
+                        out: Some("builder".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "call_bind".into(),
+                        args: Some(vec!["callable".into(), "builder".into()]),
+                        argument_custody: Some(custody),
+                        out: Some("result".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".into(),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        };
+        super::validate_simple_ir(&bind(None, vec![Transferred, Transferred]))
+            .expect("an ordinary call adopts its callable");
+        super::validate_simple_ir(&bind(Some("expanded"), vec![Borrowed, Transferred]))
+            .expect("an expanded call borrows its callable");
+        for (form, custody, expected) in [
+            (
+                None,
+                vec![Borrowed, Transferred],
+                "Stack call form requires callable custody Transferred",
+            ),
+            (
+                Some("expanded"),
+                vec![Transferred, Transferred],
+                "Expanded call form requires callable custody Borrowed",
+            ),
+            (
+                None,
+                vec![Transferred, Borrowed],
+                "operand 1 custody Borrowed disagrees with its source call, which adopts it",
+            ),
+        ] {
+            let error = super::validate_simple_ir(&bind(form, custody)).unwrap_err();
+            assert!(error.contains(expected), "{form:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn direct_call_custody_equals_the_declared_parameter_custody() {
+        use super::ParameterCustody::{Borrowed, Transferred};
+        for kind in ["call", "call_internal"] {
+            let mut ir = extern_call_contract_ir(kind, true, 3);
+            // The declaration takes over its second Python parameter. The
+            // leading closure parameter is supplied by the callee itself.
+            ir.functions[1].parameter_custody = vec![Borrowed, Borrowed, Transferred, Borrowed];
+            let error = super::validate_direct_call_custody(&ir).unwrap_err();
+            assert!(
+                error.contains("operand 1 custody Borrowed disagrees"),
+                "{kind}: {error}"
+            );
+            ir.functions[0].ops[0].argument_custody = Some(vec![Borrowed, Transferred, Borrowed]);
+            super::validate_direct_call_custody(&ir).expect("exact custody enters the raw entry");
+            let encoded = serde_json::to_vec(&ir).unwrap();
+            let decoded: SimpleIR =
+                serde_json::from_slice(&encoded).expect("exact custody survives transport");
+            assert_eq!(
+                decoded.functions[0].ops[0].argument_custody,
+                ir.functions[0].ops[0].argument_custody
+            );
+            ir.functions[0].ops[0].argument_custody =
+                Some(vec![Transferred, Transferred, Borrowed]);
+            let error = super::validate_direct_call_custody(&ir).unwrap_err();
+            assert!(
+                error.contains("operand 0 custody Transferred disagrees"),
+                "{kind}: {error}"
+            );
+        }
+        let mut guarded = extern_call_contract_ir("call_guarded", false, 2);
+        guarded.functions[1].parameter_custody = vec![Transferred, Borrowed, Borrowed];
+        guarded.functions[0].ops[0].argument_custody =
+            Some(vec![Transferred, Transferred, Transferred]);
+        super::validate_direct_call_custody(&guarded)
+            .expect("a guarded call's adoption is its own instruction fact");
+
+        let runtime = SimpleIR {
+            functions: vec![FunctionIR {
+                return_abi: crate::FunctionReturnAbi::Void,
+                name: "caller".into(),
+                params: vec!["value".into()],
+                ops: vec![
+                    OpIR {
+                        kind: "call".into(),
+                        s_value: Some("molt_typing_get_origin".into()),
+                        args: Some(vec!["value".into()]),
+                        argument_custody: Some(vec![Transferred]),
+                        out: Some("result".into()),
+                        ..OpIR::default()
+                    },
+                    OpIR {
+                        kind: "ret_void".into(),
+                        ..OpIR::default()
+                    },
+                ],
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        };
+        let error = super::validate_direct_call_custody(&runtime).unwrap_err();
+        assert!(error.contains("borrows its operands"), "{error}");
     }
 }

@@ -17,10 +17,16 @@
 //! 6. **Boolean simplification**: And(x, True) → x; Or(x, False) → x;
 //!    And(x, False) → False; Or(x, True) → True; Not(True) → False
 //! 7. **Comparison canonicalization**: 0 < x → x > 0 (constant on right)
+//!
+//! A rule that yields an existing value `x` rewrites the op into `Copy(x)`.
+//! The result keeps the owner it had: where it held a heap reference of its
+//! own, the copy is an owned alias of `x` (`ownership_lattice_min::Replacements`,
+//! design 20 §1.2).
 
 use std::collections::HashMap;
 
 use super::PassStats;
+use super::ownership_lattice_min::Replacements;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     CanonicalizeBinaryAction, CanonicalizeBinaryPredicate, CanonicalizeBinaryRule,
@@ -61,7 +67,12 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         }
                     }
                 }
-                None => {}
+                Some(
+                    LiteralPayloadKind::Float
+                    | LiteralPayloadKind::None
+                    | LiteralPayloadKind::Owned(_),
+                )
+                | None => {}
             }
         }
     }
@@ -81,6 +92,8 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         }
     }
 
+    // A replaced result keeps the owner it had (design 20 §1.2).
+    let mut owners = Replacements::new(func);
     let block_ids: Vec<_> = func.blocks.keys().copied().collect();
 
     for bid in block_ids {
@@ -139,17 +152,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                         && let Some(&inner_src) = not_source.get(&operand)
                         && exact_scalar_types.get(&inner_src) == Some(&TirType::Bool)
                     {
-                        let old = op.clone();
-                        let mut replacement = TirOp {
-                            dialect: Dialect::Molt,
-                            opcode: OpCode::Copy,
-                            operands: vec![inner_src],
-                            results: vec![result],
-                            attrs: Default::default(),
-                            source_span: None,
-                        };
-                        replacement.inherit_source_from(&old);
-                        *op = replacement;
+                        replace_with_copy(op, inner_src, result, &mut owners);
                         stats.values_changed += 1;
                     }
 
@@ -165,17 +168,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                                 | (Some(TirType::F64), Some(TirType::F64))
                         )
                     {
-                        let old = op.clone();
-                        let mut replacement = TirOp {
-                            dialect: Dialect::Molt,
-                            opcode: OpCode::Copy,
-                            operands: vec![inner_src],
-                            results: vec![result],
-                            attrs: Default::default(),
-                            source_span: None,
-                        };
-                        replacement.inherit_source_from(&old);
-                        *op = replacement;
+                        replace_with_copy(op, inner_src, result, &mut owners);
                         stats.values_changed += 1;
                     }
 
@@ -221,11 +214,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 rhs_bool,
                 result,
                 &exact_scalar_types,
+                &mut owners,
             ) {
                 stats.values_changed += 1;
             }
         }
     }
+    owners.finish(func, None);
 
     stats
 }
@@ -240,12 +235,13 @@ fn apply_canonicalize_binary_rules(
     rhs_bool: Option<bool>,
     result: ValueId,
     type_map: &HashMap<ValueId, TirType>,
+    owners: &mut Replacements,
 ) -> bool {
     for &rule in opcode_canonicalize_binary_rules_table(op.opcode) {
         if canonicalize_binary_rule_matches(
             rule, lhs, rhs, lhs_int, rhs_int, lhs_bool, rhs_bool, type_map,
         ) {
-            apply_canonicalize_binary_action(op, rule.action, lhs, rhs, result);
+            apply_canonicalize_binary_action(op, rule.action, lhs, rhs, result, owners);
             return true;
         }
     }
@@ -313,10 +309,11 @@ fn apply_canonicalize_binary_action(
     lhs: ValueId,
     rhs: ValueId,
     result: ValueId,
+    owners: &mut Replacements,
 ) {
     match action {
         CanonicalizeBinaryAction::Copy(side) => {
-            replace_with_copy(op, value_for_side(side, lhs, rhs), result)
+            replace_with_copy(op, value_for_side(side, lhs, rhs), result, owners)
         }
         CanonicalizeBinaryAction::ConstInt(value) => replace_with_const_int(op, value, result),
         CanonicalizeBinaryAction::ConstBool(value) => replace_with_const_bool(op, value, result),
@@ -399,7 +396,10 @@ fn can_reorder_comparison(
     both_numeric(lhs, rhs, type_map)
 }
 
-fn replace_with_copy(op: &mut TirOp, source: ValueId, result: ValueId) {
+/// Rewrites `op` into a copy of `source`, a value equal to its result. The
+/// result keeps the owner it had (`owners`, design 20 §1.2).
+fn replace_with_copy(op: &mut TirOp, source: ValueId, result: ValueId, owners: &mut Replacements) {
+    owners.record(op);
     let old = op.clone();
     let mut replacement = TirOp {
         dialect: Dialect::Molt,

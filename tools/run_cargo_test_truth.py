@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -24,6 +25,7 @@ ROOT = bind_repository_imports(__file__)
 
 from molt.exact_json import loads_exact  # noqa: E402
 from tools import check_suite_honesty  # noqa: E402
+from tools import runtime_descendant_receipts  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.libtest_results import BINARY_RECEIPT_SCHEMA, accounting_problem  # noqa: E402
 from tools.memory_guard_core.process_custody import GuardInfrastructureFailure  # noqa: E402
@@ -207,6 +209,24 @@ def load_binary_receipts(
                 )
         if workspace:
             payload["workspace"] = workspace
+        # Re-derive runtime descendant evidence from raw captures; a saved
+        # summary is never carried forward. A failed binary keeps its own
+        # attribution, while a published success that no longer verifies has
+        # lost custody exactly like a changed executable.
+        descendants = runtime_descendant_receipts.receipt_outcome(
+            payload, receipt_root=receipt_dir
+        )
+        payload.pop("runtime_descendants", None)
+        if descendants is not None:
+            if (
+                descendants["status"] != "verified"
+                and payload.get("status") == "success"
+            ):
+                raise RuntimeError(
+                    "Cargo test binary runtime descendant evidence changed after "
+                    f"receipt publication: {path}: {descendants['error']}"
+                )
+            payload["runtime_descendants"] = descendants
         receipts.append(payload)
     return receipts
 
@@ -660,6 +680,8 @@ def run_streamed(
                     payload = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(payload, dict):
+                    continue
                 if payload.get("reason") == "compiler-artifact" and payload.get(
                     "profile", {}
                 ).get("test"):
@@ -676,7 +698,9 @@ def run_streamed(
         stream_error = exc
     finally:
         try:
-            returncode = process.wait()
+            if stream_error is not None:
+                process.request_cancel()
+            returncode = _COMMANDS.wait_owned(process, timeout=10.0)
         except BaseException as exc:
             wait_error = exc
         finally:
@@ -1094,8 +1118,11 @@ def _main() -> int:
     return 0
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     global _ACTIVE_RUN_TERMINALIZER
+    # Admit the command before source capture, receipt creation or subprocesses.
+    # This driver has no selectors: unknown options must never start a campaign.
+    argparse.ArgumentParser(description=__doc__).parse_args(argv)
     try:
         return _main()
     finally:

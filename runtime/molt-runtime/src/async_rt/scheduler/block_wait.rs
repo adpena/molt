@@ -1,6 +1,6 @@
 use crate::PyToken;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::{PtrSlot, obj_from_bits, ptr_from_bits, runtime_state, to_i64};
+use crate::{obj_from_bits, ptr_from_bits, runtime_state, to_i64};
 use std::time::{Duration, Instant};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -9,7 +9,7 @@ use crate::{IoPoller, ProcessTaskState, ThreadTaskState};
 use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
-use super::{process_task_state, task_waiting_on, thread_task_state};
+use super::{await_chain_terminal, process_task_state, thread_task_state};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) enum BlockOnWaitSpec {
@@ -110,26 +110,7 @@ pub(crate) fn block_on_wait_spec(
                 None
             }
         }
-        unsafe {
-            let mut cursor = awaited_ptr;
-            for _ in 0..8 {
-                let timeout = remaining_timeout(deadline);
-                if let Some(spec) = wait_spec_for_ptr(_py, cursor, timeout) {
-                    return Some(spec);
-                }
-                let next = {
-                    let waiting_map = task_waiting_on(_py).lock().unwrap();
-                    waiting_map.get(&PtrSlot(cursor)).map(|val| val.0)
-                };
-                let Some(next_ptr) = next else {
-                    break;
-                };
-                if next_ptr.is_null() || next_ptr == cursor {
-                    break;
-                }
-                cursor = next_ptr;
-            }
-        }
-        None
+        let terminal = await_chain_terminal(_py, awaited_ptr)?;
+        unsafe { wait_spec_for_ptr(_py, terminal, remaining_timeout(deadline)) }
     }
 }

@@ -5,18 +5,13 @@ from .render_rust_common import _render_matches_arm, _rs_bool
 _OPERAND_OWNERSHIP_VARIANT = {
     "borrowed": "OperandOwnership::Borrowed",
     "consumed": "OperandOwnership::Consumed",
-    # The borrow-of-edge leaf (design 27 §1.5 / §2.1, ladder #73): a per-position
-    # opcode operand whose result holds an interior reference into it (the
-    # `LoadAttr`/`Index` source — the round-6 `Counter._handle` keepalive). Read by
-    # `opcode_borrows_source_operand` and `op_borrow_source` in alias_analysis.rs.
-    "interior_borrow_keepalive": "OperandOwnership::InteriorBorrowKeepAlive",
     # Existing-container store leaf: the op borrows the operand while retaining
     # its own container/storage reference. DropInsertion uses this as a release
     # boundary for finalizer-sensitive producer temps.
     "container_absorb": "OperandOwnership::ContainerAbsorb",
     # Move-out leaves used by the per-TERMINATOR table (design 27 §2.4). The
     # opcode `operand_ownership` validator restricts opcodes to
-    # borrowed|consumed|interior_borrow_keepalive|container_absorb; these are reachable only via
+    # borrowed|consumed|container_absorb; these are reachable only via
     # the terminator categories.
     "transferred": "OperandOwnership::Transferred",
     "none": "OperandOwnership::NoOperand",
@@ -31,6 +26,7 @@ def _render_operand_ownership(
     opcodes: list[dict],
     consuming: list[dict],
     absorbing_operands: list[dict],
+    source_calls: list[dict],
 ) -> str:
     """Render the operand-ownership tables (design 27 §2.1/§2.3):
 
@@ -42,8 +38,14 @@ def _render_operand_ownership(
     * ``kind_consumed_operand_table(kind, arity)`` — the per-SPELLING consume
       override keyed on the ``_original_kind`` attr. Returns the 0-based index
       of the consumed operand, resolving ``"last"`` against the op's ``arity``.
-      This is the table ``op_consumed_operand_root`` reads (replacing the
+      This is the table ``op_transferred_operands`` reads (replacing the
       hand-coded ``matches!(_original_kind, "call_bind" | "call_indirect")``).
+    * ``kind_source_call_first_adopted_operand(kind)`` — the per-SPELLING
+      source call admission (design 20 §1.6): the first operand that a
+      source Python call may adopt through typed ``argument_custody``.
+    * ``kind_source_call_callable_operand(kind)`` — the source call's
+      callable operand, which an ordinary call adopts and an expanded call
+      borrows (the builder's ``CallArgumentForm``).
     """
     out: list[str] = []
     # `operand_idx` is referenced by the match body ONLY when some opcode carries
@@ -63,32 +65,14 @@ def _render_operand_ownership(
         "/// Operand-ownership leaf (design 27 §2.1): does an op release this\n"
         "/// operand internally (`Consumed` — the holder must NOT also drop it, a\n"
         "/// double-free otherwise) or merely borrow it (`Borrowed` — the holder\n"
-        "/// keeps its obligation and drops at the value's true last use)? molt's\n"
-        "/// `callee borrows all args` ABI (design 20 §1.2) makes `Borrowed` the\n"
-        "/// universal default; `Consumed` is the CallArgs-builder / move-into class.\n"
+        "/// keeps its obligation and drops at the value's true last use)? `Borrowed`\n"
+        "/// is the opcode default (design 20 §1.2); `Consumed` is the CallArgs-builder\n"
+        "/// / move-into class. A source call's typed per-operand custody\n"
+        "/// (`TirOp::operand_custody`) adds adopted operands per call site.\n"
         "/// The result-side lattice (Owned/Borrowed/Raw/MaybeUninit) is the\n"
         "/// classifier_* tables — a SEPARATE axis from this operand-side leaf.\n"
         "///\n"
-        "/// The variant set models molt's FULL operand-ownership domain so the\n"
-        "/// design-27 ownership-boundary lattice (#58) and the next consumer\n"
-        "/// migrations are TABLE edits, not enum surgery. `Borrowed`/`Consumed`\n"
-        "/// seed the per-OpCode + per-spelling tables; `InteriorBorrowKeepAlive`\n"
-        "/// seeds the per-position borrow-of column (ladder #73);\n"
-        "/// `ContainerAbsorb` marks borrowed operands retained by container/storage\n"
-        "/// mutation; `Transferred`\n"
-        "/// seeds the per-TERMINATOR table (design 27 §2.4 transfer sites — ladder\n"
-        "/// #72). Every variant below is constructed by a generated table today:\n"
-        "///   * `Transferred` — ownership moves OUT of the function/block: a\n"
-        "///     `Return` value or a branch-arg passed into a successor block arg.\n"
-        "///     LIVE: constructed by `terminator_operand_ownership_table` and read\n"
-        "///     by drop_insertion's `terminator_uses_root` / `terminator_branch_args`.\n"
-        "///   * `InteriorBorrowKeepAlive` — the round-6 interior-borrow keepalive:\n"
-        "///     the operand must stay live because the result holds an INTERIOR\n"
-        "///     reference into it (drop deferred to the interior ref's last use).\n"
-        "///     LIVE: constructed by `opcode_operand_ownership_table` for the\n"
-        "///     `LoadAttr`/`Index` source position and read by\n"
-        "///     `opcode_borrows_source_operand` / `op_borrow_source` to build the\n"
-        "///     `BorrowProvenance` relation (the `Counter._handle` UAF fix).\n"
+        "/// `Transferred` describes return and successor-argument ownership.\n"
         "///   * `ContainerAbsorb` — an existing-container/store mutation retains\n"
         "///     this operand while the caller still owns the producer temp ref. This\n"
         "///     gives DropInsertion a shared release boundary for absorbed temps\n"
@@ -106,28 +90,17 @@ def _render_operand_ownership(
         "    Borrowed,\n"
         "    Consumed,\n"
         "    Transferred,\n"
-        "    InteriorBorrowKeepAlive,\n"
         "    ContainerAbsorb,\n"
         "    ConditionalValidOnlyOnEdge,\n"
         "    NoOperand,\n"
         "}\n\n"
-        "// Parse/render path for the operand-ownership vocabulary. `Transferred`\n"
-        "// is LIVE through `terminator_operand_ownership_table` (ladder #72) and\n"
-        "// `InteriorBorrowKeepAlive` through `opcode_operand_ownership_table` /\n"
-        "// `opcode_borrows_source_operand` (ladder #73); `from_str` remains the\n"
-        "// toml-ingest path the LAST migration (the `conditional_valid_only_on_edge`\n"
-        "// row, #74) reads and is not yet wired to a runtime caller, so\n"
-        "// `from_str`/`as_str`/`ALL` keep allow(dead_code) — SCOPED to this\n"
-        "// forward-compat parse API, never the enum (every variant is constructed)\n"
-        "// nor the file. `ALL` + the round-trip test keep every variant constructed\n"
-        "// and live today.\n"
+        "// Parse/render path for the generated operand-ownership vocabulary.\n"
         "#[allow(dead_code)]\n"
         "impl OperandOwnership {\n"
-        "    pub const ALL: [OperandOwnership; 7] = [\n"
+        "    pub const ALL: [OperandOwnership; 6] = [\n"
         "        OperandOwnership::Borrowed,\n"
         "        OperandOwnership::Consumed,\n"
         "        OperandOwnership::Transferred,\n"
-        "        OperandOwnership::InteriorBorrowKeepAlive,\n"
         "        OperandOwnership::ContainerAbsorb,\n"
         "        OperandOwnership::ConditionalValidOnlyOnEdge,\n"
         "        OperandOwnership::NoOperand,\n"
@@ -137,7 +110,6 @@ def _render_operand_ownership(
         '            OperandOwnership::Borrowed => "borrowed",\n'
         '            OperandOwnership::Consumed => "consumed",\n'
         '            OperandOwnership::Transferred => "transferred",\n'
-        '            OperandOwnership::InteriorBorrowKeepAlive => "interior_borrow_keepalive",\n'
         '            OperandOwnership::ContainerAbsorb => "container_absorb",\n'
         '            OperandOwnership::ConditionalValidOnlyOnEdge => "conditional_valid_only_on_edge",\n'
         '            OperandOwnership::NoOperand => "no_operand_ownership",\n'
@@ -148,7 +120,6 @@ def _render_operand_ownership(
         '            "borrowed" => Some(OperandOwnership::Borrowed),\n'
         '            "consumed" => Some(OperandOwnership::Consumed),\n'
         '            "transferred" => Some(OperandOwnership::Transferred),\n'
-        '            "interior_borrow_keepalive" => Some(OperandOwnership::InteriorBorrowKeepAlive),\n'
         '            "container_absorb" => Some(OperandOwnership::ContainerAbsorb),\n'
         '            "conditional_valid_only_on_edge" => Some(OperandOwnership::ConditionalValidOnlyOnEdge),\n'
         '            "no_operand_ownership" => Some(OperandOwnership::NoOperand),\n'
@@ -193,42 +164,6 @@ def _render_operand_ownership(
         out.append(f"        OpCode::{name} => {_operand_ownership_arm(spec)},\n")
     out.append("    }\n}\n\n")
 
-    # Derived borrow-of authority (design 27 §1.5 / §2.1, ladder #73): the
-    # operand index an opcode's result interior-borrows (its
-    # `interior_borrow_keepalive` position), or `None`. This is the single
-    # declarative fact `op_borrow_source` (alias_analysis.rs) reads — the migrated
-    # interior-borrow-keepalive relation, no longer a hardcoded `LoadAttr | Index`
-    # match. EXHAUSTIVE over the enum (every opcode is classified by its
-    # `operand_ownership` row). A future op whose result interior-borrows an
-    # operand gets correct keepalive by setting that position to
-    # `interior_borrow_keepalive` in op_kinds.toml — never by editing the pass.
-    out.append(
-        "/// The operand index whose backing store this op's result interior-borrows\n"
-        "/// (design 27 §1.5 borrow-of edge): the operand position classified\n"
-        "/// `OperandOwnership::InteriorBorrowKeepAlive`, or `None` if the op's result\n"
-        "/// borrows into no operand. Derived from the per-OpCode `operand_ownership`\n"
-        "/// row — the SINGLE declarative authority `op_borrow_source`\n"
-        "/// (alias_analysis.rs) reads to build the `BorrowProvenance` keepalive\n"
-        "/// relation, REPLACING the hand-coded\n"
-        "/// `LoadAttr | Index` match (the round-6 `Counter._handle` UAF fix). The\n"
-        "/// source object's drop is deferred to the borrow result's last use, so a\n"
-        "/// finalizer that owns the backing store cannot run while the borrow lives.\n"
-        "/// EXHAUSTIVE over the enum — a new interior-borrowing op is classified by a\n"
-        "/// table edit, not a pass edit. At most one interior-borrow operand exists in\n"
-        "/// molt's lowering today (the container/object at position 0); the first such\n"
-        "/// position is returned.\n"
-        "#[inline]\n"
-        "pub fn opcode_borrows_source_operand(opcode: OpCode) -> Option<usize> {\n"
-        "    match opcode {\n"
-    )
-    for row in opcodes:
-        name = row["name"]
-        idx = _borrows_source_operand_index(row["operand_ownership"])
-        if idx is not None:
-            out.append(f"        OpCode::{name} => Some({idx}),\n")
-    out.append("        _ => None,\n")
-    out.append("    }\n}\n\n")
-
     out.append(
         "/// The operand index retained by an existing container/store mutation.\n"
         "/// The op still borrows the operand for ABI/drop purposes; this fact only\n"
@@ -250,11 +185,13 @@ def _render_operand_ownership(
     out.append(
         "/// Per-SPELLING consume override (design 27 §2.3): for a `Copy`-lifted op\n"
         "/// carrying `_original_kind = kind`, the 0-based index of the operand the\n"
-        "/// op CONSUMES (frees internally), or `None` if it consumes none. `arity`\n"
-        '/// is the op\'s operand count, used to resolve a `"last"` selector. The\n'
-        "/// drop pass treats a value whose last use is the consumed-operand\n"
-        "/// position exactly like a `Return` transfer — no trailing `DecRef`.\n"
-        "/// Replaces the hand-coded `op_consumed_operand_root` match.\n"
+        "/// op CONSUMES (frees internally, or moves into storage it owns, as a\n"
+        "/// frame home store does), or `None` if it consumes none. `arity` is the\n"
+        '/// op\'s operand count, used to resolve a `"last"` selector. The drop pass\n'
+        "/// hands the op the value's own reference when nothing reads the value\n"
+        "/// afterwards, ending a Python binding that held it, and a retained one\n"
+        "/// otherwise; no trailing `DecRef` releases what the op took.\n"
+        "/// Read by the ownership module's `op_transferred_operands`.\n"
         "#[inline]\n"
         "pub fn kind_consumed_operand_table(kind: &str, arity: usize) -> Option<usize> {\n"
         "    match kind {\n"
@@ -267,6 +204,34 @@ def _render_operand_ownership(
                 out.append(f'        "{kind}" => arity.checked_sub(1),\n')
             else:
                 out.append(f'        "{kind}" => Some({int(sel)}),\n')
+    out.append("        _ => None,\n")
+    out.append("    }\n}\n")
+    out.append(
+        "\n/// Per-SPELLING source call instruction (design 20 §1.6): the first operand\n"
+        "/// position that a source Python call spelled `kind` may adopt through typed\n"
+        "/// `argument_custody`, or `None` when the spelling adopts nothing. An earlier\n"
+        "/// operand (a `super()` class) always stays borrowed.\n"
+        "#[inline]\n"
+        "pub fn kind_source_call_first_adopted_operand(kind: &str) -> Option<usize> {\n"
+        "    match kind {\n"
+    )
+    for row in source_calls:
+        first = int(row["first_adopted_operand"])
+        out.append(f'        "{row["kind"]}" => Some({first}),\n')
+    out.append("        _ => None,\n")
+    out.append("    }\n}\n")
+    out.append(
+        "\n/// Per-SPELLING source call instruction (design 20 §1.6): the operand holding\n"
+        "/// the callable. An ordinary call adopts it and an expanded call borrows it,\n"
+        "/// so its custody follows the call form rather than the arguments'.\n"
+        "#[inline]\n"
+        "pub fn kind_source_call_callable_operand(kind: &str) -> Option<usize> {\n"
+        "    match kind {\n"
+    )
+    for row in source_calls:
+        if "callable_operand" in row:
+            callable_operand = int(row["callable_operand"])
+            out.append(f'        "{row["kind"]}" => Some({callable_operand}),\n')
     out.append("        _ => None,\n")
     out.append("    }\n}\n")
     absorbed_uses_arity = any(
@@ -605,24 +570,9 @@ def _render_terminator_ownership(terminators: list[dict]) -> str:
     return "".join(out)
 
 
-def _borrows_source_operand_index(spec: object) -> int | None:
-    """The operand index this op's result interior-borrows (design 27 §1.5), or
-    ``None``. The first position whose `operand_ownership` leaf is
-    ``interior_borrow_keepalive``. A uniform spec (``all_borrowed`` /
-    ``all_consumed``) interior-borrows nothing — only the per-position list form
-    can carry the keepalive leaf (the validator forbids it as a uniform shorthand,
-    so a borrow-of op MUST spell out its operand positions)."""
-    if not isinstance(spec, list):
-        return None
-    for i, leaf in enumerate(spec):
-        if leaf == "interior_borrow_keepalive":
-            return i
-    return None
-
-
 def _container_absorb_operand_index(spec: object) -> int | None:
     """The operand index retained by an existing container/store mutation, or
-    ``None``. Like interior borrows, this is per-position only: a uniform opcode
+    ``None``. This is per-position only: a uniform opcode
     cannot name one absorbed value operand without also identifying container/key
     operands."""
     if not isinstance(spec, list):

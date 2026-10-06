@@ -14,6 +14,15 @@ performance-first C-extension compatibility without embedding CPython.
 - No CPython ABI compatibility; extensions must be recompiled.
 - Capability gating and determinism rules apply to all extensions.
 
+Generic C subscription (`PyObject_GetItem`, `PyObject_SetItem`,
+`PyObject_DelItem`) uses the runtime's live Python class protocol for every
+managed value. Physical storage tags do not select semantics; subclass overrides,
+arbitrary keys, zero-valued payloads, and the original callback exception survive
+the boundary. Foreign extension objects retain their declared C-slot protocol.
+Physical container APIs such as `PyDict_SetItem` remain distinct because their
+contract intentionally bypasses subclass subscription overrides. Mutation returns
+are statements with borrowed receivers, not owned result values.
+
 ---
 
 ## 2. Non-Goals
@@ -71,9 +80,19 @@ not observable through this accessor.
 
 `molt_c_heap_*` is the public-header C-object provenance lane. It lets
 source-compatible headers expose real C heap pointers for extension-local
-objects, while generic `Py_INCREF`/`Py_DECREF`/type checks avoid treating those
-pointers as Molt handles. Type canonicalization is keyed by explicit kind so
-header-inline type objects keep one identity across C translation units.
+objects. The source-header `Py_INCREF`/`Py_DECREF`, `Py_REFCNT` and `Py_TYPE`
+operations retain the private reference-count and type-pointer representation;
+they never interpret the pointer as a Molt handle. Kind canonicalization keeps
+that private type-pointer identity across C translation units. Registration
+does not create a CPython object prefix, MRO, slot table or Python class
+projection. Canonical object inquiry and class-info protocols therefore reject
+registered private storage with `TypeError` before any CPython layout access;
+predicates return false and error-returning APIs retain their normal failure
+sentinels. This admission is owned by the bridge's existing Foreign resolution,
+shared by both C headers and runtime-value ingress. The runtime membership hook
+uses this same registry and does not hold its lock while constructing errors.
+Buffer leases and the source-header representation operations remain admitted;
+canonical extension objects use `PyType_FromSpec` and the linked object APIs.
 
 The `molt_c_heap_*_buffer*` lease functions extend that lane to the buffer
 protocol: a source-recompiled extension (e.g. the numpy `PyArrayObject`
@@ -107,13 +126,22 @@ exports alive.
 - `molt_string_from`, `molt_string_as_ptr`
 - `molt_bytearray_from`, `molt_bytearray_as_ptr`
 
-`MoltBufferView` is the single descriptor exchanged by the public C header,
-the compiled CPython-ABI shim, and the runtime. Non-contiguous exports must
-request stride metadata; `PyBUF_SIMPLE`/format-only requests fail closed unless
-the descriptor is C-contiguous. Unsupported or over-capacity PEP 3118 format
-metadata fails closed instead of being truncated or guessed, and base-less
-negative-stride memoryviews do not publish a buffer descriptor because their
-lower bound cannot be revalidated on import. `readonly` is a canonical u32
+Both C facades share the canonical CPython-prefix `Py_buffer` and linked entry
+points. C-API major 5 rejects artifacts compiled for the former private tail;
+rebuild is mandatory and sealing cannot relabel their layout. Runtime MemoryView
+is the sole semantic owner, with a stable descriptor in its existing BridgeEntry.
+The descriptor has no cache eviction or independent exporter ownership. Native
+leases are shared across derived views and traced by mixed GC; release publishes
+the view empty before callbacks. Python methods, indexing and shared buffer
+acquisition work for Python-created and C-created views alike.
+
+`PyBuffer_FillInfo` remains allocation-free and publishes self-referential
+shape/stride pointers. Native memoryviews preserve complete format strings;
+byte conversion consumes geometry without interpreting format text. Indirect
+suboffset buffers fail closed. Noncontiguous exports require stride metadata.
+Bytes and bytearray share buffer-before-iteration selection after the applicable
+special-method and index/count policies. Acquisition and release preserve the
+original conversion error. `readonly` is a canonical u32
 boolean: `0` means writable, `1` means read-only, and every other value fails
 descriptor admission.
 
@@ -143,13 +171,77 @@ borrowing writable bytes, then revalidates the view (including release by the
 conversion callback). These are implementation contracts, not certification of
 every Python-version, platform, package or release matrix cell.
 
-Scalar write admission rejects released/readonly views before running conversion.
+Scalar operation-entry admission rejects released/readonly views before key or
+value conversion. After key callbacks, conversion errors retain their documented
+precedence over the final release check.
 Numeric packing translates conversion `TypeError` to the format-specific type
-diagnostic and `OverflowError` to its value diagnostic; boolean truth testing
+diagnostic and `OverflowError`/`ValueError` to its value diagnostic; boolean truth testing
 preserves the original exception. Buffer C-API contiguity and cached memoryview
 flags are distinct CPython surfaces: an empty rank-one strided view can report
 `c_contiguous == False` while `PyBuffer_IsContiguous` returns true. Do not use
 one of those observations as a proxy for the other.
+
+Ordinary, stepped and C-API memoryview slices share first-axis normalization and
+validated storage derivation. They preserve trailing shape/strides, root owner
+and native lease, including empty slices; rank-zero slicing is rejected before
+index conversion. Derived storage owns its base/format references, counted
+root export and native lease before index callbacks run; releasing the parent
+inside a callback does not invalidate the slice or permit exporter resizing.
+That same ownership pin transfers into the allocated view or unwinds while
+preserving the callback error. Stride multiplication may wrap only when the
+validated result has at most one first-axis element or no elements at all;
+otherwise invalid geometry raises `BufferError`.
+Derivation preserves inline format descriptors as well as referenced formats,
+and a failed derivation leaves the original geometry intact. Cast dimensions
+use the shared checked byte extent; overflow raises the CPython shape-product
+error before inspecting later dimensions, rather than silently returning `None`.
+
+Slice assignment uses that same checked geometry and byte traversal. It acquires
+the source export before step/start/stop conversion, retains it until copying or
+failure cleanup completes, and rechecks destination release after conversion.
+It does not pin the destination: callbacks may release it and resize its former
+owner. Callback failures precede release; release precedes structural mismatch.
+Contiguous overlapping copies use memmove semantics; strided copies stage the
+source before any destination write. No unused final stride increment or failed
+geometry calculation may silently skip an assignment.
+
+Scalar stores perform Python conversion and native C-width integer admission,
+then directly recheck release, then apply the destination range and encode.
+Only conversion failures enter numeric error translation: a released-view
+error retains its exact message, and small-format range or half-float packing
+failures produce the final format value error. Pointer format `P` follows
+`PyLong_AsVoidPtr` integer admission without invoking `__index__`. No exporter
+pointer is retained across scalar callbacks.
+
+Store entry admits release, format syntax and readonly before key callbacks.
+After key conversion, bounds errors, later tuple callbacks, unsupported scalar
+formats and value-conversion errors retain precedence over release. Tuple reads
+likewise finish per-axis bounds and later callbacks before their final release
+check; scalar reads reenter item admission after key conversion. Release keeps
+shape/strides alive until view destruction; these callbacks retain no borrowed
+exporter data. Allocator pins transfer geometry without extra vector copies,
+skip empty cleanup, and drop a redundant base reference plainly only after the
+initialized view owns the same exporter. Actual abort/finalizer cleanup still
+preserves the pending exception.
+
+Known source-parity limit: the pinned CPython 3.12.13/3.13.11/3.14.3 `c` pack
+branch does not recheck release after a key callback and may use its earlier
+data pointer. Molt retains a final release check for this case. Character
+conversion failures still precede release, but a successful character store
+after key-induced release is not claimed as exact CPython parity. This includes
+defined cases where another view keeps the storage exported; it is not limited
+to CPython's dangling-pointer cases after the final export is released. Molt's
+current release operation clears its data and ownership edges. Restoring the
+defined cases needs shared, non-exporting observation of storage lifetime;
+adding a view/root pin would change permitted release/resize callbacks, and a
+native lease clone would defer the exporter's release callback. The exact gap
+is tracked in the [type coverage matrix](../language/type_coverage_matrix.md).
+
+Typed frontend loops use the same runtime iterator admission as `iter(view)`:
+empty multidimensional or invalid-format
+views cannot bypass it. An unexhausted iterator on a released view raises without
+advancing; an already exhausted iterator stays exhausted. Unsupported scalar
+codes are still deferred until an element is requested.
 
 ### 4.8 Types + Modules
 - `molt_type_ready`

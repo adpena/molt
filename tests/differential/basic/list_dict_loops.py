@@ -219,3 +219,32 @@ print(
     bool_snapshot_digest([True, False]),
     bool_snapshot_digest([False, True]),
 )
+
+def heap_store_between_loops(flag):
+    values = [1] * 4
+    alias = values
+    first = 0
+    for index in range(len(values)):
+        first += values[index]
+    heap = int("4611686018427387904")
+    if flag:
+        alias[2] = heap
+    second = 0
+    for index in range(len(values)):
+        second += values[index]
+    return first, second, values[2] is heap
+
+
+print("storage:heap-store", heap_store_between_loops(False), heap_store_between_loops(True))
+
+
+def singleton_before_repeat():
+    values = [1]
+    alias = values
+    heap = int("4611686018427387904")
+    alias[0] = heap
+    repeated = values * 3
+    return len(repeated), repeated[0] == heap, repeated[0] is heap, repeated[-1] is heap
+
+
+print("storage:singleton-mutation", singleton_before_repeat())

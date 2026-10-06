@@ -3,7 +3,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 #[cfg(test)]
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Mutex, OnceLock};
 
 pub(super) fn debug_oom() -> bool {
@@ -20,8 +20,15 @@ pub(crate) struct ExceptionContextFallback {
 thread_local! {
     /// CPython-compatible pending exception for the current native thread.
     /// Async task execution uses the task-keyed runtime map instead; the
-    /// thread slot is the sole authority whenever no task is active.
+    /// thread slot is the sole authority whenever no task is active. The slot
+    /// has no destructor, so it stays accessible while other thread-locals are
+    /// torn down; `THREAD_EXCEPTION_RELEASE` releases its strong edge.
     pub(crate) static THREAD_LAST_EXCEPTION: ThreadExceptionState = const { ThreadExceptionState::new() };
+    /// Thread-exit owner of the pending exception's strong edge. Releasing it
+    /// runs finalizer probes that preserve and restore the pending error, so
+    /// they re-enter `THREAD_LAST_EXCEPTION`; a slot with its own destructor is
+    /// inaccessible while that destructor runs and would abort the thread.
+    static THREAD_EXCEPTION_RELEASE: ThreadExceptionRelease = const { ThreadExceptionRelease };
     /// Inline fast byte for the active execution context. It mirrors the
     /// thread slot outside async execution and the active task's suspended
     /// slot while a task is installed on this native thread.
@@ -73,10 +80,12 @@ impl ThreadExceptionState {
     }
 
     pub(crate) fn set(&self, ptr: *mut u8) {
+        arm_thread_exception_release(ptr);
         self.slot.set(ptr);
     }
 
     pub(crate) fn replace(&self, ptr: *mut u8) -> *mut u8 {
+        arm_thread_exception_release(ptr);
         self.slot.replace(ptr)
     }
 
@@ -102,10 +111,20 @@ impl ThreadExceptionState {
     }
 }
 
-impl Drop for ThreadExceptionState {
+/// First access registers the thread-exit release. During that release the
+/// sentinel is already being destroyed; an exception published by a finalizer
+/// there is drained by the release loop itself.
+fn arm_thread_exception_release(ptr: *mut u8) {
+    if !ptr.is_null() {
+        let _ = THREAD_EXCEPTION_RELEASE.try_with(|_| ());
+    }
+}
+
+struct ThreadExceptionRelease;
+
+impl Drop for ThreadExceptionRelease {
     fn drop(&mut self) {
-        let ptr = self.slot.replace(std::ptr::null_mut());
-        if ptr.is_null() {
+        if THREAD_LAST_EXCEPTION.with(|state| state.get().is_null()) {
             return;
         }
         let gil = GilGuard::new();
@@ -129,7 +148,15 @@ impl Drop for ThreadExceptionState {
             return;
         }
         let py = gil.token();
-        dec_ref_bits(&py, MoltObject::from_ptr(ptr).bits());
+        // Releasing an exception can run finalizers that publish another one;
+        // drain until the slot stays empty.
+        loop {
+            let ptr = THREAD_LAST_EXCEPTION.with(|state| state.slot.replace(std::ptr::null_mut()));
+            if ptr.is_null() {
+                break;
+            }
+            dec_ref_bits(&py, MoltObject::from_ptr(ptr).bits());
+        }
         #[cfg(test)]
         if let Some(completion) = test_completion {
             completion.send(()).unwrap();
@@ -137,21 +164,9 @@ impl Drop for ThreadExceptionState {
     }
 }
 
-const EXCEPTIONS_OBJECT_SLOT_COUNT: usize = 27;
+const EXCEPTIONS_OBJECT_SLOT_COUNT: usize = 15;
 
 pub(crate) struct ExceptionsRuntimeState {
-    pub(super) errno_attr_name: AtomicU64,
-    pub(super) strerror_attr_name: AtomicU64,
-    pub(super) filename_attr_name: AtomicU64,
-    pub(super) characters_written_attr_name: AtomicU64,
-    pub(super) exc_group_message_name: AtomicU64,
-    pub(super) exc_group_exceptions_name: AtomicU64,
-    pub(super) unicode_encoding_attr_name: AtomicU64,
-    pub(super) unicode_object_attr_name: AtomicU64,
-    pub(super) unicode_start_attr_name: AtomicU64,
-    pub(super) unicode_end_attr_name: AtomicU64,
-    pub(super) unicode_reason_attr_name: AtomicU64,
-    pub(super) exception_with_traceback: AtomicU64,
     pub(super) base_exception_class_cache: AtomicU64,
     pub(super) exception_class_cache: AtomicU64,
     pub(super) key_error_class_cache: AtomicU64,
@@ -172,18 +187,6 @@ pub(crate) struct ExceptionsRuntimeState {
 impl ExceptionsRuntimeState {
     pub(crate) fn new() -> Self {
         Self {
-            errno_attr_name: AtomicU64::new(0),
-            strerror_attr_name: AtomicU64::new(0),
-            filename_attr_name: AtomicU64::new(0),
-            characters_written_attr_name: AtomicU64::new(0),
-            exc_group_message_name: AtomicU64::new(0),
-            exc_group_exceptions_name: AtomicU64::new(0),
-            unicode_encoding_attr_name: AtomicU64::new(0),
-            unicode_object_attr_name: AtomicU64::new(0),
-            unicode_start_attr_name: AtomicU64::new(0),
-            unicode_end_attr_name: AtomicU64::new(0),
-            unicode_reason_attr_name: AtomicU64::new(0),
-            exception_with_traceback: AtomicU64::new(0),
             base_exception_class_cache: AtomicU64::new(0),
             exception_class_cache: AtomicU64::new(0),
             key_error_class_cache: AtomicU64::new(0),
@@ -204,18 +207,6 @@ impl ExceptionsRuntimeState {
 
     pub(super) fn object_slots(&self) -> [&AtomicU64; EXCEPTIONS_OBJECT_SLOT_COUNT] {
         [
-            &self.errno_attr_name,
-            &self.strerror_attr_name,
-            &self.filename_attr_name,
-            &self.characters_written_attr_name,
-            &self.exc_group_message_name,
-            &self.exc_group_exceptions_name,
-            &self.unicode_encoding_attr_name,
-            &self.unicode_object_attr_name,
-            &self.unicode_start_attr_name,
-            &self.unicode_end_attr_name,
-            &self.unicode_reason_attr_name,
-            &self.exception_with_traceback,
             &self.base_exception_class_cache,
             &self.exception_class_cache,
             &self.key_error_class_cache,
@@ -234,8 +225,6 @@ impl ExceptionsRuntimeState {
         ]
     }
 }
-
-pub(super) static STOPASYNC_BT_PRINTED: AtomicBool = AtomicBool::new(false);
 
 pub(super) fn exceptions_state(_py: &PyToken<'_>) -> &'static ExceptionsRuntimeState {
     &runtime_state(_py).exceptions

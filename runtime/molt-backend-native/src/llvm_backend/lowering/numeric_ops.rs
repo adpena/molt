@@ -71,11 +71,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // branch condition (no truthiness call, no NaN-box round-trip).
             self.value_types.insert(flag_id, TirType::Bool);
         } else {
-            let lhs = self.resolve(lhs_id);
-            let rhs = self.resolve(rhs_id);
-            let lhs_i64 = self.materialize_dynbox_bits(lhs, &lhs_ty);
-            let rhs_i64 = self.materialize_dynbox_bits(rhs, &rhs_ty);
-            let sum = self.call_runtime_2("molt_add", lhs_i64.into(), rhs_i64.into());
+            let sum = self.emit_boxed_binary_fallback("molt_add", lhs_id, rhs_id);
             self.values.insert(sum_id, sum);
             self.value_types.insert(sum_id, TirType::DynBox);
             let false_flag = self.backend.context.bool_type().const_zero();
@@ -155,11 +151,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // branch condition (no truthiness call, no NaN-box round-trip).
             self.value_types.insert(flag_id, TirType::Bool);
         } else {
-            let lhs = self.resolve(lhs_id);
-            let rhs = self.resolve(rhs_id);
-            let lhs_i64 = self.materialize_dynbox_bits(lhs, &lhs_ty);
-            let rhs_i64 = self.materialize_dynbox_bits(rhs, &rhs_ty);
-            let prod = self.call_runtime_2("molt_mul", lhs_i64.into(), rhs_i64.into());
+            let prod = self.emit_boxed_binary_fallback("molt_mul", lhs_id, rhs_id);
             self.values.insert(prod_id, prod);
             self.value_types.insert(prod_id, TirType::DynBox);
             let false_flag = self.backend.context.bool_type().const_zero();
@@ -349,7 +341,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             other => unreachable!("emit_i64_divrem_zero_guarded called with {other:?}"),
         };
         let boxed = self
-            .call_runtime_2_boxed(rt_name, op.operands[0], op.operands[1])
+            .emit_boxed_binary_fallback(rt_name, op.operands[0], op.operands[1])
             .into_int_value();
         // The runtime raised; this value is unreachable-but-typed. Convert the
         // DynBox bits to the fast lane's carrier so the phi types line up.
@@ -383,6 +375,143 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let phi = self.backend.builder.build_phi(phi_ty, "divrem").unwrap();
         phi.add_incoming(&[(&fast_val, fast_pred), (&slow_val, slow_pred)]);
         (phi.as_basic_value(), out_ty)
+    }
+
+    /// Keep float division/modulo zero dispatch and divisor-sign remainder
+    /// semantics coherent with the runtime, including signed zero and NaNs.
+    fn emit_f64_divrem_zero_guarded(
+        &mut self,
+        op: &crate::tir::ops::TirOp,
+        name: &str,
+        lhs: inkwell::values::FloatValue<'ctx>,
+        rhs: inkwell::values::FloatValue<'ctx>,
+    ) -> (BasicValueEnum<'ctx>, TirType) {
+        use inkwell::FloatPredicate;
+        let f64_ty = self.backend.context.f64_type();
+        let i64_ty = self.backend.context.i64_type();
+        let zero = f64_ty.const_zero();
+        let nonzero = self
+            .backend
+            .builder
+            .build_float_compare(FloatPredicate::UNE, rhs, zero, "float_rhs_nonzero")
+            .unwrap();
+        let fast = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, "float_divrem_fast");
+        let slow = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, "float_divrem_zero");
+        let merge = self
+            .backend
+            .context
+            .append_basic_block(self.llvm_fn, "float_divrem_merge");
+        self.all_llvm_blocks.extend([fast, slow, merge]);
+        self.backend
+            .builder
+            .build_conditional_branch(nonzero, fast, slow)
+            .unwrap();
+        self.backend.builder.position_at_end(fast);
+        let fast_value: BasicValueEnum<'ctx> = match name {
+            "div" => self
+                .backend
+                .builder
+                .build_float_div(lhs, rhs, "fdiv")
+                .unwrap()
+                .into(),
+            "mod" => {
+                let rem = self
+                    .backend
+                    .builder
+                    .build_float_rem(lhs, rhs, "fmod_raw")
+                    .unwrap();
+                let rem_nonzero = self
+                    .backend
+                    .builder
+                    .build_float_compare(FloatPredicate::UNE, rem, zero, "remainder_nonzero")
+                    .unwrap();
+                let rem_negative = self
+                    .backend
+                    .builder
+                    .build_float_compare(FloatPredicate::OLT, rem, zero, "remainder_negative")
+                    .unwrap();
+                let rhs_negative = self
+                    .backend
+                    .builder
+                    .build_float_compare(FloatPredicate::OLT, rhs, zero, "divisor_negative")
+                    .unwrap();
+                let signs_differ = self
+                    .backend
+                    .builder
+                    .build_xor(rem_negative, rhs_negative, "float_signs_differ")
+                    .unwrap();
+                let adjusted = self
+                    .backend
+                    .builder
+                    .build_float_add(rem, rhs, "fmod_adjusted")
+                    .unwrap();
+                let signed_rem = self
+                    .backend
+                    .builder
+                    .build_select(signs_differ, adjusted, rem, "fmod_signed")
+                    .unwrap();
+                let rhs_bits = self
+                    .backend
+                    .builder
+                    .build_bit_cast(rhs, i64_ty, "divisor_bits")
+                    .unwrap()
+                    .into_int_value();
+                let sign_bits = self
+                    .backend
+                    .builder
+                    .build_and(rhs_bits, i64_ty.const_int(1 << 63, false), "divisor_sign")
+                    .unwrap();
+                let signed_zero = self
+                    .backend
+                    .builder
+                    .build_bit_cast(sign_bits, f64_ty, "fmod_zero")
+                    .unwrap();
+                self.backend
+                    .builder
+                    .build_select(rem_nonzero, signed_rem, signed_zero, "pymod_float")
+                    .unwrap()
+            }
+            _ => unreachable!("non-divrem float operation"),
+        };
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .unwrap();
+        let fast_pred = self.backend.builder.get_insert_block().unwrap();
+        self.backend.builder.position_at_end(slow);
+        let runtime_name = if name == "div" {
+            "molt_div"
+        } else {
+            "molt_mod"
+        };
+        let boxed = self
+            .emit_boxed_binary_fallback(runtime_name, op.operands[0], op.operands[1])
+            .into_int_value();
+        // Zero dispatch raises; the dead value still has the phi's carrier type.
+        let slow_value = self
+            .backend
+            .builder
+            .build_bit_cast(boxed, f64_ty, "float_zero_dead")
+            .unwrap();
+        self.backend
+            .builder
+            .build_unconditional_branch(merge)
+            .unwrap();
+        let slow_pred = self.backend.builder.get_insert_block().unwrap();
+        self.backend.builder.position_at_end(merge);
+        let phi = self
+            .backend
+            .builder
+            .build_phi(f64_ty, "float_divrem")
+            .unwrap();
+        phi.add_incoming(&[(&fast_value, fast_pred), (&slow_value, slow_pred)]);
+        (phi.as_basic_value(), TirType::F64)
     }
 
     pub(super) fn emit_binary_arith(&mut self, op: &crate::tir::ops::TirOp, name: &str) {
@@ -508,28 +637,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 (v.into(), TirType::F64)
             }
-            (TirType::F64, TirType::F64, "div") => {
-                let v = self
-                    .backend
-                    .builder
-                    .build_float_div(lhs.into_float_value(), rhs.into_float_value(), "fdiv")
-                    .unwrap();
-                if fast_math && let Some(instr) = v.as_instruction() {
-                    instr.set_fast_math_flags(llvm_fast_math_all()).unwrap();
-                }
-                (v.into(), TirType::F64)
-            }
-            (TirType::F64, TirType::F64, "mod") => {
-                let v = self
-                    .backend
-                    .builder
-                    .build_float_rem(lhs.into_float_value(), rhs.into_float_value(), "fmod")
-                    .unwrap();
-                if fast_math && let Some(instr) = v.as_instruction() {
-                    instr.set_fast_math_flags(llvm_fast_math_all()).unwrap();
-                }
-                (v.into(), TirType::F64)
-            }
+            (TirType::F64, TirType::F64, "div" | "mod") => self.emit_f64_divrem_zero_guarded(
+                op,
+                name,
+                lhs.into_float_value(),
+                rhs.into_float_value(),
+            ),
 
             // Everything else: call runtime (DynBox dispatch).
             //
@@ -573,9 +686,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     ("pow", true) => "molt_inplace_pow",
                     _ => unreachable!("unknown arith op: {}", name),
                 };
-                let lhs_i64 = self.materialize_dynbox_bits(lhs, &lhs_ty);
-                let rhs_i64 = self.materialize_dynbox_bits(rhs, &rhs_ty);
-                let v = self.call_runtime_2(rt_name, lhs_i64.into(), rhs_i64.into());
+                let v = self.emit_boxed_binary_fallback(rt_name, lhs_id, rhs_id);
                 (v, TirType::DynBox)
             }
         };
@@ -650,9 +761,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     "ge" => "molt_ge",
                     _ => unreachable!(),
                 };
-                let lhs_i64 = self.materialize_dynbox_bits(lhs, &lhs_ty);
-                let rhs_i64 = self.materialize_dynbox_bits(rhs, &rhs_ty);
-                let v = self.call_runtime_2(rt_name, lhs_i64.into(), rhs_i64.into());
+                let v = self.emit_boxed_binary_fallback(rt_name, lhs_id, rhs_id);
                 (v, TirType::DynBox)
             }
         };
@@ -690,45 +799,237 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     // ── Containment (in / not in) ──
 
     pub(super) fn emit_containment(&mut self, op: &crate::tir::ops::TirOp) {
-        let result_id = op.results[0];
         // `molt_contains(container, item)`. The membership op's operands are
         // [container, item] (matching the native `contains` arm and the SimpleIR
         // `contains`/`in`/`not_in` convention), so they must be passed in that
         // order — swapping them makes `3 in [1, 2, 3]` call `molt_contains(3,
         // [1, 2, 3])`, reporting `argument of type 'int' is not iterable`.
-        let val = self.call_runtime_2_boxed("molt_contains", op.operands[0], op.operands[1]);
-        let final_val = if op.opcode == OpCode::NotIn {
-            // Invert the boolean result from molt_contains
-            let truthy_fn = self.backend.module.get_function("molt_is_truthy").unwrap();
-            let item_i64 = self.ensure_i64(val);
-            let truthy = self
+        let contains_fn = self.ensure_runtime_i64_fn("molt_contains", 2);
+        let args = [
+            RuntimeArg::Operand(op.operands[0]),
+            RuntimeArg::Operand(op.operands[1]),
+        ];
+        let custody = Self::canonical_boxed_return("molt_contains", 2);
+        if op.opcode != OpCode::NotIn {
+            self.emit_borrowed_runtime_call(
+                op,
+                contains_fn,
+                &args,
+                custody,
+                "contains",
+                "molt_contains",
+            );
+            return;
+        }
+        // `not in` keeps only the inverted truthiness of the membership result.
+        let result_id = op.results[0];
+        let val = self.borrowed_runtime_call_value(
+            contains_fn,
+            &args,
+            false,
+            "contains",
+            "molt_contains",
+        );
+        let truthy_fn = self.ensure_runtime_i64_fn("molt_is_truthy", 1);
+        let truthy = self
+            .backend
+            .builder
+            .build_call(truthy_fn, &[val.into()], "truthy")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic();
+        let not_in = self
+            .backend
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                truthy.into_int_value(),
+                self.backend.context.i64_type().const_int(0, false),
+                "not_in",
+            )
+            .unwrap();
+        if custody == RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue) {
+            let release = self.ensure_runtime_import(MOLT_DEC_REF_OBJ);
+            self.backend
+                .builder
+                .build_call(release, &[val.into()], "")
+                .unwrap();
+        }
+        self.values.insert(result_id, not_in.into());
+        self.value_types.insert(result_id, TirType::Bool);
+    }
+
+    /// The boxed runtime lane of a binary operator: both operands are borrowed
+    /// through one custody, and the owned result is the operator's value.
+    fn emit_boxed_binary_fallback(
+        &mut self,
+        symbol: &str,
+        lhs: ValueId,
+        rhs: ValueId,
+    ) -> BasicValueEnum<'ctx> {
+        let callee = self.ensure_runtime_i64_fn(symbol, 2);
+        self.borrowed_runtime_call_value(
+            callee,
+            &[RuntimeArg::Operand(lhs), RuntimeArg::Operand(rhs)],
+            false,
+            "binary",
+            symbol,
+        )
+        .into()
+    }
+
+    // ── Boolean selection (and / or) ──
+
+    /// Frontend BoolOp lowering uses And/Or ops to produce the selected operand
+    /// value inside already-structured control flow, so this preserves Python
+    /// operand selection, not bitwise semantics. The result owns one reference
+    /// to the selected operand (`result_mints_owned_selected_operand`). Two
+    /// object carriers select a word and retain it. Otherwise each edge
+    /// materializes only its own operand, so a scalar is boxed once, only when
+    /// selected, and a minted heap integer is itself the result's owner.
+    pub(super) fn emit_boolean_selection(&mut self, op: &crate::tir::ops::TirOp) {
+        assert!(
+            crate::tir::op_kinds_generated::opcode_result_mints_owned_selected_operand_table(
+                op.opcode
+            ),
+            "{:?} must mint an owned selected operand",
+            op.opcode
+        );
+        let result_id = op.results[0];
+        let cond = self.operand_truthiness(op.operands[0]);
+        // `a and b` is `b` when `a` is truthy; `a or b` is `a`.
+        let (name, when_true, when_false) = if op.opcode == OpCode::And {
+            ("bool_and", op.operands[1], op.operands[0])
+        } else {
+            ("bool_or", op.operands[0], op.operands[1])
+        };
+        let object_carrier = |this: &Self, id: ValueId| {
+            Self::tir_type_is_dynbox_like(
+                &this
+                    .value_types
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or(TirType::DynBox),
+            )
+        };
+        let selected = if object_carrier(self, when_true) && object_carrier(self, when_false) {
+            let true_bits = self.ensure_i64(self.resolve(when_true));
+            let false_bits = self.ensure_i64(self.resolve(when_false));
+            let selected = self
                 .backend
                 .builder
-                .build_call(truthy_fn, &[item_i64.into()], "truthy")
+                .build_select(cond, true_bits, false_bits, name)
                 .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic();
-            let as_bool = self
+                .into_int_value();
+            let retain = self.ensure_runtime_import(MOLT_INC_REF_OBJ);
+            self.backend
+                .builder
+                .build_call(retain, &[selected.into()], "boolop_selected_inc_ref")
+                .unwrap();
+            selected
+        } else {
+            let suffix = self.synthetic_block_counter;
+            self.synthetic_block_counter += 1;
+            let true_bb = self
+                .backend
+                .context
+                .append_basic_block(self.llvm_fn, &format!("{name}_true{suffix}"));
+            let false_bb = self
+                .backend
+                .context
+                .append_basic_block(self.llvm_fn, &format!("{name}_false{suffix}"));
+            let merge_bb = self
+                .backend
+                .context
+                .append_basic_block(self.llvm_fn, &format!("{name}_merge{suffix}"));
+            self.all_llvm_blocks.extend([true_bb, false_bb, merge_bb]);
+            let source = self.backend.builder.get_insert_block().unwrap();
+            self.backend
+                .builder
+                .build_conditional_branch(cond, true_bb, false_bb)
+                .unwrap();
+            self.record_llvm_edge(source, true_bb);
+            self.record_llvm_edge(source, false_bb);
+            let mut incoming = Vec::with_capacity(2);
+            for (block, operand) in [(true_bb, when_true), (false_bb, when_false)] {
+                self.backend.builder.position_at_end(block);
+                let word = self.owned_operand_word(operand, "boolop_selected_inc_ref");
+                let end = self.backend.builder.get_insert_block().unwrap();
+                self.backend
+                    .builder
+                    .build_unconditional_branch(merge_bb)
+                    .unwrap();
+                self.record_llvm_edge(end, merge_bb);
+                incoming.push((word, end));
+            }
+            self.backend.builder.position_at_end(merge_bb);
+            let phi = self
+                .backend
+                .builder
+                .build_phi(self.backend.context.i64_type(), name)
+                .unwrap();
+            for (word, end) in &incoming {
+                phi.add_incoming(&[(word, *end)]);
+            }
+            phi.as_basic_value().into_int_value()
+        };
+        self.values.insert(result_id, selected.into());
+        self.value_types.insert(result_id, TirType::DynBox);
+    }
+
+    /// Python truthiness of an operand, read from its physical carrier.
+    fn operand_truthiness(&self, operand: ValueId) -> inkwell::values::IntValue<'ctx> {
+        let value = self.resolve(operand);
+        let ty = self
+            .value_types
+            .get(&operand)
+            .cloned()
+            .unwrap_or(TirType::DynBox);
+        match ty {
+            TirType::Bool => value.into_int_value(),
+            TirType::I64 => self
                 .backend
                 .builder
                 .build_int_compare(
-                    inkwell::IntPredicate::EQ,
-                    truthy.into_int_value(),
-                    self.backend.context.i64_type().const_int(0, false),
-                    "not_in",
+                    inkwell::IntPredicate::NE,
+                    value.into_int_value(),
+                    self.backend.context.i64_type().const_zero(),
+                    "boolop_cond",
                 )
-                .unwrap();
-            as_bool.into()
-        } else {
-            val
-        };
-        self.values.insert(result_id, final_val);
-        let out_ty = if op.opcode == OpCode::NotIn {
-            TirType::Bool
-        } else {
-            TirType::DynBox
-        };
-        self.value_types.insert(result_id, out_ty);
+                .unwrap(),
+            // NaN is truthy and -0.0 is falsy: unordered-or-unequal to zero.
+            TirType::F64 => self
+                .backend
+                .builder
+                .build_float_compare(
+                    inkwell::FloatPredicate::UNE,
+                    value.into_float_value(),
+                    self.backend.context.f64_type().const_zero(),
+                    "boolop_cond",
+                )
+                .unwrap(),
+            _ => {
+                let bits = self.ensure_i64(value);
+                let truthy_fn = self.ensure_runtime_i64_fn("molt_is_truthy", 1);
+                let truthy = self
+                    .backend
+                    .builder
+                    .build_call(truthy_fn, &[bits.into()], "truthy")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic()
+                    .into_int_value();
+                self.backend
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        truthy,
+                        self.backend.context.i64_type().const_zero(),
+                        "boolop_cond",
+                    )
+                    .unwrap()
+            }
+        }
     }
 
     // ── Bitwise ops ──
@@ -827,15 +1128,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 };
                 // The runtime bitwise entries take NaN-BOXED operands. A raw
                 // `TirType::I64` operand (e.g. the `4` in `x <<= 4`) must be boxed
-                // via `materialize_dynbox_bits`, NOT passed through `ensure_i64`
+                // as a borrowed operand, NOT passed through `ensure_i64`
                 // (which forwards the raw i64 bit pattern — the runtime then
                 // mis-reads `4` as the subnormal float 2e-323). This mirrors
                 // `emit_binary_arith`'s boxed fallback; using `ensure_i64` here
                 // was a latent miscompile of `<<`/`>>`/bitwise on a raw-int
                 // operand, now exposed by the `<<=`/`>>=` in-place dunder path.
-                let lhs_i64 = self.materialize_dynbox_bits(lhs, &lhs_ty);
-                let rhs_i64 = self.materialize_dynbox_bits(rhs, &rhs_ty);
-                let v = self.call_runtime_2(&rt_name, lhs_i64.into(), rhs_i64.into());
+                let v = self.emit_boxed_binary_fallback(&rt_name, lhs_id, rhs_id);
                 (v, TirType::DynBox)
             }
         };
@@ -902,23 +1201,69 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     "invert" => "molt_invert",
                     _ => unreachable!(),
                 };
-                // Runtime unary entries consume boxed objects, not widened
+                // Runtime unary entries borrow boxed objects, not widened
                 // machine bits. In particular, ~bool needs its Bool tag for
                 // both integer semantics and the runtime deprecation warning.
-                let op_i64 = self.materialize_dynbox_bits(operand, &operand_ty);
                 let func = self.ensure_runtime_i64_fn(rt_name, 1);
-                let v = self
-                    .backend
-                    .builder
-                    .build_call(func, &[op_i64.into()], name)
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic();
-                (v, TirType::DynBox)
+                let v = self.borrowed_runtime_call_value(
+                    func,
+                    &[RuntimeArg::Operand(operand_id)],
+                    false,
+                    "unary",
+                    name,
+                );
+                (v.into(), TirType::DynBox)
             }
         };
 
         self.values.insert(result_id, val);
         self.value_types.insert(result_id, out_ty);
+    }
+}
+
+#[cfg(test)]
+mod numeric_family_tests {
+    use super::super::*;
+    use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+    use crate::tir::values::ValueId;
+
+    #[test]
+    fn float_divrem_preserves_zero_dispatch_and_python_remainder_sign() {
+        for (opcode, runtime) in [(OpCode::Div, "molt_div"), (OpCode::Mod, "molt_mod")] {
+            let context = inkwell::context::Context::create();
+            let backend = LlvmBackend::new(&context, "float_divrem_semantics");
+            let mut func = TirFunction::new(
+                "float_divrem".into(),
+                vec![TirType::F64, TirType::F64],
+                TirType::F64,
+                molt_ir::FunctionReturnAbi::Value,
+            );
+            let result = func.fresh_value();
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode,
+                operands: vec![ValueId(0), ValueId(1)],
+                results: vec![result],
+                attrs: AttrDict::from([("fast_math".into(), AttrValue::Bool(true))]),
+                source_span: None,
+            });
+            entry.terminator = Terminator::Return {
+                values: vec![result],
+            };
+            try_lower_tir_to_llvm(&func, &backend).unwrap();
+            backend.module.verify().unwrap();
+            let ir = backend.module.print_to_string().to_string();
+            assert!(ir.contains("float_rhs_nonzero") && ir.contains("fcmp une"));
+            assert!(ir.contains(runtime));
+            assert!(
+                !ir.contains("fdiv fast") && !ir.contains("frem fast"),
+                "fast-math must not erase zero/NaN/sign semantics"
+            );
+            if opcode == OpCode::Mod {
+                assert!(ir.contains("fmod_adjusted") && ir.contains("divisor_sign"));
+                assert!(ir.contains("fmod_zero") && ir.contains("pymod_float"));
+            }
+        }
     }
 }
