@@ -231,7 +231,7 @@ def test_lean_cache_is_ignored_untracked_build_state() -> None:
 
 def test_generated_local_dx_projection_has_stable_command_ids() -> None:
     projection = json.loads(gen_proof_plan._json_projection(PLAN))
-    assert projection["schema"] == "molt.proof-plan-projection.v5"
+    assert projection["schema"] == "molt.proof-plan-projection.v6"
     assert projection["receipt_schema"] == "molt.proof-receipt.v4"
     assert projection["authority_inputs"] == list(PLAN.authority_inputs)
     assert projection["authority_sha256"] == proof_plan._authority_sha256(PLAN)
@@ -299,6 +299,22 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
                 "resource_capacity_floor_seconds": envelope.resource_capacity_floor_seconds,
                 "headroom_seconds": budget - envelope.projected_makespan_seconds,
             }
+    matrix_envelopes = projection["executor"]["github_matrix_timeout_envelopes"]
+    matrix_families = tuple(
+        family for family in PLAN.families if family.data["executor"] == "github-matrix"
+    )
+    assert set(matrix_envelopes) == {family.name for family in matrix_families}
+    for family in matrix_families:
+        budget = int(family.data["timeout_minutes"]) * 60
+        assert set(matrix_envelopes[family.name]) == set(PLAN.family_cells(family.name))
+        for cell, projected in matrix_envelopes[family.name].items():
+            envelope = PLAN.timeout_envelope(family.name, matrix_cell=cell)
+            assert projected["budget_seconds"] == budget
+            assert (
+                projected["projected_makespan_seconds"]
+                == envelope.projected_makespan_seconds
+            )
+            assert projected["headroom_seconds"] >= 0
     local = projection["local"]
     assert local["commands"]["local.always.0"] == PLAN.always[0]
     first = PLAN.local_rules[0]
@@ -592,6 +608,151 @@ def test_matrix_command_dependencies_cannot_cross_runner_cells() -> None:
         "portability.queue.macos: matrix command dependency "
         "'portability.queue.linux' crosses runner cells"
     ) in errors
+
+
+def test_python_unit_runs_the_same_partitions_on_linux_and_macos() -> None:
+    family = next(family for family in PLAN.families if family.name == "python_unit")
+    assert family.data["executor"] == "github-matrix"
+    cells = {cell.id: cell for cell in PLAN.matrix_cells}
+    by_cell: dict[str, list[proof_plan.ProofCommand]] = {}
+    for command in PLAN.commands:
+        if command.family == "python_unit":
+            by_cell.setdefault(command.data["cell"], []).append(command)
+    assert {
+        cell: (cells[cell].data["os"], cells[cell].data["runner"]) for cell in by_cell
+    } == {
+        "linux-x86_64-py312-unit": ("linux", "ubuntu-latest"),
+        "macos-arm64-py312-unit": ("macos", "macos-14"),
+    }
+    linux = by_cell["linux-x86_64-py312-unit"]
+    macos = by_cell["macos-arm64-py312-unit"]
+
+    def contract(command: proof_plan.ProofCommand) -> dict[str, object]:
+        return {
+            key: value
+            for key, value in command.data.items()
+            if key not in {"id", "cell"}
+        }
+
+    # One macOS twin per Linux partition, identical apart from identity.
+    assert [command.id + ".macos" for command in linux] == [
+        command.id for command in macos
+    ]
+    assert [contract(command) for command in linux] == [
+        contract(command) for command in macos
+    ]
+
+
+def test_each_matrix_family_receives_only_its_own_runner_cells() -> None:
+    # tools/** selects both matrix families at once.
+    outputs = proof_plan.family_outputs(PLAN, PLAN.select(["tools/proof_queue.py"]))
+    assert "matrix" not in outputs
+    unit = json.loads(outputs["python_unit_matrix"])["include"]
+    assert [(entry["cell"], entry["runner"]) for entry in unit] == [
+        ("linux-x86_64-py312-unit", "ubuntu-latest"),
+        ("macos-arm64-py312-unit", "macos-14"),
+    ]
+    for entry in unit:
+        assert entry["family"] == "python_unit"
+        commands = proof_plan._topological_commands(
+            PLAN, family="python_unit", matrix_cell=entry["cell"]
+        )
+        assert [command.id for command in commands] == entry["command_ids"]
+    portability = json.loads(outputs["platform_portability_matrix"])["include"]
+    assert portability
+    assert all(entry["family"] == "platform_portability" for entry in portability)
+
+
+def test_local_matrix_family_run_selects_only_the_host_cell(monkeypatch) -> None:
+    monkeypatch.setattr(proof_plan, "_normalized_os", lambda: "macos")
+    monkeypatch.setattr(proof_plan, "_normalized_arch", lambda: "aarch64")
+    assert proof_plan.host_matrix_cell(PLAN, "python_unit") == "macos-arm64-py312-unit"
+    monkeypatch.setattr(proof_plan, "_normalized_os", lambda: "linux")
+    with pytest.raises(ValueError) as error:
+        proof_plan.host_matrix_cell(PLAN, "python_unit")
+    assert str(error.value) == (
+        "python_unit runs one job per matrix cell and no unique cell matches host "
+        "linux/aarch64; pass --matrix-cell with one of: "
+        "linux-x86_64-py312-unit (linux/x86_64), macos-arm64-py312-unit (macos/aarch64)"
+    )
+
+
+def test_run_family_without_cell_executes_only_the_host_cell(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    executed: list[str] = []
+
+    def record(_plan, commands, _receipt):
+        executed.extend(command.id for command in commands)
+        return 0
+
+    monkeypatch.setattr(proof_plan, "execute_commands", record)
+    monkeypatch.setattr(proof_plan, "_normalized_os", lambda: "macos")
+    monkeypatch.setattr(proof_plan, "_normalized_arch", lambda: "aarch64")
+    receipt = tmp_path / "receipt.json"
+    assert (
+        proof_plan.main(["--run-family", "python_unit", "--receipt", str(receipt)]) == 0
+    )
+    assert executed == [
+        command.id
+        for command in PLAN.commands
+        if command.family == "python_unit"
+        and command.data["cell"] == "macos-arm64-py312-unit"
+    ]
+    assert "runs host matrix cell macos-arm64-py312-unit" in capsys.readouterr().err
+
+
+def test_github_job_family_cannot_span_runners() -> None:
+    families = tuple(
+        replace(family, data={**family.data, "executor": "github-job"})
+        if family.name == "python_unit"
+        else family
+        for family in PLAN.families
+    )
+    errors = replace(PLAN, families=families).validate()
+    assert (
+        "python_unit: a github-job runs every command on one runner, but its "
+        "cells name ['macos-14', 'ubuntu-latest']; use executor github-matrix"
+    ) in errors
+
+
+def test_matrix_job_must_consume_its_own_family_matrix(tmp_path) -> None:
+    workflow = tmp_path / "ci.yml"
+    workflow.write_text(
+        (proof_plan.ROOT / ".github/workflows/ci.yml")
+        .read_text(encoding="utf-8")
+        .replace(
+            "outputs.python_unit_matrix) }}", "outputs.platform_portability_matrix) }}"
+        ),
+        encoding="utf-8",
+    )
+    families = tuple(
+        replace(family, data={**family.data, "workflow": str(workflow)})
+        if family.name == "python_unit"
+        else family
+        for family in PLAN.families
+    )
+    errors = replace(PLAN, families=families).validate()
+    assert (
+        "python_unit: matrix workflow job does not contain 'matrix: "
+        "${{ fromJSON(needs.classify-changes.outputs.python_unit_matrix) }}'"
+    ) in errors
+
+
+def test_matrix_family_budget_binds_each_cell() -> None:
+    commands = tuple(
+        replace(command, data={**command.data, "timeout_seconds": 1201})
+        if command.id == "python.unit.harness.macos"
+        else command
+        for command in PLAN.commands
+    )
+    errors = replace(PLAN, commands=commands).validate()
+    # Harness (1201 s) runs beside the other four partitions: a 1320 s makespan.
+    # The Linux job is unchanged, so only the macOS cell exceeds its budget.
+    assert [error for error in errors if "timeout envelope" in error] == [
+        "python_unit: projected resource-aware timeout envelope 1320s in matrix "
+        "cell macos-arm64-py312-unit exceeds GitHub job budget 1200s"
+    ]
 
 
 def test_github_job_timeout_covers_resource_aware_dag_envelope() -> None:
@@ -1464,7 +1625,7 @@ def test_generated_matrix_records_selection_reason() -> None:
     assert "linux-x86_64-rust-wasi-dev" in by_name["rust"]["matrix_cells"]
     # A Rust input also selects the hosted portability matrix, whose macOS
     # Rust cell carries exactly the workspace lint and the runtime gate.
-    matrix = json.loads(outputs["matrix"])["include"]
+    matrix = json.loads(outputs["platform_portability_matrix"])["include"]
     assert {entry["family"] for entry in matrix} == {"platform_portability"}
     assert all(entry["selected_by"] == ["Cargo.lock"] for entry in matrix)
     rust_cells = [entry for entry in matrix if entry["backend"] == "rust"]
@@ -1485,12 +1646,14 @@ def test_generated_matrix_records_selection_reason() -> None:
             "portability.rust.macos.runtime-gate",
         ],
     ]
+    # Cargo.lock is not a Python unit input, so that matrix starts no runner.
+    assert json.loads(outputs["python_unit_matrix"]) == {"include": []}
 
 
 def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None:
     selection = PLAN.select(["tools/proof_queue.py"])
     outputs = proof_plan.family_outputs(PLAN, selection)
-    matrix = json.loads(outputs["matrix"])["include"]
+    matrix = json.loads(outputs["platform_portability_matrix"])["include"]
 
     assert [(entry["os"], entry["runner"]) for entry in matrix] == [
         ("linux", "ubuntu-latest"),
@@ -3035,12 +3198,12 @@ def test_pull_requests_skip_main_only_commands_but_keep_their_dependencies() -> 
     main = proof_plan.family_outputs(PLAN, selection, tier="main")
     pr_ids = {
         command_id
-        for entry in json.loads(pr["matrix"])["include"]
+        for entry in json.loads(pr["platform_portability_matrix"])["include"]
         for command_id in entry["command_ids"]
     }
     main_ids = {
         command_id
-        for entry in json.loads(main["matrix"])["include"]
+        for entry in json.loads(main["platform_portability_matrix"])["include"]
         for command_id in entry["command_ids"]
     }
     assert "portability.queue.linux" in main_ids - pr_ids
@@ -3056,5 +3219,8 @@ def test_family_without_tier_commands_starts_no_runner(tmp_path) -> None:
     selection = PLAN.select(["tools/proof_queue.py"])
     outputs = proof_plan.family_outputs(PLAN, selection, tier="no-such-tier")
     assert json.loads(outputs["selected"]) == []
-    assert json.loads(outputs["matrix"]) == {"include": []}
+    for family in PLAN.families:
+        if family.data["executor"] == "github-matrix":
+            output = proof_plan.family_matrix_output(family.name)
+            assert json.loads(outputs[output]) == {"include": []}
     assert all(outputs[family.name] == "false" for family in PLAN.families)

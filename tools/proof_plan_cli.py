@@ -123,11 +123,25 @@ def main(api: ModuleType, argv: list[str] | None = None) -> int:
             print("proof-plan: executable proofs require --receipt", file=sys.stderr)
             return 2
         try:
+            matrix_cell = args.matrix_cell
+            family = next(
+                (item for item in plan.families if item.name == args.run_family), None
+            )
+            if (
+                matrix_cell is None
+                and family is not None
+                and family.data["executor"] == "github-matrix"
+            ):
+                matrix_cell = api.host_matrix_cell(plan, family.name)
+                print(
+                    f"proof-plan: {family.name} runs host matrix cell {matrix_cell}",
+                    file=sys.stderr,
+                )
             commands = api._topological_commands(
                 plan,
                 family=args.run_family,
                 command_id=args.run_command,
-                matrix_cell=args.matrix_cell,
+                matrix_cell=matrix_cell,
                 tier=tier,
             )
             return api.execute_commands(plan, commands, args.receipt)

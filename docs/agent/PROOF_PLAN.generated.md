@@ -33,21 +33,21 @@ Installed Python custody uses 12 bounded hash workers over deterministic coarse 
 | `scheduled-suite` | 4 |
 | `wasm-runtime` | 2 |
 
-GitHub job budgets are validated against a deterministic worst-case DAG schedule in which every admitted command consumes its full declared timeout. The projection accounts for dependencies, the global worker ceiling, and per-resource capacity.
+GitHub job budgets are validated against a deterministic worst-case DAG schedule in which every admitted command consumes its full declared timeout. The projection accounts for dependencies, the global worker ceiling, and per-resource capacity. A `github-matrix` job runs one cell, so its budget binds each cell's schedule separately.
 
 | Family | Tiers | Required | Executor | Timeout | Projected | Headroom | Resource | Selection parents | Admission | Inputs |
 |---|---|---:|---|---:|---:|---:|---|---|---|---:|
 | `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 3540 s | 60 s | `repository-policy` | none | `docs-gates` needs none | 1 |
 | `wasm` | pr, main | yes | `github-job` | 125 min | 7200 s | 300 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 18 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | none | `python-static` needs `classify-changes` | 8 |
-| `python_unit` | pre-push, pr, main | yes | `github-job` | 20 min | 1200 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 10 |
+| `python_unit` | pre-push, pr, main | yes | `github-matrix` | 20 min | 1200 s per cell | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 10 |
 | `native_integration` | pr, main | yes | `github-job` | 25 min | 1500 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 19 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 240 min | 13920 s | 480 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 17 |
 | `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 75 min | 4200 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 25 |
 | `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
 | `formal` | pr, main, nightly | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 180 min | n/a | n/a | `python-tests` | none | `platform-portability` needs `classify-changes` | 106 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 180 min | 10800 s per cell | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 106 |
 
 ## Scheduled families
 
@@ -65,7 +65,7 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 
 ## Matrix cells
 
-`github-matrix` families project these cells directly into the workflow strategy. The runner is therefore generated policy, not a second handwritten OS list.
+`github-matrix` families project these cells directly into the workflow strategy. The runner is therefore generated policy, not a second handwritten OS list. Each matrix family has its own classifier output, `<family>_matrix`, so a matrix job never receives another family's cells.
 
 | Cell | Runner | OS | Architecture | Python | Backend | Target | Profile |
 |---|---|---|---|---|---|---|---|
@@ -73,6 +73,7 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 | `linux-x86_64-py312-wasm-dev` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `wasm` | `wasm32-wasip1` | `dev-fast` |
 | `linux-x86_64-py312-static` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `static` |
 | `linux-x86_64-py312-unit` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `python-tooling` | `host` | `test` |
+| `macos-arm64-py312-unit` | `macos-14` | `macos` | `aarch64` | `3.12` | `python-tooling` | `host` | `test` |
 | `linux-x86_64-py312-native-dev` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `native` | `x86_64-unknown-linux-gnu` | `dev` |
 | `linux-x86_64-rust-native-dev` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `x86_64-unknown-linux-gnu` | `dev` |
 | `linux-x86_64-rust-native-release-output` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `x86_64-unknown-linux-gnu` | `release-output` |
@@ -224,10 +225,15 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `wasm.test.finally-pending-observer-parity` | `wasm` | `linux-x86_64-py312-wasm-dev` | `integration` | 600 s | `compiler-build-resource` | 2 |
 | `python.static.ty` | `python_static` | `linux-x86_64-py312-static` | `explicit` | 300 s | `python-static` | 0 |
 | `python.unit.harness` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
+| `python.unit.harness.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
 | `python.unit.python-custody` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
+| `python.unit.python-custody.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
 | `python.unit.binding-authority` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
+| `python.unit.binding-authority.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
 | `python.unit.runtime-artifacts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
+| `python.unit.runtime-artifacts.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.runtime-library-boundary` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 120 s | `python-tests` | 0 |
+| `python.unit.runtime-library-boundary.macos` | `python_unit` | `macos-arm64-py312-unit` | `explicit` | 120 s | `python-tests` | 0 |
 | `native.integration.python-custody` | `native_integration` | `linux-x86_64-py312-native-dev` | `explicit` | 300 s | `python-tests` | 0 |
 | `native.integration.bench-cli` | `native_integration` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
 | `native.integration.capability-manifest` | `native_integration` | `linux-x86_64-py312-native-dev` | `warm` | 300 s | `compiler-build-resource` | 0 |
@@ -309,4 +315,4 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 
 ## Selection contract
 
-Pull requests use the merge-base diff. Pushes use the event's `before..after` identities. Forced pushes, null SHAs, missing refs, and unknown events fail closed to the full plan. Merge-group, scheduled, and manual runs intentionally select the full plan. The topology projection records why every family was selected; the executable matrix expands selected `github-matrix` families into exact runner cells.
+Pull requests use the merge-base diff. Pushes use the event's `before..after` identities. Forced pushes, null SHAs, missing refs, and unknown events fail closed to the full plan. Merge-group, scheduled, and manual runs intentionally select the full plan. The topology projection records why every family was selected; each selected `github-matrix` family's executable matrix expands into its exact runner cells.
