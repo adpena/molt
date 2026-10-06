@@ -601,6 +601,21 @@ sync_test = "tests/test_structural_audit.py"
 closed_domains = ["CompatibilityError"]
 discovery_only = false
 
+[[generator]]
+tool = "tools/gen_environment_registry.py"
+outputs = [
+  "src/molt/_environment_registry.py",
+  "docs/environment-variables.generated.md",
+]
+source = "src/molt/environment_registry.toml + src/molt/environment_registry.py + tools/generator_io.py"
+check_mode = true
+check_command = "tools/gen_environment_registry.py --check"
+generate_command = "tools/gen_environment_registry.py"
+idempotent = true
+sync_test = "tests/test_environment_registry.py"
+closed_domains = []
+discovery_only = false
+
 [[closed_domain]]
 name = "CompatibilityError"
 enum_file = "runtime/molt-runtime/src/builtins/compatibility_error.rs"
