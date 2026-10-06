@@ -162,13 +162,18 @@ def _append_row_and_land(
     claims_path.write_text(text + row, encoding="utf-8")
     _git(root, "add", "--", CLAIMS_REL)
     _git(root, "commit", "-m", f"{status} {lane} ({agent})", "--", CLAIMS_REL)
+    # Land with the ff_land that ships beside this tool; `root` (from cwd) is
+    # only the repository being landed, as `tests/tools/test_ff_land.py` runs it.
     land = _COMMANDS.run(
-        [sys.executable, str(root / "tools" / "ff_land.py")],
+        [sys.executable, str(Path(__file__).with_name("ff_land.py"))],
         cwd=root,
         capture_output=True,
         text=True,
     )
     print(land.stdout.strip())
+    if land.stderr.strip():
+        # A crash also exits nonzero; never let it pass as a lost claim race.
+        print(land.stderr.strip(), file=sys.stderr)
     return land.returncode
 
 
