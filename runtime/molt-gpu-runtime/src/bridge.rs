@@ -161,7 +161,12 @@ mod ffi {
     }
 }
 
+// The browser host provides this import in the same `env` module that
+// molt-runtime declares it in. Without the module attribute the symbol is a
+// plain undefined reference and the runtime cdylib link fails under
+// `molt_gpu_primitives`.
 #[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "env")]
 unsafe extern "C" {
     #[link_name = "molt_gpu_webgpu_dispatch_host"]
     pub(super) fn molt_gpu_webgpu_dispatch_host(
