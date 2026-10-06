@@ -79,6 +79,11 @@ def main(api: ModuleType, argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--receipt-dir", type=Path)
     parser.add_argument("--run-family")
+    parser.add_argument(
+        "--tier",
+        help="gate only commands in this tier (default: from GITHUB_EVENT_NAME "
+        "or MOLT_PROOF_TIER; unset runs every tier)",
+    )
     parser.add_argument("--run-command")
     parser.add_argument("--matrix-cell")
     parser.add_argument("--receipt", type=Path)
@@ -88,6 +93,7 @@ def main(api: ModuleType, argv: list[str] | None = None) -> int:
     parser.add_argument("--before", default="")
     parser.add_argument("--after", default=os.environ.get("GITHUB_SHA", ""))
     args = parser.parse_args(argv)
+    tier = args.tier or api.active_tier()
 
     try:
         plan = api.ProofPlan.load(args.manifest)
@@ -122,6 +128,7 @@ def main(api: ModuleType, argv: list[str] | None = None) -> int:
                 family=args.run_family,
                 command_id=args.run_command,
                 matrix_cell=args.matrix_cell,
+                tier=tier,
             )
             return api.execute_commands(plan, commands, args.receipt)
         except (OSError, ValueError) as exc:
@@ -144,7 +151,7 @@ def main(api: ModuleType, argv: list[str] | None = None) -> int:
                 raise ValueError("--verify-selected must be a JSON string array")
             if args.receipt_dir is None:
                 raise ValueError("--verify-selected requires --receipt-dir")
-            errors = api.verify_receipts(plan, selected, args.receipt_dir)
+            errors = api.verify_receipts(plan, selected, args.receipt_dir, tier=tier)
         except (ValueError, json.JSONDecodeError) as exc:
             print(f"proof-plan verdict: {exc}", file=sys.stderr)
             return 2
@@ -187,7 +194,7 @@ def main(api: ModuleType, argv: list[str] | None = None) -> int:
             after=args.after,
         )
     )
-    outputs = api.family_outputs(plan, selection)
+    outputs = api.family_outputs(plan, selection, tier=tier)
     if args.json:
         print(json.dumps(outputs, indent=2, sort_keys=True))
     else:

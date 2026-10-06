@@ -316,7 +316,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "539743673062eba275e30d6683525c4401438aa46c57956b19558e0b10d06497",
+  "authority_sha256": "cc0a109a0e5e72a67681ff77b249c9ecdd9abd38e183235d115fefe8c3733e2e",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -1311,7 +1311,6 @@
       "id": "portability.queue.linux",
       "resource_class": "python-tests",
       "tiers": [
-        "pr",
         "main"
       ],
       "timeout_seconds": 600,
@@ -1370,7 +1369,6 @@
       "id": "portability.queue.macos",
       "resource_class": "python-tests",
       "tiers": [
-        "pr",
         "main"
       ],
       "timeout_seconds": 600,
@@ -1429,7 +1427,6 @@
       "id": "portability.queue.windows",
       "resource_class": "python-tests",
       "tiers": [
-        "pr",
         "main"
       ],
       "timeout_seconds": 600,
@@ -2345,6 +2342,31 @@
         "uv",
         "run",
         "python3",
+        "tools/encoding_gate.py",
+        "--check"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.encoding-gate",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
         "tools/gen_proof_plan.py",
         "--check"
       ],
@@ -3055,7 +3077,6 @@
       "id": "wasm.test.control-flow",
       "resource_class": "compiler-build-resource",
       "tiers": [
-        "pr",
         "main"
       ],
       "timeout_budget": "integration",
@@ -3104,7 +3125,6 @@
       "id": "wasm.integration.split-runtime",
       "resource_class": "compiler-build-resource",
       "tiers": [
-        "pr",
         "main"
       ],
       "timeout_budget": "warm",
@@ -3549,7 +3569,6 @@
       "id": "native.integration.bench-cli",
       "resource_class": "compiler-build-resource",
       "tiers": [
-        "pr",
         "main"
       ],
       "timeout_budget": "cold",
@@ -4158,7 +4177,6 @@
       "id": "llvm.test.differential",
       "resource_class": "compiler-build-resource",
       "tiers": [
-        "pr",
         "main",
         "nightly"
       ],
@@ -4560,7 +4578,7 @@
         "headroom_seconds": 180,
         "projected_makespan_seconds": 3420,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 3135
+          "repository-policy": 3165
         }
       },
       "rust": {
