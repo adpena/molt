@@ -25,10 +25,25 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc as WgpuArc, Mutex as WgpuMutex};
 
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
-use metal::{
-    Buffer as MetalBuffer, CommandQueue, CompileOptions, ComputePipelineState, Device,
-    MTLResourceOptions, MTLSize, NSUInteger,
+use objc2::rc::Retained;
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
+use objc2::runtime::ProtocolObject;
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
+use objc2_foundation::NSString;
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
+use objc2_metal::{
+    MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder,
+    MTLComputePipelineState, MTLCreateSystemDefaultDevice, MTLDevice, MTLLibrary,
+    MTLResourceOptions, MTLSize,
 };
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
+type MetalBuffer = Retained<ProtocolObject<dyn MTLBuffer>>;
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
+type MetalCommandQueue = Retained<ProtocolObject<dyn MTLCommandQueue>>;
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
+type MetalDeviceObject = Retained<ProtocolObject<dyn MTLDevice>>;
+#[cfg(all(target_os = "macos", feature = "metal-backend"))]
+type MetalPipelineState = Retained<ProtocolObject<dyn MTLComputePipelineState>>;
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 use std::sync::Arc;
 
@@ -872,7 +887,7 @@ fn webgpu_scalar_bytes_for_arg(arg: &RuntimeKernelArg) -> Result<Vec<u8>, String
 fn render_metal_source(
     desc: &RuntimeKernelDescriptor,
     args: &BTreeMap<String, RuntimeKernelArg>,
-) -> Result<(String, Vec<String>, Vec<String>, Vec<String>), String> {
+) -> Result<RenderedKernelSource, String> {
     let mut write_buffers = BTreeSet::new();
     let mut read_buffers = BTreeSet::new();
     for op in &desc.ops {
@@ -1040,11 +1055,14 @@ fn webgpu_scalar_type_for_buffer(format: &str) -> Result<&'static str, String> {
     }
 }
 
+/// A rendered kernel: shader source, bound buffer names, scalar argument
+/// names, and the buffers the kernel writes. Shared by every GPU renderer.
 #[cfg(any(
     target_arch = "wasm32",
-    all(not(target_arch = "wasm32"), feature = "webgpu-backend")
+    all(not(target_arch = "wasm32"), feature = "webgpu-backend"),
+    all(target_os = "macos", feature = "metal-backend")
 ))]
-type RenderedWebGpuKernel = (String, Vec<String>, Vec<String>, Vec<String>);
+type RenderedKernelSource = (String, Vec<String>, Vec<String>, Vec<String>);
 
 #[cfg(any(
     target_arch = "wasm32",
@@ -1054,7 +1072,7 @@ fn render_webgpu_source(
     desc: &RuntimeKernelDescriptor,
     args: &BTreeMap<String, RuntimeKernelArg>,
     workgroup_size: u32,
-) -> Result<RenderedWebGpuKernel, String> {
+) -> Result<RenderedKernelSource, String> {
     let mut write_buffers = BTreeSet::new();
     for op in &desc.ops {
         if op.kind == "store_index"
@@ -1594,7 +1612,7 @@ fn {entry}(@builtin(global_invocation_id) gid: vec3<u32>) {{\n\
 
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 struct RuntimeMetalPipeline {
-    pipeline: ComputePipelineState,
+    pipeline: MetalPipelineState,
 }
 
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
@@ -1604,16 +1622,20 @@ unsafe impl Sync for RuntimeMetalPipeline {}
 
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 struct RuntimeMetalDevice {
-    device: Device,
-    command_queue: CommandQueue,
+    device: MetalDeviceObject,
+    command_queue: MetalCommandQueue,
 }
 
 #[cfg(all(target_os = "macos", feature = "metal-backend"))]
 impl RuntimeMetalDevice {
     fn new() -> Result<Self, String> {
-        let device = Device::system_default().ok_or_else(|| "No Metal device found".to_string())?;
+        let device =
+            MTLCreateSystemDefaultDevice().ok_or_else(|| "No Metal device found".to_string())?;
+        let command_queue = device
+            .newCommandQueue()
+            .ok_or_else(|| "Metal command queue creation failed".to_string())?;
         Ok(Self {
-            command_queue: device.new_command_queue(),
+            command_queue,
             device,
         })
     }
@@ -1623,28 +1645,37 @@ impl RuntimeMetalDevice {
         name: &str,
         source: &str,
     ) -> Result<Arc<RuntimeMetalPipeline>, String> {
-        let options = CompileOptions::new();
         let library = self
             .device
-            .new_library_with_source(source, &options)
-            .map_err(|err| format!("MSL compile error: {err}"))?;
+            .newLibraryWithSource_options_error(&NSString::from_str(source), None)
+            .map_err(|err| format!("MSL compile error: {}", err.localizedDescription()))?;
         let function = library
-            .get_function(name, None)
-            .map_err(|err| format!("MSL function lookup failed: {err}"))?;
+            .newFunctionWithName(&NSString::from_str(name))
+            .ok_or_else(|| format!("MSL function lookup failed: {name} is not in the library"))?;
         let pipeline = self
             .device
-            .new_compute_pipeline_state_with_function(&function)
-            .map_err(|err| format!("Metal pipeline creation failed: {err}"))?;
+            .newComputePipelineStateWithFunction_error(&function)
+            .map_err(|err| {
+                format!(
+                    "Metal pipeline creation failed: {}",
+                    err.localizedDescription()
+                )
+            })?;
         Ok(Arc::new(RuntimeMetalPipeline { pipeline }))
     }
 
-    fn alloc_buffer(&self, size_bytes: usize) -> MetalBuffer {
+    fn alloc_buffer(&self, size_bytes: usize) -> Result<MetalBuffer, String> {
+        // Metal rejects a zero-length buffer; an empty argument still needs a
+        // bound slot, so it is backed by one byte.
         self.device
-            .new_buffer(size_bytes as u64, MTLResourceOptions::StorageModeShared)
+            .newBufferWithLength_options(size_bytes.max(1), MTLResourceOptions::StorageModeShared)
+            .ok_or_else(|| format!("Metal buffer allocation of {size_bytes} bytes failed"))
     }
 
     fn copy_to_buffer(&self, buffer: &MetalBuffer, data: &[u8]) {
-        let contents = buffer.contents() as *mut u8;
+        let contents = buffer.contents().as_ptr().cast::<u8>();
+        // SAFETY: the shared-mode buffer is CPU-visible for its whole lifetime,
+        // and every caller allocated it for at least `data.len()` bytes.
         unsafe {
             std::ptr::copy_nonoverlapping(data.as_ptr(), contents, data.len());
         }
@@ -1652,7 +1683,10 @@ impl RuntimeMetalDevice {
 
     fn copy_from_buffer(&self, buffer: &MetalBuffer, size_bytes: usize) -> Vec<u8> {
         let mut out = vec![0u8; size_bytes];
-        let contents = buffer.contents() as *const u8;
+        let contents = buffer.contents().as_ptr().cast::<u8>().cast_const();
+        // SAFETY: the shared-mode buffer is CPU-visible for its whole lifetime;
+        // `dispatch` waited for the command buffer, so every GPU write landed,
+        // and callers read back at most the size they allocated.
         unsafe {
             std::ptr::copy_nonoverlapping(contents, out.as_mut_ptr(), size_bytes);
         }
@@ -1665,15 +1699,22 @@ impl RuntimeMetalDevice {
         grid_threads: usize,
         buffers: &[&MetalBuffer],
     ) -> Result<(), String> {
-        let command_buffer = self.command_queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
-        encoder.set_compute_pipeline_state(&pipeline.pipeline);
+        let command_buffer = self
+            .command_queue
+            .commandBuffer()
+            .ok_or_else(|| "Metal command buffer creation failed".to_string())?;
+        let encoder = command_buffer
+            .computeCommandEncoder()
+            .ok_or_else(|| "Metal compute command encoder creation failed".to_string())?;
+        encoder.setComputePipelineState(&pipeline.pipeline);
         for (index, buffer) in buffers.iter().enumerate() {
-            encoder.set_buffer(index as NSUInteger, Some(*buffer), 0);
+            // SAFETY: each buffer is a live object of this device bound at
+            // offset 0 inside its own length; the encoder retains it.
+            unsafe { encoder.setBuffer_offset_atIndex(Some(&***buffer), 0, index) };
         }
-        encoder.dispatch_threads(
+        encoder.dispatchThreads_threadsPerThreadgroup(
             MTLSize {
-                width: grid_threads as NSUInteger,
+                width: grid_threads,
                 height: 1,
                 depth: 1,
             },
@@ -1683,9 +1724,9 @@ impl RuntimeMetalDevice {
                 depth: 1,
             },
         );
-        encoder.end_encoding();
+        encoder.endEncoding();
         command_buffer.commit();
-        command_buffer.wait_until_completed();
+        command_buffer.waitUntilCompleted();
         Ok(())
     }
 }
@@ -1763,7 +1804,9 @@ fn try_dispatch_metal_kernel(
         };
         let host_bytes = buffer_host_bytes_for_gpu_compute(_py, buf)
             .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-        let metal_buf = device.alloc_buffer(host_bytes.len());
+        let metal_buf = device
+            .alloc_buffer(host_bytes.len())
+            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
         if !host_bytes.is_empty() {
             device.copy_to_buffer(&metal_buf, &host_bytes);
         }
@@ -1774,7 +1817,9 @@ fn try_dispatch_metal_kernel(
         let arg = args_map.get(name).expect("scalar arg missing");
         let (_, scalar_bytes) = metal_scalar_type_for_arg(arg)
             .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
-        let metal_buf = device.alloc_buffer(scalar_bytes.len().max(1));
+        let metal_buf = device
+            .alloc_buffer(scalar_bytes.len())
+            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
         if !scalar_bytes.is_empty() {
             device.copy_to_buffer(&metal_buf, &scalar_bytes);
         }
