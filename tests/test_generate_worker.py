@@ -372,10 +372,12 @@ def test_static_browser_runners_use_the_generated_reserved_callable_layout() -> 
     calls landed on the wrong runtime callable (``new_class() expects positional
     arguments tuple`` while constructing a ModuleSpec).
     """
+    from tests.wasm_linked_runner import require_node_binary
+
     root = Path(__file__).resolve().parents[1]
     result = run_guarded_test_process(
         [
-            "node",
+            require_node_binary(),
             "-e",
             "const b = require('./wasm/loader_bridge.js');"
             "const l = b.runtimeCallableTableLayout(null);"
