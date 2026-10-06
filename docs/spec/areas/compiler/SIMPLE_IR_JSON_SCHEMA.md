@@ -955,6 +955,19 @@ injection call `molt_exception_trace_prepend` before publishing an already-trace
 transport preserve the existing traceback. The same prefix constructor accepts
 lazy or already-observed tails; materialization preserves eager tail identity.
 
+Cold module chunks retain the same producer-derived scalar and container facts
+as other functions. Suppressing their raw-primary carriers is an optimization
+policy, not permission to erase semantic provenance used by target admission.
+In particular, identity against a proven None singleton remains admissible on
+Luau; this does not admit unknown numeric identity or integer arithmetic without
+the target's required exact numeric authority.
+The preserved frontend `iter` spelling and typed `get_iter` projection both
+require the canonical iterable/sequence protocol; neither is runtime-neutral.
+Luau local-frame cookies are owned by the function scope, including context,
+entry depth, code and coroutine owner. Operation capture closures and dispatch
+blocks assign that cookie rather than shadow it, so later source updates and
+frame exit observe the same entry.
+
 
 `frame_context_set` requires internal execution-frame support. Its three boxed
 operands are borrowed; the runtime retains the active frame owners. It has no

@@ -257,10 +257,6 @@ impl ScalarRepresentationPlan {
         func_ir: &FunctionIR,
         target_info: &crate::tir::target_info::TargetInfo,
     ) -> Self {
-        if is_cold_module_chunk_function(&func_ir.name) {
-            return Self::with_capacity(func_ir.ops.len());
-        }
-
         let fact_index = FunctionFactIndex::for_function(func_ir);
         let indexed_fact_index = fact_index
             .needs_indexed_name_graph()

@@ -1712,7 +1712,7 @@ fn scalar_primary_excludes_missing_sentinel_store_sources() {
 }
 
 #[test]
-fn cold_module_chunk_functions_have_empty_primary_sets() {
+fn cold_module_chunk_functions_keep_semantic_facts_without_primary_carriers() {
     let func = function(
         "__molt_module_chunk_0",
         &[],
@@ -1721,18 +1721,32 @@ fn cold_module_chunk_functions_have_empty_primary_sets() {
             const_int("value", 1),
             const_bool("flag", true),
             op("list_new", Some("items"), None, &["value"]),
+            op("const_none", Some("nothing"), None, &[]),
         ],
     );
 
-    let plan = native_representation_plan(&func);
-    let primary = plan.primary_name_sets();
+    for target in [
+        crate::tir::TargetInfo::native_release_fast(),
+        crate::tir::TargetInfo::wasm_release_fast(),
+        crate::tir::TargetInfo::llvm_release_fast(),
+        crate::tir::TargetInfo::luau_release_fast(),
+        crate::tir::TargetInfo::rust_release_fast(),
+        crate::tir::TargetInfo::mlir_release_fast(),
+    ] {
+        let plan = ScalarRepresentationPlan::for_function_ir_for_target(&func, &target);
+        let primary = plan.primary_name_sets();
 
-    assert!(primary.int.is_empty());
-    assert!(primary.bool_.is_empty());
-    assert!(primary.float.is_empty());
-    assert_eq!(plan.name_scalar_kind("value"), None);
-    assert_eq!(plan.name_scalar_kind("flag"), None);
-    assert_eq!(plan.name_container_kind("items"), None);
+        assert!(primary.int.is_empty());
+        assert!(primary.bool_.is_empty());
+        assert!(primary.float.is_empty());
+        assert_eq!(plan.name_scalar_kind("value"), Some(ScalarKind::Int));
+        assert_eq!(plan.name_scalar_kind("flag"), Some(ScalarKind::Bool));
+        assert_eq!(
+            plan.name_scalar_kind("nothing"),
+            Some(ScalarKind::NoneValue)
+        );
+        assert_eq!(plan.name_container_kind("items"), Some(ContainerKind::List));
+    }
 }
 
 #[test]

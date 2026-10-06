@@ -81,7 +81,7 @@ impl LuauBackend {
             "trace_enter_slot" => {
                 let code_id = op.value.expect("admitted trace_enter_slot ID");
                 self.emit_line(&format!(
-                    "local __molt_frame_context, __molt_frame_depth, __molt_frame_code, __molt_frame_owner = molt_frame_enter_slot(molt_code_slots[{code_id}])"
+                    "__molt_frame_context, __molt_frame_depth, __molt_frame_code, __molt_frame_owner = molt_frame_enter_slot(molt_code_slots[{code_id}])"
                 ));
             }
             "trace_exit" => {
