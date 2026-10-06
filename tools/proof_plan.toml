@@ -1922,7 +1922,7 @@ timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
 env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
-argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/hello.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/test_hello.wasm"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/hello.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/molt-wasm-ci/hello/hello.wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
 [[command]]
@@ -1936,7 +1936,7 @@ timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "none"
 dependencies = ["wasm.compile.hello"]
 env = { MOLT_WASM_HOST_DEBUG = "1" }
-argv = ["target/sessions/wasm-ci/dev-fast/molt-wasm-host", "/tmp/test_hello.wasm"]
+argv = ["target/sessions/wasm-ci/dev-fast/molt-wasm-host", "/tmp/molt-wasm-ci/hello/manifest.json"]
 toolchains = ["rustc", "cargo", "wasm-tools"]
 
 [[command]]
@@ -1950,7 +1950,7 @@ timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
 env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
-argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/comprehension_fail.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/test_comprehension.wasm"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/comprehension_fail.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/molt-wasm-ci/comprehension/comprehension.wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
 [[command]]
@@ -1963,7 +1963,7 @@ timeout_seconds = 300
 timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "none"
 dependencies = ["wasm.compile.comprehension"]
-argv = ["target/sessions/wasm-ci/dev-fast/molt-wasm-host", "/tmp/test_comprehension.wasm"]
+argv = ["target/sessions/wasm-ci/dev-fast/molt-wasm-host", "/tmp/molt-wasm-ci/comprehension/manifest.json"]
 toolchains = ["rustc", "cargo", "wasm-tools"]
 
 [[command]]
@@ -2005,7 +2005,7 @@ timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.host", "wasm.build.shared-runtime"]
 env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
-argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/sieve_bench.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/test_sieve.wasm"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/sieve_bench.py", "--build-profile", "dev", "--target", "wasm", "--output", "/tmp/molt-wasm-ci/sieve/sieve.wasm"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
 [[command]]
@@ -2018,7 +2018,7 @@ timeout_seconds = 300
 timeout_env = ["MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "none"
 dependencies = ["wasm.compile.sieve"]
-argv = ["target/sessions/wasm-ci/dev-fast/molt-wasm-host", "/tmp/test_sieve.wasm"]
+argv = ["target/sessions/wasm-ci/dev-fast/molt-wasm-host", "/tmp/molt-wasm-ci/sieve/manifest.json"]
 toolchains = ["rustc", "cargo", "wasm-tools"]
 
 [[command]]
