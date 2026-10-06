@@ -17,7 +17,7 @@ The tests have teeth:
   tooling fingerprint, or flipping the target Python must all force a cold miss:
   the shared entry is not reused, so the stale result can never be served.
 * **exFAT-safe** -- the publish/hydrate path never calls ``os.link`` (byte copy
-  only), so it works on the hard-link-less APDataStore build volume.
+  only), so it works on hard-link-less (exFAT) build volumes.
 """
 
 from __future__ import annotations

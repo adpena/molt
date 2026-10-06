@@ -145,6 +145,7 @@ def python_capture_authority_paths(
         "temporary_artifacts",
         "file_deletion",
         "file_locks",
+        "custody_layout",
         "memory_guard_paths",
         "process_spawn",
         "dx",

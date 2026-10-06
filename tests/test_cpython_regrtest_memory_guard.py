@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import molt.dx as molt_dx
+from molt import custody_layout
 import pytest
 
 
@@ -114,14 +115,14 @@ def test_run_command_uses_memory_guard_and_preserves_log(monkeypatch) -> None:
     assert contexts[0]["prefix"] == "MOLT_REGRTEST"
     assert contexts[0]["repo_root"] == module.REPO_ROOT
     assert contexts[0]["env"]["X"] == "1"
-    assert contexts[0]["env"]["MOLT_EXT_ROOT"] == str(module.REPO_ROOT)
+    artifact_root = molt_dx.checkout_custody(module.REPO_ROOT).custody_root
+    assert contexts[0]["env"]["MOLT_EXT_ROOT"] == str(artifact_root)
     assert contexts[0]["env"]["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_environment(
-            module.REPO_ROOT,
-            contexts[0]["env"],
-        )
+        molt_dx.cargo_target_dir_for_environment(artifact_root, contexts[0]["env"])
     )
-    assert contexts[0]["env"]["TMPDIR"] == str(module.REPO_ROOT / "tmp")
+    assert contexts[0]["env"]["TMPDIR"] == str(
+        custody_layout.scratch_root(artifact_root, module.REPO_ROOT)
+    )
     assert calls[0]["cwd"] == Path("/tmp")
     assert calls[0]["env"]["X"] == "1"
     text = log.getvalue()
@@ -135,8 +136,11 @@ def test_build_env_canonicalizes_repo_local_artifact_roots(
     monkeypatch,
 ) -> None:
     module = _load_regrtest_module()
-    monkeypatch.setenv("MOLT_EXT_ROOT", "/ambient")
-    monkeypatch.setenv("CARGO_TARGET_DIR", "/ambient/target")
+    # Ambient roots must stay writable: the live pytest guard plugin also reads
+    # this process environment while the test body runs.
+    ambient = tmp_path / "ambient"
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(ambient))
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(ambient / "target"))
     config = module.RegrtestConfig(
         repo_root=tmp_path,
         cpython_dir=tmp_path / "cpython",
@@ -200,7 +204,9 @@ def test_build_env_canonicalizes_repo_local_artifact_roots(
         )
     )
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
-    assert env["TMPDIR"] == str(tmp_path / "tmp")
+    assert env["TMPDIR"] == str(
+        custody_layout.scratch_root(tmp_path.resolve(), tmp_path)
+    )
     assert env["UV_CACHE_DIR"] == str(tmp_path / ".uv-cache")
     assert env["PYTHONHASHSEED"] == "0"
 

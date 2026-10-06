@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Literal, Mapping, Sequence, cast
 
+from molt import custody_layout
 from molt.source_root import compiler_source_root
 from molt.path_custody import (
     CustodyPathRole,
@@ -67,10 +68,6 @@ DX_ENV_KEYS = (
     "MOLT_CACHE_MAX_GB",
     "MOLT_CACHE_MAX_AGE_DAYS",
     "UV_LINK_MODE",
-)
-DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS = (
-    "/Volumes/APDataStore/Molt",
-    "/Volumes/VertigoDataTier/Molt",
 )
 # Toolchain root (wasi-sysroot / binaryen / zig) is DERIVED from the durable
 # Molt custody root, never from a capacity-selected scratch/output volume.
@@ -619,32 +616,19 @@ def _dedupe_paths(paths: list[Path]) -> tuple[Path, ...]:
 
 
 def _default_external_artifact_roots(
-    repo_root: Path, env: Mapping[str, str]
-) -> tuple[Path, ...]:
-    custody = checkout_custody(repo_root, env, require_exists=False)
-    if custody.source_only:
-        return (custody.custody_root,)
-    roots: list[Path] = []
-    if os.name == "nt":
-        roots.extend(_default_windows_external_artifact_roots(repo_root, env))
-    else:
-        roots.extend(
-            Path(path).expanduser() for path in DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS
-        )
-    return _dedupe_paths(roots)
-
-
-def _default_windows_external_artifact_roots(
     repo_root: Path, env: Mapping[str, str] | None = None
 ) -> tuple[Path, ...]:
-    """Return the one automatic Windows Molt root.
+    """Return the one automatic artifact root: the checkout family's custody root.
 
-    Other volumes are valid only as explicit, non-custodial output locations.
-    Volume labels and free-space ranking must never promote a removable or
-    legacy volume into source, package-input, worktree, or toolchain authority.
+    The rule is the same on every OS. A checkout family (`<root>/molt-src` and
+    `<root>/worktrees/<name>`) keeps build artifacts under `<root>`. Any other
+    location is an explicit `MOLT_EXTERNAL_ARTIFACT_ROOTS` choice: volume names,
+    labels, and free-space ranking never select a root by themselves, and never
+    promote a removable volume into source, worktree, or toolchain authority.
     """
-    root = checkout_custody(repo_root, env, require_exists=False).custody_root
-    return (root,) if root.is_dir() else ()
+    custody = checkout_custody(repo_root, env, require_exists=False)
+    root = custody.custody_root
+    return (root,) if custody.source_only or root.is_dir() else ()
 
 
 def _windows_volume_info(drive_root: Path) -> tuple[str | None, str | None]:
@@ -700,16 +684,6 @@ def _artifact_root_is_windows_exfat(artifact_root: Path) -> bool:
         return False
     filesystem = _windows_volume_filesystem(_windows_drive_root_for_path(artifact_root))
     return filesystem is not None and filesystem.casefold() == "exfat"
-
-
-def _checkout_family_custody_root(repo_root: str | Path) -> Path:
-    """Derive the durable checkout family root without consulting build env."""
-    root = Path(repo_root).expanduser().resolve()
-    if root.name == "molt-src":
-        return root.parent
-    if root.parent.name == "worktrees":
-        return root.parent.parent
-    return root
 
 
 def _path_is_within(path: Path, parent: Path) -> bool:
@@ -924,7 +898,7 @@ def canonical_molt_root(repo_root: str | Path, *, require_exists: bool = True) -
         )
     except PathCustodyError as exc:
         raise DxConfigError(str(exc)) from exc
-    root = _checkout_family_custody_root(repo_root)
+    root = custody_layout.custody_root(repo_root)
     if require_exists and not root.is_dir():
         raise DxConfigError(f"canonical Molt custody root does not exist: {root}")
     return root
@@ -1176,10 +1150,11 @@ def select_external_artifact_root(
         return candidate
     if require_external:
         raise DxConfigError(
-            "no healthy Molt artifact root was found. Prefer C:\\Molt on this "
-            "workstation; set MOLT_ALLOW_C_DRIVE_ARTIFACTS=1 for the canonical "
-            "C:\\Molt root or MOLT_EXTERNAL_ARTIFACT_ROOTS for an explicit "
-            "fallback with sufficient free space."
+            "no healthy Molt artifact root was found (each candidate needs "
+            f"{min_free_gb:g} GiB free outside the checkout). Use a checkout family "
+            "(`<root>/molt-src`, whose artifacts live under `<root>`) or set "
+            "MOLT_EXTERNAL_ARTIFACT_ROOTS to an explicit root; see "
+            "docs/agent/ORCHESTRATION.md canonical paths."
         )
     return None
 
@@ -1435,6 +1410,9 @@ def _cmd_quote(value: str) -> str:
 EnvRenderFormat = Literal["dotenv", "posix", "powershell", "cmd", "json"]
 
 
+_POSIX_ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
 def render_env(
     env: Mapping[str, str], keys: Sequence[str], fmt: EnvRenderFormat
 ) -> str:
@@ -1442,12 +1420,28 @@ def render_env(
     if fmt == "json":
         return json.dumps(dx_env_payload(env, keys), indent=2, sort_keys=True)
     if fmt == "posix":
-        return "\n".join(
-            f"export {key}={_posix_quote(value)}" for key, value in present
-        )
+        # A POSIX shell cannot name a variable such as `CC_wasm32-wasip1`.
+        # Such a key is exported only through its underscore spelling, which
+        # its consumers (cc-rs) also read; a key without that twin is refused
+        # rather than silently dropped.
+        names = {key for key, _ in present}
+        exported = []
+        for key, value in present:
+            if _POSIX_ENV_NAME.fullmatch(key):
+                exported.append(f"export {key}={_posix_quote(value)}")
+            elif key.replace("-", "_") not in names:
+                raise DxConfigError(
+                    f"{key} cannot be exported by a POSIX shell and has no "
+                    "underscore spelling to carry its value"
+                )
+        return "\n".join(exported)
     if fmt == "powershell":
+        # The braced form names any environment variable, hyphens included.
         return "\n".join(
-            f"$env:{key} = {_powershell_quote(value)}" for key, value in present
+            f"${{env:{key}}} = {_powershell_quote(value)}"
+            if not _POSIX_ENV_NAME.fullmatch(key)
+            else f"$env:{key} = {_powershell_quote(value)}"
+            for key, value in present
         )
     if fmt == "cmd":
         return "\n".join(f'set "{key}={_cmd_quote(value)}"' for key, value in present)
@@ -1567,8 +1561,9 @@ class RunContext:
         # it back to "0" wherever it actually enables sccache (mutually exclusive).
         install_default("CARGO_INCREMENTAL", "1")
         install_default("MOLT_CACHE", ext_root / ".molt_cache")
-        install_default("MOLT_DIFF_ROOT", ext_root / "tmp" / "diff")
-        install_default("MOLT_DIFF_TMPDIR", ext_root / "tmp")
+        scratch_root = custody_layout.scratch_root(ext_root, self.root)
+        install_default("MOLT_DIFF_ROOT", scratch_root / "diff")
+        install_default("MOLT_DIFF_TMPDIR", scratch_root)
         install_default("UV_CACHE_DIR", ext_root / ".uv-cache")
         install_default("UV_PROJECT_ENVIRONMENT", self.uv_project_env_dir(env))
         install_default("PIP_CACHE_DIR", ext_root / ".pip-cache")
@@ -1582,8 +1577,8 @@ class RunContext:
             raw_target_root, ext_root, env
         ):
             env["MOLT_TARGET_ROOT"] = str(default_toolchain_root)
-        install_default("PYTHONPYCACHEPREFIX", ext_root / "tmp" / "pycache")
-        install_default("TMPDIR", ext_root / "tmp")
+        install_default("PYTHONPYCACHEPREFIX", scratch_root / "pycache")
+        install_default("TMPDIR", scratch_root)
         install_default("TMP", env["TMPDIR"])
         install_default("TEMP", env["TMPDIR"])
 

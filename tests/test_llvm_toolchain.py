@@ -777,8 +777,8 @@ def test_wasm_ci_profile_verifies_and_projects_one_sdk_tool_family(
         "CFLAGS": "-O2",
         "CFLAGS_wasm32_wasip1": "-fno-exceptions",
     }
-    projected = llvm_toolchain.project_wasm_ci_environment(
-        verified, environ=native_environment
+    projected = llvm_toolchain.project_wasm_toolchain_environment(
+        verified.installation, environ=native_environment
     )
 
     installed = prefix.resolve()
@@ -817,10 +817,70 @@ def test_wasm_ci_profile_verifies_and_projects_one_sdk_tool_family(
                 assert projected[f"{flag}_{suffix}"].endswith("--no-default-config")
     assert projected["CFLAGS_wasm32_wasip1"] == "-fno-exceptions --no-default-config"
     assert (
-        llvm_toolchain.project_wasm_ci_environment(verified, environ=projected)
+        llvm_toolchain.project_wasm_toolchain_environment(
+            verified.installation, environ=projected
+        )
         == projected
     )
     assert not (installed / "wasm-bin").exists()
+
+
+def test_apply_provisioned_wasm_toolchain_keeps_explicit_selectors_consistent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Local builds select WASM tools through the projection CI uses. An explicit
+    # selector wins under both of its spellings, everything else comes from the
+    # selected SDK, and native selectors stay untouched.
+    prefix = _write_wasi_sdk_installation(tmp_path)
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "provisioned_wasi_sdk_prefix",
+        lambda _root, *, environ=None: prefix,
+    )
+    env = {
+        "PATH": "host-bin",
+        "CC": "native-cc",
+        "CC_wasm32_wasip1": "explicit-clang",
+        "WASI_SYSROOT": "explicit-sysroot",
+        "CFLAGS_wasm32-wasip1": "-O2",
+    }
+
+    managed = llvm_toolchain.apply_provisioned_wasm_toolchain(ROOT, env)
+    assert {"CC_wasm32-wasip1", "AR_wasm32_wasip1", "MOLT_WASI_SYSROOT"} <= set(managed)
+
+    asset = llvm_toolchain.wasi_sdk_host_asset(ROOT)
+    sdk_bin = prefix.resolve() / SDK_DIRNAME / "bin"
+    assert (env["PATH"], env["CC"]) == ("host-bin", "native-cc")
+    assert env["CC_wasm32-wasip1"] == env["CC_wasm32_wasip1"] == "explicit-clang"
+    assert env["MOLT_WASI_SYSROOT"] == env["WASI_SYSROOT"] == "explicit-sysroot"
+    for spelling in (
+        "wasm32-wasip1",
+        "wasm32_wasip1",
+        "wasm32-unknown-unknown",
+        "wasm32_unknown_unknown",
+    ):
+        assert env[f"AR_{spelling}"] == str(
+            sdk_bin / executable_filename("llvm-ar", asset.id)
+        )
+    assert env["CC_wasm32-unknown-unknown"] == str(
+        sdk_bin / executable_filename("clang", asset.id)
+    )
+    assert env["CFLAGS_wasm32-wasip1"] == "-O2 --no-default-config"
+    assert env["CFLAGS_wasm32_wasip1"] == "--no-default-config"
+
+
+def test_apply_provisioned_wasm_toolchain_never_guesses_without_an_sdk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        llvm_toolchain,
+        "provisioned_wasi_sdk_prefix",
+        lambda _root, *, environ=None: tmp_path / "absent",
+    )
+    env = {"PATH": "host-bin"}
+
+    assert llvm_toolchain.apply_provisioned_wasm_toolchain(ROOT, env) == ()
+    assert env == {"PATH": "host-bin"}
 
 
 @pytest.mark.parametrize(

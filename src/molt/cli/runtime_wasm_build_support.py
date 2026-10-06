@@ -4,7 +4,6 @@ from molt.cli.runtime_build_python import build_python_scope
 
 import contextlib
 import json
-import os
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -81,6 +80,7 @@ from molt.cli.wasm_link_args import (
     write_wasm_link_args_response_file as _write_wasm_link_args_response_file,
 )
 from molt.file_publication import durable_replace, staged_file_path
+from molt.llvm_toolchain import apply_provisioned_wasm_toolchain
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     stable_regular_file_identity,
@@ -88,18 +88,16 @@ from molt.toolchain_identity import (
 )
 
 
-def _configure_wasm_cc_env(env: dict[str, str]) -> None:
-    if env.get("CC_wasm32-wasip1") or env.get("CC_wasm32_wasip1"):
-        return
-    for candidate in (
-        "/opt/homebrew/opt/llvm/bin/clang",
-        "/usr/local/opt/llvm/bin/clang",
-    ):
-        cc_path = Path(candidate)
-        if cc_path.exists() and os.access(cc_path, os.X_OK):
-            env["CC_wasm32-wasip1"] = str(cc_path)
-            env["CC_wasm32_wasip1"] = str(cc_path)
-            return
+def _configure_wasm_toolchain_env(env: dict[str, str]) -> None:
+    """Select WASM C tools and the sysroot from the one toolchain authority.
+
+    The manifest-pinned WASI SDK provisioned for the compiler checkout supplies
+    cc/c++/ar/ranlib for both wasm32 targets through the projection CI uses;
+    explicit selectors win. Without a provisioned SDK nothing is guessed from
+    the host: the Cargo plan then fails with the provisioning command.
+    """
+    apply_provisioned_wasm_toolchain(_compiler_root(), env)
+    _configure_wasi_sysroot_env(env)
 
 
 def _configure_wasi_sysroot_env(env: dict[str, str]) -> None:
@@ -247,8 +245,7 @@ def _ensure_wasm_cpython_abi_staticlib(
             )
             env = _cargo_build_env()
             env["CARGO_TARGET_DIR"] = str(target_root)
-            _configure_wasm_cc_env(env)
-            _configure_wasi_sysroot_env(env)
+            _configure_wasm_toolchain_env(env)
             cmd = [
                 env.get("CARGO", "cargo"),
                 "rustc",

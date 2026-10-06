@@ -96,7 +96,7 @@ The loop repeats until convergence (no changes) or the round cap is reached.
 | `MOLT_TV_JOBS` | 4 | Parallel validation jobs |
 | `MOLT_TV_PYTHON` | verified target command | Explicit CPython command override for baseline and Molt build frontend |
 | `MOLT_MIDEND_MAX_ROUNDS` | (varies; minimum 2) | Cap fixed-point iteration rounds |
-| `MOLT_EXT_ROOT` | /Volumes/APDataStore/Molt | External volume root |
+| `MOLT_EXT_ROOT` | checkout custody root (`<root>` for `<root>/molt-src`) | Build artifact root |
 | `MOLT_DIFF_TMPDIR` | /tmp | Temp directory root |
 
 `tools/translation_validate.py --python-version` uses the same target resolver

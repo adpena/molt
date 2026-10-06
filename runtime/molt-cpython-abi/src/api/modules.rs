@@ -582,8 +582,7 @@ pub unsafe extern "C" fn PyModule_AddIntConstant(
     name: *const c_char,
     value: c_long,
 ) -> c_int {
-    let obj =
-        unsafe { crate::api::numbers::PyLong_FromLongLong(crate::abi_types::c_long_to_i64(value)) };
+    let obj = unsafe { crate::api::numbers::PyLong_FromLong(value) };
     if obj.is_null() {
         if !module_error_pending() {
             unsafe { crate::api::errors::PyErr_NoMemory() };

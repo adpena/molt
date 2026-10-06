@@ -16,6 +16,7 @@ from molt import pytest_memory_guard_config_plugin
 from molt import memory_guard_paths
 from molt import temporary_artifacts
 
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -321,6 +322,13 @@ def test_pytest_startup_windows_handoff_waits_for_guard_child(monkeypatch) -> No
 
     monkeypatch.setattr(
         pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
+    )
+    # Complete the Windows simulation on every host: the flag is 0 off Windows.
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap.subprocess,
+        "CREATE_NEW_PROCESS_GROUP",
+        0x00000200,
+        raising=False,
     )
     monkeypatch.setattr(pytest_memory_guard_bootstrap.subprocess, "run", fake_run)
     monkeypatch.setattr(pytest_memory_guard_bootstrap.os, "execvpe", fake_execvpe)
@@ -882,6 +890,10 @@ def test_windows_pytest_tempdir_patch_keeps_numbered_dirs_readable(
     assert not pytest_memory_guard_bootstrap.install_windows_pytest_tempdir_mode_patch()
 
 
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="instantiates a pathlib.WindowsPath subclass, which CPython refuses on POSIX",
+)
 def test_windows_pytest_tempdir_patch_keeps_xdist_given_basetemp_readable(
     monkeypatch, tmp_path
 ) -> None:

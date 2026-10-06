@@ -22,21 +22,30 @@ Routing reviewed: 2026-10-06.
 The primary development host is macOS (from 2026-10-06). A Windows host stays
 available for platform testing.
 
+Both hosts use the same checkout-family layout. `src/molt/custody_layout.py` is
+the one rule: a checkout at `<root>/molt-src` and every worktree at
+`<root>/worktrees/<name>` resolve to the custody root `<root>`, which owns
+build artifacts, toolchains (`<root>/target-root`), guard state, and scratch.
+
 | purpose | macOS (primary) | Windows (test host) |
 |---|---|---|
-| checkout, git work, landings | `~/Projects/molt` | `C:\Molt\molt-src` |
+| custody root | `~/Molt` (internal NVMe) | `C:\Molt` (internal NVMe) |
+| checkout, git work, landings | `~/Molt/molt-src` (`~/Projects/molt` links to it) | `C:\Molt\molt-src` |
+| lane worktrees | `~/Molt/worktrees/<lane>` | `C:\Molt\worktrees\<lane>` |
 | Python commands | `uv run --python 3.12 ...` from the checkout | same |
-| artifact root (`MOLT_EXT_ROOT`) | see below | `C:\Molt` (`MOLT_EXTERNAL_ARTIFACT_ROOTS=C:\Molt`, `MOLT_ALLOW_C_DRIVE_ARTIFACTS=1`) |
 
 Route builds through RunContext (`tools/run_context_env.py --prefer-external-artifacts
 --dx`, `tools/dev.py`, or the proof queue). It resolves the artifact root, a
-stable `CARGO_TARGET_DIR`, cache and temp roots, and `MOLT_TARGET_ROOT`.
+stable `CARGO_TARGET_DIR`, cache and temp roots, and `MOLT_TARGET_ROOT`. No
+volume is ever selected by name, label, or free space: put build output on
+another drive only by naming it in `MOLT_EXTERNAL_ARTIFACT_ROOTS`. A plain clone
+outside the family layout is its own custody root: artifacts stay in the clone
+(the Cargo norm) and scratch goes to a per-checkout folder under the host temp
+root, never into the source tree.
 
-macOS artifact root: `DEFAULT_POSIX_EXTERNAL_ARTIFACT_ROOTS` in `src/molt/dx.py`
-names `/Volumes/APDataStore/Molt` and `/Volumes/VertigoDataTier/Molt`. When
-neither volume is mounted, RunContext resolves every root inside the checkout
-(`MOLT_EXT_ROOT=<checkout>`, `TMPDIR=<checkout>/tmp`). That is the HF-28
-failure mode; see `V1_HANDOFF_FINDINGS.md` row HF-30.
+Provision the pinned WASI SDK once per custody root with
+`uv run --python 3.12 python tools/provision_wasi_sdk.py`; WebAssembly builds
+then take every C tool from it, locally and in CI.
 
 Forbidden on every host: a checkout, worktree, venv, or artifact root under
 OneDrive (`src/molt/dx.py` rejects it). On Windows, `D:\Molt` and `E:\Molt`

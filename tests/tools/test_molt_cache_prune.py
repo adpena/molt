@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
 from pathlib import Path
@@ -30,11 +31,20 @@ def _load_molt_cache_prune():
     return module
 
 
-def _cache_entry(cache_root: Path, key: str):
+def _cache_key(label: str) -> str:
+    """A real SHA-256 cache key; an `xx-` label prefix pins the lock stripe."""
+    digest = hashlib.sha256(label.encode("utf-8")).hexdigest()
+    stripe, _, _rest = label.partition("-")
+    if len(stripe) == 2 and all(char in "0123456789abcdef" for char in stripe):
+        return stripe + digest[2:]
+    return digest
+
+
+def _cache_entry(cache_root: Path, label: str):
     return _wasm_link_cache_entry(
         "runtime_tree_shake",
         "runtime-tree-shake-test",
-        key,
+        _cache_key(label),
         cache_root=cache_root / "wasm_link",
     )
 
@@ -131,3 +141,16 @@ def test_pruner_breaks_equal_mtime_ties_by_normalized_key_path(tmp_path: Path) -
     assert result["entries_removed"] == 1
     assert not first.root.exists()
     assert second.root.exists()
+
+
+def test_budget_comes_from_flags_then_projected_env_then_dx_defaults() -> None:
+    module = _load_molt_cache_prune()
+    from molt import dx
+
+    assert module.resolve_budget(None, None, {}) == (
+        float(dx.DEFAULT_MOLT_CACHE_MAX_GB),
+        int(dx.DEFAULT_MOLT_CACHE_MAX_AGE_DAYS),
+    )
+    projected = {"MOLT_CACHE_MAX_GB": "7.5", "MOLT_CACHE_MAX_AGE_DAYS": "3"}
+    assert module.resolve_budget(None, None, projected) == (7.5, 3)
+    assert module.resolve_budget(2.0, 1, projected) == (2.0, 1)

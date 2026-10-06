@@ -234,7 +234,7 @@ def _rewrite_preserving_mtime(
     os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
 
 
-# exFAT (the APDataStore artifact SSD where pytest tmp lives) cannot represent
+# exFAT (an artifact SSD where pytest tmp may live) cannot represent
 # timestamps before the 1980 FAT epoch, so os.utime with a ~1970 time raises
 # WinError 87. Shift artificial "old" mtimes above the epoch, preserving their
 # relative order, so retention / rebuild-detection tests run on exFAT.
@@ -21817,8 +21817,7 @@ def test_runtime_compile_key_is_stable_across_user_import_graph(
         lambda: {"CARGO_TARGET_DIR": str(tmp_path / "target")},
     )
     for name in (
-        "_configure_wasm_cc_env",
-        "_configure_wasi_sysroot_env",
+        "_configure_wasm_toolchain_env",
         "_configure_wasm_long_double_env",
     ):
         monkeypatch.setattr(RUNTIME_WASM_BUILD_SPEC, name, lambda _env: None)
@@ -21905,8 +21904,7 @@ def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
         lambda: {"CARGO_TARGET_DIR": str(tmp_path / "target")},
     )
     for name in (
-        "_configure_wasm_cc_env",
-        "_configure_wasi_sysroot_env",
+        "_configure_wasm_toolchain_env",
         "_configure_wasm_long_double_env",
     ):
         monkeypatch.setattr(RUNTIME_WASM_BUILD_SPEC, name, lambda _env: None)

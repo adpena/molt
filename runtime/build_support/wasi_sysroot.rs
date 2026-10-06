@@ -127,6 +127,9 @@ fn push_target_root_candidates(candidates: &mut Vec<PathBuf>, raw: &str) {
                     candidates.push(path.clone());
                 }
                 if name.starts_with("wasi-sdk") {
+                    // tools/provision_wasi_sdk.py installs identity-addressed
+                    // prefixes as `<prefix>/sdk/share/wasi-sysroot`.
+                    candidates.push(path.join("sdk").join("share").join("wasi-sysroot"));
                     candidates.push(path.join("share").join("wasi-sysroot"));
                     candidates.push(path.join("wasi-sysroot"));
                 }

@@ -16,6 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from molt import llvm_toolchain
 from molt._wasm_runtime_exports import wasm_split_runtime_export_rename_map
 from molt.cli import wasm_link_inputs
 from molt.cli.models import _RuntimeArtifactState
@@ -650,6 +651,18 @@ def validation_specs(
     target = tmp_path / "target with spaces"
     state_root = tmp_path / "state with spaces"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target))
+    # Hermetic WASI sysroot: plans must not depend on the host's SDK install.
+    sysroot = runtime_fixture_root.path / "wasi-sysroot"
+    (sysroot / "include" / "wasm32-wasip1").mkdir(parents=True, exist_ok=True)
+    (sysroot / "include" / "wasm32-wasip1" / "errno.h").write_text(
+        "#define EDOM 18\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("MOLT_WASI_SYSROOT", str(sysroot))
+    monkeypatch.delenv("WASI_SYSROOT", raising=False)
+    # Hermetic: plan tests never select the host's provisioned WASI SDK.
+    monkeypatch.setattr(
+        llvm_toolchain, "selected_wasi_sdk_installation", lambda *_a, **_k: None
+    )
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SPEC,
         "resolve_runtime_cargo_plan",
@@ -989,10 +1002,11 @@ def test_runtime_wasm_incremental_policy_survives_plan_resolution(
         monkeypatch.setenv("CARGO_INCREMENTAL", explicit)
     _root, _target, _state, shared, _reloc = validation_specs()
     assert shared.cargo_plan.environment["CARGO_INCREMENTAL"] == (explicit or "0")
-    assert (
-        shared.cargo_plan.environment["WASI_SYSROOT"]
-        == shared.cargo_plan.environment["MOLT_WASI_SYSROOT"]
-    )
+    # cc-rs reads WASI_SYSROOT and Molt build scripts read MOLT_WASI_SYSROOT;
+    # both must name the one resolved sysroot.
+    sysroot = str(Path(os.environ["MOLT_WASI_SYSROOT"]).resolve())
+    assert shared.cargo_plan.environment["MOLT_WASI_SYSROOT"] == sysroot
+    assert shared.cargo_plan.environment["WASI_SYSROOT"] == sysroot
 
 
 def test_runtime_fingerprint_recomputes_when_rustflags_change() -> None:

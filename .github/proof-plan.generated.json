@@ -262,6 +262,7 @@
     "tools/harness_memory_guard.py",
     "tools/import_file.py",
     "tools/memory_guard.py",
+    "src/molt/custody_layout.py",
     "src/molt/memory_guard_paths.py",
     "tools/memory_guard_core/payloads.py",
     "tools/memory_guard_core/process_custody.py",
@@ -316,7 +317,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "85013b0faace3bf600ff60512e6b28ff01c5b7bb6b81601009e1284cd83e0909",
+  "authority_sha256": "0e78775918a745502e59aa85e86464e8af4663c971a90257a0fdc97b557db31f",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -742,6 +743,7 @@
         "tools/memory_guard.py",
         "tools/memory_guard_core/**",
         "src/molt/process_spawn.py",
+        "src/molt/custody_layout.py",
         "src/molt/memory_guard_paths.py",
         "src/molt/pytest_memory_guard_bootstrap.py",
         "sitecustomize.py",

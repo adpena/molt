@@ -16,6 +16,7 @@ import sys
 import tempfile
 import tomllib
 from dataclasses import asdict, dataclass
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from molt.source_root import compiler_source_root
@@ -742,7 +743,7 @@ def wasi_sdk_install_prefix(toolchain_root: Path, asset: WasiSdkHostAsset) -> Pa
 def provisioned_wasi_sdk_prefix(
     root: Path,
     *,
-    environ: dict[str, str] | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> Path:
     """Locate this host's SDK under checkout custody without provisioning it."""
 
@@ -843,6 +844,80 @@ def load_wasi_sdk_installation(
         wasm_ld=wasm_ld,
         llvm_nm=llvm_nm,
     )
+
+
+def selected_wasi_sdk_prefix(
+    root: Path,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    """Return the SDK prefix an environment selects; never install one.
+
+    `WASI_SDK_PATH` or `WASI_SDK_PREFIX` selects an SDK explicitly (either the
+    install prefix or its `sdk` directory); otherwise this host's provisioned
+    prefix under checkout custody is selected. Admission is separate.
+    """
+
+    environment = os.environ if environ is None else environ
+    sdk = environment.get("WASI_SDK_PATH") or environment.get("WASI_SDK_PREFIX")
+    if sdk:
+        prefix = Path(sdk).expanduser().absolute()
+        return prefix.parent if prefix.name == SDK_DIRNAME else prefix
+    return provisioned_wasi_sdk_prefix(root, environ=environment)
+
+
+def selected_wasi_sdk_installation(
+    root: Path,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> WasiSdkInstallation | None:
+    """Admit the selected SDK, or return None when none exists; never install."""
+
+    prefix = selected_wasi_sdk_prefix(root, environ=environ)
+    if not prefix.exists():
+        return None
+    return load_wasi_sdk_installation(root, prefix, verify_tree=False)
+
+
+_WASI_SYSROOT_SELECTORS = ("MOLT_WASI_SYSROOT", "WASI_SYSROOT")
+
+
+def apply_provisioned_wasm_toolchain(
+    root: Path, env: dict[str, str]
+) -> tuple[str, ...]:
+    """Select WASM tools from the selected SDK into a build environment.
+
+    This is the one local entry point to `project_wasm_toolchain_environment`,
+    the projection CI also uses. A selector the caller already set wins, and a
+    selector that has two spellings (`CC_wasm32-wasip1` and
+    `CC_wasm32_wasip1`, or the two sysroot names) keeps both spellings equal.
+    C flags gain the SDK's `--no-default-config`. Returns the keys it manages,
+    or an empty tuple when no SDK is selected; consumers then fail with the
+    provisioning command instead of guessing a host tool.
+    """
+
+    installation = selected_wasi_sdk_installation(root, environ=env)
+    if installation is None:
+        return ()
+    projected = project_wasm_toolchain_environment(installation, environ=env)
+    groups: list[tuple[str, ...]] = [_WASI_SYSROOT_SELECTORS]
+    for target in SDK_CARGO_TARGETS:
+        spellings = (target, target.replace("-", "_"))
+        groups.extend(
+            tuple(f"{role}_{spelling}" for spelling in spellings)
+            for role, _name in SDK_CARGO_TOOLS
+        )
+        for flag in ("CFLAGS", "CXXFLAGS"):
+            for spelling in spellings:
+                env[f"{flag}_{spelling}"] = projected[f"{flag}_{spelling}"]
+    for keys in groups:
+        value = next((env[key] for key in keys if env.get(key)), projected[keys[0]])
+        for key in keys:
+            env[key] = value
+    for key in ("WASI_SDK_PATH", "MOLT_WASM_LD", "MOLT_LLVM_NM"):
+        if not env.get(key):
+            env[key] = projected[key]
+    return tuple(project_wasm_toolchain_environment(installation, environ={}))
 
 
 def _read_toml(path: Path) -> dict[str, Any] | None:
@@ -2287,13 +2362,7 @@ def resolve_wasi_sdk_tool(
             configured, selector=selector, environment=environment
         )
     else:
-        sdk = environment.get("WASI_SDK_PATH") or environment.get("WASI_SDK_PREFIX")
-        if sdk:
-            prefix = Path(sdk).expanduser().absolute()
-            if prefix.name == SDK_DIRNAME:
-                prefix = prefix.parent
-        else:
-            prefix = provisioned_wasi_sdk_prefix(root, environ=environment)
+        prefix = selected_wasi_sdk_prefix(root, environ=environment)
         if not prefix.exists():
             raise LlvmToolchainConfigError(
                 f"WebAssembly {role} is unavailable: no wasi-sdk is provisioned at "
@@ -2399,19 +2468,20 @@ def verify_wasm_ci_toolchain(
     )
 
 
-def project_wasm_ci_environment(
-    verification: WasmCiToolchainVerification,
+def project_wasm_toolchain_environment(
+    installation: WasiSdkInstallation,
     *,
-    environ: dict[str, str] | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    """Project the verified SDK identity to every shared resolver.
+    """Project one admitted SDK to every shared WASM resolver.
 
-    Tools execute in place with their adjacent resources/libraries intact.
-    Only WASM selectors change; native PATH and compiler policy remain intact.
+    Local builds, CI, and the proof queue all select WebAssembly tools through
+    this projection. Tools execute in place with their adjacent resources and
+    libraries intact. Only WASM selectors change; native PATH and compiler
+    policy remain intact.
     """
 
     result = dict(os.environ if environ is None else environ)
-    installation = verification.installation
     sysroot = str(installation.sysroot)
     result["MOLT_WASI_SYSROOT"] = sysroot
     result["WASI_SYSROOT"] = sysroot
@@ -2609,11 +2679,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"WASM toolchain verification failed: {exc}", file=sys.stderr)
             return 2
         if args.github_env is not None:
-            projected = project_wasm_ci_environment(
-                wasm_verification,
+            projected = project_wasm_toolchain_environment(
+                wasm_verification.installation,
                 environ=dict(os.environ),
             )
-            keys = project_wasm_ci_environment(wasm_verification, environ={})
+            keys = project_wasm_toolchain_environment(
+                wasm_verification.installation, environ={}
+            )
             with args.github_env.open("a", encoding="utf-8") as fh:
                 for key in keys:
                     fh.write(f"{key}={projected[key]}\n")

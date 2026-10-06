@@ -60,8 +60,10 @@ mod address;
 pub(crate) use address::decode_sockaddr;
 #[cfg(target_arch = "wasm32")]
 use address::encode_sockaddr;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use address::port_from_bits;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
-pub(crate) use address::{host_from_bits, port_from_bits, service_from_bits};
+pub(crate) use address::{host_from_bits, service_from_bits};
 #[cfg(molt_has_net_io)]
 pub(crate) use address::{sockaddr_from_bits, sockaddr_to_bits};
 
