@@ -861,55 +861,54 @@ fn direct_and_preserved_boxed_calls_require_runtime_symbol_admission() {
 
 #[test]
 fn stateful_locals_registration_preserves_mixed_abi() {
-    for kind in ["stateful_locals_register"] {
-        let ctx = Context::create();
-        let mut backend = make_backend(&ctx);
-        backend.function_linkage_abis.insert(
-            "poll_fn".into(),
-            test_native_linkage_abi(vec![TirType::DynBox], Some(TirType::DynBox)),
-        );
-        let mut func = TirFunction::new(
-            format!("register_{kind}"),
-            vec![TirType::DynBox, TirType::DynBox],
-            TirType::DynBox,
-            molt_ir::FunctionReturnAbi::Value,
-        );
-        let result = func.fresh_value();
-        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        let names = entry.args[0].id;
-        let offsets = entry.args[1].id;
-        entry.ops.push(TirOp {
-            dialect: Dialect::Molt,
-            opcode: OpCode::Copy,
-            operands: vec![names, offsets],
-            results: vec![result],
-            attrs: AttrDict::from([
-                ("_original_kind".into(), AttrValue::Str(kind.into())),
-                ("s_value".into(), AttrValue::Str("poll_fn".into())),
-                ("value".into(), AttrValue::Int(1)),
-            ]),
-            source_span: None,
-        });
-        entry.terminator = Terminator::Return {
-            values: vec![result],
-        };
-        let ir = try_lower_tir_to_llvm(&func, &backend)
-            .expect("generator locals mixed ABI must lower")
-            .print_to_string()
-            .to_string();
-        backend
-            .module
-            .verify()
-            .expect("generator locals mixed ABI must verify");
-        assert!(
-            ir.contains(&format!(
-                "call i64 @molt_{kind}(i64 ptrtoint (ptr @poll_fn to i64), i64 %0, i64 %1)"
-            )),
-            "{ir}"
-        );
-        assert!(!ir.contains("@molt_int_from_i64("), "{ir}");
-        assert!(!ir.contains("call void @molt_dec_ref_obj("), "{ir}");
-    }
+    let kind = "stateful_locals_register";
+    let ctx = Context::create();
+    let mut backend = make_backend(&ctx);
+    backend.function_linkage_abis.insert(
+        "poll_fn".into(),
+        test_native_linkage_abi(vec![TirType::DynBox], Some(TirType::DynBox)),
+    );
+    let mut func = TirFunction::new(
+        format!("register_{kind}"),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let result = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    let names = entry.args[0].id;
+    let offsets = entry.args[1].id;
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Copy,
+        operands: vec![names, offsets],
+        results: vec![result],
+        attrs: AttrDict::from([
+            ("_original_kind".into(), AttrValue::Str(kind.into())),
+            ("s_value".into(), AttrValue::Str("poll_fn".into())),
+            ("value".into(), AttrValue::Int(1)),
+        ]),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result],
+    };
+    let ir = try_lower_tir_to_llvm(&func, &backend)
+        .expect("generator locals mixed ABI must lower")
+        .print_to_string()
+        .to_string();
+    backend
+        .module
+        .verify()
+        .expect("generator locals mixed ABI must verify");
+    assert!(
+        ir.contains(&format!(
+            "call i64 @molt_{kind}(i64 ptrtoint (ptr @poll_fn to i64), i64 %0, i64 %1)"
+        )),
+        "{ir}"
+    );
+    assert!(!ir.contains("@molt_int_from_i64("), "{ir}");
+    assert!(!ir.contains("call void @molt_dec_ref_obj("), "{ir}");
 }
 
 #[test]

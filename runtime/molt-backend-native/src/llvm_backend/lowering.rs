@@ -1024,8 +1024,7 @@ mod operation_shape_tests {
                     source_span: None,
                 });
             let error = try_lower_tir_to_llvm(&func, &backend)
-                .err()
-                .expect("retired typed origin must fail before mutation");
+                .expect_err("retired typed origin must fail before mutation");
             assert!(
                 error
                     .to_string()
@@ -1065,9 +1064,7 @@ mod operation_shape_tests {
                     attrs,
                     source_span: None,
                 });
-            let error = try_lower_tir_to_llvm(&func, &backend)
-                .err()
-                .expect("checked shape failure");
+            let error = try_lower_tir_to_llvm(&func, &backend).expect_err("checked shape failure");
             assert!(error.to_string().contains("code_slot_set"));
             assert_eq!(backend.module.get_functions().count(), 0);
         }
