@@ -209,7 +209,7 @@ mod tests {
             ),
             (
                 WasmRuntimeImport::FrameInvocationExit,
-                WasmRuntimeReturn::OwnedObject,
+                WasmRuntimeReturn::BorrowedObject,
             ),
             (
                 WasmRuntimeImport::DictSet,

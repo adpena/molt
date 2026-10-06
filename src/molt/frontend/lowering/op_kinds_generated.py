@@ -1900,6 +1900,7 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "is_native_awaitable": 1024,
     "is_not": 1,
     "is_pending": 1024,
+    "iter": 32,
     "iter_next": 32,
     "iter_next_unboxed": 32,
     "jump": 2048,

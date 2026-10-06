@@ -2,6 +2,56 @@ use super::exceptions::luau_tir_roundtrip_function;
 use super::*;
 
 #[test]
+fn cold_module_chunk_identity_uses_semantic_provenance() {
+    let mut function = FunctionIR {
+        name: "comprehension_fail__molt_module_chunk_1".into(),
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        params: vec!["unknown".into()],
+        ops: vec![
+            OpIR {
+                kind: "const_none".into(),
+                out: Some("nothing".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "is".into(),
+                args: Some(vec!["unknown".into(), "nothing".into()]),
+                out: Some("result".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["result".into()]),
+                ..OpIR::default()
+            },
+        ],
+        ..FunctionIR::default()
+    };
+    let source = LuauBackend::new()
+        .compile_checked(&SimpleIR {
+            functions: vec![function.clone()],
+            profile: None,
+        })
+        .expect("None identity remains exact in a cold module chunk");
+    assert!(
+        source.contains("molt_rawequal(unknown, nothing)"),
+        "{source}"
+    );
+
+    function.ops[0].kind = "const".into();
+    function.ops[0].value = Some(1);
+    let mut backend = LuauBackend::new();
+    let error = backend
+        .compile_checked(&SimpleIR {
+            functions: vec![function],
+            profile: None,
+        })
+        .expect_err("a value scalar compared with unknown must remain rejected");
+    assert!(error.contains("identity needs alias/reference/singleton provenance"));
+    assert!(backend.output.is_empty());
+}
+
+#[test]
 fn compile_checked_rejects_canonical_void_and_value_externs_before_emission() {
     let declarations = [
         FunctionIR {
@@ -5400,6 +5450,103 @@ fn execution_frame_siblings_have_real_luau_lowering() {
     assert!(source.contains("molt_frame_locals_set(__molt_frame_context, locals)"));
     assert!(!source.contains("molt_frame_set_line(molt_frame_context()"));
     assert!(!source.contains("molt_frame_locals_set(molt_frame_context()"));
+}
+
+#[test]
+fn execution_frame_cookie_survives_operation_capture_and_dispatch() {
+    for guarded in [false, true] {
+        let mut ops = vec![
+            OpIR {
+                kind: "code_slots_init".into(),
+                value: Some(8),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "dict_new".into(),
+                out: Some("globals".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "code_slot_set".into(),
+                args: Some(vec!["code".into(), "globals".into()]),
+                value: Some(7),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "trace_enter_slot".into(),
+                value: Some(7),
+                ..OpIR::default()
+            },
+        ];
+        if guarded {
+            ops.push(OpIR {
+                kind: "check_exception".into(),
+                value: Some(9),
+                ..OpIR::default()
+            });
+        }
+        ops.extend([
+            OpIR {
+                kind: "line".into(),
+                value: Some(8),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "trace_exit".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            },
+        ]);
+        if guarded {
+            ops.extend([
+                OpIR {
+                    kind: "label".into(),
+                    value: Some(9),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "exception_last_pending".into(),
+                    out: Some("entry_error".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "raise".into(),
+                    args: Some(vec!["entry_error".into()]),
+                    ..OpIR::default()
+                },
+            ]);
+        }
+        let mut source = LuauBackend::new()
+            .compile_checked(&SimpleIR {
+                functions: vec![FunctionIR {
+                    name: "frame_scope".into(),
+                    params: vec!["code".into()],
+                    return_abi: molt_ir::FunctionReturnAbi::Void,
+                    execution_context: ExecutionContextPolicy::Local,
+                    ops,
+                    ..FunctionIR::default()
+                }],
+                profile: None,
+            })
+            .expect("frame entry and exit must share one lexical cookie owner");
+        assert!(!source.contains("local __molt_frame_context, __molt_frame_depth"));
+        source.push_str(
+            r#"
+assert(molt_frame_context().depth == 0)
+frame_scope({co_name="frame_scope", co_filename="frame_scope.py", co_firstlineno=1})
+assert(molt_frame_context().depth == 0)
+print("frame cookie scope OK")
+"#,
+        );
+        let output = execute_lune_oracle("frame_cookie_scope", &source);
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "frame cookie scope OK"
+        );
+    }
 }
 
 #[test]

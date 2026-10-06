@@ -1088,7 +1088,7 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
             Some(SimpleIrRuntimeRequirements(8))
         }
         "format_string" | "string_format" => Some(SimpleIrRuntimeRequirements(16)),
-        "for_iter" | "for_iter_end" | "for_iter_start" | "get_iter" | "iter_next"
+        "for_iter" | "for_iter_end" | "for_iter_start" | "get_iter" | "iter" | "iter_next"
         | "iter_next_unboxed" | "list_fill_new" | "string_join" | "unpack_sequence" => {
             Some(SimpleIrRuntimeRequirements(32))
         }

@@ -7794,3 +7794,21 @@ def test_generated_serialization_boundary_preserves_wire_field_roles():
     # This boundary does not grant support: unknown wire kinds are the target
     # semantic validator's obligation, independent of frontend optimizer facts.
     assert validate("future_unclassified_wire_kind") is None
+
+
+def test_preserved_iterator_requires_the_generated_iterable_protocol():
+    from molt.frontend.lowering.op_kinds_generated import (
+        SIMPLEIR_RUNTIME_KIND_REQUIREMENTS,
+    )
+
+    data = _gen().load_table()
+    namespace = {}
+    exec(_gen().render_py(data), namespace)
+    for kind in ("iter", "get_iter", "iter_next", "iter_next_unboxed", "for_iter"):
+        assert kind in data["simpleir_iterable_protocol_semantics_kinds"]
+        assert kind not in data["simpleir_runtime_neutral_semantics_kinds"]
+        assert namespace["SIMPLEIR_RUNTIME_KIND_REQUIREMENTS"][kind] & (1 << 5)
+        assert (
+            SIMPLEIR_RUNTIME_KIND_REQUIREMENTS[kind]
+            == namespace["SIMPLEIR_RUNTIME_KIND_REQUIREMENTS"][kind]
+        )

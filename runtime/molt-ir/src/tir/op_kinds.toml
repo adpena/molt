@@ -548,7 +548,7 @@ simpleir_iterable_protocol_semantics_kinds = [
     "string_join", "unpack_sequence", "list_fill_new",
     "for_iter", "iter_next", "iter_next_unboxed",
     "callargs_expand_star",
-    "get_iter", "for_iter_start", "for_iter_end",
+    "iter", "get_iter", "for_iter_start", "for_iter_end",
 ]
 simpleir_object_model_semantics_kinds = [
     "const_none", "const_bytes",

@@ -138,6 +138,7 @@ class CargoResourceRoot:
     dynamic_libraries_only: bool = False
 
     def files(self) -> tuple[tuple[str, Path], ...]:
+        """Capture lexical file edges without unfolding directory backedges."""
         try:
             metadata = self.path.lstat()
         except FileNotFoundError:
@@ -155,7 +156,7 @@ class CargoResourceRoot:
         def visit(directory: Path, ancestors: frozenset[Path]) -> None:
             resolved = directory.resolve(strict=True)
             if resolved in ancestors:
-                raise ValueError(f"runtime resource directory alias cycle: {directory}")
+                return
             ancestors = ancestors | {resolved}
             for path in sorted(directory.iterdir()):
                 if self.dynamic_libraries_only and not (

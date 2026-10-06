@@ -1,6 +1,38 @@
 use super::*;
 
 #[test]
+fn preserved_iterator_spelling_requires_the_iterable_protocol() {
+    for kind in ["iter", "get_iter"] {
+        let op = OpIR {
+            kind: kind.into(),
+            args: Some(vec!["source".into()]),
+            out: Some("iterator".into()),
+            ..OpIR::default()
+        };
+        assert!(
+            op.runtime_requirements()
+                .expect("iterator operations must be classified")
+                .contains(SimpleIrRuntimeRequirements::ITERABLE_PROTOCOL)
+        );
+        let ir = function_ir(vec![op]);
+        for target in [
+            TargetInfo::native_release_fast(),
+            TargetInfo::wasm_release_fast(),
+            TargetInfo::llvm_release_fast(),
+            TargetInfo::luau_release_fast(),
+        ] {
+            validate_runtime_target_contract(&ir, &target).expect(kind);
+        }
+        let error = validate_runtime_target_contract(&ir, &TargetInfo::rust_release_fast())
+            .expect_err("a target without the iterable protocol must still reject iterators");
+        assert!(
+            error.contains("Python iterable/sequence protocol"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn runtime_aliases_and_typed_siblings_cannot_escape_existing_capabilities() {
     for kind in [
         "load",

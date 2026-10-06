@@ -86,8 +86,14 @@ impl LuauBackend {
         // Reset per-function state.
         self.hoisted_vars.clear();
         self.tuple_vars.clear();
-        self.has_local_frame_context =
-            inherits_frame_context || ops.iter().any(|op| op.kind == "trace_enter_slot");
+        let owns_frame_context = ops.iter().any(|op| op.kind == "trace_enter_slot");
+        self.has_local_frame_context = inherits_frame_context || owns_frame_context;
+        if owns_frame_context {
+            if !inherits_frame_context {
+                self.emit_line("local __molt_frame_context");
+            }
+            self.emit_line("local __molt_frame_depth, __molt_frame_code, __molt_frame_owner");
+        }
         self.nonneg_consts.clear();
         self.scope_local_count = 0;
         self.func_body_indent = self.indent as u32;
