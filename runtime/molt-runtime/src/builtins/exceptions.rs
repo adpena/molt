@@ -5051,6 +5051,9 @@ mod tests {
             let fresh = super::alloc_class_obj_from_name(_py, "CacheOwnershipProbe");
             assert!(!fresh.is_null());
             let fresh_bits = MoltObject::from_ptr(fresh).bits();
+            // Sealing the definition registers the runtime's own owner; seal
+            // first so the measurement below isolates the cache's transfer.
+            unsafe { crate::object::class_finish_definition(_py, fresh) }.expect("seal probe");
             let before = unsafe { (*header_from_obj_ptr(fresh)).ref_count_snapshot() };
             assert_eq!(
                 super::cache_exception_type(_py, "CacheOwnershipProbe", fresh_bits),
