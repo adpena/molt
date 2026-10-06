@@ -58,7 +58,7 @@ def _admit_mock_symbol_reader_commands(monkeypatch: pytest.MonkeyPatch):
         native_symbol_inspection,
         "_native_symbol_reader_candidate",
         lambda command: native_symbol_inspection._NativeSymbolReaderCandidate(
-            tuple(command), executable_identity=identity
+            tuple(command), executable_identity=identity, reader_family="llvm"
         ),
     )
     monkeypatch.setattr(
