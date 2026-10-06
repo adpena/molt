@@ -392,12 +392,21 @@ pub fn parse_positive_usize_env(name: &str) -> Option<usize> {
         .filter(|value| *value > 0)
 }
 
-pub fn parse_nonnegative_gb_env(name: &str) -> Option<u64> {
-    let gb = std::env::var(name)
+/// Parse a non-negative, possibly fractional GB value (the memory guard writes
+/// six decimals) into bytes, saturating at `u64::MAX`.
+pub fn parse_nonnegative_gb(raw: &str) -> Option<u64> {
+    let gb = raw
+        .trim()
+        .parse::<f64>()
         .ok()
-        .and_then(|raw| raw.trim().parse::<f64>().ok())
         .filter(|value| value.is_finite() && *value >= 0.0)?;
     Some((gb * GIB_BYTES as f64).min(u64::MAX as f64) as u64)
+}
+
+pub fn parse_nonnegative_gb_env(name: &str) -> Option<u64> {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| parse_nonnegative_gb(&raw))
 }
 
 pub fn env_memory_limit_bytes() -> Option<u64> {
