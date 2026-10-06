@@ -61,11 +61,17 @@ _READ_ONLY_GIT_SUBCOMMANDS = frozenset(
         "diff",
         "grep",
         "log",
+        "ls-files",
         "rev-parse",
         "show",
         "status",
     }
 )
+# Global git options that only shape how a read proceeds. None of them can
+# name a hook, a pager, or a config value, so the subcommand after them keeps
+# its class. ``-c key=value`` stays outside this set: it can arm
+# ``core.fsmonitor`` or ``core.pager`` and so turns any read into a launch.
+_INERT_GIT_GLOBAL_OPTIONS = frozenset({"--no-optional-locks", "--no-pager"})
 _VERSION_FLAGS = frozenset({"--help", "--version", "-V", "-vV", "-version"})
 
 
@@ -75,8 +81,14 @@ def _is_bounded_metadata_probe(command: Sequence[str]) -> bool:
         executable = executable[:-4]
     if executable == "git":
         index = 1
-        while index < len(command) and command[index] == "-C":
-            index += 2
+        while index < len(command):
+            option = command[index]
+            if option == "-C":
+                index += 2
+            elif option in _INERT_GIT_GLOBAL_OPTIONS:
+                index += 1
+            else:
+                break
         if index >= len(command):
             return False
         subcommand = command[index]
