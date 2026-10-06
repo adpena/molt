@@ -25,11 +25,10 @@ fn backend_max_rss_bytes() -> u64 {
 
 fn backend_max_rss_bytes_from(raw_gb: Option<&str>, default_gb: u64) -> u64 {
     raw_gb
-        .and_then(molt_tir::tir::pipeline_cache::parse_nonnegative_gb)
+        .and_then(molt_passes::memory_budget::parse_nonnegative_gb)
         .filter(|bytes| *bytes > 0)
         .unwrap_or_else(|| default_gb.saturating_mul(1024 * 1024 * 1024))
 }
-
 
 #[cfg(unix)]
 fn install_unix_memory_guard() {
