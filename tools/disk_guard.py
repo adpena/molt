@@ -85,6 +85,7 @@ from molt.disk_capacity import (  # noqa: E402
     DISK_GUARD_HIGH_WATER_ENV,
     minimum_headroom_bytes,
 )
+from molt.custody_layout import custody_root  # noqa: E402
 from molt.file_deletion import delete_path  # noqa: E402
 from tools.memory_guard_core.active_custody import has_active_guard_marker  # noqa: E402
 
@@ -419,23 +420,6 @@ def resolve_root(
     return root
 
 
-def _artifact_scope_root(root: Path) -> Path:
-    """Return the common artifact parent for a Molt checkout/worktree.
-
-    Canonical layouts use ``<scope>/molt-src`` for the main checkout and
-    ``<scope>/worktrees/<lane>`` for linked worktrees. Unknown layouts remain
-    scoped to the explicit root instead of widening discovery speculatively.
-    """
-    root = root.resolve()
-    if root.parent.name == "worktrees":
-        return root.parent.parent.resolve()
-    if root.name == "molt-src" and (root.parent / "worktrees").is_dir():
-        return root.parent.resolve()
-    if (root / "molt-src" / ".git").exists() and (root / "worktrees").is_dir():
-        return root
-    return root
-
-
 def _path_within(path: Path, parent: Path) -> bool:
     try:
         return path == parent or parent in path.parents
@@ -508,7 +492,7 @@ def registered_worktree_roots(root: Path) -> tuple[Path, ...]:
     cross-platform scope) from widening deletion authority.
     """
     root = root.resolve()
-    scope = _artifact_scope_root(root)
+    scope = custody_root(root)
     probes: list[Path] = [root, scope, scope / "molt-src"]
     common_dirs = {
         common for probe in probes if (common := _git_common_dir(probe)) is not None
@@ -527,7 +511,7 @@ def registered_worktree_roots(root: Path) -> tuple[Path, ...]:
 def reclaim_roots(root: Path) -> tuple[Path, ...]:
     """All artifact roots governed by one canonical disk-guard invocation."""
     resolved = root.resolve()
-    scope = _artifact_scope_root(resolved)
+    scope = custody_root(resolved)
     roots = {resolved, scope, *registered_worktree_roots(resolved)}
     return tuple(sorted((path for path in roots if path.is_dir()), key=_norm))
 

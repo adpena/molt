@@ -184,7 +184,6 @@ fn open_arg_errors(_py: &PyToken<'_>, bits: u64) -> Option<String> {
 }
 
 fn file_mode_to_flags(mode: &FileMode) -> i32 {
-    #[allow(clippy::useless_conversion)]
     let mut flags = 0;
     if mode.readable && !mode.writable {
         flags |= libc::O_RDONLY;

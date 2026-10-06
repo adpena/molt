@@ -11,6 +11,7 @@ import json
 import re
 import shlex
 import shutil
+import sys
 import stat
 import tomllib
 from collections.abc import Iterator, MutableMapping
@@ -1247,14 +1248,9 @@ def _target_tool_defaults(target: str) -> Mapping[str, tuple[str, ...]]:
             "ranlib": ("ranlib", "llvm-ranlib"),
             "linker": ("cc", "gcc", "clang"),
         }
-    if target.startswith("wasm32-"):
-        return {
-            "cc": ("clang",),
-            "cxx": ("clang++",),
-            "ar": ("llvm-ar",),
-            "ranlib": ("llvm-ranlib",),
-            "linker": (),
-        }
+    # WebAssembly C tools are never host guesses: the manifest-pinned WASI SDK
+    # owns them and `llvm_toolchain.apply_provisioned_wasm_toolchain` selects
+    # them, like every other target without a host default.
     return {role: () for role in ("cc", "cxx", "ar", "ranlib", "linker")}
 
 
@@ -2048,7 +2044,7 @@ def resolve_runtime_cargo_plan(
             value = next(
                 (environment[name] for name in names if environment.get(name)), None
             )
-        if value is None and (target == host_target or target.startswith("wasm32-")):
+        if value is None and target == host_target:
             value = next(
                 (
                     name
@@ -2060,8 +2056,20 @@ def resolve_runtime_cargo_plan(
         if value is None:
             if role == "linker" and target.startswith("wasm32-"):
                 continue  # WASM final linker has a separate explicit invocation.
+            selectors = (
+                (f"CARGO_TARGET_{cargo_target}_LINKER",) if role == "linker" else names
+            )
+            if target.startswith("wasm32-"):
+                raise ValueError(
+                    f"runtime target {target} takes its {role} from the pinned WASI "
+                    f"SDK, which is not provisioned: run `{sys.executable} "
+                    f"tools/provision_wasi_sdk.py`, or set {selectors[0]}"
+                )
             if target != host_target:
-                raise ValueError(f"runtime cross target {target} needs explicit {role}")
+                raise ValueError(
+                    f"runtime cross target {target} needs an explicit {role}: set "
+                    + " or ".join(selectors)
+                )
             continue  # Native Rust-only builds need no absent C tool.
         tools[role] = _tool_path(value, root=root, env=environment, role=role)
         selected = os.fspath(tools[role])

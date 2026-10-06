@@ -466,7 +466,8 @@ fn unsigned_masks_truncate_without_setting_overflow() {
     );
     assert_eq!(
         unsafe { molt_cpython_abi::api::numbers::PyLong_AsUnsignedLongMask(huge) },
-        (HUGE_LOW_U64 & std::os::raw::c_ulong::MAX as u64) as std::os::raw::c_ulong
+        // `as` to the narrower C width truncates: the low bits CPython keeps.
+        HUGE_LOW_U64 as std::os::raw::c_ulong
     );
     assert!(
         !err_pending(),

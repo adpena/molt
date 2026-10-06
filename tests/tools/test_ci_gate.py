@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import molt.dx as molt_dx
+from molt import custody_layout
 import pytest
 
 from tests.process_guard_common import run_guarded_test_process
@@ -166,19 +167,18 @@ def test_check_env_seeds_canonical_artifact_roots(monkeypatch) -> None:
 
     env = module._check_env(module.Check(name="unit", tier=1, cmd=["true"]))
 
-    assert env["MOLT_EXT_ROOT"] == str(module.ROOT)
+    artifact_root = molt_dx.checkout_custody(module.ROOT).custody_root
+    assert env["MOLT_EXT_ROOT"] == str(artifact_root)
     assert env["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_environment(
-            module.ROOT,
-            env,
-        )
+        molt_dx.cargo_target_dir_for_environment(artifact_root, env)
     )
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
-    assert env["MOLT_CACHE"] == str(module.ROOT / ".molt_cache")
-    assert env["MOLT_DIFF_ROOT"] == str(module.ROOT / "tmp" / "diff")
-    assert env["MOLT_DIFF_TMPDIR"] == str(module.ROOT / "tmp")
-    assert env["UV_CACHE_DIR"] == str(module.ROOT / ".uv-cache")
-    assert env["TMPDIR"] == str(module.ROOT / "tmp")
+    scratch = custody_layout.scratch_root(artifact_root, module.ROOT)
+    assert env["MOLT_CACHE"] == str(artifact_root / ".molt_cache")
+    assert env["MOLT_DIFF_ROOT"] == str(scratch / "diff")
+    assert env["MOLT_DIFF_TMPDIR"] == str(scratch)
+    assert env["UV_CACHE_DIR"] == str(artifact_root / ".uv-cache")
+    assert env["TMPDIR"] == str(scratch)
     assert env["MOLT_SESSION_ID"].startswith("ci-gate-")
     assert env["CARGO_BUILD_JOBS"] == "2"
 

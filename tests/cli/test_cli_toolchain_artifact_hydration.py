@@ -445,10 +445,9 @@ def test_cpython_abi_build_requires_and_fingerprints_only_reported_staticlib(
         },
     )
     monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SUPPORT, "_configure_wasm_cc_env", lambda _env: None
-    )
-    monkeypatch.setattr(
-        RUNTIME_WASM_BUILD_SUPPORT, "_configure_wasi_sysroot_env", lambda _env: None
+        RUNTIME_WASM_BUILD_SUPPORT,
+        "_configure_wasm_toolchain_env",
+        lambda _env: None,
     )
     monkeypatch.setattr(
         RUNTIME_WASM_BUILD_SUPPORT, "_build_slot", lambda: contextlib.nullcontext(None)
@@ -544,8 +543,7 @@ def test_cpython_abi_failures_publish_consumable_evidence_in_json_mode(
         support, "_build_lock", lambda *_a, **_kw: contextlib.nullcontext()
     )
     monkeypatch.setattr(support, "_build_slot", lambda: contextlib.nullcontext())
-    monkeypatch.setattr(support, "_configure_wasm_cc_env", lambda _env: None)
-    monkeypatch.setattr(support, "_configure_wasi_sysroot_env", lambda _env: None)
+    monkeypatch.setattr(support, "_configure_wasm_toolchain_env", lambda _env: None)
     monkeypatch.setattr(
         support,
         "_cargo_build_env",
@@ -883,8 +881,7 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
         lambda: {"CARGO_TARGET_DIR": str(target)},
     )
     for name in (
-        "_configure_wasm_cc_env",
-        "_configure_wasi_sysroot_env",
+        "_configure_wasm_toolchain_env",
         "_configure_wasm_long_double_env",
     ):
         monkeypatch.setattr(RUNTIME_WASM_BUILD_SPEC, name, lambda _env: None)

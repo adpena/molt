@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 import molt.dx as dx
+from molt import custody_layout
 import pytest
 from molt.dx import (
     CANONICAL_RUN_ENV_KEYS,
@@ -110,15 +111,17 @@ def test_run_context_installs_repo_local_defaults(tmp_path: Path) -> None:
     # canonical_env does not do.
     assert env["CARGO_INCREMENTAL"] == "1"
     assert env["MOLT_CACHE"] == str(tmp_path.resolve() / ".molt_cache")
-    assert env["MOLT_DIFF_ROOT"] == str(tmp_path.resolve() / "tmp" / "diff")
-    assert env["MOLT_DIFF_TMPDIR"] == str(tmp_path.resolve() / "tmp")
+    # Scratch never lands in the source tree, even for a repo-local root.
+    scratch = custody_layout.out_of_tree_scratch_root(tmp_path)
+    assert env["MOLT_DIFF_ROOT"] == str(scratch / "diff")
+    assert env["MOLT_DIFF_TMPDIR"] == str(scratch)
     assert env["UV_CACHE_DIR"] == str(tmp_path.resolve() / ".uv-cache")
     assert env["UV_PROJECT_ENVIRONMENT"].startswith(
         str(tmp_path.resolve() / "uv-project-envs")
     )
     assert env["PIP_CACHE_DIR"] == str(tmp_path.resolve() / ".pip-cache")
-    assert env["PYTHONPYCACHEPREFIX"] == str(tmp_path.resolve() / "tmp" / "pycache")
-    assert env["TMPDIR"] == str(tmp_path.resolve() / "tmp")
+    assert env["PYTHONPYCACHEPREFIX"] == str(scratch / "pycache")
+    assert env["TMPDIR"] == str(scratch)
     assert env["TMP"] == env["TMPDIR"]
     assert env["TEMP"] == env["TMPDIR"]
 
@@ -787,11 +790,11 @@ def test_bind_repo_src_pythonpath_deletes_ambient_import_authority(
     assert env["PYTHONPATH"] == str(repo_root.resolve() / "src")
 
 
-def test_default_windows_artifact_roots_has_no_volume_fallback(
+def test_default_artifact_root_is_the_custody_root(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    # The checkout-family root is the only automatic Windows root. Capacity-
+    # The checkout-family root is the only automatic root on every OS. Capacity-
     # selected volumes may be explicit outputs, but never custody by label.
     primary = tmp_path / "primary"
     repo_root = primary / "molt-src"
@@ -805,9 +808,46 @@ def test_default_windows_artifact_roots_has_no_volume_fallback(
         lambda _root, *, require_exists=True: primary.resolve(),
     )
 
-    roots = dx._default_windows_external_artifact_roots(repo_root)
+    roots = dx._default_external_artifact_roots(repo_root)
 
     assert roots == (primary,)
+
+
+def test_clone_outside_a_checkout_family_keeps_scratch_out_of_the_source_tree(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    # A plain clone is its own custody root, so artifacts stay repo-local (the
+    # Cargo norm). Scratch, temp, and bytecode must still never land in the
+    # source tree, where runtime fixtures reject them.
+    repo_root = tmp_path / "clone"
+    repo_root.mkdir()
+    monkeypatch.setattr(
+        dx, "_host_scratch_roots", lambda: ((tmp_path / "ambient").resolve(),)
+    )
+    monkeypatch.setattr(
+        dx,
+        "canonical_molt_root",
+        lambda root, *, require_exists=True: Path(root).resolve(),
+    )
+
+    env = RunContext(
+        repo_root, session_prefix="test", prefer_external_artifacts=True
+    ).canonical_env({"MOLT_EXTERNAL_MIN_FREE_GB": "0"}, create_dirs=False)
+
+    source = repo_root.resolve()
+    assert Path(env["MOLT_EXT_ROOT"]) == source
+    for key in (
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "MOLT_DIFF_TMPDIR",
+        "MOLT_DIFF_ROOT",
+        "PYTHONPYCACHEPREFIX",
+    ):
+        scratch = Path(env[key])
+        assert source not in (scratch, *scratch.parents), (key, scratch)
+    assert Path(env["TMPDIR"]) == custody_layout.out_of_tree_scratch_root(repo_root)
 
 
 def test_run_context_keeps_explicit_d_scratch_out_of_toolchain_custody(
@@ -1234,7 +1274,7 @@ def test_canonical_env_rehomes_stale_target_root_and_adds_ruff_cache(
     )
     monkeypatch.setattr(
         dx,
-        "_default_windows_external_artifact_roots",
+        "_default_external_artifact_roots",
         lambda _root, _env=None: (external_root,),
     )
     monkeypatch.setattr(dx, "_is_windows_c_drive_path", lambda _path: False)
@@ -1337,3 +1377,24 @@ def test_onedrive_paths_rejected_fail_closed():
             Path("/Users/x/Library/CloudStorage/OneDrive-Personal/molt"), "checkout"
         )
     dx._reject_onedrive(Path("/Users/x/Projects/molt"), "checkout")
+
+
+def test_render_env_spells_hyphenated_names_per_shell() -> None:
+    env = {
+        "CC_wasm32-wasip1": "/sdk/clang",
+        "CC_wasm32_wasip1": "/sdk/clang",
+        "MOLT_EXT_ROOT": "/root",
+    }
+    keys = tuple(env)
+
+    posix = dx.render_env(env, keys, "posix")
+    assert "CC_wasm32-wasip1" not in posix  # not a POSIX shell name
+    assert "export CC_wasm32_wasip1=" in posix
+    assert "export MOLT_EXT_ROOT=" in posix
+
+    powershell = dx.render_env(env, keys, "powershell")
+    assert "${env:CC_wasm32-wasip1} = " in powershell
+    assert "$env:MOLT_EXT_ROOT = " in powershell
+
+    with pytest.raises(dx.DxConfigError, match="no underscore spelling"):
+        dx.render_env({"ORPHAN-NAME": "x"}, ("ORPHAN-NAME",), "posix")

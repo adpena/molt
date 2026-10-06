@@ -62,6 +62,7 @@ from tools.compat import diff_output_layout  # noqa: E402
 from tools.compat import test_policy  # noqa: E402
 from tools.memory_guard_core import harness_outcomes  # noqa: E402
 from molt.build_state_layout import build_state_root  # noqa: E402
+from molt.memory_guard_paths import memory_guard_state_root  # noqa: E402
 
 _DYLD_GUARD_MARKER = "dyld_guard.json"
 _FAILURE_STATUSES = frozenset({"fail", "oom", "uncalibrated"})
@@ -823,7 +824,7 @@ def _terminate_verified_backend_daemon(
 
 
 def _prune_custody_event_path() -> Path:
-    return _repo_root() / "tmp" / "memory_guard" / "incidents" / "molt-diff-prune.jsonl"
+    return memory_guard_state_root(_repo_root()) / "incidents" / "molt-diff-prune.jsonl"
 
 
 def _record_prune_custody_event(

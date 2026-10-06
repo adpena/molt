@@ -37,8 +37,8 @@ session can hydrate a warm entry instead of re-running the frontend:
   coarse -- the ``context_digest``), so distinct build identities occupy distinct
   shared slots and can never clobber or be mis-served for one another.
 * Publication and hydration use ``_atomic_copy_file`` (a byte copy), never
-  ``os.link``, so they are safe on the exFAT APDataStore build volume which
-  rejects hard links.
+  ``os.link``, so they are safe on exFAT build volumes, which
+  reject hard links.
 * Because the tier lives outside every cargo target dir, the memory-guard cargo
   incremental quarantine (which only relocates ``target/**`` dirs) can never
   destroy it.
@@ -163,7 +163,7 @@ def _publish_shared_frontend_cache(*, src: Path, cache_path: Path | None) -> Non
     Best-effort: a failure to publish must never fail the build (the entry is
     already written to the session dir); it only means the next fresh session
     pays to re-run the frontend for this module. Uses a byte copy so it is safe
-    on filesystems without hard-link support (the exFAT APDataStore volume).
+    on filesystems without hard-link support (exFAT, for example).
     Idempotent: the slot is content-addressed, so re-publishing an identical
     identity simply rewrites byte-identical content.
     """

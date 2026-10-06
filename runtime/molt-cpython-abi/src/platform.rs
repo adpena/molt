@@ -1,6 +1,62 @@
 //! Target C-runtime authority used by the CPython ABI surface.
 
-use std::ffi::{c_int, c_void};
+use std::ffi::{c_int, c_long, c_longlong, c_ulong, c_ulonglong, c_void};
+
+// C `long` and `unsigned long` are 64-bit on LP64 targets (Linux, macOS) and
+// 32-bit on LLP64 (Windows) and wasm32. Widening them to Rust's fixed-width
+// integers is a same-type cast on some targets and a real widening on others.
+// The widening is written once here, so the lint that rejects a same-type cast
+// is allowed only on these functions. The assertions keep every widening
+// lossless on every target.
+const _: () = {
+    assert!(size_of::<c_long>() <= size_of::<i64>());
+    assert!(size_of::<c_ulong>() <= size_of::<u64>());
+    assert!(size_of::<c_longlong>() == size_of::<i64>());
+    assert!(size_of::<c_ulonglong>() == size_of::<u64>());
+};
+
+/// `LONG_MIN` of the target C ABI, widened to `i64`.
+pub(crate) const C_LONG_MIN: i64 = c_long_to_i64(c_long::MIN);
+/// `LONG_MAX` of the target C ABI, widened to `i64`.
+pub(crate) const C_LONG_MAX: i64 = c_long_to_i64(c_long::MAX);
+/// `ULONG_MAX` of the target C ABI, widened to `u64`.
+pub(crate) const C_ULONG_MAX: u64 = c_ulong_to_u64(c_ulong::MAX);
+
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "c_long is i64 on LP64 and i32 on LLP64/wasm32"
+)]
+#[inline]
+pub(crate) const fn c_long_to_i64(value: c_long) -> i64 {
+    value as i64
+}
+
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "c_ulong is u64 on LP64 and u32 on LLP64/wasm32"
+)]
+#[inline]
+pub(crate) const fn c_ulong_to_u64(value: c_ulong) -> u64 {
+    value as u64
+}
+
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "c_longlong is the platform's i64 spelling"
+)]
+#[inline]
+pub(crate) const fn c_longlong_to_i64(value: c_longlong) -> i64 {
+    value as i64
+}
+
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "c_ulonglong is the platform's u64 spelling"
+)]
+#[inline]
+pub(crate) const fn c_ulonglong_to_u64(value: c_ulonglong) -> u64 {
+    value as u64
+}
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) const C_EDOM: c_int = libc::EDOM;

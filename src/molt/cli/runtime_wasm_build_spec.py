@@ -81,8 +81,7 @@ from molt.cli.runtime_wasm_build_support import (
     RuntimeWasmLinkInputs,
     resolve_runtime_wasm_link_inputs,
     _cargo_cmd_with_json_artifact_messages,
-    _configure_wasi_sysroot_env,
-    _configure_wasm_cc_env,
+    _configure_wasm_toolchain_env,
     _configure_wasm_long_double_env,
     _wasm_runtime_codegen_flags,
 )
@@ -423,8 +422,7 @@ def _compute_runtime_wasm_build_spec(
     profile_dir = _cargo_profile_dir(cargo_profile)
     incremental_enabled = _runtime_wasm_incremental_enabled()
     env = _cargo_build_env()
-    _configure_wasm_cc_env(env)
-    _configure_wasi_sysroot_env(env)
+    _configure_wasm_toolchain_env(env)
     _configure_wasm_long_double_env(env)
     if "CARGO_INCREMENTAL" not in os.environ:
         env["CARGO_INCREMENTAL"] = "1" if incremental_enabled else "0"

@@ -623,16 +623,16 @@ uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic/exec_
   `MOLT_CACHE_MAX_AGE_DAYS`, or disable via `MOLT_CACHE_PRUNE=0`.
 - **Diff run coordination lock**: `tests/molt_diff.py` acquires `diff_run.lock` under the resolved build-state root, so agents sharing a Cargo target queue instead of running overlapping diff sweeps. Tune with `MOLT_DIFF_RUN_LOCK_WAIT_SEC` (default 900) and `MOLT_DIFF_RUN_LOCK_POLL_SEC`.
 - **Matrix harness**: use `tools/throughput_matrix.py` for reproducible single-vs-concurrent build throughput checks (profiles + wrapper modes), with optional differential mini-matrix.
-  - Example: `uv run --python 3.12 python tools/throughput_matrix.py --concurrency 2 --timeout-sec 75 --shared-target-dir /Volumes/APDataStore/Molt/cargo-target --run-diff --diff-jobs 2 --diff-timeout-sec 180`
+  - Example: `uv run --python 3.12 python tools/throughput_matrix.py --concurrency 2 --timeout-sec 75 --shared-target-dir "$MOLT_EXT_ROOT/cargo-target" --run-diff --diff-jobs 2 --diff-timeout-sec 180`
   - Output: `matrix_results.json` under the output root (`$MOLT_EXT_ROOT/...` by default).
   - `matrix_results.json` now includes `gate_status` (thresholds, observed counts, violation details, pass/fail).
   - Use `--fail-on-gate` to return exit code `2` on gate failure.
   - If external root is unavailable, pass `--output-root` explicitly only for an approved emergency override.
-  - If rustc or backend cache publication reports hard-link fallback on
-    APDataStore/exFAT, keep the lane on the DX-selected artifact root and
+  - If rustc or backend cache publication reports hard-link fallback on an
+    exFAT artifact root, keep the lane on the DX-selected artifact root and
     diagnose the specific cache authority; do not reroute proof lanes to legacy
     `E:` roots to hide the defect. The DX env should include
-    `UV_LINK_MODE=copy` on APDataStore/exFAT; if it does not, fix RunContext
+    `UV_LINK_MODE=copy` on exFAT roots; if it does not, fix RunContext
     instead of adding a one-off shell export.
 - **Compile-progress suite**: use `tools/compile_progress.py` for standardized
   cold/warm + cache-hit/no-cache + daemon-on/off compile tracking.

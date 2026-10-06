@@ -1,9 +1,8 @@
 //! Numeric type bridge — PyLong_*, PyFloat_*, PyBool_*.
 
 use crate::abi_types::{
-    C_LONG_MAX_I64, C_LONG_MIN_I64, C_ULONG_MAX_U64, IMMORTAL_REFCNT, Py_False, Py_True,
-    Py_complex, Py_ssize_t, PyComplexObject, PyFloatObject, PyLongObject, PyLongValue, PyObject,
-    c_long_to_i64,
+    IMMORTAL_REFCNT, Py_False, Py_True, Py_complex, Py_ssize_t, PyComplexObject, PyFloatObject,
+    PyLongObject, PyLongValue, PyObject,
 };
 use crate::bridge::{
     GLOBAL_BRIDGE, ResolvedPyObject, RuntimeValue, resolve_pyobject, resolved_molt_handle,
@@ -1003,8 +1002,7 @@ unsafe fn set_digit_limit_error(limit: usize, digits: usize) {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_FromLong(v: c_long) -> *mut PyObject {
-    #[allow(clippy::unnecessary_cast)]
-    py_long_from_i64(v as i64)
+    py_long_from_i64(crate::platform::c_long_to_i64(v))
 }
 
 #[unsafe(no_mangle)]
@@ -1019,20 +1017,17 @@ pub unsafe extern "C" fn PyLong_FromSize_t(v: usize) -> *mut PyObject {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_FromLongLong(v: c_longlong) -> *mut PyObject {
-    #[allow(clippy::unnecessary_cast)]
-    py_long_from_i64(v as i64)
+    py_long_from_i64(crate::platform::c_longlong_to_i64(v))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_FromUnsignedLong(v: c_ulong) -> *mut PyObject {
-    #[allow(clippy::unnecessary_cast)]
-    py_long_from_u64(v as u64)
+    py_long_from_u64(crate::platform::c_ulong_to_u64(v))
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_FromUnsignedLongLong(v: c_ulonglong) -> *mut PyObject {
-    #[allow(clippy::unnecessary_cast)]
-    py_long_from_u64(v as u64)
+    py_long_from_u64(crate::platform::c_ulonglong_to_u64(v))
 }
 
 #[unsafe(no_mangle)]
@@ -1291,7 +1286,12 @@ pub unsafe extern "C" fn _PyLong_FromByteArray(
 /// returned bare -1 sentinels.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsLong(op: *mut PyObject) -> c_long {
-    match checked_signed_value(op, true, C_LONG_MIN_I64, C_LONG_MAX_I64) {
+    match checked_signed_value(
+        op,
+        true,
+        crate::platform::C_LONG_MIN,
+        crate::platform::C_LONG_MAX,
+    ) {
         Ok(value) => value as c_long,
         Err(CheckedLongError::Overflow(_)) => {
             set_long_overflow_msg(c"Python int too large to convert to C long");
@@ -1407,7 +1407,12 @@ pub unsafe extern "C" fn PyLong_AsLongAndOverflow(
     overflow: *mut c_int,
 ) -> c_long {
     let mut ov: c_int = 0;
-    let result = match checked_signed_value(op, true, C_LONG_MIN_I64, C_LONG_MAX_I64) {
+    let result = match checked_signed_value(
+        op,
+        true,
+        crate::platform::C_LONG_MIN,
+        crate::platform::C_LONG_MAX,
+    ) {
         Ok(value) => value as c_long,
         Err(CheckedLongError::Overflow(sign)) => {
             ov = sign as c_int;
@@ -1525,7 +1530,7 @@ pub unsafe extern "C" fn PyLong_AsLongLongAndOverflow(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyLong_AsUnsignedLong(op: *mut PyObject) -> c_ulong {
     const SENTINEL: c_ulong = c_ulong::MAX; // (unsigned long)-1
-    match checked_unsigned_value(op, C_ULONG_MAX_U64) {
+    match checked_unsigned_value(op, crate::platform::C_ULONG_MAX) {
         Ok(value) => value as c_ulong,
         Err(CheckedLongError::Negative) => {
             set_long_overflow_msg(c"can't convert negative value to unsigned int");
@@ -1667,7 +1672,7 @@ pub unsafe extern "C" fn _PyLong_UnsignedLong_Converter(
     }
     let Some(value) = unsigned_converter_value(
         op,
-        C_ULONG_MAX_U64,
+        crate::platform::C_ULONG_MAX,
         c"Python int too large for C unsigned long",
     ) else {
         return 0;
@@ -2083,9 +2088,9 @@ pub unsafe extern "C" fn _PyLong_AsInt(op: *mut PyObject) -> c_int {
     if value == -1 && overflow == 0 && !unsafe { crate::api::errors::PyErr_Occurred() }.is_null() {
         return -1;
     }
-    // Widen to i64 so the range test is platform-independent (c_long is 32-bit
-    // on Windows/wasm32, 64-bit on LP64) and never an absurd comparison.
-    let wide = c_long_to_i64(value);
+    // Widen so the range test is platform-independent and never an absurd
+    // comparison.
+    let wide = crate::platform::c_long_to_i64(value);
     if overflow != 0 || wide > c_int::MAX as i64 || wide < c_int::MIN as i64 {
         set_long_overflow_msg(c"Python int too large to convert to C int");
         return -1;

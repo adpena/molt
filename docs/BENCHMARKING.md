@@ -865,12 +865,12 @@ When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFL
     `uv run --python 3.12 python -m molt.cli dx env --format posix`
     or `--format powershell`; `tools/throughput_env.sh --apply` is a POSIX
     compatibility wrapper over that resolver and still runs cache prune policy.
-- Windows maintainer defaults have one automatic authority: `C:\Molt`.
-  Volume labels and free-space ranking never promote another drive into Molt
-  custody. An explicit output path remains valid for non-custodial benchmark
-  results or scratch, while toolchains and named package inputs stay under the
-  platform custody root. POSIX defaults prefer `/Volumes/APDataStore/Molt`, then
-  `/Volumes/VertigoDataTier/Molt` for build output.
+- Every OS has one automatic artifact authority: the checkout's custody root
+  (`<root>` for a `<root>/molt-src` checkout or `<root>/worktrees/<name>`,
+  for example `C:\Molt` or `~/Molt`). Volume names, labels, and free-space
+  ranking never select or promote a drive. Another volume is an explicit
+  `MOLT_EXTERNAL_ARTIFACT_ROOTS` choice for non-custodial build output; toolchains
+  and named package inputs stay under the custody root.
 - `tools/bench.py` treats explicit canonical artifact env vars as authoritative
   after conformance setup. `MOLT_EXT_ROOT`, `CARGO_TARGET_DIR`,
   `MOLT_DIFF_CARGO_TARGET_DIR`, `MOLT_CACHE`, `MOLT_DIFF_ROOT`,

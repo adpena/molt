@@ -13,6 +13,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from molt.llvm_toolchain import apply_provisioned_wasm_toolchain  # noqa: E402
 from molt.dx import (  # noqa: E402
     CANONICAL_RUN_ENV_KEYS,
     DX_ENV_KEYS,
@@ -91,9 +92,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.dx
         else context.canonical_env(base_env, create_dirs=False)
     )
+    keys: tuple[str, ...] = tuple(DX_ENV_KEYS if args.dx else CANONICAL_RUN_ENV_KEYS)
     if args.dx:
         ensure_repo_src_pythonpath(args.root, env)
-    keys = DX_ENV_KEYS if args.dx else CANONICAL_RUN_ENV_KEYS
+        # A DX shell builds every target: export the provisioned WASI SDK's
+        # tools through the same projection CI and `molt build` use. The SDK
+        # manifest belongs to the compiler source running this tool.
+        keys += apply_provisioned_wasm_toolchain(REPO_ROOT, env)
     fmt = cast(
         Literal["dotenv", "posix", "powershell", "cmd", "json"],
         args.format,

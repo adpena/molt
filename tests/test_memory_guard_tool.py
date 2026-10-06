@@ -18,6 +18,7 @@ import pytest
 from tools.memory_guard_core import process_custody, process_model
 
 import tools.memory_guard as memory_guard
+from molt.custody_layout import unconfigured_state_root
 from molt.memory_guard_paths import (
     active_guard_marker_dir,
     pytest_guard_summary_dir,
@@ -834,9 +835,12 @@ def test_active_guard_markers_follow_external_artifact_custody(tmp_path: Path) -
     repo_root = tmp_path / "repo"
     artifact_root = tmp_path / "artifacts"
 
-    assert active_guard_marker_dir(repo_root, {}) == (
-        repo_root / "tmp" / "memory_guard" / "active"
+    # Unconfigured guard state belongs to the checkout family, never the tree.
+    default_markers = active_guard_marker_dir(repo_root, {})
+    assert default_markers == (
+        unconfigured_state_root(repo_root) / "tmp" / "memory_guard" / "active"
     ).resolve(strict=False)
+    assert repo_root.resolve() not in default_markers.parents
     assert active_guard_marker_dir(
         repo_root, {"MOLT_EXT_ROOT": str(artifact_root)}
     ) == (artifact_root / "tmp" / "memory_guard" / "active").resolve(strict=False)

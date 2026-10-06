@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import molt.dx as molt_dx
+from molt import custody_layout
 import pytest
 
 
@@ -36,10 +37,10 @@ def test_bench_harness_run_cmd_uses_memory_guard(
         "guarded_completed_process",
         fake_guarded_completed_process,
     )
-    # Pin MOLT_EXT_ROOT to its repo-local fallback so the assertions stay
-    # deterministic on developer hosts that have an external (non-C:) artifact
-    # drive attached; _base_env() -> development_artifact_env() prefers an
-    # external root whenever one is available.
+    # Remove every explicit artifact-root candidate so the assertions stay
+    # deterministic on any host: with none, artifacts live under the checkout's
+    # custody root (the checkout itself for a plain clone, `<root>` for a
+    # `<root>/molt-src` family, the ephemeral root under hosted CI).
     for key in (
         *molt_dx.CANONICAL_RUN_ENV_KEYS,
         *molt_dx.DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS,
@@ -62,14 +63,14 @@ def test_bench_harness_run_cmd_uses_memory_guard(
     assert call["capture_output"] is True
     assert call["text"] is True
     assert call["timeout"] == 9.0
-    assert call["env"]["MOLT_EXT_ROOT"] == str(bench_harness.REPO_ROOT)
+    artifact_root = molt_dx.checkout_custody(bench_harness.REPO_ROOT).custody_root
+    assert call["env"]["MOLT_EXT_ROOT"] == str(artifact_root)
     assert call["env"]["CARGO_TARGET_DIR"] == str(
-        molt_dx.cargo_target_dir_for_environment(
-            bench_harness.REPO_ROOT,
-            call["env"],
-        )
+        molt_dx.cargo_target_dir_for_environment(artifact_root, call["env"])
     )
-    assert call["env"]["TMPDIR"] == str(bench_harness.REPO_ROOT / "tmp")
+    assert call["env"]["TMPDIR"] == str(
+        custody_layout.scratch_root(artifact_root, bench_harness.REPO_ROOT)
+    )
 
 
 def test_bench_harness_supports_explicit_molt_profile(

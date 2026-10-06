@@ -28,7 +28,11 @@ from molt.cli import runtime_cargo_plan as cargo_plans
 from molt.cli import runtime_identity_schema as schema
 from molt.python_runtime_identity import validate_python_runtime_identity
 from tests.python_environment_test_support import runtime_identity_manifest
-from tests.executable_test_support import write_mock_executable
+from tests.executable_test_support import (
+    build_native_executable,
+    native_executable_name,
+    write_mock_executable,
+)
 from tests.rustc_test_support import rustc_target_metadata_output
 
 
@@ -1422,17 +1426,33 @@ def test_wasi_sysroot_layout_does_not_include_unattested_parent_version(
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX linker entrypoint symlink contract")
 def test_executable_identity_preserves_role_selecting_symlink(tmp_path: Path) -> None:
-    generic = tmp_path / "lld"
-    write_mock_executable(
-        generic,
-        b"#!/bin/sh\n"
-        b'case "$0" in\n'
-        b'  *wasm-ld) echo "LLD 22.1.8" ;;\n'
-        b'  *) echo "lld is a generic driver" >&2; exit 1 ;;\n'
-        b"esac\n",
+    # lld selects its flavor from argv[0]: `wasm-ld` is a role name for the
+    # generic driver. Identity must probe the role spelling, never the link
+    # target, or the generic driver refuses to run and the tool is misrecorded.
+    generic = build_native_executable(
+        tmp_path / native_executable_name("lld"),
+        """
+fn main() {
+    let argv0 = std::env::args().next().unwrap_or_default();
+    let stem = std::path::Path::new(&argv0)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_owned();
+    if stem == "wasm-ld" {
+        println!("LLD 22.1.8");
+    } else {
+        eprintln!("lld is a generic driver");
+        std::process::exit(1);
+    }
+}
+""",
     )
-    role = tmp_path / "wasm-ld"
-    role.symlink_to(generic)
+    role = tmp_path / native_executable_name("wasm-ld")
+    try:
+        role.symlink_to(generic)
+    except OSError as exc:  # Windows without the symlink privilege
+        pytest.skip(f"host cannot create file symlinks: {exc}")
 
     tool = identity._executable_identity(
         "wasm-ld",

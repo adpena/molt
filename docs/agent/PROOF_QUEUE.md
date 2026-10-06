@@ -1041,7 +1041,7 @@ Windows, macOS, and Linux detached rows from being marked stale just because an
 old queued log or launch summary predates the current execution epoch while
 making violated guard contracts directly actionable.
 Queue-owned uv subprocesses default `UV_LINK_MODE=copy` unless the operator
-already set a value. This keeps APDataStore, exFAT, cross-device caches, and
+already set a value. This keeps exFAT volumes, cross-device caches, and
 other valid Windows/macOS/Linux storage layouts out of noisy hardlink fallback
 paths without disabling cache reuse or overriding an explicit operator choice.
 

@@ -6,6 +6,8 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
+from molt.custody_layout import unconfigured_state_root
+
 
 def memory_guard_state_root(
     repo_root: Path,
@@ -43,7 +45,8 @@ def memory_guard_state_root(
         if not root.is_absolute():
             root = repo_root / root
     else:
-        root = repo_root
+        # Unconfigured state belongs to the checkout family, never the tree.
+        root = unconfigured_state_root(repo_root)
     return root.resolve(strict=False) / "tmp" / "memory_guard"
 
 

@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +20,10 @@ from molt.file_locks import (  # noqa: E402
     _try_acquire_file_lock,
 )
 from molt.cli.default_paths import _default_molt_cache  # noqa: E402
+from molt.dx import (  # noqa: E402
+    DEFAULT_MOLT_CACHE_MAX_AGE_DAYS,
+    DEFAULT_MOLT_CACHE_MAX_GB,
+)
 from molt.cli.wasm_link_cache import (  # noqa: E402
     WASM_LINK_CACHE_DIRECTORY,
     WASM_LINK_CACHE_FAMILIES,
@@ -27,14 +32,6 @@ from molt.cli.wasm_link_cache import (  # noqa: E402
 
 def _default_cache_root() -> Path:
     return _default_molt_cache()
-
-
-def _is_external_volume(path: Path) -> bool:
-    try:
-        resolved = path.resolve()
-    except OSError:
-        resolved = path
-    return str(resolved).startswith("/Volumes/APDataStore/")
 
 
 @dataclass
@@ -227,6 +224,31 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_budget(
+    max_gb: float | None,
+    max_age_days: int | None,
+    environ: Mapping[str, str],
+) -> tuple[float, int]:
+    """Return the cache budget: flags, then the projected env, then molt.dx defaults.
+
+    RunContext projects MOLT_CACHE_MAX_GB and MOLT_CACHE_MAX_AGE_DAYS from the
+    molt.dx defaults, so the pruner and every DX entry point share one budget.
+    """
+    gb = (
+        max_gb
+        if max_gb is not None
+        else float(environ.get("MOLT_CACHE_MAX_GB") or DEFAULT_MOLT_CACHE_MAX_GB)
+    )
+    days = (
+        max_age_days
+        if max_age_days is not None
+        else int(
+            environ.get("MOLT_CACHE_MAX_AGE_DAYS") or DEFAULT_MOLT_CACHE_MAX_AGE_DAYS
+        )
+    )
+    return gb, days
+
+
 def main() -> int:
     args = parse_args()
     cache_root = (
@@ -236,12 +258,7 @@ def main() -> int:
     )
     cache_root.mkdir(parents=True, exist_ok=True)
 
-    max_gb = args.max_gb
-    max_age_days = args.max_age_days
-    if max_gb is None:
-        max_gb = 200.0 if _is_external_volume(cache_root) else 30.0
-    if max_age_days is None:
-        max_age_days = 30
+    max_gb, max_age_days = resolve_budget(args.max_gb, args.max_age_days, os.environ)
 
     max_bytes = int(max_gb * (1024**3))
     before_entries = _collect_entries(cache_root)
