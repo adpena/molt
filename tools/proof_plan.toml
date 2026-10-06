@@ -789,6 +789,16 @@ target = "host"
 profile = "portability"
 
 [[matrix_cell]]
+id = "linux-aarch64-py312-rust-native-dev"
+runner = "ubuntu-24.04-arm"
+os = "linux"
+arch = "aarch64"
+python = "3.12"
+backend = "rust"
+target = "aarch64-unknown-linux-gnu"
+profile = "dev"
+
+[[matrix_cell]]
 id = "macos-arm64-py312-queue-portability"
 runner = "macos-14"
 os = "macos"
@@ -1432,6 +1442,24 @@ resource_class = "compiler-build-resource"
 # LP64/Mach-O drift surfaces in CI instead of on a developer's machine. Cold
 # macos-14 timing is unmeasured; the suite budget keeps headroom over the
 # 240-second Linux cross-check for the same command.
+timeout_budget = "suite"
+cache_domain = "cargo-workspace"
+dependencies = []
+argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"]
+toolchains = ["rustc", "cargo"]
+
+[[command]]
+id = "portability.rust.linux-aarch64.clippy-workspace"
+family = "platform_portability"
+cell = "linux-aarch64-py312-rust-native-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+# aarch64 Linux is the one supported host where C `char` is unsigned and the
+# target baseline lacks the CRC extension, so same-type casts and
+# `#[target_feature]` inlining errors surface only here. Measured 81 s with
+# warm dependencies on a 6-CPU aarch64 VM; the suite budget covers a cold
+# dependency build on the 4-CPU hosted runner. Standard arm runners are free
+# for this public repository.
 timeout_budget = "suite"
 cache_domain = "cargo-workspace"
 dependencies = []

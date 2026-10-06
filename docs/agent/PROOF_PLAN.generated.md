@@ -85,6 +85,7 @@ Scheduled workflows consume the same typed command DAG and receipt executor with
 | `linux-x86_64-rust-audit` | `ubuntu-latest` | `linux` | `x86_64` | `none` | `rust` | `host` | `audit` |
 | `linux-x86_64-formal-verification` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `formal` | `tir-luau` | `verification` |
 | `linux-x86_64-py312-queue-portability` | `ubuntu-latest` | `linux` | `x86_64` | `3.12` | `proof-queue` | `host` | `portability` |
+| `linux-aarch64-py312-rust-native-dev` | `ubuntu-24.04-arm` | `linux` | `aarch64` | `3.12` | `rust` | `aarch64-unknown-linux-gnu` | `dev` |
 | `macos-arm64-py312-queue-portability` | `macos-14` | `macos` | `aarch64` | `3.12` | `proof-queue` | `host` | `portability` |
 | `macos-arm64-py312-rust-native-dev` | `macos-14` | `macos` | `aarch64` | `3.12` | `rust` | `aarch64-apple-darwin` | `dev` |
 | `windows-x86_64-py312-queue-portability` | `windows-2022` | `windows` | `x86_64` | `3.12` | `proof-queue` | `host` | `portability` |
@@ -160,6 +161,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `portability.ir.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
 | `portability.ir.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
 | `portability.rust.macos.clippy-workspace` | `platform_portability` | `macos-arm64-py312-rust-native-dev` | `suite` | 1800 s | `compiler-build-resource` | 0 |
+| `portability.rust.linux-aarch64.clippy-workspace` | `platform_portability` | `linux-aarch64-py312-rust-native-dev` | `suite` | 1800 s | `compiler-build-resource` | 0 |
 | `portability.rust.macos.runtime-gate` | `platform_portability` | `macos-arm64-py312-rust-native-dev` | `shipping` | 9000 s | `compiler-build-resource` | 0 |
 | `repository.github-actions.static` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.commit-attribution` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 60 s | `repository-policy` | 0 |
