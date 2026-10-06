@@ -110,8 +110,9 @@ pub fn parse_hex_float(text: &[u8]) -> Result<f64, HexFloatError> {
     // Match floatobject.c's target-C-long coefficient bound. Besides its
     // diagnostic, this proves exponent +/- 4*digit_count fits in i64 and
     // that saturated decimal exponents cannot be cancelled by the input.
-    let long_min = std::os::raw::c_long::MIN as i64;
-    let long_max = std::os::raw::c_long::MAX as i64;
+    // C `long` is 32-bit on LLP64 Windows and 64-bit on LP64 Unix.
+    let long_max = (1i64 << (std::os::raw::c_long::BITS - 1)) - 1;
+    let long_min = -long_max - 1;
     let digit_limit = ((-1074 - long_min / 2).min(long_max / 2 + 1 - 1024)) / 4;
     if digit_count as u64 > digit_limit as u64 {
         return Err(HexFloatError::TooLong);
