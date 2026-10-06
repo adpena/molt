@@ -12,7 +12,6 @@ from pathlib import Path
 
 import molt.cli as cli
 from molt.cli import backend_binary as cli_backend_binary
-from molt.cli import native_toolchain
 from molt.cli import backend_execution as cli_backend_execution
 from molt.backend_executable_names import backend_executable_name
 from molt.cli.backend_compile import _backend_environment_with_compiler_fingerprint
@@ -84,7 +83,6 @@ def test_target_switch_preserves_admitted_native_and_wasm_compilers(
 
     monkeypatch.setattr(cli_backend_binary, "_backend_fingerprint", fingerprint)
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", build)
-    monkeypatch.setattr(native_toolchain, "_codesign_binary", lambda _p: None)
     monkeypatch.setattr(
         cli_backend_binary,
         "_maybe_hydrate_artifact_from_canonical_target",
@@ -345,7 +343,6 @@ def test_ensure_backend_binary_refreshes_feature_tagged_alias_only_from_admitted
     monkeypatch.setattr(
         cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint
     )
-    monkeypatch.setattr(native_toolchain, "_codesign_binary", lambda _path: None)
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", fail_run_cargo)
     monkeypatch.setattr(
         cli_backend_binary,
@@ -709,7 +706,6 @@ def test_backend_build_publishes_provenance_only_after_successful_probe(
         cli_backend_binary, "_backend_fingerprint", lambda *_a, **_k: fingerprint
     )
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", fake_cargo)
-    monkeypatch.setattr(native_toolchain, "_codesign_binary", lambda _p: None)
     monkeypatch.setattr(
         cli_backend_binary,
         "_maybe_hydrate_artifact_from_canonical_target",
@@ -797,7 +793,6 @@ def test_backend_alias_replacement_during_publication_cannot_acquire_provenance(
     monkeypatch.setattr(
         cli_backend_binary, "_backend_fingerprint", lambda *_a, **_k: fingerprint
     )
-    monkeypatch.setattr(native_toolchain, "_codesign_binary", lambda _p: None)
     monkeypatch.setattr(
         cli_backend_binary,
         "_maybe_hydrate_artifact_from_canonical_target",
@@ -829,4 +824,84 @@ def test_backend_alias_replacement_during_publication_cannot_acquire_provenance(
     )
     assert not cli_backend_binary._runtime_artifact_fingerprint_matches(
         backend_bin, fingerprint, alias_receipt, require_artifact_digest=True
+    )
+
+
+def test_warm_feature_alias_is_exact_cargo_bytes_and_skips_rematerialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unchanged Cargo output must leave the admitted alias and its identity alone.
+
+    Re-signing the alias on macOS rewrote its bytes, so the "alias equals the
+    Cargo output" freshness test never held: every build re-copied, re-probed
+    and published a new compiler identity, which re-keyed every backend and
+    link cache. Signing hooks below mutate bytes the way codesign does.
+    """
+    from molt.cli import atomic_io
+
+    write_compiler_source(tmp_path)
+    stub_compiler_admission(monkeypatch)
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
+    monkeypatch.delenv("MOLT_SKIP_RUNTIME_REBUILD", raising=False)
+    features = ("wasm-backend",)
+    selected = cli_backend_execution._backend_bin_path(tmp_path, "dev-fast", features)
+    cargo_output = selected.with_name(backend_executable_name(os_name=os.name))
+    builds: list[tuple[str, ...]] = []
+    probes: list[list[str]] = []
+
+    def build(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+        builds.append(tuple(cmd))
+        cargo_output.parent.mkdir(parents=True, exist_ok=True)
+        cargo_output.write_bytes(b"compiled:wasm-backend")
+        cargo_output.chmod(0o755)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def probe(cmd, **_kwargs):  # type: ignore[no-untyped-def]
+        probes.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    def rewriting_signature(stage: Path, *_destination: Path) -> None:
+        stage.write_bytes(stage.read_bytes() + os.urandom(8))
+
+    monkeypatch.setattr(
+        cli_backend_binary,
+        "_backend_fingerprint",
+        lambda _root, **_kwargs: _fingerprint(),
+    )
+    monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", build)
+    monkeypatch.setattr(
+        cli_backend_binary,
+        "_maybe_hydrate_artifact_from_canonical_target",
+        lambda **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        cli_backend_binary, "_run_subprocess_captured_to_tempfiles", probe
+    )
+    monkeypatch.setattr(atomic_io, "_codesign_atomic_copy_temp", rewriting_signature)
+
+    def ensure() -> str | None:
+        result = cli_backend_binary._ensure_backend_binary(
+            selected,
+            cargo_timeout=1,
+            json_output=True,
+            cargo_profile="dev-fast",
+            project_root=tmp_path,
+            backend_features=features,
+        )
+        assert result, result.message
+        return result.cache_compiler_fingerprint
+
+    first_identity = ensure()
+    assert len(builds) == 1
+    assert selected.read_bytes() == cargo_output.read_bytes()
+    alias_stat = selected.stat()
+    probes.clear()
+
+    assert ensure() == first_identity
+    assert builds and len(builds) == 1
+    assert probes == []
+    assert selected.read_bytes() == cargo_output.read_bytes()
+    assert (selected.stat().st_ino, selected.stat().st_mtime_ns) == (
+        alias_stat.st_ino,
+        alias_stat.st_mtime_ns,
     )

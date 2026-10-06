@@ -19,7 +19,6 @@ from typing import Any
 import pytest
 
 from molt.cli import backend_binary as cli_backend_binary
-from molt.cli import native_toolchain
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_compile as cli_backend_compile
 from molt.cli import build_inputs as cli_build_inputs
@@ -314,7 +313,6 @@ def _fake_backend_toolchain(
     monkeypatch.setattr(
         cli_backend_binary, "_run_subprocess_captured_to_tempfiles", probe
     )
-    monkeypatch.setattr(native_toolchain, "_codesign_binary", lambda _path: None)
     return cargo_calls, probe_calls
 
 

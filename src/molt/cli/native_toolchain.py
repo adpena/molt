@@ -24,21 +24,36 @@ def _run_completed_command(*args: Any, **kwargs: Any) -> Any:
     return _cli_module()._run_completed_command(*args, **kwargs)
 
 
-def _codesign_binary(binary_path: Path) -> None:
-    """Ad-hoc codesign a binary on macOS."""
+def _codesign_binary(binary_path: Path, *, identifier: str) -> None:
+    """Ad-hoc codesign a binary on macOS under a caller-fixed identifier.
+
+    Without ``--identifier`` codesign derives the signing identifier from the
+    file name, so signing a uniquely named staging file embeds that random name
+    and makes the published bytes differ on every build. A failed signature is
+    a publication failure: an unsigned or stale-signed arm64 binary is killed
+    by the kernel at its first exec.
+    """
     if sys.platform != "darwin":
         return
+    if not identifier:
+        raise ValueError("codesign identifier must be non-empty")
     try:
-        _run_completed_command(
-            ["codesign", "-f", "-s", "-", str(binary_path)],
+        result = _run_completed_command(
+            ["codesign", "--force", "--sign", "-", "--identifier", identifier]
+            + [str(binary_path)],
             capture_output=True,
             env=None,
             cwd=binary_path.parent,
             memory_guard_prefix="MOLT_BUILD",
             timeout=10,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        pass
+    except subprocess.TimeoutExpired as exc:
+        raise OSError(f"codesign timed out for {binary_path}") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise OSError(
+            f"codesign failed for {binary_path} (exit {result.returncode}): {detail}"
+        )
 
 
 def _run_bolt_post_link(
