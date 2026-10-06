@@ -179,6 +179,26 @@ mod tests {
         });
     }
 
+    /// A thread that exits with a pending exception releases it from a
+    /// thread-local destructor. The terminal DECREF probes finalizers through
+    /// the preserved-error boundary, which re-enters the pending-exception
+    /// slot; that must not abort the process.
+    #[test]
+    fn thread_exit_releases_pending_exception_through_finalizer_probe() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        assert!(crate::cpython_abi_hooks::register_cpython_hooks());
+        std::thread::spawn(|| {
+            crate::with_gil_entry_nopanic!(py, {
+                let ptr = alloc_exception(py, "ValueError", "pending at thread exit");
+                assert!(!ptr.is_null());
+                record_exception_owned(py, ptr);
+                assert!(exception_pending(py));
+            });
+        })
+        .join()
+        .expect("thread exit releases its pending exception");
+    }
+
     #[test]
     fn callback_boundary_restores_or_replaces_emergency_raised_state() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
