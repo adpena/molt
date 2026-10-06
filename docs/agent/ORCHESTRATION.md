@@ -631,6 +631,10 @@ Everything else: parallel, lane-owned.
 - Land small and complete: one coherent arc per commit, replaced code
   deleted in the same commit, tests with teeth (proven to fail on
   violation).
+- `main` is protected by a GitHub ruleset: no force-push, no deletion. History
+  was rewritten once (2026-10-06) to remove Claude attribution; translate an old
+  commit ID with `docs/agent/history-rewrite-2026-10-06.commit-map`. Commit
+  messages never carry Claude/AI attribution (hook + CI enforce it).
 - Land via fail-closed fast-forward: `python tools/ff_land.py` pushes HEAD to
   `origin/main` ONLY as a clean fast-forward (refuses on a dirty tree, a
   non-fast-forward / drifted base, or nothing-to-land), so you never trample a
