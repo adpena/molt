@@ -51,6 +51,7 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
+from tests.process_guard_common import install_module_os_view
 
 import pytest
 
@@ -1379,12 +1380,12 @@ def test_difftest_refuses_missing_program(drv):
 
 
 def test_difftest_streams_match_normalizes_windows_pipe_crlf(drv, monkeypatch):
-    monkeypatch.setattr(drv.os, "name", "nt")
+    install_module_os_view(monkeypatch, drv, name="nt")
     assert drv._difftest_streams_match(b"ok\r\n", b"ok\n")
 
 
 def test_difftest_streams_match_stays_byte_strict_on_posix(drv, monkeypatch):
-    monkeypatch.setattr(drv.os, "name", "posix")
+    install_module_os_view(monkeypatch, drv, name="posix")
     assert not drv._difftest_streams_match(b"ok\r\n", b"ok\n")
 
 

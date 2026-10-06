@@ -10,6 +10,7 @@ pre-set wrapper. If this test regresses, the cache silently turned off again.
 from __future__ import annotations
 
 from pathlib import Path
+from tests.process_guard_common import install_module_os_view
 
 import molt.dx as dx
 
@@ -88,7 +89,7 @@ def test_respects_preset_wrapper(monkeypatch):
 def test_windows_auto_disables_sccache(monkeypatch, capsys):
     # On Windows sccache delivers 0 hits + crashes builds; "auto"/default must NOT
     # provision or wire it (negative-leverage cache), and must say so loudly.
-    monkeypatch.setattr(dx.os, "name", "nt")
+    install_module_os_view(monkeypatch, dx, name="nt")
     monkeypatch.setattr(dx, "_sccache_degrade_warned", False, raising=False)
     tried = {"n": 0}
     monkeypatch.setattr(
@@ -102,7 +103,7 @@ def test_windows_auto_disables_sccache(monkeypatch, capsys):
 
 
 def test_windows_explicit_on_forces_sccache(monkeypatch):
-    monkeypatch.setattr(dx.os, "name", "nt")
+    install_module_os_view(monkeypatch, dx, name="nt")
     monkeypatch.setattr(dx, "_provision_sccache", lambda root: "/opt/sccache")
     monkeypatch.setattr(dx, "_sccache_degrade_warned", False, raising=False)
     env = {"MOLT_USE_SCCACHE": "1"}  # power-user override
@@ -111,7 +112,7 @@ def test_windows_explicit_on_forces_sccache(monkeypatch):
 
 
 def test_non_windows_auto_enables_sccache(monkeypatch):
-    monkeypatch.setattr(dx.os, "name", "posix")
+    install_module_os_view(monkeypatch, dx, name="posix")
     monkeypatch.setattr(dx, "_provision_sccache", lambda root: "/opt/sccache")
     monkeypatch.setattr(dx, "_sccache_degrade_warned", False, raising=False)
     env: dict[str, str] = {}  # auto → on where sccache works
@@ -135,6 +136,8 @@ def test_cargo_build_env_incremental_on_when_sccache_off(monkeypatch):
 
     monkeypatch.delenv("RUSTC_WRAPPER", raising=False)
     monkeypatch.delenv("CARGO_INCREMENTAL", raising=False)
+    # "auto" enables a provisioned, responsive sccache; state "off" explicitly.
+    monkeypatch.setenv("MOLT_USE_SCCACHE", "0")
     env = ce._cargo_build_env()
     assert env["CARGO_INCREMENTAL"] == "1"
 
@@ -166,7 +169,7 @@ def test_lld_link_enabled_on_windows_when_available(monkeypatch):
     # the slow serial link.exe.
     import molt.cli.cargo_execution as ce
 
-    monkeypatch.setattr(ce.os, "name", "nt")
+    install_module_os_view(monkeypatch, ce, name="nt")
     monkeypatch.setattr(
         ce,
         "llvm_linker_candidates",
@@ -181,7 +184,7 @@ def test_lld_link_noop_when_absent(monkeypatch):
     # Portability: no lld-link -> keep link.exe (do NOT set a bogus linker).
     import molt.cli.cargo_execution as ce
 
-    monkeypatch.setattr(ce.os, "name", "nt")
+    install_module_os_view(monkeypatch, ce, name="nt")
     monkeypatch.setattr(ce, "llvm_linker_candidates", lambda _role: ())
     env: dict[str, str] = {}
     ce._maybe_enable_lld_link(env)
@@ -191,7 +194,7 @@ def test_lld_link_noop_when_absent(monkeypatch):
 def test_lld_link_noop_non_windows(monkeypatch):
     import molt.cli.cargo_execution as ce
 
-    monkeypatch.setattr(ce.os, "name", "posix")
+    install_module_os_view(monkeypatch, ce, name="posix")
     env: dict[str, str] = {}
     ce._maybe_enable_lld_link(env)
     assert "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER" not in env
@@ -200,7 +203,7 @@ def test_lld_link_noop_non_windows(monkeypatch):
 def test_lld_link_respects_explicit_override(monkeypatch):
     import molt.cli.cargo_execution as ce
 
-    monkeypatch.setattr(ce.os, "name", "nt")
+    install_module_os_view(monkeypatch, ce, name="nt")
     env = {"CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER": "custom-linker"}
     ce._maybe_enable_lld_link(env)
     assert env["CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"] == "custom-linker"

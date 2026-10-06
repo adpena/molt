@@ -12,6 +12,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from tests.process_guard_common import install_module_os_view
 from types import SimpleNamespace
 
 import pytest
@@ -1378,7 +1379,7 @@ def test_apply_classification_asymmetry_red_noisy_but_green_survives() -> None:
 
 
 def test_loadavg_uses_portable_os_probe_before_sysctl(monkeypatch) -> None:
-    monkeypatch.setattr(ps.os, "name", "posix", raising=False)
+    install_module_os_view(monkeypatch, ps, name="posix")
     monkeypatch.setattr(ps.os, "getloadavg", lambda: (3.25, 2.0, 1.0), raising=False)
     monkeypatch.setattr(
         ps,
@@ -1389,7 +1390,7 @@ def test_loadavg_uses_portable_os_probe_before_sysctl(monkeypatch) -> None:
 
 
 def test_loadavg_falls_back_to_sysctl_when_os_probe_missing(monkeypatch) -> None:
-    monkeypatch.setattr(ps.os, "name", "posix", raising=False)
+    install_module_os_view(monkeypatch, ps, name="posix")
     monkeypatch.delattr(ps.os, "getloadavg", raising=False)
 
     def fake_metadata_probe(cmd: list[str], **kwargs) -> SimpleNamespace:
@@ -1401,7 +1402,7 @@ def test_loadavg_falls_back_to_sysctl_when_os_probe_missing(monkeypatch) -> None
 
 
 def test_loadavg_uses_windows_cpu_load_probe(monkeypatch) -> None:
-    monkeypatch.setattr(ps.os, "name", "nt", raising=False)
+    install_module_os_view(monkeypatch, ps, name="nt")
     monkeypatch.setattr(ps, "_ncpu", lambda: 8)
 
     def fake_metadata_probe(cmd: list[str], **kwargs) -> SimpleNamespace:
@@ -1443,7 +1444,7 @@ def test_ncpu_falls_back_to_sysctl_when_os_probe_missing(monkeypatch) -> None:
 
 
 def test_list_build_processes_uses_windows_cim_snapshot(monkeypatch) -> None:
-    monkeypatch.setattr(ps.os, "name", "nt", raising=False)
+    install_module_os_view(monkeypatch, ps, name="nt")
     monkeypatch.setattr(ps.os, "getpid", lambda: 100)
     monkeypatch.setattr(ps.os, "getppid", lambda: 101)
     payload = [
@@ -1492,7 +1493,7 @@ def test_list_build_processes_uses_windows_cim_snapshot(monkeypatch) -> None:
 
 
 def test_list_build_processes_filters_posix_log_observers(monkeypatch) -> None:
-    monkeypatch.setattr(ps.os, "name", "posix", raising=False)
+    install_module_os_view(monkeypatch, ps, name="posix")
     monkeypatch.setattr(ps.os, "getpid", lambda: 10)
     monkeypatch.setattr(ps.os, "getppid", lambda: 11)
 
