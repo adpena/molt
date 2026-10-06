@@ -7794,6 +7794,11 @@ pub const RUNTIME_BOXED_ABIS: &[RuntimeBoxedAbi] = &[
         result: RuntimeBoxedReturn::OwnedValue,
     },
     RuntimeBoxedAbi {
+        symbol: "molt_module_ensure",
+        arity: 1,
+        result: RuntimeBoxedReturn::OwnedValue,
+    },
+    RuntimeBoxedAbi {
         symbol: "molt_module_get_attr",
         arity: 2,
         result: RuntimeBoxedReturn::OwnedValue,
