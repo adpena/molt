@@ -426,6 +426,38 @@ def _recover_transition_locked(
     return owner
 
 
+def _block_uncommitted_retirement_locked(
+    generation: Path, owner: dict[str, object], indexed_digest: object
+) -> dict[str, object]:
+    """Resolve a pending index whose owner never adopted its terminal receipt.
+
+    Retirement publishes the index before the owner records the terminal
+    digest, so an interruption between the two leaves a leased (or
+    indeterminate) owner beside an index naming a terminal it never adopted.
+    Verify that terminal against the retiring owner the finisher would have
+    committed, then record the transition as blocked with the payload
+    preserved and retire the index: the sweep reports the interruption once
+    instead of failing every later guarded command on the host.
+    """
+    committed = {
+        key: value for key, value in owner.items() if key not in {"error", "closure"}
+    }
+    committed.update(
+        target=str(resolve_owned_path(generation / "payload")),
+        state="retiring",
+        terminal_digest=indexed_digest,
+    )
+    _terminal(generation, committed)
+    blocked = {
+        **committed,
+        "state": "blocked",
+        "error": "interrupted before the terminal owner commit; payload preserved without retry",
+    }
+    write_exact(generation / "owner.json", blocked)
+    _drop_index(generation)
+    return blocked
+
+
 def _reclaim_locked(generation: Path, owner: dict[str, object]) -> dict[str, object]:
     if owner["state"] == "reclaimed":
         _terminal(generation, owner)
@@ -621,6 +653,17 @@ def reclaim_terminal_scratch(
                     max_bytes=_MAX_RECEIPT_BYTES,
                     label="scratch pending index",
                 )
+                if (
+                    isinstance(index, dict)
+                    and index.get("schema") == SCHEMA
+                    and "terminal_digest" not in owner
+                    and owner["state"] in {"leased", "indeterminate"}
+                ):
+                    owner = _block_uncommitted_retirement_locked(
+                        generation, owner, index.get("terminal_digest")
+                    )
+                    errors.append(f"{generation}: {owner.get('error')}")
+                    continue
                 if (
                     not isinstance(index, dict)
                     or index.get("schema") != SCHEMA

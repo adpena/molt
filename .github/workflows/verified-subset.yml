@@ -124,6 +124,9 @@ jobs:
           path: proof-receipts/${{ matrix.id }}.json
           if-no-files-found: error
           retention-days: 14
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache
 
   verify-receipts:
     if: ${{ always() && needs.plan.result == 'success' }}

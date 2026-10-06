@@ -210,11 +210,11 @@ def _runtime_library() -> Path | None:
         raise PythonEnvironmentIdentityError(
             f"cannot inspect the loaded CPython runtime library: {exc}"
         ) from exc
-    if (
-        os.name == "nt"
-        or sysconfig.get_config_var("Py_ENABLE_SHARED")
-        or sysconfig.get_config_var("PYTHONFRAMEWORK")
-    ):
+    # The loaded image, not the build configuration, is the authority: the
+    # runtime symbol lives in the interpreter executable itself. Configuration
+    # can disagree; python-build-standalone configures --enable-shared (it ships
+    # a libpython for embedders) yet links its own executable statically.
+    if os.name == "nt" or sysconfig.get_config_var("PYTHONFRAMEWORK"):
         raise PythonEnvironmentIdentityError(
             "cannot identify the loaded CPython runtime library"
         )
@@ -224,13 +224,7 @@ def _runtime_library() -> Path | None:
 def _runtime_linkage(runtime_library: Path | None) -> str:
     if sysconfig.get_config_var("PYTHONFRAMEWORK"):
         return "framework"
-    if runtime_library is not None:
-        return "shared"
-    if sysconfig.get_config_var("Py_ENABLE_SHARED"):
-        raise PythonEnvironmentIdentityError(
-            "CPython reports shared linkage but its loaded runtime library is unavailable"
-        )
-    return "static"
+    return "static" if runtime_library is None else "shared"
 
 
 def _required_runtime_roles(

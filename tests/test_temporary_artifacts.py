@@ -535,6 +535,60 @@ def test_retirement_write_failure_has_pending_discovery_and_preserves_source(
     assert lease.target.is_dir()
 
 
+@pytest.mark.parametrize("owner_state", ["leased", "indeterminate"])
+def test_uncommitted_retirement_is_reported_once_and_preserves_source(
+    tmp_path, monkeypatch, owner_state
+):
+    lease, _ = _lease(tmp_path)
+    leased_owner = dict(lease.owner)
+    original = scratch.write_exact
+
+    def fail_retiring(path, value, **kwargs):
+        if path == lease.generation / "owner.json" and value.get("state") == "retiring":
+            raise OSError("fixture owner commit interrupted")
+        original(path, value, **kwargs)
+
+    monkeypatch.setattr(scratch, "write_exact", fail_retiring)
+    with pytest.raises(OSError, match="owner commit interrupted"):
+        _finish(lease)
+    monkeypatch.setattr(scratch, "write_exact", original)
+    if owner_state == "leased":
+        # A killed guard never reaches its indeterminate failure receipt.
+        write_exact(lease.generation / "owner.json", leased_owner)
+    assert scratch._index_path(lease.generation).is_file()
+
+    first = scratch.reclaim_terminal_scratch(lease.generation.parent)
+    assert first["errors"] == [
+        f"{lease.generation}: interrupted before the terminal owner commit; "
+        "payload preserved without retry"
+    ]
+    owner = _read(lease.generation / "owner.json")
+    assert owner["state"] == "blocked"
+    assert owner["terminal_digest"] == canonical_json_sha256(
+        _read(lease.generation / "terminal.json")
+    )
+    assert not scratch._index_path(lease.generation).exists()
+    assert lease.target.is_dir()
+
+    second = scratch.reclaim_terminal_scratch(lease.generation.parent)
+    assert second["errors"] == []
+    assert lease.target.is_dir()
+
+
+def test_uncommitted_retirement_with_foreign_terminal_stays_fail_closed(tmp_path):
+    lease, _ = _lease(tmp_path)
+    leased_owner = dict(lease.owner)
+    _finish(lease, success=False)
+    write_exact(lease.generation / "owner.json", leased_owner)
+    terminal = _read(lease.generation / "terminal.json")
+    write_exact(lease.generation / "terminal.json", dict(terminal, token="f" * 32))
+    for _ in range(2):
+        result = scratch.reclaim_terminal_scratch(lease.generation.parent)
+        assert result["errors"]
+        assert scratch._index_path(lease.generation).is_file()
+    assert _read(lease.generation / "owner.json") == leased_owner
+
+
 def test_missing_retained_payload_is_reported_not_counted_as_retained(tmp_path):
     lease, _ = _lease(tmp_path)
     _finish(lease, success=False)

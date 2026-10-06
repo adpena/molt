@@ -839,3 +839,24 @@ def test_runtime_library_does_not_depend_on_the_invocation_name(tmp_path) -> Non
     library = runtime._runtime_library()
     expected = None if library is None else str(library)
     assert result.stdout.strip() == json.dumps(expected)
+
+
+@pytest.mark.parametrize("enable_shared", ["0", "1"])
+def test_runtime_linkage_follows_the_loaded_image_not_build_configuration(
+    monkeypatch: pytest.MonkeyPatch, enable_shared: str
+) -> None:
+    # python-build-standalone configures --enable-shared (shipping a libpython
+    # for embedders) yet links its own executable statically: the runtime
+    # symbol lives in the executable, so the linkage is static.
+    config = {"Py_ENABLE_SHARED": enable_shared, "PYTHONFRAMEWORK": ""}
+    monkeypatch.setattr(runtime.sysconfig, "get_config_var", config.get)
+    assert runtime._runtime_linkage(None) == "static"
+    assert runtime._runtime_linkage(Path("/opt/py/lib/libpython3.12.so.1.0")) == (
+        "shared"
+    )
+
+
+def test_framework_linkage_stays_framework(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = {"Py_ENABLE_SHARED": "0", "PYTHONFRAMEWORK": "Python"}
+    monkeypatch.setattr(runtime.sysconfig, "get_config_var", config.get)
+    assert runtime._runtime_linkage(None) == "framework"

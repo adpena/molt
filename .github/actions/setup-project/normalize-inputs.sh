@@ -101,9 +101,12 @@ fi
 
 # Git is guaranteed on every supported Actions runner. Hash a length-delimited
 # canonical tuple so cache keys never embed caller punctuation or list order.
+# The job id is part of the identity: jobs build different crate sets into
+# different target directories, and actions/cache folds paths into the cache
+# version, so a key shared across jobs can never restore for most of them.
 rust_cache_token=$(
-  printf '%s\0%s\0%s\0%s\0' "$toolchain" "$components" "$targets" "$namespace" |
-    git hash-object --stdin
+  printf '%s\0%s\0%s\0%s\0%s\0' "$toolchain" "$components" "$targets" "$namespace" \
+    "${GITHUB_JOB:?}" | git hash-object --stdin
 )
 
 {

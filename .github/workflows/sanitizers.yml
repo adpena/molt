@@ -89,6 +89,9 @@ jobs:
             cargo "+$RUST_NIGHTLY" test -p molt-backend --lib \
               --features native-backend \
               --target "$SANITIZER_TARGET" -Zbuild-std
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache
 
   miri-obj-model:
     name: Miri (NaN-boxing object model)
@@ -139,3 +142,6 @@ jobs:
         run: |
           python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- \
             cargo "+$RUST_NIGHTLY" miri test -p molt-lang-obj-model --test nan_boxing_props
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache

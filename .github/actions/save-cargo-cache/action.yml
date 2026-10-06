@@ -1,0 +1,24 @@
+name: Save Molt Cargo dependency cache
+description: Persist the dependency artifacts setup-project restored, even when proofs fail
+
+# Callers run this as their last step with `if: ${{ !cancelled() }}`. Only
+# main saves: pull requests and merge queues restore main's caches, so they
+# never spend the repository's 10 GB cache quota or evict main's entries.
+runs:
+  using: composite
+  steps:
+    - name: Drop workspace artifacts Cargo rebuilds after every checkout
+      if: env.MOLT_CARGO_CACHE_KEY != '' && github.ref == 'refs/heads/main'
+      shell: bash
+      run: python3 tools/ci_cargo_cache.py prune
+
+    - name: Save Cargo dependency cache
+      if: env.MOLT_CARGO_CACHE_KEY != '' && github.ref == 'refs/heads/main'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ${{ env.MOLT_CARGO_CACHE_TARGET }}
+        key: ${{ env.MOLT_CARGO_CACHE_KEY }}

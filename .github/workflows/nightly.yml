@@ -72,6 +72,9 @@ jobs:
             proof-receipts/nightly-shard-prepare.json
             proof-results/nightly/prepare/**
           if-no-files-found: error
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache
 
   conformance-shard:
     name: Molt conformance shard ${{ matrix.shard }}
@@ -124,6 +127,9 @@ jobs:
           name: nightly-shard-conformance-${{ matrix.shard }}
           path: proof-results/nightly/conformance/*
           if-no-files-found: error
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache
 
   differential-shard:
     name: Differential shard ${{ matrix.shard }}
@@ -179,6 +185,9 @@ jobs:
           name: nightly-shard-differential-${{ matrix.shard }}
           path: proof-results/nightly/differential/*
           if-no-files-found: error
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache
 
   regrtest-shard:
     name: CPython regrtest shard ${{ matrix.shard }}
@@ -233,6 +242,9 @@ jobs:
           name: nightly-shard-regrtest-${{ matrix.shard }}
           path: proof-results/nightly/regrtest/*
           if-no-files-found: error
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache
 
   conformance-aggregate:
     name: Molt Conformance Full
@@ -389,6 +401,9 @@ jobs:
             proof-results/nightly/deterministic-runtime.json
             proof-results/nightly/ir-verification.json
           if-no-files-found: error
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache
 
   formal-verification:
     name: Formal Verification
@@ -432,6 +447,9 @@ jobs:
             proof-results/mutation-tier3.json
             proof-results/translation-tier3.json
           if-no-files-found: error
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache
 
   nightly-verdict:
     name: Nightly receipt verdict

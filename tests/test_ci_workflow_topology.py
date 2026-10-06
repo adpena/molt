@@ -72,6 +72,50 @@ def test_setup_project_callers_use_declared_inputs() -> None:
     assert calls >= 10
 
 
+def test_every_cargo_cache_job_saves_even_when_its_proofs_fail() -> None:
+    # actions/cache saves only after a successful job, so a red job never
+    # warmed its own cache and cold-compiled every dependency on every run.
+    cache_jobs = 0
+    for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
+        payload = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        for name, job in payload.get("jobs", {}).items():
+            steps = job.get("steps", [])
+            caches = any(
+                step.get("uses") == "./.github/actions/setup-project"
+                and str(step.get("with", {}).get("cache-cargo")) == "true"
+                for step in steps
+            )
+            saves = [
+                index
+                for index, step in enumerate(steps)
+                if step.get("uses") == "./.github/actions/save-cargo-cache"
+            ]
+            assert bool(saves) == caches, (workflow.name, name)
+            if caches:
+                cache_jobs += 1
+                assert saves == [len(steps) - 1], (workflow.name, name)
+                assert steps[-1]["if"] == "${{ !cancelled() }}", (workflow.name, name)
+    assert cache_jobs >= 10
+
+    save = yaml.safe_load(_read(".github/actions/save-cargo-cache/action.yml"))
+    prune, persist = save["runs"]["steps"]
+    restore = next(
+        step
+        for step in yaml.safe_load(_read(".github/actions/setup-project/action.yml"))[
+            "runs"
+        ]["steps"]
+        if step.get("id") == "cargo-restore"
+    )
+    main_only = "env.MOLT_CARGO_CACHE_KEY != '' && github.ref == 'refs/heads/main'"
+    assert prune["if"] == persist["if"] == main_only
+    assert prune["run"] == "python3 tools/ci_cargo_cache.py prune"
+    assert re.fullmatch(r"actions/cache/save@[0-9a-f]{40}", persist["uses"])
+    assert persist["uses"].split("@")[1] == restore["uses"].split("@")[1]
+    # actions/cache folds the path list into the cache version.
+    assert persist["with"]["path"] == restore["with"]["path"]
+    assert persist["with"]["key"] == "${{ env.MOLT_CARGO_CACHE_KEY }}"
+
+
 def test_setup_project_cache_identity_is_complete_and_non_incremental() -> None:
     action = _read(".github/actions/setup-project/action.yml")
     normalizer = _read(".github/actions/setup-project/normalize-inputs.sh")
@@ -83,26 +127,33 @@ def test_setup_project_cache_identity_is_complete_and_non_incremental() -> None:
         "rust-toolchain.toml",
         "Cargo.lock",
         "**/Cargo.toml",
-        "tools/proof_plan.toml",
         "config/llvm_toolchain_releases.toml",
         "config/llvm_toolchain_arches.toml",
     ):
         assert token in action
+    # The proof plan is not a Cargo input; hashing it re-keyed every cache on
+    # each unrelated proof edit.
+    assert "tools/proof_plan.toml" not in action
+    # Jobs build different crate sets into different target directories, and
+    # actions/cache folds paths into the cache version: the job id must be part
+    # of the identity or one job's key shadows every other job's cache.
+    assert '"${GITHUB_JOB:?}" | git hash-object --stdin' in normalizer
     steps = yaml.safe_load(action)["runs"]["steps"]
     configure = next(step for step in steps if step.get("id") == "cargo-cache")
-    cache = next(
-        step
-        for step in steps
-        if step.get("name") == "Cache Cargo builds and source downloads"
+    restore = next(step for step in steps if step.get("id") == "cargo-restore")
+    record = next(
+        step for step in steps if step.get("name") == "Record Cargo cache save key"
     )
-    assert re.fullmatch(r"actions/cache@[0-9a-f]{40}", cache["uses"])
+    assert re.fullmatch(r"actions/cache/restore@[0-9a-f]{40}", restore["uses"])
     assert (
-        configure["if"] == cache["if"] == "steps.inputs.outputs.cache-cargo == 'true'"
+        configure["if"]
+        == restore["if"]
+        == record["if"]
+        == "steps.inputs.outputs.cache-cargo == 'true'"
     )
-    assert configure["run"] == "python3 tools/ci_cargo_cache.py"
-    cached_paths = cache["with"]["path"].split()
-    assert "${{" in " ".join(cached_paths)
-    assert "steps.cargo-cache.outputs.target-dir" in cache["with"]["path"]
+    assert configure["run"] == "python3 tools/ci_cargo_cache.py configure"
+    cached_paths = restore["with"]["path"].split()
+    assert "${{ env.MOLT_CARGO_CACHE_TARGET }}" in restore["with"]["path"]
     for source in (
         "~/.cargo/registry/index",
         "~/.cargo/registry/cache",
@@ -110,20 +161,24 @@ def test_setup_project_cache_identity_is_complete_and_non_incremental() -> None:
     ):
         assert source in cached_paths
     for token in ("runner.os", "runner.arch", "steps.inputs.outputs.rust-cache-token"):
-        assert token in cache["with"]["key"]
-        assert token in cache["with"]["restore-keys"]
-    assert "hashFiles(" in cache["with"]["key"]
-    assert "hashFiles(" not in cache["with"]["restore-keys"]
+        assert token in restore["with"]["key"]
+        assert token in restore["with"]["restore-keys"]
+    # A per-run key is never an exact hit, so main always saves a fresh cache;
+    # restore-keys prefer the newest cache for the same lockfile.
+    assert "github.run_id" in restore["with"]["key"]
+    assert "github.run_attempt" in restore["with"]["key"]
+    assert "github.run_id" not in restore["with"]["restore-keys"]
+    assert "hashFiles(" in restore["with"]["key"]
+    assert "steps.cargo-restore.outputs.cache-primary-key" in str(record["env"])
+    assert "MOLT_CARGO_CACHE_KEY=" in record["run"]
     install = next(step for step in steps if step.get("name") == "Install exact Rust")
-    assert steps.index(install) < steps.index(configure) < steps.index(cache)
     assert (
-        sum(
-            step.get("name") == "Cache Cargo builds and source downloads"
-            for step in steps
-        )
-        == 1
+        steps.index(install)
+        < steps.index(configure)
+        < steps.index(restore)
+        < steps.index(record)
     )
-    assert "Cache Cargo source downloads" not in action
+    assert sum("actions/cache/restore@" in str(step.get("uses")) for step in steps) == 1
     assert "cache-uv requires uv" in normalizer
     assert "sync requires uv" in normalizer
     assert "cache-cargo requires rust-toolchain" in normalizer
@@ -964,7 +1019,8 @@ def test_github_workflows_pin_every_external_action_to_full_sha() -> None:
         *REPO_ROOT.glob(".github/actions/*/action.yml"),
     ]
     uses_pattern = re.compile(r"^\s*(?:-\s*)?uses:\s*([^\s#]+)", re.MULTILINE)
-    sha_pattern = re.compile(r"^[^/@]+/[^/@]+@[0-9a-f]{40}$", re.IGNORECASE)
+    # owner/repo[/path]@sha: subpath actions such as actions/cache/restore.
+    sha_pattern = re.compile(r"^[^/@]+/[^/@]+(?:/[^/@]+)*@[0-9a-f]{40}$", re.IGNORECASE)
     found = 0
     for workflow in sorted(action_files):
         text = workflow.read_text(encoding="utf-8")
@@ -1084,8 +1140,8 @@ def test_rust_security_reuses_cached_tool_builds() -> None:
     assert 'rust-toolchain: "1.96.1"' in rust_security
     assert 'cache-cargo: "true"' in rust_security
     setup_project = _read(".github/actions/setup-project/action.yml")
-    assert "Cache Cargo builds and source downloads" in setup_project
-    assert "steps.cargo-cache.outputs.target-dir" in setup_project
+    assert "Restore Cargo dependency cache" in setup_project
+    assert "${{ env.MOLT_CARGO_CACHE_TARGET }}" in setup_project
     assert "cargo install cargo-deny --version 0.20.2 --locked" in rust_security
     assert "cargo install cargo-audit --version 0.22.2 --locked" in rust_security
     assert "rm -rf" not in rust_security

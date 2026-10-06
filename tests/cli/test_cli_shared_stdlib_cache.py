@@ -44,7 +44,7 @@ CACHE_KEYS = importlib.import_module("molt.cli.cache_keys")
 @pytest.fixture(autouse=True)
 def _admit_mock_symbol_reader_commands(monkeypatch: pytest.MonkeyPatch):
     identity = BACKEND_CACHE.stable_regular_file_identity(
-        Path(sys.executable), label="test symbol reader"
+        Path(sys.executable).resolve(strict=True), label="test symbol reader"
     )
 
     @contextmanager

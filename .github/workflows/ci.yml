@@ -76,6 +76,9 @@ jobs:
       - name: Summarize guarded command hotspots
         if: always()
         run: python3 tools/profile_hotspots.py --limit 20
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache
 
   classify-changes:
     name: Changed Path Classifier
@@ -185,6 +188,9 @@ jobs:
             ${{ env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT != '' && format('{0}/tmp/pytest-memory-guard/**/*.json', env.MOLT_CI_EPHEMERAL_CUSTODY_ROOT) || '' }}
           include-hidden-files: true
           if-no-files-found: warn
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache
 
   security-hardening:
     name: Security Hardening
@@ -302,6 +308,9 @@ jobs:
           name: proof-receipt-native-integration
           path: proof-receipts/native_integration.json
           if-no-files-found: error
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache
 
   rust-build-unit-smoke:
     name: Rust Build And Unit Smoke
@@ -361,6 +370,9 @@ jobs:
       - name: Summarize guarded command hotspots
         if: always()
         run: python3 tools/profile_hotspots.py --limit 20
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache
 
   llvm-backend:
     name: LLVM Backend
@@ -434,6 +446,9 @@ jobs:
       - name: Summarize guarded command hotspots
         if: always()
         run: python3 tools/profile_hotspots.py --limit 20
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache
 
   proof-plan-verdict:
     name: Proof Plan Verdict

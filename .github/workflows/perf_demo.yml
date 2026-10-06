@@ -67,3 +67,6 @@ jobs:
             logs/molt_worker.log
             tmp/harness_memory_guard/
             tmp/bench/demo/
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache
