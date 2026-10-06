@@ -1816,6 +1816,7 @@ def test_darwin_native_argv_decoder_preserves_boundaries_and_raw_bytes():
         libsystem=None,
         proc_bsd_info_type=object,
         proc_task_info_type=object,
+        kinfo_proc_type=object,
         proc_pidinfo=lambda *_args: 0,
         proc_listallpids=unused,
         sysctl=sysctl,

@@ -93,6 +93,7 @@ def test_darwin_kernel_argv_preserves_spaces_quotes_and_empty_arguments():
         libsystem=None,
         proc_bsd_info_type=object,
         proc_task_info_type=object,
+        kinfo_proc_type=object,
         proc_pidinfo=lambda *_args: 0,
         proc_listallpids=unused,
         sysctl=sysctl,

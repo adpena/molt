@@ -960,7 +960,14 @@ Memory-guard process sampling reads native process tables: Linux parses one
 enumerates through `proc_listallpids`/`proc_pidinfo` instead of a `ps`
 subprocess with a hard timeout. Another user's process carries zero resident
 kB on macOS because `PROC_PIDTASKINFO` is uid-restricted; the guard never
-sizes those, since global RSS sums only Molt-owned process groups.
+sizes those, since global RSS sums only Molt-owned process groups. A process
+that exited and awaits its parent's `wait()` stays listed by
+`proc_listallpids` while every `proc_pidinfo` flavor answers ESRCH; the
+sampler then reads its `kern.proc.pid` row (the table `ps` reads, with the
+same birth clock as `pbi_start_tvsec`) and leaves `SZOMB` rows out, so a
+killed child is never reported as a live member of its tree. A pid with no
+kernel row was reaped between the two reads; any other row binds the exact
+birth the kernel kept.
 
 Python custody additionally binds the venv launcher and `pyvenv.cfg`, base
 CPython executable and shared libraries, stdlib and native-extension byte

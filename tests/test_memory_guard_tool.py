@@ -1121,6 +1121,174 @@ def test_darwin_sampler_revokes_identity_when_native_binding_changes(
     assert samples[7].started_at_ns is None
 
 
+def _darwin_kernel_row(
+    status: int, *, ppid: int = 3, pgid: int = 7, started_at_ns: int = 123_000_000
+):
+    model = memory_guard._process_model
+    return model._DarwinKernelProcRow(
+        status=status,
+        ppid=ppid,
+        pgid=pgid,
+        started_at_ns=started_at_ns,
+        command="python3.12",
+    )
+
+
+def test_darwin_sampler_omits_exited_process_awaiting_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A SZOMB pid stays listed by proc_listallpids; it is no live member."""
+    model = memory_guard._process_model
+    monkeypatch.setattr(model.sys, "platform", "darwin")
+    monkeypatch.setattr(model, "_darwin_proc_table", lambda: {7: 0, 8: 4096})
+    monkeypatch.setattr(
+        model,
+        "_darwin_proc_metadata",
+        lambda pid: None if pid == 7 else (1, 8, 123_456_789, "cargo"),
+    )
+    monkeypatch.setattr(model, "_darwin_proc_argv", lambda _pid: ("cargo", "build"))
+    rows = {7: _darwin_kernel_row(model._DARWIN_SZOMB)}
+    monkeypatch.setattr(model, "_darwin_proc_kernel_row", lambda pid: rows.get(pid))
+
+    samples = model.sample_processes_posix()
+
+    assert 7 not in samples
+    assert samples[8].started_at_ns == 123_456_789
+
+
+def test_darwin_sampler_omits_pid_reaped_between_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = memory_guard._process_model
+    monkeypatch.setattr(model.sys, "platform", "darwin")
+    monkeypatch.setattr(model, "_darwin_proc_table", lambda: {7: 0})
+    monkeypatch.setattr(model, "_darwin_proc_metadata", lambda _pid: None)
+    monkeypatch.setattr(model, "_darwin_proc_kernel_row", lambda _pid: None)
+
+    assert model.sample_processes_posix() == {}
+
+
+def test_darwin_sampler_binds_leaving_process_from_kernel_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """libproc already answers ESRCH while the kernel row still says live."""
+    model = memory_guard._process_model
+    monkeypatch.setattr(model.sys, "platform", "darwin")
+    monkeypatch.setattr(model, "_darwin_proc_table", lambda: {7: 512})
+    monkeypatch.setattr(model, "_darwin_proc_metadata", lambda _pid: None)
+    monkeypatch.setattr(
+        model, "_darwin_proc_kernel_row", lambda _pid: _darwin_kernel_row(2)
+    )
+    monkeypatch.setattr(model, "_darwin_proc_argv", lambda _pid: ("python3.12", "-c"))
+
+    sample = model.sample_processes_posix()[7]
+
+    assert (sample.ppid, sample.pgid, sample.rss_kb) == (3, 7, 512)
+    assert sample.started_at_ns == 123_000_000
+    assert sample.argv == ("python3.12", "-c")
+    assert sample.command == "python3.12 -c"
+
+
+def test_darwin_sampler_leaves_libproc_withheld_daemon_unbound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """launchd answers neither proc_pidinfo nor KERN_PROCARGS2 to a user."""
+    model = memory_guard._process_model
+    monkeypatch.setattr(model.sys, "platform", "darwin")
+    monkeypatch.setattr(model, "_darwin_proc_table", lambda: {1: 0})
+    monkeypatch.setattr(model, "_darwin_proc_metadata", lambda _pid: None)
+    monkeypatch.setattr(
+        model,
+        "_darwin_proc_kernel_row",
+        lambda _pid: model._DarwinKernelProcRow(
+            status=2, ppid=0, pgid=1, started_at_ns=5_000, command="launchd"
+        ),
+    )
+    monkeypatch.setattr(model, "_darwin_proc_argv", lambda _pid: None)
+
+    sample = model.sample_processes_posix()[1]
+
+    assert (sample.ppid, sample.pgid, sample.rss_kb) == (0, 1, 0)
+    assert sample.started_at_ns is None
+    assert sample.argv == ()
+    assert sample.command == "launchd"
+
+
+def test_darwin_sampler_omits_process_that_exits_mid_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = memory_guard._process_model
+    monkeypatch.setattr(model.sys, "platform", "darwin")
+    monkeypatch.setattr(model, "_darwin_proc_table", lambda: {7: 2048})
+    metadata = iter(((3, 7, 123_456_789, "node"), None))
+    monkeypatch.setattr(model, "_darwin_proc_metadata", lambda _pid: next(metadata))
+    monkeypatch.setattr(model, "_darwin_proc_argv", lambda _pid: ("node", "codex.js"))
+    monkeypatch.setattr(
+        model,
+        "_darwin_proc_kernel_row",
+        lambda _pid: _darwin_kernel_row(model._DARWIN_SZOMB),
+    )
+
+    assert model.sample_processes_posix() == {}
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin kernel process table")
+def test_actual_darwin_kernel_row_matches_libproc_identity() -> None:
+    model = memory_guard._process_model
+    authority = model._load_darwin_process_authority()
+
+    assert (
+        authority.ctypes.sizeof(authority.kinfo_proc_type)
+        == model._DARWIN_KINFO_PROC_SIZE
+    )
+    row = authority.kernel_row(os.getpid())
+    assert row is not None
+    assert row.status != model._DARWIN_SZOMB
+    assert (row.ppid, row.pgid) == (os.getppid(), os.getpgrp())
+    assert row.started_at_ns == model._darwin_proc_started_at_ns(os.getpid())
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin kernel process table")
+def test_actual_darwin_sampler_omits_unreaped_child() -> None:
+    model = memory_guard._process_model
+    # A forked child the test reaps itself, so the SZOMB window is observable.
+    # It reports readiness on one pipe and exits when the other one closes.
+    ready_read, ready_write = os.pipe()
+    release_read, release_write = os.pipe()
+    child = os.fork()
+    if child == 0:  # pragma: no cover - child process
+        os.close(ready_read)
+        os.close(release_write)
+        os.write(ready_write, b"x")
+        os.read(release_read, 1)
+        os._exit(0)
+    os.close(ready_write)
+    os.close(release_read)
+    try:
+        assert os.read(ready_read, 1) == b"x"
+        sample = model.sample_processes_posix().get(child)
+        assert sample is not None
+        assert sample.ppid == os.getpid()
+        assert sample.started_at_ns == model._darwin_proc_started_at_ns(child)
+        os.close(release_write)
+        # Not reaped yet on purpose: the child sits in SZOMB, still listed by
+        # proc_listallpids, while libproc answers ESRCH for it.
+        deadline = time.monotonic() + 5.0
+        while model._darwin_proc_metadata(child) is not None:
+            assert time.monotonic() < deadline, "child never reached SZOMB"
+            time.sleep(0.02)
+        row = model._darwin_proc_kernel_row(child)
+        assert row is not None and row.status == model._DARWIN_SZOMB
+        assert row.started_at_ns == sample.started_at_ns
+        assert child in model._darwin_proc_table()
+        assert child not in model.sample_processes_posix()
+    finally:
+        os.close(ready_read)
+        os.waitpid(child, 0)
+    assert model._darwin_proc_kernel_row(child) is None
+    assert child not in model.sample_processes_posix()
+
+
 def test_descendant_pids_includes_grandchildren() -> None:
     samples = {
         100: memory_guard.ProcessSample(100, 1, 10, "root"),
