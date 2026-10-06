@@ -616,7 +616,10 @@ runtime_name = "molt_module_registry_install"
 
 [[import]]
 name = "module_ensure"
-return_contract = "owned_object"
+# Import sites lower onto a direct call with a boxed ModuleId operand and an
+# owned module result; the boxed ABI is its declaration authority on every
+# native backend, without making it Python-callable.
+boxed_call = true
 type = 2
 runtime_name = "molt_module_ensure"
 
