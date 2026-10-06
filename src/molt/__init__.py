@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from molt._version import version as _resolve_version
-
-__version__ = _resolve_version()
-
 _CONCURRENCY_EXPORTS = {
     "Channel",
     "CancellationToken",
@@ -35,6 +31,14 @@ __all__: list[str] = []
 
 
 def __getattr__(name: str):
+    if name == "__version__":
+        # Resolved on first use. Compiled guests import `molt.gpu` and other
+        # subpackages through this module; an eager lookup would run the
+        # host's package-metadata and file-system probe at guest import time
+        # and pull importlib.metadata into every guest's module closure.
+        from molt._version import version
+
+        return version()
     if name in _CONCURRENCY_EXPORTS:
         raise AttributeError(
             f"moltlib.concurrency.{name} — use 'from moltlib.concurrency import {name}'"
@@ -47,4 +51,4 @@ def __getattr__(name: str):
 
 
 def __dir__() -> list[str]:
-    return sorted(set(__all__) | set(globals()))
+    return sorted(set(__all__) | set(globals()) | {"__version__"})
