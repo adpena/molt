@@ -2387,9 +2387,55 @@ def custody_python(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return create_test_venv(tmp_path_factory.mktemp("proof-custody-python") / "venv")
 
 
-@dataclass(frozen=True)
+@dataclass
 class GuardedExecutionAuthorities:
+    """One Python identity captured per module and re-proved before every reuse.
+
+    Bytecode caches inside the editable source tree are custody bytes, and any
+    interpreter that imports the package between two tests regenerates them.
+    Reuse therefore rehashes every captured file first; on drift the identity
+    is recaptured so a row's prelaunch never describes bytes that no longer
+    exist on disk.
+    """
+
     python_identity: dict[str, object]
+    command: list[str]
+    envelope: dict[str, object]
+    selection: Mapping[str, object]
+    recaptures: int = 0
+
+    def current(self) -> dict[str, object]:
+        rows = toolchain_capture.frozen_files(
+            {"tools": {"python": self.python_identity}}
+        )
+        workers = proof_plan.ProofPlan.load().inventory_hash_workers
+
+        def rehash(row: toolchain_capture.FrozenFile) -> bool:
+            path = Path(row.path)
+            try:
+                with path.open("rb") as stream:
+                    digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                size = path.stat().st_size
+            except OSError:
+                return False
+            return digest == row.sha256 and (row.size is None or size == row.size)
+
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+            if all(executor.map(rehash, rows)):
+                return self.python_identity
+        identity = command_identity._python_identity(
+            self.envelope,
+            self.command,
+            cwd=state.ROOT,
+            env=os.environ,
+            source_root=Path(str(self.python_identity["source_root"])),
+            selection=self.selection,
+            hash_workers=workers,
+        )
+        assert identity is not None
+        self.python_identity = identity
+        self.recaptures += 1
+        return identity
 
 
 _REAL_METADATA_CASES = frozenset(
@@ -2571,7 +2617,12 @@ def guarded_execution_authorities(
         hash_workers=proof_plan.ProofPlan.load().inventory_hash_workers,
     )
     assert identity is not None
-    return GuardedExecutionAuthorities(python_identity=identity)
+    return GuardedExecutionAuthorities(
+        python_identity=identity,
+        command=command,
+        envelope=envelope,
+        selection=selections["python"],
+    )
 
 
 def _rebind_cached_python_identity(
@@ -2700,7 +2751,7 @@ def _execute_request(
             ):
                 return None
             return _rebind_cached_python_identity(
-                authorities.python_identity,
+                authorities.current(),
                 source_root=source_root,
                 selection=selection,
             )
@@ -3306,25 +3357,35 @@ def test_python_bootstrap_parser_preserves_interpreter_options_and_payload() -> 
     envelope = {"python": {"kind": "direct"}}
     exact = [sys.executable, "-S", "-E", "-I", "-c", "pass", "argument"]
     rewritten = command_admission._python_bootstrap_command(envelope, exact)
-    assert rewritten[:4] == [sys.executable, "-S", "-E", "-I"]
-    assert Path(rewritten[4]).name == "python_custody_bootstrap.py"
-    assert rewritten[5:] == ["command", "0", "pass", "argument"]
+    # The queue's canonical no-bytecode input rides along as -B so -E/-I
+    # cannot drop it; a payload that already carries B keeps its own spelling.
+    assert rewritten[:5] == [sys.executable, "-B", "-S", "-E", "-I"]
+    assert Path(rewritten[5]).name == "python_custody_bootstrap.py"
+    assert rewritten[6:] == ["command", "0", "pass", "argument"]
+    grouped = command_admission._python_bootstrap_command(
+        envelope, [sys.executable, "-IB", "-c", "pass"]
+    )
+    assert grouped[:2] == [sys.executable, "-IB"]
+    assert Path(grouped[2]).name == "python_custody_bootstrap.py"
+    assert command_admission._python_bootstrap_command(
+        envelope, [sys.executable, "-Wignore::BytesWarning", "-c", "pass"]
+    )[:3] == [sys.executable, "-B", "-Wignore::BytesWarning"]
 
     py_rewritten = command_admission._python_bootstrap_command(
         {"python": {"kind": "py-launcher", "selector": "-3.12"}},
         ["py.exe", "-3.12", "-I", "-m", "sample_package", "argument"],
     )
-    assert py_rewritten[:3] == ["py.exe", "-3.12", "-I"]
-    assert Path(py_rewritten[3]).name == "python_custody_bootstrap.py"
-    assert py_rewritten[4:] == ["module", "0", "sample_package", "argument"]
+    assert py_rewritten[:4] == ["py.exe", "-3.12", "-B", "-I"]
+    assert Path(py_rewritten[4]).name == "python_custody_bootstrap.py"
+    assert py_rewritten[5:] == ["module", "0", "sample_package", "argument"]
 
     uv_rewritten = command_admission._python_bootstrap_command(
         {"python": {"kind": "uv", "prefix": ["uv", "run"]}},
         ["uv.exe", "run", "python", "-S", "-c", "pass", "argument"],
     )
-    assert uv_rewritten[:4] == ["uv.exe", "run", "python", "-S"]
-    assert Path(uv_rewritten[4]).name == "python_custody_bootstrap.py"
-    assert uv_rewritten[5:] == ["command", "0", "pass", "argument"]
+    assert uv_rewritten[:5] == ["uv.exe", "run", "python", "-B", "-S"]
+    assert Path(uv_rewritten[5]).name == "python_custody_bootstrap.py"
+    assert uv_rewritten[6:] == ["command", "0", "pass", "argument"]
 
 
 @pytest.mark.parametrize(
@@ -3431,6 +3492,48 @@ def test_python_bootstrap_module_and_script_main_semantics(tmp_path: Path) -> No
     assert script_payload["name"] == "__main__"
     assert script_payload["package"] is None
     assert script_payload["spec"] is None
+
+
+def test_python_bootstrap_honors_canonical_bytecode_policy_under_isolated_startup(
+    tmp_path: Path,
+) -> None:
+    """An admitted -I payload cannot drop the queue's no-bytecode input.
+
+    -I implies -E, so the interpreter ignores PYTHONDONTWRITEBYTECODE while
+    site still imports the repository startup adapter; without -B that
+    adapter rewrote bytecode caches inside custody-inventoried source and
+    turned the row into non-evidence.
+    """
+    probe = (
+        "import json,sys; print(json.dumps({'flag': sys.flags.dont_write_bytecode,"
+        "'dont_write': sys.dont_write_bytecode,"
+        "'adapter': 'molt.pytest_memory_guard_bootstrap' in sys.modules}))"
+    )
+    rewritten = command_admission._python_bootstrap_command(
+        {"python": {"kind": "direct"}}, [sys.executable, "-I", "-c", probe]
+    )
+    assert rewritten[1:3] == ["-B", "-I"]
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key != "PYTHONPATH" and not key.startswith("MOLT_PROOF_CHILD_CUSTODY")
+    }
+    env.pop("PYTHONDONTWRITEBYTECODE", None)
+    completed = run_custody_subject_process(
+        rewritten,
+        cwd=tmp_path,
+        env=env,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["flag"] == 1
+    assert payload["dont_write"] is True
+    # The repository adapter still ran under -I; it just could not write.
+    assert payload["adapter"] is True
 
 
 def test_python_bootstrap_pytest_disables_source_cache_exactly_once(

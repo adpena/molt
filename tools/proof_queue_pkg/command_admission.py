@@ -1378,10 +1378,14 @@ def _python_bootstrap_command(
             return [supervised_executable, *invocation.interpreter_options]
         return exact_values
     bootstrap = _PYTHON_CUSTODY_BOOTSTRAP.resolve(strict=True)
-    skip_first_line = any(
-        option.startswith("-") and not option.startswith("-X") and "x" in option[1:]
-        for option in invocation.interpreter_options
-    )
+    skip_first_line = _interpreter_flag_present(invocation.interpreter_options, "x")
+    # PYTHONDONTWRITEBYTECODE is a queue-owned canonical input, but -E and -I
+    # make the interpreter ignore it while site still imports the repository
+    # startup adapter from custody-inventoried source. -B is the same policy
+    # as an interpreter option, so no admitted payload can drop it.
+    interpreter_options = list(invocation.interpreter_options)
+    if not _interpreter_flag_present(interpreter_options, "B"):
+        interpreter_options.insert(0, "-B")
     arguments = list(invocation.arguments)
     if invocation.mode == "module" and invocation.target == "pytest":
         cache_disabled = any(
@@ -1400,8 +1404,22 @@ def _python_bootstrap_command(
         payload.append(invocation.target)
     payload.extend(arguments)
     if supervised_executable is not None:
-        return [supervised_executable, *invocation.interpreter_options, *payload]
-    return [*outer, *invocation.interpreter_options, *payload]
+        return [supervised_executable, *interpreter_options, *payload]
+    return [*outer, *interpreter_options, *payload]
+
+
+def _interpreter_flag_present(options: Sequence[str], flag: str) -> bool:
+    """Whether a single-letter CPython flag is set in parsed interpreter options.
+
+    Only short-option groups carry flags; -W and -X take free-text values and
+    long options are named, so none of those can match a letter.
+    """
+    return any(
+        option.startswith("-")
+        and not option.startswith(("--", "-W", "-X"))
+        and flag in option[1:]
+        for option in options
+    )
 
 
 def _supervised_execution_command(
