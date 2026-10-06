@@ -928,13 +928,24 @@ def _write_linux_proc_sample(
 ) -> None:
     proc = root / str(pid)
     proc.mkdir(parents=True)
-    tail = ["S", str(ppid), str(pgid), *(["0"] * 16), str(start_ticks)]
+    # Fields after the comm: state, ppid, pgid, ..., starttime (index 19),
+    # vsize (20), rss pages (21). The sampler reads rss from this row, so the
+    # fixture carries no `status` file at all.
+    rss_pages = 4096 // memory_guard._process_model._LINUX_PAGE_KB
+    tail = [
+        "S",
+        str(ppid),
+        str(pgid),
+        *(["0"] * 16),
+        str(start_ticks),
+        "0",
+        str(rss_pages),
+    ]
     (proc / "stat").write_text(
         f"{pid} (worker) {' '.join(tail)}\n",
         encoding="utf-8",
     )
     (proc / "cmdline").write_bytes(b"python\0worker.py\0")
-    (proc / "status").write_text("Name:\tworker\nVmRSS:\t1234 kB\n", encoding="utf-8")
 
 
 def test_linux_proc_sampler_binds_lineage_identity_command_and_rss(
@@ -953,7 +964,7 @@ def test_linux_proc_sampler_binds_lineage_identity_command_and_rss(
     assert samples[200].ppid == 100
     assert samples[200].pgid == 200
     assert samples[200].command == "python worker.py"
-    assert samples[200].rss_kb == 1234
+    assert samples[200].rss_kb == 4096
     assert samples[200].started_at_ns is not None
     assert samples[200].elapsed_sec is not None
 
@@ -995,16 +1006,7 @@ def test_darwin_sampler_keeps_bound_launcher_arguments_for_host_protection(
 ) -> None:
     model = memory_guard._process_model
     monkeypatch.setattr(model.sys, "platform", "darwin")
-    monkeypatch.setattr(
-        model.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="7 3 7 2048 Thu Jul 17 07:15:01 2026 node\n",
-            stderr="",
-        ),
-    )
+    monkeypatch.setattr(model, "_darwin_proc_table", lambda: {7: 2048})
     metadata = (3, 7, 123_456_789, "node")
     monkeypatch.setattr(model, "_darwin_proc_metadata", lambda _pid: metadata)
     monkeypatch.setattr(
@@ -1030,16 +1032,7 @@ def test_darwin_sampler_revokes_identity_when_native_binding_changes(
 ) -> None:
     model = memory_guard._process_model
     monkeypatch.setattr(model.sys, "platform", "darwin")
-    monkeypatch.setattr(
-        model.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            args=[],
-            returncode=0,
-            stdout="7 3 7 2048 Thu Jul 17 07:15:01 2026 node\n",
-            stderr="",
-        ),
-    )
+    monkeypatch.setattr(model, "_darwin_proc_table", lambda: {7: 2048})
     metadata = iter(
         (
             (3, 7, 123_456_789, "node"),
