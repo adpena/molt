@@ -7,6 +7,7 @@ passes are not native credit. Darwin filesystem recovery still defers unknown.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import subprocess
@@ -238,15 +239,12 @@ def test_restored_non_incremental_artifacts_remain_admitted_guard_inputs(tmp_pat
     dependency = target / "debug" / "deps" / "librestored.rlib"
     dependency.parent.mkdir(parents=True)
     dependency.write_bytes(b"restored non-incremental dependency")
-    # An explicit custody root keeps the test independent of where the checkout
-    # lives (GitHub's Windows runners check out on D:, which canonical custody
-    # rejects as a default durable authority).
+    # Layer the explicit selections over the process environment, as the real
+    # harness does: hosted runners prove their ephemeral checkout custody there
+    # (a bare mapping would demote GitHub's D: checkout to forbidden durable
+    # custody on Windows).
     canonical = canonical_harness_env(
-        {
-            "CARGO_TARGET_DIR": str(target),
-            "CARGO_INCREMENTAL": "0",
-            "MOLT_EXT_ROOT": str(tmp_path / "canonical"),
-        }
+        {**os.environ, "CARGO_TARGET_DIR": str(target), "CARGO_INCREMENTAL": "0"}
     )
     assert canonical["CARGO_TARGET_DIR"] == str(target)
     assert canonical["CARGO_INCREMENTAL"] == "0"

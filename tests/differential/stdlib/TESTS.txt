@@ -1844,6 +1844,7 @@ tests/differential/stdlib/sys_setrecursionlimit.py
 tests/differential/stdlib/sys_stat_version_gate.py
 tests/differential/stdlib/sys_stdio_build_mode.py
 tests/differential/stdlib/sys_stdlib_module_names.py
+tests/differential/stdlib/sys_struct_sequences.py
 tests/differential/stdlib/tabnanny_basic.py
 tests/differential/stdlib/tarfile_basic.py
 tests/differential/stdlib/tempfile_basic.py
