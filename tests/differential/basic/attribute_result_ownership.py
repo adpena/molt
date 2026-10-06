@@ -50,3 +50,40 @@ def attribute_lifetime_refs():
 value_ref, holder_ref = attribute_lifetime_refs()
 gc.collect()
 print("attribute-released", value_ref() is None, holder_ref() is None)
+
+
+events = []
+
+
+class Observed:
+    def __init__(self, value):
+        self.value = value
+
+    def __del__(self):
+        events.append("receiver released")
+
+    @property
+    def property_value(self):
+        events.append("property read")
+        return self.value
+
+    def __getitem__(self, key):
+        events.append("item read")
+        return self.value
+
+
+def consume(value):
+    events.append("consume " + value)
+
+
+def owned_reads():
+    consume(Observed("attribute").value)
+    consume(Observed("property").property_value)
+    consume(Observed("item")[0])
+    consume([Observed("list item")][0].value)
+    consume((Observed("tuple item"),)[0].value)
+    consume({"key": Observed("dict item")}["key"].value)
+
+
+owned_reads()
+print("owned-read-order", events)

@@ -184,6 +184,8 @@ fn canonical_labelled_transfers_execute_targets_phis_backedges_and_returns() {
                     float("answer", 42.0),
                     op("ret", &["answer"], None),
                     label("label", 1),
+                    op("const_none", &[], Some("implicit_none")),
+                    op("ret", &["implicit_none"], None),
                 ],
             ),
             function(
@@ -204,6 +206,8 @@ fn canonical_labelled_transfers_execute_targets_phis_backedges_and_returns() {
     molt_tir::validate_simple_ir(&ir).expect("fixture transport must be valid");
     molt_ir::simple_verify::validate_simple_ir_control_flow(&ir)
         .expect("fixture must use the admitted canonical graph");
+    let verification = molt_ir::simple_verify::verify_simple_ir(&ir);
+    assert!(verification.is_ok(), "{:?}", verification.errors);
     // This proves the emitter, not target support: Rust still does not claim
     // unstructured flow, truthiness, or fallible-protocol runtime capabilities.
     let mut backend = RustBackend::new();
@@ -256,6 +260,47 @@ fn check_labelled_flow() {
         compile_and_run_emitted(&source, "labelled_scalar_flow").trim(),
         "17.0"
     );
+}
+
+#[test]
+fn unreachable_terminators_trap_in_structured_and_labelled_flow() {
+    let ir = SimpleIR {
+        functions: vec![
+            function("structured_trap", &[], vec![op("unreachable", &[], None)]),
+            function(
+                "labelled_trap",
+                &[],
+                vec![
+                    label("jump", 1),
+                    label("label", 1),
+                    op("unreachable", &[], None),
+                ],
+            ),
+            FunctionIR {
+                return_abi: molt_ir::FunctionReturnAbi::Void,
+                name: "molt_main".into(),
+                ops: vec![op("ret_void", &[], None)],
+                ..FunctionIR::default()
+            },
+        ],
+        profile: None,
+    };
+    let mut backend = RustBackend::new();
+    let source = backend.compile(&ir);
+    assert!(
+        backend.unsupported_ops.is_empty(),
+        "{:?}",
+        backend.unsupported_ops
+    );
+    let source = source.replacen(
+        "fn main() {",
+        r#"fn main() {
+        assert!(std::panic::catch_unwind(|| structured_trap(&mut vec![])).is_err());
+        assert!(std::panic::catch_unwind(|| labelled_trap(&mut vec![])).is_err());
+    "#,
+        1,
+    );
+    assert!(compile_and_run_emitted(&source, "unreachable_flow").is_empty());
 }
 
 #[test]

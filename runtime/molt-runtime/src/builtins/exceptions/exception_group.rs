@@ -1,71 +1,82 @@
+//! The one BaseExceptionGroup semantic authority (CPython 3.12
+//! `Objects/exceptions.c`): constructor admission (`BaseExceptionGroup_new`),
+//! the default `derive`, `exceptiongroup_subset` and
+//! `exceptiongroup_split_recursive`. Managed allocation, native C allocation
+//! (`RuntimeHooks::exception_group_admit`), `split`, `subgroup`, `derive` and
+//! the `except*` match/combine intrinsics all consume these primitives.
+
 use super::*;
+use molt_cpython_abi::hooks::ExceptionGroupRequest;
+use molt_cpython_abi::{
+    abi_types as cabi,
+    api::{refcount as cref, sequences as cseq},
+};
 
-struct ExceptionGroupItems {
-    items: Vec<u64>,
-    all_exception: bool,
-    ownership: ExceptionGroupItemOwnership,
-}
+use super::storage::{ExceptionStorage, ExceptionValue as Owned, native_owned_value};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ExceptionGroupItemOwnership {
-    Borrowed,
-    Owned,
-}
-
-impl ExceptionGroupItems {
-    fn new(ownership: ExceptionGroupItemOwnership) -> Self {
-        Self {
-            items: Vec::new(),
-            all_exception: true,
-            ownership,
-        }
-    }
-
-    fn release_owned(&mut self, _py: &PyToken<'_>) {
-        if self.ownership == ExceptionGroupItemOwnership::Owned {
-            for bits in self.items.drain(..) {
-                dec_ref_bits(_py, bits);
-            }
-        }
-    }
-
-    fn fail(mut self, _py: &PyToken<'_>) -> Option<Self> {
-        self.release_owned(_py);
-        None
-    }
-
-    fn try_push(&mut self, _py: &PyToken<'_>, bits: u64) -> bool {
-        if self.items.try_reserve(1).is_err() {
-            if self.ownership == ExceptionGroupItemOwnership::Owned {
-                dec_ref_bits(_py, bits);
-            }
-            self.release_owned(_py);
-            let _ = raise_exception::<u64>(_py, "MemoryError", "");
-            return false;
-        }
-        self.items.push(bits);
-        true
-    }
-
-    /// Transfer the collected items into the canonical exceptions tuple. The
-    /// tuple takes one reference per item; generic-sequence results then release
-    /// their temporary owned references exactly once on both success and OOM.
-    fn into_owned_tuple(mut self, _py: &PyToken<'_>) -> Option<u64> {
-        let tuple_ptr = alloc_tuple(_py, &self.items);
-        self.release_owned(_py);
-        (!tuple_ptr.is_null()).then(|| MoltObject::from_ptr(tuple_ptr).bits())
+fn release(py: &PyToken<'_>, bits: u64) {
+    if exception_pending(py) {
+        molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, bits));
+    } else {
+        dec_ref_bits(py, bits);
     }
 }
 
-struct ExceptionGroupItem {
-    bits: u64,
-    owned: bool,
+/// Raise unless a callee already published the failure.
+fn fail<T: ExceptionSentinel>(py: &PyToken<'_>, kind: &str, message: &str) -> T {
+    if exception_pending(py) {
+        T::exception_sentinel()
+    } else {
+        raise_exception(py, kind, message)
+    }
 }
 
+fn alloc_owned_str<'a, 'py>(py: &'a PyToken<'py>, text: &[u8]) -> Option<Owned<'a, 'py>> {
+    let ptr = alloc_string(py, text);
+    if ptr.is_null() {
+        return fail(py, "MemoryError", "string allocation failed");
+    }
+    Some(Owned::adopt(py, MoltObject::from_ptr(ptr).bits()))
+}
+
+fn alloc_owned_tuple<'a, 'py>(py: &'a PyToken<'py>, items: &[u64]) -> Option<Owned<'a, 'py>> {
+    let ptr = alloc_tuple(py, items);
+    if ptr.is_null() {
+        return fail(py, "MemoryError", "tuple allocation failed");
+    }
+    Some(Owned::adopt(py, MoltObject::from_ptr(ptr).bits()))
+}
+
+fn alloc_owned_list<'a, 'py>(py: &'a PyToken<'py>) -> Option<Owned<'a, 'py>> {
+    let ptr = alloc_list(py, &[]);
+    if ptr.is_null() {
+        return fail(py, "MemoryError", "list allocation failed");
+    }
+    Some(Owned::adopt(py, MoltObject::from_ptr(ptr).bits()))
+}
+
+fn list_append(py: &PyToken<'_>, list: &Owned<'_, '_>, item: u64) -> Option<()> {
+    let Some(ptr) = obj_from_bits(list.bits()).as_ptr() else {
+        return fail(py, "SystemError", "exception group partition is not a list");
+    };
+    if unsafe { crate::object::list_mutation::append(py, ptr, item) } {
+        Some(())
+    } else {
+        fail(py, "MemoryError", "list allocation failed")
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn exception_group_message_bits(_py: &PyToken<'_>, ptr: *mut u8) -> u64 {
-    exception_materialized_message_bits(_py, ptr)
+    let bits = unsafe { exception_msg_bits(ptr) };
+    if exception_field_is_missing(bits) {
+        MoltObject::none().bits()
+    } else {
+        bits
+    }
 }
 
+#[cfg(test)]
 pub(crate) fn exception_group_exceptions_bits(_py: &PyToken<'_>, ptr: *mut u8) -> Option<u64> {
     let bits =
         unsafe { exception_typed_field_raw_bits(ptr, ExceptionTypedField::GroupExceptions)? };
@@ -74,726 +85,747 @@ pub(crate) fn exception_group_exceptions_bits(_py: &PyToken<'_>, ptr: *mut u8) -
     })
 }
 
-fn exception_group_collect_exceptions(
-    _py: &PyToken<'_>,
-    exceptions_bits: u64,
-) -> Option<ExceptionGroupItems> {
-    let builtins = builtin_classes(_py);
-    let exceptions_obj = obj_from_bits(exceptions_bits);
-    if let Some(ptr) = exceptions_obj.as_ptr() {
+/// CPython `PyExceptionInstance_Check` plus real-type `Exception` ancestry.
+/// Managed values use their class edge and native C objects their exact
+/// native type; instance `__class__` is never consulted.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExceptionIdentity {
+    NotException,
+    BaseException,
+    Exception,
+}
+
+/// Keep the original tuple alive across predicates and derive callbacks.
+/// Managed tuples expose their immutable slice; foreign tuples use the same
+/// C tuple accessors as extension consumers, without invoking subtype iteration.
+struct ExceptionTuple<'a, 'py> {
+    tuple: Owned<'a, 'py>,
+}
+
+impl ExceptionTuple<'_, '_> {
+    fn try_all(&self, mut consume: impl FnMut(u64) -> Option<bool>) -> Option<bool> {
+        let py = self.tuple.py;
+        let Some(ptr) = obj_from_bits(self.tuple.bits()).as_ptr() else {
+            return fail(py, "SystemError", "exception group has no exceptions tuple");
+        };
+        if unsafe { object_type_id(ptr) } == TYPE_ID_TUPLE {
+            let values = unsafe { crate::object::seq_access::pin_tuple(py, ptr) }?;
+            for &value in values.iter() {
+                if !consume(value)? {
+                    return Some(false);
+                }
+            }
+            return Some(true);
+        }
+        if unsafe { object_type_id(ptr) } != crate::TYPE_ID_FOREIGN {
+            return fail(py, "SystemError", "exception group has no exceptions tuple");
+        }
         unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_TUPLE || type_id == TYPE_ID_LIST {
-                let elems = crate::object::seq_access::snapshot(
-                    _py,
-                    ptr,
-                    "sequence snapshot allocation failed",
-                )?;
-                if elems.is_empty() {
-                    let _ = raise_exception::<u64>(
-                        _py,
-                        "ValueError",
-                        "second argument (exceptions) must be a non-empty sequence",
+            let tuple = std::ptr::with_exposed_provenance_mut(
+                crate::object::foreign::foreign_ptr_from_obj(ptr),
+            );
+            let len = cseq::PyTuple_Size(tuple);
+            if len < 0 {
+                crate::cpython_abi_hooks::propagate_native_failure(
+                    py,
+                    "exception group tuple read",
+                );
+                return None;
+            }
+            for index in 0..len {
+                let child = cseq::PyTuple_GetItem(tuple, index);
+                if child.is_null() {
+                    crate::cpython_abi_hooks::propagate_native_failure(
+                        py,
+                        "exception group tuple item",
                     );
                     return None;
                 }
-                let mut collected = ExceptionGroupItems::new(ExceptionGroupItemOwnership::Borrowed);
-                for (idx, &item_bits) in elems.iter().enumerate() {
-                    if !collected.try_push(_py, item_bits) {
-                        return None;
-                    }
-                    let item_class = type_of_bits(_py, item_bits);
-                    if !issubclass_bits(item_class, builtins.base_exception) {
-                        let msg = format!(
-                            "Item {idx} of second argument (exceptions) is not an exception"
-                        );
-                        let _ = raise_exception::<u64>(_py, "ValueError", &msg);
-                        return collected.fail(_py);
-                    }
-                    if !issubclass_bits(item_class, builtins.exception) {
-                        collected.all_exception = false;
-                    }
+                cref::Py_INCREF(child);
+                let child = native_owned_value(py, child)?;
+                if !consume(child.bits())? {
+                    return Some(false);
                 }
-                return Some(collected);
             }
         }
-        let getitem_name = attr_name_bits_from_bytes(_py, b"__getitem__")?;
-        let getitem_bits = unsafe { attr_lookup_ptr_allow_missing(_py, ptr, getitem_name) };
-        dec_ref_bits(_py, getitem_name);
-        if let Some(bits) = getitem_bits {
-            dec_ref_bits(_py, bits);
-        } else {
-            let _ = raise_exception::<u64>(
-                _py,
-                "TypeError",
-                "second argument (exceptions) must be a sequence",
-            );
-            return None;
-        }
-        let mut collected = ExceptionGroupItems::new(ExceptionGroupItemOwnership::Owned);
-        let mut index = 0i64;
-        loop {
-            let idx_bits = MoltObject::from_int(index).bits();
-            let item_bits = molt_index(exceptions_bits, idx_bits);
-            if exception_pending(_py) {
-                let exc_bits = molt_exception_last();
-                let is_index = exception_matches_builtin_name(_py, exc_bits, "IndexError");
-                if is_index {
-                    clear_exception(_py);
-                    dec_ref_bits(_py, exc_bits);
-                    if collected.items.is_empty() {
-                        let _ = raise_exception::<u64>(
-                            _py,
-                            "ValueError",
-                            "second argument (exceptions) must be a non-empty sequence",
-                        );
-                        return collected.fail(_py);
-                    }
-                    break;
-                }
-                dec_ref_bits(_py, exc_bits);
-                return collected.fail(_py);
-            }
-            if !collected.try_push(_py, item_bits) {
-                return None;
-            }
-            let item_class = type_of_bits(_py, item_bits);
-            if !issubclass_bits(item_class, builtins.base_exception) {
-                let msg =
-                    format!("Item {index} of second argument (exceptions) is not an exception");
-                let _ = raise_exception::<u64>(_py, "ValueError", &msg);
-                return collected.fail(_py);
-            }
-            if !issubclass_bits(item_class, builtins.exception) {
-                collected.all_exception = false;
-            }
-            index += 1;
-        }
-        return Some(collected);
+        Some(true)
     }
-    let _ = raise_exception::<u64>(
-        _py,
-        "TypeError",
-        "second argument (exceptions) must be a sequence",
-    );
-    None
 }
 
-fn exception_group_alloc(
-    _py: &PyToken<'_>,
-    class_bits: u64,
-    message_bits: u64,
-    args_exceptions_bits: u64,
-    items: &[u64],
-    owned_exceptions_tuple_bits: Option<u64>,
-) -> Option<u64> {
-    let tuple_bits = if let Some(bits) = owned_exceptions_tuple_bits {
-        bits
-    } else {
-        let tuple_ptr = alloc_tuple(_py, items);
-        if tuple_ptr.is_null() {
-            return None;
-        }
-        MoltObject::from_ptr(tuple_ptr).bits()
-    };
-    let args_ptr = alloc_tuple(_py, &[message_bits, args_exceptions_bits]);
-    if args_ptr.is_null() {
-        dec_ref_bits(_py, tuple_bits);
-        return None;
-    }
-    let args_bits = MoltObject::from_ptr(args_ptr).bits();
-    let ptr = alloc_exception_obj(
-        _py,
-        class_bits,
-        message_bits,
-        args_bits,
-        MoltObject::none().bits(),
-    );
-    let value_installed = !ptr.is_null()
-        && exception_typed_field_replace_internal(
-            _py,
-            MoltObject::from_ptr(ptr).bits(),
-            ExceptionTypedField::GroupExceptions,
-            tuple_bits,
+fn native_identity(ptr: *mut u8) -> u8 {
+    unsafe {
+        molt_cpython_abi::api::errors::native_exception_identity(
+            core::ptr::with_exposed_provenance_mut(crate::object::foreign::foreign_ptr_from_obj(
+                ptr,
+            )),
         )
-        .is_ok();
-    dec_ref_bits(_py, args_bits);
-    dec_ref_bits(_py, tuple_bits);
-    if !value_installed {
-        if !ptr.is_null() {
-            dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
-        }
-        None
-    } else {
-        Some(MoltObject::from_ptr(ptr).bits())
     }
 }
 
-fn exception_group_alloc_collected(
-    _py: &PyToken<'_>,
-    class_bits: u64,
-    message_bits: u64,
-    args_exceptions_bits: u64,
-    collected: ExceptionGroupItems,
-) -> Option<u64> {
-    let tuple_bits = collected.into_owned_tuple(_py)?;
-    exception_group_alloc(
-        _py,
-        class_bits,
-        message_bits,
-        args_exceptions_bits,
-        &[],
-        Some(tuple_bits),
-    )
-}
-
-unsafe fn exception_group_set_slot_bits(
-    _py: &PyToken<'_>,
-    ptr: *mut u8,
-    field: ExceptionFieldSlot,
-    bits: u64,
-) {
-    unsafe {
-        let _ = exception_publish_field_slot(_py, ptr, field, bits);
-    }
-}
-
-unsafe fn exception_group_copy_metadata(
-    _py: &PyToken<'_>,
-    dest_ptr: *mut u8,
-    src_ptr: *mut u8,
-    copy_context: bool,
-    copy_trace: bool,
-    suppress: bool,
-    copy_notes: bool,
-) {
-    unsafe {
-        if copy_context {
-            let cause_bits = exception_cause_bits(src_ptr);
-            let context_bits = exception_context_bits(src_ptr);
-            exception_group_set_slot_bits(_py, dest_ptr, ExceptionFieldSlot::Cause, cause_bits);
-            exception_group_set_slot_bits(_py, dest_ptr, ExceptionFieldSlot::Context, context_bits);
-        }
-        if copy_trace {
-            let trace_bits = exception_trace_bits(src_ptr);
-            exception_group_set_slot_bits(_py, dest_ptr, ExceptionFieldSlot::Traceback, trace_bits);
-        }
-        let _ = exception_replace_suppress_context(
-            _py,
-            MoltObject::from_ptr(dest_ptr).bits(),
-            suppress,
-        );
-
-        // Propagate __notes__ (PEP 678) through its dedicated BaseException
-        // slot and shallow-copy the list to avoid aliasing.
-        if copy_notes {
-            let src_notes_bits = exception_notes_bits(src_ptr);
-            if let Some(src_notes_ptr) = obj_from_bits(src_notes_bits).as_ptr()
-                && object_type_id(src_notes_ptr) == TYPE_ID_LIST
-            {
-                let Some(notes_elems) = crate::object::seq_access::snapshot(
-                    _py,
-                    src_notes_ptr,
-                    "sequence snapshot allocation failed",
-                ) else {
-                    return;
-                };
-                let new_list_ptr = alloc_list(_py, &notes_elems);
-                if !new_list_ptr.is_null() {
-                    let new_list_bits = MoltObject::from_ptr(new_list_ptr).bits();
-                    exception_group_set_slot_bits(
-                        _py,
-                        dest_ptr,
-                        ExceptionFieldSlot::Notes,
-                        new_list_bits,
-                    );
-                    dec_ref_bits(_py, new_list_bits);
-                }
-            }
-        }
-    }
-}
-
-enum ExceptionGroupMatcher {
-    Type(u64),
-    Callable(u64),
-}
-
-fn exception_group_parse_matcher(
-    _py: &PyToken<'_>,
-    matcher_bits: u64,
-) -> Option<ExceptionGroupMatcher> {
-    let builtins = builtin_classes(_py);
-    let matcher_obj = obj_from_bits(matcher_bits);
-    let Some(ptr) = matcher_obj.as_ptr() else {
-        let _ = raise_exception::<u64>(
-            _py,
-            "TypeError",
-            "expected an exception type, a tuple of exception types, or a callable (other than a class)",
-        );
-        return None;
-    };
-    unsafe {
-        match object_type_id(ptr) {
-            TYPE_ID_TYPE => {
-                if !issubclass_bits(matcher_bits, builtins.base_exception) {
-                    let _ = raise_exception::<u64>(
-                        _py,
-                        "TypeError",
-                        "expected an exception type, a tuple of exception types, or a callable (other than a class)",
-                    );
-                    return None;
-                }
-                return Some(ExceptionGroupMatcher::Type(matcher_bits));
-            }
-            TYPE_ID_TUPLE => {
-                let elems = crate::object::seq_access::pin_tuple(_py, ptr)
-                    .expect("type-checked matcher tuple must remain live");
-                if elems.is_empty() {
-                    let _ = raise_exception::<u64>(
-                        _py,
-                        "TypeError",
-                        "expected an exception type, a tuple of exception types, or a callable (other than a class)",
-                    );
-                    return None;
-                }
-                for &elem_bits in elems.iter() {
-                    let Some(elem_ptr) = obj_from_bits(elem_bits).as_ptr() else {
-                        let _ = raise_exception::<u64>(
-                            _py,
-                            "TypeError",
-                            "expected an exception type, a tuple of exception types, or a callable (other than a class)",
-                        );
-                        return None;
-                    };
-                    if object_type_id(elem_ptr) != TYPE_ID_TYPE
-                        || !issubclass_bits(elem_bits, builtins.base_exception)
-                    {
-                        let _ = raise_exception::<u64>(
-                            _py,
-                            "TypeError",
-                            "expected an exception type, a tuple of exception types, or a callable (other than a class)",
-                        );
-                        return None;
-                    }
-                }
-                return Some(ExceptionGroupMatcher::Type(matcher_bits));
-            }
-            _ => {}
-        }
-    }
-    let callable_bits = molt_is_callable(matcher_bits);
-    if is_truthy(_py, obj_from_bits(callable_bits)) {
-        return Some(ExceptionGroupMatcher::Callable(matcher_bits));
-    }
-    let _ = raise_exception::<u64>(
-        _py,
-        "TypeError",
-        "expected an exception type, a tuple of exception types, or a callable (other than a class)",
-    );
-    None
-}
-
-fn exception_group_parse_except_star_matcher(_py: &PyToken<'_>, matcher_bits: u64) -> Option<u64> {
-    let builtins = builtin_classes(_py);
-    let matcher_obj = obj_from_bits(matcher_bits);
-    let Some(ptr) = matcher_obj.as_ptr() else {
-        let _ = raise_exception::<u64>(
-            _py,
-            "TypeError",
-            "catching classes that do not inherit from BaseException is not allowed",
-        );
-        return None;
-    };
-    unsafe {
-        let type_id = object_type_id(ptr);
-        if type_id == TYPE_ID_TYPE {
-            if !issubclass_bits(matcher_bits, builtins.base_exception) {
-                let _ = raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "catching classes that do not inherit from BaseException is not allowed",
-                );
-                return None;
-            }
-            if issubclass_bits(matcher_bits, builtins.base_exception_group) {
-                let _ = raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "catching ExceptionGroup with except* is not allowed. Use except instead.",
-                );
-                return None;
-            }
-            return Some(matcher_bits);
-        }
-        if type_id == TYPE_ID_TUPLE {
-            let elems = crate::object::seq_access::pin_tuple(_py, ptr)
-                .expect("type-checked matcher tuple must remain live");
-            if elems.is_empty() {
-                let _ = raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "catching classes that do not inherit from BaseException is not allowed",
-                );
-                return None;
-            }
-            for &elem_bits in elems.iter() {
-                let Some(elem_ptr) = obj_from_bits(elem_bits).as_ptr() else {
-                    let _ = raise_exception::<u64>(
-                        _py,
-                        "TypeError",
-                        "catching classes that do not inherit from BaseException is not allowed",
-                    );
-                    return None;
-                };
-                if object_type_id(elem_ptr) != TYPE_ID_TYPE
-                    || !issubclass_bits(elem_bits, builtins.base_exception)
-                {
-                    let _ = raise_exception::<u64>(
-                        _py,
-                        "TypeError",
-                        "catching classes that do not inherit from BaseException is not allowed",
-                    );
-                    return None;
-                }
-            }
-            for &elem_bits in elems.iter() {
-                if issubclass_bits(elem_bits, builtins.base_exception_group) {
-                    let _ = raise_exception::<u64>(
-                        _py,
-                        "TypeError",
-                        "catching ExceptionGroup with except* is not allowed. Use except instead.",
-                    );
-                    return None;
-                }
-            }
-            return Some(matcher_bits);
-        }
-    }
-    let _ = raise_exception::<u64>(
-        _py,
-        "TypeError",
-        "catching classes that do not inherit from BaseException is not allowed",
-    );
-    None
-}
-
-fn exception_group_matcher_matches(
-    _py: &PyToken<'_>,
-    matcher: &ExceptionGroupMatcher,
-    exc_bits: u64,
-) -> Option<bool> {
-    match matcher {
-        ExceptionGroupMatcher::Type(class_bits) => {
-            Some(isinstance_bits(_py, exc_bits, *class_bits))
-        }
-        ExceptionGroupMatcher::Callable(call_bits) => {
-            let res_bits = unsafe { call_callable1(_py, *call_bits, exc_bits) };
-            if exception_pending(_py) {
-                return None;
-            }
-            Some(is_truthy(_py, obj_from_bits(res_bits)))
-        }
-    }
-}
-
-fn exception_group_split_node(
-    _py: &PyToken<'_>,
-    exc_bits: u64,
-    matcher: &ExceptionGroupMatcher,
-) -> Option<(Option<ExceptionGroupItem>, Option<ExceptionGroupItem>)> {
-    let exc_obj = obj_from_bits(exc_bits);
-    let Some(exc_ptr) = exc_obj.as_ptr() else {
-        return Some((None, None));
-    };
-    unsafe {
-        if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
-            return Some((
-                None,
-                Some(ExceptionGroupItem {
-                    bits: exc_bits,
-                    owned: false,
-                }),
-            ));
-        }
-    }
-    if let Some(matches) = exception_group_matcher_matches(_py, matcher, exc_bits) {
-        if matches {
-            return Some((
-                Some(ExceptionGroupItem {
-                    bits: exc_bits,
-                    owned: false,
-                }),
-                None,
-            ));
-        }
-    } else {
-        return None;
-    }
-    let class_bits = unsafe { object_class_bits(exc_ptr) };
-    let base_group_bits = builtin_classes(_py).base_exception_group;
-    if !issubclass_bits(class_bits, base_group_bits) {
-        return Some((
-            None,
-            Some(ExceptionGroupItem {
-                bits: exc_bits,
-                owned: false,
-            }),
-        ));
-    }
-    let Some(exceptions_bits) = exception_group_exceptions_bits(_py, exc_ptr) else {
-        return Some((
-            None,
-            Some(ExceptionGroupItem {
-                bits: exc_bits,
-                owned: false,
-            }),
-        ));
-    };
-    let exceptions_obj = obj_from_bits(exceptions_bits);
-    let Some(ex_ptr) = exceptions_obj.as_ptr() else {
-        return Some((
-            None,
-            Some(ExceptionGroupItem {
-                bits: exc_bits,
-                owned: false,
-            }),
-        ));
-    };
-    unsafe {
-        if object_type_id(ex_ptr) != TYPE_ID_TUPLE && object_type_id(ex_ptr) != TYPE_ID_LIST {
-            return Some((
-                None,
-                Some(ExceptionGroupItem {
-                    bits: exc_bits,
-                    owned: false,
-                }),
-            ));
-        }
-        let elems = crate::object::seq_access::snapshot(
-            _py,
-            ex_ptr,
-            "sequence snapshot allocation failed",
-        )?;
-        let mut match_items: Vec<ExceptionGroupItem> = Vec::new();
-        let mut rest_items: Vec<ExceptionGroupItem> = Vec::new();
-        for &item_bits in elems.iter() {
-            let (match_part, rest_part) = exception_group_split_node(_py, item_bits, matcher)?;
-            if let Some(bits) = match_part {
-                match_items.push(bits);
-            }
-            if let Some(bits) = rest_part {
-                rest_items.push(bits);
-            }
-        }
-        let message_bits = exception_group_message_bits(_py, exc_ptr);
-        let mut match_bits = None;
-        let mut rest_bits = None;
-        if !match_items.is_empty() {
-            let match_vals: Vec<u64> = match_items.iter().map(|item| item.bits).collect();
-            let list_ptr = alloc_list(_py, &match_vals);
-            if list_ptr.is_null() {
-                return None;
-            }
-            let list_bits = MoltObject::from_ptr(list_ptr).bits();
-            match_bits =
-                exception_group_alloc(_py, class_bits, message_bits, list_bits, &match_vals, None);
-            dec_ref_bits(_py, list_bits);
-            if let Some(bits) = match_bits
-                && let Some(new_ptr) = obj_from_bits(bits).as_ptr()
-            {
-                exception_group_copy_metadata(_py, new_ptr, exc_ptr, true, true, true, true);
-            }
-            for item in match_items.into_iter() {
-                if item.owned {
-                    dec_ref_bits(_py, item.bits);
-                }
-            }
-        }
-        if !rest_items.is_empty() {
-            let rest_vals: Vec<u64> = rest_items.iter().map(|item| item.bits).collect();
-            let list_ptr = alloc_list(_py, &rest_vals);
-            if list_ptr.is_null() {
-                return None;
-            }
-            let list_bits = MoltObject::from_ptr(list_ptr).bits();
-            rest_bits =
-                exception_group_alloc(_py, class_bits, message_bits, list_bits, &rest_vals, None);
-            dec_ref_bits(_py, list_bits);
-            if let Some(bits) = rest_bits
-                && let Some(new_ptr) = obj_from_bits(bits).as_ptr()
-            {
-                exception_group_copy_metadata(_py, new_ptr, exc_ptr, true, true, true, true);
-            }
-            for item in rest_items.into_iter() {
-                if item.owned {
-                    dec_ref_bits(_py, item.bits);
-                }
-            }
-        }
-        Some((
-            match_bits.map(|bits| ExceptionGroupItem { bits, owned: true }),
-            rest_bits.map(|bits| ExceptionGroupItem { bits, owned: true }),
-        ))
-    }
-}
-
-fn exception_group_make_pair_tuple(
-    _py: &PyToken<'_>,
-    match_item: Option<ExceptionGroupItem>,
-    rest_item: Option<ExceptionGroupItem>,
-) -> u64 {
-    let none_bits = MoltObject::none().bits();
-    let match_bits = match_item
-        .as_ref()
-        .map(|item| item.bits)
-        .unwrap_or(none_bits);
-    let rest_bits = rest_item
-        .as_ref()
-        .map(|item| item.bits)
-        .unwrap_or(none_bits);
-    let tuple_ptr = alloc_tuple(_py, &[match_bits, rest_bits]);
-    if tuple_ptr.is_null() {
-        if let Some(item) = match_item
-            && item.owned
-        {
-            dec_ref_bits(_py, item.bits);
-        }
-        if let Some(item) = rest_item
-            && item.owned
-        {
-            dec_ref_bits(_py, item.bits);
-        }
-        return MoltObject::none().bits();
-    }
-    if let Some(item) = match_item
-        && item.owned
+fn exception_identity(py: &PyToken<'_>, bits: u64) -> ExceptionIdentity {
+    if let Some(ptr) = obj_from_bits(bits).as_ptr()
+        && unsafe { object_type_id(ptr) } == crate::TYPE_ID_FOREIGN
     {
-        dec_ref_bits(_py, item.bits);
-    }
-    if let Some(item) = rest_item
-        && item.owned
-    {
-        dec_ref_bits(_py, item.bits);
-    }
-    MoltObject::from_ptr(tuple_ptr).bits()
-}
-
-pub(crate) fn alloc_exception_group_from_class_bits(
-    _py: &PyToken<'_>,
-    class_bits: u64,
-    args_bits: u64,
-) -> *mut u8 {
-    let args_obj = obj_from_bits(args_bits);
-    let Some(args_ptr) = args_obj.as_ptr() else {
-        dec_ref_bits(_py, args_bits);
-        return std::ptr::null_mut();
-    };
-    unsafe {
-        if object_type_id(args_ptr) != TYPE_ID_TUPLE {
-            dec_ref_bits(_py, args_bits);
-            return std::ptr::null_mut();
-        }
-        let Some(args_elems) = crate::object::seq_access::snapshot(
-            _py,
-            args_ptr,
-            "sequence snapshot allocation failed",
-        ) else {
-            dec_ref_bits(_py, args_bits);
-            return std::ptr::null_mut();
-        };
-        let argc = args_elems.len();
-        if argc != 2 {
-            let msg = format!(
-                "BaseExceptionGroup.__new__() takes exactly 2 arguments ({} given)",
-                argc
-            );
-            let _ = raise_exception::<u64>(_py, "TypeError", &msg);
-            dec_ref_bits(_py, args_bits);
-            return std::ptr::null_mut();
-        }
-        let message_bits = args_elems[0];
-        let exceptions_bits = args_elems[1];
-        let message_obj = obj_from_bits(message_bits);
-        if let Some(msg_ptr) = message_obj.as_ptr() {
-            if object_type_id(msg_ptr) != TYPE_ID_STRING {
-                let msg = format!(
-                    "BaseExceptionGroup.__new__() argument 1 must be str, not {}",
-                    type_name(_py, message_obj)
-                );
-                let _ = raise_exception::<u64>(_py, "TypeError", &msg);
-                dec_ref_bits(_py, args_bits);
-                return std::ptr::null_mut();
-            }
+        let identity = native_identity(ptr);
+        return if identity & molt_cpython_abi::api::errors::NATIVE_EXCEPTION_INSTANCE == 0 {
+            ExceptionIdentity::NotException
+        } else if identity & molt_cpython_abi::api::errors::NATIVE_EXCEPTION_SUBCLASS != 0 {
+            ExceptionIdentity::Exception
         } else {
-            let msg = format!(
-                "BaseExceptionGroup.__new__() argument 1 must be str, not {}",
-                type_name(_py, message_obj)
-            );
-            let _ = raise_exception::<u64>(_py, "TypeError", &msg);
-            dec_ref_bits(_py, args_bits);
-            return std::ptr::null_mut();
-        }
-        let Some(mut collected) = exception_group_collect_exceptions(_py, exceptions_bits) else {
-            dec_ref_bits(_py, args_bits);
-            return std::ptr::null_mut();
+            ExceptionIdentity::BaseException
         };
-        let builtins = builtin_classes(_py);
-        let strict_exception = issubclass_bits(class_bits, builtins.exception);
-        if strict_exception && !collected.all_exception {
-            collected.release_owned(_py);
-            let _ = raise_exception::<u64>(
-                _py,
+    }
+    if !exception_is_instance(py, bits) {
+        return ExceptionIdentity::NotException;
+    }
+    let builtins = builtin_classes(py);
+    let class = type_of_bits(py, bits);
+    if issubclass_bits(class, builtins.exception) {
+        ExceptionIdentity::Exception
+    } else {
+        ExceptionIdentity::BaseException
+    }
+}
+
+fn exception_group_storage(py: &PyToken<'_>, bits: u64) -> Option<ExceptionStorage> {
+    let storage = ExceptionStorage::for_exception(py, bits)?;
+    let is_group = match storage {
+        ExceptionStorage::Managed(ptr) => issubclass_bits(
+            unsafe { object_class_bits(ptr) },
+            builtin_classes(py).base_exception_group,
+        ),
+        ExceptionStorage::Native(ptr) => unsafe {
+            molt_cpython_abi::api::typeobj::PyType_IsSubtype(
+                ptr.as_ref()?.ob_type,
+                &raw mut cabi::PyExc_BaseExceptionGroup,
+            ) != 0
+        },
+    };
+    is_group.then_some(storage)
+}
+
+/// Requested constructor identity. Each allocator derives it from its own
+/// canonical class authority: the runtime class edge, or the exact native type
+/// object and its native subtype ancestry.
+pub(crate) enum ExceptionGroupClass<'a> {
+    Runtime(u64),
+    Native {
+        request: ExceptionGroupRequest,
+        name: &'a [u8],
+    },
+}
+
+impl ExceptionGroupClass<'_> {
+    fn request(&self, py: &PyToken<'_>) -> ExceptionGroupRequest {
+        match *self {
+            Self::Native { request, .. } => request,
+            Self::Runtime(class) => {
+                let builtins = builtin_classes(py);
+                if class == builtins.base_exception_group {
+                    ExceptionGroupRequest::BaseExceptionGroup
+                } else if class == builtins.exception_group {
+                    ExceptionGroupRequest::ExceptionGroup
+                } else if issubclass_bits(class, builtins.exception) {
+                    ExceptionGroupRequest::ExceptionSubclass
+                } else {
+                    ExceptionGroupRequest::BaseExceptionSubclass
+                }
+            }
+        }
+    }
+
+    /// The requested type's `tp_name`, formatted as CPython's `%.200s`.
+    fn c_name(&self) -> String {
+        let name = match *self {
+            Self::Native { name, .. } => name.to_vec(),
+            Self::Runtime(class) => crate::object::ops_format::format_class_name_bytes(class),
+        };
+        String::from_utf8_lossy(&name[..name.len().min(200)]).into_owned()
+    }
+}
+
+/// Successful CPython `BaseExceptionGroup_new` admission.
+struct Admission<'a, 'py> {
+    message: Owned<'a, 'py>,
+    /// The canonical `PySequence_Tuple` result.
+    exceptions: Owned<'a, 'py>,
+    /// The exact BaseExceptionGroup request allocates ExceptionGroup instead.
+    narrow: bool,
+}
+
+/// CPython 3.12 `BaseExceptionGroup_new` admission (CPy:697-794): argument
+/// shape, sequence admission, `PySequence_Tuple`, item identity and the class
+/// decision. `args` is a positional tuple the caller keeps alive.
+fn exception_group_admit<'a, 'py>(
+    py: &'a PyToken<'py>,
+    class: &ExceptionGroupClass<'_>,
+    args: u64,
+) -> Option<Admission<'a, 'py>> {
+    let Some(args) = obj_from_bits(args)
+        .as_ptr()
+        .and_then(|ptr| unsafe { crate::object::seq_access::pin_tuple(py, ptr) })
+    else {
+        return fail(
+            py,
+            "SystemError",
+            "exception group arguments must be a tuple",
+        );
+    };
+    // PyArg_ParseTuple(args, "UO:BaseExceptionGroup.__new__", ...)
+    if args.len() != 2 {
+        let message = format!(
+            "BaseExceptionGroup.__new__() takes exactly 2 arguments ({} given)",
+            args.len()
+        );
+        return fail(py, "TypeError", &message);
+    }
+    let (message, exceptions) = (args[0], args[1]);
+    if !issubclass_bits(type_of_bits(py, message), builtin_classes(py).str) {
+        let label = if obj_from_bits(message).is_none() {
+            std::borrow::Cow::Borrowed("None")
+        } else {
+            type_name(py, obj_from_bits(message))
+        };
+        let message = format!("BaseExceptionGroup.__new__() argument 1 must be str, not {label}");
+        return fail(py, "TypeError", &message);
+    }
+    let message = Owned::pin(py, message);
+    if crate::object::ops::sequence_check_bits(py, exceptions) != 1 {
+        return fail(
+            py,
+            "TypeError",
+            "second argument (exceptions) must be a sequence",
+        );
+    }
+    // PySequence_Tuple: an exact tuple keeps its identity, an exact list is
+    // copied, and every subtype iterates under the target's hint policy.
+    let Some(exceptions) = (unsafe { tuple_from_iter_bits(py, exceptions) }) else {
+        return fail(py, "MemoryError", "tuple allocation failed");
+    };
+    let exceptions = Owned::adopt(py, exceptions);
+    let Some(tuple) = obj_from_bits(exceptions.bits()).as_ptr() else {
+        return fail(
+            py,
+            "SystemError",
+            "PySequence_Tuple did not produce a tuple",
+        );
+    };
+    let verdict = unsafe {
+        crate::object::seq_access::with_immutable_tuple_slice(tuple, |items| {
+            if items.is_empty() {
+                return Err(None);
+            }
+            let mut nested_base = false;
+            for (index, &item) in items.iter().enumerate() {
+                match exception_identity(py, item) {
+                    ExceptionIdentity::NotException => return Err(Some(index)),
+                    ExceptionIdentity::BaseException => nested_base = true,
+                    ExceptionIdentity::Exception => {}
+                }
+            }
+            Ok(nested_base)
+        })
+    };
+    let nested_base = match verdict {
+        Some(Ok(nested_base)) => nested_base,
+        Some(Err(None)) => {
+            return fail(
+                py,
+                "ValueError",
+                "second argument (exceptions) must be a non-empty sequence",
+            );
+        }
+        Some(Err(Some(index))) => {
+            let message =
+                format!("Item {index} of second argument (exceptions) is not an exception");
+            return fail(py, "ValueError", &message);
+        }
+        None => {
+            return fail(
+                py,
+                "SystemError",
+                "PySequence_Tuple did not produce a tuple",
+            );
+        }
+    };
+    let narrow = match class.request(py) {
+        ExceptionGroupRequest::BaseExceptionGroup => !nested_base,
+        ExceptionGroupRequest::ExceptionGroup if nested_base => {
+            return fail(
+                py,
                 "TypeError",
                 "Cannot nest BaseExceptions in an ExceptionGroup",
             );
-            dec_ref_bits(_py, args_bits);
-            return std::ptr::null_mut();
         }
-        // CPython's exact BaseExceptionGroup constructor narrows to the
-        // ExceptionGroup builtin when every nested item derives from
-        // Exception. Subclasses preserve their requested identity.
-        let allocation_class =
-            if class_bits == builtins.base_exception_group && collected.all_exception {
-                builtins.exception_group
-            } else {
-                class_bits
-            };
-        let Some(bits) = exception_group_alloc_collected(
-            _py,
-            allocation_class,
-            message_bits,
-            exceptions_bits,
-            collected,
-        ) else {
-            dec_ref_bits(_py, args_bits);
-            return std::ptr::null_mut();
-        };
-        dec_ref_bits(_py, args_bits);
-        obj_from_bits(bits).as_ptr().unwrap_or(std::ptr::null_mut())
+        ExceptionGroupRequest::ExceptionSubclass if nested_base => {
+            let message = format!("Cannot nest BaseExceptions in '{}'", class.c_name());
+            return fail(py, "TypeError", &message);
+        }
+        _ => false,
+    };
+    Some(Admission {
+        message,
+        exceptions,
+        narrow,
+    })
+}
+
+/// Allocate one managed group after admission. The original positional tuple
+/// is the stored `args` (`BaseException_new`).
+fn exception_group_allocate(
+    py: &PyToken<'_>,
+    class: u64,
+    args: u64,
+    admission: Admission<'_, '_>,
+) -> Option<u64> {
+    let ptr = alloc_exception_obj(
+        py,
+        class,
+        admission.message.bits(),
+        args,
+        MoltObject::none().bits(),
+    );
+    if ptr.is_null() {
+        return fail(py, "MemoryError", "exception group allocation failed");
     }
+    let group = Owned::adopt(py, MoltObject::from_ptr(ptr).bits());
+    if let Err(message) = exception_typed_field_replace_internal(
+        py,
+        group.bits(),
+        ExceptionTypedField::GroupExceptions,
+        admission.exceptions.bits(),
+    ) {
+        return fail(py, "SystemError", message);
+    }
+    Some(group.into_bits())
+}
+
+/// Managed `BaseExceptionGroup.__new__`. Consumes `args_bits`.
+pub(crate) fn alloc_exception_group_from_class_bits(
+    py: &PyToken<'_>,
+    class_bits: u64,
+    args_bits: u64,
+) -> *mut u8 {
+    let args = Owned::adopt(py, args_bits);
+    let Some(admission) =
+        exception_group_admit(py, &ExceptionGroupClass::Runtime(class_bits), args.bits())
+    else {
+        return std::ptr::null_mut();
+    };
+    let class = if admission.narrow {
+        builtin_classes(py).exception_group
+    } else {
+        class_bits
+    };
+    exception_group_allocate(py, class, args.bits(), admission)
+        .and_then(|bits| obj_from_bits(bits).as_ptr())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+/// Native C allocation (`RuntimeHooks::exception_group_admit`): the same
+/// admission with the requested identity of the exact native type. Returns
+/// owned message and exceptions handles plus the narrowing decision.
+pub(crate) fn exception_group_admit_native(
+    py: &PyToken<'_>,
+    request: ExceptionGroupRequest,
+    name: &[u8],
+    args: u64,
+) -> Option<(u64, u64, bool)> {
+    let admission =
+        exception_group_admit(py, &ExceptionGroupClass::Native { request, name }, args)?;
+    let narrow = admission.narrow;
+    Some((
+        admission.message.into_bits(),
+        admission.exceptions.into_bits(),
+        narrow,
+    ))
+}
+
+/// `PyObject_CallObject(PyExc_BaseExceptionGroup, (message, exceptions))`:
+/// the canonical class-call authority, including exact-class narrowing.
+fn exception_group_construct(py: &PyToken<'_>, message: u64, exceptions: u64) -> Option<u64> {
+    let Some(class) = obj_from_bits(builtin_classes(py).base_exception_group).as_ptr() else {
+        return fail(py, "SystemError", "BaseExceptionGroup is not initialized");
+    };
+    let result = unsafe {
+        crate::call::class_init::construct_exception_from_args(
+            py,
+            class,
+            &[message, exceptions],
+            &[],
+            &[],
+        )
+    };
+    if exception_pending(py) {
+        release(py, result);
+        return None;
+    }
+    Some(result)
+}
+
+/// CPython `_exceptiongroup_split_matcher_type` for `split`, `subgroup` and
+/// the `except*` handler. Values are borrowed from the caller's arguments.
+enum GroupMatcher {
+    /// `PyErr_GivenExceptionMatches` against one exception class.
+    Class(u64),
+    /// `PyErr_GivenExceptionMatches` against each class of a tuple.
+    Classes(u64),
+    /// A predicate called exactly once per node.
+    Predicate(u64),
+}
+
+impl GroupMatcher {
+    /// CPython `get_matcher_type`. CPython 3.12 (CPy:989-1021) admits a
+    /// function, an exception class or an exact tuple of exception classes,
+    /// including the empty tuple; 3.13+ admits any callable that is not a
+    /// class in place of the function.
+    fn parse(py: &PyToken<'_>, value: u64) -> Option<Self> {
+        let builtins = builtin_classes(py);
+        let any_callable = crate::object::ops_sys::runtime_target_at_least(py, 3, 13);
+        let pointer = obj_from_bits(value).as_ptr();
+        let is_class = pointer.is_some_and(|ptr| unsafe {
+            object_type_id(ptr) == TYPE_ID_TYPE
+                || (object_type_id(ptr) == crate::TYPE_ID_FOREIGN
+                    && molt_cpython_abi::api::typeobj::PyType_Check(
+                        std::ptr::with_exposed_provenance_mut(
+                            crate::object::foreign::foreign_ptr_from_obj(ptr),
+                        ),
+                    ) != 0)
+        });
+        let predicate = if any_callable {
+            !is_class && crate::builtins::callable::is_callable_impl(py, value)
+        } else {
+            type_of_bits(py, value) == builtins.function
+        };
+        if predicate {
+            return Some(Self::Predicate(value));
+        }
+        if exception_is_class(py, value) {
+            return Some(Self::Class(value));
+        }
+        let exact_tuple = pointer.is_some_and(|ptr| unsafe {
+            (object_type_id(ptr) == TYPE_ID_TUPLE && type_of_bits(py, value) == builtins.tuple)
+                || (object_type_id(ptr) == crate::TYPE_ID_FOREIGN
+                    && cseq::PyTuple_CheckExact(std::ptr::with_exposed_provenance_mut(
+                        crate::object::foreign::foreign_ptr_from_obj(ptr),
+                    )) != 0)
+        });
+        if exact_tuple
+            && (ExceptionTuple {
+                tuple: Owned::pin(py, value),
+            })
+            .try_all(|class| {
+                let valid = exception_is_class(py, class);
+                (!exception_pending(py)).then_some(valid)
+            })?
+        {
+            return Some(Self::Classes(value));
+        }
+        let message = if any_callable {
+            "expected an exception type, a tuple of exception types, or a callable (other than a class)"
+        } else {
+            "expected a function, exception type or tuple of exception types"
+        };
+        fail(py, "TypeError", message)
+    }
+
+    /// An `except*` handler already validated as a class or tuple of classes.
+    fn handler(value: u64) -> Self {
+        let tuple = obj_from_bits(value).as_ptr().is_some_and(|ptr| unsafe {
+            object_type_id(ptr) == TYPE_ID_TUPLE
+                || (object_type_id(ptr) == crate::TYPE_ID_FOREIGN
+                    && cseq::PyTuple_Check(std::ptr::with_exposed_provenance_mut(
+                        crate::object::foreign::foreign_ptr_from_obj(ptr),
+                    )) != 0)
+        });
+        if tuple {
+            Self::Classes(value)
+        } else {
+            Self::Class(value)
+        }
+    }
+
+    /// CPython `exceptiongroup_split_check_match` (CPy:1023-1059); classes
+    /// use the `except` clause authority (`PyErr_GivenExceptionMatches`).
+    fn matches(&self, py: &PyToken<'_>, exc: u64) -> Option<bool> {
+        match *self {
+            Self::Class(class) => {
+                let matched = exception_matches_type(py, exc, class);
+                (!exception_pending(py)).then_some(matched)
+            }
+            Self::Classes(classes) => (ExceptionTuple {
+                tuple: Owned::pin(py, classes),
+            })
+            .try_all(|class| {
+                let matched = exception_matches_type(py, exc, class);
+                (!exception_pending(py)).then_some(!matched)
+            })
+            .map(|unmatched| !unmatched),
+            Self::Predicate(predicate) => {
+                let result = unsafe { call_callable1(py, predicate, exc) };
+                if exception_pending(py) {
+                    release(py, result);
+                    return None;
+                }
+                let result = Owned::adopt(py, result);
+                let truth = is_truthy(py, obj_from_bits(result.bits()));
+                drop(result);
+                (!exception_pending(py)).then_some(truth)
+            }
+        }
+    }
+}
+
+fn exception_group_parse_except_star_matcher(py: &PyToken<'_>, matcher_bits: u64) -> Option<u64> {
+    if !super::validate_exception_handler(py, matcher_bits) {
+        return None;
+    }
+    let base_group = builtin_classes(py).base_exception_group;
+    let catches_group = match GroupMatcher::handler(matcher_bits) {
+        GroupMatcher::Classes(classes) => !(ExceptionTuple {
+            tuple: Owned::pin(py, classes),
+        })
+        .try_all(|class| {
+            let matches = exception_class_is_subtype(py, class, base_group);
+            (!exception_pending(py)).then_some(!matches)
+        })?,
+        GroupMatcher::Class(class) => exception_class_is_subtype(py, class, base_group),
+        GroupMatcher::Predicate(_) => unreachable!("validated except* handler"),
+    };
+    if exception_pending(py) {
+        return None;
+    }
+    if catches_group {
+        let _ = raise_exception::<u64>(
+            py,
+            "TypeError",
+            "catching ExceptionGroup with except* is not allowed. Use except instead.",
+        );
+        return None;
+    }
+    Some(matcher_bits)
+}
+
+struct GroupSplit<'a, 'py> {
+    matched: Option<Owned<'a, 'py>>,
+    rest: Option<Owned<'a, 'py>>,
+}
+
+/// CPython `exceptiongroup_split_recursive` (CPy:1066-1175). `exc` is borrowed
+/// from a caller-pinned owner; the matcher runs once per node and the rest
+/// partition is built only when requested.
+unsafe fn exception_group_split<'a, 'py>(
+    py: &'a PyToken<'py>,
+    exc: u64,
+    matcher: &GroupMatcher,
+    construct_rest: bool,
+) -> Option<GroupSplit<'a, 'py>> {
+    if matcher.matches(py, exc)? {
+        return Some(GroupSplit {
+            matched: Some(Owned::pin(py, exc)),
+            rest: None,
+        });
+    }
+    let Some(group) = exception_group_storage(py, exc) else {
+        return Some(GroupSplit {
+            matched: None,
+            rest: construct_rest.then(|| Owned::pin(py, exc)),
+        });
+    };
+    // Callbacks below may replace the group's physical exceptions edge; the
+    // pinned tuple keeps every borrowed child alive for the whole partition.
+    let children = ExceptionTuple {
+        tuple: group.typed_field(py, ExceptionTypedField::GroupExceptions)?,
+    };
+    let matched = alloc_owned_list(py)?;
+    let rest = if construct_rest {
+        Some(alloc_owned_list(py)?)
+    } else {
+        None
+    };
+    children.try_all(|child| {
+        let part = {
+            let _depth = crate::state::recursion::RecursionGuard::enter_with_message(
+                py,
+                "maximum recursion depth exceeded in exceptiongroup_split_recursive",
+            )?;
+            unsafe { exception_group_split(py, child, matcher, construct_rest) }?
+        };
+        if let Some(item) = part.matched {
+            list_append(py, &matched, item.bits())?;
+        }
+        if let (Some(rest), Some(item)) = (rest.as_ref(), part.rest) {
+            list_append(py, rest, item.bits())?;
+        }
+        Some(true)
+    })?;
+    let matched = unsafe { exception_group_subset(py, exc, group, &matched) }?;
+    let rest = match rest {
+        Some(rest) => unsafe { exception_group_subset(py, exc, group, &rest) }?,
+        None => None,
+    };
+    Some(GroupSplit { matched, rest })
+}
+
+/// CPython `exceptiongroup_subset` (CPy:896-975): the Python-visible `derive`
+/// builds the part, whose exact type must be a BaseExceptionGroup; the
+/// original's traceback, context, cause and notes are then transferred.
+unsafe fn exception_group_subset<'a, 'py>(
+    py: &'a PyToken<'py>,
+    orig: u64,
+    original: ExceptionStorage,
+    excs: &Owned<'a, 'py>,
+) -> Option<Option<Owned<'a, 'py>>> {
+    let Some(excs_ptr) = obj_from_bits(excs.bits()).as_ptr() else {
+        return fail(py, "SystemError", "exception group partition is not a list");
+    };
+    if unsafe { crate::object::seq_access::len(excs_ptr) } == 0 {
+        return Some(None);
+    }
+    let Some(name) = attr_name_bits_from_bytes(py, b"derive") else {
+        return fail(py, "MemoryError", "attribute name allocation failed");
+    };
+    let name = Owned::adopt(py, name);
+    let derive = crate::molt_get_attr_name(orig, name.bits());
+    if exception_pending(py) {
+        release(py, derive);
+        return None;
+    }
+    let derive = Owned::adopt(py, derive);
+    let derived = unsafe { call_callable1(py, derive.bits(), excs.bits()) };
+    if exception_pending(py) {
+        release(py, derived);
+        return None;
+    }
+    let derived = Owned::adopt(py, derived);
+    let Some(destination) = exception_group_storage(py, derived.bits()) else {
+        return fail(
+            py,
+            "TypeError",
+            "derive must return an instance of BaseExceptionGroup",
+        );
+    };
+    unsafe { exception_group_copy_metadata(py, derived.bits(), destination, orig, original) }?;
+    Some(Some(derived))
+}
+
+unsafe fn publish_slot(
+    py: &PyToken<'_>,
+    exception: *mut u8,
+    field: ExceptionFieldSlot,
+    value: u64,
+) -> Option<()> {
+    if unsafe { exception_publish_field_slot(py, exception, field, value) } {
+        Some(())
+    } else {
+        fail(
+            py,
+            "SystemError",
+            "exception ABI sidecar synchronization failed",
+        )
+    }
+}
+
+/// `exceptiongroup_subset` metadata (CPy:932-968): the traceback only when the
+/// original has one, then context, then cause (setting `__suppress_context__`),
+/// then an independent `__notes__` list through the attribute protocol.
+unsafe fn exception_group_copy_metadata(
+    py: &PyToken<'_>,
+    derived: u64,
+    destination: ExceptionStorage,
+    original_bits: u64,
+    original: ExceptionStorage,
+) -> Option<()> {
+    for field in [
+        ExceptionFieldSlot::Traceback,
+        ExceptionFieldSlot::Context,
+        ExceptionFieldSlot::Cause,
+    ] {
+        let value = original.metadata(py, field)?;
+        if !matches!(field, ExceptionFieldSlot::Traceback) || !obj_from_bits(value.bits()).is_none()
+        {
+            destination.publish(py, field, value.bits())?;
+        }
+    }
+    let name = intern_static_name(py, &runtime_state(py).interned.notes_name, b"__notes__");
+    if name == 0 {
+        return fail(py, "MemoryError", "attribute name allocation failed");
+    }
+    let notes = unsafe {
+        attr_lookup_ptr_allow_missing(py, obj_from_bits(original_bits).as_ptr().unwrap(), name)
+    };
+    if exception_pending(py) {
+        if let Some(notes) = notes {
+            release(py, notes);
+        }
+        return None;
+    }
+    let Some(notes) = notes else {
+        return Some(());
+    };
+    let notes = Owned::adopt(py, notes);
+    // Non-sequence notes are ignored rather than reported here (CPy:961-967).
+    if crate::object::ops::sequence_check_bits(py, notes.bits()) != 1 {
+        return (!exception_pending(py)).then_some(());
+    }
+    let Some(copy) = (unsafe { crate::object::ops::list_from_iter_bits(py, notes.bits()) }) else {
+        return fail(py, "MemoryError", "list allocation failed");
+    };
+    let copy = Owned::adopt(py, copy);
+    drop(notes);
+    let result = crate::builtins::attributes::molt_set_attr_name(derived, name, copy.bits());
+    release(py, result);
+    (!exception_pending(py)).then_some(())
+}
+
+fn exception_group_pair(
+    py: &PyToken<'_>,
+    matched: Option<Owned<'_, '_>>,
+    rest: Option<Owned<'_, '_>>,
+) -> u64 {
+    let none = MoltObject::none().bits();
+    let pair = alloc_tuple(
+        py,
+        &[
+            matched.as_ref().map_or(none, |item| item.bits()),
+            rest.as_ref().map_or(none, |item| item.bits()),
+        ],
+    );
+    if pair.is_null() {
+        return fail(py, "MemoryError", "tuple allocation failed");
+    }
+    MoltObject::from_ptr(pair).bits()
+}
+
+/// `BaseExceptionGroup` method-descriptor receiver admission.
+fn exception_group_receiver(
+    py: &PyToken<'_>,
+    receiver: u64,
+    method: &str,
+) -> Option<ExceptionStorage> {
+    if let Some(storage) = exception_group_storage(py, receiver) {
+        return Some(storage);
+    }
+    let message = format!(
+        "descriptor '{method}' for 'BaseExceptionGroup' objects doesn't apply to a '{}' object",
+        type_name(py, obj_from_bits(receiver))
+    );
+    fail(py, "TypeError", &message)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_init(self_bits: u64, args_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let self_obj = obj_from_bits(self_bits);
-        let Some(self_ptr) = self_obj.as_ptr() else {
+        let Some(storage) = ExceptionStorage::for_exception(_py, self_bits) else {
+            if !obj_from_bits(args_bits).is_none() {
+                release(_py, args_bits);
+            }
             return raise_exception::<u64>(
                 _py,
                 "TypeError",
                 "exception init expects exception instance",
             );
         };
-        unsafe {
-            if object_type_id(self_ptr) != TYPE_ID_EXCEPTION {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "exception init expects exception instance",
-                );
-            }
-        }
         let norm_bits = exception_normalize_args(_py, args_bits);
         if obj_from_bits(norm_bits).is_none() {
             if !obj_from_bits(args_bits).is_none() {
@@ -801,7 +833,7 @@ pub extern "C" fn molt_exceptiongroup_init(self_bits: u64, args_bits: u64) -> u6
             }
             return MoltObject::none().bits();
         }
-        let _ = exception_replace_field_bits(_py, self_bits, ExceptionFieldSlot::Args, norm_bits);
+        let _ = storage.publish(_py, ExceptionFieldSlot::Args, norm_bits);
         dec_ref_bits(_py, norm_bits);
         if !obj_from_bits(args_bits).is_none() {
             dec_ref_bits(_py, args_bits);
@@ -813,277 +845,130 @@ pub extern "C" fn molt_exceptiongroup_init(self_bits: u64, args_bits: u64) -> u6
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_subgroup(self_bits: u64, matcher_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let self_obj = obj_from_bits(self_bits);
-        let Some(self_ptr) = self_obj.as_ptr() else {
-            return raise_exception::<u64>(_py, "TypeError", "expected exception object");
+        let none = MoltObject::none().bits();
+        if exception_group_receiver(_py, self_bits, "subgroup").is_none() {
+            return none;
+        }
+        let Some(matcher) = GroupMatcher::parse(_py, matcher_bits) else {
+            return none;
         };
-        unsafe {
-            if object_type_id(self_ptr) != TYPE_ID_EXCEPTION {
-                return raise_exception::<u64>(_py, "TypeError", "expected exception object");
-            }
+        match unsafe { exception_group_split(_py, self_bits, &matcher, false) } {
+            Some(split) => split.matched.map_or(none, Owned::into_bits),
+            None => none,
         }
-        let class_bits = unsafe { object_class_bits(self_ptr) };
-        let base_group_bits = builtin_classes(_py).base_exception_group;
-        if base_group_bits == 0 || !issubclass_bits(class_bits, base_group_bits) {
-            let type_label = type_name(_py, self_obj);
-            let msg = format!(
-                "descriptor 'subgroup' for 'BaseExceptionGroup' objects doesn't apply to a '{type_label}' object"
-            );
-            return raise_exception::<u64>(_py, "TypeError", &msg);
-        }
-        let Some(matcher) = exception_group_parse_matcher(_py, matcher_bits) else {
-            return MoltObject::none().bits();
-        };
-        if let Some(matches) = exception_group_matcher_matches(_py, &matcher, self_bits) {
-            if matches {
-                inc_ref_bits(_py, self_bits);
-                return self_bits;
-            }
-        } else {
-            return MoltObject::none().bits();
-        }
-        let Some((match_item, _rest_item)) = exception_group_split_node(_py, self_bits, &matcher)
-        else {
-            return MoltObject::none().bits();
-        };
-        if let Some(item) = match_item {
-            if !item.owned {
-                inc_ref_bits(_py, item.bits);
-            }
-            return item.bits;
-        }
-        MoltObject::none().bits()
     })
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_split(self_bits: u64, matcher_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let self_obj = obj_from_bits(self_bits);
-        let Some(self_ptr) = self_obj.as_ptr() else {
-            return raise_exception::<u64>(_py, "TypeError", "expected exception object");
-        };
-        unsafe {
-            if object_type_id(self_ptr) != TYPE_ID_EXCEPTION {
-                return raise_exception::<u64>(_py, "TypeError", "expected exception object");
-            }
+        let none = MoltObject::none().bits();
+        if exception_group_receiver(_py, self_bits, "split").is_none() {
+            return none;
         }
-        let class_bits = unsafe { object_class_bits(self_ptr) };
-        let base_group_bits = builtin_classes(_py).base_exception_group;
-        if base_group_bits == 0 || !issubclass_bits(class_bits, base_group_bits) {
-            let type_label = type_name(_py, self_obj);
-            let msg = format!(
-                "descriptor 'split' for 'BaseExceptionGroup' objects doesn't apply to a '{type_label}' object"
-            );
-            return raise_exception::<u64>(_py, "TypeError", &msg);
-        }
-        let Some(matcher) = exception_group_parse_matcher(_py, matcher_bits) else {
-            return MoltObject::none().bits();
+        let Some(matcher) = GroupMatcher::parse(_py, matcher_bits) else {
+            return none;
         };
-        if let Some(matches) = exception_group_matcher_matches(_py, &matcher, self_bits) {
-            if matches {
-                return exception_group_make_pair_tuple(
-                    _py,
-                    Some(ExceptionGroupItem {
-                        bits: self_bits,
-                        owned: false,
-                    }),
-                    None,
-                );
-            }
-        } else {
-            return MoltObject::none().bits();
+        match unsafe { exception_group_split(_py, self_bits, &matcher, true) } {
+            Some(split) => exception_group_pair(_py, split.matched, split.rest),
+            None => none,
         }
-        let Some((match_item, rest_item)) = exception_group_split_node(_py, self_bits, &matcher)
-        else {
-            return MoltObject::none().bits();
-        };
-        exception_group_make_pair_tuple(_py, match_item, rest_item)
     })
 }
 
+/// CPython `BaseExceptionGroup_derive` (CPy:877-893):
+/// `BaseExceptionGroup(self.message, excs)` through the canonical constructor.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_derive(self_bits: u64, exceptions_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let self_obj = obj_from_bits(self_bits);
-        let Some(self_ptr) = self_obj.as_ptr() else {
-            return raise_exception::<u64>(_py, "TypeError", "expected exception object");
+        let none = MoltObject::none().bits();
+        let Some(group) = exception_group_receiver(_py, self_bits, "derive") else {
+            return none;
         };
-        unsafe {
-            if object_type_id(self_ptr) != TYPE_ID_EXCEPTION {
-                return raise_exception::<u64>(_py, "TypeError", "expected exception object");
-            }
-        }
-        let class_bits = unsafe { object_class_bits(self_ptr) };
-        let base_group_bits = builtin_classes(_py).base_exception_group;
-        if base_group_bits == 0 || !issubclass_bits(class_bits, base_group_bits) {
-            let type_label = type_name(_py, self_obj);
-            let msg = format!(
-                "descriptor 'derive' for 'BaseExceptionGroup' objects doesn't apply to a '{type_label}' object"
-            );
-            return raise_exception::<u64>(_py, "TypeError", &msg);
-        }
-        let Some(collected) = exception_group_collect_exceptions(_py, exceptions_bits) else {
-            return MoltObject::none().bits();
+        let Some(message) = group.typed_field(_py, ExceptionTypedField::GroupMessage) else {
+            return none;
         };
-        let builtins = builtin_classes(_py);
-        let mut target_class = class_bits;
-        if issubclass_bits(class_bits, builtins.exception) && !collected.all_exception {
-            target_class = builtins.base_exception_group;
-        }
-        let message_bits = exception_group_message_bits(_py, self_ptr);
-        exception_group_alloc_collected(_py, target_class, message_bits, exceptions_bits, collected)
-            .unwrap_or_else(|| MoltObject::none().bits())
+        exception_group_construct(_py, message.bits(), exceptions_bits).unwrap_or(none)
     })
 }
 
+/// `except*` matching. A group is partitioned by the shared split authority
+/// (calling `derive` for each non-empty part); a matching naked exception is
+/// wrapped with `_PyExc_CreateExceptionGroup("", (exc,))`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_match(exc_bits: u64, matcher_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let none_bits = MoltObject::none().bits();
+        let none = MoltObject::none().bits();
         if obj_from_bits(exc_bits).is_none() {
-            return exception_group_make_pair_tuple(_py, None, None);
+            return exception_group_pair(_py, None, None);
         }
-        let Some(match_bits) = exception_group_parse_except_star_matcher(_py, matcher_bits) else {
-            return MoltObject::none().bits();
+        let Some(handler) = exception_group_parse_except_star_matcher(_py, matcher_bits) else {
+            return none;
         };
-        let exc_obj = obj_from_bits(exc_bits);
-        let Some(exc_ptr) = exc_obj.as_ptr() else {
+        let Some(exception) = ExceptionStorage::for_exception(_py, exc_bits) else {
             return raise_exception::<u64>(_py, "TypeError", "expected exception object");
         };
-        unsafe {
-            if object_type_id(exc_ptr) != TYPE_ID_EXCEPTION {
-                return raise_exception::<u64>(_py, "TypeError", "expected exception object");
-            }
-        }
-        let exc_class_bits = unsafe { object_class_bits(exc_ptr) };
-        let base_group_bits = builtin_classes(_py).base_exception_group;
-        if issubclass_bits(exc_class_bits, base_group_bits) {
-            let is_match = isinstance_bits(_py, exc_bits, match_bits);
-            if is_match {
-                return exception_group_make_pair_tuple(
-                    _py,
-                    Some(ExceptionGroupItem {
-                        bits: exc_bits,
-                        owned: false,
-                    }),
-                    None,
-                );
-            }
-            let matcher = ExceptionGroupMatcher::Type(match_bits);
-            let Some((match_item, rest_item)) = exception_group_split_node(_py, exc_bits, &matcher)
-            else {
-                return MoltObject::none().bits();
+        let matcher = GroupMatcher::handler(handler);
+        if exception_group_storage(_py, exc_bits).is_some() {
+            return match unsafe { exception_group_split(_py, exc_bits, &matcher, true) } {
+                Some(split) => exception_group_pair(_py, split.matched, split.rest),
+                None => none,
             };
-            return exception_group_make_pair_tuple(_py, match_item, rest_item);
         }
-        if !isinstance_bits(_py, exc_bits, match_bits) {
-            return exception_group_make_pair_tuple(
-                _py,
-                None,
-                Some(ExceptionGroupItem {
-                    bits: exc_bits,
-                    owned: false,
-                }),
-            );
-        }
-        let exc_type_bits = type_of_bits(_py, exc_bits);
-        let builtins = builtin_classes(_py);
-        let group_class_bits = if issubclass_bits(exc_type_bits, builtins.exception) {
-            builtins.exception_group
-        } else {
-            builtins.base_exception_group
-        };
-        let tuple_ptr = alloc_tuple(_py, &[exc_bits]);
-        if tuple_ptr.is_null() {
-            return none_bits;
-        }
-        let tuple_bits = MoltObject::from_ptr(tuple_ptr).bits();
-        let msg_ptr = alloc_string(_py, b"");
-        if msg_ptr.is_null() {
-            dec_ref_bits(_py, tuple_bits);
-            return none_bits;
-        }
-        let msg_bits = MoltObject::from_ptr(msg_ptr).bits();
-        let group_bits = exception_group_alloc(
-            _py,
-            group_class_bits,
-            msg_bits,
-            tuple_bits,
-            &[exc_bits],
-            Some(tuple_bits),
-        );
-        dec_ref_bits(_py, msg_bits);
-        let Some(bits) = group_bits else {
-            return none_bits;
-        };
-        if let Some(group_ptr) = obj_from_bits(bits).as_ptr() {
-            unsafe {
-                exception_group_copy_metadata(_py, group_ptr, exc_ptr, false, true, false, false);
+        match matcher.matches(_py, exc_bits) {
+            Some(true) => {}
+            Some(false) => {
+                return exception_group_pair(_py, None, Some(Owned::pin(_py, exc_bits)));
             }
+            None => return none,
         }
-        exception_group_make_pair_tuple(_py, Some(ExceptionGroupItem { bits, owned: true }), None)
+        let Some(message) = alloc_owned_str(_py, b"") else {
+            return none;
+        };
+        let Some(items) = alloc_owned_tuple(_py, &[exc_bits]) else {
+            return none;
+        };
+        let Some(group) = exception_group_construct(_py, message.bits(), items.bits()) else {
+            return none;
+        };
+        let group = Owned::adopt(_py, group);
+        // The wrapper reports the matched exception's traceback.
+        let Some(group_ptr) = obj_from_bits(group.bits()).as_ptr() else {
+            return fail(
+                _py,
+                "SystemError",
+                "exception group construction returned no object",
+            );
+        };
+        let Some(traceback) = exception.metadata(_py, ExceptionFieldSlot::Traceback) else {
+            return none;
+        };
+        if unsafe {
+            publish_slot(
+                _py,
+                group_ptr,
+                ExceptionFieldSlot::Traceback,
+                traceback.bits(),
+            )
+        }
+        .is_none()
+        {
+            return none;
+        }
+        exception_group_pair(_py, Some(group), None)
     })
 }
 
+/// `except*` reraise combination: `_PyExc_CreateExceptionGroup("", raised)`
+/// (CPy:810-824) through the canonical constructor.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exceptiongroup_combine(list_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
-        let list_obj = obj_from_bits(list_bits);
-        let Some(list_ptr) = list_obj.as_ptr() else {
-            return raise_exception::<u64>(_py, "TypeError", "expected exception object");
+        let none = MoltObject::none().bits();
+        let Some(message) = alloc_owned_str(_py, b"") else {
+            return none;
         };
-        unsafe {
-            let type_id = object_type_id(list_ptr);
-            if type_id != TYPE_ID_LIST && type_id != TYPE_ID_TUPLE {
-                return raise_exception::<u64>(
-                    _py,
-                    "TypeError",
-                    "second argument (exceptions) must be a sequence",
-                );
-            }
-            let Some(elems) = crate::object::seq_access::snapshot(
-                _py,
-                list_ptr,
-                "sequence snapshot allocation failed",
-            ) else {
-                return MoltObject::none().bits();
-            };
-            if elems.is_empty() {
-                return raise_exception::<u64>(
-                    _py,
-                    "ValueError",
-                    "second argument (exceptions) must be a non-empty sequence",
-                );
-            }
-            let builtins = builtin_classes(_py);
-            let mut all_exception = true;
-            for (idx, &item_bits) in elems.iter().enumerate() {
-                let item_class = type_of_bits(_py, item_bits);
-                if !issubclass_bits(item_class, builtins.base_exception) {
-                    let msg =
-                        format!("Item {idx} of second argument (exceptions) is not an exception");
-                    return raise_exception::<u64>(_py, "ValueError", &msg);
-                }
-                if !issubclass_bits(item_class, builtins.exception) {
-                    all_exception = false;
-                }
-            }
-            let group_class = if all_exception {
-                builtins.exception_group
-            } else {
-                builtins.base_exception_group
-            };
-            let msg_ptr = alloc_string(_py, b"");
-            if msg_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            let msg_bits = MoltObject::from_ptr(msg_ptr).bits();
-            let out = exception_group_alloc(_py, group_class, msg_bits, list_bits, &elems, None)
-                .unwrap_or_else(|| MoltObject::none().bits());
-            dec_ref_bits(_py, msg_bits);
-            out
-        }
+        exception_group_construct(_py, message.bits(), list_bits).unwrap_or(none)
     })
 }
 
@@ -1095,6 +980,8 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static GENERIC_SEQUENCE_ITEMS: AtomicU64 = AtomicU64::new(0);
+    static PREDICATE_CALLS: AtomicU64 = AtomicU64::new(0);
+    static PREDICATE_TARGET: AtomicU64 = AtomicU64::new(0);
 
     extern "C" fn generic_sequence_getitem(_self_bits: u64, index_bits: u64) -> u64 {
         crate::with_gil_entry_nopanic!(_py, {
@@ -1114,6 +1001,12 @@ mod tests {
             }
             bits
         })
+    }
+
+    /// A Python-function predicate that records every node it inspects.
+    extern "C" fn counting_predicate(exc_bits: u64) -> u64 {
+        PREDICATE_CALLS.fetch_add(1, Ordering::SeqCst);
+        MoltObject::from_bool(exc_bits == PREDICATE_TARGET.load(Ordering::SeqCst)).bits()
     }
 
     fn heap_refcount(bits: u64) -> u32 {
@@ -1163,8 +1056,50 @@ mod tests {
         GENERIC_SEQUENCE_ITEMS.store(0, Ordering::Release);
     }
 
+    /// Allocate `class(message, children)` through the managed constructor.
+    fn group(py: &PyToken<'_>, class: u64, message: &[u8], children: u64) -> u64 {
+        let message_ptr = alloc_string(py, message);
+        assert!(!message_ptr.is_null());
+        let message_bits = MoltObject::from_ptr(message_ptr).bits();
+        let args_ptr = alloc_tuple(py, &[message_bits, children]);
+        assert!(!args_ptr.is_null());
+        dec_ref_bits(py, message_bits);
+        let group_ptr =
+            alloc_exception_group_from_class_bits(py, class, MoltObject::from_ptr(args_ptr).bits());
+        assert!(!group_ptr.is_null(), "group construction failed");
+        assert!(!exception_pending(py));
+        MoltObject::from_ptr(group_ptr).bits()
+    }
+
+    fn tuple_items(bits: u64) -> Vec<u64> {
+        let ptr = obj_from_bits(bits).as_ptr().expect("tuple");
+        unsafe {
+            crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| items.to_vec())
+        }
+        .expect("exact tuple")
+    }
+
+    fn group_children(py: &PyToken<'_>, group_bits: u64) -> Vec<u64> {
+        let ptr = obj_from_bits(group_bits).as_ptr().expect("group");
+        tuple_items(exception_group_exceptions_bits(py, ptr).expect("canonical exceptions tuple"))
+    }
+
+    fn pending_message(py: &PyToken<'_>, kind: &str) -> String {
+        let error = crate::exception_last_bits_noinc(py).expect("pending exception");
+        assert!(
+            super::super::exception_matches_builtin_name(py, error, kind),
+            "pending exception is not {kind}"
+        );
+        let text = crate::builtins::exceptions::format_exception_message(
+            py,
+            obj_from_bits(error).as_ptr().expect("exception"),
+        );
+        clear_exception(py);
+        text
+    }
+
     #[test]
-    fn exception_landing_generic_sequence_transfers_each_item_once() {
+    fn constructor_generic_sequence_transfers_each_item_once() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let first_ptr = alloc_exception(_py, "ValueError", "first");
@@ -1179,37 +1114,20 @@ mod tests {
             let first_baseline = heap_refcount(first_bits);
             let second_baseline = heap_refcount(second_bits);
 
-            let message_ptr = alloc_string(_py, b"generic");
-            assert!(!message_ptr.is_null());
-            let message_bits = MoltObject::from_ptr(message_ptr).bits();
-            let args_ptr = alloc_tuple(_py, &[message_bits, sequence_bits]);
-            assert!(!args_ptr.is_null());
-            let group_ptr = alloc_exception_group_from_class_bits(
+            let group_bits = group(
                 _py,
                 builtin_classes(_py).exception_group,
-                MoltObject::from_ptr(args_ptr).bits(),
+                b"generic",
+                sequence_bits,
             );
-            assert!(!group_ptr.is_null());
-            assert!(!exception_pending(_py));
-            let exceptions_bits = exception_group_exceptions_bits(_py, group_ptr)
-                .expect("canonical exceptions tuple");
-            let exceptions_ptr = obj_from_bits(exceptions_bits).as_ptr().unwrap();
-            assert_eq!(
-                unsafe {
-                    crate::object::seq_access::with_immutable_tuple_slice(exceptions_ptr, |items| {
-                        items == [first_bits, second_bits]
-                    })
-                },
-                Some(true)
-            );
+            assert_eq!(group_children(_py, group_bits), [first_bits, second_bits]);
             assert_eq!(heap_refcount(first_bits), first_baseline + 1);
             assert_eq!(heap_refcount(second_bits), second_baseline + 1);
 
-            dec_ref_bits(_py, MoltObject::from_ptr(group_ptr).bits());
+            dec_ref_bits(_py, group_bits);
             assert_eq!(heap_refcount(first_bits), first_baseline);
             assert_eq!(heap_refcount(second_bits), second_baseline);
             clear_generic_sequence();
-            dec_ref_bits(_py, message_bits);
             dec_ref_bits(_py, sequence_bits);
             dec_ref_bits(_py, class_bits);
             dec_ref_bits(_py, function_bits);
@@ -1220,45 +1138,119 @@ mod tests {
     }
 
     #[test]
+    fn exact_tuple_argument_is_the_canonical_exceptions_tuple() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let value_ptr = alloc_exception(_py, "ValueError", "value");
+            assert!(!value_ptr.is_null());
+            let value_bits = MoltObject::from_ptr(value_ptr).bits();
+            let children_ptr = alloc_tuple(_py, &[value_bits]);
+            assert!(!children_ptr.is_null());
+            let children_bits = MoltObject::from_ptr(children_ptr).bits();
+
+            let group_bits = group(
+                _py,
+                builtin_classes(_py).exception_group,
+                b"identity",
+                children_bits,
+            );
+            let group_ptr = obj_from_bits(group_bits).as_ptr().unwrap();
+            assert_eq!(
+                exception_group_exceptions_bits(_py, group_ptr),
+                Some(children_bits),
+                "PySequence_Tuple keeps an exact tuple's identity"
+            );
+
+            let list_ptr = alloc_list(_py, &[value_bits]);
+            assert!(!list_ptr.is_null());
+            let list_bits = MoltObject::from_ptr(list_ptr).bits();
+            let copied_bits = group(
+                _py,
+                builtin_classes(_py).exception_group,
+                b"copy",
+                list_bits,
+            );
+            let copied_ptr = obj_from_bits(copied_bits).as_ptr().unwrap();
+            let copied_tuple = exception_group_exceptions_bits(_py, copied_ptr).unwrap();
+            assert_ne!(copied_tuple, list_bits);
+            assert_eq!(tuple_items(copied_tuple), [value_bits]);
+
+            for bits in [
+                copied_bits,
+                list_bits,
+                group_bits,
+                children_bits,
+                value_bits,
+            ] {
+                dec_ref_bits(_py, bits);
+            }
+        });
+    }
+
+    #[test]
     fn exact_base_exception_group_narrows_only_for_exception_children() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let builtins = builtin_classes(_py);
             let value_ptr = alloc_exception(_py, "ValueError", "value");
-            assert!(!value_ptr.is_null());
+            let interrupt_ptr = alloc_exception(_py, "KeyboardInterrupt", "interrupt");
+            assert!(!value_ptr.is_null() && !interrupt_ptr.is_null());
             let value_bits = MoltObject::from_ptr(value_ptr).bits();
-            let message_ptr = alloc_string(_py, b"narrow");
-            let children_ptr = alloc_tuple(_py, &[value_bits]);
-            assert!(!message_ptr.is_null() && !children_ptr.is_null());
-            let args_ptr = alloc_tuple(
-                _py,
-                &[
-                    MoltObject::from_ptr(message_ptr).bits(),
-                    MoltObject::from_ptr(children_ptr).bits(),
-                ],
-            );
-            assert!(!args_ptr.is_null());
+            let interrupt_bits = MoltObject::from_ptr(interrupt_ptr).bits();
+            let exceptions_ptr = alloc_tuple(_py, &[value_bits]);
+            let mixed_ptr = alloc_tuple(_py, &[value_bits, interrupt_bits]);
+            assert!(!exceptions_ptr.is_null() && !mixed_ptr.is_null());
+            let exceptions_bits = MoltObject::from_ptr(exceptions_ptr).bits();
+            let mixed_bits = MoltObject::from_ptr(mixed_ptr).bits();
 
-            let group_ptr = alloc_exception_group_from_class_bits(
+            let narrowed = group(
                 _py,
                 builtins.base_exception_group,
-                MoltObject::from_ptr(args_ptr).bits(),
+                b"narrow",
+                exceptions_bits,
             );
-            assert!(!group_ptr.is_null());
             assert_eq!(
-                unsafe { object_class_bits(group_ptr) },
+                unsafe { object_class_bits(obj_from_bits(narrowed).as_ptr().unwrap()) },
                 builtins.exception_group
             );
+            let kept = group(_py, builtins.base_exception_group, b"keep", mixed_bits);
+            assert_eq!(
+                unsafe { object_class_bits(obj_from_bits(kept).as_ptr().unwrap()) },
+                builtins.base_exception_group
+            );
 
-            dec_ref_bits(_py, MoltObject::from_ptr(group_ptr).bits());
-            dec_ref_bits(_py, MoltObject::from_ptr(message_ptr).bits());
-            dec_ref_bits(_py, MoltObject::from_ptr(children_ptr).bits());
-            dec_ref_bits(_py, value_bits);
+            let message_ptr = alloc_string(_py, b"nest");
+            assert!(!message_ptr.is_null());
+            let message_bits = MoltObject::from_ptr(message_ptr).bits();
+            let args_ptr = alloc_tuple(_py, &[message_bits, mixed_bits]);
+            assert!(!args_ptr.is_null());
+            let rejected = alloc_exception_group_from_class_bits(
+                _py,
+                builtins.exception_group,
+                MoltObject::from_ptr(args_ptr).bits(),
+            );
+            assert!(rejected.is_null());
+            assert_eq!(
+                pending_message(_py, "TypeError"),
+                "Cannot nest BaseExceptions in an ExceptionGroup"
+            );
+
+            for bits in [
+                kept,
+                narrowed,
+                message_bits,
+                mixed_bits,
+                exceptions_bits,
+                interrupt_bits,
+                value_bits,
+            ] {
+                dec_ref_bits(_py, bits);
+            }
         });
     }
 
     #[test]
-    fn exception_landing_invalid_generic_sequence_releases_current_and_prior_items() {
+    fn invalid_generic_sequence_releases_current_and_prior_items() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let exception_ptr = alloc_exception(_py, "ValueError", "valid first");
@@ -1273,13 +1265,26 @@ mod tests {
             let exception_baseline = heap_refcount(exception_bits);
             let invalid_baseline = heap_refcount(invalid_bits);
 
-            assert!(exception_group_collect_exceptions(_py, sequence_bits).is_none());
-            assert!(exception_pending(_py));
+            let message_ptr = alloc_string(_py, b"invalid");
+            assert!(!message_ptr.is_null());
+            let message_bits = MoltObject::from_ptr(message_ptr).bits();
+            let args_ptr = alloc_tuple(_py, &[message_bits, sequence_bits]);
+            assert!(!args_ptr.is_null());
+            let group_ptr = alloc_exception_group_from_class_bits(
+                _py,
+                builtin_classes(_py).exception_group,
+                MoltObject::from_ptr(args_ptr).bits(),
+            );
+            assert!(group_ptr.is_null());
+            assert_eq!(
+                pending_message(_py, "ValueError"),
+                "Item 1 of second argument (exceptions) is not an exception"
+            );
             assert_eq!(heap_refcount(exception_bits), exception_baseline);
             assert_eq!(heap_refcount(invalid_bits), invalid_baseline);
-            clear_exception(_py);
 
             clear_generic_sequence();
+            dec_ref_bits(_py, message_bits);
             dec_ref_bits(_py, sequence_bits);
             dec_ref_bits(_py, class_bits);
             dec_ref_bits(_py, function_bits);
@@ -1290,19 +1295,20 @@ mod tests {
     }
 
     #[test]
-    fn exception_landing_tuple_oom_releases_generic_owned_items() {
+    fn admission_oom_releases_every_item() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let exception_ptr = alloc_exception(_py, "ValueError", "owned");
             assert!(!exception_ptr.is_null());
             let exception_bits = MoltObject::from_ptr(exception_ptr).bits();
+            let list_ptr = alloc_list(_py, &[exception_bits]);
+            let message_ptr = alloc_string(_py, b"oom");
+            assert!(!list_ptr.is_null() && !message_ptr.is_null());
+            let list_bits = MoltObject::from_ptr(list_ptr).bits();
+            let message_bits = MoltObject::from_ptr(message_ptr).bits();
+            let args_ptr = alloc_tuple(_py, &[message_bits, list_bits]);
+            assert!(!args_ptr.is_null());
             let baseline = heap_refcount(exception_bits);
-            inc_ref_bits(_py, exception_bits);
-            let collected = ExceptionGroupItems {
-                items: vec![exception_bits],
-                all_exception: true,
-                ownership: ExceptionGroupItemOwnership::Owned,
-            };
             set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                 max_memory: Some(0),
                 ..Default::default()
@@ -1314,11 +1320,141 @@ mod tests {
                 }
             }
             let reset = TrackerReset;
-            assert!(collected.into_owned_tuple(_py).is_none());
-            assert_eq!(heap_refcount(exception_bits), baseline);
+            let group_ptr = alloc_exception_group_from_class_bits(
+                _py,
+                builtin_classes(_py).exception_group,
+                MoltObject::from_ptr(args_ptr).bits(),
+            );
             drop(reset);
+            assert!(group_ptr.is_null());
+            assert!(exception_pending(_py));
             clear_exception(_py);
-            dec_ref_bits(_py, exception_bits);
+            assert_eq!(heap_refcount(exception_bits), baseline);
+            for bits in [message_bits, list_bits, exception_bits] {
+                dec_ref_bits(_py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn split_and_subgroup_run_the_predicate_once_per_node() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let first_ptr = alloc_exception(_py, "ValueError", "first");
+            let second_ptr = alloc_exception(_py, "TypeError", "second");
+            assert!(!first_ptr.is_null() && !second_ptr.is_null());
+            let first_bits = MoltObject::from_ptr(first_ptr).bits();
+            let second_bits = MoltObject::from_ptr(second_ptr).bits();
+            let children_ptr = alloc_tuple(_py, &[first_bits, second_bits]);
+            assert!(!children_ptr.is_null());
+            let children_bits = MoltObject::from_ptr(children_ptr).bits();
+            let group_bits = group(
+                _py,
+                builtin_classes(_py).exception_group,
+                b"predicate",
+                children_bits,
+            );
+            let predicate_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                _py,
+                crate::builtins::functions::runtime_fn_addr(
+                    "exception_group_test_predicate",
+                    counting_predicate as *const (),
+                ),
+                1,
+            );
+            assert!(!predicate_ptr.is_null());
+            let predicate_bits = MoltObject::from_ptr(predicate_ptr).bits();
+            PREDICATE_TARGET.store(first_bits, Ordering::SeqCst);
+
+            PREDICATE_CALLS.store(0, Ordering::SeqCst);
+            let pair_bits = molt_exceptiongroup_split(group_bits, predicate_bits);
+            assert!(!exception_pending(_py));
+            assert_eq!(
+                PREDICATE_CALLS.load(Ordering::SeqCst),
+                3,
+                "root, first and second are each inspected once"
+            );
+            let pair = tuple_items(pair_bits);
+            assert_eq!(pair.len(), 2, "split returns a pair");
+            let (matched, rest) = (pair[0], pair[1]);
+            assert_eq!(group_children(_py, matched), [first_bits]);
+            assert_eq!(group_children(_py, rest), [second_bits]);
+            assert_eq!(
+                unsafe { object_class_bits(obj_from_bits(matched).as_ptr().unwrap()) },
+                builtin_classes(_py).exception_group,
+                "the default derive constructs through BaseExceptionGroup narrowing"
+            );
+
+            PREDICATE_CALLS.store(0, Ordering::SeqCst);
+            let subgroup_bits = molt_exceptiongroup_subgroup(group_bits, predicate_bits);
+            assert!(!exception_pending(_py));
+            assert_eq!(PREDICATE_CALLS.load(Ordering::SeqCst), 3);
+            assert_eq!(group_children(_py, subgroup_bits), [first_bits]);
+
+            PREDICATE_TARGET.store(group_bits, Ordering::SeqCst);
+            PREDICATE_CALLS.store(0, Ordering::SeqCst);
+            let whole_bits = molt_exceptiongroup_subgroup(group_bits, predicate_bits);
+            assert_eq!(whole_bits, group_bits, "a matching root is returned itself");
+            assert_eq!(PREDICATE_CALLS.load(Ordering::SeqCst), 1);
+
+            PREDICATE_TARGET.store(0, Ordering::SeqCst);
+            for bits in [
+                whole_bits,
+                subgroup_bits,
+                pair_bits,
+                predicate_bits,
+                group_bits,
+                children_bits,
+                first_bits,
+                second_bits,
+            ] {
+                dec_ref_bits(_py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn default_derive_constructs_base_exception_group_with_narrowing() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let builtins = builtin_classes(_py);
+            let interrupt_ptr = alloc_exception(_py, "KeyboardInterrupt", "interrupt");
+            let value_ptr = alloc_exception(_py, "ValueError", "value");
+            assert!(!interrupt_ptr.is_null() && !value_ptr.is_null());
+            let interrupt_bits = MoltObject::from_ptr(interrupt_ptr).bits();
+            let value_bits = MoltObject::from_ptr(value_ptr).bits();
+            let base_children = alloc_tuple(_py, &[interrupt_bits]);
+            assert!(!base_children.is_null());
+            let base_children = MoltObject::from_ptr(base_children).bits();
+            let base_group = group(_py, builtins.base_exception_group, b"base", base_children);
+
+            let values = alloc_list(_py, &[value_bits]);
+            assert!(!values.is_null());
+            let values = MoltObject::from_ptr(values).bits();
+            let derived = molt_exceptiongroup_derive(base_group, values);
+            assert!(!exception_pending(_py));
+            let derived_ptr = obj_from_bits(derived).as_ptr().unwrap();
+            assert_eq!(
+                unsafe { object_class_bits(derived_ptr) },
+                builtins.exception_group,
+                "derive narrows exactly like BaseExceptionGroup(msg, excs)"
+            );
+            assert_eq!(group_children(_py, derived), [value_bits]);
+            let derived_message = exception_group_message_bits(_py, derived_ptr);
+            let base_message =
+                exception_group_message_bits(_py, obj_from_bits(base_group).as_ptr().unwrap());
+            assert_eq!(derived_message, base_message, "derive reuses self.message");
+
+            for bits in [
+                derived,
+                values,
+                base_group,
+                base_children,
+                value_bits,
+                interrupt_bits,
+            ] {
+                dec_ref_bits(_py, bits);
+            }
         });
     }
 }

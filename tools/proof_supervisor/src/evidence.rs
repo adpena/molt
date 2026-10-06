@@ -1,14 +1,18 @@
-use crate::{Accounting, EventKind, FileIdentity, ImageClass, ProcessEvent, sha256_bytes};
+use crate::process_ledger::{ProcessLedger, ProcessLedgerSnapshot};
+use crate::{
+    Accounting, Capability, FileIdentity, ProcessEvent, ProcessEventKind, RecordOutcome,
+    ValidatedPolicy, sha256_bytes,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const EVENT_LOG_SCHEMA: &str = "molt.proof-process-event-log.v1";
+pub use crate::EVENT_LOG_SCHEMA;
 pub const MAX_RECEIPT_BYTES: usize = 64 * 1024;
 const MAX_EVENT_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_EVENT_LOG_BYTES: u64 = 1024 * 1024 * 1024;
@@ -43,13 +47,17 @@ impl IdentitySummary {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublishedEvidence {
     pub event_log: ArtifactSummary,
-    pub derived_images: IdentitySummary,
+    pub verified: VerifiedEventLog,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerifiedEventLog {
     pub derived_images: IdentitySummary,
     pub accounting: Accounting,
+    pub root_exit_code: Option<i64>,
+    pub violation_count: u64,
+    pub violations: Vec<String>,
+    pub active_processes: BTreeSet<String>,
 }
 
 pub struct EventJournal {
@@ -60,13 +68,18 @@ pub struct EventJournal {
     digest: Sha256,
     count: u64,
     bytes: u64,
-    last_sequence: Option<u64>,
-    derived: BTreeMap<PathBuf, FileIdentity>,
+    ledger: ProcessLedger,
+    terminal: Option<VerifiedEventLog>,
     published: bool,
 }
 
 impl EventJournal {
-    pub fn create(receipt_path: &Path) -> Result<Self, String> {
+    pub fn create(
+        receipt_path: &Path,
+        policy: &ValidatedPolicy,
+        capability: &Capability,
+    ) -> Result<Self, String> {
+        let ledger = ProcessLedger::new(policy, capability)?;
         let mut staging_name = receipt_path
             .file_name()
             .ok_or_else(|| "receipt path must name a file".to_owned())?
@@ -82,23 +95,33 @@ impl EventJournal {
             digest: Sha256::new(),
             count: 0,
             bytes: 0,
-            last_sequence: None,
-            derived: BTreeMap::new(),
+            ledger,
+            terminal: None,
             published: false,
         })
     }
 
-    pub fn record(&mut self, event: &ProcessEvent) -> Result<(), String> {
-        if let Some(previous) = self.last_sequence
-            && event.sequence <= previous
-        {
-            return Err(format!(
-                "process event sequence is not strictly increasing: {previous} then {}",
-                event.sequence
-            ));
+    pub fn record(
+        &mut self,
+        process_id: u32,
+        stable_process_id: String,
+        event: ProcessEventKind,
+    ) -> Result<RecordOutcome, String> {
+        if self.terminal.is_some() {
+            return Err("process event journal is already terminal".to_owned());
         }
+        let sequence = self
+            .count
+            .checked_add(1)
+            .ok_or_else(|| "process event journal count overflow".to_owned())?;
+        let event = ProcessEvent {
+            sequence,
+            process_id,
+            stable_process_id,
+            event,
+        };
         self.buffer.clear();
-        serde_json::to_writer(&mut self.buffer, event)
+        serde_json::to_writer(&mut self.buffer, &event)
             .map_err(|error| format!("cannot serialize process event: {error}"))?;
         self.buffer.push(b'\n');
         if self.buffer.len() > MAX_EVENT_RECORD_BYTES {
@@ -111,6 +134,7 @@ impl EventJournal {
         {
             return Err("process event journal exceeds its bounded evidence budget".to_owned());
         }
+        let outcome = self.ledger.apply(&event)?;
         let file = self
             .file
             .as_mut()
@@ -122,27 +146,18 @@ impl EventJournal {
             .bytes
             .checked_add(self.buffer.len() as u64)
             .ok_or_else(|| "process event journal byte count overflow".to_owned())?;
-        self.count = self
-            .count
-            .checked_add(1)
-            .ok_or_else(|| "process event journal count overflow".to_owned())?;
-        self.last_sequence = Some(event.sequence);
-        if let Some(image) = &event.image
-            && image.class == ImageClass::Derived
-        {
-            let key = image.path.clone();
-            if let Some(prior) = self.derived.get(&key) {
-                if prior != image {
-                    return Err(format!(
-                        "derived image identity changed during run: {}",
-                        image.path.display()
-                    ));
-                }
-            } else {
-                self.derived.insert(key, image.clone());
-            }
+        self.count = sequence;
+        Ok(outcome)
+    }
+
+    pub fn verified(&mut self) -> Result<&VerifiedEventLog, String> {
+        if self.terminal.is_none() {
+            self.terminal = Some(verified_from_ledger(self.ledger.snapshot())?);
         }
-        Ok(())
+        Ok(self
+            .terminal
+            .as_ref()
+            .expect("terminal ledger was populated"))
     }
 
     pub fn publish(mut self) -> Result<PublishedEvidence, String> {
@@ -164,8 +179,7 @@ impl EventJournal {
             .and_then(|value| value.to_str())
             .ok_or_else(|| "receipt event artifact name is not UTF-8".to_owned())?
             .to_owned();
-        let derived_images =
-            summarize_identities(std::mem::take(&mut self.derived).into_values().collect())?;
+        let verified = self.verified()?.clone();
         let event_log = ArtifactSummary {
             schema: EVENT_LOG_SCHEMA.to_owned(),
             file: file_name,
@@ -176,7 +190,7 @@ impl EventJournal {
         self.published = true;
         Ok(PublishedEvidence {
             event_log,
-            derived_images,
+            verified,
         })
     }
 }
@@ -203,6 +217,8 @@ pub fn event_artifact_path(receipt_path: &Path, sha256: &str) -> Result<PathBuf,
 pub fn verify_event_artifact(
     receipt_path: &Path,
     expected: &ArtifactSummary,
+    policy: &ValidatedPolicy,
+    capability: &Capability,
 ) -> Result<VerifiedEventLog, String> {
     if expected.schema != EVENT_LOG_SCHEMA {
         return Err(format!("event log schema must be {EVENT_LOG_SCHEMA}"));
@@ -235,11 +251,9 @@ pub fn verify_event_artifact(
     let mut digest = Sha256::new();
     let mut line = Vec::new();
     let mut count = 0_u64;
-    let mut previous_sequence = None;
-    let mut derived = BTreeMap::new();
-    let mut active_processes = BTreeMap::<String, u32>::new();
-    let mut accounting = Accounting::default();
-    let mut root_stable_id = None;
+    let mut actual_bytes = 0_u64;
+    let mut previous_sequence = 0_u64;
+    let mut ledger = ProcessLedger::new(policy, capability)?;
     loop {
         line.clear();
         let bytes = read_bounded_record(&mut reader, &mut line)
@@ -247,80 +261,34 @@ pub fn verify_event_artifact(
         if bytes == 0 {
             break;
         }
+        actual_bytes = actual_bytes
+            .checked_add(bytes as u64)
+            .ok_or_else(|| "event log byte count overflow".to_owned())?;
+        if actual_bytes > expected.bytes || count >= expected.count {
+            return Err("event log grew beyond its sealed evidence bounds".to_owned());
+        }
         digest.update(&line);
         if line.last() != Some(&b'\n') {
             return Err("event log has a non-terminated final record".to_owned());
         }
         let event: ProcessEvent = serde_json::from_slice(&line[..line.len() - 1])
             .map_err(|error| format!("invalid process event record: {error}"))?;
-        if let Some(previous) = previous_sequence
-            && event.sequence <= previous
-        {
-            return Err("event log sequence is not strictly increasing".to_owned());
+        let expected_sequence = previous_sequence
+            .checked_add(1)
+            .ok_or_else(|| "event log sequence overflow".to_owned())?;
+        if event.sequence != expected_sequence {
+            return Err(format!(
+                "event log sequence is not contiguous: expected {expected_sequence}, observed {}",
+                event.sequence
+            ));
         }
-        previous_sequence = Some(event.sequence);
+        previous_sequence = event.sequence;
         count = count
             .checked_add(1)
             .ok_or_else(|| "event log count overflow".to_owned())?;
-        if let Some(image) = &event.image
-            && image.class == ImageClass::Derived
-        {
-            let key = image.path.clone();
-            if let Some(prior) = derived.get(&key) {
-                if prior != image {
-                    return Err(format!(
-                        "derived image identity changed within event log: {}",
-                        image.path.display()
-                    ));
-                }
-            } else {
-                derived.insert(key, image.clone());
-            }
-        }
-        match event.kind {
-            EventKind::ProcessCreate | EventKind::Fork => {
-                if active_processes
-                    .insert(event.stable_process_id.clone(), event.process_id)
-                    .is_some()
-                {
-                    return Err("event log creates one stable process identity twice".to_owned());
-                }
-                if root_stable_id.is_none() {
-                    root_stable_id = Some(event.stable_process_id.clone());
-                }
-                accounting.total_processes = accounting.total_processes.saturating_add(1);
-                accounting.observed_process_creates =
-                    accounting.observed_process_creates.saturating_add(1);
-                if event.kind == EventKind::ProcessCreate && event.image.is_some() {
-                    accounting.observed_execs = accounting.observed_execs.saturating_add(1);
-                    if root_stable_id.as_deref() == Some(&event.stable_process_id) {
-                        accounting.root_execs = accounting.root_execs.saturating_add(1);
-                    }
-                }
-            }
-            EventKind::Exec => {
-                if !active_processes.contains_key(&event.stable_process_id) {
-                    return Err("event log exec has no live process creation".to_owned());
-                }
-                if event.image.is_none() {
-                    return Err("event log exec has no classified image".to_owned());
-                }
-                accounting.observed_execs = accounting.observed_execs.saturating_add(1);
-                if root_stable_id.as_deref() == Some(&event.stable_process_id) {
-                    accounting.root_execs = accounting.root_execs.saturating_add(1);
-                }
-            }
-            EventKind::ProcessExit => {
-                if active_processes.remove(&event.stable_process_id).is_none() {
-                    return Err("event log exit has no live process creation".to_owned());
-                }
-                accounting.observed_process_exits =
-                    accounting.observed_process_exits.saturating_add(1);
-            }
-            EventKind::ThreadCreate | EventKind::CloneUnclassified => {}
-        }
+        ledger.apply(&event)?;
     }
-    if count != expected.count {
+    if count != expected.count || actual_bytes != expected.bytes {
         return Err(format!(
             "event log record count mismatch: receipt={} actual={count}",
             expected.count
@@ -330,10 +298,17 @@ pub fn verify_event_artifact(
     if !crate::constant_time_eq(expected.sha256.as_bytes(), actual_sha256.as_bytes()) {
         return Err("event log digest mismatch".to_owned());
     }
-    accounting.active_processes = active_processes.len() as u64;
+    verified_from_ledger(ledger.snapshot())
+}
+
+fn verified_from_ledger(snapshot: ProcessLedgerSnapshot) -> Result<VerifiedEventLog, String> {
     Ok(VerifiedEventLog {
-        derived_images: summarize_identities(derived.into_values().collect())?,
-        accounting,
+        derived_images: summarize_identities(snapshot.derived_images)?,
+        accounting: snapshot.accounting,
+        root_exit_code: snapshot.root_exit_code,
+        violation_count: snapshot.violation_count,
+        violations: snapshot.violations,
+        active_processes: snapshot.active_processes,
     })
 }
 
@@ -380,8 +355,6 @@ pub fn durable_atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn summarize_identities(mut identities: Vec<FileIdentity>) -> Result<IdentitySummary, String> {
-    // Recorded paths are already canonical. Replay must never consult the
-    // current filesystem or merge distinct native path identities.
     identities.sort_by(|left, right| left.path.cmp(&right.path));
     let bytes = serde_json::to_vec(&identities)
         .map_err(|error| format!("cannot serialize derived image summary: {error}"))?;
@@ -543,7 +516,11 @@ fn sync_parent_directory(path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{EventKind, ProcessEvent};
+    use crate::{
+        CAPABILITY_SCHEMA, Capability, ClosureMode, DerivedRoot, FixedImage, ImageClass,
+        POLICY_SCHEMA, Policy, ProcessEvent, ProcessEventKind, RootExitDisposition,
+        ValidatedPolicy, sha256_file,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn unique_path(name: &str) -> PathBuf {
@@ -557,40 +534,117 @@ mod tests {
         ))
     }
 
+    fn test_policy(mode: ClosureMode, derived_roots: Vec<DerivedRoot>) -> ValidatedPolicy {
+        let executable = std::env::current_exe().unwrap();
+        Policy {
+            schema: POLICY_SCHEMA.to_owned(),
+            nonce: "a".repeat(32),
+            mode,
+            cwd: std::env::current_dir().unwrap(),
+            command: vec![executable.display().to_string()],
+            environment: crate::platform::required_environment(),
+            root_role: "test-root".to_owned(),
+            fixed_images: vec![FixedImage {
+                role: "test-root".to_owned(),
+                path: executable.clone(),
+                sha256: sha256_file(&executable).unwrap(),
+                root_exit_disposition: RootExitDisposition::RequireExit,
+            }],
+            derived_roots,
+        }
+        .validate()
+        .unwrap()
+    }
+
+    fn test_capability(mode: ClosureMode) -> Capability {
+        Capability {
+            schema: CAPABILITY_SCHEMA.to_owned(),
+            platform: "linux".to_owned(),
+            mode,
+            backend: "ptrace-exitkill".to_owned(),
+            available: true,
+            pre_entry_exec_authority: true,
+            pre_entry_process_create_authority: true,
+            recursive_descendant_authority: true,
+            required_environment: crate::platform::required_environment(),
+            reason: None,
+        }
+    }
+
+    fn test_root_image(policy: &ValidatedPolicy) -> FileIdentity {
+        policy.classify_observed_image(
+            &policy.root_path,
+            "test-root".to_owned(),
+            1,
+            policy.fixed[&policy.root_path].sha256.clone(),
+        )
+    }
+
+    fn assert_published_replay_matches(
+        journal: EventJournal,
+        receipt: &Path,
+        policy: &ValidatedPolicy,
+        capability: &Capability,
+    ) -> PublishedEvidence {
+        let published = journal.publish().unwrap();
+        assert_eq!(
+            verify_event_artifact(receipt, &published.event_log, policy, capability).unwrap(),
+            published.verified
+        );
+        fs::remove_file(event_artifact_path(receipt, &published.event_log.sha256).unwrap())
+            .unwrap();
+        published
+    }
+
+    fn write_event_fixture(receipt: &Path, events: &[ProcessEvent]) -> ArtifactSummary {
+        let mut bytes = Vec::new();
+        for event in events {
+            serde_json::to_writer(&mut bytes, event).unwrap();
+            bytes.push(b'\n');
+        }
+        let sha256 = sha256_bytes(&bytes);
+        let path = event_artifact_path(receipt, &sha256).unwrap();
+        durable_atomic_write(&path, &bytes).unwrap();
+        ArtifactSummary {
+            schema: EVENT_LOG_SCHEMA.to_owned(),
+            file: path.file_name().unwrap().to_string_lossy().into_owned(),
+            count: events.len() as u64,
+            bytes: bytes.len() as u64,
+            sha256,
+        }
+    }
+
     #[test]
     fn event_journal_is_adjacent_durable_and_stream_verified() {
         let receipt = unique_path("receipt.json");
-        let mut journal = EventJournal::create(&receipt).unwrap();
+        let policy = test_policy(ClosureMode::Leaf, Vec::new());
+        let capability = test_capability(policy.policy.mode);
+        let mut journal = EventJournal::create(&receipt, &policy, &capability).unwrap();
         journal
-            .record(&ProcessEvent {
-                sequence: 6,
-                kind: EventKind::ProcessCreate,
-                process_id: 1,
-                parent_process_id: None,
-                stable_process_id: "test:1".to_owned(),
-                image: None,
-                exit_code: None,
-            })
+            .record(
+                1,
+                "test:1".to_owned(),
+                ProcessEventKind::ProcessCreate {
+                    parent_process_id: None,
+                    image: None,
+                },
+            )
             .unwrap();
         journal
-            .record(&ProcessEvent {
-                sequence: 7,
-                kind: EventKind::ProcessExit,
-                process_id: 1,
-                parent_process_id: None,
-                stable_process_id: "test:1".to_owned(),
-                image: None,
-                exit_code: Some(0),
-            })
+            .record(
+                1,
+                "test:1".to_owned(),
+                ProcessEventKind::ProcessExit { exit_code: 0 },
+            )
             .unwrap();
         let published = journal.publish().unwrap();
         assert_eq!(published.event_log.count, 2);
-        assert_eq!(published.derived_images, IdentitySummary::empty());
+        assert_eq!(published.verified.derived_images, IdentitySummary::empty());
         assert_eq!(
-            verify_event_artifact(&receipt, &published.event_log)
+            verify_event_artifact(&receipt, &published.event_log, &policy, &capability)
                 .unwrap()
                 .derived_images,
-            published.derived_images
+            published.verified.derived_images
         );
         let _ =
             fs::remove_file(event_artifact_path(&receipt, &published.event_log.sha256).unwrap());
@@ -621,136 +675,362 @@ mod tests {
     }
 
     #[test]
-    fn native_identity_keys_survive_offline_record_and_replay() {
-        let receipt = unique_path("native-keys.json");
-        let absent_root = unique_path("absent-images");
-        let names = ["Output", "output", "\u{130}", "i\u{307}"];
-        let mut journal = EventJournal::create(&receipt).unwrap();
-        for (index, name) in names.iter().enumerate() {
-            let path = absent_root.join(name).join("image.exe");
-            assert!(!path.exists());
+    fn rejected_root_creation_and_live_pid_reuse_preserve_the_accepted_prefix() {
+        let receipt = unique_path("rejected-create.json");
+        let policy = test_policy(ClosureMode::DeclaredTree, Vec::new());
+        let mut capability = test_capability(policy.policy.mode);
+        capability.platform = "windows".to_owned();
+        capability.backend = "debug-process+nested-job".to_owned();
+        let root_image = test_root_image(&policy);
+        let wrong_root = policy.classify_observed_image(
+            &policy.root_path.with_file_name("wrong-root"),
+            "wrong-root".to_owned(),
+            2,
+            "b".repeat(64),
+        );
+        let mut journal = EventJournal::create(&receipt, &policy, &capability).unwrap();
+        let before = journal.ledger.snapshot();
+        assert!(
             journal
-                .record(&ProcessEvent {
-                    sequence: index as u64 + 1,
-                    kind: if index == 0 {
-                        EventKind::ProcessCreate
-                    } else {
-                        EventKind::Exec
-                    },
-                    process_id: 1,
+                .record(
+                    1,
+                    "test:1".to_owned(),
+                    ProcessEventKind::ProcessCreate {
+                        parent_process_id: None,
+                        image: Some(wrong_root),
+                    }
+                )
+                .unwrap_err()
+                .contains("initial root image")
+        );
+        assert_eq!(journal.ledger.snapshot(), before);
+        assert_eq!(journal.count, 0);
+        // Retrying the same stable identity also checks state omitted from the snapshot.
+        journal
+            .record(
+                1,
+                "test:1".to_owned(),
+                ProcessEventKind::ProcessCreate {
                     parent_process_id: None,
-                    stable_process_id: "test:1".to_owned(),
-                    image: Some(FileIdentity {
-                        path,
-                        file_id: format!("file:{index}"),
-                        size_bytes: 4,
-                        sha256: "a".repeat(64),
-                        class: ImageClass::Derived,
-                        roles: vec!["generated-tool".to_owned()],
-                    }),
-                    exit_code: None,
-                })
+                    image: Some(root_image.clone()),
+                },
+            )
+            .unwrap();
+
+        let child = ProcessEventKind::ProcessCreate {
+            parent_process_id: Some(1),
+            image: Some(root_image.clone()),
+        };
+        let before = journal.ledger.snapshot();
+        assert!(
+            journal
+                .record(1, "test:2".to_owned(), child.clone())
+                .unwrap_err()
+                .contains("reuses live process id")
+        );
+        assert_eq!(journal.ledger.snapshot(), before);
+        let mut misclassified = root_image;
+        misclassified.roles.push("forged-role".to_owned());
+        assert!(
+            journal
+                .record(
+                    2,
+                    "test:2".to_owned(),
+                    ProcessEventKind::ProcessCreate {
+                        parent_process_id: Some(1),
+                        image: Some(misclassified),
+                    }
+                )
+                .unwrap_err()
+                .contains("classification disagrees")
+        );
+        assert_eq!(journal.ledger.snapshot(), before);
+        journal.record(2, "test:2".to_owned(), child).unwrap();
+        for id in [2, 1] {
+            journal
+                .record(
+                    id,
+                    format!("test:{id}"),
+                    ProcessEventKind::ProcessExit { exit_code: 0 },
+                )
                 .unwrap();
         }
-        journal
-            .record(&ProcessEvent {
-                sequence: names.len() as u64 + 1,
-                kind: EventKind::ProcessExit,
-                process_id: 1,
-                parent_process_id: None,
-                stable_process_id: "test:1".to_owned(),
-                image: None,
-                exit_code: Some(0),
-            })
+        let published = assert_published_replay_matches(journal, &receipt, &policy, &capability);
+        assert_eq!(published.event_log.count, 4);
+        assert_eq!(published.verified.accounting.process_creates, 2);
+        assert_eq!(published.verified.violation_count, 0);
+    }
+
+    #[test]
+    fn fork_requires_the_exact_optional_live_parent_image_during_record_and_replay() {
+        let receipt = unique_path("fork-inheritance.json");
+        let auxiliary_path = unique_path("auxiliary-image");
+        fs::write(&auxiliary_path, b"distinct auxiliary image").unwrap();
+        let mut policy = test_policy(ClosureMode::DeclaredTree, Vec::new()).policy;
+        policy.fixed_images.push(FixedImage {
+            role: "auxiliary".to_owned(),
+            path: auxiliary_path.clone(),
+            sha256: sha256_file(&auxiliary_path).unwrap(),
+            root_exit_disposition: RootExitDisposition::Terminate,
+        });
+        let policy = policy.validate().unwrap();
+        let capability = test_capability(policy.policy.mode);
+        let root_image = test_root_image(&policy);
+        let auxiliary = policy
+            .fixed
+            .values()
+            .find(|image| image.roles.contains("auxiliary"))
             .unwrap();
-        let published = journal.publish().unwrap();
-        assert_eq!(published.derived_images.count, names.len() as u64);
-        let replayed = verify_event_artifact(&receipt, &published.event_log).unwrap();
-        assert_eq!(replayed.derived_images, published.derived_images);
-        assert_eq!(replayed.accounting.active_processes, 0);
-        let _ =
-            fs::remove_file(event_artifact_path(&receipt, &published.event_log.sha256).unwrap());
+        let auxiliary_image = policy.classify_observed_image(
+            &auxiliary.path,
+            "test-auxiliary".to_owned(),
+            24,
+            auxiliary.sha256.clone(),
+        );
+        let mut wrong_file_id = root_image.clone();
+        wrong_file_id.file_id.push_str("-forged");
+        let mut wrong_size = root_image.clone();
+        wrong_size.size_bytes += 1;
+        let forged_images = [
+            Some(auxiliary_image),
+            None,
+            Some(wrong_file_id),
+            Some(wrong_size),
+        ];
+        let events: Vec<ProcessEvent> = [
+            ProcessEventKind::ProcessCreate {
+                parent_process_id: None,
+                image: None,
+            },
+            ProcessEventKind::Exec {
+                image: root_image.clone(),
+            },
+            ProcessEventKind::Fork {
+                parent_process_id: 1,
+                image: Some(root_image.clone()),
+            },
+            ProcessEventKind::ProcessExit { exit_code: 0 },
+            ProcessEventKind::ProcessExit { exit_code: 0 },
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, event)| {
+            let process_id = if index == 2 || index == 4 { 2 } else { 1 };
+            ProcessEvent {
+                sequence: index as u64 + 1,
+                process_id,
+                stable_process_id: format!("test:{process_id}"),
+                event,
+            }
+        })
+        .collect();
+        for image in &forged_images {
+            let mut forged = events.clone();
+            forged[2].event = ProcessEventKind::Fork {
+                parent_process_id: 1,
+                image: image.clone(),
+            };
+            let summary = write_event_fixture(&receipt, &forged);
+            assert!(
+                verify_event_artifact(&receipt, &summary, &policy, &capability)
+                    .unwrap_err()
+                    .contains("inherited live parent image")
+            );
+            fs::remove_file(event_artifact_path(&receipt, &summary.sha256).unwrap()).unwrap();
+        }
+
+        let mut journal = EventJournal::create(&receipt, &policy, &capability).unwrap();
+        journal
+            .record(1, "test:1".to_owned(), events[0].event.clone())
+            .unwrap();
+        let before = journal.ledger.snapshot();
+        assert!(
+            journal
+                .record(2, "pre-exec:2".to_owned(), events[2].event.clone())
+                .unwrap_err()
+                .contains("inherited live parent image")
+        );
+        assert_eq!(journal.ledger.snapshot(), before);
+        journal
+            .record(
+                2,
+                "pre-exec:2".to_owned(),
+                ProcessEventKind::Fork {
+                    parent_process_id: 1,
+                    image: None,
+                },
+            )
+            .unwrap();
+        journal
+            .record(
+                2,
+                "pre-exec:2".to_owned(),
+                ProcessEventKind::ProcessExit { exit_code: 0 },
+            )
+            .unwrap();
+        journal
+            .record(1, "test:1".to_owned(), events[1].event.clone())
+            .unwrap();
+        let before = journal.ledger.snapshot();
+        for image in forged_images {
+            assert!(
+                journal
+                    .record(
+                        2,
+                        "test:2".to_owned(),
+                        ProcessEventKind::Fork {
+                            parent_process_id: 1,
+                            image,
+                        }
+                    )
+                    .unwrap_err()
+                    .contains("inherited live parent image")
+            );
+            assert_eq!(journal.ledger.snapshot(), before);
+        }
+        journal
+            .record(2, "test:2".to_owned(), events[2].event.clone())
+            .unwrap();
+        assert!(
+            journal
+                .record(1, "test:1".to_owned(), events[3].event.clone())
+                .unwrap()
+                .has_policy_violation()
+        );
+        journal
+            .record(2, "test:2".to_owned(), events[4].event.clone())
+            .unwrap();
+        let published = assert_published_replay_matches(journal, &receipt, &policy, &capability);
+        assert_eq!(published.verified.violation_count, 1);
+        assert_eq!(
+            published.verified.accounting.root_exit_terminated_processes,
+            0
+        );
+        assert_eq!(published.verified.accounting.active_processes, 0);
+        fs::remove_file(auxiliary_path).unwrap();
     }
 
     #[test]
     fn derived_identity_drift_is_rejected_during_record_and_replay() {
         let receipt = unique_path("derived-drift.json");
-        let derived_path = unique_path("derived-tool");
+        let derived_root = unique_path("derived-root");
+        fs::create_dir_all(&derived_root).unwrap();
+        let policy = test_policy(
+            ClosureMode::DeclaredTree,
+            vec![DerivedRoot {
+                role: "generated-tool".to_owned(),
+                path: derived_root.clone(),
+            }],
+        );
+        let derived_path = policy.derived[0].path.join("derived-tool");
         let image = |sha256: &str| FileIdentity {
             path: derived_path.clone(),
-            file_id: "device:inode".to_owned(),
-            size_bytes: 4,
+            file_id: "test-derived".to_owned(),
+            size_bytes: 1,
             sha256: sha256.to_owned(),
             class: ImageClass::Derived,
             roles: vec!["generated-tool".to_owned()],
         };
+        let root_image = test_root_image(&policy);
         let events = vec![
             ProcessEvent {
                 sequence: 1,
-                kind: EventKind::ProcessCreate,
                 process_id: 1,
-                parent_process_id: None,
                 stable_process_id: "test:1".to_owned(),
-                image: None,
-                exit_code: None,
+                event: ProcessEventKind::ProcessCreate {
+                    parent_process_id: None,
+                    image: None,
+                },
             },
             ProcessEvent {
                 sequence: 2,
-                kind: EventKind::Exec,
                 process_id: 1,
-                parent_process_id: None,
                 stable_process_id: "test:1".to_owned(),
-                image: Some(image(&"a".repeat(64))),
-                exit_code: None,
+                event: ProcessEventKind::Exec { image: root_image },
             },
             ProcessEvent {
                 sequence: 3,
-                kind: EventKind::Exec,
                 process_id: 1,
-                parent_process_id: None,
                 stable_process_id: "test:1".to_owned(),
-                image: Some(image(&"b".repeat(64))),
-                exit_code: None,
+                event: ProcessEventKind::Exec {
+                    image: image(&"a".repeat(64)),
+                },
+            },
+            ProcessEvent {
+                sequence: 4,
+                process_id: 1,
+                stable_process_id: "test:1".to_owned(),
+                event: ProcessEventKind::Exec {
+                    image: image(&"b".repeat(64)),
+                },
             },
         ];
 
-        let mut journal = EventJournal::create(&receipt).unwrap();
-        journal.record(&events[0]).unwrap();
-        journal.record(&events[1]).unwrap();
+        let capability = test_capability(policy.policy.mode);
+        let mut journal = EventJournal::create(&receipt, &policy, &capability).unwrap();
+        journal
+            .record(1, "test:1".to_owned(), events[0].event.clone())
+            .unwrap();
+        let before = journal.ledger.snapshot();
         assert!(
             journal
-                .record(&events[2])
+                .record(1, "test:1".to_owned(), events[2].event.clone())
                 .unwrap_err()
-                .contains("identity changed")
+                .contains("initial root image")
         );
-        drop(journal);
-
-        let mut bytes = Vec::new();
-        for event in &events {
-            serde_json::to_writer(&mut bytes, event).unwrap();
-            bytes.push(b'\n');
-        }
-        let sha256 = sha256_bytes(&bytes);
-        let path = event_artifact_path(&receipt, &sha256).unwrap();
-        durable_atomic_write(&path, &bytes).unwrap();
-        let summary = ArtifactSummary {
-            schema: EVENT_LOG_SCHEMA.to_owned(),
-            file: path.file_name().unwrap().to_string_lossy().into_owned(),
-            count: events.len() as u64,
-            bytes: bytes.len() as u64,
-            sha256,
-        };
+        assert_eq!(journal.ledger.snapshot(), before);
+        journal
+            .record(1, "test:1".to_owned(), events[1].event.clone())
+            .unwrap();
+        journal
+            .record(1, "test:1".to_owned(), events[2].event.clone())
+            .unwrap();
+        let before = journal.ledger.snapshot();
         assert!(
-            verify_event_artifact(&receipt, &summary)
+            journal
+                .record(1, "test:1".to_owned(), events[3].event.clone())
                 .unwrap_err()
                 .contains("identity changed")
         );
-        let _ = fs::remove_file(path);
+        assert_eq!(journal.ledger.snapshot(), before);
+        journal
+            .record(
+                2,
+                "test:2".to_owned(),
+                ProcessEventKind::Fork {
+                    parent_process_id: 1,
+                    image: Some(image(&"a".repeat(64))),
+                },
+            )
+            .unwrap();
+        for id in [2, 1] {
+            journal
+                .record(
+                    id,
+                    format!("test:{id}"),
+                    ProcessEventKind::ProcessExit { exit_code: 0 },
+                )
+                .unwrap();
+        }
+        let published = assert_published_replay_matches(journal, &receipt, &policy, &capability);
+        assert_eq!(published.event_log.count, 6);
+        assert_eq!(published.verified.derived_images.count, 1);
+
+        let summary = write_event_fixture(&receipt, &events);
+        assert!(
+            verify_event_artifact(&receipt, &summary, &policy, &capability)
+                .unwrap_err()
+                .contains("identity changed")
+        );
+        let _ = fs::remove_file(event_artifact_path(&receipt, &summary.sha256).unwrap());
+        let _ = fs::remove_dir_all(derived_root);
     }
 
     #[test]
     fn verifier_rejects_an_oversized_event_record_without_unbounded_read() {
         let receipt = unique_path("oversized-event.json");
+        let policy = test_policy(ClosureMode::Leaf, Vec::new());
+        let capability = test_capability(policy.policy.mode);
         let mut bytes = vec![b'x'; MAX_EVENT_RECORD_BYTES + 1];
         bytes.push(b'\n');
         let sha256 = sha256_bytes(&bytes);
@@ -764,7 +1044,7 @@ mod tests {
             sha256,
         };
         assert!(
-            verify_event_artifact(&receipt, &summary)
+            verify_event_artifact(&receipt, &summary, &policy, &capability)
                 .unwrap_err()
                 .contains("exceeds")
         );

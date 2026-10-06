@@ -11,6 +11,7 @@ fn test_compile_checked_lowers_checked_add_helper() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -32,7 +33,7 @@ fn test_compile_checked_lowers_checked_add_helper() {
     let mut backend = LuauBackend::new();
     let source = backend.compile(&ir);
 
-    assert!(source.contains("local function molt_checked_i64_add"));
+    assert!(source.contains("function molt_checked_i64_add"));
     assert!(source.contains("return a + b, false"));
     assert!(source.contains("local sum: number, overflow: boolean = molt_checked_i64_add(a, b)"));
     assert!(!source.contains("[unsupported op: checked_add]"));
@@ -49,6 +50,7 @@ fn test_compile_checked_lowers_checked_mul_helper() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -70,7 +72,7 @@ fn test_compile_checked_lowers_checked_mul_helper() {
     let mut backend = LuauBackend::new();
     let source = backend.compile(&ir);
 
-    assert!(source.contains("local function molt_checked_i64_mul"));
+    assert!(source.contains("function molt_checked_i64_mul"));
     assert!(source.contains("if p >= 9007199254740992 or p <= -9007199254740992"));
     assert!(
         source.contains("local product: number, overflow: boolean = molt_checked_i64_mul(a, b)")
@@ -95,6 +97,7 @@ fn test_checked_numeric_results_preserve_discarded_field_positions() {
                         source_file: None,
                         is_extern: false,
                         codegen_partition: false,
+                        parameter_custody: Vec::new(),
                         execution_context: ExecutionContextPolicy::None,
                         ops: vec![
                             OpIR {
@@ -137,6 +140,7 @@ fn test_compile_checked_lowers_zero_division_guards() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -169,15 +173,43 @@ fn test_compile_checked_lowers_zero_division_guards() {
     let mut backend = LuauBackend::new();
     let source = backend.compile(&ir);
 
-    assert!(source.contains("__msg=\"division by zero\""));
-    assert!(source.contains("__msg=\"integer modulo by zero\""));
-    assert!(source.contains("__msg=\"integer division or modulo by zero\""));
+    assert!(source.contains("if b == 0 then molt_numeric_error(\"truediv:int\") end"));
+    assert!(source.contains("if b == 0 then molt_numeric_error(\"mod:int\") end"));
+    assert!(source.contains("if b == 0 then molt_numeric_error(\"floordiv:int\") end"));
+    assert!(source.contains("[13]=\"float modulo by zero\""));
+    assert!(source.contains("[14]=\"division by zero\""));
     assert!(source.contains("local quotient: number = a / b"));
     assert!(source.contains("local remainder: number = a % b"));
     assert!(source.contains("local floor_quotient: number = a // b"));
     assert!(!source.contains("[unsupported op: div]"));
     assert!(!source.contains("[unsupported op: mod]"));
     assert!(!source.contains("[unsupported op: floordiv]"));
+
+    let mut typed_ir = ir;
+    typed_ir.functions[0].param_types = Some(vec!["float".to_string(), "float".to_string()]);
+    let float_source = LuauBackend::new().compile(&typed_ir);
+    assert!(float_source.contains("if b == 0 then molt_numeric_error(\"truediv:float\") end"));
+    assert!(float_source.contains("if b == 0 then molt_numeric_error(\"floordiv:float\") end"));
+    assert!(float_source.contains("if b == 0 then molt_numeric_error(\"mod:float\") end"));
+    typed_ir.functions[0].param_types = Some(vec!["int".to_string(), "bool".to_string()]);
+    for operation in &mut typed_ir.functions[0].ops {
+        if ["div", "mod", "floordiv"].contains(&operation.kind.as_str()) {
+            operation.kind = format!("inplace_{}", operation.kind);
+        }
+    }
+    let bool_source = LuauBackend::new().compile(&typed_ir);
+    assert!(
+        bool_source
+            .contains("if (if b then 1 else 0) == 0 then molt_numeric_error(\"truediv:int\") end")
+    );
+    assert!(
+        bool_source
+            .contains("if (if b then 1 else 0) == 0 then molt_numeric_error(\"mod:int\") end")
+    );
+    assert!(
+        bool_source
+            .contains("if (if b then 1 else 0) == 0 then molt_numeric_error(\"floordiv:int\") end")
+    );
 }
 
 #[test]
@@ -195,6 +227,7 @@ fn test_compile_checked_lowers_pow_mod_square_multiply_loop() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -226,266 +259,79 @@ fn test_compile_checked_lowers_pow_mod_square_multiply_loop() {
     assert!(!source.contains("[unsupported op: pow_mod]"));
 }
 
+fn fused_kernel_function(name: &str, kind: &str, args: &[&str]) -> FunctionIR {
+    FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        name: name.to_string(),
+        params: args.iter().map(|arg| arg.to_string()).collect(),
+        param_types: None,
+        source_file: None,
+        is_extern: false,
+        codegen_partition: false,
+        parameter_custody: Vec::new(),
+        execution_context: ExecutionContextPolicy::None,
+        ops: vec![
+            OpIR {
+                kind: kind.to_string(),
+                args: Some(args.iter().map(|arg| arg.to_string()).collect()),
+                out: Some(format!("{name}_result")),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".to_string(),
+                args: Some(vec![format!("{name}_result")]),
+                ..OpIR::default()
+            },
+        ],
+    }
+}
+
 #[test]
-fn test_compile_checked_lowers_vector_reduction_kernels() {
+fn test_compile_checked_fused_reductions_decline_to_the_ordinary_loop() {
+    let args = ["it", "acc", "target"];
+    let ir = SimpleIR {
+        functions: ["vec_sum", "vec_prod", "vec_min", "vec_max"]
+            .iter()
+            .map(|kind| fused_kernel_function(kind, kind, &args))
+            .collect(),
+        profile: None,
+    };
+    let mut backend = LuauBackend::new();
+    let source = backend.compile(&ir);
+    for kind in ["vec_sum", "vec_prod", "vec_min", "vec_max"] {
+        assert!(
+            source.contains(&format!("local {kind}_result = {{nil, nil, 0, false}}")),
+            "{kind} must decline, got:\n{source}"
+        );
+        assert!(!source.contains(&format!("[unsupported op: {kind}]")));
+    }
+}
+
+#[test]
+fn test_compile_checked_fused_split_count_declines_to_the_ordinary_loop() {
     let ir = SimpleIR {
         functions: vec![
-            FunctionIR {
-                return_abi: molt_ir::FunctionReturnAbi::Value,
-                name: "vector_sum_kernel_test".to_string(),
-                params: vec!["values".to_string()],
-                param_types: Some(vec!["list".to_string()]),
-                source_file: None,
-                is_extern: false,
-                codegen_partition: false,
-                execution_context: ExecutionContextPolicy::None,
-                ops: vec![
-                    OpIR {
-                        kind: "vec_sum_i64".to_string(),
-                        args: Some(vec!["values".to_string()]),
-                        out: Some("sum_result".to_string()),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "ret".to_string(),
-                        args: Some(vec!["sum_result".to_string()]),
-                        ..OpIR::default()
-                    },
-                ],
-            },
-            FunctionIR {
-                return_abi: molt_ir::FunctionReturnAbi::Value,
-                name: "vector_min_kernel_test".to_string(),
-                params: vec!["values".to_string()],
-                param_types: Some(vec!["list".to_string()]),
-                source_file: None,
-                is_extern: false,
-                codegen_partition: false,
-                execution_context: ExecutionContextPolicy::None,
-                ops: vec![
-                    OpIR {
-                        kind: "vec_min_i64".to_string(),
-                        args: Some(vec!["values".to_string()]),
-                        out: Some("min_result".to_string()),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "ret".to_string(),
-                        args: Some(vec!["min_result".to_string()]),
-                        ..OpIR::default()
-                    },
-                ],
-            },
+            fused_kernel_function(
+                "ws",
+                "string_split_ws_dict_inc",
+                &["line", "dict", "delta", "target"],
+            ),
+            fused_kernel_function(
+                "sep",
+                "string_split_sep_dict_inc",
+                &["line", "sep", "dict", "delta", "target"],
+            ),
         ],
         profile: None,
     };
     let mut backend = LuauBackend::new();
     let source = backend.compile(&ir);
-
-    assert!(source.contains("local sum_result\n\tdo"));
-    assert!(source.contains("local acc = 0"));
-    assert!(source.contains("for __vi = 1, #values do local v = values[__vi]; acc = acc + v end"));
-    assert!(source.contains("local min_result\n\tdo"));
-    assert!(source.contains("local acc = math.huge"));
-    assert!(source.contains(
-        "for __vi = 1, #values do local v = values[__vi]; if v < acc then acc = v end end"
-    ));
-    assert!(!source.contains("[unsupported op: vec_sum_i64]"));
-    assert!(!source.contains("[unsupported op: vec_min_i64]"));
-}
-
-#[test]
-fn test_compile_checked_lowers_intarray_from_seq_dense_integer_table() {
-    let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            return_abi: molt_ir::FunctionReturnAbi::Void,
-            name: "intarray_from_seq_test".to_string(),
-            params: vec![],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            execution_context: ExecutionContextPolicy::None,
-            ops: vec![
-                OpIR {
-                    kind: "const".to_string(),
-                    out: Some("one".to_string()),
-                    value: Some(1),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "const".to_string(),
-                    out: Some("two".to_string()),
-                    value: Some(2),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "list_new".to_string(),
-                    out: Some("seq".to_string()),
-                    args: Some(vec!["one".to_string(), "two".to_string()]),
-                    ..OpIR::default()
-                },
-                OpIR {
-                    kind: "intarray_from_seq".to_string(),
-                    out: Some("arr".to_string()),
-                    args: Some(vec!["seq".to_string()]),
-                    ..OpIR::default()
-                },
-            ],
-        }],
-        profile: None,
-    };
-    let mut backend = LuauBackend::new();
-    let source = backend.compile(&ir);
-    assert!(
-        source.contains("local arr\n")
-            && source.contains("\tdo\n")
-            && source.contains("local __seq = seq")
-            && source.contains("local __arr = {}")
-            && source.contains("math.floor(__v) == __v")
-            && source.contains("arr = if __ok then __arr else nil")
-            && source.contains("arr = nil"),
-        "intarray_from_seq should copy integer tables and fail closed, got:\n{source}"
-    );
-    assert!(
-        !source.contains("[intarray_from_seq]")
-            && !source.contains("[unsupported op: intarray_from_seq]"),
-        "intarray_from_seq must not leave checked-output markers, got:\n{source}"
-    );
-}
-
-#[test]
-fn test_compile_checked_lowers_fused_dict_kernels() {
-    let ir = SimpleIR {
-        functions: vec![
-            FunctionIR {
-                return_abi: molt_ir::FunctionReturnAbi::Value,
-                name: "split_ws_dict_inc_test".to_string(),
-                params: vec!["line".to_string(), "dict".to_string(), "delta".to_string()],
-                param_types: Some(vec![
-                    "str".to_string(),
-                    "dict".to_string(),
-                    "int".to_string(),
-                ]),
-                source_file: None,
-                is_extern: false,
-                codegen_partition: false,
-                execution_context: ExecutionContextPolicy::None,
-                ops: vec![
-                    OpIR {
-                        kind: "string_split_ws_dict_inc".to_string(),
-                        args: Some(vec![
-                            "line".to_string(),
-                            "dict".to_string(),
-                            "delta".to_string(),
-                        ]),
-                        out: Some("ws_result".to_string()),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "ret".to_string(),
-                        args: Some(vec!["ws_result".to_string()]),
-                        ..OpIR::default()
-                    },
-                ],
-            },
-            FunctionIR {
-                return_abi: molt_ir::FunctionReturnAbi::Value,
-                name: "split_sep_dict_inc_test".to_string(),
-                params: vec![
-                    "line".to_string(),
-                    "sep".to_string(),
-                    "dict".to_string(),
-                    "delta".to_string(),
-                ],
-                param_types: Some(vec![
-                    "str".to_string(),
-                    "str".to_string(),
-                    "dict".to_string(),
-                    "int".to_string(),
-                ]),
-                source_file: None,
-                is_extern: false,
-                codegen_partition: false,
-                execution_context: ExecutionContextPolicy::None,
-                ops: vec![
-                    OpIR {
-                        kind: "string_split_sep_dict_inc".to_string(),
-                        args: Some(vec![
-                            "line".to_string(),
-                            "sep".to_string(),
-                            "dict".to_string(),
-                            "delta".to_string(),
-                        ]),
-                        out: Some("sep_result".to_string()),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "ret".to_string(),
-                        args: Some(vec!["sep_result".to_string()]),
-                        ..OpIR::default()
-                    },
-                ],
-            },
-            FunctionIR {
-                return_abi: molt_ir::FunctionReturnAbi::Value,
-                name: "taq_ingest_line_test".to_string(),
-                params: vec![
-                    "dict".to_string(),
-                    "line".to_string(),
-                    "bucket_size".to_string(),
-                ],
-                param_types: Some(vec![
-                    "dict".to_string(),
-                    "str".to_string(),
-                    "int".to_string(),
-                ]),
-                source_file: None,
-                is_extern: false,
-                codegen_partition: false,
-                execution_context: ExecutionContextPolicy::None,
-                ops: vec![
-                    OpIR {
-                        kind: "taq_ingest_line".to_string(),
-                        args: Some(vec![
-                            "dict".to_string(),
-                            "line".to_string(),
-                            "bucket_size".to_string(),
-                        ]),
-                        out: Some("ingested".to_string()),
-                        ..OpIR::default()
-                    },
-                    OpIR {
-                        kind: "ret".to_string(),
-                        args: Some(vec!["ingested".to_string()]),
-                        ..OpIR::default()
-                    },
-                ],
-            },
-        ],
-        profile: None,
-    };
-    let mut backend = LuauBackend::new();
-    let source = backend.compile(&ir);
-
-    assert!(source.contains("local function molt_string_split_ws_dict_inc"));
-    assert!(source.contains("local function molt_string_split_sep_dict_inc"));
-    assert!(source.contains("local function molt_taq_ingest_line"));
-    assert!(!source.contains("local molt_string = {"));
-    assert!(source.contains("local ws_result = molt_string_split_ws_dict_inc(line, dict, delta)"));
-    assert!(
-        source
-            .contains("local sep_result = molt_string_split_sep_dict_inc(line, sep, dict, delta)")
-    );
-    assert!(source.contains("local ingested = molt_taq_ingest_line(dict, line, bucket_size)"));
-    assert!(
-        source.contains(
-            "series[#series + 1] = {molt_taq_div_euclid(timestamp, bucket_size), volume}"
-        )
-    );
+    assert!(source.contains("local ws_result = {nil, false}"));
+    assert!(source.contains("local sep_result = {nil, false}"));
+    assert!(!source.contains("function molt_string_split_ws_dict_inc"));
+    assert!(!source.contains("function molt_string_split_sep_dict_inc"));
     assert!(!source.contains("[unsupported op: string_split_ws_dict_inc]"));
     assert!(!source.contains("[unsupported op: string_split_sep_dict_inc]"));
-    assert!(!source.contains("[unsupported op: taq_ingest_line]"));
 }
 
 #[test]
@@ -498,6 +344,7 @@ fn test_compile_checked_lowers_labeled_branch_ops() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: ExecutionContextPolicy::None,
         ops: vec![
             OpIR {
@@ -571,6 +418,7 @@ fn test_compile_via_ir_rejects_unsupported_output() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "unknown_luau_op".to_string(),
@@ -605,6 +453,7 @@ fn test_compile_via_ir_fails_closed_without_emitted_value_line() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 // No `out`: dispatch still records the unsupported operation.
@@ -639,6 +488,7 @@ fn test_compile_checked_rejects_malformed_callable_family_without_nil_values() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -692,6 +542,7 @@ fn test_compile_checked_lowers_matmul_dunder_dispatch() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "matmul".to_string(),
@@ -705,7 +556,7 @@ fn test_compile_checked_lowers_matmul_dunder_dispatch() {
     let mut backend = LuauBackend::new();
     let source = backend.compile(&ir);
     assert!(
-        source.contains("local function molt_matmul")
+        source.contains("function molt_matmul")
             && source.contains("local v0 = molt_matmul(v1, v2)")
             && source.contains("molt_get_attr(a, \"__matmul__\")")
             && source.contains("molt_get_attr(b, \"__rmatmul__\")"),
@@ -728,6 +579,7 @@ fn test_compile_checked_lowers_matmul_not_implemented_reflection() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -748,7 +600,7 @@ fn test_compile_checked_lowers_matmul_not_implemented_reflection() {
     let mut backend = LuauBackend::new();
     let source = backend.compile(&ir);
     assert!(
-        source.contains("local molt_not_implemented = {__molt_not_implemented = true}")
+        source.contains("molt_not_implemented = {__molt_not_implemented = true}")
             && source.contains("local not_impl = molt_not_implemented")
             && source.contains("if result ~= molt_not_implemented then return result end"),
         "matmul should use a concrete NotImplemented sentinel, got:\n{source}"
@@ -770,6 +622,7 @@ fn test_compile_checked_lowers_inplace_matmul_dunder_dispatch() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "inplace_matmul".to_string(),
@@ -783,7 +636,7 @@ fn test_compile_checked_lowers_inplace_matmul_dunder_dispatch() {
     let mut backend = LuauBackend::new();
     let source = backend.compile(&ir);
     assert!(
-        source.contains("local function molt_inplace_matmul")
+        source.contains("function molt_inplace_matmul")
             && source.contains("local v0 = molt_inplace_matmul(lhs, rhs)")
             && source.contains("molt_get_attr(a, \"__imatmul__\")")
             && source.contains("return molt_matmul_impl(a, b, \"@=\")"),
@@ -806,6 +659,7 @@ fn test_compile_checked_rejects_call_async_scheduler_semantics() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -847,6 +701,7 @@ fn test_compile_checked_rejects_native_awaitable_without_async_runtime() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -881,6 +736,7 @@ fn test_compile_checked_rejects_file_marker() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "file_open".to_string(),
@@ -913,6 +769,7 @@ fn test_compile_checked_rejects_context_marker() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "context_enter".to_string(),

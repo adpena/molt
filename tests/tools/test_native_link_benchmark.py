@@ -31,7 +31,8 @@ def _plan(tmp_path: Path) -> NativeLinkPlan:
     obj = tmp_path / "program.obj"
     return NativeLinkPlan(
         target=NativeTargetSpec(
-            triple=None,
+            triple="x86_64-pc-windows-msvc",
+            is_host=True,
             os="windows",
             arch="x86_64",
             object_format=NativeObjectFormat.COFF,
@@ -54,42 +55,43 @@ def _plan(tmp_path: Path) -> NativeLinkPlan:
     )
 
 
+def _run_sample(
+    phase: str,
+    iteration: int,
+    wall_ns: int,
+    peak_tree_rss_bytes: int,
+    peak_job_commit_bytes: int,
+    finalize_wall_ns: int,
+) -> benchmark.BenchmarkRun:
+    return {
+        "phase": phase,
+        "iteration": iteration,
+        "execution": {
+            "wall_ns": wall_ns,
+            "orchestration_wall_ns": wall_ns + 20,
+            "cpu_user_ns": None,
+            "cpu_system_ns": None,
+            "cpu_source": "unavailable",
+            "peak_process_rss_bytes": None,
+            "peak_tree_rss_bytes": peak_tree_rss_bytes,
+            "peak_job_commit_bytes": peak_job_commit_bytes,
+            "returncode": 0,
+            "timed_out": False,
+        },
+        "candidate_size_bytes": None,
+        "finalization": {"wall_ns": finalize_wall_ns},
+    }
+
+
 def _report(*, fingerprint_suffix: str = "", warm: list[int] | None = None) -> dict:
     warm = warm or [100, 100, 101, 99, 100]
-    runs = [
-        {
-            "phase": "cold_first",
-            "execution": {
-                "wall_ns": 200,
-                "orchestration_wall_ns": 220,
-                "peak_tree_rss_bytes": 1000,
-                "peak_job_commit_bytes": 2000,
-            },
-            "finalization": {"wall_ns": 20},
-        },
+    runs: list[benchmark.BenchmarkRun] = [
+        _run_sample("cold_first", 0, 200, 1000, 2000, 20),
         *(
-            {
-                "phase": "warm",
-                "execution": {
-                    "wall_ns": value,
-                    "orchestration_wall_ns": value + 20,
-                    "peak_tree_rss_bytes": 900,
-                    "peak_job_commit_bytes": 1900,
-                },
-                "finalization": {"wall_ns": 10},
-            }
-            for value in warm
+            _run_sample("warm", iteration, value, 900, 1900, 10)
+            for iteration, value in enumerate(warm)
         ),
-        {
-            "phase": "relink",
-            "execution": {
-                "wall_ns": 110,
-                "orchestration_wall_ns": 130,
-                "peak_tree_rss_bytes": 950,
-                "peak_job_commit_bytes": 1950,
-            },
-            "finalization": {"wall_ns": 11},
-        },
+        _run_sample("relink", 0, 110, 950, 1950, 11),
     ]
     identity = {
         field: f"{field}{fingerprint_suffix}" for field in benchmark.IDENTITY_FIELDS
@@ -216,10 +218,20 @@ def test_generated_sidecar_bytes_are_semantic_plan_facts(tmp_path: Path) -> None
 def test_plan_allocation_profile_reports_real_tracemalloc_facts(tmp_path: Path) -> None:
     plan, metrics = benchmark.profile_plan(lambda: _plan(tmp_path))
     assert plan.linker_hint == "lld"
-    assert metrics["wall_ns"] > 0
-    assert metrics["traced_peak_bytes"] >= metrics["traced_current_bytes"]
-    assert metrics["net_allocated_blocks"] >= 0
-    assert metrics["net_allocated_bytes"] >= 0
+    wall_ns = metrics["wall_ns"]
+    traced_peak_bytes = metrics["traced_peak_bytes"]
+    traced_current_bytes = metrics["traced_current_bytes"]
+    net_allocated_blocks = metrics["net_allocated_blocks"]
+    net_allocated_bytes = metrics["net_allocated_bytes"]
+    assert isinstance(wall_ns, int)
+    assert isinstance(traced_peak_bytes, int)
+    assert isinstance(traced_current_bytes, int)
+    assert isinstance(net_allocated_blocks, int)
+    assert isinstance(net_allocated_bytes, int)
+    assert wall_ns > 0
+    assert traced_peak_bytes >= traced_current_bytes
+    assert net_allocated_blocks >= 0
+    assert net_allocated_bytes >= 0
 
 
 def test_link_wall_uses_guarded_child_elapsed_not_orchestration_overhead(
@@ -378,7 +390,9 @@ def test_measurement_authority_is_content_addressed(monkeypatch) -> None:
 @pytest.mark.slow
 def test_implementation_identity_includes_canonical_tool_candidate_resolver() -> None:
     facts = benchmark.implementation_source_facts()
-    names = {str(item["name"]) for item in facts["files"]}
+    files = facts["files"]
+    assert isinstance(files, list)
+    names = {str(item["name"]) for item in files}
     assert {
         "src/molt/cli/llvm_wasi_tools.py",
         "src/molt/cli/runtime_cargo_plan.py",
@@ -418,9 +432,13 @@ def test_implementation_identity_follows_generated_dependency_closure(
     dependency.write_bytes(b"VERSION = 2\n")
     second = benchmark.implementation_source_facts()
     assert first["fingerprint"] != second["fingerprint"]
-    assert second["files"][0]["name"] == "dependency.py"
-    assert first["files"][0]["sha256"] == hashlib.sha256(b"VERSION = 1\n").hexdigest()
-    assert second["files"][0]["sha256"] == hashlib.sha256(b"VERSION = 2\n").hexdigest()
+    first_files = first["files"]
+    second_files = second["files"]
+    assert isinstance(first_files, list)
+    assert isinstance(second_files, list)
+    assert second_files[0]["name"] == "dependency.py"
+    assert first_files[0]["sha256"] == hashlib.sha256(b"VERSION = 1\n").hexdigest()
+    assert second_files[0]["sha256"] == hashlib.sha256(b"VERSION = 2\n").hexdigest()
 
 
 def test_comparison_is_attestable_only_for_stable_five_run_warm_samples() -> None:
@@ -428,13 +446,19 @@ def test_comparison_is_attestable_only_for_stable_five_run_warm_samples() -> Non
     current = _report(warm=[90, 91, 90, 89, 90])
     comparison = benchmark.compare_reports(baseline, current)
     assert comparison["attestable"] is True
-    assert comparison["phases"]["warm"]["link_wall_ratio"] == pytest.approx(0.9)
-    assert comparison["phases"]["warm"]["peak_job_commit_delta_bytes"] == 0
+    phases = comparison["phases"]
+    assert isinstance(phases, dict)
+    warm_phase = phases["warm"]
+    assert isinstance(warm_phase, dict)
+    assert warm_phase["link_wall_ratio"] == pytest.approx(0.9)
+    assert warm_phase["peak_job_commit_delta_bytes"] == 0
 
     noisy = _report(warm=[50, 150, 60, 140, 100])
     comparison = benchmark.compare_reports(baseline, noisy)
     assert comparison["attestable"] is False
-    assert "descriptive only" in comparison["attestation_reason"]
+    attestation_reason = comparison["attestation_reason"]
+    assert isinstance(attestation_reason, str)
+    assert "descriptive only" in attestation_reason
 
 
 def test_standalone_attestation_requires_quiescence_and_stability() -> None:
@@ -686,3 +710,20 @@ def test_parser_preserves_external_static_link_contract() -> None:
     )
 
     assert args.external_link_plan == ["extension-link-plan.json"]
+
+
+def test_implementation_identity_keeps_namespace_only_topology(tmp_path, monkeypatch):
+    seed = tmp_path / "entry.py"
+    seed.write_text("__package__ = unknown\nfrom .missing import member\n")
+    monkeypatch.setattr(benchmark, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        benchmark,
+        "local_python_import_closure",
+        lambda root, _seeds: local_python_import_closure(root, (seed,)),
+    )
+    before = benchmark.implementation_source_facts()
+    (tmp_path / "namespace_only").mkdir()
+    after = benchmark.implementation_source_facts()
+    assert before["files"] == after["files"]
+    assert before["source_topology_sha256"] != after["source_topology_sha256"]
+    assert before["fingerprint"] != after["fingerprint"]

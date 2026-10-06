@@ -1,34 +1,13 @@
+use crate::call::ExceptionBaselineGuard;
 use crate::call::type_policy::{InitArgPolicy, resolved_constructor_init_policy};
-use crate::call::{
-    CallAttrLookup, StaticmethodCallTarget, require_call_attr, resolve_staticmethod_call_target,
-};
+use crate::call::{StaticmethodCallTarget, require_call_attr, resolve_staticmethod_call_target};
 use crate::{
-    MoltObject, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_FUNCTION, TYPE_ID_GENERIC_ALIAS,
-    TYPE_ID_TYPE, bound_method_func_bits, call_builtin_type_if_needed, call_function_obj_vec,
+    MoltObject, PtrDropGuard, PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_FUNCTION,
+    TYPE_ID_GENERIC_ALIAS, TYPE_ID_TYPE, call_builtin_type_if_needed, call_function_obj_vec,
     class_attr_lookup_raw_mro, class_name_for_error, dec_ref_bits, exception_pending,
-    exception_stack_baseline_get, exception_stack_baseline_set, function_arity_usize,
-    generic_alias_origin_bits, intern_static_name, lookup_call_attr, molt_call_bind,
-    molt_callargs_new, molt_callargs_push_pos, obj_from_bits, object_type_id, raise_exception,
-    raise_not_callable, runtime_state,
+    generic_alias_origin_bits, intern_static_name, molt_call_bind, obj_from_bits, object_type_id,
+    ptr_from_bits, raise_exception, raise_not_callable, runtime_state,
 };
-
-struct ExceptionBaselineGuard {
-    prev: usize,
-}
-
-impl ExceptionBaselineGuard {
-    fn new() -> Self {
-        Self {
-            prev: exception_stack_baseline_get(),
-        }
-    }
-}
-
-impl Drop for ExceptionBaselineGuard {
-    fn drop(&mut self) {
-        exception_stack_baseline_set(self.prev);
-    }
-}
 
 #[inline]
 unsafe fn with_owned_callable<T>(
@@ -65,14 +44,7 @@ unsafe fn call_type_via_bind(_py: &PyToken<'_>, call_bits: u64, args: &[u64]) ->
                 }
             }
         }
-        let builder_bits = molt_callargs_new(args.len() as u64, 0);
-        if builder_bits == 0 {
-            return MoltObject::none().bits();
-        }
-        for &arg in args {
-            let _ = molt_callargs_push_pos(builder_bits, arg);
-        }
-        molt_call_bind(call_bits, builder_bits)
+        crate::call::bind::call_bind_borrowed(_py, call_bits, None, args, &[], &[])
     }
 }
 
@@ -93,6 +65,12 @@ unsafe fn call_staticmethod_if_needed(
 pub extern "C" fn molt_call_builtin(name_bits: u64, builder_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
+            // The call consumes the builder on every path. Until binding takes
+            // it, a failure releases it as the value stack of the failed call.
+            let mut builder_owner = PtrDropGuard::new(ptr_from_bits(builder_bits));
+            if exception_pending(_py) {
+                return MoltObject::none().bits();
+            }
             let name_obj = obj_from_bits(name_bits);
             let Some(name_ptr) = name_obj.as_ptr() else {
                 return raise_exception::<_>(_py, "TypeError", "builtin name must be str");
@@ -106,39 +84,16 @@ pub extern "C" fn molt_call_builtin(name_bits: u64, builder_bits: u64) -> u64 {
                 std::str::from_utf8(bytes).unwrap_or("")
             };
 
-            if let Some(func_bits) =
-                crate::builtins::functions::python_builtin_function_bits(_py, name)
-            {
+            if let Some(func_bits) = crate::builtins::functions::lookup_builtin_name(_py, name) {
+                builder_owner.release();
                 return bind_owned_callable(_py, func_bits, builder_bits);
             }
-            if let Some(func_bits) =
-                crate::intrinsics::registry::try_resolve_intrinsic_func(_py, name, true)
-            {
-                return bind_owned_callable(_py, func_bits, builder_bits);
-            }
-
-            let builtins_bits = {
-                let cache = crate::builtins::exceptions::internals::module_cache(_py);
-                let guard = cache.lock().unwrap();
-                guard.get("builtins").copied()
-            };
-            let Some(builtins_bits) = builtins_bits else {
-                return raise_exception::<_>(
-                    _py,
-                    "RuntimeError",
-                    "builtins module cache missing during builtin call",
-                );
-            };
-            let missing = crate::missing_bits(_py);
-            let callable_bits = crate::object::ops_builtins::molt_getattr_builtin(
-                builtins_bits,
-                name_bits,
-                missing,
-            );
             if exception_pending(_py) {
                 return MoltObject::none().bits();
             }
-            bind_owned_callable(_py, callable_bits, builder_bits)
+            // CallBuiltin names the active public namespace. A miss cannot
+            // acquire an intrinsic or retry against a different module cache.
+            raise_exception::<_>(_py, "NameError", &format!("name '{name}' is not defined"))
         }
     })
 }
@@ -217,42 +172,6 @@ pub(crate) unsafe fn call_callable1(_py: &PyToken<'_>, call_bits: u64, arg0_bits
                 with_owned_callable(_py, call_attr_bits, |bits| {
                     call_callable1(_py, bits, arg0_bits)
                 })
-            }
-        }
-    }
-}
-
-pub(crate) unsafe fn callable_arity(_py: &PyToken<'_>, call_bits: u64) -> Option<usize> {
-    unsafe {
-        let call_obj = obj_from_bits(call_bits);
-        let call_ptr = call_obj.as_ptr()?;
-        match resolve_staticmethod_call_target(_py, call_bits) {
-            StaticmethodCallTarget::Owned(target) => {
-                return callable_arity(_py, target.bits());
-            }
-            StaticmethodCallTarget::Raised => return None,
-            StaticmethodCallTarget::NotStaticmethod => {}
-        }
-        match object_type_id(call_ptr) {
-            TYPE_ID_FUNCTION => function_arity_usize(call_ptr),
-            TYPE_ID_BOUND_METHOD => {
-                let func_bits = bound_method_func_bits(call_ptr);
-                let func_obj = obj_from_bits(func_bits);
-                let func_ptr = func_obj.as_ptr()?;
-                if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
-                    return None;
-                }
-                function_arity_usize(func_ptr)
-            }
-            TYPE_ID_GENERIC_ALIAS => {
-                let origin_bits = generic_alias_origin_bits(call_ptr);
-                callable_arity(_py, origin_bits)
-            }
-            _ => {
-                let CallAttrLookup::Found(call_attr_bits) = lookup_call_attr(_py, call_ptr) else {
-                    return None;
-                };
-                with_owned_callable(_py, call_attr_bits, |bits| callable_arity(_py, bits))
             }
         }
     }
@@ -357,37 +276,12 @@ pub(crate) unsafe fn call_callable3(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::sync::atomic::Ordering as AtomicOrdering;
+    use crate::{molt_callargs_new, molt_callargs_push_pos};
 
-    fn populated_python_builtin_function_slots(_py: &PyToken<'_>) -> usize {
-        crate::runtime_state(_py)
-            .python_builtin_function_slots
-            .get()
-            .map(|slots| {
-                slots
-                    .iter()
-                    .filter(|slot| slot.load(AtomicOrdering::Acquire) != 0)
-                    .count()
-            })
-            .unwrap_or(0)
+    extern "C" fn len_trampoline(_closure: u64, argv: u64, argc: u64) -> i64 {
+        assert_eq!(argc, 1);
+        crate::molt_len(unsafe { *(argv as *const u64) }) as i64
     }
-
-    fn single_cached_python_builtin_bits(_py: &PyToken<'_>) -> u64 {
-        let slots = crate::runtime_state(_py)
-            .python_builtin_function_slots
-            .get()
-            .expect("python builtin cache should be initialized");
-        let cached = slots
-            .iter()
-            .filter_map(|slot| {
-                let bits = slot.load(AtomicOrdering::Acquire);
-                (bits != 0).then_some(bits)
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(cached.len(), 1);
-        cached[0]
-    }
-
     fn object_ref_count(bits: u64) -> u32 {
         let ptr = obj_from_bits(bits)
             .as_ptr()
@@ -396,47 +290,165 @@ mod tests {
     }
 
     #[test]
-    fn call_builtin_prefers_generated_builtin_cache_over_intrinsic_alias() {
+    fn call_builtin_uses_published_namespace_and_releases_its_callable() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let _provider = crate::test_support::NativeProviderTestNamespace::new(py, "builtins");
+            let name = crate::attr_name_bits_from_bytes(py, b"len").unwrap();
+            let callable = crate::builtins::functions::lookup_builtin_name(py, "len").unwrap();
+            let baseline = object_ref_count(callable);
+            let argument = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
+            let builder = molt_callargs_new(1, 0);
+            unsafe { molt_callargs_push_pos(builder, argument) };
+            let result = molt_call_builtin(name, builder);
+            assert!(!exception_pending(py));
+            assert_eq!(crate::to_i64(obj_from_bits(result)), Some(0));
+            assert_eq!(object_ref_count(callable), baseline);
+            for bits in [name, callable, argument, result] {
+                crate::dec_ref_bits(py, bits);
+            }
+        });
+    }
+
+    #[test]
+    fn call_builtin_consumes_its_builder_when_resolution_fails() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            crate::builtins::functions::python_builtin_functions_clear_runtime_state(
-                _py,
-                crate::runtime_state(_py),
-            );
-            assert_eq!(populated_python_builtin_function_slots(_py), 0);
-
-            let name_ptr = crate::alloc_string(_py, b"len");
-            assert!(!name_ptr.is_null());
-            let name_bits = MoltObject::from_ptr(name_ptr).bits();
-            let arg_ptr = crate::alloc_tuple(_py, &[]);
+            let unknown_ptr = crate::alloc_string(_py, b"__molt_unresolved_builtin_probe__");
+            assert!(!unknown_ptr.is_null());
+            let unknown_bits = MoltObject::from_ptr(unknown_ptr).bits();
+            let arg_ptr = crate::alloc_string(_py, b"call_builtin argument");
             assert!(!arg_ptr.is_null());
             let arg_bits = MoltObject::from_ptr(arg_ptr).bits();
-            let builder_bits = molt_callargs_new(1, 0);
-            assert!(!obj_from_bits(builder_bits).is_none());
-            let push_result = unsafe { molt_callargs_push_pos(builder_bits, arg_bits) };
-            assert!(obj_from_bits(push_result).is_none());
+            let baseline = object_ref_count(arg_bits);
+            // An unresolvable name and a non-string name both fail before any
+            // callable exists; the consumed builder must still release its
+            // argument rather than leak it with the builder.
+            for name_bits in [unknown_bits, MoltObject::from_int(7).bits()] {
+                let builder_bits = molt_callargs_new(1, 0);
+                assert!(!obj_from_bits(builder_bits).is_none());
+                let pushed = unsafe { molt_callargs_push_pos(builder_bits, arg_bits) };
+                assert!(obj_from_bits(pushed).is_none());
+                assert_eq!(object_ref_count(arg_bits), baseline + 1);
 
-            let result_bits = molt_call_builtin(name_bits, builder_bits);
-            assert!(
-                !exception_pending(_py),
-                "generated builtin call path must not raise"
-            );
-            assert_eq!(crate::to_i64(obj_from_bits(result_bits)), Some(0));
-            assert_eq!(
-                populated_python_builtin_function_slots(_py),
-                1,
-                "direct builtin calls must populate the generated builtin callable cache"
-            );
-            let cached_bits = single_cached_python_builtin_bits(_py);
-            assert_eq!(
-                object_ref_count(cached_bits),
-                1,
-                "molt_call_builtin must release the owned generated callable reference after binding"
-            );
-
-            crate::dec_ref_bits(_py, result_bits);
+                let result_bits = molt_call_builtin(name_bits, builder_bits);
+                assert!(obj_from_bits(result_bits).is_none());
+                assert!(
+                    exception_pending(_py),
+                    "a failed builtin resolution must raise"
+                );
+                let _ = crate::molt_exception_clear();
+                assert_eq!(
+                    object_ref_count(arg_bits),
+                    baseline,
+                    "molt_call_builtin must consume its builder when resolution fails"
+                );
+            }
             crate::dec_ref_bits(_py, arg_bits);
-            crate::dec_ref_bits(_py, name_bits);
+            crate::dec_ref_bits(_py, unknown_bits);
+        });
+    }
+
+    #[test]
+    fn builtin_call_consumers_respect_captured_names_and_explicit_runtime_identity() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let _provider = crate::test_support::NativeProviderTestNamespace::new(py, "builtins");
+            let canonical = crate::builtins::functions::lookup_builtin_name(py, "len").unwrap();
+            let captured_ptr = crate::alloc_dict_with_pairs(py, &[]);
+            let captured = MoltObject::from_ptr(captured_ptr).bits();
+            let globals = MoltObject::from_ptr(crate::alloc_dict_with_pairs(py, &[])).bits();
+            let argument = MoltObject::from_ptr(crate::alloc_tuple(py, &[])).bits();
+            let public_name = crate::attr_name_bits_from_bytes(py, b"len").unwrap();
+            let custom_name = crate::attr_name_bits_from_bytes(py, b"custom_builtin").unwrap();
+            let runtime_name = crate::attr_name_bits_from_bytes(py, b"molt_len").unwrap();
+            unsafe {
+                crate::dict_set_in_place(py, captured_ptr, public_name, canonical);
+                crate::dict_set_in_place(py, captured_ptr, custom_name, canonical);
+                crate::dict_set_in_place(
+                    py,
+                    captured_ptr,
+                    runtime_name,
+                    MoltObject::from_int(37).bits(),
+                );
+            }
+            crate::inc_ref_bits(py, globals);
+            crate::inc_ref_bits(py, captured);
+            crate::builtins::frames::frame_stack_push_owned(py, 0, globals, captured, 0);
+            for name in [public_name, custom_name] {
+                let builder = molt_callargs_new(1, 0);
+                unsafe {
+                    molt_callargs_push_pos(builder, argument);
+                }
+                let value = molt_call_builtin(name, builder);
+                assert!(!exception_pending(py));
+                assert_eq!(crate::to_i64(obj_from_bits(value)), Some(0));
+                crate::dec_ref_bits(py, value);
+            }
+            unsafe {
+                crate::dict_del_in_place(py, captured_ptr, public_name);
+            }
+            let baseline = object_ref_count(argument);
+            for name in [public_name, runtime_name] {
+                // len is absent; molt_len is a present non-callable. Neither
+                // case may select the builtin/intrinsic behind this namespace.
+                let builder = molt_callargs_new(1, 0);
+                unsafe {
+                    molt_callargs_push_pos(builder, argument);
+                }
+                let result = molt_call_builtin(name, builder);
+                assert!(exception_pending(py));
+                let error = crate::builtins::exceptions::exception_last_bits_noinc(py).unwrap();
+                let expected = if name == public_name {
+                    "NameError"
+                } else {
+                    "TypeError"
+                };
+                assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                    py, error, expected
+                ));
+                crate::clear_exception(py);
+                crate::dec_ref_bits(py, result);
+                assert_eq!(object_ref_count(argument), baseline);
+            }
+            let missing =
+                crate::molt_func_new_builtin_named(public_name, fn_addr!(crate::molt_len), 0, 1);
+            assert!(exception_pending(py));
+            let error = crate::builtins::exceptions::exception_last_bits_noinc(py).unwrap();
+            assert!(crate::builtins::exceptions::exception_matches_builtin_name(
+                py,
+                error,
+                "NameError"
+            ));
+            crate::clear_exception(py);
+            crate::dec_ref_bits(py, missing);
+            // The constructor's canonical runtime symbol is declarative and
+            // must not read the same-spelled active public binding (37).
+            let intrinsic = crate::molt_func_new_builtin_named(
+                runtime_name,
+                fn_addr!(crate::molt_len),
+                fn_addr!(len_trampoline),
+                1,
+            );
+            assert!(!exception_pending(py));
+            assert_ne!(intrinsic, MoltObject::from_int(37).bits());
+            let result = unsafe { call_callable1(py, intrinsic, argument) };
+            assert_eq!(crate::to_i64(obj_from_bits(result)), Some(0));
+            assert!(!exception_pending(py));
+            crate::builtins::frames::frame_stack_pop(py);
+            for bits in [
+                canonical,
+                captured,
+                globals,
+                argument,
+                public_name,
+                custom_name,
+                runtime_name,
+                intrinsic,
+                result,
+            ] {
+                crate::dec_ref_bits(py, bits);
+            }
         });
     }
 }

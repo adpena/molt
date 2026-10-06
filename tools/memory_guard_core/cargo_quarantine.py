@@ -33,6 +33,7 @@ def _exception_diagnostic(exc: BaseException) -> str:
 
 
 DEFAULT_CARGO_INCREMENTAL_QUARANTINE_KEEP = 5
+CARGO_COMPILER_EXECUTABLES = frozenset({"rustc", "clippy-driver"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +58,8 @@ class CargoIncrementalQuarantine:
     ownership_observations: tuple[CargoIncrementalObservation, ...] = ()
     recovery_observations: tuple[CargoIncrementalObservation, ...] = ()
     admission_telemetry: Mapping[str, int | float] | None = None
+    interruption_inventory_complete: bool = False
+    interruption_inventory_error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,11 +71,89 @@ class CargoIncrementalObservation:
     cargo_started_at_ns: int
 
 
-def _owned_sample_argv(sample: ProcessSample) -> tuple[str, ...] | None:
+@dataclass(frozen=True, slots=True)
+class CargoInterruptionInventory:
+    error: str | None = None
+
+    @property
+    def complete(self) -> bool:
+        return self.error is None
+
+    def fence_process_births(
+        self, before: int | None, after: int, *, closed: bool
+    ) -> CargoInterruptionInventory:
+        """Bind a negative inventory fact to native lifetime accounting."""
+        if not self.complete:
+            return self
+        if (
+            type(before) is not int
+            or before <= 0
+            or type(after) is not int
+            or before != after
+            or closed is not True
+        ):
+            return CargoInterruptionInventory(
+                "process generation changed or closure unknown during interruption inventory"
+            )
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class CargoCompilerInvocation:
+    is_compiler: bool
+    incremental_dir: str | None
+    arguments_complete: bool
+    implementation_known: bool
+
+
+def cargo_compiler_invocation(argv: tuple[str, ...]) -> CargoCompilerInvocation:
+    """One argument authority for rustc, in-process Clippy and wrappers."""
+    response_file = any(arg.startswith("@") for arg in argv[1:])
+    incremental = None
+    for index, arg in enumerate(argv[1:], start=1):
+        if arg == "--":
+            break
+        option = (
+            argv[index + 1]
+            if arg in {"-C", "--codegen"} and index + 1 < len(argv)
+            else arg[2:]
+            if arg.startswith("-C")
+            else arg[len("--codegen=") :]
+            if arg.startswith("--codegen=")
+            else ""
+        )
+        if option.startswith("incremental="):
+            incremental = option[len("incremental=") :]
+    return CargoCompilerInvocation(
+        _native_executable_name(argv[0]) in CARGO_COMPILER_EXECUTABLES
+        or incremental is not None
+        or response_file,
+        incremental,
+        not response_file,
+        _native_executable_name(argv[0]) in CARGO_COMPILER_EXECUTABLES,
+    )
+
+
+def _owned_sample_argv(
+    sample: ProcessSample, *, resolve_native_image: bool = False
+) -> tuple[str, ...] | None:
     """Native argument boundaries from the observed process instance only."""
     if getattr(sample, "command_kind", None) != "full":
-        return None
-    argv = getattr(sample, "argv", None)
+        if (
+            not resolve_native_image
+            or os.name != "nt"
+            or getattr(sample, "command_kind", None) != "image"
+        ):
+            return None
+        from molt.backend_daemon_custody import _split_command
+        from tools.memory_guard_core.windows_snapshot import (
+            windows_job_command_context,
+        )
+
+        context = windows_job_command_context(sample.pid, sample.started_at_ns)
+        argv = tuple(_split_command(context[1])) if context else ()
+    else:
+        argv = getattr(sample, "argv", None)
     if argv is None and os.name == "nt":
         from molt.backend_daemon_custody import _split_command
 
@@ -109,7 +190,10 @@ def _owned_cargo_ancestor(
     watched: set[int],
     identities: Mapping[int, ProcessIdentity],
 ) -> ProcessSample | None:
-    from tools.memory_guard_core.process_model import process_identity
+    from tools.memory_guard_core.process_model import (
+        process_births_are_ordered,
+        process_identity,
+    )
 
     # No generic ancestor walk: a Cargo build script/program can manually spawn
     # Rustc. Wrappers need an explicit source-bound protocol before admission.
@@ -118,11 +202,8 @@ def _owned_cargo_ancestor(
     parent = samples.get(child.ppid)
     if (
         parent is None
-        or type(child.started_at_ns) is not int
-        or type(parent.started_at_ns) is not int
-        or parent.started_at_ns <= 0
+        or not process_births_are_ordered(parent.started_at_ns, child.started_at_ns)
         or identities.get(parent.pid) != process_identity(parent)
-        or parent.started_at_ns > child.started_at_ns
         or parent.ppid == child.pid
     ):
         return None
@@ -158,32 +239,15 @@ def observe_owned_incremental_state(
         ):
             continue
         argv = _owned_sample_argv(sample)
-        if argv is None or _native_executable_name(argv[0]) != "rustc":
+        if argv is None:
+            continue
+        invocation = cargo_compiler_invocation(argv)
+        if not invocation.implementation_known or not invocation.arguments_complete:
             continue
         producer = _owned_cargo_ancestor(sample, samples, watched, identities)
         if producer is None or type(producer.started_at_ns) is not int:
             continue
-        if any(arg.startswith("@") for arg in argv[1:]):
-            # Unknown response-file expansion can override every literal flag.
-            # Command text alone grants no authority over its effective path.
-            continue
-        # rustc applies codegen options in argv order and overwrites the
-        # incremental slot. Superseded paths confer no recovery authority.
-        effective_incremental = None
-        for index, arg in enumerate(argv[1:], start=1):
-            if arg == "--":
-                break
-            option = (
-                argv[index + 1]
-                if arg in {"-C", "--codegen"} and index + 1 < len(argv)
-                else arg[2:]
-                if arg.startswith("-C")
-                else arg[len("--codegen=") :]
-                if arg.startswith("--codegen=")
-                else ""
-            )
-            if option.startswith("incremental="):
-                effective_incremental = option[len("incremental=") :]
+        effective_incremental = invocation.incremental_dir
         if effective_incremental:
             path = Path(effective_incremental)
             if path.is_absolute():
@@ -197,6 +261,50 @@ def observe_owned_incremental_state(
                     )
                 )
     return observations
+
+
+def observe_cargo_interruption_inventory(
+    samples: Mapping[int, ProcessSample],
+    watched: set[int],
+    identities: Mapping[int, ProcessIdentity],
+    observations: set[CargoIncrementalObservation],
+) -> CargoInterruptionInventory:
+    """Require birth custody and native argv for the interruption snapshot.
+
+    An unobserved or wrapped compiler remains unknown. Absence of incremental
+    observations alone never proves that no compiler cache was interrupted.
+    """
+    from tools.memory_guard_core.process_model import process_identity
+
+    if not watched:
+        return CargoInterruptionInventory("no owned process inventory observed")
+    observed_compilers = {
+        (item.rustc_pid, item.rustc_started_at_ns) for item in observations
+    }
+    for pid in watched:
+        sample = samples.get(pid)
+        if (
+            sample is None
+            or type(sample.started_at_ns) is not int
+            or sample.started_at_ns <= 0
+            or identities.get(pid) != process_identity(sample)
+        ):
+            return CargoInterruptionInventory(
+                f"process {pid}: birth custody unavailable"
+            )
+        argv = _owned_sample_argv(sample, resolve_native_image=True)
+        if argv is None:
+            return CargoInterruptionInventory(
+                f"process {pid}: native argv unavailable ({sample.command_kind})"
+            )
+        if (
+            cargo_compiler_invocation(argv).is_compiler
+            and (pid, sample.started_at_ns) not in observed_compilers
+        ):
+            return CargoInterruptionInventory(
+                f"process {pid}: live compiler incremental ownership unobserved"
+            )
+    return CargoInterruptionInventory()
 
 
 def _observed_pid_is_definitely_closed(pid: int) -> bool:
@@ -362,20 +470,20 @@ def _local_cargo_lock_filesystem(path: Path) -> bool:
 def _observed_incremental_units(
     target_dir: Path, observations: Sequence[CargoIncrementalObservation]
 ) -> dict[Path, Path]:
+    from tools.memory_guard_core.process_model import process_births_are_ordered
+
     root = target_dir.resolve(strict=True)
     units: dict[Path, Path] = {}
     for observed in observations:
         if (
             type(observed.rustc_pid) is not int
             or observed.rustc_pid <= 0
-            or type(observed.rustc_started_at_ns) is not int
-            or observed.rustc_started_at_ns <= 0
             or type(observed.cargo_pid) is not int
             or observed.cargo_pid <= 0
             or observed.cargo_pid == observed.rustc_pid
-            or type(observed.cargo_started_at_ns) is not int
-            or observed.cargo_started_at_ns <= 0
-            or observed.cargo_started_at_ns > observed.rustc_started_at_ns
+            or not process_births_are_ordered(
+                observed.cargo_started_at_ns, observed.rustc_started_at_ns
+            )
         ):
             raise ValueError("incremental observation lacks process birth authority")
         path = Path(observed.incremental_dir)
@@ -402,7 +510,9 @@ def _observed_incremental_units(
     return units
 
 
-_CARGO_BUILD_STATE_EXECUTABLES = frozenset({"cargo", "rustc", "rustdoc"})
+_CARGO_BUILD_STATE_EXECUTABLES = frozenset(
+    {"cargo", "rustdoc", *CARGO_COMPILER_EXECUTABLES}
+)
 
 
 def _command_tokens(fragment: str) -> list[str]:
@@ -440,6 +550,13 @@ def _samples_include_cargo_build_state(
     for pid in watched:
         sample = samples.get(pid)
         if sample is None:
+            continue
+        if getattr(sample, "command_kind", None) == "image":
+            if (
+                _native_executable_name(sample.command)
+                in _CARGO_BUILD_STATE_EXECUTABLES
+            ):
+                return True  # Detection grants no cache recovery ownership.
             continue
         argv = getattr(sample, "argv", None)
         if isinstance(argv, tuple):
@@ -534,6 +651,8 @@ def _cargo_incremental_quarantine_payload(
         "errors": list(receipt.errors),
         "receipt_path": receipt.receipt_path,
         "ownership_status": receipt.ownership_status,
+        "interruption_inventory_complete": receipt.interruption_inventory_complete,
+        "interruption_inventory_error": receipt.interruption_inventory_error,
         "mutation_scope": "cargo_managed_observed_profile_incremental",
         "admission_telemetry": None
         if receipt.admission_telemetry is None
@@ -585,6 +704,8 @@ def _quarantine_cargo_incremental_state(
     descendants_closed: bool = False,
     eligible_observations: frozenset[CargoIncrementalObservation] = frozenset(),
     profile_lock_settle_s: float = 0.0,
+    interruption_inventory_complete: bool = False,
+    interruption_inventory_error: str | None = None,
 ) -> CargoIncrementalQuarantine:
     """Recover observed inactive profile caches under Cargo-compatible exclusion.
 
@@ -652,6 +773,20 @@ def _quarantine_cargo_incremental_state(
             raise ValueError(
                 "compiler descendant closure is unverified; recovery deferred"
             )
+        if not eligible_observations and interruption_inventory_complete is True:
+            # No cache mutation or coordinate lock is needed when the native
+            # interruption inventory observed no active incremental compiler.
+            return CargoIncrementalQuarantine(
+                reason=reason,
+                recorded_at=recorded_at,
+                target_dir=str(target_dir),
+                quarantine_dir=None,
+                command=tuple(command),
+                cwd=str(cwd),
+                ownership_status="not_required",
+                ownership_observations=tuple(observations),
+                interruption_inventory_complete=True,
+            )
         if not observations:
             raise ValueError(
                 "no birth-custodied rustc incremental observations; recovery deferred"
@@ -661,6 +796,11 @@ def _quarantine_cargo_incremental_state(
         ):
             raise ValueError(
                 "no freshly observed compiler was interrupted; completed caches retained"
+                + (
+                    f"; {interruption_inventory_error}"
+                    if interruption_inventory_error
+                    else ""
+                )
             )
         units = _observed_incremental_units(target_dir, tuple(eligible_observations))
         if not units or any(
@@ -851,7 +991,12 @@ def _quarantine_cargo_incremental_state(
             )
         ),
     )
-    final_receipt = replace(final_receipt, admission_telemetry=admission_telemetry())
+    final_receipt = replace(
+        final_receipt,
+        admission_telemetry=admission_telemetry(),
+        interruption_inventory_complete=interruption_inventory_complete,
+        interruption_inventory_error=interruption_inventory_error,
+    )
     if receipt_path is not None:
         try:
             # Cache mutation and its provisional receipt were lock-protected.

@@ -47,9 +47,13 @@ from molt.cli.native_link_command import _build_native_link_plan  # noqa: E402
 from molt.cli.native_link_manifest import (  # noqa: E402
     native_link_dependency_manifest_path,
 )
-from molt.cli.native_link_plan import NativeLinkPlan, _host_target_triple  # noqa: E402
+from molt.cli.native_link_plan import (  # noqa: E402
+    NativeLinkPlan,
+    _host_target_triple,
+    resolve_native_target_spec,
+)
 from molt.cli.python_source_closure import local_python_import_closure  # noqa: E402
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity  # noqa: E402
+from molt.cli.runtime_identity_schema import RuntimeBuildIdentity  # noqa: E402
 from molt.cli.runtime_native_build import (  # noqa: E402
     current_native_runtime_build_identity,
 )
@@ -61,10 +65,7 @@ from molt.cli.source_extension_link_requirements import (  # noqa: E402
 from molt.cli.static_archive_identity import artifact_content_identity  # noqa: E402
 from tools import harness_memory_guard, perf_calibration  # noqa: E402
 
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor
+from tools.command_execution import CommandExecutor  # noqa: E402
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 
@@ -212,7 +213,7 @@ def implementation_source_facts() -> dict[str, object]:
     closure = local_python_import_closure(
         ROOT,
         tuple(
-            Path(inspect.getfile(function))
+            Path(inspect.getfile(inspect.unwrap(function)))
             for function in (
                 _build_native_link_plan,
                 _native_link_execution_command,
@@ -229,7 +230,8 @@ def implementation_source_facts() -> dict[str, object]:
         }
         for path in closure.paths
     ]
-    return {"files": files, "fingerprint": _stable_hash(files)}
+    facts = {"files": files, "source_topology_sha256": closure.topology_digest}
+    return {**facts, "fingerprint": _stable_hash(facts)}
 
 
 def _canonical_arch(raw: str) -> str:
@@ -1038,7 +1040,7 @@ def run_benchmark(args: argparse.Namespace) -> BenchmarkReport:
             stub_path=inputs["stub"],
             runtime_lib=inputs["runtime"],
             output_binary=output,
-            target_triple=args.target_triple,
+            target=resolve_native_target_spec(args.target_triple),
             sysroot_path=Path(args.sysroot) if args.sysroot else None,
             profile=args.profile,
             runtime_build_identity=runtime_build_identity,

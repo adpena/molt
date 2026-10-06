@@ -28,6 +28,32 @@
 - Cargo-hosted DX helpers: `wasm-tools`, `wasm-pack`, and `cargo-edit`
   (`cargo-upgrade`) for dependency sweeps.
 
+## Python tooling source ownership
+
+`src/molt/cli/python_source_closure.toml` declares the compiler/tooling graph's
+ordered Python search roots separately from its admitted source roots. The
+repository namespace search location supports qualified `tools.*` imports;
+it does not admit temporary trees, build artifacts, tests, or other repository
+directories as tooling source. `LocalPythonModuleResolver` enforces the same
+canonical source boundary for named imports, seed identities, namespace portions,
+and complete inventories needed by unknown relative import anchors. Symlink
+aliases outside that boundary are not local sources. Cycles and enumeration
+failures inside the admitted domain remain errors, never partial coverage.
+The manifest bytes and resolved inventory topology participate in closure
+identity, so changing root order or source ownership invalidates dependent caches.
+
+## Host temporary-directory custody
+
+Guard scratch and WASM tool stages share `molt.temporary_artifacts` directory
+allocation. POSIX allocations retain private `0700` permissions. Windows
+allocations inherit the admitted parent's ACL instead of installing CPython's
+user-only `0700` DACL, which excludes restricted child tokens. Pytest's numbered
+and xdist-provided base directories use the same Windows mode projection.
+`OwnedTemporaryDirectory` fences cleanup to the directory generation it created;
+replacement directories are not cleanup authority. Linker staging, optimizer
+transactions, facts-scanner snapshots, and WASM profiling/pipeline helpers use
+this owner rather than independent host-default temporary-directory lanes.
+
 ## macOS
 - Install Xcode CLT: `xcode-select --install`
 - Homebrew recommended: `brew install llvm mlir cmake ninja pkg-config`
@@ -84,6 +110,15 @@ PATH-resolved name must pass lexical and resolved-content custody before probing
 the captured executable generation is checked again at execution and cache reuse.
 Quoted paths preserve spaces and native separators without admitting arguments.
 
+Optimized linked WASM builds require Binaryen from
+`config/binaryen_releases.toml`, provisioned by `tools/provision_binaryen.py`.
+The manifest owns each host archive and extracted-tree identity, not
+`config/tool_releases.toml`'s standalone validator executables. Hosted WASM CI
+uses `.github/actions/setup-binaryen` alongside pinned `wasm-tools` provisioning
+and passes its exact `wasm_opt` output as `MOLT_WASM_OPT` to the proof partitions.
+Link fingerprints require optimizer identity only when optimization is selected;
+missing tooling is a provisioning error, not permission to omit optimization.
+
 Rust via rustup:
 - `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 
@@ -137,6 +172,62 @@ explicit pre-commit filenames. Generated projections are changed only through
 their owning generator. Generators that intentionally format Python text pass
 `--no-force-exclude` to Ruff for their output path; routine hooks do not rewrite
 or reinterpret that generated authority.
+
+## Direct file read custody
+
+`molt.toolchain_identity.open_stable_regular_file` owns direct-file admission,
+reading and closing checks through the native descriptor authority in
+`molt.file_hashing`. Windows admits concurrent readers but excludes writers and
+deletion for the descriptor's lifetime. Existing writers prevent admission;
+write or delete conflicts fail the transaction. POSIX retains no-follow opening
+and before/after path, handle and content-change metadata checks.
+
+Runtime tree capture enumerates names, then each bounded worker admits, hashes
+and closes one file. Size and digest come from that same owned read. There is no
+detached metadata pass or second content hash, and live descriptors are bounded
+by the existing worker limit. Name enumeration is not an atomic filesystem
+snapshot: byte observation starts when each file is admitted.
+
+Content digests identify bytes. Detached `StableRegularFileVersion` values and
+their later verification compare metadata observations; equal values do not
+prove continuous nonmutation while the handle was closed. Windows can assign
+identical ChangeTime values to distinct writes, including same-size writes with
+restored mtime. Retaining an observed token does not extend an owned read's
+write exclusion beyond its context.
+
+`read_stable_regular_file` is the content-admission boundary for a previously
+captured digest: it hashes the returned bytes inside the same owned read and
+rejects a mismatch, including equal-metadata substitutions. This adds one
+in-memory SHA-256 and no second read or descriptor. Callers that need both a new
+identity and its bytes use `capture_stable_regular_file` in one read. Metadata
+polling remains distinct; it does not perform implicit whole-tree rehashes.
+Executable digest and native header capture share one owned descriptor; it is
+closed before a version subprocess runs. The later version-probe fences remain
+metadata observations and do not claim continuous execution identity.
+
+Mapped WASM symbol parsing and observed artifact copies compare the digest of
+their actual mapped buffer or copied stream through the same content check.
+Runtime generation staging also checks supplied identities while copying.
+Native custody hashes and parses an archive under one owned handle; warm
+archive admission hashes current bytes before reusing parsed member semantics,
+and extracted members are rehashed before reuse. A supplied digest never
+authorizes different bytes merely because metadata matches.
+
+WASM fact, linking-symbol and structural caches reuse parsing or validation
+results only after current member content matches. Cold structural validation
+retains the owned handle through the external validator. Final binding checks
+hash both members and the pinned receipt. These content-admission boundaries
+explicitly request hashing; ordinary version and tree-generation polling still
+compare metadata only and retain the detached-token limits above.
+
+Managed LLVM SDK verification retains a separate explicit policy:
+`content_policy="full"` hashes the content manifest; `"cached"` hashes after
+recorded path/size/mtime/ChangeTime drift or unavailable Windows ChangeTime.
+The cached policy can miss equal-metadata substitutions and therefore is not
+fresh byte attestation. Detached executable/version fences likewise do not
+prove which bytes a later subprocess loaded. These limits are distinct from
+the owned content-read boundary above and must remain explicit in acceptance
+or execution-identity claims.
 
 ## Python runtime identity
 
@@ -238,6 +329,64 @@ cached lock check cannot overlook a changed input. Cargo remains the dependency
 resolver. Add ordinary crates explicitly to the root members list; independent
 workspace exclusions are not a second ordinary runtime workspace.
 
+Backend compiler receipts and compiler-only object-cache identities use the
+same conservative root-package projection of `Cargo.lock` from
+`molt.cli.cargo_source_closure`. It retains all reachable package records,
+checksums, sources and dependency edges, including optional, development and
+target edges; Cargo still resolves features and owns whole-lock validation.
+Unreachable rows and their stale dependency references do not invalidate the
+compiler. Reachable missing, malformed, duplicate or ambiguous identities fail
+closed. Git references match the Cargo source selector without requiring its
+precise revision fragment; path packages take precedence for source-less
+references. The reached package's full source, including revision, remains an
+input. Runtime build identity retains its complete lockfile input.
+
+Compiler and runtime source topology, runtime Cargo feature expansion and lock
+projection share one stable TOML reader. Each use admits current document bytes;
+the operation transaction reuses parsing only by content hash. Reachable
+manifests are traversed directly, including nested path dependencies. No
+process-wide manifest/stat stamp, hand-enumerated manifest list, graph cache or
+profile-feature cache can preserve obsolete dependency or feature selection.
+Unreadable or invalid reached documents fail admission instead of becoming an
+empty dependency graph. Runtime raw-lock semantic identity is unchanged.
+
+Developer compiler identity uses the same resolved Cargo plan as execution:
+effective flags, configuration bytes, selected profile controls, tool and resource
+content, C build inputs and selected LLVM prefix are admitted before lookup.
+The Cargo plan owns the shared tool/resource projection. Runtime builds augment
+it with their required build-Python admission; Cargo-only compiler builds do not
+probe a runtime generator interpreter or inherit its runtime closure.
+Resource directories are traversed as graphs: a resolved directory already on
+the active ancestor path is a backedge, not a second resource subtree. This
+admits distro layouts such as LLVM's `build/Debug+Asserts -> ..` without infinite
+unfolding. Non-cyclic directory aliases retain their lexical file selections;
+file-content mutation, added resources and alias retargeting that changes the
+selected resources remain fenced by the same capture and verification authority.
+Compiler Cargo commands use `--locked` and execute that exact plan without
+changing wrappers on retry. One source-fingerprint operation owns reusable plan
+admission; subsequent operations recapture live inputs. A clean Git HEAD is
+never cached across operations. After Cargo, fresh source and lock identity plus
+configuration/tool/resource custody must match before alias materialization,
+feature-probe receipts or artifact receipts can publish. Actual Cargo rebuilds
+also retain a source/lock generation fence: no-follow file observations,
+directory membership and change times reject observed generation changes.
+This includes restored bytes and mtime when the filesystem exposes a new change
+time; metadata equality alone does not prove continuous nonmutation.
+That live fence is not a portable semantic key or receipt, and warm receipt hits
+do not capture it. Identity rejection is a structured build/run/deploy failure.
+
+Installed compiler admission verifies its release source/package once per
+immutable operation and verifies executable bytes and feature/profile selection.
+The shared run/deploy wrapper owns this scope without caller pre-admission.
+Cold builds perform one fresh post-child source admission before publishing the
+wrapper manifest; warm cache hits perform one mandatory source admission and no
+child build. Both compiler and tooling keys reuse each admission. This does not
+create cross-operation trust or eliminate the installed source inventory check.
+Wrapper and daemon keys reuse that admitted release identity, including its
+tooling and runtime inventory, without developer Rust discovery or Cargo probes.
+Daemon selection also commits to executable content and request codegen/runtime
+ABI controls; source mtimes are not a separate freshness authority.
+
 Root profiles are the only profile authority: compiler `release` retains unwind
 support; shipping native runtimes use `release-output`/`release-size`, and WASM
 uses `wasm-release`. Select profiles explicitly rather than changing policy by
@@ -250,13 +399,74 @@ overrides never select the host compiler. Compiler developers may explicitly use
 `MOLT_{DEV,RELEASE}_BACKEND_CARGO_PROFILE` in a source checkout. Packaged compilers
 are immutable release inputs: unsupported features or host-profile overrides
 fail with a diagnostic rather than rebuilding/replacing the installed binary.
+Installed runtimes follow the same rule. `release-compiler-source.json` declares
+typed runtime cells (native staticlib, native-link closure and archive-derived
+callable projection; WASM shared/reloc generation with the full CPython C-API
+surface) keyed by target, runtime Cargo
+profile, stdlib tier, features and SIMD/freestanding. `molt.cli.installed_runtime`
+selects exactly one cell, admits bundle bytes through the canonical native-link
+and WASM-generation receipts, requires their `RuntimeBuildIdentity` to agree
+with the key, and retains one content-addressed generation under
+`MOLT_HOME/installed-runtime`. Each build operation admits that generation once;
+code generation and final link compare stable-file metadata observations and
+re-derive the cell selection, failing on an observed generation or selection
+change. These detached comparisons have the limits described under direct file
+read custody above; they do not establish continuous nonmutation. Byte readers
+that consume a captured digest validate it against the actual returned bytes.
+Native code generation admits the cell's callable projection (signed bytes,
+canonical encoding, named for the retained archive's digest) and never runs a
+symbol reader.
+Installed builds, doctor, setup and `molt update` never resolve a runtime Cargo
+plan, probe or install Rust, consult `MOLT_WASM_RUNTIME_DIR`, or substitute
+another cell. A platform wheel installs the same bundle in its scheme's
+`share/molt/distribution`; the CLI binds its site-packages package to the
+signed source inventory. An installed CLI never adopts a nearby checkout;
+source builds are an explicit `MOLT_SOURCE_ROOT`. Commands needing compiler inputs
+select them through `molt.source_root.compiler_source_root()`: the executing package's
+source root or its installed distribution, with an explicit override taking
+precedence. Guest/project discovery never selects compiler sources. The separate
+cwd-based compiler resolver and its cached guesses are removed, so build,
+extension, maintenance and developer commands cannot silently use different
+compiler trees. User-project discovery is a separate live path authority:
+`MOLT_PROJECT_ROOT` selects the project, while `MOLT_SOURCE_ROOT` selects
+compiler inputs. Package commands select their project through user-project
+discovery and reject sealed compiler trees. Project environments, lock validation
+and vendoring outputs follow the selected user root; a Python-only project does
+not acquire a compiler Cargo dependency. Runtime Cargo builds are a
+source-checkout workflow and the release producer `tools/release/runtime_cells.py`,
+whose cells are admitted with the installed receipt rules and whose
+`compile.sources` must equal the release snapshot's runtime source tree
+identity (hashed once per producer or bundle operation). In a checkout,
+`molt update` refreshes the rustup-managed pinned toolchain; installed
+maintenance only provisions pinned auxiliary tools.
 The selected binary identity flows through cache keys, daemon/one-shot execution,
 native linking, build diagnostics, and the installed-consumer receipt.
 
-`tools/release/build_compiler.py` enforces the production host policy from the
-root manifest and pinned toolchain: developer profile/CPU flags and compiler
-wrappers cannot change the distributed compiler. Cargo configuration that
-overrides this policy is rejected, not silently combined with it. The installed
+Source builds publish every backend feature variant, including native, to its
+own executable with a content-bound receipt. Cargo's unqualified output is only
+publication input; selecting it for native would let a WASM build replace the
+native compiler and force a rebuild on the next target switch. All variants use
+the same publication lock, atomic copy, and admission rules. Process discovery
+recognizes these variant names without treating a name as ownership evidence.
+After Cargo completes, a rejected compiler feature probe fails the build with
+its original diagnostic and publishes no new provenance. The CLI does not
+rerun the unchanged Cargo plan to conceal that failed outcome.
+
+For source-checkout reuse, `MOLT_SKIP_RUNTIME_REBUILD=1` disables compiler and
+runtime source builds, including Cargo-based provenance refresh. It does not
+skip source, configuration, content, manifest or feature admission. Compatible
+local artifacts and validated cache hydration remain available; unavailable or
+invalid artifacts produce an explicit rebuild-policy failure without invoking
+a Cargo build. Installed distributions retain their immutable admission rules regardless
+of this developer setting.
+
+`tools/release/native_build.py` owns snapshot builds and receipts for the
+production compiler, launcher and worker; `build_compiler.py` projects its CLI.
+The source snapshot supplies the Rust channel, and developer profile/CPU flags
+and wrappers cannot change native release policy. Private Cargo homes and
+configuration-free build roots exclude ambient Cargo configuration. Darwin
+SDK/tool selection and activated Visual Studio roots are pinned before tool
+identity admission; LLVM's ATL check belongs only to LLVM bootstrap. The installed
 consumer runs the shipped native launcher for both guest profiles and binds each
 build/run command and compiler/launcher identity into admission. The same
 executable entry point serves direct invocation and package-manager links; there
@@ -274,8 +484,8 @@ offline synchronization check without modifying the environment. Explicit
 `molt setup --install-cli-dependencies` authorizes frozen, exact dependency-only
 sync, including removal of unrequested packages only inside that private
 environment. It explains the source, destination and scope; it never installs
-Python/toolchains, edits PATH or changes another installation. Rustup automatic
-toolchain installation is disabled for the installed CLI. Ambient project and uv
+Python/toolchains, edits PATH or changes another installation. The installed CLI
+never invokes Rust toolchains. Ambient project and uv
 resolver/install overrides cannot select another dependency closure. There is
 no exported-requirements resolver or independent Molt venv/locking implementation.
 Python re-entry (including the REPL) inherits only the selected source import
@@ -290,7 +500,8 @@ validated against source bytes, import policy and analysis implementation.
 All commands share sealed-source dependency admission. Installed compilation,
 extension builds and dependency consumers do not re-resolve the
 compiler's Python dependencies with ambient project configuration. The shared
-native/WASM runtime Cargo plan always uses `--locked`, independent of guest
+native/WASM runtime Cargo plan (source checkouts and release production only)
+always uses `--locked`, independent of guest
 determinism settings. Installed metadata identifies the bundled source commit
 and compiler toolchain, not a containing guest Git repository or toolchain.
 The native launcher resolves the bundle from its executable, including package-
@@ -340,3 +551,37 @@ speed before introducing new per-package optimization overrides.
   `llvm-config --version` reports the required major/minor.
 - **Windows path lengths**: keep repo/build paths short; avoid deeply nested output folders.
 - **WASM linker availability**: `wasm-ld` and `wasm-tools` are required for linked builds; use `--require-linked` to fail fast.
+- **WASM debug section placement**: linked-output normalization orders and merges
+  standard sections while preserving custom bytes and relative order. Custom
+  sections remain after their preceding standard sections, so name and DWARF
+  metadata stay after the declarations they describe. Already ordered modules
+  retain their original bytes. Normalization rejects section renumbering when
+  relocation metadata is present; it cannot preserve section-index relocations.
+
+## Build-Python operation custody
+
+Source runtime builds retain one live isolated build-Python admission for the
+build operation. Native code generation/final linking, shared and relocatable
+WASM publication, and standalone WASM CPython-ABI publication use the same
+`BuildPythonAdmission` authority. Standalone producers close their own scope;
+the CLI build output scope closes the admission on success and every failure.
+Installed runtime cells continue to bypass build-Python capture.
+
+Each boundary independently reselects the interpreter and checks its captured
+executable metadata and native-loader environment. The selected interpreter
+retains `PythonFileCaptureContext`; reuse compares no-follow metadata
+observations, complete directory membership, import-root selection
+including absent archives and startup selection files (`pyvenv.cfg`, `._pth`,
+and `pybuilddir.txt`), and the original loaded-native-image census. A
+failed verification or exited/closed session revokes admission. These metadata
+comparisons have the detached-token limits described above. Reads from captured
+file nodes independently validate their bytes against the node's digest.
+A retained JSON
+receipt is never sufficient to admit the next boundary.
+
+The existing guarded interactive command owner holds the capture process and
+its inherited streams. The protocol emits one runtime receipt, accepts bounded
+verification requests, and closes on EOF. One-shot captures use the same
+capture context and verifier. Source, Cargo/tool configuration and artifact
+publication checks remain fresh at their existing boundaries; only successful
+live runtime verification permits reuse of the immutable semantic projection.

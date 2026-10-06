@@ -19,13 +19,10 @@ from molt.frontend._types import (
     BUILTIN_EXCEPTION_NAMES,
     BUILTIN_FUNC_SPECS,
     BUILTIN_TYPE_TAGS,
-    INTRINSIC_HANDLE_CLASS_CONSTRUCTORS_BY_TYPE,
-    IntrinsicHandleClassConstructorSpec,
     MoltOp,
     MoltValue,
     _canonical_intrinsic_runtime_name,
     _intrinsic_arity_exact,
-    _intrinsic_defaults_exact,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -117,11 +114,10 @@ class RuntimeReferenceMixin(GeneratorMixinBase):
                 Diagnostic.OPERAND_VALUE,
                 f"Intrinsic {canonical_name!r} is a raw non-callable ABI",
             )
-        return self._emit_runtime_function_with_defaults(
-            canonical_name,
-            arity,
-            _intrinsic_defaults_exact(runtime_name),
-        )
+        # The manifest-backed runtime constructor owns callable defaults.
+        # Public attribute mutation is neither initialization nor permitted on
+        # builtin_function_or_method objects.
+        return self._emit_runtime_function(canonical_name, arity)
 
     def _emit_runtime_function(self, runtime_name: str, arity: int) -> MoltValue:
         name_val = MoltValue(self.next_var(), type_hint="str")
@@ -146,66 +142,6 @@ class RuntimeReferenceMixin(GeneratorMixinBase):
     ) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint=type_hint)
         self.emit(MoltOp(kind="CALL", args=[runtime_name, *args], result=res))
-        return res
-
-    def _emit_runtime_function_with_none_defaults(
-        self, runtime_name: str, arity: int, *, default_count: int
-    ) -> MoltValue:
-        return self._emit_runtime_function_with_defaults(
-            runtime_name, arity, (None,) * max(0, default_count)
-        )
-
-    def _emit_runtime_function_with_defaults(
-        self, runtime_name: str, arity: int, defaults: Sequence[object]
-    ) -> MoltValue:
-        func_val = self._emit_runtime_function(runtime_name, arity)
-        if not defaults:
-            return func_val
-        default_vals = [self._emit_const_value(value) for value in defaults]
-        defaults_tuple = MoltValue(self.next_var(), type_hint="tuple")
-        self.emit(MoltOp(kind="TUPLE_NEW", args=default_vals, result=defaults_tuple))
-        self.emit(
-            MoltOp(
-                kind="SETATTR_GENERIC_OBJ",
-                args=[func_val, "__defaults__", defaults_tuple],
-                result=MoltValue("none"),
-            )
-        )
-        return func_val
-
-    def _intrinsic_handle_class_spec_for_value(
-        self, value: MoltValue | None
-    ) -> IntrinsicHandleClassConstructorSpec | None:
-        if value is None:
-            return None
-        return INTRINSIC_HANDLE_CLASS_CONSTRUCTORS_BY_TYPE.get(value.type_hint)
-
-    def _emit_intrinsic_handle_class_call(
-        self,
-        obj: MoltValue,
-        spec: IntrinsicHandleClassConstructorSpec,
-        intrinsic_name: str,
-        args: list[MoltValue],
-        *,
-        result_hint: str,
-    ) -> MoltValue:
-        handle = MoltValue(self.next_var(), type_hint="int")
-        self.emit(
-            MoltOp(
-                kind="GETATTR_GENERIC_OBJ",
-                args=[obj, spec.handle_attr],
-                result=handle,
-            )
-        )
-        intrinsic_func = self._emit_intrinsic_function(intrinsic_name)
-        res = MoltValue(self.next_var(), type_hint=result_hint)
-        self.emit(
-            MoltOp(
-                kind="CALL_FUNC",
-                args=[intrinsic_func, handle] + args,
-                result=res,
-            )
-        )
         return res
 
     @staticmethod

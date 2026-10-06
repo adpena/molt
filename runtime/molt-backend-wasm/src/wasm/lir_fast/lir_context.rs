@@ -12,7 +12,7 @@ use molt_tir::tir::lir::{LirFunction, LirRepr};
 use molt_tir::tir::types::TirType;
 use molt_tir::tir::values::ValueId;
 use ownership::LirOperationOwners;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use wasm_encoder::ValType;
 
 #[cfg(any(test, feature = "test-util"))]
@@ -23,7 +23,6 @@ pub(super) struct LirLowerCtx<'a> {
     pub(super) value_locals: HashMap<ValueId, u32>,
     pub(super) value_reprs: HashMap<ValueId, LirRepr>,
     pub(super) value_types: HashMap<ValueId, TirType>,
-    flat_list_int_values: HashSet<ValueId>,
     /// Reverse map: local index -> ValType. Built during allocation so the
     /// locals vector can be constructed in O(N) instead of O(N^2).
     pub(super) local_types: HashMap<u32, ValType>,
@@ -33,4 +32,6 @@ pub(super) struct LirLowerCtx<'a> {
     /// Validated reachable topology, consumed by shared TIR graph analysis.
     pub(super) cfg: molt_tir::tir::function::TirFunction,
     operation_owners: Option<LirOperationOwners>,
+    pub(super) guard_facts: molt_tir::passes::SsaRuntimeGuardFacts,
+    pub(super) guard_profile_local: Option<u32>,
 }

@@ -183,18 +183,26 @@ cap (a per-thread `set_tracker` alone would leave them unlimited).
    `on_allocate` / `on_grow` hooks account the logical Python heap. This layer is
    precise, deterministic, and identical across native / WASM / LLVM / Luau, and
    produces the uncatchable `ResourceError::Memory`.
-2. **Layer 2 — OS backstop (`RLIMIT_AS`, native only).** When a memory cap is
-   configured, runtime init also calls `setrlimit(RLIMIT_AS, …)` (and
-   `RLIMIT_DATA`) set *above* the Layer-1 limit (headroom = max(64 MiB, 25%)).
-   This bounds allocations the tracker cannot see — Rust-internal metadata, FFI,
-   runtime structures — converting a runaway into a clean failure instead of an
-   OOM-kill of the host. It is a **backstop only**, never the limit user-visible
-   behavior depends on; the soft limit is tightened raise-only (never lowered
-   below a host-imposed bound).
-   - **Linux:** `RLIMIT_AS` genuinely caps the address space.
-   - **macOS:** `setrlimit(RLIMIT_AS, …)` rejects small finite caps (EINVAL), so
-     the backstop degrades to best-effort and the in-VM tracker (Layer 1) is the
-     sole enforcement. `install_address_space_backstop` honestly reports this.
+2. **Layer 2 — OS committed-memory backstop (Linux).** When a memory cap is
+   configured, runtime init also tightens the `RLIMIT_DATA` soft limit to the
+   process's startup footprint (`VmData`) plus the Layer-1 limit plus headroom
+   (max(64 MiB, 25%)). Linux charges `RLIMIT_DATA` for every writable private
+   mapping, so this bounds memory the tracker cannot see — Rust-internal
+   metadata, FFI, runtime structures — converting a runaway into a clean
+   allocation failure instead of an OOM-kill of the host. It is a **backstop
+   only**, never the limit user-visible behavior depends on; the soft limit is
+   only ever tightened (never loosened past a host-imposed bound).
+   - **Why not `RLIMIT_AS`:** address space also counts sparse reservations that
+     are not memory — the mapped executable, allocator arenas, per-thread malloc
+     arenas, guard regions. A small address-space cap sits below a healthy
+     binary's reservation footprint, so the next mapping fails and main-stack
+     growth becomes SIGSEGV before the program allocates anything.
+   - **Child processes:** spawned children inherit the same budget (limit plus
+     headroom) as a hard `RLIMIT_DATA` cap, tightened by any explicit
+     `MOLT_CHILD_RLIMIT_BYTES` / `MOLT_CHILD_RLIMIT_GB`.
+   - **macOS / Windows:** no committed-memory rlimit exists (macOS's
+     `RLIMIT_DATA` governs only `brk`), so the in-VM tracker (Layer 1) is the
+     sole enforcement. `install_memory_backstop` honestly reports `None`.
    - **WASM:** not applicable — the host-controlled linear-memory `max` page
      count is the backstop already.
 
@@ -268,13 +276,15 @@ layer.
 
 - Trait, `ResourceLimits` (single source of truth), `LimitedTracker`,
   `parse_human_size` (the `MOLT_MEMORY_LIMIT` front door), and
-  `install_address_space_backstop` (RLIMIT_AS): `runtime/molt-runtime/src/resource.rs`
+  `install_memory_backstop` (Linux `RLIMIT_DATA`):
+  `runtime/molt-runtime-resource/src/lib.rs` (re-exported as `molt_runtime::resource`)
 - Env parsing + `molt_runtime_init_resources` (resolves `MOLT_MEMORY_LIMIT` /
   `MOLT_RESOURCE_MAX_*` and installs both layers):
   `runtime/molt-runtime/src/object/ops_sys.rs`
-- Child-process limit inheritance (per-op caps + memory): `runtime/molt-runtime/src/async_rt/process.rs`
+- Child-process limit inheritance (per-op caps + memory):
+  `runtime/molt-runtime/src/async_rt/process/child_resources.rs`
 - Python `ResourceLimits` dataclass, manifest parsing, and `to_env_vars`
   serialization (one env var per field, no silent drops): `src/molt/capability_manifest.py`
 - Tests: `runtime/molt-runtime/tests/resource_enforcement.rs` (end-to-end env →
-  tracker enforcement + RLIMIT_AS backstop), `tests/test_manifest_env.py`
+  tracker enforcement + `RLIMIT_DATA` backstop), `tests/test_manifest_env.py`
   (Python↔env parity, no per-op field drop)

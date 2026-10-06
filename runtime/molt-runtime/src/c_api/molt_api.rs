@@ -675,32 +675,6 @@ pub unsafe extern "C" fn molt_object_getattr_bytes(
     })
 }
 
-/// Returns a **borrowed** handle for an attribute on `obj_bits`.
-///
-/// Identical to `molt_object_getattr_bytes` except the returned handle does
-/// NOT carry an extra refcount.  The handle is valid as long as the parent
-/// object (module, type, etc.) continues to hold the attribute.
-///
-/// This is the runtime counterpart of CPython's internal borrowed-reference
-/// getattr used by `PyImport_GetModuleDict`, `PyEval_GetBuiltins`, etc.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_object_getattr_borrowed(
-    obj_bits: MoltHandle,
-    name_ptr: *const u8,
-    name_len: u64,
-) -> MoltHandle {
-    crate::with_gil_entry_nopanic!(_py, {
-        let result = unsafe { molt_object_getattr_bytes(obj_bits, name_ptr, name_len) };
-        if result != 0 && !exception_pending(_py) {
-            // Convert new reference → borrowed reference.
-            // Safe because the parent object holds its own strong reference
-            // to the attribute value (e.g. in its __dict__).
-            dec_ref_bits(_py, result);
-        }
-        result
-    })
-}
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_object_setattr_bytes(
     obj_bits: MoltHandle,
@@ -857,12 +831,35 @@ pub(crate) fn register_module_capi(
     module_state_size: u64,
     defer_state: bool,
 ) -> i32 {
+    register_module_capi_with_callbacks(
+        module_bits,
+        module_def_ptr,
+        module_state_size,
+        defer_state,
+        molt_cpython_abi::hooks::ModuleGcCallbacks::default(),
+    )
+}
+
+pub(crate) fn register_module_capi_with_callbacks(
+    module_bits: MoltHandle,
+    module_def_ptr: usize,
+    module_state_size: u64,
+    defer_state: bool,
+    callbacks: molt_cpython_abi::hooks::ModuleGcCallbacks,
+) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         let module_ptr = match require_module_handle(_py, module_bits) {
             Ok(ptr) => ptr,
             Err(code) => return code,
         };
         let module_key = module_ptr_key(module_ptr);
+        if c_api_module_state(_py).metadata.contains_key(&module_key) {
+            return raise_i32(
+                _py,
+                "SystemError",
+                "module C-API metadata is already registered",
+            );
+        }
         let size = match usize::try_from(module_state_size) {
             Ok(value) => value,
             Err(_) => {
@@ -886,6 +883,10 @@ pub(crate) fn register_module_capi(
             module_state: state,
             module_state_size: size,
             exec_started: false,
+            callbacks,
+            callback_depth: 0,
+            clear_active: false,
+            free_started: false,
         };
         c_api_module_state(_py)
             .metadata
@@ -982,6 +983,14 @@ pub extern "C" fn molt_module_capi_get_state(module_bits: MoltHandle) -> *mut u8
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_module_state_add(module_bits: MoltHandle, module_def_ptr: usize) -> i32 {
+    module_state_add_with_import(module_bits, module_def_ptr, None)
+}
+
+pub(crate) fn module_state_add_with_import(
+    module_bits: MoltHandle,
+    module_def_ptr: usize,
+    import: Option<(&ExtensionImportIdentity, Option<u64>)>,
+) -> i32 {
     crate::with_gil_entry_nopanic!(_py, {
         if module_def_ptr == 0 {
             return raise_i32(
@@ -1000,21 +1009,37 @@ pub extern "C" fn molt_module_state_add(module_bits: MoltHandle, module_def_ptr:
         {
             let mut guard = c_api_module_state(_py);
 
-            if let Some(existing) = guard.state_registry.by_def.get(&def_key).copied()
+            if let Some(existing) = guard
+                .state_registry
+                .by_def
+                .get(&def_key)
+                .and_then(|entry| entry.module_bits)
                 && existing == module_bits
                 && guard.state_registry.by_module.get(&module_key).copied() == Some(def_key)
+                && import.is_none()
             {
                 return 0;
             }
 
             if let Some(old_def) = guard.state_registry.by_module.get(&module_key).copied()
                 && old_def != def_key
-                && let Some(old_bits) = guard.state_registry.by_def.remove(&old_def)
+                && let Some(old_bits) =
+                    c_api_module_state_take_module(&mut guard.state_registry, old_def)
             {
                 decref_bits.push(old_bits);
             }
 
-            if let Some(old_bits) = guard.state_registry.by_def.insert(def_key, module_bits)
+            let old_bits = guard
+                .state_registry
+                .by_def
+                .entry(def_key)
+                .or_default()
+                .module_bits
+                .replace(module_bits);
+            if old_bits != Some(module_bits) {
+                inc_ref_bits(_py, module_bits);
+            }
+            if let Some(old_bits) = old_bits
                 && old_bits != module_bits
             {
                 if let Some(old_ptr) = obj_from_bits(old_bits).as_ptr() {
@@ -1027,7 +1052,44 @@ pub extern "C" fn molt_module_state_add(module_bits: MoltHandle, module_def_ptr:
             }
 
             guard.state_registry.by_module.insert(module_key, def_key);
-            inc_ref_bits(_py, module_bits);
+            if let Some((identity, dict_bits)) = import {
+                // Transfer the cache-key association atomically: nested
+                // initialization may have registered another definition for
+                // this identity before the outer transaction resumed.
+                for (&other_def, other) in &mut guard.state_registry.by_def {
+                    if other_def == def_key {
+                        continue;
+                    }
+                    let old_len = other.imports.len();
+                    other.imports.retain(|existing| existing != identity);
+                    if other.imports.len() != old_len
+                        && other.imports.is_empty()
+                        && let Some(snapshot) = other.legacy.take()
+                    {
+                        decref_bits.push(snapshot.dict_bits);
+                    }
+                }
+                // Independent PyState module ownership remains registered.
+                guard.state_registry.by_def.retain(|_, entry| {
+                    entry.module_bits.is_some()
+                        || !entry.imports.is_empty()
+                        || entry.legacy.is_some()
+                });
+                let entry = guard.state_registry.by_def.get_mut(&def_key).unwrap();
+                if !entry.imports.contains(identity) {
+                    entry.imports.push(identity.clone());
+                }
+                if let Some(dict_bits) = dict_bits {
+                    // Publish the lookup identity and snapshot before any
+                    // displaced owner can reenter extension creation.
+                    inc_ref_bits(_py, dict_bits);
+                    if let Some(snapshot) = &mut entry.legacy {
+                        decref_bits.push(std::mem::replace(&mut snapshot.dict_bits, dict_bits));
+                    } else {
+                        entry.legacy = Some(LegacyExtensionSnapshot { dict_bits });
+                    }
+                }
+            }
         }
         for bits in decref_bits {
             if !obj_from_bits(bits).is_none() {
@@ -1052,9 +1114,40 @@ pub extern "C" fn molt_module_state_find(module_def_ptr: usize) -> MoltHandle {
             .state_registry
             .by_def
             .get(&module_def_ptr)
-            .copied()
+            .and_then(|entry| entry.module_bits)
             .unwrap_or(0)
     })
+}
+
+/// The existing extension registry owns first-init/reload admission. A
+/// returned legacy snapshot is independently owned; repeatable imports have
+/// no snapshot but retain identity after PyState_RemoveModule.
+pub(crate) fn module_extension_import(
+    py: &PyToken<'_>,
+    identity: &ExtensionImportIdentity,
+) -> Option<(usize, Option<u64>)> {
+    let state = c_api_module_state(py);
+    for (&def, entry) in &state.state_registry.by_def {
+        if entry.imports.contains(identity) {
+            let snapshot = entry.legacy.as_ref().map(|snapshot| {
+                inc_ref_bits(py, snapshot.dict_bits);
+                snapshot.dict_bits
+            });
+            return Some((def, snapshot));
+        }
+    }
+    None
+}
+
+/// CPython legacy snapshot reimports are ordinary fresh modules with no md_def.
+/// Their loader execution is complete, even after their PyState entry changes.
+pub(crate) fn module_mark_legacy_reimport(py: &PyToken<'_>, module_bits: u64) {
+    let ptr = obj_from_bits(module_bits).as_ptr().expect("fresh module");
+    let mut state = c_api_module_state(py);
+    let metadata = state.metadata.entry(module_ptr_key(ptr)).or_default();
+    if metadata.module_def_ptr == 0 {
+        metadata.exec_started = true;
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -1700,7 +1793,13 @@ pub extern "C" fn molt_sequence_length(seq_bits: MoltHandle) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_sequence_getitem(seq_bits: MoltHandle, key_bits: MoltHandle) -> MoltHandle {
-    molt_getitem_method(seq_bits, key_bits)
+    crate::with_gil_entry_nopanic!(_py, {
+        let index = index_i64_from_obj(_py, key_bits, "sequence index must be an integer");
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        crate::object::sequence_index::sequence_item_at_index(_py, seq_bits, index)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -1933,7 +2032,7 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
             return raise_exception::<u64>(_py, "TypeError", "buffer view cannot be null");
         }
         // Never retain a borrowed C descriptor across allocation/reentry.
-        let view = unsafe { *view };
+        let mut view = unsafe { *view };
         if view.data.is_null() && view.len != 0 {
             return raise_exception::<u64>(
                 _py,
@@ -1968,6 +2067,74 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
                 "buffer itemsize exceeds the active address space",
             );
         };
+
+        let mut native_lease = None;
+        let mut source_span = None;
+        let mut source_format = None;
+        // Every managed exporter supplies the same geometry and permission
+        // authority. A descriptor cannot grant write access that its source
+        // storage did not grant, including immutable bytes roots.
+        let source_owner = if view.owner != 0 {
+            view.owner
+        } else {
+            view.base
+        };
+        if source_owner != 0 {
+            let source_is_memoryview = obj_from_bits(source_owner)
+                .as_ptr()
+                .is_some_and(|ptr| unsafe { object_type_id(ptr) == TYPE_ID_MEMORYVIEW });
+            let source_storage = match unsafe {
+                crate::object::memoryview::TypedStridedStorage::from_object_bits(source_owner)
+            } {
+                Ok(storage) => storage,
+                Err(crate::object::memoryview::TypedStridedStorageError::ReleasedMemoryView) => {
+                    return raise_released_memoryview(_py);
+                }
+                Err(_) => match crate::builtins::array_mod::array_storage_from_object_bits(
+                    _py,
+                    source_owner,
+                ) {
+                    Ok(storage) => storage,
+                    Err(_) => {
+                        if exception_pending(_py) {
+                            return none_bits();
+                        }
+                        return raise_exception(_py, "BufferError", "invalid source buffer");
+                    }
+                },
+            };
+            let low = source_storage
+                .data
+                .addr()
+                .checked_add_signed(source_storage.min_offset);
+            let high = source_storage
+                .data
+                .addr()
+                .checked_add_signed(source_storage.max_end_offset);
+            let origin = usize::try_from(source_storage.offset)
+                .ok()
+                .and_then(|offset| source_storage.data.addr().checked_sub(offset));
+            let (Some(low), Some(high), Some(origin)) = (low, high, origin) else {
+                return raise_exception(_py, "BufferError", "source buffer span overflow");
+            };
+            source_span = Some((low, high, origin, source_storage.readonly));
+            if source_is_memoryview {
+                let Some(format_ptr) = obj_from_bits(source_storage.format_bits).as_ptr() else {
+                    return raise_exception(_py, "SystemError", "source memoryview has no format");
+                };
+                source_format = Some(
+                    unsafe {
+                        std::slice::from_raw_parts(
+                            crate::string_bytes(format_ptr),
+                            crate::string_len(format_ptr),
+                        )
+                    }
+                    .to_vec(),
+                );
+                native_lease = source_storage.native_lease;
+                view.base = source_storage.base_bits;
+            }
+        }
         inc_ref_bits(_py, view.base);
         let _base = crate::object::builders::PtrDropGuard::new(
             obj_from_bits(view.base)
@@ -1984,8 +2151,8 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
         let owner = unsafe {
             match obj_from_bits(owner).as_ptr() {
                 Some(ptr) if object_type_id(ptr) == TYPE_ID_MEMORYVIEW => {
-                    if memoryview_released(ptr) {
-                        return raise_released_memoryview(_py);
+                    if !crate::object::memoryview::require_exportable(_py, ptr) {
+                        return none_bits();
                     }
                     memoryview_owner_bits(ptr)
                 }
@@ -2005,7 +2172,12 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
             .position(|&byte| byte == 0)
             .unwrap_or(MOLT_BUFFER_FORMAT_CAP)
             .max(1);
-        let format_ptr = alloc_string(_py, &view.format[..format_len]);
+        let format_ptr = alloc_string(
+            _py,
+            source_format
+                .as_deref()
+                .unwrap_or(&view.format[..format_len]),
+        );
         if format_ptr.is_null() {
             return none_bits();
         }
@@ -2020,7 +2192,11 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
             shape,
             strides,
         )
-        .map(|storage| storage.with_owner(pinned.owner_bits()));
+        .map(|storage| {
+            storage
+                .with_owner(pinned.owner_bits())
+                .with_native_lease(native_lease)
+        });
         let out_ptr = match storage {
             Some(storage) => {
                 let Ok(logical_len) = u64::try_from(storage.len) else {
@@ -2031,40 +2207,17 @@ pub unsafe extern "C" fn molt_memoryview_from_buffer(view: *const MoltBufferView
                         "buffer logical length exceeds Molt limit",
                     );
                 };
-                let valid = if view.base != 0 {
-                    unsafe {
-                        let base = crate::object::obj_from_bits(view.base);
-                        let backing = base
-                            .as_ptr()
-                            .and_then(|base_ptr| {
-                                crate::object::memoryview::bytes_like_slice_raw(base_ptr)
-                                    .map(|bytes| (bytes.as_ptr(), bytes.len()))
-                            })
-                            .or_else(|| {
-                                crate::builtins::array_mod::array_storage_from_object_bits(
-                                    _py,
-                                    pinned.owner_bits(),
-                                )
-                                .ok()
-                                .map(|storage| (storage.data.cast_const(), storage.len))
-                            });
-                        backing
-                            .map(|(base_data, base_len)| {
-                                let data_matches_base = if view.data.is_null() {
-                                    storage.span_len == 0
-                                } else if storage.offset < 0 {
-                                    false
-                                } else {
-                                    usize::try_from(storage.offset)
-                                        .ok()
-                                        .filter(|&offset| offset <= base_len)
-                                        .map(|offset| base_data.add(offset).cast_mut() == view.data)
-                                        .unwrap_or(false)
-                                };
-                                data_matches_base && storage.fits_in_base_len(base_len)
-                            })
-                            .unwrap_or(false)
-                    }
+
+                let in_source_span = source_span.map(|(low, high, origin, source_readonly)| {
+                    let first = storage.data.addr().checked_add_signed(storage.min_offset);
+                    let last = storage.data.addr().checked_add_signed(storage.max_end_offset);
+                    let candidate_origin = usize::try_from(storage.offset).ok()
+                        .and_then(|offset| storage.data.addr().checked_sub(offset));
+                    matches!((first, last), (Some(first), Some(last)) if first >= low && last <= high)
+                        && candidate_origin == Some(origin) && (!source_readonly || readonly)
+                });
+                let valid = if let Some(in_bounds) = in_source_span {
+                    in_bounds && storage.span_len <= backing_capacity && storage.offset >= 0
                 } else {
                     storage.fits_in_backing_len(backing_capacity)
                 };
@@ -2203,13 +2356,9 @@ pub unsafe extern "C" fn molt_bytearray_as_ptr(
                 raise_type_error_unless_pending(_py, "bytearray object expected");
                 return std::ptr::null_mut();
             }
-            let vec_ptr = bytearray_vec_ptr(ptr);
-            if vec_ptr.is_null() {
-                return std::ptr::null_mut();
-            }
-            let data = (*vec_ptr).as_mut_ptr();
+            let (data, len) = crate::object::buffer_exports::bytearray_data(ptr);
             if !out_len.is_null() {
-                *out_len = (*vec_ptr).len() as u64;
+                *out_len = len as u64;
             }
             data
         }

@@ -110,7 +110,6 @@ fn ensure_debug_sigtrap_handler() {
 fn ensure_debug_sigtrap_handler() {}
 
 pub(crate) struct SpecialCache {
-    pub(crate) open_default_mode: AtomicU64,
     pub(crate) awaitable_await: AtomicU64,
     pub(crate) function_code_descriptor: AtomicU64,
     pub(crate) function_globals_descriptor: AtomicU64,
@@ -131,16 +130,78 @@ pub(crate) struct RuntimeExtensionStateSlot {
 // mutex. The raw pointer is an opaque Box owned by the registering crate.
 unsafe impl Send for RuntimeExtensionStateSlot {}
 
-#[derive(Clone)]
-pub(crate) struct AsyncGenLocalsEntry {
-    pub(crate) names: Vec<u64>,
-    pub(crate) offsets: Vec<usize>,
+/// One compiler-published binding stored in a stateful activation's typed
+/// frame slot. Parameter slots are bound by the constructor; cell slots hold
+/// the closure cell that the compiled prologue publishes for the binding.
+#[derive(Clone, Copy)]
+pub(crate) struct StatefulLocalSlot {
+    pub(crate) name_bits: u64,
+    pub(crate) offset: usize,
+    pub(crate) parameter: bool,
+    /// Prologue publication ordinal; None denotes a raw binding.
+    pub(crate) cell: Option<usize>,
 }
 
-#[derive(Clone)]
-pub(crate) struct GenLocalsEntry {
-    pub(crate) names: Vec<u64>,
-    pub(crate) offsets: Vec<usize>,
+/// Immutable public-locals layout registered for one stateful poll target:
+/// generators, coroutines, async generators and generator expressions alike.
+/// One shared layout owns one reference to every name until its final lease
+/// or registry edge retires. Never clone the vectors on a poll entry.
+pub(crate) struct StatefulLocalsLayout {
+    pub(crate) slots: Vec<StatefulLocalSlot>,
+    pub(crate) closure_offset: Option<usize>,
+    pub(crate) free_var_names: Vec<u64>,
+}
+
+impl StatefulLocalsLayout {
+    pub(crate) fn name_bits(&self) -> impl Iterator<Item = u64> + '_ {
+        self.slots
+            .iter()
+            .map(|slot| slot.name_bits)
+            .chain(self.free_var_names.iter().copied())
+    }
+}
+
+/// Release the registry or a scoped lease outside the registry mutex. Every
+/// Arc owner follows this path, so names survive replacement/reentrant readers
+/// and are released exactly once, by the last owner while holding a PyToken.
+pub(crate) fn release_stateful_locals_layout(py: &PyToken<'_>, layout: Arc<StatefulLocalsLayout>) {
+    if let Some(layout) = Arc::into_inner(layout) {
+        for bits in layout.name_bits() {
+            crate::dec_ref_bits(py, bits);
+        }
+    }
+}
+
+/// A constant-time shared layout acquisition whose final release has GIL custody.
+/// The Arc is private to prevent a consumer from accidentally dropping its last
+/// name-owning edge without the explicit release authority.
+pub(crate) struct StatefulLocalsLease<'a, 'py> {
+    py: &'a PyToken<'py>,
+    layout: Option<Arc<StatefulLocalsLayout>>,
+}
+
+impl<'a, 'py> StatefulLocalsLease<'a, 'py> {
+    pub(crate) fn acquire(py: &'a PyToken<'py>, layout: &Arc<StatefulLocalsLayout>) -> Self {
+        Self {
+            py,
+            layout: Some(Arc::clone(layout)),
+        }
+    }
+}
+
+impl std::ops::Deref for StatefulLocalsLease<'_, '_> {
+    type Target = StatefulLocalsLayout;
+    fn deref(&self) -> &Self::Target {
+        self.layout.as_ref().expect("live layout lease").as_ref()
+    }
+}
+
+impl Drop for StatefulLocalsLease<'_, '_> {
+    fn drop(&mut self) {
+        if let Some(layout) = self.layout.take() {
+            release_stateful_locals_layout(self.py, layout);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -410,9 +471,18 @@ impl ExitRegistry {
     }
 }
 
+pub(crate) struct WeakBorrowEntry {
+    pub(crate) generation: u64,
+    pub(crate) borrowers: usize,
+}
+
 pub(crate) struct WeakRefRegistry {
     pub(crate) by_ref: HashMap<PtrSlot, WeakRefEntry>,
     pub(crate) by_target: HashMap<PtrSlot, Vec<PtrSlot>>,
+    // Internal allocation-lifetime observation. These are not Python weakrefs:
+    // public weakref admission, enumeration and callbacks use only by_ref/target.
+    pub(crate) borrowed_targets: HashMap<PtrSlot, WeakBorrowEntry>,
+    pub(crate) next_borrow_generation: u64,
 }
 
 impl WeakRefRegistry {
@@ -420,6 +490,8 @@ impl WeakRefRegistry {
         Self {
             by_ref: HashMap::new(),
             by_target: HashMap::new(),
+            borrowed_targets: HashMap::new(),
+            next_borrow_generation: 1,
         }
     }
 }
@@ -477,7 +549,6 @@ pub(crate) struct PythonVersionInfo {
 impl SpecialCache {
     fn new() -> Self {
         Self {
-            open_default_mode: AtomicU64::new(0),
             awaitable_await: AtomicU64::new(0),
             function_code_descriptor: AtomicU64::new(0),
             function_globals_descriptor: AtomicU64::new(0),
@@ -487,6 +558,8 @@ impl SpecialCache {
 }
 
 pub(crate) struct RuntimeState {
+    /// Interpreter policy shared by its threads; execution depth stays thread-local.
+    pub(crate) recursion_limit: AtomicUsize,
     pub(crate) gc: crate::object::gc::GcRuntimeState,
     pub(crate) gc_running: AtomicBool,
     pub(crate) gc_last_failure: AtomicU8,
@@ -498,6 +571,7 @@ pub(crate) struct RuntimeState {
     pub(crate) special_cache: SpecialCache,
     pub(crate) canonical_objects: CanonicalObjectCache,
     pub(crate) module_cache: Mutex<HashMap<String, u64>>,
+    pub(crate) interpreter_sys: crate::builtins::module_table::InterpreterSysNamespace,
     /// Import-bedrock ModuleTable (design doc 69): dense per-ModuleId state
     /// machine + slots, one instance per isolate, sized from the installed
     /// module registry on first use. Owned by builtins::module_table.
@@ -506,7 +580,6 @@ pub(crate) struct RuntimeState {
     pub(crate) intrinsic_registry_module: AtomicPtr<u8>,
     pub(crate) exception_type_cache: Mutex<HashMap<String, u64>>,
     pub(crate) exceptions: ExceptionsRuntimeState,
-    pub(crate) exception_str_cache: Mutex<HashMap<u64, (u64, bool)>>,
     pub(crate) codec_error_handlers: Mutex<HashMap<String, u64>>,
     pub(crate) argv: Mutex<Vec<Vec<u8>>>,
     pub(crate) sys_version_info: Mutex<Option<PythonVersionInfo>>,
@@ -545,11 +618,10 @@ pub(crate) struct RuntimeState {
     pub(crate) task_last_exception_pending: AtomicBool,
     pub(crate) task_results: Mutex<HashMap<PtrSlot, u64>>,
     pub(crate) attributes: AttributesRuntimeState,
-    pub(crate) dict_subclass_storage: Mutex<HashMap<PtrSlot, u64>>,
     pub(crate) await_waiters: Mutex<HashMap<PtrSlot, Vec<PtrSlot>>>,
     pub(crate) await_waiter_index: Mutex<HashMap<PtrSlot, AwaitWaiterIndex>>,
     pub(crate) task_waiting_on: Mutex<HashMap<PtrSlot, PtrSlot>>,
-    pub(crate) asyncgen_hooks: Mutex<AsyncGenHooks>,
+    pub(crate) asyncgen_hooks: Mutex<HashMap<thread::ThreadId, AsyncGenHooks>>,
     pub(crate) contextvars: Mutex<ContextVarsState>,
     pub(crate) concurrent: ConcurrentRuntimeState,
     pub(crate) copy_memo: Mutex<CopyMemoRuntimeState>,
@@ -562,12 +634,10 @@ pub(crate) struct RuntimeState {
     pub(crate) sys_ext: SysRuntimeState,
     pub(crate) c_api_module: Mutex<CApiModuleRuntimeState>,
     pub(crate) call_bind: Mutex<CallBindRuntimeState>,
-    pub(crate) asyncgen_locals: Mutex<HashMap<u64, AsyncGenLocalsEntry>>,
-    pub(crate) gen_locals: Mutex<HashMap<u64, GenLocalsEntry>>,
+    pub(crate) stateful_locals: Mutex<HashMap<u64, Arc<StatefulLocalsLayout>>>,
     pub(crate) weakrefs: Mutex<WeakRefRegistry>,
     pub(crate) exit_registry: Mutex<ExitRegistry>,
     pub(crate) abc_invalidation_counter: AtomicU64,
-    pub(crate) asyncgen_registry: Mutex<HashSet<PtrSlot>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) thread_pool_started: AtomicBool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -580,7 +650,6 @@ pub(crate) struct RuntimeState {
     pub(crate) signal: SignalRuntimeState,
     pub(crate) process_tasks: Mutex<HashMap<PtrSlot, Arc<ProcessTaskState>>>,
     pub(crate) code_slots: OnceLock<Vec<crate::builtins::frames::CompiledCodeSlot>>,
-    pub(crate) python_builtin_function_slots: OnceLock<Vec<AtomicU64>>,
     pub(crate) start_time: OnceLock<Instant>,
     /// VFS state lazily initialized from environment variables on first access.
     pub(crate) vfs_state: OnceLock<Option<crate::vfs::VfsState>>,
@@ -591,6 +660,7 @@ pub(crate) struct RuntimeState {
 impl RuntimeState {
     pub(crate) fn new() -> Self {
         Self {
+            recursion_limit: AtomicUsize::new(super::recursion::DEFAULT_RECURSION_LIMIT),
             gc: crate::object::gc::GcRuntimeState::new(),
             gc_running: AtomicBool::new(false),
             gc_last_failure: AtomicU8::new(0),
@@ -602,12 +672,12 @@ impl RuntimeState {
             special_cache: SpecialCache::new(),
             canonical_objects: CanonicalObjectCache::new(),
             module_cache: Mutex::new(HashMap::new()),
+            interpreter_sys: crate::builtins::module_table::InterpreterSysNamespace::new(),
             module_table: OnceLock::new(),
             importlib_default_meta_path_bootstrapped: AtomicBool::new(false),
             intrinsic_registry_module: AtomicPtr::new(std::ptr::null_mut()),
             exception_type_cache: Mutex::new(HashMap::new()),
             exceptions: ExceptionsRuntimeState::new(),
-            exception_str_cache: Mutex::new(HashMap::new()),
             codec_error_handlers: Mutex::new({
                 let mut handlers = HashMap::new();
                 for name in [
@@ -661,14 +731,10 @@ impl RuntimeState {
             task_last_exception_pending: AtomicBool::new(false),
             task_results: Mutex::new(HashMap::new()),
             attributes: AttributesRuntimeState::new(),
-            dict_subclass_storage: Mutex::new(HashMap::new()),
             await_waiters: Mutex::new(HashMap::new()),
             await_waiter_index: Mutex::new(HashMap::new()),
             task_waiting_on: Mutex::new(HashMap::new()),
-            asyncgen_hooks: Mutex::new(AsyncGenHooks {
-                firstiter: MoltObject::none().bits(),
-                finalizer: MoltObject::none().bits(),
-            }),
+            asyncgen_hooks: Mutex::new(HashMap::new()),
             contextvars: Mutex::new(ContextVarsState::new()),
             concurrent: ConcurrentRuntimeState::new(),
             copy_memo: Mutex::new(CopyMemoRuntimeState::new()),
@@ -681,12 +747,10 @@ impl RuntimeState {
             sys_ext: SysRuntimeState::new(),
             c_api_module: Mutex::new(CApiModuleRuntimeState::new()),
             call_bind: Mutex::new(CallBindRuntimeState::new()),
-            asyncgen_locals: Mutex::new(HashMap::new()),
-            gen_locals: Mutex::new(HashMap::new()),
+            stateful_locals: Mutex::new(HashMap::new()),
             weakrefs: Mutex::new(WeakRefRegistry::new()),
             exit_registry: Mutex::new(ExitRegistry::new()),
             abc_invalidation_counter: AtomicU64::new(0),
-            asyncgen_registry: Mutex::new(HashSet::new()),
             #[cfg(not(target_arch = "wasm32"))]
             thread_pool_started: AtomicBool::new(false),
             #[cfg(not(target_arch = "wasm32"))]
@@ -699,7 +763,6 @@ impl RuntimeState {
             signal: SignalRuntimeState::new(),
             process_tasks: Mutex::new(HashMap::new()),
             code_slots: OnceLock::new(),
-            python_builtin_function_slots: OnceLock::new(),
             start_time: OnceLock::new(),
             vfs_state: OnceLock::new(),
             extension_states: Mutex::new(HashMap::new()),
@@ -1249,6 +1312,7 @@ pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
         let _ = std::io::stdout().flush();
         let _ = std::io::stderr().flush();
     }
+    let code = crate::builtins::signal_ext::signal_exit_status_after_finalization(code);
     unsafe { libc::_exit(code) }
 }
 
@@ -1406,7 +1470,10 @@ pub extern "C" fn molt_runtime_init() -> u64 {
         }
 
         let ptr = Box::into_raw(state);
-        signal_runtime_state_publish(unsafe { &*ptr });
+        assert!(
+            signal_runtime_state_publish(unsafe { &*ptr }),
+            "runtime initialization could not publish its signal authority"
+        );
         let mut phase = lifecycle.phase.lock().unwrap();
         assert_eq!(*phase, RuntimeLifecyclePhase::Initializing { owner });
         *phase = RuntimeLifecyclePhase::Ready { ptr: ptr as usize };

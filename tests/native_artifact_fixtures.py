@@ -28,11 +28,13 @@ def native_relocatable_object(
     symbols: tuple[str, ...] = (),
     data_symbols: tuple[str, ...] = (),
     weak_symbols: tuple[str, ...] = (),
+    undefined_symbols: tuple[str, ...] = (),
 ) -> bytes:
     """Real readable object sections; no executable-body or support claim.
 
-    Function and data symbols occupy distinct sections, so callable-admission
-    fixtures cannot accidentally encode a function while asserting it is data.
+    Function and data symbols occupy distinct sections; undefined references
+    have the format's real undefined section/type and zero value. Object bytes
+    therefore bind the same definitions and references asserted by reader mocks.
     """
     from molt.cli.native_link_plan import resolve_native_target_spec
     from molt.native_target_shape import NativeObjectFormat, native_artifact_shape
@@ -47,13 +49,14 @@ def native_relocatable_object(
         or shape.architecture not in {"x86_64", "aarch64"}
     ):
         raise ValueError(f"No relocatable symbol fixture layout for {target.triple}")
-    all_symbols = (*symbols, *data_symbols)
+    definitions = (*symbols, *data_symbols)
+    all_symbols = (*definitions, *undefined_symbols)
     if len(set(all_symbols)) != len(all_symbols) or any(
         not symbol or "\0" in symbol for symbol in all_symbols
     ):
         raise ValueError("Fixture symbols must be unique, nonempty, and NUL-free")
     weak_names = frozenset(weak_symbols)
-    if not weak_names <= set(all_symbols):
+    if not weak_names <= set(definitions):
         raise ValueError("Weak fixture symbols must name declared definitions")
     if weak_names and target.object_format is not NativeObjectFormat.ELF:
         raise ValueError("Weak fixture bindings are implemented only for ELF")
@@ -80,13 +83,16 @@ def native_relocatable_object(
                 encoded_name = struct.pack("<II", 0, len(strings))
                 strings.extend(name + b"\0")
             function = index < function_count
-            value = 4 * (index if function else index - function_count)
+            undefined = index >= len(definitions)
+            value = (
+                0 if undefined else 4 * (index if function else index - function_count)
+            )
             image.extend(
                 struct.pack(
                     "<8sIhHBB",
                     encoded_name,
                     value,
-                    1 if function else 2,
+                    0 if undefined else 1 if function else 2,
                     0x20 if function else 0,
                     2,
                     0,
@@ -128,17 +134,20 @@ def native_relocatable_object(
         strings = bytearray(b"\0")
         for index, name in enumerate(names):
             function = index < function_count
-            value = 4 * (index if function else index - function_count)
+            undefined = index >= len(definitions)
+            value = (
+                0 if undefined else 4 * (index if function else index - function_count)
+            )
             image.extend(
                 struct.pack(
                     "<IBBHQQ",
                     len(strings),
                     (0x20 if all_symbols[index] in weak_names else 0x10)
-                    | (2 if function else 1),
+                    | (0 if undefined else 2 if function else 1),
                     0,
-                    1 if function else 2,
+                    0 if undefined else 1 if function else 2,
                     value,
-                    4,
+                    0 if undefined else 4,
                 )
             )
             strings.extend(name + b"\0")
@@ -218,9 +227,23 @@ def native_relocatable_object(
     strings = bytearray(b"\0")
     for index, name in enumerate(names):
         function = index < function_count
-        value = 4 * index if function else len(body) + 4 * (index - function_count)
+        undefined = index >= len(definitions)
+        value = (
+            0
+            if undefined
+            else 4 * index
+            if function
+            else len(body) + 4 * (index - function_count)
+        )
         image.extend(
-            struct.pack("<IBBHQ", len(strings), 0x0F, 1 if function else 2, 0, value)
+            struct.pack(
+                "<IBBHQ",
+                len(strings),
+                0x01 if undefined else 0x0F,
+                0 if undefined else 1 if function else 2,
+                0,
+                value,
+            )
         )
         strings.extend(b"_" + name + b"\0")
     string_offset = len(image)

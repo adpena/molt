@@ -34,7 +34,7 @@ from molt.frontend import (
     compile_to_tir,
 )
 from molt.frontend._protocol import _GeneratorProtocol
-from molt.frontend._types import _ClassNsScope
+from molt.frontend._types import CodeSlotDeclaration, _ClassNsScope
 from molt.frontend.lowering.generator_state import (
     FUNCTION_CONTEXT_STATE_ATTRS,
     FUNCTION_STATE_SNAPSHOT_ATTRS,
@@ -117,7 +117,6 @@ EXPECTED_MIXINS = [
     "CallNamedBuiltinDispatchMixin",
     "CallNamedBuiltinScalarDispatchMixin",
     "CallNamedBuiltinIterDispatchMixin",
-    "CallNamedBuiltinConstructorDispatchMixin",
     "CallNamedBuiltinFallbackDispatchMixin",
     "CallImportedAttributeDispatchMixin",
     "CallAttributeDispatchMixin",
@@ -184,7 +183,7 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_restore_function_scope_state")
     assert hasattr(SimpleTIRGenerator, "_load_local_value")
     assert hasattr(SimpleTIRGenerator, "_store_local_value")
-    assert hasattr(SimpleTIRGenerator, "_value_reads_plain_local_binding")
+    assert hasattr(SimpleTIRGenerator, "_emit_frame_home_store")
     # midend optimization
     assert hasattr(SimpleTIRGenerator, "_run_ir_midend_passes")
     assert hasattr(SimpleTIRGenerator, "_init_midend_state")
@@ -203,7 +202,6 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_serialize_loop_string_async_op")
     assert hasattr(SimpleTIRGenerator, "_serialization_field_offset")
     assert hasattr(SimpleTIRGenerator, "_serialization_control_value")
-    assert hasattr(SimpleTIRGenerator, "_serialization_carry_bound_local")
     assert hasattr(SimpleTIRGenerator, "_scalarize_string_split_fields_json")
     # compile warnings
     assert hasattr(SimpleTIRGenerator, "_prescan_compile_warnings")
@@ -220,7 +218,7 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_emit_not")
     assert hasattr(SimpleTIRGenerator, "_emit_call_bound_or_func")
     # function lifecycle
-    assert hasattr(SimpleTIRGenerator, "_function_contains_locals_call")
+    assert hasattr(SimpleTIRGenerator, "_function_binds_homes")
     assert hasattr(SimpleTIRGenerator, "_task_closure_size")
     assert hasattr(SimpleTIRGenerator, "start_function")
     assert hasattr(SimpleTIRGenerator, "_capture_function_state")
@@ -234,10 +232,9 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_known_module_function_type_hint")
     assert hasattr(SimpleTIRGenerator, "_emit_builtin_function")
     # module globals
-    assert hasattr(SimpleTIRGenerator, "_get_or_emit_module_cache")
     assert hasattr(SimpleTIRGenerator, "_emit_global_get")
     assert hasattr(SimpleTIRGenerator, "_emit_globals_dict")
-    assert hasattr(SimpleTIRGenerator, "_init_locals_cache_and_pin")
+    assert hasattr(SimpleTIRGenerator, "_emit_module_globals_dict")
     # module lifecycle
     assert hasattr(SimpleTIRGenerator, "_init_module_lifecycle_state")
     assert hasattr(SimpleTIRGenerator, "_emit_initial_module_object")
@@ -362,8 +359,9 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "to_json")
     # string formatting and template lowering
     assert hasattr(SimpleTIRGenerator, "_try_extract_const_str")
-    assert hasattr(SimpleTIRGenerator, "_parse_format_tokens")
-    assert hasattr(SimpleTIRGenerator, "_emit_format_tokens")
+    assert not hasattr(SimpleTIRGenerator, "_parse_format_tokens")
+    assert not hasattr(SimpleTIRGenerator, "_emit_format_tokens")
+    assert not hasattr(SimpleTIRGenerator, "_lower_string_format_call")
     assert hasattr(SimpleTIRGenerator, "_emit_format_spec_value")
     assert hasattr(SimpleTIRGenerator, "_emit_template_interpolation")
     # runtime and intrinsic references
@@ -388,7 +386,9 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_collect_assigned_names")
     assert hasattr(SimpleTIRGenerator, "_collect_free_vars")
     assert hasattr(SimpleTIRGenerator, "_match_vector_reduction_loop")
-    assert hasattr(SimpleTIRGenerator, "_match_taq_ingest_loop_body")
+    assert hasattr(SimpleTIRGenerator, "_match_split_dict_increment_for_loop")
+    # The benchmark-shaped TAQ ingest recognizer is retired, not relocated.
+    assert not hasattr(SimpleTIRGenerator, "_match_taq_ingest_loop_body")
 
 
 def test_mixin_modules_import_standalone() -> None:
@@ -432,7 +432,6 @@ def test_mixin_modules_import_standalone() -> None:
         "molt.frontend.visitors.async_gen",
         "molt.frontend.visitors.pattern_match",
         "molt.frontend.visitors.call_dispatch_attribute",
-        "molt.frontend.visitors.call_dispatch_builtin_constructors",
         "molt.frontend.visitors.call_dispatch_builtin_fallback",
         "molt.frontend.visitors.call_dispatch_builtin_iter",
         "molt.frontend.visitors.call_dispatch_builtin_scalar",
@@ -639,7 +638,7 @@ def test_function_state_restore_cannot_recycle_exact_class_tokens() -> None:
     outer_token = gen.exact_class_token
     state = gen._capture_function_state()
 
-    gen.start_function("nested")
+    gen.start_function("nested", code_slots=CodeSlotDeclaration((), (), (), ()))
     nested_value = gen._stamp_exact_class(MoltValue("nested_value"), "Point")
     nested_token = gen.exact_class_token
     assert nested_token > outer_token
@@ -666,7 +665,7 @@ def test_function_state_isolates_and_restores_enclosing_class_storage() -> None:
     gen._class_body_depth = 2
     state = gen._capture_function_state()
 
-    gen.start_function("nested")
+    gen.start_function("nested", code_slots=CodeSlotDeclaration((), (), (), ()))
     assert gen._class_ns_stack == []
     assert gen._class_ns_stack is not scopes
     assert gen._class_body_depth == 0

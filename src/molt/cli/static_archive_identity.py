@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager, nullcontext
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 import re
 from typing import BinaryIO, Callable, Mapping
 
-from molt.toolchain_identity import open_stable_regular_file
+from molt.toolchain_identity import (
+    StableRegularFileHandle,
+    StableRegularFileIdentity,
+    open_stable_regular_file,
+)
 from molt.exact_json import string_keyed_mapping
 from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
 
@@ -301,23 +307,31 @@ def static_archive_identity(
         ) from exc
 
 
-def visit_static_archive_members(
-    path: Path, *, visit_member: StaticArchiveMemberVisitor
-) -> int:
-    """Visit resolved content members without computing an unused semantic hash.
+@contextmanager
+def open_static_archive_members(
+    path: Path,
+    *,
+    opened: StableRegularFileHandle | None = None,
+) -> Iterator[tuple[tuple[StaticArchiveMember, ...], BinaryIO]]:
+    """Expose the canonical member envelope and its one verified source handle.
 
-    Framing, names and all payload extents use the same parser as semantic
-    identity. The visitor reads only the member structure it needs through
-    this stable handle; the caller's content identity is a separate proof.
+    Callers may project member bytes, symbols, or identities while the context
+    remains open. Header/name/extent parsing and source mutation checks stay in
+    this authority; no consumer reopens an archive between framing and reads.
     """
     try:
-        with open_stable_regular_file(path, label="static archive") as opened:
+        if opened is not None and opened.path != path.expanduser().absolute():
+            raise StaticArchiveIdentityError("archive handle belongs to another path")
+        with (
+            open_stable_regular_file(path, label="static archive")
+            if opened is None
+            else nullcontext(opened)
+        ) as opened:
+            opened.stream.seek(0)
             members = _static_archive_stream_members(
                 opened.stream, archive_size=opened.stat.st_size
             )
-            for member in members:
-                visit_member(member, opened.stream)
-            return len(members)
+            yield members, opened.stream
     except (OSError, ValueError) as exc:
         if isinstance(exc, StaticArchiveIdentityError):
             raise
@@ -326,8 +340,23 @@ def visit_static_archive_members(
         ) from exc
 
 
+def visit_static_archive_members(
+    path: Path,
+    *,
+    visit_member: StaticArchiveMemberVisitor,
+    opened: StableRegularFileHandle | None = None,
+) -> int:
+    """Visit resolved members through their canonical stable source handle."""
+    with open_static_archive_members(path, opened=opened) as (members, stream):
+        for member in members:
+            visit_member(member, stream)
+        return len(members)
+
+
 def static_archive_member_identities(
     path: Path,
+    *,
+    opened: StableRegularFileHandle | None = None,
 ) -> tuple[StaticArchiveMemberIdentity, ...]:
     identities: list[StaticArchiveMemberIdentity] = []
 
@@ -339,16 +368,21 @@ def static_archive_member_identities(
             )
         )
 
-    visit_static_archive_members(path, visit_member=identify)
+    visit_static_archive_members(path, visit_member=identify, opened=opened)
     return tuple(identities)
 
 
 def artifact_content_identity(
-    path: Path, *, logical_path: Path | None = None
+    path: Path,
+    *,
+    logical_path: Path | None = None,
+    observed: StableRegularFileIdentity | None = None,
 ) -> dict[str, object]:
     """Read current artifact bytes once; metadata never authorizes cached content."""
     try:
-        with open_stable_regular_file(path, label="runtime artifact") as opened:
+        with open_stable_regular_file(
+            path, label="runtime artifact", observed=observed
+        ) as opened:
             stream = opened.stream
             prefix = stream.read(len(_ARCHIVE_MAGIC))
             if (logical_path or path).suffix.lower() in {".a", ".lib"} and prefix in {

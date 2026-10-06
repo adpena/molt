@@ -750,6 +750,16 @@ def test_windows_sampler_limits_full_command_line_reads_to_launcher_processes() 
     assert module._windows_process_needs_full_command_line("python.exe") is True
     assert module._windows_process_needs_full_command_line("UV.EXE") is True
     assert module._windows_process_needs_full_command_line("node.exe") is True
+    assert (
+        module._windows_process_needs_full_command_line(
+            "molt-backend.native_backend.exe"
+        )
+        is True
+    )
+    assert (
+        module._windows_process_needs_full_command_line("molt-backend.wasm_backend.exe")
+        is True
+    )
     assert module._windows_process_needs_full_command_line("explorer.exe") is False
     assert module._windows_process_needs_full_command_line("svchost.exe") is False
 
@@ -941,24 +951,28 @@ def test_windows_protects_external_codex_descendants_but_not_owned_children(
                 r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
                 r"\app\Codex.exe"
             ),
+            started_at_ns=1000,
         ),
         20: module.ProcessSample(
             pid=20,
             ppid=10,
             rss_kb=1,
             command=r"C:\Users\adpen\OneDrive\Documents\molt\target\dev-fast\molt-backend.exe",
+            started_at_ns=2000,
         ),
         30: module.ProcessSample(
             pid=30,
             ppid=10,
             rss_kb=1,
             command=r"C:\Users\adpen\OneDrive\Documents\molt\.venv\Scripts\python.exe tools\memory_guard.py",
+            started_at_ns=2000,
         ),
         31: module.ProcessSample(
             pid=31,
             ppid=30,
             rss_kb=1,
             command=r"C:\Users\adpen\OneDrive\Documents\molt\target\dev-fast\molt-backend.exe",
+            started_at_ns=3000,
         ),
     }
 
@@ -1447,124 +1461,40 @@ def test_terminate_single_pid_windows_rechecks_identity_before_signal(
     assert sample_calls >= 2
 
 
-def test_pid_signal_windows_keeps_current_guard_child_killable(
+@pytest.mark.parametrize("entrypoint", ["pid_signal", "watched"])
+@pytest.mark.parametrize(
+    "command,parent_birth,child_birth,expected_result",
+    [
+        ("molt-backend.exe --owned", 100, 200, "sent"),
+        ("molt-backend.exe --owned", 200, 200, "sent"),
+        ("molt-backend.exe --owned", 999, 200, "skipped_host_control_lineage"),
+        ("molt-backend.exe --owned", None, 200, "skipped_host_control_lineage"),
+        ("molt-backend.exe --owned", 100, None, "skipped_ambiguous_identity"),
+        ("powershell.exe -NoProfile", 100, 200, "skipped_host_control_lineage"),
+        ("cmd.exe /d /c cargo check", 100, 200, "skipped_host_control_lineage"),
+        ("node_repl.exe", 100, 200, "skipped_host_control_plane"),
+    ],
+    ids=[
+        "ordered-births",
+        "same-clock-tick",
+        "reused-parent-pid",
+        "unknown-parent-birth",
+        "unknown-child-birth",
+        "powershell-child",
+        "cmd-child",
+        "host-control-child",
+    ],
+)
+def test_windows_current_guard_child_custody(
     monkeypatch,
+    entrypoint,
+    command,
+    parent_birth,
+    child_birth,
+    expected_result,
 ) -> None:
-    module = _load_memory_guard()
-    samples = {
-        100: module.ProcessSample(
-            pid=100,
-            ppid=1,
-            pgid=None,
-            rss_kb=500_000,
-            started_at_ns=100,
-            command=(
-                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
-                r"\app\Codex.exe"
-            ),
-        ),
-        999: module.ProcessSample(
-            pid=999,
-            ppid=100,
-            pgid=None,
-            rss_kb=30_000,
-            started_at_ns=999,
-            command=(
-                r"C:\Users\adpen\OneDrive\Documents\molt"
-                r"\tools\memory_guard.py --"
-            ),
-        ),
-        200: module.ProcessSample(
-            pid=200,
-            ppid=999,
-            pgid=None,
-            rss_kb=250_000,
-            started_at_ns=200,
-            command=(
-                r"C:\Users\adpen\OneDrive\Documents\molt"
-                r"\target\dev-fast\molt-backend.exe --owned"
-            ),
-        ),
-    }
-    sent: list[tuple[int, int]] = []
-
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(
-        module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
-    )
-    monkeypatch.setattr(module.os, "getpid", lambda: 999)
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
-
-    action = module._send_pid_signal_if_identity_action(
-        200,
-        module.process_identity(samples[200]),
-        module.signal.SIGTERM,
-        sampler=lambda: samples,
-    )
-
-    assert action.result == "sent"
-    assert sent == [(200, module.signal.SIGTERM)]
-
-
-def test_pid_signal_windows_refuses_current_guard_shell_child(
-    monkeypatch,
-) -> None:
-    module = _load_memory_guard()
-    samples = {
-        100: module.ProcessSample(
-            pid=100,
-            ppid=1,
-            pgid=None,
-            rss_kb=500_000,
-            started_at_ns=100,
-            command=(
-                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
-                r"\app\Codex.exe"
-            ),
-        ),
-        999: module.ProcessSample(
-            pid=999,
-            ppid=100,
-            pgid=None,
-            rss_kb=30_000,
-            started_at_ns=999,
-            command=(
-                r"C:\Users\adpen\OneDrive\Documents\molt"
-                r"\tools\memory_guard.py --"
-            ),
-        ),
-        200: module.ProcessSample(
-            pid=200,
-            ppid=999,
-            pgid=None,
-            rss_kb=25_000,
-            started_at_ns=200,
-            command="powershell.exe -NoProfile",
-        ),
-    }
-    sent: list[tuple[int, int]] = []
-
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(
-        module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
-    )
-    monkeypatch.setattr(module.os, "getpid", lambda: 999)
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
-
-    action = module._send_pid_signal_if_identity_action(
-        200,
-        module.process_identity(samples[200]),
-        module.signal.SIGTERM,
-        sampler=lambda: samples,
-    )
-
-    assert action.result == "skipped_host_control_lineage"
-    assert sent == []
-
-
-def test_terminate_watched_processes_windows_keeps_current_guard_child_killable(
-    monkeypatch,
-) -> None:
+    # PID values deliberately differ from creation order. All signal consumers
+    # share this snapshot, including the valid ancestry of protected shell children.
     module = process_custody
     samples = {
         100: module.ProcessSample(
@@ -1572,111 +1502,59 @@ def test_terminate_watched_processes_windows_keeps_current_guard_child_killable(
             ppid=1,
             pgid=None,
             rss_kb=500_000,
-            started_at_ns=100,
-            command=(
-                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
-                r"\app\resources\codex.exe"
-            ),
+            started_at_ns=50,
+            command="codex.exe app-server",
         ),
         999: module.ProcessSample(
             pid=999,
             ppid=100,
             pgid=None,
             rss_kb=30_000,
-            started_at_ns=999,
-            command=(
-                r"C:\Users\adpen\OneDrive\Documents\molt"
-                r"\tools\memory_guard.py --"
-            ),
+            started_at_ns=parent_birth,
+            command="python.exe tools/memory_guard.py --",
         ),
         200: module.ProcessSample(
             pid=200,
             ppid=999,
             pgid=None,
             rss_kb=250_000,
-            started_at_ns=200,
-            command=(
-                r"C:\Users\adpen\OneDrive\Documents\molt"
-                r"\target\dev-fast\molt-backend.exe --owned"
-            ),
+            started_at_ns=child_birth,
+            command=command,
         ),
     }
     sent: list[tuple[int, int]] = []
-
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
+    _set_module_os_name(monkeypatch, module)
     monkeypatch.setattr(module.os, "getpid", lambda: 999)
     monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
 
-    module.terminate_watched_processes(
-        200,
-        samples=samples,
-        watched={200},
-        grace=0.0,
-        sampler=lambda: samples,
-    )
-
-    assert (200, module.signal.SIGTERM) in sent
-    assert (200, module.fallback_kill_signal()) in sent
-
-
-def test_terminate_watched_processes_windows_refuses_current_guard_shell_child(
-    monkeypatch,
-) -> None:
-    module = process_custody
-    samples = {
-        100: module.ProcessSample(
-            pid=100,
-            ppid=1,
-            pgid=None,
-            rss_kb=500_000,
-            started_at_ns=100,
-            command=(
-                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
-                r"\app\resources\codex.exe"
-            ),
-        ),
-        999: module.ProcessSample(
-            pid=999,
-            ppid=100,
-            pgid=None,
-            rss_kb=30_000,
-            started_at_ns=999,
-            command=(
-                r"C:\Users\adpen\OneDrive\Documents\molt"
-                r"\tools\memory_guard.py --"
-            ),
-        ),
-        200: module.ProcessSample(
-            pid=200,
-            ppid=999,
-            pgid=None,
-            rss_kb=25_000,
-            started_at_ns=200,
-            command="cmd.exe /d /c cargo check",
-        ),
-    }
-    sent: list[tuple[int, int]] = []
-
-    monkeypatch.setattr(module, "_is_windows_process_model", lambda: True)
-    monkeypatch.setattr(module.os, "getpid", lambda: 999)
-    monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
-
-    report = module.terminate_watched_processes(
-        200,
-        samples=samples,
-        watched={200},
-        grace=0.0,
-        root_owned=True,
-        sampler=lambda: samples,
-    )
-
-    assert sent == []
-    assert any(
-        action.target_kind == "process"
-        and action.target_id == 200
-        and action.result == "skipped_host_control_lineage"
-        for action in report.actions
-    )
+    if entrypoint == "pid_signal":
+        action = module._send_pid_signal_if_identity_action(
+            200,
+            module.process_identity(samples[200]),
+            module.signal.SIGTERM,
+            sampler=lambda: samples,
+        )
+        assert action.result == expected_result
+        expected_signals = [(200, module.signal.SIGTERM)]
+    else:
+        report = module.terminate_watched_processes(
+            200,
+            samples=samples,
+            watched={200},
+            grace=0.0,
+            sampler=lambda: samples,
+        )
+        assert any(
+            action.target_kind == "process"
+            and action.target_id == 200
+            and action.result == expected_result
+            for action in report.actions
+        )
+        expected_signals = [
+            (200, module.signal.SIGTERM),
+            (200, module.fallback_kill_signal()),
+        ]
+    assert sent == (expected_signals if expected_result == "sent" else [])
 
 
 @pytest.mark.parametrize(

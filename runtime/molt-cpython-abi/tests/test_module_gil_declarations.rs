@@ -16,16 +16,17 @@
 //!   * slot absent — DEFAULT is GIL-used; a free-threaded interpreter
 //!     re-enables the GIL at import.
 //!
-//! These tests use the canonical stub-hook test transaction: recording happens
-//! at module-DEFINITION processing time and must not depend on whether module
-//! creation subsequently succeeds (with stub hooks it does not), mirroring
-//! CPython, which stamps `md_gil` from the slots before running any exec slot.
+//! Valid native import specs supply spec.name before declaration recording.
+//! A minimal module transport then exercises failed creation and real exec
+//! admission separately. Invalid spec/module inputs are not fake successes.
 
 #![allow(non_snake_case)]
 
 mod support;
 
-use molt_cpython_abi::abi_types::{PyModuleDef, PyModuleDef_Base, PyModuleDef_Slot, PyObject};
+use molt_cpython_abi::abi_types::{
+    MoltTypeTag, PyModuleDef, PyModuleDef_Base, PyModuleDef_Slot, PyObject, PyTypeObject,
+};
 use molt_cpython_abi::api::modules::{
     PyModule_ExecDef, PyModule_FromDefAndSpec2, PyUnstable_Module_SetGIL,
 };
@@ -33,8 +34,73 @@ use molt_cpython_abi::gil_declarations::{
     ModuleGilDeclaration, module_gil_declaration, modules_requiring_gil,
     unresolved_gil_declaration_count,
 };
+use std::collections::HashSet;
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
+use std::sync::{LazyLock, Mutex};
+static MODULES: LazyLock<Mutex<HashSet<u64>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+thread_local! { static EXEC_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+unsafe extern "C" fn classify(bits: u64) -> u8 {
+    if support::fake_strings::contains(bits) {
+        MoltTypeTag::Str as u8
+    } else if MODULES.lock().unwrap().contains(&bits) {
+        MoltTypeTag::Module as u8
+    } else {
+        MoltTypeTag::Other as u8
+    }
+}
+unsafe extern "C" fn alloc_module(_data: *const u8, _len: usize) -> u64 {
+    let bits = molt_lang_obj_model::MoltObject::from_ptr(Box::into_raw(Box::new(0u8))).bits();
+    MODULES.lock().unwrap().insert(bits);
+    bits
+}
+unsafe extern "C" fn exec_begin(bits: u64, _definition: usize) -> c_int {
+    if MODULES.lock().unwrap().contains(&bits) {
+        0
+    } else {
+        -1
+    }
+}
+fn install_hooks() {
+    let mut hooks = support::stub_runtime_hooks();
+    support::fake_strings::wire(&mut hooks);
+    hooks.classify_heap = classify;
+    hooks.alloc_module = alloc_module;
+    hooks.module_exec_begin = exec_begin;
+    support::prepare_runtime_class_abi_test_thread(hooks);
+}
+#[repr(C)]
+struct NativeSpec {
+    object: PyObject,
+    name: *const c_char,
+}
+unsafe extern "C" fn spec_getattro(spec: *mut PyObject, name: *mut PyObject) -> *mut PyObject {
+    let key = unsafe { molt_cpython_abi::api::strings::PyUnicode_AsUTF8(name) };
+    if key.is_null() || unsafe { std::ffi::CStr::from_ptr(key) }.to_bytes() != b"name" {
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_SetNone(
+                (&raw mut molt_cpython_abi::abi_types::PyExc_AttributeError).cast(),
+            )
+        };
+        return ptr::null_mut();
+    }
+    unsafe {
+        molt_cpython_abi::api::strings::PyUnicode_FromString((*spec.cast::<NativeSpec>()).name)
+    }
+}
+unsafe fn from_valid_spec(def: *mut PyModuleDef) -> *mut PyObject {
+    let mut type_: Box<PyTypeObject> = Box::new(unsafe { std::mem::zeroed() });
+    type_.tp_name = c"test_import_spec".as_ptr();
+    type_.tp_getattro = Some(spec_getattro);
+    let mut spec = NativeSpec {
+        object: PyObject {
+            ob_refcnt: 1,
+            ob_type: &raw mut *type_,
+        },
+        name: unsafe { (*def).m_name },
+    };
+    unsafe { PyModule_FromDefAndSpec2(def, &raw mut spec.object, 0) }
+}
 
 const PY_MOD_EXEC: c_int = 2;
 const PY_MOD_GIL: c_int = 4;
@@ -42,13 +108,18 @@ const PY_MOD_GIL_USED: *mut c_void = ptr::null_mut(); // ((void *)0)
 // ((void *)1) — an integer sentinel, never dereferenced (CPython moduleobject.h).
 const PY_MOD_GIL_NOT_USED: *mut c_void = ptr::without_provenance_mut(1);
 
-unsafe extern "C" fn noop_exec(_module: *mut PyObject) -> c_int {
+unsafe extern "C" fn noop_exec(module: *mut PyObject) -> c_int {
+    assert_eq!(
+        unsafe { molt_cpython_abi::api::modules::PyModule_Check(module) },
+        1
+    );
+    EXEC_CALLS.with(|count| count.set(count.get() + 1));
     0
 }
 
 /// Build a leaked (test-'static) PyModuleDef with the given name and slots.
 fn make_def(name: &'static str, slots: Vec<PyModuleDef_Slot>) -> *mut PyModuleDef {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+    install_hooks();
     assert!(name.ends_with('\0'), "name must be NUL-terminated");
     let mut slots = slots;
     slots.push(PyModuleDef_Slot {
@@ -88,7 +159,12 @@ fn py_mod_gil_not_used_slot_is_recorded_from_fromdefandspec() {
     );
     // Stub hooks make the actual module creation fail (NULL return) — the
     // declaration must be recorded regardless.
-    let _ = unsafe { PyModule_FromDefAndSpec2(def, ptr::null_mut(), 0) };
+    let module = unsafe { from_valid_spec(def) };
+    // The metadata registration hook remains unsupported: creation fails only
+    // after a valid spec name and declaration have been admitted.
+    assert!(module.is_null());
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     assert_eq!(
         module_gil_declaration("gil_itest_notused"),
         Some(ModuleGilDeclaration::GilNotUsed),
@@ -111,7 +187,12 @@ fn py_mod_gil_used_explicit_slot_is_recorded() {
             value: PY_MOD_GIL_USED,
         }],
     );
-    let _ = unsafe { PyModule_FromDefAndSpec2(def, ptr::null_mut(), 0) };
+    let module = unsafe { from_valid_spec(def) };
+    // The metadata registration hook remains unsupported: creation fails only
+    // after a valid spec name and declaration have been admitted.
+    assert!(module.is_null());
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     assert_eq!(
         module_gil_declaration("gil_itest_used_explicit"),
         Some(ModuleGilDeclaration::GilUsedExplicit),
@@ -135,7 +216,12 @@ fn absent_slot_records_cpython_default_gil_used() {
             value: noop_exec as *mut c_void,
         }],
     );
-    let _ = unsafe { PyModule_FromDefAndSpec2(def, ptr::null_mut(), 0) };
+    let module = unsafe { from_valid_spec(def) };
+    // The metadata registration hook remains unsupported: creation fails only
+    // after a valid spec name and declaration have been admitted.
+    assert!(module.is_null());
+    assert!(!unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
+    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     assert_eq!(
         module_gil_declaration("gil_itest_default"),
         Some(ModuleGilDeclaration::GilUsedDefault),
@@ -167,11 +253,12 @@ fn execdef_records_the_declaration_too() {
             },
         ],
     );
-    let mut dummy = PyObject {
-        ob_refcnt: 1,
-        ob_type: ptr::null_mut(),
-    };
-    let rc = unsafe { PyModule_ExecDef(&raw mut dummy, def) };
+    let module =
+        unsafe { molt_cpython_abi::api::modules::PyModule_New(c"gil_itest_execdef".as_ptr()) };
+    assert!(!module.is_null());
+    let rc = unsafe { PyModule_ExecDef(module, def) };
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(module) };
+    assert_eq!(EXEC_CALLS.with(std::cell::Cell::get), 1);
     assert_eq!(rc, 0, "exec slot returning 0 must succeed");
     assert_eq!(
         module_gil_declaration("gil_itest_execdef"),
@@ -193,4 +280,25 @@ fn setgil_on_unresolvable_module_counts_unresolved_and_still_returns_0() {
         before + 1,
         "an unattributable declaration must be counted, not silently dropped"
     );
+}
+
+#[test]
+fn invalid_definition_inputs_fail_before_metadata_publication() {
+    let def = make_def("gil_itest_invalid_spec\0", vec![]);
+    unsafe {
+        assert!(PyModule_FromDefAndSpec2(def, ptr::null_mut(), 0).is_null());
+        assert!(!molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
+        assert_eq!(module_gil_declaration("gil_itest_invalid_spec"), None);
+        molt_cpython_abi::api::errors::PyErr_Clear();
+        assert_eq!(PyModule_ExecDef(ptr::null_mut(), def), -1);
+        assert!(!molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
+        assert_eq!(module_gil_declaration("gil_itest_invalid_spec"), None);
+        molt_cpython_abi::api::errors::PyErr_Clear();
+        assert!(molt_cpython_abi::api::modules::PyModuleDef_Init(ptr::null_mut()).is_null());
+        assert!(!molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
+        molt_cpython_abi::api::errors::PyErr_Clear();
+        assert!(molt_cpython_abi::api::modules::PyModule_Create2(ptr::null_mut(), 0).is_null());
+        assert!(!molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
+        molt_cpython_abi::api::errors::PyErr_Clear();
+    }
 }

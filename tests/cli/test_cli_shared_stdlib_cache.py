@@ -21,6 +21,10 @@ from molt.exact_json import canonical_json_sha256
 from tests.cli.process_guard import run_cli_test_process
 from tests.cli.native_link_test_support import static_archive_bytes
 from tests.native_artifact_fixtures import native_relocatable_object
+from tests.compiler_identity_helper import (
+    stub_compiler_admission,
+    write_compiler_source,
+)
 
 # Key algebra consumes explicit content identities. Filesystem fingerprinting has
 # separate producer tests; rereading the live compiler here both repeats expensive
@@ -59,6 +63,13 @@ def _admit_mock_symbol_reader_commands(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         native_symbol_inspection, "stable_executable_probe", admitted_reader
     )
+    # Each test supplies a distinct external reader implementation. Within a
+    # test, the production content cache remains live across all sibling paths.
+    native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
+    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+    yield
+    native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
+    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
 
 
 @pytest.mark.parametrize(
@@ -603,7 +614,9 @@ def test_prepare_backend_cache_setup_threads_capability_config_to_stdlib_key(
         cache_enabled=True,
         ir=ir,
         target="native",
-        target_triple=None,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin", target_triple=None
+        ),
         profile="dev",
         runtime_cargo_profile="dev-fast",
         backend_cargo_profile="dev-fast",
@@ -742,7 +755,9 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
         cache_enabled=True,
         ir=ir,
         target="native",
-        target_triple=None,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin", target_triple=None
+        ),
         profile="dev",
         runtime_cargo_profile="dev-fast",
         backend_cargo_profile="dev-fast",
@@ -834,7 +849,9 @@ def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
         cache_enabled=True,
         ir=ir,
         target="native",
-        target_triple=None,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin", target_triple=None
+        ),
         profile="dev",
         runtime_cargo_profile="dev-fast",
         backend_cargo_profile="dev-fast",
@@ -926,7 +943,9 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
         cache_enabled=True,
         ir=ir,
         target="native",
-        target_triple=None,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin", target_triple=None
+        ),
         profile="dev",
         runtime_cargo_profile="dev-fast",
         backend_cargo_profile="dev-fast",
@@ -959,10 +978,23 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
     assert first.stdlib_object_cache_key == second.stdlib_object_cache_key
     assert first.stdlib_object_manifest == second.stdlib_object_manifest
     assert key_calls == 1
-    assert manifest_calls == 1
-    assert list(
+    assert manifest_calls == 2
+    paths = list(
         (build_state_root / "backend_cache_stdlib_key_material").rglob("*.json")
     )
+    assert len(paths) == 1
+    stored = json.loads(paths[0].read_text())
+    assert "manifest" not in stored
+    # A leftover memo projection cannot override the current archive contract.
+    stored["manifest"] = "stale contract"
+    paths[0].write_text(json.dumps(stored))
+    third = cli_backend_cache_setup._prepare_backend_cache_setup(
+        backend_bin=tmp_path / "molt-backend", **common
+    )
+    assert third.stdlib_object_cache_key == first.stdlib_object_cache_key
+    assert third.stdlib_object_manifest == first.stdlib_object_manifest
+    assert key_calls == 1
+    assert manifest_calls == 3
     assert "backend_cache_stdlib_key_manifest" in second_timings
 
 
@@ -1013,7 +1045,9 @@ def test_prepare_backend_cache_setup_uses_verified_backend_compiler_fingerprint(
             cache_enabled=True,
             ir=ir,
             target="native",
-            target_triple=None,
+            artifact_contract=resolve_backend_artifact_contract(
+                target="native", emit_mode="bin", target_triple=None
+            ),
             profile="dev",
             runtime_cargo_profile="dev-fast",
             backend_cargo_profile="dev-fast",
@@ -1069,7 +1103,9 @@ def test_prepare_backend_cache_setup_threads_ambient_capability_env_to_stdlib_ke
         cache_enabled=True,
         ir=ir,
         target="native",
-        target_triple=None,
+        artifact_contract=resolve_backend_artifact_contract(
+            target="native", emit_mode="bin", target_triple=None
+        ),
         profile="dev",
         runtime_cargo_profile="dev-fast",
         backend_cargo_profile="dev-fast",
@@ -1559,8 +1595,10 @@ def test_shared_stdlib_cache_matches_key_requires_present_matching_contract(
 
 
 def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime_fixture_root
 ) -> None:
+    stub_compiler_admission(monkeypatch)
+    write_compiler_source(tmp_path)
     project_root = tmp_path
     cache_root = project_root / ".molt_cache"
     home_bin = tmp_path / "molt-home" / "bin"
@@ -1603,14 +1641,14 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
         del args, kwargs
         return dict(fingerprint)
 
-    def fake_run_cargo(
-        cmd: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
+    def fake_run_cargo(plan, **kwargs: object) -> subprocess.CompletedProcess[str]:
         del kwargs
-        build_cmds.append(list(cmd))
-        backend_bin.parent.mkdir(parents=True, exist_ok=True)
-        backend_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        backend_bin.chmod(0o755)
+        plan.verify()
+        cmd = list(plan.command)
+        build_cmds.append(cmd)
+        runtime_fixture_root.native_executable(
+            backend_bin.relative_to(tmp_path).as_posix()
+        )
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setenv("MOLT_CACHE", str(cache_root))
@@ -1619,9 +1657,7 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
         cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint
     )
     monkeypatch.setattr(cli_backend_binary, "_codesign_binary", lambda _path: None)
-    monkeypatch.setattr(
-        cli_backend_binary, "_run_cargo_with_sccache_retry", fake_run_cargo
-    )
+    monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", fake_run_cargo)
     monkeypatch.setattr(
         cli_backend_binary,
         "_run_subprocess_captured_to_tempfiles",
@@ -1640,6 +1676,7 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
         [
             "cargo",
             "build",
+            "--locked",
             "--package",
             "molt-backend",
             "--bin",
@@ -2543,7 +2580,12 @@ def test_native_object_symbol_sets_reuse_content_bound_result_across_admission_s
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     obj = tmp_path / "module.o"
-    obj.write_bytes(native_relocatable_object())
+    obj.write_bytes(
+        native_relocatable_object(
+            symbols=("hello__molt_module_chunk_1",),
+            undefined_symbols=("molt_runtime_symbol",),
+        )
+    )
     contract = resolve_backend_artifact_contract(target="native", emit_mode="obj")
     calls = 0
 
@@ -2611,7 +2653,11 @@ def test_native_archive_chunk_closure_resolves_all_included_members(
         static_archive_bytes(
             native_relocatable_object(symbols=tuple(sorted(application_defined)))
         )
-        + static_archive_bytes(native_relocatable_object())[8:]
+        + static_archive_bytes(
+            native_relocatable_object(
+                undefined_symbols=tuple(sorted(application_undefined))
+            )
+        )[8:]
     )
     member_tables = {
         application: ((application_defined, set()), (set(), application_undefined))
@@ -2663,7 +2709,7 @@ def test_native_object_symbol_sets_reuse_persistent_symbol_facts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     obj = tmp_path / "module.o"
-    obj.write_bytes(b"coff")
+    obj.write_bytes(native_relocatable_object(symbols=("original",)))
     calls = 0
 
     def fake_run_completed_command(
@@ -2688,6 +2734,10 @@ def test_native_object_symbol_sets_reuse_persistent_symbol_facts(
         fake_run_completed_command,
     )
 
+    assert (
+        native_symbol_inspection._native_object_global_symbol_facts(obj, publish=True)
+        is not None
+    )
     assert cli._native_object_global_symbol_sets(obj) is not None
     assert calls == 1
     assert native_symbol_inspection._native_object_symbol_facts_sidecar_path(
@@ -2698,24 +2748,32 @@ def test_native_object_symbol_sets_reuse_persistent_symbol_facts(
     assert cli._native_object_global_symbol_sets(obj) is not None
     assert calls == 1
 
-    obj.write_bytes(b"coff-changed")
+    obj.write_bytes(native_relocatable_object(symbols=("changed",)))
     native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
     assert cli._native_object_global_symbol_sets(obj) is not None
     assert calls == 2
 
 
+@pytest.mark.parametrize("archive", [False, True])
 def test_stage_backend_output_warms_native_cache_symbol_facts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    archive: bool,
 ) -> None:
     backend_output = tmp_path / "backend.o"
     target_triple = "x86_64-unknown-linux-gnu"
-    backend_output.write_bytes(
-        native_relocatable_object(target_triple=target_triple, symbols=("molt_main",))
+    payload = native_relocatable_object(
+        target_triple=target_triple, symbols=("molt_main",)
     )
+    backend_output.write_bytes(static_archive_bytes(payload) if archive else payload)
     output_artifact = tmp_path / "out" / "output.o"
     cache_path = tmp_path / "cache" / "module.o"
     function_cache_path = tmp_path / "cache" / "function.o"
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "_default_molt_cache",
+        lambda: tmp_path / "symbol-cache",
+    )
     err = BACKEND_CACHE._stage_backend_output_and_caches(
         tmp_path,
         backend_output,
@@ -2726,25 +2784,32 @@ def test_stage_backend_output_warms_native_cache_symbol_facts(
         function_cache_path=function_cache_path,
         warnings=[],
         artifact_contract=resolve_backend_artifact_contract(
-            target="native", emit_mode="obj", target_triple=target_triple
+            target="native",
+            emit_mode="bin" if archive else "obj",
+            target_triple=target_triple,
         ),
     )
 
     assert err is None
     assert output_artifact.exists()
-    reader_identity = native_symbol_inspection._native_symbol_reader(
-        nm_command=None,
-        target_triple=target_triple,
-    ).cache_identity
+    native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
+    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+
+    def unexpected_extraction(*args, **kwargs):
+        pytest.fail("staged outputs must reuse persistent content-bound symbol facts")
+
+    monkeypatch.setattr(
+        native_symbol_inspection, "_run_completed_command", unexpected_extraction
+    )
     for path in (cache_path, function_cache_path):
-        facts = native_symbol_inspection._read_native_object_symbol_facts(
-            path,
-            object_digest=cli._sha256_file(path),
-            target_triple=target_triple,
-            reader_identity=reader_identity,
+        facts = native_symbol_inspection._native_object_global_symbol_facts(
+            path, target_triple=target_triple
         )
-        assert facts is not None
         assert facts.defined_functions == {"molt_main"}
+        assert (facts.members is not None) is archive
+        assert native_symbol_inspection._native_object_symbol_facts_sidecar_path(
+            path
+        ).exists() is (not archive)
 
 
 def test_native_symbol_normalization_is_platform_explicit(
@@ -2924,12 +2989,15 @@ def test_backend_binary_identity_and_daemon_selection_reject_preserved_metadata_
 ) -> None:
     backend_bin = tmp_path / "molt-backend"
     backend_bin.write_bytes(b"old-binary")
-    monkeypatch.setattr(
-        BACKEND_EXECUTION, "_cargo_target_root", lambda _root: tmp_path / "target"
-    )
     before = cli._backend_binary_identity(backend_bin)
-    daemon_before = BACKEND_EXECUTION._backend_daemon_freshness_inputs(
-        tmp_path, backend_bin
+    monkeypatch.setattr(
+        BACKEND_EXECUTION, "_cache_tooling_fingerprint", lambda: "tooling"
+    )
+    daemon_before = BACKEND_EXECUTION._backend_daemon_config_digest(
+        tmp_path,
+        "release",
+        backend_bin=backend_bin,
+        env={"MOLT_BACKEND_COMPILER_FINGERPRINT": "admitted"},
     )
     metadata = backend_bin.stat()
     if replace:
@@ -2941,12 +3009,14 @@ def test_backend_binary_identity_and_daemon_selection_reject_preserved_metadata_
     assert backend_bin.stat().st_size == metadata.st_size
     os.utime(backend_bin, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
     after = cli._backend_binary_identity(backend_bin)
-    daemon_after = BACKEND_EXECUTION._backend_daemon_freshness_inputs(
-        tmp_path, backend_bin
+    daemon_after = BACKEND_EXECUTION._backend_daemon_config_digest(
+        tmp_path,
+        "release",
+        backend_bin=backend_bin,
+        env={"MOLT_BACKEND_COMPILER_FINGERPRINT": "admitted"},
     )
     assert before != after
-    assert daemon_before["backend_bin"] == before
-    assert daemon_after["backend_bin"] == after
+    assert daemon_before != daemon_after
 
 
 def test_backend_features_for_target_single_source_of_truth() -> None:

@@ -7,91 +7,16 @@ use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::api::{
     cfunction::CFunctionConvention, errors, mapping, numbers, object, refcount, sequences, strings,
 };
-use molt_cpython_abi::hooks::BorrowedHandleResult;
-use molt_lang_obj_model::MoltObject;
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::ptr;
-use std::sync::{LazyLock, Mutex};
+use std::sync::Mutex;
 
 static LOCK: Mutex<()> = Mutex::new(());
-type Dict = Vec<(u64, u64)>;
-static DICTS: LazyLock<Mutex<HashMap<u64, Box<Dict>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-unsafe extern "C" fn alloc_dict() -> u64 {
-    let dict = Box::new(Vec::new());
-    let bits = MoltObject::from_ptr((&raw const *dict).cast_mut().cast()).bits();
-    DICTS.lock().unwrap().insert(bits, dict);
-    bits
-}
-unsafe extern "C" fn dict_set(bits: u64, key: u64, value: u64) -> i32 {
-    let mut dicts = DICTS.lock().unwrap();
-    let dict = dicts.get_mut(&bits).unwrap();
-    if let Some(pair) = dict.iter_mut().find(|pair| pair.0 == key) {
-        pair.1 = value;
-    } else {
-        dict.push((key, value));
-    }
-    0
-}
-unsafe extern "C" fn dict_get(bits: u64, key: u64) -> BorrowedHandleResult {
-    match DICTS
-        .lock()
-        .unwrap()
-        .get(&bits)
-        .unwrap()
-        .iter()
-        .find(|pair| pair.0 == key)
-    {
-        Some(pair) => BorrowedHandleResult::ok(pair.1),
-        None => BorrowedHandleResult::missing(),
-    }
-}
-unsafe extern "C" fn dict_del(bits: u64, key: u64) -> i32 {
-    let mut dicts = DICTS.lock().unwrap();
-    let dict = dicts.get_mut(&bits).unwrap();
-    let Some(index) = dict.iter().position(|pair| pair.0 == key) else {
-        return -1;
-    };
-    dict.remove(index);
-    0
-}
-unsafe extern "C" fn dict_len(bits: u64) -> usize {
-    DICTS.lock().unwrap().get(&bits).unwrap().len()
-}
-unsafe extern "C" fn dict_entry(bits: u64, index: usize, key: *mut u64, value: *mut u64) -> i32 {
-    let dicts = DICTS.lock().unwrap();
-    let Some(pair) = dicts.get(&bits).unwrap().get(index) else {
-        return 0;
-    };
-    unsafe {
-        *key = pair.0;
-        *value = pair.1;
-    }
-    1
-}
-unsafe extern "C" fn classify(bits: u64) -> u8 {
-    if DICTS.lock().unwrap().contains_key(&bits) {
-        MoltTypeTag::Dict as u8
-    } else if support::fake_strings::contains(bits) {
-        MoltTypeTag::Str as u8
-    } else {
-        0xff
-    }
-}
 
 fn setup() {
     let mut hooks = support::stub_runtime_hooks();
-    support::fake_strings::wire(&mut hooks);
-    hooks.alloc_dict = alloc_dict;
-    hooks.dict_set = dict_set;
-    hooks.dict_get = dict_get;
-    hooks.dict_del = dict_del;
-    hooks.dict_len = dict_len;
-    hooks.dict_entry = dict_entry;
-    hooks.classify_heap = classify;
-    support::prepare_abi_test_thread(hooks);
+    support::fake_runtime::wire(&mut hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
     unsafe { errors::PyErr_Clear() };
     *REC.lock().unwrap() = Record::default();
 }
@@ -272,9 +197,25 @@ fn cfunction_convention_matrix_uses_identical_vectorcall_and_tpcall_carriers() {
     unsafe {
         let first = numbers::PyLong_FromLong(31);
         let second = numbers::PyLong_FromLong(47);
+        let third = numbers::PyLong_FromLong(59);
+        let fourth = numbers::PyLong_FromLong(61);
         let key = strings::PyUnicode_FromString(c"answer".as_ptr());
-        assert!(!key.is_null());
-        let names = tuple(&[key]);
+        let second_key = strings::PyUnicode_FromString(c"zebra".as_ptr());
+        let third_key = strings::PyUnicode_FromString(c"alpha".as_ptr());
+        let keys = [key, second_key, third_key];
+        let key_handles = keys.map(|key| {
+            assert!(!key.is_null());
+            let bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                .molt_handle_for_pyobj(key)
+                .unwrap()
+                .bits();
+            assert!(
+                support::fake_runtime::ref_count(bits) > 0,
+                "projected strings need real runtime owners"
+            );
+            bits
+        });
+        let names = tuple(&keys);
         let empty_names = tuple(&[]);
         let empty_dict = mapping::PyDict_New();
         for (flags, target, keywords) in cases {
@@ -294,11 +235,13 @@ fn cfunction_convention_matrix_uses_identical_vectorcall_and_tpcall_carriers() {
             let positional = tuple(pos);
             let kwargs = mapping::PyDict_New();
             if keywords {
-                assert_eq!(mapping::PyDict_SetItem(kwargs, key, second), 0);
+                for (key, value) in keys.into_iter().zip([second, third, fourth]) {
+                    assert_eq!(mapping::PyDict_SetItem(kwargs, key, value), 0);
+                }
             }
             let mut flat = pos.to_vec();
             if keywords {
-                flat.push(second);
+                flat.extend([second, third, fourth]);
             }
             for route in 0..4 {
                 let result = match route {
@@ -323,7 +266,7 @@ fn cfunction_convention_matrix_uses_identical_vectorcall_and_tpcall_carriers() {
                 let expected: Vec<i64> = if flags == METH_NOARGS {
                     vec![]
                 } else if keywords {
-                    vec![31, 47]
+                    vec![31, 47, 59, 61]
                 } else {
                     vec![31]
                 };
@@ -331,7 +274,7 @@ fn cfunction_convention_matrix_uses_identical_vectorcall_and_tpcall_carriers() {
                 assert_eq!(
                     observed.names,
                     if keywords {
-                        vec!["answer".to_owned()]
+                        vec!["answer".to_owned(), "zebra".to_owned(), "alpha".to_owned()]
                     } else {
                         vec![]
                     }
@@ -349,9 +292,26 @@ fn cfunction_convention_matrix_uses_identical_vectorcall_and_tpcall_carriers() {
             refcount::Py_DECREF(positional);
             refcount::Py_DECREF(function);
         }
-        for value in [first, second, key, names, empty_names, empty_dict] {
+        for value in [
+            first,
+            second,
+            third,
+            fourth,
+            key,
+            second_key,
+            third_key,
+            names,
+            empty_names,
+            empty_dict,
+        ] {
             refcount::Py_DECREF(value);
         }
+        assert!(
+            key_handles
+                .into_iter()
+                .all(|bits| !support::fake_runtime::contains(bits)),
+            "the same owner registry must retire every projected keyword string"
+        );
     }
 }
 
@@ -653,9 +613,11 @@ fn cfunction_temporary_cleanup_preserves_exact_callee_exception_during_reentry()
             fails_after_releasing_external_owner as *const (),
             ptr::null_mut(),
             ptr::null_mut(),
-            &[argument],
-            1,
-            ptr::null_mut(),
+            molt_cpython_abi::api::cfunction::VectorcallArguments {
+                values: &[argument],
+                positional_count: 1,
+                kwnames: ptr::null_mut(),
+            },
             || "cleanup_probe".to_owned(),
         );
         assert!(result.is_null());

@@ -92,7 +92,11 @@ unsafe extern "C" fn bytes_data(bits: u64, out_len: *mut usize) -> *const u8 {
     value.as_ptr()
 }
 
-unsafe extern "C" fn sys_get_object(data: *const u8, len: usize) -> BorrowedHandleResult {
+unsafe extern "C" fn sys_get_object(
+    data: *const u8,
+    len: usize,
+    _policy: molt_cpython_abi::hooks::SysLookupPolicy,
+) -> BorrowedHandleResult {
     let name = unsafe { std::slice::from_raw_parts(data, len) };
     if name == b"float_info" {
         SYS_GET_CALLS.fetch_add(1, Ordering::Relaxed);
@@ -383,7 +387,7 @@ fn init() {
     hooks.tuple_len = tuple_len;
     hooks.tuple_item = tuple_item;
     hooks.tuple_set = tuple_set;
-    support::prepare_abi_test_thread(hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 fn proxy(value: i128) -> *mut PyObject {

@@ -303,8 +303,12 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::StateSwitch => "state_switch",
         OpCode::StateTransition => "state_transition",
         OpCode::StateYield => "state_yield",
+        OpCode::StateSet | OpCode::IsPending | OpCode::TaskWait => {
+            super::op_kinds_generated::opcode_canonical_kind_table(*op)
+        }
         OpCode::ClosureLoad => "closure_load",
         OpCode::ClosureStore => "closure_store",
+        OpCode::FrameContextSet => "frame_context_set",
         OpCode::Yield => "yield",
         OpCode::YieldFrom => "yield_from",
         OpCode::Raise => "raise",

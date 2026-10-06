@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from molt.cli.extension_manifest import _default_molt_c_api_version
+from molt.source_root import compiler_source_root
+
 import hashlib
 import json
 import os
@@ -207,8 +210,8 @@ def _write_external_static_native_package_fixture(
     manifest = {
         "schema_version": 1,
         "module": "nativepkg._native",
-        "molt_c_api_version": "1",
-        "abi_tag": "molt_abi1",
+        "molt_c_api_version": _default_molt_c_api_version(compiler_source_root()),
+        "abi_tag": f"molt_abi{_default_molt_c_api_version(compiler_source_root())}",
         "python_tag": "py3",
         "target_triple": "x86_64-unknown-linux-gnu",
         "platform_tag": "x86_64_unknown_linux_gnu",
@@ -1455,6 +1458,74 @@ def test_native_import_transaction_unifies_public_import_surfaces(
     )
     assert run.returncode == 0, run.stdout + run.stderr
     assert run.stdout.strip().splitlines() == ["pkg.helper"] + ["True"] * 8
+
+
+def test_native_import_call_binding_errors_are_catchable(tmp_path: Path) -> None:
+    source = """\
+from builtins import __import__ as load_builtin
+from importlib import import_module as load_module
+from importlib.util import find_spec
+events = []
+def argument(label):
+    events.append(label)
+    return 'unbundled.binding_target'
+for label, operation in (
+    ('builtin-missing', lambda: load_builtin()),
+    ('builtin-excess', lambda: load_builtin(argument('builtin-excess'), None, None, (), 0, 0)),
+    ('builtin-duplicate', lambda: load_builtin(argument('builtin-duplicate'), name='duplicate')),
+    ('builtin-keyword', lambda: load_builtin(argument('builtin-keyword'), unexpected=1)),
+    ('module-missing', lambda: load_module()),
+    ('module-excess', lambda: load_module(argument('module-excess'), None, None)),
+    ('module-duplicate', lambda: load_module(argument('module-duplicate'), name='duplicate')),
+    ('module-keyword', lambda: load_module(argument('module-keyword'), unexpected=1)),
+    ('find-spec-missing', lambda: find_spec()),
+):
+    try:
+        operation()
+    except TypeError:
+        print(label)
+    else:
+        raise AssertionError(label)
+print(','.join(events))
+print(load_builtin(name='builtins') is load_module('builtins'))
+class Keyword(str):
+    __hash__ = str.__hash__
+    def __eq__(self, other):
+        events.append('keyword-equality')
+        return False
+try:
+    load_builtin('builtins', **{Keyword('unknown'): 1})
+except TypeError:
+    print('expanded-keyword-error', 'keyword-equality' in events)
+else:
+    raise AssertionError('expanded keyword call succeeded')
+print(load_builtin(*('builtins',), **{}) is load_module(name='builtins', **{}))
+try:
+    load_builtin('unbundled.runtime_import', **{})
+except ModuleNotFoundError:
+    print('unadmitted-module-rejected')
+else:
+    raise AssertionError('unadmitted import succeeded')
+"""
+    run = _build_and_run(tmp_path, source, "import_call_binding_errors")
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert run.stdout.splitlines() == [
+        "builtin-missing",
+        "builtin-excess",
+        "builtin-duplicate",
+        "builtin-keyword",
+        "module-missing",
+        "module-excess",
+        "module-duplicate",
+        "module-keyword",
+        "find-spec-missing",
+        "builtin-excess,builtin-duplicate,builtin-keyword,"
+        "module-excess,module-duplicate,module-keyword",
+        "True",
+        "expanded-keyword-error True",
+        "True",
+        "unadmitted-module-rejected",
+    ]
 
 
 def test_native_importlib_import_module_literal_respects_rebinding(
@@ -3371,39 +3442,23 @@ def test_native_abc_register_realistic_iterator_abc_shape(tmp_path: Path) -> Non
     assert run.stdout.strip() == "ok"
 
 
-def test_native_safe_intrinsic_helper_with_tuple_subclass(tmp_path: Path) -> None:
+def test_native_required_sys_intrinsics_with_tuple_subclass(tmp_path: Path) -> None:
     run = _build_and_run(
         tmp_path,
         (
             "from _intrinsics import require_intrinsic as _require_intrinsic\n"
-            "def _return_version_info_default():\n"
-            "    return (3, 12, 0, 'final', 0)\n"
-            "def _return_empty_str():\n"
-            "    return ''\n"
-            "def _return_hexversion_default():\n"
-            "    return 0x030C00F0\n"
-            "def _safe_intrinsic(name, default=None, _ri=_require_intrinsic):\n"
-            "    try:\n"
-            "        fn = _ri(name)\n"
-            "        if callable(fn):\n"
-            "            return fn\n"
-            "    except (RuntimeError, TypeError):\n"
-            "        pass\n"
-            "    if default is not None:\n"
-            "        return default\n"
-            "    return lambda *_a, **_k: None\n"
             "class version_info(tuple):\n"
             "    def __new__(cls, values):\n"
             "        return tuple.__new__(cls, values)\n"
             "_VersionInfoTuple = version_info\n"
-            "_MOLT_SYS_VERSION = _safe_intrinsic('molt_sys_version', _return_empty_str)\n"
-            "_MOLT_SYS_VERSION_INFO = _safe_intrinsic('molt_sys_version_info', _return_version_info_default)\n"
-            "_MOLT_SYS_HEXVERSION = _safe_intrinsic('molt_sys_hexversion', _return_hexversion_default)\n"
+            "_MOLT_SYS_VERSION = _require_intrinsic('molt_sys_version')\n"
+            "_MOLT_SYS_VERSION_INFO = _require_intrinsic('molt_sys_version_info')\n"
+            "_MOLT_SYS_HEXVERSION = _require_intrinsic('molt_sys_hexversion')\n"
             "def f():\n"
             "    g = globals()\n"
-            "    version_text = _MOLT_SYS_VERSION() or '3.12.0 (molt)'\n"
-            "    version_values = _MOLT_SYS_VERSION_INFO() or (3, 12, 0, 'final', 0)\n"
-            "    hexversion_value = _MOLT_SYS_HEXVERSION() or 0x030C00F0\n"
+            "    version_text = _MOLT_SYS_VERSION()\n"
+            "    version_values = _MOLT_SYS_VERSION_INFO()\n"
+            "    hexversion_value = _MOLT_SYS_HEXVERSION()\n"
             "    g['_raw_version_info'] = version_values\n"
             "    g['version_info'] = _VersionInfoTuple(version_values)\n"
             "    print(version_text)\n"
@@ -3412,7 +3467,7 @@ def test_native_safe_intrinsic_helper_with_tuple_subclass(tmp_path: Path) -> Non
             "    print(tuple(g['version_info']))\n"
             "f()\n"
         ),
-        "safe_intrinsic_shape",
+        "required_sys_intrinsic_shape",
     )
     assert run.returncode == 0, run.stdout + run.stderr
     lines = run.stdout.strip().splitlines()

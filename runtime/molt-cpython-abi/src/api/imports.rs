@@ -88,7 +88,11 @@ unsafe fn sys_modules_result() -> hooks::DecodedHandleResult {
         return hooks::DecodedHandleResult::Missing;
     };
     decode_borrowed_hook_result(unsafe {
-        (h.sys_get_object_borrowed)(b"modules".as_ptr(), b"modules".len())
+        (h.sys_get_object_borrowed)(
+            b"modules".as_ptr(),
+            b"modules".len(),
+            hooks::SysLookupPolicy::Propagate,
+        )
     })
 }
 

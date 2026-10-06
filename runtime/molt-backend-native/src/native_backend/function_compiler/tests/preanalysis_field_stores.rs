@@ -29,6 +29,7 @@ fn field_fixture(allocation_kind: &str, payload: Option<i64>, body: Vec<OpIR>) -
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     }
 }

@@ -622,6 +622,163 @@ fn unary_neg_without_result_range_proof_boxes_full_i64_before_runtime() {
 }
 
 #[test]
+fn binary_runtime_fallbacks_share_one_box_for_a_repeated_raw_operand() {
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let mut func = TirFunction::new(
+        "binary_owner".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let raw = func.fresh_value();
+    let result = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(const_int_def(raw, i64::MAX));
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Add,
+        operands: vec![raw, raw],
+        results: vec![result],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result],
+    };
+    let llvm_fn = lower_tir_to_llvm(&func, &backend);
+    backend.module.verify().expect("boxed binary fallback");
+    let ir = llvm_fn.print_to_string().to_string();
+    let call = "call i64 @molt_add(i64 %boxed_int, i64 %boxed_int)";
+    let release = "call void @molt_dec_ref_obj(i64 %binary_owner_bits)";
+    assert!(ir.contains(call), "both positions carry one box: {ir}");
+    assert_eq!(
+        ir.matches("call i64 @molt_int_from_i64(").count(),
+        1,
+        "{ir}"
+    );
+    assert_eq!(ir.matches(release).count(), 1, "{ir}");
+    assert!(
+        ir.find(call).unwrap() < ir.find(release).unwrap(),
+        "the runtime borrows the box before it is released: {ir}"
+    );
+}
+
+#[test]
+fn boolean_selection_owns_exactly_the_selected_operand() {
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let mut func = TirFunction::new(
+        "select_scalar".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let raw = func.fresh_value();
+    let result = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    let object = entry.args[0].id;
+    entry.ops.push(const_int_def(raw, i64::MAX));
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::Or,
+        operands: vec![raw, object],
+        results: vec![result],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result],
+    };
+    let llvm_fn = lower_tir_to_llvm(&func, &backend);
+    backend.module.verify().expect("scalar boolean selection");
+    let ir = llvm_fn.print_to_string().to_string();
+    let block_text = |prefix: &str| -> String {
+        let block = llvm_fn
+            .get_basic_blocks()
+            .into_iter()
+            .find(|block| block.get_name().to_str().unwrap().starts_with(prefix))
+            .unwrap_or_else(|| panic!("missing {prefix}: {ir}"));
+        let mut text = String::new();
+        let mut instruction = block.get_first_instruction();
+        while let Some(current) = instruction {
+            text.push_str(&current.print_to_string().to_string());
+            text.push('\n');
+            instruction = current.get_next_instruction();
+        }
+        text
+    };
+    assert!(
+        !ir.contains("@molt_is_truthy("),
+        "a raw integer's truthiness needs no runtime call: {ir}"
+    );
+    assert!(
+        block_text("bool_or_true").contains("label %box_int_inline"),
+        "only the edge that selects the raw integer boxes it: {ir}"
+    );
+    assert_eq!(
+        ir.matches("call i64 @molt_int_from_i64(").count(),
+        1,
+        "{ir}"
+    );
+    let object_edge = block_text("bool_or_false");
+    assert!(
+        object_edge.contains("call void @molt_inc_ref_obj(i64 %0)")
+            && !object_edge.contains("@molt_int_from_i64("),
+        "the selected object is retained and the unselected integer is not boxed: {ir}"
+    );
+    assert_eq!(
+        ir.matches("call void @molt_inc_ref_obj(").count(),
+        1,
+        "{ir}"
+    );
+    assert!(
+        !ir.contains("@molt_dec_ref_obj("),
+        "a minted box is the selected result's owner: {ir}"
+    );
+    assert!(ir.contains("%bool_or = phi i64"), "{ir}");
+}
+
+#[test]
+fn not_in_releases_the_owned_membership_result() {
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let mut func = TirFunction::new(
+        "not_in_owner".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::Bool,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let result = func.fresh_value();
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    let operands = entry.args.iter().map(|arg| arg.id).collect();
+    entry.ops.push(TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::NotIn,
+        operands,
+        results: vec![result],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![result],
+    };
+    let llvm_fn = lower_tir_to_llvm(&func, &backend);
+    backend.module.verify().expect("negated membership");
+    let ir = llvm_fn.print_to_string().to_string();
+    let contains = ir
+        .find("%molt_contains = call i64 @molt_contains(i64 %0, i64 %1)")
+        .unwrap_or_else(|| panic!("{ir}"));
+    let truthy = ir
+        .find("call i64 @molt_is_truthy(i64 %molt_contains)")
+        .unwrap_or_else(|| panic!("{ir}"));
+    let release = ir
+        .find("call void @molt_dec_ref_obj(i64 %molt_contains)")
+        .unwrap_or_else(|| panic!("only its truthiness escapes: {ir}"));
+    assert!(contains < truthy && truthy < release, "{ir}");
+}
+
+#[test]
 fn unary_proven_numeric_lanes_keep_raw_results() {
     for (opcode, operand, expected, result_repr) in [
         (OpCode::Neg, 42_i64, -42_i64, Some(crate::Repr::RawI64Safe)),

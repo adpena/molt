@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import ast
 from molt.frontend._mixin_base import GeneratorMixinBase
-from molt.compiler_analysis.python_call_arguments import call_argument_schedule
+from molt.compiler_analysis.python_call_arguments import (
+    call_argument_schedule,
+    call_form,
+)
 from molt.frontend._types import (
-    FormatParseState,
     MoltOp,
     MoltValue,
 )
@@ -128,15 +130,12 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
     def _emit_locals_dict(self) -> MoltValue:
         if self.current_func_name == "molt_main":
             return self._emit_globals_dict()
-        use_snapshot = self.target_python >= (3, 13)
-        if use_snapshot:
-            res = MoltValue(self.next_var(), type_hint="dict")
-            self.emit(MoltOp(kind="DICT_NEW", args=[], result=res))
-        else:
-            self._init_locals_cache()
-            if self.locals_cache_cell is None:
-                raise AssertionError("locals cache scratch cell was not initialized")
-            res = self._load_scratch_cell(self.locals_cache_cell)
+        # A function's locals() is its frame's: the runtime reads the executing
+        # frame's homes or task payload. Luau and Rust, which keep no runtime
+        # frame, build the dict from these (name, value) pairs, where an unbound
+        # name's value is the missing sentinel. `shared`: before PEP 667 an
+        # activation's locals() is one dict that each call refreshes.
+        pairs: list[MoltValue] = []
         public_names = set(self.scope_assigned)
         public_names.update(self.async_locals)
         public_names.update(self.parameter_bindings)
@@ -146,16 +145,7 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
                 continue
             key = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[name], result=key))
-            # Update the locals dict without emitting control-flow:
-            # - value is `__molt_missing__` => delete key if present
-            # - else => set key to value
-            self.emit(
-                MoltOp(
-                    kind="DICT_UPDATE_MISSING",
-                    args=[res, key, value],
-                    result=MoltValue("none"),
-                )
-            )
+            pairs.extend((key, value))
         for name in sorted(self.free_vars):
             if name in public_names:
                 continue
@@ -166,13 +156,16 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
             value = self._emit_cell_get(cell, type_hint=hint)
             key = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[name], result=key))
-            self.emit(
-                MoltOp(
-                    kind="DICT_UPDATE_MISSING",
-                    args=[res, key, value],
-                    result=MoltValue("none"),
-                )
+            pairs.extend((key, value))
+        res = MoltValue(self.next_var(), type_hint="dict")
+        self.emit(
+            MoltOp(
+                kind="FRAME_LOCALS",
+                args=pairs,
+                result=res,
+                metadata={"shared": self.target_python < (3, 13)},
             )
+        )
         return res
 
     def _emit_dataclasses_field_call(
@@ -319,8 +312,32 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
             or any(keyword.arg is None for keyword in node.keywords)
         ):
             raise AssertionError("pre-evaluated call requires flat argument syntax")
-        callargs = MoltValue(self.next_var(), type_hint="callargs")
-        self.emit(MoltOp(kind="CALLARGS_NEW", args=[], result=callargs))
+        if self._sema is None:
+            raise AssertionError("module sema must be populated before lowering calls")
+        # The runtime cannot tell CALL from CALL_FUNCTION_EX by the values it
+        # receives, and the two own their arguments differently while the
+        # callee binds them. The builder carries the compiler's choice.
+        form = call_form(node, module_imports=self._sema.import_names)
+
+        # The builder is CPython's value stack for this call and comes into
+        # existence at its first push. Operands still pending then (a named
+        # keyword group, a deferred sole ``*x``) are older than it, so
+        # exceptional cleanup, which releases newest first, unwinds the
+        # builder's keyword mapping before them, as CPython unwinds its kwargs
+        # dictionary before the operands beneath it.
+        def new_builder() -> MoltValue:
+            created = MoltValue(self.next_var(), type_hint="callargs")
+            self.emit(
+                MoltOp(
+                    kind="CALLARGS_NEW",
+                    args=[],
+                    result=created,
+                    metadata={"call_form": form},
+                )
+            )
+            return created
+
+        callargs: MoltValue | None = None
         pending: dict[int, MoltValue] = {}
         for step in call_argument_schedule(node):
             if step.action == "evaluate":
@@ -329,10 +346,11 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
                     continue
                 # Only values actually live across this suspension need storage.
                 # Consuming each scratch cell clears its retained frame reference.
+                # A builder not yet created has nothing to park.
                 suspends = self.is_async() and self._expr_may_yield(step.expression)
                 builder_cell = (
                     self._new_scratch_cell(callargs, type_hint="callargs")
-                    if suspends
+                    if suspends and callargs is not None
                     else None
                 )
                 cells = (
@@ -350,6 +368,7 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
                     )
                 if builder_cell is not None:
                     callargs = self._consume_scratch_cell(builder_cell)
+                if suspends:
                     pending = {
                         index: self._consume_scratch_cell(cell)
                         for index, cell in cells.items()
@@ -362,6 +381,8 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
                 # for mixed stars. The runtime tuple authority owns versioned
                 # length-hint callbacks and exact-tuple identity preservation.
                 value = self._emit_tuple_from_iter(value)
+            if callargs is None:
+                callargs = new_builder()
             args = [callargs, value]
             if step.action == "kw":
                 if step.name is None:
@@ -384,7 +405,7 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
             )
         if pending:
             raise AssertionError("call argument schedule left unconsumed values")
-        return callargs
+        return callargs if callargs is not None else new_builder()
 
     def _emit_tuple_from_iter(self, iterable: MoltValue) -> MoltValue:
         constructor = self._emit_builtin_type_value("tuple")
@@ -454,63 +475,6 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
         if node.args:
             return node.args[0]
         return kw_object
-
-    def _lower_string_format_call(
-        self, node: ast.Call, format_str: str
-    ) -> MoltValue | None:
-        if any(isinstance(arg, ast.Starred) for arg in node.args):
-            return None
-        kw_names: list[str] = []
-        for keyword in node.keywords:
-            if keyword.arg is None:
-                return None
-            kw_names.append(keyword.arg)
-        if len(set(kw_names)) != len(kw_names):
-            return None
-        cache_key = (format_str, len(node.args), tuple(sorted(kw_names)))
-        tokens = self.format_token_cache.get(cache_key)
-        if tokens is None:
-            state = FormatParseState()
-            try:
-                tokens = self._parse_format_tokens(
-                    format_str,
-                    len(node.args),
-                    set(kw_names),
-                    state,
-                )
-            except ValueError as exc:
-                err_val = self._emit_exception_new("ValueError", str(exc))
-                self.emit(
-                    MoltOp(kind="RAISE", args=[err_val], result=MoltValue("none"))
-                )
-                res = MoltValue(self.next_var(), type_hint="Any")
-                self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
-                return res
-            if tokens is None:
-                return None
-            self.format_token_cache[cache_key] = tokens
-        args: list[MoltValue] = []
-        for arg in node.args:
-            value = self.visit(arg)
-            if value is None:
-                raise FrontendRejection(
-                    Diagnostic.OPERAND_VALUE, "Unsupported format argument"
-                )
-            args.append(value)
-        kwargs: dict[str, MoltValue] = {}
-        for keyword in node.keywords:
-            value = self.visit(keyword.value)
-            if value is None:
-                raise FrontendRejection(
-                    Diagnostic.OPERAND_VALUE, "Unsupported format argument"
-                )
-            key = keyword.arg
-            if key is None:
-                raise FrontendRejection(
-                    Diagnostic.OPERAND_VALUE, "Unsupported format argument"
-                )
-            kwargs[key] = value
-        return self._emit_format_tokens(tokens, args, kwargs)
 
     def _emit_dynamic_call(self, node: ast.Call, callee: MoltValue) -> MoltValue:
         # The result authority already proves exactness at this source point.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import queue
+import threading
 
 import pytest
 
@@ -24,9 +25,15 @@ class _FakeProc:
 def _bare_client() -> BatchCompileServerClient:
     client = BatchCompileServerClient.__new__(BatchCompileServerClient)
     client._proc = _FakeProc()
+    client._request_lock = threading.Lock()
     client._next_id = 1
     client._poisoned = False
     client._response_queue = queue.Queue()
+    client.child_process = (
+        batch_compile_client.harness_memory_guard.memory_guard.GuardedChildProcess(
+            11, 11, 11, ("fixture",), "fixture", 1000
+        )
+    )
     return client
 
 
@@ -69,6 +76,35 @@ def test_batch_compile_client_readline_timeout_is_bounded() -> None:
         client._readline(0.01)
 
 
+def test_batch_request_custody_is_immutable_across_responses_and_errors(monkeypatch):
+    client = _bare_client()
+    times = iter((100, 200, 300))
+    monkeypatch.setattr(batch_compile_client.time, "monotonic_ns", lambda: next(times))
+    replies = iter(
+        (
+            '{"id": 1, "ok": true, "returncode": 0}',
+            '{"id": 2, "ok": false, "returncode": 5}',
+        )
+    )
+    monkeypatch.setattr(client, "_readline", lambda timeout: next(replies))
+    first = client.request("build", timeout=1)
+    second = client.request("build", timeout=1)
+    assert first.custody.request_started_at_ns == 100
+    assert second.custody.request_started_at_ns == 200
+    assert first.custody.returncode == 0
+    assert second.custody.returncode == 5
+
+    def closed(timeout):
+        raise RuntimeError("server died before response")
+
+    monkeypatch.setattr(client, "_readline", closed)
+    with pytest.raises(RuntimeError) as error:
+        client.request("build", timeout=1)
+    assert error.value.batch_request_custody.request_started_at_ns == 300
+    assert error.value.batch_request_custody.child_process.started_at_ns == 1000
+    assert first.custody.request_started_at_ns == 100
+
+
 def test_batch_compile_client_owns_guard_context_by_default(
     monkeypatch,
     tmp_path,
@@ -105,6 +141,7 @@ def test_batch_compile_client_owns_guard_context_by_default(
     class FakeProc:
         def __init__(self, *args, **kwargs) -> None:
             events.append(("popen_kwargs", kwargs))
+            self.pid = 12345
             self.stdin = io.StringIO()
             self.stdout = io.StringIO("")
             self.stderr = io.StringIO("")
@@ -124,6 +161,13 @@ def test_batch_compile_client_owns_guard_context_by_default(
         fake_from_env,
     )
     monkeypatch.setattr(batch_compile_client.subprocess, "Popen", FakeProc)
+    guard = batch_compile_client.harness_memory_guard.memory_guard
+    monkeypatch.setattr(guard._process_model, "process_started_at_ns", lambda pid: 1000)
+    monkeypatch.setattr(
+        guard, "windows_process_handle_started_at_ns", lambda handle: 1000
+    )
+    monkeypatch.setattr(guard, "_safe_getpgid", lambda pid: pid)
+    monkeypatch.setattr(guard, "_safe_getsid", lambda pid: pid)
 
     client = BatchCompileServerClient(
         ["molt", "internal-batch-build-server"],

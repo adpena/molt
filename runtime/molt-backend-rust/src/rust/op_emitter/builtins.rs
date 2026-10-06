@@ -2,6 +2,21 @@ use super::*;
 
 impl RustBackend {
     pub(super) fn emit_op_builtin_func(&mut self, op: &OpIR) {
+        if op
+            .builtin_name
+            .as_deref()
+            .and_then(molt_ir::python_builtin_callables_generated::python_builtin_callable)
+            .is_some()
+        {
+            // compile_checked already rejects builtin_func through the shared
+            // FALLIBLE_PROTOCOL capability. Keep private emission honest too:
+            // a fixed Arc function cannot substitute a captured public binding.
+            self.emit_unsupported_op(
+                op,
+                "public builtin lookup requires captured namespace and mapping exception custody",
+            );
+            return;
+        }
         let out = || out_var(op);
         let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
             if hoisted.contains(out_name) {
@@ -47,24 +62,6 @@ impl RustBackend {
             &format!("molt_len(&{a})"),
             &self.hoisted_vars.clone(),
         ));
-    }
-
-    pub(super) fn emit_op_int(&mut self, op: &OpIR) {
-        self.emit_unsupported_op(op, "int() requires arbitrary-precision integer storage");
-    }
-
-    pub(super) fn emit_op_int_from_obj(&mut self, op: &OpIR) {
-        self.emit_unsupported_op(
-            op,
-            "object-to-int conversion requires arbitrary-precision integer storage",
-        );
-    }
-
-    pub(super) fn emit_op_int_from_str_of_obj(&mut self, op: &OpIR) {
-        self.emit_unsupported_op(
-            op,
-            "string-to-int conversion requires arbitrary-precision integer storage",
-        );
     }
 
     pub(super) fn emit_op_float(&mut self, op: &OpIR) {
@@ -465,19 +462,12 @@ impl RustBackend {
                 .unwrap_or("__unknown__");
             if is_assignable_var(&obj) {
                 self.emit_line(&format!(
-                            "molt_set_attr_name(&mut {obj}, MoltValue::Str({attr_lit}.to_string()), {value});",
-                            attr_lit = rust_string_literal(attr)
-                        ));
+                    "molt_set_attr_name(&mut {obj}, MoltValue::Str({attr_lit}.into()), {value});",
+                    attr_lit = rust_string_literal(attr)
+                ));
                 self.emit_alias_writeback(&obj);
             }
         }
-    }
-
-    pub(super) fn emit_op_enumerate(&mut self, op: &OpIR) {
-        self.emit_unsupported_op(
-            op,
-            "enumerate() requires arbitrary-precision integer index storage",
-        );
     }
 
     pub(super) fn emit_op_zip(&mut self, op: &OpIR) {
@@ -537,13 +527,6 @@ impl RustBackend {
         ));
     }
 
-    pub(super) fn emit_op_sum(&mut self, op: &OpIR) {
-        self.emit_unsupported_op(
-            op,
-            "sum() requires arbitrary-precision integer accumulation",
-        );
-    }
-
     pub(super) fn emit_op_any(&mut self, op: &OpIR) {
         let out = || out_var(op);
         let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {
@@ -580,9 +563,5 @@ impl RustBackend {
             &format!("MoltValue::Bool(molt_all(&{a}))"),
             &self.hoisted_vars.clone(),
         ));
-    }
-
-    pub(super) fn emit_op_range(&mut self, op: &OpIR) {
-        self.emit_unsupported_op(op, "range() requires arbitrary-precision integer storage");
     }
 }

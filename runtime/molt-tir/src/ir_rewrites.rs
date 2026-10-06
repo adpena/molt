@@ -545,14 +545,20 @@ mod tests {
             "borrow",
             "unknown_alias",
         ] {
+            let reads = if matches!(kind, "guard_tag" | "guard_type") {
+                args(&["source", "expected_tag"])
+            } else {
+                args(&["source"])
+            };
             let mut ops = vec![OpIR {
                 kind: kind.into(),
-                args: Some(args(&["source"])),
+                args: Some(reads.clone()),
                 out: Some(name("alias")),
                 ..OpIR::default()
             }];
             rewrite_copy_aliases(&mut ops);
             assert_eq!(ops[0].kind, kind);
+            assert_eq!(ops[0].args.as_ref(), Some(&reads));
         }
         for kind in ["copy", "copy_var", "load_var", "identity_alias"] {
             for source_args in [None, Some(vec![]), Some(args(&["a", "b"]))] {

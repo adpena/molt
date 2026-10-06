@@ -77,7 +77,7 @@ fn descriptor_invocation_keeps_tagged_owner_without_pointer_roundtrip() {
             echo_descriptor_owner as *const (),
             3,
         );
-        let class = test_class_bits(py, b"OwnerEchoDescriptor", &[(b"__get__", getter)]);
+        let class = test_class_bits(py, b"OwnerEchoDescriptor", &[], &[(b"__get__", getter)]);
         let descriptor =
             unsafe { crate::alloc_instance_for_class(py, obj_from_bits(class).as_ptr().unwrap()) };
         for owner in [
@@ -140,7 +140,14 @@ fn wrapper_descriptors_have_real_flavor_identity_and_shared_metadata() {
                 let key = string_bits(py, attribute);
                 let value = crate::molt_get_attr_name(descriptor, key);
                 assert!(!exception_pending(py));
-                assert!(obj_eq(py, obj_from_bits(value), obj_from_bits(expected)));
+                assert!(matches!(
+                    crate::object::ops_compare::compare_object_eq_bool(
+                        py,
+                        obj_from_bits(value),
+                        obj_from_bits(expected),
+                    ),
+                    crate::object::ops_compare::CompareBoolOutcome::True
+                ));
                 dec_ref_bits(py, value);
                 dec_ref_bits(py, key);
             }

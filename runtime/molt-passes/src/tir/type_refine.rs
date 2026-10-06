@@ -235,14 +235,14 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                         //
                         //  1. Object allocation `_type_hint` — structural class
                         //     identity minted by the allocator itself.
-                        //  2. Call/CallMethod/CallBuiltin `return_type` — the
+                        //  2. Call/CallMethod `return_type` — the
                         //     frontend's structural return type. (Legacy
                         //     `_type_hint` is semantic transport metadata and must
                         //     NOT refine representation, so it is ignored.)
-                        //  3. CallBuiltin `name` for structural builtin return
-                        //     types (`len`, predicates, `ord`, `chr`).
+                        //  3. Public builtin lookup has no name-derived
+                        //     result proof; arbitrary replacements stay dynamic.
                         //  4. TypeGuard's proven type.
-                        //  5. A `Copy`-spelled fresh value (the SSA converter's
+                        //  5. A `Copy`-spelled owned value (the SSA converter's
                         //     fallback for ops without a dedicated OpCode). Two
                         //     classifier-backed cases, in priority order:
                         //     (a) RAW-CARRIER scalar conversions
@@ -251,9 +251,9 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                         //         by the CONVERSION — operand-0 propagation here is
                         //         the round-8 repr miscompile (`int(t)`, t: float,
                         //         typed F64 → def_var repr mismatch).
-                        //     (b) other fresh-value-minting kinds
-                        //         (`copy_kind_mints_fresh_owned_ref`) pin their
-                        //         intrinsic type (`fresh_value_kind_result_type`) —
+                        //     (b) other owned-result kinds
+                        //         (`copy_kind_mints_owned_value`) pin their
+                        //         intrinsic type (`owned_value_kind_result_type`) —
                         //         the #45 fix (`complex_from_obj` typed F64 from its
                         //         real-part operand routed float+complex down the
                         //         unboxed fadd path).

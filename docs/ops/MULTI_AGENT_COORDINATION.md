@@ -2,7 +2,7 @@
 
 Status: active
 Owner: tooling + tests + release
-Last updated: 2026-06-22
+Last updated: 2026-10-02
 
 ## Purpose
 
@@ -116,10 +116,16 @@ uv run --python 3.12 python tools/agent_coordination.py proof-plan
   records, subprocess failures, and unhealthy proof audit results appear in
   `errors` and make the command exit nonzero; unavailable data is never rendered
   as a healthy zero. The summarized proof section includes the full-detail
-  audit command when deeper evidence is needed.
-- `scan` lists current task records and any broad-lane collisions.
-- `check` returns nonzero when two active broad-sweep coordinators claim the
-  same proof lane on the same shared target root.
+  audit command when deeper evidence is needed. Pending ownership requests show
+  their requester, owner task, exact requested paths, task/request status, record
+  path, and timestamps in both text and JSON. Active JSON records also include
+  granted `owned_paths` and resolved request state.
+- `scan` shows pending ownership requests before listing all task records,
+  including historical canonical records, and any broad-lane collisions. Its JSON
+  shares the same `pending_ownership_requests` projection as `context`.
+- `check` returns nonzero for any invalid canonical record, or when two active
+  broad-sweep coordinators claim the same proof lane on the same shared target
+  root. A rejected record cannot make an unsafe coordination check green.
 - `proof-plan [paths...]` recommends focused proof lanes from explicit paths or
   from current `git status` when paths are omitted. Run it before long proof
   work so agents pick targeted differential, conformance, backend, or custody
@@ -154,6 +160,56 @@ reviewers. Use `init --agent --role --lane --owned` and update the resulting
 record when scope changes or the worker finishes. A reviewer has no owned write
 paths. Keep the agreed registry root and actual source checkout explicit in the
 parent record; `scan` reads the selected repository's records, not agent chat.
+
+The registry consists only of `logs/agents/<task>/coordination.json`, where
+`<task>` is one directory name and the record's `task` field matches it exactly.
+`init` rejects nested task names and nonportable or aliased directory names
+using the shared portable-path grammar; it never strips or rewrites task identity.
+Files below that directory, including copied
+`coordination.json` files in evidence, archives, base trees, or donor trees, are
+preserved material and never register another worker. Discovery does not depend
+on archive directory names or renaming evidence files. Malformed JSON, missing
+task IDs, and mismatched IDs at canonical locations remain visible as invalid
+records and make context health fail. Only admitted canonical records contribute
+active workers, pending requests, and proof-lane collisions.
+
+If a worker is explicitly waiting for an ownership decision, put the request in
+that worker's existing `coordination.json`. For a new task:
+
+```bash
+uv run --python 3.12 python tools/agent_coordination.py init llvm-worker \
+  --agent llvm-delegate --role implementer --status blocked \
+  --request-owner integration --requested src/molt/verified_subset.py \
+  --requested tools/verified_subset.py
+```
+
+`--request-owner` names the coordination task responsible for assigning scope;
+each `--requested` path is repository-relative. These options write one
+`ownership_request` object with `owner`, `requested_paths`, `status: "pending"`,
+and `requested_at_utc`, a UTC timestamp with `Z` or an explicit zero offset.
+They do not add paths to `owned_paths`. For an existing
+task, update that object and `updated_at_utc` in the existing record instead of
+reinitializing its scaffold. Markdown can explain the request, but the JSON
+fields are the discovery authority for its owner, scope, and current state.
+
+The owner resolves the request by changing its status to `acknowledged`,
+`declined`, or `withdrawn`, recording the decision in the task's evidence, and
+updating the task status, timestamp, and granted `owned_paths` as appropriate.
+Acknowledgment does not automatically grant paths or start a proof lane. A new
+scope request replaces the resolved request with a new pending timestamp; retain
+the prior decision in the existing progress log or report.
+
+Only explicit pending requests on `running`, `paused`, or `blocked` tasks appear
+in the pending section. Historical blocked records with no request, resolved
+requests, and terminal task records do not become pending actions. An old
+explicit pending request remains visible until resolved; its recorded timestamps
+show its age without treating age as cancellation. Malformed request fields make
+the record visibly invalid rather than silently dropping its request.
+
+Each query observes the selected registry at query time. A context captured
+before registration cannot include the later request; query again at handoff or
+before assigning the next scope. These tools do not poll, notify another chat,
+guarantee delivery, or establish a source lock.
 
 `check` detects broad proof-lane collisions; it does not lock source files or
 merge dirty worktrees. The integrator must enforce disjoint write scopes and

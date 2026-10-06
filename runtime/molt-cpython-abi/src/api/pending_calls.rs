@@ -325,8 +325,12 @@ pub fn register_main_thread(owner: std::thread::ThreadId) -> bool {
     !has_pending_calls() && PENDING_CALL_ADMISSION.reopen()
 }
 
+/// The thread registered as process main by the winning runtime
+/// initialization (CPython `_Py_IsMainThread`). The one identity for both
+/// pending-call execution and Python signal-handler dispatch
+/// (`molt-runtime` `builtins::signal_ext::signal_owner_thread`).
 #[inline]
-fn current_thread_is_main() -> bool {
+pub fn current_thread_is_main() -> bool {
     #[cfg(feature = "runtime-test-support")]
     {
         MAIN_THREAD
@@ -603,12 +607,20 @@ pub unsafe extern "C" fn Py_AddPendingCall(func: Option<PendingCallFn>, arg: *mu
     let Some(_publisher) = PENDING_CALL_ADMISSION.enter() else {
         return -1;
     };
-    PENDING_CALLS
+    if PENDING_CALLS
         .push(PendingCall {
             func,
             arg: arg as usize,
         })
-        .map_or(-1, |()| 0)
+        .is_err()
+    {
+        return -1;
+    }
+    // The ring is the readiness authority. Publish before notifying, with no
+    // queue/runtime lock or GIL held. Keep the lifecycle admission lease until
+    // notification ends so teardown cannot retire this publisher's runtime.
+    unsafe { (crate::hooks::hooks_or_stubs().notify_pending_calls)() };
+    0
 }
 
 /// Run a bounded pending-call pass when invoked with normal CPython custody.

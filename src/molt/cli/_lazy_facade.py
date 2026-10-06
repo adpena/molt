@@ -117,10 +117,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
         "backend_execution",
         "_backend_codegen_env_inputs_cached",
     ),
-    "_backend_daemon_binary_is_newer": (
-        "backend_execution",
-        "_backend_daemon_binary_is_newer",
-    ),
     "_backend_daemon_command_has_socket": (
         "backend_execution",
         "_backend_daemon_command_has_socket",
@@ -145,10 +141,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
     "_backend_daemon_enabled_cached": (
         "backend_daemon_config",
         "_backend_daemon_enabled_cached",
-    ),
-    "_backend_daemon_freshness_inputs": (
-        "backend_execution",
-        "_backend_daemon_freshness_inputs",
     ),
     "_backend_daemon_health_from_response": (
         "backend_execution",
@@ -414,7 +406,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
         "wrapper_build",
         "_parse_wrapper_build_contract_payload",
     ),
-    "_path_freshness_fingerprint": ("backend_execution", "_path_freshness_fingerprint"),
     "_persist_validate_summary": ("toolchain_validation", "_persist_validate_summary"),
     "_pid_alive": ("backend_execution", "_pid_alive"),
     "_planned_update_steps": ("toolchain_validation", "_planned_update_steps"),
@@ -517,10 +508,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
         "runtime_callable_symbols",
         "_runtime_callable_symbols_file",
     ),
-    "_runtime_lib_freshness_candidates": (
-        "backend_execution",
-        "_runtime_lib_freshness_candidates",
-    ),
     "_rustup_setup_advice": ("setup_readiness", "_rustup_setup_advice"),
     "_shared_cache_lock": ("backend_cache", "_shared_cache_lock"),
     "_shared_cache_lock_dir_cached": ("backend_cache", "_shared_cache_lock_dir_cached"),
@@ -564,10 +551,6 @@ _LAZY_REEXPORTS: dict[str, tuple[str, str | None]] = {
         "_short_backend_daemon_socket_dir",
     ),
     "_smoke_probe_native_binary": ("native_binary", "_smoke_probe_native_binary"),
-    "_source_tree_freshness_fingerprint": (
-        "backend_execution",
-        "_source_tree_freshness_fingerprint",
-    ),
     "_split_backend_daemon_command": (
         "backend_execution",
         "_split_backend_daemon_command",

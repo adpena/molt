@@ -1,4 +1,3 @@
-use super::blocking::blocking_waiter_id;
 use super::*;
 
 #[cfg(molt_has_net_io)]
@@ -709,7 +708,9 @@ fn interest_from_events(events: u32) -> Interest {
     interest.unwrap_or(Interest::READABLE)
 }
 
+#[cfg(test)]
 mod tests {
+    use super::super::blocking::blocking_waiter_id;
     use super::*;
 
     fn slot(addr: usize) -> PtrSlot {

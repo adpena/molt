@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::time::Instant;
 
 use std::borrow::Cow;
 use wasm_encoder::{CustomSection, RawSection, TagKind, TagSection, TagType};
@@ -11,10 +10,11 @@ use crate::wasm_abi::TAG_EXCEPTION_FUNC_TYPE;
 use crate::wasm_binary::{add_reloc_sections, strip_unused_imports, validate_wasm_sections};
 use crate::wasm_options::WasmProfile;
 use crate::wasm_plan::{
-    emit_wasm_numeric_lane_audit, emit_wasm_stage_audit, simple_ir_stage_shape,
+    WasmStageAudit, emit_wasm_numeric_lane_audit, emit_wasm_stage_audit, simple_ir_stage_shape,
 };
 
 pub(super) struct WasmModuleFinalizationInput<'a> {
+    pub(super) stage_audit: WasmStageAudit,
     pub(super) functions: &'a [FunctionIR],
     pub(super) callable_table_elements: WasmCallableTableElements,
     pub(super) reloc_enabled: bool,
@@ -26,6 +26,7 @@ impl WasmBackend {
         input: WasmModuleFinalizationInput<'_>,
     ) -> WasmCompileOutput {
         let WasmModuleFinalizationInput {
+            stage_audit,
             functions,
             callable_table_elements,
             reloc_enabled,
@@ -33,7 +34,7 @@ impl WasmBackend {
 
         self.emit_linear_memory_surface();
         self.emit_import_audit();
-        emit_wasm_numeric_lane_audit(self.numeric_lane_stats);
+        emit_wasm_numeric_lane_audit(stage_audit, self.numeric_lane_stats);
         self.append_ordered_sections(&callable_table_elements);
 
         let unused_imports = if self.options.wasm_profile != WasmProfile::Full {
@@ -42,18 +43,20 @@ impl WasmBackend {
             BTreeSet::new()
         };
         let diagnostics = self.compile_diagnostics();
-        let module_finish_start = Instant::now();
+        let module_finish_start = stage_audit.start();
         let mut bytes = self.module.finish();
         emit_wasm_stage_audit(
+            stage_audit,
             "after-module-finish",
-            simple_ir_stage_shape(functions),
+            || simple_ir_stage_shape(functions),
             Some(bytes.len()),
             None,
             None,
-            Some(module_finish_start.elapsed().as_millis()),
+            || module_finish_start.map(|start| start.elapsed().as_millis()),
         );
 
-        bytes = Self::strip_unused_imports_if_enabled(bytes, functions, unused_imports);
+        bytes =
+            Self::strip_unused_imports_if_enabled(bytes, functions, unused_imports, stage_audit);
         if reloc_enabled {
             bytes = add_reloc_sections(
                 bytes,
@@ -110,7 +113,7 @@ impl WasmBackend {
             "exception_last",
             "exception_last_pending",
             "exception_stack_clear",
-            "exception_set_cause",
+            "exception_prepare_raise",
             "exception_set_value",
             "exception_context_set",
             "exception_set_last",
@@ -212,6 +215,7 @@ impl WasmBackend {
         mut bytes: Vec<u8>,
         functions: &[FunctionIR],
         unused: BTreeSet<String>,
+        stage_audit: WasmStageAudit,
     ) -> Vec<u8> {
         if unused.is_empty() {
             return bytes;
@@ -219,22 +223,24 @@ impl WasmBackend {
 
         let before_len = bytes.len();
         emit_wasm_stage_audit(
+            stage_audit,
             "before-strip-unused-imports",
-            simple_ir_stage_shape(functions),
+            || simple_ir_stage_shape(functions),
             Some(before_len),
             Some(unused.len()),
             None,
-            None,
+            || None,
         );
-        let strip_start = Instant::now();
+        let strip_start = stage_audit.start();
         let stripped = strip_unused_imports(bytes.clone(), &unused);
         emit_wasm_stage_audit(
+            stage_audit,
             "after-strip-unused-imports",
-            simple_ir_stage_shape(functions),
+            || simple_ir_stage_shape(functions),
             Some(stripped.len()),
             Some(unused.len()),
             None,
-            Some(strip_start.elapsed().as_millis()),
+            || strip_start.map(|start| start.elapsed().as_millis()),
         );
         if validate_wasm_sections(&stripped) {
             eprintln!(

@@ -701,6 +701,7 @@ class PatternMatchMixin(GeneratorMixinBase):
 
             for name in capture_names:
                 temp_val = self._load_scratch_cell(capture_map[name])
+                self._clear_import_binding_origin(name)
                 self._store_local_value(name, temp_val)
 
             if case.guard is not None:

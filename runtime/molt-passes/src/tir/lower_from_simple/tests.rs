@@ -17,6 +17,7 @@ fn make_func(name: &str, params: &[&str], ops: Vec<OpIR>) -> FunctionIR {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     }
 }
@@ -413,6 +414,7 @@ fn transport_hints_do_not_seed_canonical_types() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -639,6 +641,7 @@ fn param_types_from_annotation() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -684,6 +687,7 @@ fn compound_param_types_from_annotation() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -714,6 +718,7 @@ fn abi_i64_param_type_is_not_a_semantic_int_fact() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -742,6 +747,7 @@ fn exception_region_drop_marker_round_trips_without_full_drop_gate() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -812,4 +818,67 @@ fn codegen_partition_survives_tir_artifact_roundtrip() {
             crate::ir::ExecutionContextPolicy::None
         );
     }
+}
+
+// Entry custody is a typed wire fact. The lift projects it for the ownership
+// passes, the TIR artifact cache keeps it, and a declaration with no body
+// answers it from its signature.
+#[test]
+fn parameter_custody_survives_tir_artifact_roundtrip() {
+    use crate::ir::ParameterCustody::{Borrowed, Transferred};
+    let mut body = make_func("owns_second", &["first", "second"], vec![op("ret_void")]);
+    body.parameter_custody = vec![Borrowed, Transferred];
+    let mut declaration = body.clone();
+    declaration.ops.clear();
+    declaration.is_extern = true;
+    for source in [&body, &declaration] {
+        let tir = lower_to_tir(source);
+        assert_eq!(
+            [tir.parameter_custody(0), tir.parameter_custody(1)],
+            [Borrowed, Transferred],
+            "{}",
+            source.name
+        );
+        assert_eq!(
+            tir.attrs.get(crate::tir::function::PARAMETER_CUSTODY_ATTR),
+            Some(&crate::tir::ops::AttrValue::Bytes(vec![0, 1])),
+            "custody uses its canonical borrowed/transferred byte encoding"
+        );
+        let bytes = crate::tir::serialize::serialize_tir_function(&tir).unwrap();
+        let restored = crate::tir::serialize::deserialize_tir_function(&bytes);
+        if source.is_extern {
+            assert!(tir.blocks.is_empty(), "a declaration must remain bodyless");
+            assert!(
+                restored.is_none(),
+                "the executable TIR cache must reject a declaration without an entry block"
+            );
+        } else {
+            crate::tir::verify::verify_function(&tir).expect("the executable body must verify");
+            let restored = restored.expect("the executable body must survive the cache");
+            assert_eq!(
+                [restored.parameter_custody(0), restored.parameter_custody(1)],
+                [Borrowed, Transferred]
+            );
+            assert_eq!(
+                crate::tir::serialize::serialize_tir_function(&restored).unwrap(),
+                bytes,
+                "the custody-bearing body must retain its canonical artifact"
+            );
+        }
+    }
+    let mut borrowed_source = make_func("borrows", &["only"], vec![op("ret_void")]);
+    let borrowed = lower_to_tir(&borrowed_source);
+    borrowed_source.parameter_custody = vec![Borrowed];
+    let explicit_borrowed = lower_to_tir(&borrowed_source);
+    assert_eq!(
+        crate::tir::serialize::serialize_tir_function(&borrowed).unwrap(),
+        crate::tir::serialize::serialize_tir_function(&explicit_borrowed).unwrap(),
+        "implicit and explicit all-borrowed custody have one artifact encoding"
+    );
+    assert_eq!(borrowed.parameter_custody(0), Borrowed);
+    assert!(
+        !borrowed
+            .attrs
+            .contains_key(crate::tir::function::PARAMETER_CUSTODY_ATTR)
+    );
 }

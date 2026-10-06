@@ -4,19 +4,37 @@ import hashlib
 import json
 import os
 import shutil
-from dataclasses import dataclass
+from contextlib import ExitStack
+from dataclasses import dataclass, replace
+from functools import cached_property
+from collections.abc import Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from molt.cli.atomic_io import _atomic_write_bytes, _atomic_write_json
-from molt.file_publication import durable_replace, staged_file_path
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity
-from molt.exact_json import read_exact, string_keyed_mapping
-from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
+from molt.cli.atomic_io import _atomic_write_json
+from molt.file_publication import atomic_write_bytes, durable_replace, staged_file_path
+from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
+from molt.exact_json import (
+    capture_exact,
+    canonical_json_sha256,
+    read_exact,
+    string_keyed_mapping,
+)
+from molt.cli.runtime_identity_schema import (
+    RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+    _freeze_json,
+    _frozen_json_projection,
+)
 from molt.toolchain_identity import (
     StableRegularFileIdentity,
     open_stable_regular_file,
-    stable_regular_file_identity,
+    stable_regular_file_handle_identity,
+    verify_stable_regular_file_content,
+    verify_stable_regular_file_identity,
 )
+
+if TYPE_CHECKING:
+    from molt.wasm_artifact import WasmRuntimeFacts
 
 
 _RUNTIME_WASM_GENERATION_SCHEMA = "molt.runtime-wasm-generation.v3"
@@ -36,7 +54,114 @@ class RuntimeWasmGeneration:
     reloc_identity: RuntimeBuildIdentity
     shared_member_identity: StableRegularFileIdentity
     reloc_member_identity: StableRegularFileIdentity
-    payload: dict[str, object]
+    payload: Mapping[str, object]
+    receipt_identity: StableRegularFileIdentity | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload", _freeze_json(self.payload))
+
+    def verify_members(self, *, hash_content: bool = False) -> None:
+        for path, member in (
+            (self.shared, self.shared_member_identity),
+            (self.reloc, self.reloc_member_identity),
+        ):
+            if path.absolute() != member.path:
+                raise ValueError("runtime WASM member observation changed path")
+            verify_stable_regular_file_identity(
+                member, label="runtime WASM member", hash_content=hash_content
+            )
+
+    @cached_property
+    def _shared_facts(self) -> WasmRuntimeFacts:
+        from molt.wasm_artifact import read_wasm_runtime_facts
+
+        return read_wasm_runtime_facts(self.shared_member_identity, relocatable=False)
+
+    @cached_property
+    def _reloc_facts(self) -> WasmRuntimeFacts:
+        from molt.wasm_artifact import read_wasm_runtime_facts
+
+        return read_wasm_runtime_facts(self.reloc_member_identity, relocatable=True)
+
+    def facts(self, *, relocatable: bool = False) -> WasmRuntimeFacts:
+        # Parse only the selected member. Pair/binding admission may hash both
+        # members, but split layout does not parse the reloc module's sections.
+        self.verify_members()
+        key = "_reloc_facts" if relocatable else "_shared_facts"
+        member = (
+            self.reloc_member_identity if relocatable else self.shared_member_identity
+        )
+        if key in self.__dict__:
+            verify_stable_regular_file_identity(
+                member, label="runtime WASM cached facts", hash_content=True
+            )
+        facts = self._reloc_facts if relocatable else self._shared_facts
+        self.verify_members()
+        return facts
+
+    @cached_property
+    def _linking_obligations(self) -> dict[tuple[str, str], bool]:
+        return {}
+
+    def linking_names(self, expected_kinds: Mapping[str, str]) -> frozenset[str]:
+        from molt.wasm_linking_symbols import wasm_linking_defined_names
+
+        self.verify_members()
+        previous = self._linking_obligations
+        missing = {
+            name: kind
+            for name, kind in expected_kinds.items()
+            if (name, kind) not in previous
+        }
+        if missing:
+            available = wasm_linking_defined_names(
+                self.reloc, missing, observed=self.reloc_member_identity
+            )
+            previous.update(
+                ((name, kind), name in available) for name, kind in missing.items()
+            )
+        elif expected_kinds:
+            verify_stable_regular_file_identity(
+                self.reloc_member_identity,
+                label="runtime WASM cached linking symbols",
+                hash_content=True,
+            )
+        self.verify_members()
+        return frozenset(
+            name for name, kind in expected_kinds.items() if previous[(name, kind)]
+        )
+
+    @cached_property
+    def _structurally_validated(self) -> bool:
+        from molt.cli.runtime_wasm_validation import _validate_wasm_structural
+
+        for member in (self.shared_member_identity, self.reloc_member_identity):
+            with open_stable_regular_file(
+                member.path, label="runtime WASM structural input", observed=member
+            ) as opened:
+                current = stable_regular_file_handle_identity(
+                    opened, label="runtime WASM structural input"
+                )
+                verify_stable_regular_file_content(
+                    member,
+                    sha256=current.sha256,
+                    size=current.size,
+                    label="runtime WASM structural input",
+                )
+                error = _validate_wasm_structural(member.path)
+            if error is not None:
+                raise ValueError(error)
+        return True
+
+    def validate_structure(self) -> None:
+        self.verify_members()
+        if "_structurally_validated" in self.__dict__:
+            for member in (self.shared_member_identity, self.reloc_member_identity):
+                verify_stable_regular_file_identity(
+                    member, label="runtime WASM cached structure", hash_content=True
+                )
+        if not self._structurally_validated:
+            raise ValueError("runtime WASM lacks structural admission")
 
 
 @dataclass(frozen=True)
@@ -45,6 +170,33 @@ class RuntimeWasmCodegenBinding:
 
     generation: RuntimeWasmGeneration
     required_exports: frozenset[str] | None
+
+    def verify(self) -> None:
+        self.generation.verify_members(hash_content=True)
+        receipt = self.generation.receipt_identity
+        if receipt is None or receipt.path != self.generation.manifest.absolute():
+            raise ValueError(
+                "runtime WASM binding lacks its pinned receipt observation"
+            )
+        verify_stable_regular_file_identity(
+            receipt, label="pinned runtime WASM receipt", hash_content=True
+        )
+
+    @property
+    def semantic_digest(self) -> str:
+        """Bind app caches to admitted bytes, independently of source receipts.
+
+        The complete pair determines layout and callable addresses. Its build
+        provenance still crosses live admission on every reuse; it is not an
+        additional code-generation input when both members are byte-identical.
+        """
+        return canonical_json_sha256(
+            {
+                "schema": "molt.runtime-wasm-codegen.v1",
+                "shared": self.generation.shared_member_identity.sha256,
+                "reloc": self.generation.reloc_member_identity.sha256,
+            }
+        )
 
 
 def bind_runtime_wasm_codegen(
@@ -57,35 +209,71 @@ def bind_runtime_wasm_codegen(
     content-named snapshot, so another build can publish a different selection
     without redirecting this app's final admission or linker.
     """
-    data = (
-        json.dumps(generation.payload, sort_keys=True, indent=2, allow_nan=False) + "\n"
-    ).encode()
-    digest = hashlib.sha256(data).hexdigest()
-    manifest = generation.manifest.with_name(f"molt_runtime.{digest}.generation.json")
-    if manifest.exists():
-        if manifest.read_bytes() != data:
+    with ExitStack() as owned:
+        validated = _validate_generation_payload(
+            generation.manifest,
+            generation.payload,
+            expected_shared_identity=generation.shared_identity,
+            expected_reloc_identity=generation.reloc_identity,
+            _owned=owned,
+            observed_members=(
+                generation.shared_member_identity,
+                generation.reloc_member_identity,
+            ),
+        )
+        if validated is None:
+            raise ValueError(
+                "runtime WASM binding payload does not match its admitted members"
+            )
+        data = (
+            json.dumps(
+                generation.payload,
+                sort_keys=True,
+                indent=2,
+                allow_nan=False,
+                default=_frozen_json_projection,
+            )
+            + "\n"
+        ).encode()
+        digest = hashlib.sha256(data).hexdigest()
+        manifest = generation.manifest.with_name(
+            f"molt_runtime.{digest}.generation.json"
+        )
+        try:
+            atomic_write_bytes(manifest, data, exclusive=True)
+        except FileExistsError:
+            pass
+        receipt_handle = owned.enter_context(
+            open_stable_regular_file(manifest, label="pinned runtime WASM receipt")
+        )
+        receipt = stable_regular_file_handle_identity(
+            receipt_handle,
+            max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+            label="pinned runtime WASM receipt",
+        )
+        if receipt.sha256 != digest or receipt.size != len(data):
             raise ValueError(
                 f"immutable runtime generation receipt is corrupt: {manifest}"
             )
-    else:
-        _atomic_write_bytes(manifest, data)
-    pinned = read_runtime_wasm_generation(
-        manifest,
-        expected_shared_identity=generation.shared_identity,
-        expected_reloc_identity=generation.reloc_identity,
-    )
-    if (
-        pinned is None
-        or pinned.shared != generation.shared
-        or pinned.reloc != generation.reloc
-    ):
-        raise ValueError("runtime WASM pair changed while binding code generation")
-    return RuntimeWasmCodegenBinding(
-        generation=pinned,
-        required_exports=None
-        if required_exports is None
-        else frozenset(required_exports),
-    )
+        pinned = replace(generation, manifest=manifest, receipt_identity=receipt)
+        # The physical members did not change. Carry only already-computed immutable
+        # facts; raw file buffers and failed structural checks are never retained.
+        for name in (
+            "_shared_facts",
+            "_reloc_facts",
+            "_linking_obligations",
+            "_structurally_validated",
+        ):
+            if name in generation.__dict__:
+                pinned.__dict__[name] = generation.__dict__[name]
+        binding = RuntimeWasmCodegenBinding(
+            generation=pinned,
+            required_exports=None
+            if required_exports is None
+            else frozenset(required_exports),
+        )
+
+    return binding
 
 
 @dataclass(frozen=True)
@@ -155,17 +343,27 @@ def _stage_artifact(
     published_name: str,
     identity: RuntimeBuildIdentity,
     expected_record: dict[str, object] | None = None,
+    observed: StableRegularFileIdentity | None = None,
 ) -> dict[str, object]:
     hasher = hashlib.sha256()
     size = 0
     with (
-        open_stable_regular_file(source, label="runtime generation source") as opened,
+        open_stable_regular_file(
+            source, label="runtime generation source", observed=observed
+        ) as opened,
         staged.open("xb") as staged_handle,
     ):
         while chunk := opened.stream.read(1024 * 1024):
             hasher.update(chunk)
             staged_handle.write(chunk)
             size += len(chunk)
+        if observed is not None:
+            verify_stable_regular_file_content(
+                observed,
+                sha256=hasher.hexdigest(),
+                size=size,
+                label="runtime generation source",
+            )
         staged_handle.flush()
         staged_stat = os.fstat(staged_handle.fileno())
     digest = hasher.hexdigest()
@@ -191,15 +389,8 @@ def _publish_immutable_member(staged: Path, member: Path, source: Path) -> None:
     """Publish a content-named member; same-name races can only contain same bytes."""
 
     if member.exists():
-        identity = stable_regular_file_identity(
-            member,
-            label="existing immutable runtime member",
-        )
-        if (
-            identity.sha256 != member.name.split(".")[-2]
-            or identity.size != staged.stat().st_size
-        ):
-            raise ValueError(f"immutable runtime member is corrupt: {member.name}")
+        # The pair's canonical owned admission checks existing content against
+        # the staged record before publishing the manifest. Do not hash twice.
         staged.unlink()
         return
     durable_replace(staged, member)
@@ -219,6 +410,8 @@ def publish_runtime_wasm_generation(
     source_shared: Path | None = None,
     source_reloc: Path | None = None,
     expected_source_receipts: dict[str, dict[str, object]] | None = None,
+    source_observations: tuple[StableRegularFileIdentity, StableRegularFileIdentity]
+    | None = None,
 ) -> RuntimeWasmGeneration:
     """Atomically point at one immutable shared+reloc runtime generation.
 
@@ -245,6 +438,7 @@ def publish_runtime_wasm_generation(
             published_name=shared.name,
             identity=shared_identity,
             expected_record=(expected_source_receipts or {}).get("shared"),
+            observed=None if source_observations is None else source_observations[0],
         )
         reloc_record = _stage_artifact(
             actual_source_reloc,
@@ -252,6 +446,7 @@ def publish_runtime_wasm_generation(
             published_name=reloc.name,
             identity=reloc_identity,
             expected_record=(expected_source_receipts or {}).get("reloc"),
+            observed=None if source_observations is None else source_observations[1],
         )
         shared_member = shared.parent / str(shared_record["member"])
         reloc_member = reloc.parent / str(reloc_record["member"])
@@ -264,25 +459,25 @@ def publish_runtime_wasm_generation(
             "receipts": {"shared": shared_record, "reloc": reloc_record},
         }
         manifest = runtime_wasm_generation_path(shared)
-        _atomic_write_json(
-            manifest,
-            payload,
-            sort_keys=True,
-        )
         # Self-validation is transaction-local: it proves the members THIS
         # publication committed against the identities it was given, through
         # the same validation the reader applies to a manifest payload. It
         # never re-reads the shared manifest: a concurrent publisher may
         # already have replaced it (last writer wins by contract), and that
         # replacement is not a defect of this publication.
-        generation = _validate_generation_payload(
-            manifest,
-            payload,
-            expected_shared_identity=shared_identity,
-            expected_reloc_identity=reloc_identity,
-        )
-        if generation is None:
-            raise ValueError("published runtime generation failed self-validation")
+        with ExitStack() as owned:
+            generation = _validate_generation_payload(
+                manifest,
+                payload,
+                expected_shared_identity=shared_identity,
+                expected_reloc_identity=reloc_identity,
+                _owned=owned,
+            )
+            if generation is None:
+                raise ValueError(
+                    "published runtime generation has a corrupt member or record"
+                )
+            _atomic_write_json(manifest, payload, sort_keys=True)
         return generation
     finally:
         staged_shared.unlink(missing_ok=True)
@@ -290,7 +485,7 @@ def publish_runtime_wasm_generation(
 
 
 def _member_path(manifest: Path, record: object) -> Path | None:
-    if not isinstance(record, dict):
+    if not isinstance(record, Mapping):
         return None
     raw = record.get("member")
     if not isinstance(raw, str) or not raw or Path(raw).name != raw:
@@ -301,15 +496,15 @@ def _member_path(manifest: Path, record: object) -> Path | None:
     return path
 
 
-def _validate_artifact_record(
+def _artifact_record_descriptor(
     record: object,
     *,
     manifest: Path,
     expected_name: str,
     expected_identity: RuntimeBuildIdentity,
-) -> StableRegularFileIdentity | None:
+) -> tuple[Path, str, int] | None:
     if (
-        not isinstance(record, dict)
+        not isinstance(record, Mapping)
         or set(record) != {"name", "member", "sha256", "size", "identity"}
         or record.get("name") != expected_name
     ):
@@ -318,27 +513,54 @@ def _validate_artifact_record(
     if member is None:
         return None
     try:
-        recorded_identity = RuntimeBuildIdentity.from_dict(record.get("identity"))
+        RuntimeBuildIdentity.from_dict(
+            record.get("identity"), expected=expected_identity
+        )
     except ValueError:
         return None
-    if recorded_identity != expected_identity:
-        return None
-    try:
-        member_identity = stable_regular_file_identity(
-            member,
-            label=f"immutable runtime member {expected_name}",
-        )
-    except (OSError, ValueError):
-        return None
-    expected_member = f"{expected_name}.{member_identity.sha256}{_MEMBER_SUFFIX}"
+    digest, size = record.get("sha256"), record.get("size")
     if (
-        record.get("sha256") != member_identity.sha256
-        or not isinstance(record.get("size"), int)
-        or isinstance(record.get("size"), bool)
-        or record.get("size") != member_identity.size
-        or member.name != expected_member
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(char not in "0123456789abcdef" for char in digest)
+        or type(size) is not int
+        or size < 0
+        or member.name != f"{expected_name}.{digest}{_MEMBER_SUFFIX}"
     ):
         return None
+    return member, digest, size
+
+
+def _admit_artifact_descriptor(
+    descriptor: tuple[Path, str, int],
+    *,
+    observed: StableRegularFileIdentity | None,
+    owned: ExitStack,
+) -> StableRegularFileIdentity:
+    """Hash one record member under caller custody, preserving I/O diagnostics."""
+    member, digest, size = descriptor
+    if observed is not None and observed.path != member.absolute():
+        raise ValueError("runtime member observation names another path")
+    opened = owned.enter_context(
+        open_stable_regular_file(
+            member, label="immutable runtime WASM member", observed=observed
+        )
+    )
+    member_identity = stable_regular_file_handle_identity(
+        opened, label="immutable runtime WASM member"
+    )
+    if observed is not None:
+        verify_stable_regular_file_content(
+            observed,
+            sha256=member_identity.sha256,
+            size=member_identity.size,
+            label="runtime member observation",
+        )
+        member_identity = observed
+    if (digest, size) != (member_identity.sha256, member_identity.size):
+        raise ValueError(
+            f"runtime WASM member content differs from its record: {member}"
+        )
     return member_identity
 
 
@@ -377,7 +599,7 @@ def read_runtime_wasm_generation(
     expected_shared_identity = expected_pair.shared
     expected_reloc_identity = expected_pair.reloc
     try:
-        payload = read_exact(
+        receipt_identity, payload = capture_exact(
             manifest,
             max_bytes=RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
             label="runtime WASM generation",
@@ -389,27 +611,21 @@ def read_runtime_wasm_generation(
         payload,
         expected_shared_identity=expected_shared_identity,
         expected_reloc_identity=expected_reloc_identity,
+        receipt_identity=receipt_identity,
     )
 
 
-def _validate_generation_payload(
+def _generation_record_descriptors(
     manifest: Path,
     payload: object,
     *,
     expected_shared_identity: RuntimeBuildIdentity,
     expected_reloc_identity: RuntimeBuildIdentity,
-) -> RuntimeWasmGeneration | None:
-    """Validate one manifest payload's immutable pair against trusted identities.
-
-    ``manifest`` is the path the member records resolve against; the payload is
-    validated exactly as given, whether it was just read from that manifest or
-    just written to it by the publishing transaction.
-    """
-
-    if expected_shared_identity.family_digest != expected_reloc_identity.family_digest:
-        return None
+) -> tuple[tuple[Path, str, int], tuple[Path, str, int]] | None:
+    """Validate record semantics without claiming custody of unconsumed bytes."""
     if (
-        not isinstance(payload, dict)
+        expected_shared_identity.family_digest != expected_reloc_identity.family_digest
+        or not isinstance(payload, Mapping)
         or set(payload) != {"schema", "family_digest", "receipts"}
         or payload.get("schema") != _RUNTIME_WASM_GENERATION_SCHEMA
         or payload.get("family_digest") != expected_shared_identity.family_digest
@@ -418,20 +634,72 @@ def _validate_generation_payload(
     receipts = _generation_receipts(payload.get("receipts"))
     if receipts is None:
         return None
-    shared_member_identity = _validate_artifact_record(
-        receipts.get("shared"),
+    shared = _artifact_record_descriptor(
+        receipts["shared"],
         manifest=manifest,
         expected_name=_SHARED_RUNTIME_NAME,
         expected_identity=expected_shared_identity,
     )
-    reloc_member_identity = _validate_artifact_record(
-        receipts.get("reloc"),
+    reloc = _artifact_record_descriptor(
+        receipts["reloc"],
         manifest=manifest,
         expected_name=_RELOC_RUNTIME_NAME,
         expected_identity=expected_reloc_identity,
     )
-    if shared_member_identity is None or reloc_member_identity is None:
+    return None if shared is None or reloc is None else (shared, reloc)
+
+
+def _validate_generation_payload(
+    manifest: Path,
+    payload: object,
+    *,
+    expected_shared_identity: RuntimeBuildIdentity,
+    expected_reloc_identity: RuntimeBuildIdentity,
+    receipt_identity: StableRegularFileIdentity | None = None,
+    observed_members: tuple[StableRegularFileIdentity, StableRegularFileIdentity]
+    | None = None,
+    _owned: ExitStack | None = None,
+) -> RuntimeWasmGeneration | None:
+    """Validate one manifest payload's immutable pair against trusted identities.
+
+    ``manifest`` is the path the member records resolve against; the payload is
+    validated exactly as given, whether it was just read from that manifest or
+    just written to it by the publishing transaction.
+    """
+
+    if _owned is None:
+        try:
+            with ExitStack() as owned:
+                return _validate_generation_payload(
+                    manifest,
+                    payload,
+                    expected_shared_identity=expected_shared_identity,
+                    expected_reloc_identity=expected_reloc_identity,
+                    receipt_identity=receipt_identity,
+                    observed_members=observed_members,
+                    _owned=owned,
+                )
+        except (OSError, ValueError):
+            return None
+    descriptors = _generation_record_descriptors(
+        manifest,
+        payload,
+        expected_shared_identity=expected_shared_identity,
+        expected_reloc_identity=expected_reloc_identity,
+    )
+    if descriptors is None:
         return None
+    assert isinstance(payload, Mapping)
+    shared_member_identity = _admit_artifact_descriptor(
+        descriptors[0],
+        observed=None if observed_members is None else observed_members[0],
+        owned=_owned,
+    )
+    reloc_member_identity = _admit_artifact_descriptor(
+        descriptors[1],
+        observed=None if observed_members is None else observed_members[1],
+        owned=_owned,
+    )
     return RuntimeWasmGeneration(
         manifest=manifest,
         shared=shared_member_identity.path,
@@ -441,6 +709,7 @@ def _validate_generation_payload(
         shared_member_identity=shared_member_identity,
         reloc_member_identity=reloc_member_identity,
         payload=payload,
+        receipt_identity=receipt_identity,
     )
 
 
@@ -451,14 +720,25 @@ def hydrate_runtime_wasm_generation(
     dest_reloc: Path,
     expected_shared_identity: RuntimeBuildIdentity,
     expected_reloc_identity: RuntimeBuildIdentity,
+    source_generation: RuntimeWasmGeneration | None = None,
 ) -> RuntimeWasmGeneration:
     """Validate and hydrate only from the source pointer's immutable members."""
 
-    payload = read_runtime_wasm_generation(
-        source_manifest,
-        expected_shared_identity=expected_shared_identity,
-        expected_reloc_identity=expected_reloc_identity,
-    )
+    if source_generation is None:
+        payload = read_runtime_wasm_generation(
+            source_manifest,
+            expected_shared_identity=expected_shared_identity,
+            expected_reloc_identity=expected_reloc_identity,
+        )
+    else:
+        payload = source_generation
+        if (
+            payload.manifest != source_manifest
+            or payload.shared_identity != expected_shared_identity
+            or payload.reloc_identity != expected_reloc_identity
+        ):
+            raise ValueError("runtime WASM hydration source changed selection")
+        payload.verify_members()
     if payload is None:
         raise ValueError(
             "runtime wasm source generation does not match trusted identity"
@@ -476,4 +756,8 @@ def hydrate_runtime_wasm_generation(
         source_shared=source_member_shared,
         source_reloc=source_member_reloc,
         expected_source_receipts=receipts,
+        source_observations=(
+            payload.shared_member_identity,
+            payload.reloc_member_identity,
+        ),
     )

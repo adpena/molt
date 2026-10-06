@@ -161,7 +161,6 @@ def _compile(
         runtime_state=_RuntimeArtifactState(runtime_wasm_codegen_binding=binding),
         cargo_timeout=1.0,
         molt_root=root,
-        target_triple=None,
         backend_cargo_profile="dev-fast",
         backend_timeout=1.0,
         backend_daemon_config_digest=None,
@@ -242,3 +241,35 @@ def test_warm_cache_rejects_corrupt_bound_generation(
 def test_missing_runtime_binding_fails_without_layout_defaults() -> None:
     with pytest.raises(ValueError, match="lacks a bound pair"):
         prepare_wasm_codegen_layout(None, linked=True, split_runtime=True)
+
+
+def test_layout_retains_compact_facts_and_never_reopens_admitted_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import toolchain_identity
+    from molt.cli import runtime_wasm_generation as module
+
+    binding = _bind_pair(tmp_path)
+    original = toolchain_identity.read_stable_regular_file
+    reads = []
+
+    def read(identity, **kwargs):
+        reads.append(identity.path)
+        return original(identity, **kwargs)
+
+    def no_hash(*args, **kwargs):
+        pytest.fail("layout or repinning hashed an admitted member")
+
+    monkeypatch.setattr(toolchain_identity, "read_stable_regular_file", read)
+    monkeypatch.setattr(module, "stable_regular_file_identity", no_hash)
+    first = prepare_wasm_codegen_layout(binding, linked=True, split_runtime=True)
+    repinned = bind_runtime_wasm_codegen(binding.generation, None)
+    assert (
+        prepare_wasm_codegen_layout(repinned, linked=True, split_runtime=True) == first
+    )
+    assert reads == [binding.generation.shared]
+    for facts in (binding.generation.facts(),):
+        assert all(
+            not isinstance(value, (bytes, bytearray, memoryview))
+            for value in (getattr(facts, field) for field in facts.__dataclass_fields__)
+        )

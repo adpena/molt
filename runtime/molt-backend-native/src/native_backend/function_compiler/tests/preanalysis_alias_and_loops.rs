@@ -18,7 +18,11 @@ fn native_transparency_uses_generated_no_incref_move_authority() {
     ] {
         let op = OpIR {
             kind: kind.into(),
-            args: Some(vec!["source".into()]),
+            args: Some(if matches!(kind, "guard_tag" | "guard_type") {
+                vec!["source".into(), "expected_tag".into()]
+            } else {
+                vec!["source".into()]
+            }),
             out: Some("result".into()),
             ..OpIR::default()
         };
@@ -252,6 +256,7 @@ fn preanalysis_separates_retained_storage_bindings_from_ssa_aliases() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -293,6 +298,7 @@ fn preanalysis_uses_args_based_copy_var_value_source() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -340,6 +346,7 @@ fn preanalysis_marks_unused_outputs_live_through_their_definition_site() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -397,6 +404,7 @@ fn preanalysis_only_marks_store_slots_as_loop_body_reassignments() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -461,6 +469,7 @@ fn preanalysis_does_not_reinitialize_loop_slots_with_preloop_store() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -473,4 +482,56 @@ fn preanalysis_does_not_reinitialize_loop_slots_with_preloop_store() {
             .is_none_or(|names| !names.iter().any(|name| name == "slot")),
         "pre-loop stores must not be clobbered by synthetic None initialization",
     );
+}
+
+#[test]
+fn native_runtime_guards_check_expected_tags_and_define_used_results() {
+    for kind in ["guard_tag", "guard_type"] {
+        let mut input = super::cleanup_roots::token_test_ir();
+        input.name = "molt_main".into();
+        input.return_abi = molt_ir::FunctionReturnAbi::Value;
+        input.params.clear();
+        input.ops = vec![
+            OpIR {
+                kind: "const".into(),
+                out: Some("source".into()),
+                value: Some(7),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "const".into(),
+                out: Some("tag".into()),
+                value: Some(5),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: kind.into(),
+                args: Some(vec!["source".into(), "tag".into()]),
+                out: Some("checked".into()),
+                s_value: Some("int".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["checked".into()]),
+                ..OpIR::default()
+            },
+        ];
+        let object = SimpleBackend::new().compile(SimpleIR {
+            functions: vec![input],
+            profile: None,
+        });
+        assert!(
+            native_object_symbols(&object.bytes)
+                .undefined
+                .contains("molt_guard_type"),
+            "{kind}: two raw integers and a misleading hint must not erase the check"
+        );
+        assert!(
+            native_object_symbols(&object.bytes)
+                .undefined
+                .contains("molt_profile_enabled"),
+            "{kind}: admitted tag checks must be gated by the runtime profile flag"
+        );
+    }
 }

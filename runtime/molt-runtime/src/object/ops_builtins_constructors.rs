@@ -282,12 +282,6 @@ pub extern "C" fn molt_complex_builtin(real_bits: u64, imag_bits: u64) -> u64 {
     })
 }
 
-/// `memoryview(obj)` — wraps `molt_memoryview_new`.
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_memoryview_builtin(val_bits: u64) -> u64 {
-    molt_memoryview_new(val_bits)
-}
-
 /// `classmethod(func)` — wraps `molt_classmethod_new`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_classmethod_builtin(func_bits: u64) -> u64 {

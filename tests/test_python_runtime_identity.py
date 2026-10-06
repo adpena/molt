@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from pathlib import Path
 
@@ -798,3 +799,43 @@ def test_runtime_rejects_stale_nested_native_digest_even_with_valid_outer_digest
         PythonEnvironmentIdentityError, match="native dependency closure"
     ):
         runtime.validate_python_runtime_identity(payload)
+
+
+def test_mapped_file_lookup_names_the_file_backing_an_address() -> None:
+    maps = (
+        "55d4c0a00000-55d4c0a2c000 r--p 00000000 08:01 393 /opt/py/bin/python3.12\n"
+        "55d4c0a2c000-55d4c0d10000 r-xp 0002c000 08:01 393 /opt/py/bin/python3.12\n"
+        "55d4c1f3e000-55d4c2005000 rw-p 00000000 00:00 0 [heap]\n"
+        "7f1e2a000000-7f1e2a021000 r-xp 00000000 08:01 77 /opt/a b/libx.so\n"
+    )
+    assert runtime._mapped_file_at(0x55D4C0A2D000, maps) == Path(
+        "/opt/py/bin/python3.12"
+    )
+    assert runtime._mapped_file_at(0x7F1E2A000010, maps) == Path("/opt/a b/libx.so")
+    assert runtime._mapped_file_at(0x55D4C1F3E100, maps) is None
+    assert runtime._mapped_file_at(0x10, maps) is None
+
+
+def test_runtime_library_does_not_depend_on_the_invocation_name(tmp_path) -> None:
+    # A PATH launch names the interpreter "python3" in argv[0]; glibc reports
+    # a statically linked runtime by that name, which the cwd cannot resolve.
+    import subprocess
+    import sys
+
+    probe = (
+        "import json; from molt import python_runtime_identity as r; "
+        "library = r._runtime_library(); "
+        "print(json.dumps(None if library is None else str(library)))"
+    )
+    result = subprocess.run(
+        ["python3", "-c", probe],
+        executable=sys.executable,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    library = runtime._runtime_library()
+    expected = None if library is None else str(library)
+    assert result.stdout.strip() == json.dumps(expected)

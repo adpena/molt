@@ -58,7 +58,12 @@ jobs:
           fi
 
       - name: Execute repository policy partitions
-        run: python3 tools/proof_plan.py --run-family repository_policy --receipt proof-receipts/repository_policy.json
+        # Explicit CI provisioning; the generator itself never installs tools.
+        # Derive versions from the target authority instead of another matrix.
+        # This ephemeral runner is the only all-version Unicode regeneration lane.
+        run: |
+          uv run python3 -c "import subprocess; from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS as versions; subprocess.run(['uv', 'python', 'install', *versions], check=True)"
+          python3 tools/proof_plan.py --run-family repository_policy --receipt proof-receipts/repository_policy.json
 
       - name: Upload repository policy receipt
         if: always() && hashFiles('proof-receipts/repository_policy.json') != ''
@@ -285,6 +290,9 @@ jobs:
         run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"
       - name: Setup canonical native linker SDK
         uses: ./.github/actions/setup-llvm
+        with:
+          profile: "full"
+          wasi: "true"
       - name: Execute selected native integration partitions
         run: python3 tools/proof_plan.py --run-family native_integration --receipt proof-receipts/native_integration.json
       - name: Upload native integration receipt
@@ -324,7 +332,9 @@ jobs:
           wasi: "true"
 
       - name: Install pinned executable Luau proof runner
-        run: cargo install lune --version 0.10.5 --locked
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: python3 -m molt.tool_releases provision lune --github-path "$GITHUB_PATH"
 
       - name: Execute selected Rust partitions
         run: python3 tools/proof_plan.py --run-family rust --receipt proof-receipts/rust.json

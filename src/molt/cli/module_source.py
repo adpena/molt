@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from molt.python_private_names import resolve_python_private_names
 import contextlib
 import functools
 import hashlib
@@ -17,6 +18,10 @@ from typing import Any
 from molt.cli.atomic_io import _atomic_write_text
 from molt.cli.default_paths import _default_molt_cache
 from molt.file_hashing import _sha256_file
+
+
+class PythonSourceChangedError(ValueError):
+    """An admitted source generation no longer matches the current file."""
 
 
 @dataclass(frozen=True)
@@ -45,7 +50,9 @@ class PythonSourceSnapshot:
         try:
             # This is the host-source parser. Target consumers parse text through
             # their selected target authority, never through this host AST.
-            return ast.parse(self.content, filename=str(self.path))
+            return resolve_python_private_names(
+                ast.parse(self.content, filename=str(self.path))
+            )
         except (SyntaxError, UnicodeError, ValueError) as exc:
             raise ValueError(
                 f"cannot parse local Python source {self.path}: {exc}"

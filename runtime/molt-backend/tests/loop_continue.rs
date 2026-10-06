@@ -86,6 +86,7 @@ fn loop_continue_in_if_compiles() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,

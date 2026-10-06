@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.native_link_plan import resolve_native_target_spec
+
 import inspect
 import json
 from pathlib import Path
@@ -69,11 +71,8 @@ def test_every_configured_stdlib_uses_locked_snapshot_admission(
         artifacts_root=artifacts,
         json_output=json_output,
         output_binary=artifacts / "app.exe",
-        runtime_lib=None,
-        runtime_build_identity=None,
-        molt_root=tmp_path,
-        runtime_cargo_profile="dev-fast",
-        target_triple=None,
+        runtime_codegen_binding=None,
+        target=resolve_native_target_spec(None),
         sysroot_path=None,
         profile=None,
         project_root=tmp_path,

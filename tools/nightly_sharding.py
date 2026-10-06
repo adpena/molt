@@ -23,6 +23,7 @@ import tempfile
 import time
 import tomllib
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 import zipfile
 
@@ -290,7 +291,13 @@ def lpt_shards(
     ]
 
 
-def _authority_inputs(root: Path) -> list[dict[str, str]]:
+@dataclass(frozen=True)
+class _AuthorityInputs:
+    files: tuple[dict[str, str], ...]
+    topology_digest: str
+
+
+def _authority_inputs(root: Path) -> _AuthorityInputs:
     # Reuse the compiler/tool import authority: new discovery imports enter the
     # plan identity automatically; unknown dynamic imports fail closed.
     from molt.cli.python_source_closure import local_python_import_closure
@@ -307,29 +314,39 @@ def _authority_inputs(root: Path) -> list[dict[str, str]]:
         if not path.is_file():
             raise ValueError(f"nightly shard authority input is missing: {relative}")
         source_hashes[relative] = _file_digest(path)
-    return [
-        {"path": relative, "sha256": digest}
-        for relative, digest in sorted(source_hashes.items())
-    ]
+    return _AuthorityInputs(
+        tuple(
+            {"path": relative, "sha256": digest}
+            for relative, digest in sorted(source_hashes.items())
+        ),
+        closure.topology_digest,
+    )
 
 
-def _measurement_contract_digest(inputs: Sequence[Mapping[str, str]]) -> str:
+def _measurement_contract_digest(inputs: _AuthorityInputs) -> str:
     measured_inputs = [
         dict(row)
-        for row in inputs
+        for row in inputs.files
         if row["path"] != "config/nightly_shard_profile.json"
     ]
-    return _json_digest({"policy": WEIGHT_POLICY, "inputs": measured_inputs})
+    return _json_digest(
+        {
+            "policy": WEIGHT_POLICY,
+            "inputs": measured_inputs,
+            "source_topology_sha256": inputs.topology_digest,
+        }
+    )
 
 
 def _authority_payload(
-    inputs: Sequence[Mapping[str, str]],
+    inputs: _AuthorityInputs,
     profile_summary: Mapping[str, Any],
     measurement_contract_sha256: str,
 ) -> dict[str, Any]:
     return {
         "policy": WEIGHT_POLICY,
-        "inputs": list(inputs),
+        "inputs": list(inputs.files),
+        "source_topology_sha256": inputs.topology_digest,
         "measurement_contract_sha256": measurement_contract_sha256,
         "weight_profile": profile_summary,
     }
@@ -420,7 +437,10 @@ def validate_plan_envelope(plan: Mapping[str, Any], root: Path = ROOT) -> None:
         raise ValueError("nightly shard policy authority mismatch")
     authority_inputs = authority.get("inputs")
     current_inputs = _authority_inputs(root)
-    if authority_inputs != current_inputs:
+    if (
+        authority_inputs != list(current_inputs.files)
+        or authority.get("source_topology_sha256") != current_inputs.topology_digest
+    ):
         raise ValueError("nightly shard authority inputs drift")
     contract_digest = _measurement_contract_digest(current_inputs)
     if authority.get("measurement_contract_sha256") != contract_digest:

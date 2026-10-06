@@ -267,19 +267,6 @@ impl NativeCleanupRoots {
 }
 
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn next_check_exception_target(
-    ops: &[OpIR],
-    op_idx: usize,
-) -> Option<i64> {
-    ops.iter()
-        .skip(op_idx + 1)
-        .find(|op| {
-            crate::tir::op_kinds_generated::simpleir_kind_is_exception_check(op.kind.as_str())
-        })
-        .and_then(|op| op.value)
-}
-
-#[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn is_join_slot_name(name: &str) -> bool {
     name.starts_with("_bb") && name.contains("_arg")
 }
@@ -328,52 +315,4 @@ pub(in crate::native_backend::function_compiler) fn protect_cleanup_names(
     }
     crate::extend_unique_tracked(carry, preserved);
     actual
-}
-
-/// Release dead block-tracked heap temporaries of the current block at a
-/// generator/async `_poll` suspend boundary (`state_yield` / `state_transition`
-/// / `chan_*_yield`), immediately before the jump to the master return block.
-///
-/// A `_poll` returns to its caller on every yield/await and is re-entered on the
-/// next resume, so each suspend is the per-iteration scope exit for any heap
-/// temporary that is dead before it.  Without this drain those temporaries —
-/// chiefly the `(value, done)` pair tuple emitted right before each
-/// `state_yield` — are re-allocated and orphaned on every resume, producing an
-/// unbounded leak that delegation (`yield from` / manual for-yield) multiplies
-/// by the chain depth.
-///
-/// Only names whose `last_use <= op_idx` are released (the
-/// `drain_cleanup_candidates` gate); loop-carried values keep their
-/// func_end-extended `last_use` and therefore survive the suspend.  This is the
-/// suspend-boundary twin of the function-return drain in the `ret` handler,
-/// restricted to the per-iteration temporaries identified by
-/// `stateful_per_iter_temps`.
-///
-/// Free function (not a method): a live `FunctionBuilder` holds `&mut
-/// self.ctx.func`, so a `&mut self` method taking the builder would double-borrow
-/// `self` — the same reason the surrounding codegen routes through free helpers.
-#[cfg(feature = "native-backend")]
-#[allow(clippy::too_many_arguments)]
-pub(in crate::native_backend::function_compiler) fn drain_dead_block_temps_for_suspend(
-    rc_authority: NativeRcAuthority,
-    builder: &mut FunctionBuilder,
-    block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
-    block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
-    last_use: &BTreeMap<String, usize>,
-    cleanup_roots: &mut NativeCleanupRoots,
-    local_dec_ref_obj: FuncRef,
-    op_idx: usize,
-) {
-    let Some(block) = builder.current_block() else {
-        return;
-    };
-    for tracked in [block_tracked_obj, block_tracked_ptr] {
-        let Some(names) = tracked.get_mut(&block) else {
-            continue;
-        };
-        let cleanup = drain_cleanup_candidates(rc_authority, names, last_use, op_idx, None);
-        for name in cleanup {
-            cleanup_roots.release(builder, local_dec_ref_obj, &name);
-        }
-    }
 }

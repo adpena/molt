@@ -109,14 +109,9 @@ metrics = [
   { name = "call_bind_ic_miss", semantic = "counter" },
   { name = "attr_site_name_hit", semantic = "counter" },
   { name = "attr_site_name_miss", semantic = "counter" },
-  { name = "split_ws_ascii", semantic = "counter" },
-  { name = "split_ws_unicode", semantic = "counter" },
   { name = "dict_str_int_prehash_hit", semantic = "counter" },
   { name = "dict_str_int_prehash_miss", semantic = "counter" },
   { name = "dict_str_int_prehash_deopt", semantic = "counter" },
-  { name = "taq_ingest_calls", semantic = "counter" },
-  { name = "taq_ingest_skip_marker", semantic = "counter" },
-  { name = "ascii_i64_parse_fail", semantic = "counter" },
 ]
 
 [[section]]

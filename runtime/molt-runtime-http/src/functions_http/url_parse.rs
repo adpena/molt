@@ -250,7 +250,7 @@ pub(super) fn urllib_error_set_attr(
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name.as_bytes()) else {
         return false;
     };
-    crate::bridge::molt_object_setattr(self_bits, name_bits, value_bits);
+    crate::bridge::molt_set_attr_name(self_bits, name_bits, value_bits);
     dec_ref_bits(_py, name_bits);
     !exception_pending(_py)
 }
@@ -296,19 +296,4 @@ pub(super) fn urllib_parse_qsl_impl(
         }
     }
     Ok(pairs)
-}
-
-pub(super) fn urllib_request_pending_exception_kind_name(
-    _py: &molt_runtime_core::CoreGilToken,
-) -> Option<String> {
-    if !exception_pending(_py) {
-        return None;
-    }
-    let exc_bits = molt_exception_last();
-    let out = maybe_ptr_from_bits(exc_bits)
-        .and_then(|ptr| string_obj_to_owned(obj_from_bits(unsafe { exception_kind_bits(ptr) })));
-    if !obj_from_bits(exc_bits).is_none() {
-        dec_ref_bits(_py, exc_bits);
-    }
-    out
 }

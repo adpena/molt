@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import ast
+from molt.python_private_names import (
+    python_import_binding,
+    python_source_unparse,
+)
 import hashlib
 import json
 import os
@@ -780,7 +784,7 @@ def _support_source_import_bindings(
     for stmt in tree.body:
         if isinstance(stmt, ast.Import):
             for alias in stmt.names:
-                bind_name = alias.asname or alias.name.split(".", 1)[0]
+                bind_name = python_import_binding(alias)
                 imported_modules[bind_name] = alias.name
         elif isinstance(stmt, ast.ImportFrom):
             contexts = tuple(
@@ -1047,7 +1051,7 @@ def _native_support_source_slices(
                 f"native support roots lack source custody in {module}: {sorted(missing)}"
             )
         ast.fix_missing_locations(pruned_tree)
-        generated_source = ast.unparse(pruned_tree) + "\n"
+        generated_source = python_source_unparse(pruned_tree) + "\n"
         generated_path = _write_generated_module_source(
             module, generated_source, artifacts_root
         )
@@ -1628,6 +1632,7 @@ def _materialize_import_plan(
     namespace_module_names: set[str] = set()
     generated_module_source_paths: dict[str, str] = {}
     module_graph_operation_counts = {
+        **prepared_module_graph.intrinsic_source_operation_counts,
         "native_support_iterations": 0,
         "native_support_slice_requests": 0,
         "native_support_slice_cache_hits": 0,
@@ -1908,7 +1913,7 @@ def _augment_module_graph_for_entry_and_runtime(
         for name in core_module_names
         if (path := module_graph.get(name)) is not None
     ]
-    _graph_discovery._extend_module_graph_with_closure(
+    core_closure = _graph_discovery._extend_module_graph_with_closure(
         module_graph,
         scan_authorities=scan_authorities,
         entry_paths=core_paths,
@@ -1927,6 +1932,13 @@ def _augment_module_graph_for_entry_and_runtime(
         target_python=target_python,
         capability_config_digest=capability_config_digest,
     )
+    explicit_imports.update(core_closure.explicit_imports)
+    # Inventory custody does not imply executable admission. Core modules and
+    # canonical builtin providers do own callable initializer lanes, without
+    # introducing an eager import; provider execution remains resolver-gated.
+    dispatch_roots = explicit_imports | {
+        name for name in core_module_names if name in module_graph
+    }
     spawn_enabled = False
     spawn_required = target != "wasm" and _requires_spawn_entry_override(
         module_graph, explicit_imports
@@ -1942,6 +1954,7 @@ def _augment_module_graph_for_entry_and_runtime(
             return _ModuleGraphAugmentation(
                 spawn_enabled=False,
                 explicit_imports=explicit_imports,
+                runtime_import_dispatch_roots=dispatch_roots,
                 stub_parents=stub_parents,
             ), _fail(
                 (
@@ -1952,7 +1965,7 @@ def _augment_module_graph_for_entry_and_runtime(
                 command="build",
             )
         spawn_enabled = True
-        _graph_discovery._extend_module_graph_with_closure(
+        spawn_closure = _graph_discovery._extend_module_graph_with_closure(
             module_graph,
             scan_authorities=scan_authorities,
             entry_paths=[spawn_path],
@@ -1971,9 +1984,12 @@ def _augment_module_graph_for_entry_and_runtime(
             target_python=target_python,
             capability_config_digest=capability_config_digest,
         )
+        explicit_imports.update(spawn_closure.explicit_imports)
+        dispatch_roots.add(ENTRY_OVERRIDE_SPAWN)
     return _ModuleGraphAugmentation(
         spawn_enabled=spawn_enabled,
         explicit_imports=explicit_imports,
+        runtime_import_dispatch_roots=dispatch_roots | explicit_imports,
         stub_parents=stub_parents,
     ), None
 
@@ -2107,7 +2123,7 @@ def _prepare_entry_module_graph(
             if name in module_graph
         ]
         before_parent_closure = set(module_graph)
-        _graph_discovery._extend_module_graph_with_closure(
+        parent_closure = _graph_discovery._extend_module_graph_with_closure(
             module_graph,
             scan_authorities=scan_authorities,
             entry_paths=package_parent_paths,
@@ -2127,6 +2143,7 @@ def _prepare_entry_module_graph(
             target_python=target_python,
             capability_config_digest=capability_config_digest,
         )
+        explicit_imports.update(parent_closure.explicit_imports)
         _graph_discovery._record_new_module_reasons(
             module_graph,
             before_parent_closure,
@@ -2141,11 +2158,14 @@ def _prepare_entry_module_graph(
         module_reasons,
         "core_required",
     )
+    intrinsic_source_operation_counts: dict[str, int] = {}
     intrinsic_enforced = _module_stdlib_policy._enforce_intrinsic_stdlib(
         module_graph,
         stdlib_root,
         json_output,
         target_python=target_python,
+        project_root=project_root,
+        operation_counts=intrinsic_source_operation_counts,
     )
     if intrinsic_enforced is not None:
         return None, intrinsic_enforced
@@ -2187,7 +2207,7 @@ def _prepare_entry_module_graph(
             scan_authorities=scan_authorities,
             module_reasons=module_reasons,
             explicit_imports=augmentation.explicit_imports,
-            dispatch_roots=augmentation.explicit_imports,
+            dispatch_roots=augmentation.runtime_import_dispatch_roots,
             module_resolution_cache=module_resolution_cache,
             roots=roots,
             stdlib_root=stdlib_root,
@@ -2215,6 +2235,9 @@ def _prepare_entry_module_graph(
         ]
     )
     return _PreparedEntryModuleGraph(
+        intrinsic_source_operation_counts=MappingProxyType(
+            intrinsic_source_operation_counts
+        ),
         project_root=project_root,
         capability_config_digest=capability_config_digest,
         image_scope=image_scope,

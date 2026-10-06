@@ -33,15 +33,6 @@ def _source_tree(root: Path) -> Path:
     return root.resolve()
 
 
-@pytest.fixture(autouse=True)
-def _clear_root_caches():
-    project_roots._find_molt_root_cached.cache_clear()
-    project_roots._find_project_root_cached.cache_clear()
-    yield
-    project_roots._find_molt_root_cached.cache_clear()
-    project_roots._find_project_root_cached.cache_clear()
-
-
 def test_project_and_source_authorities_are_independent(tmp_path, monkeypatch):
     project = tmp_path / "guest"
     project.mkdir()
@@ -51,7 +42,7 @@ def test_project_and_source_authorities_are_independent(tmp_path, monkeypatch):
     monkeypatch.chdir(project)
 
     assert project_roots._find_project_root(project / "main.py") == project
-    assert project_roots._find_molt_root(project) == source
+    assert source_root.compiler_source_root() == source
     assert compiler_metadata._compiler_root() == source
     assert project_roots._require_molt_root(source, True, "build") is None
 
@@ -218,7 +209,7 @@ def test_invalid_explicit_source_never_falls_back(tmp_path, monkeypatch, capsys)
     monkeypatch.setenv("MOLT_SOURCE_ROOT", str(missing))
 
     assert source_root.compiler_source_root() == missing
-    assert project_roots._find_molt_root(checkout) == missing
+    assert source_root.compiler_source_root() == missing
     assert project_roots._require_molt_root(missing, True, "build") == 2
     failure = json.loads(capsys.readouterr().out)
     assert str(missing) in failure["errors"][0]
@@ -235,7 +226,7 @@ def test_relative_source_selection_is_resolved_per_call(tmp_path, monkeypatch):
         monkeypatch.chdir(cwd)
         expected = cwd / "missing-source"
         assert source_root.compiler_source_root() == expected
-        assert project_roots._find_molt_root(tmp_path) == expected
+        assert source_root.compiler_source_root() == expected
 
 
 @pytest.mark.parametrize("error", [OSError("unreadable"), ValueError("drift")])
@@ -264,13 +255,16 @@ def test_installed_source_admission_checks_the_selected_payload(tmp_path, monkey
         def verify_sources(self):
             calls.append("verified")
 
+        def verify_executing_package(self):
+            calls.append("package verified")
+
     def installed(root):
         calls.append(root)
         return Installed()
 
     monkeypatch.setattr(project_roots, "installed_compiler", installed)
     assert project_roots._require_molt_root(source, True, "build") is None
-    assert calls == [source, "verified"]
+    assert calls == [source, "verified", "package verified"]
 
 
 def test_source_markers_must_be_files(tmp_path):
@@ -334,6 +328,25 @@ def test_stdlib_inputs_ignore_guest_and_cwd(tmp_path, monkeypatch):
         assert module_stdlib_policy._stdlib_allowlist() == set()
     finally:
         module_stdlib_policy._stdlib_allowlist_cached.cache_clear()
+
+
+def test_packaged_stdlib_and_policy_follow_live_source_identity(tmp_path, monkeypatch):
+    import os
+    from molt.cli import module_resolution, module_stdlib_policy
+
+    bundle = tmp_path / "distribution"
+    source = bundle / "source"
+    policy = source / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
+    policy.parent.mkdir(parents=True)
+    policy.write_text("| Module |\n| --- |\n| first |\n")
+    monkeypatch.delenv("MOLT_SOURCE_ROOT", raising=False)
+    monkeypatch.setattr(source_root, "packaged_distribution_root", lambda: bundle)
+    assert module_resolution._stdlib_root_path() == source / "src/molt/stdlib"
+    assert module_stdlib_policy._stdlib_allowlist() == {"first"}
+    before = policy.stat()
+    policy.write_text("| Module |\n| --- |\n| other |\n")
+    os.utime(policy, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert module_stdlib_policy._stdlib_allowlist() == {"other"}
 
 
 @pytest.mark.parametrize(

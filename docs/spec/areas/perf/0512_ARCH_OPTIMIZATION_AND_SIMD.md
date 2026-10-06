@@ -32,7 +32,7 @@ Dispatch order (example):
 - AVX2 vector reductions for 64-bit ints where supported.
 - SSE2/SSE4.1 fallback paths.
 - AVX2 lacks native 64-bit integer multiply and boxed list storage limits vectorization; `prod` stays scalar for general cases. We added an AVX2 "trivial scan" for unboxed int arrays that detects all-ones or zero early, and still fall back to scalar multiplication otherwise. SIMD reductions would re-associate multiplies, which changes wrap semantics once 64-bit overflow occurs, so any SIMD path must be guarded by overflow-safe bounds (or be documented as a semantics change). Evaluate 32-bit partials + overflow guards before any wider SIMD multiply (TODO(perf, owner:runtime, milestone:RT2, priority:P2, status:planned): 32-bit partials + overflow guards for `prod`).
-- Prototype unboxed int arrays (`intarray_from_seq`) are permitted in fast paths to reduce pointer chasing ahead of wider SIMD support.
+- Fused-loop kernels (`vec_sum`, `vec_prod`, `vec_min`, `vec_max`) read flat `list[int]`/`list[bool]` storage and inline-int blocks directly; wider lanes must keep their exact results (exact ints, sequential IEEE float order), per 0190 "Fused loops".
 - Explore AVX-512 for wide reductions where stable/available (TODO(perf, owner:runtime, milestone:RT3, priority:P3, status:planned): AVX-512 reductions).
 
 ### aarch64

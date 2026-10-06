@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from pathlib import Path
 
 import pytest
@@ -92,7 +94,7 @@ def test_gnu_coff_linker_discovery_and_replay_custody_use_same_role(
     assert (
         native_link_command._resolve_native_linker_hint(
             profile="dev",
-            target_triple=target.triple,
+            target=resolve_native_target_spec(target.triple),
             driver_command=(str(driver),),
         )
         == "lld"
@@ -129,7 +131,7 @@ def test_final_gnu_coff_link_has_no_msvc_archive_policy_or_definition_options(
     monkeypatch.setattr(
         native_link_command,
         "_collect_cargo_native_link_deps",
-        lambda *args, **kwargs: [],
+        lambda *args, **kwargs: SimpleNamespace(flags=(), verify=lambda: None),
     )
     monkeypatch.setattr(
         native_link_command,
@@ -141,7 +143,7 @@ def test_final_gnu_coff_link_has_no_msvc_archive_policy_or_definition_options(
         stub_path=tmp_path / "main.c",
         runtime_lib=tmp_path / "runtime.a",
         output_binary=tmp_path / "app.exe",
-        target_triple=triple,
+        target=resolve_native_target_spec(triple),
         sysroot_path=None,
         profile="dev",
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,

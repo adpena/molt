@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
 
 from molt.cli import runtime_wasm_cache_diagnostics as _cache_diagnostics
 from molt.cli.default_paths import _default_molt_cache
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.runtime_wasm_generation import (
     RuntimeWasmGeneration,
     hydrate_runtime_wasm_generation,
@@ -38,8 +37,6 @@ def hydrate_runtime_wasm_pair_from_shared_cache(
     dest_reloc: Path,
     shared_identity: RuntimeBuildIdentity,
     reloc_identity: RuntimeBuildIdentity,
-    is_valid_shared: Callable[[Path], bool],
-    is_valid_reloc: Callable[[Path], bool],
 ) -> RuntimeWasmGeneration | None:
     _cache_diagnostics._RUNTIME_WASM_CACHE_STATS["hydrate_attempts"] = (
         int(_cache_diagnostics._RUNTIME_WASM_CACHE_STATS["hydrate_attempts"]) + 1
@@ -60,14 +57,10 @@ def hydrate_runtime_wasm_pair_from_shared_cache(
             int(_cache_diagnostics._RUNTIME_WASM_CACHE_STATS["hydrate_failures"]) + 1
         )
         return None
-    if not is_valid_shared(generation.shared) or not is_valid_reloc(generation.reloc):
-        _cache_diagnostics._RUNTIME_WASM_CACHE_STATS["hydrate_failures"] = (
-            int(_cache_diagnostics._RUNTIME_WASM_CACHE_STATS["hydrate_failures"]) + 1
-        )
-        return None
     try:
         hydrated = hydrate_runtime_wasm_generation(
             source_manifest=cache_manifest,
+            source_generation=generation,
             dest_shared=dest_shared,
             dest_reloc=dest_reloc,
             expected_shared_identity=shared_identity,

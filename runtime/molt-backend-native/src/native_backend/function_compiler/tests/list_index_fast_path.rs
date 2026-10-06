@@ -56,7 +56,7 @@ fn cache_list_storage_field(
     field: ListStorageField,
     name: &str,
 ) -> cranelift_frontend::Variable {
-    let ty = if field == ListStorageField::IsBool {
+    let ty = if matches!(field, ListStorageField::IsBool | ListStorageField::IsInt) {
         types::I8
     } else {
         types::I64
@@ -77,6 +77,7 @@ fn list_storage_observations_do_not_cross_sibling_blocks_or_merges() {
             ListStorageField::Data,
             ListStorageField::Len,
             ListStorageField::IsBool,
+            ListStorageField::IsInt,
         ];
         let left = builder.create_block();
         let right = builder.create_block();
@@ -253,9 +254,15 @@ fn list_storage_loop_certification_uses_actual_native_owner_custody() {
     let input = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "generic_loop_ownership".into(),
-        params: vec!["lst".into(), "idx".into()],
-        param_types: Some(vec!["list".into(), "int".into()]),
+        params: vec!["idx".into(), "value".into()],
+        param_types: Some(vec!["int".into(), "object".into()]),
         ops: vec![
+            OpIR {
+                kind: "list_new".into(),
+                args: Some(vec!["value".into()]),
+                out: Some("lst".into()),
+                ..OpIR::default()
+            },
             OpIR {
                 kind: "loop_start".into(),
                 ..OpIR::default()
@@ -274,13 +281,15 @@ fn list_storage_loop_certification_uses_actual_native_owner_custody() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let plan = native_representation_plan_for_test(&input);
     let analysis = preanalyze_for_test(&input);
-    let pre = input.params.iter().cloned().collect();
+    let mut pre = collect_pre_loop_defined_names(&input.ops, 1);
+    pre.extend(input.params.iter().cloned());
     assert!(
-        scan_loop_hoistable_lists(&input.ops, 0, &pre, &plan)
+        scan_loop_hoistable_lists(&input.ops, 1, &pre, &plan)
             .1
             .contains("lst"),
         "the scanner-only fixture explicitly uses TIR-owned releases"
@@ -302,7 +311,7 @@ fn list_storage_loop_certification_uses_actual_native_owner_custody() {
         let mut state = ListIndexFastPathState::new(&roots);
         let preheader = builder.create_block();
         let (_, generic) = super::scan_loop_hoistable_lists(
-            &input.ops, 0, &pre, &plan, &mut state, preheader, &roots,
+            &input.ops, 1, &pre, &plan, &mut state, preheader, &roots,
         );
         assert_eq!(
             generic.contains("lst"),
@@ -489,6 +498,7 @@ fn native_sibling_loop_list_storage_compiles_through_both_loop_producers() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         });
     }
@@ -539,6 +549,7 @@ fn tir_drop_hoist_fixture_roots(
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
     let analysis = preanalyze_function_ir(&input, plan);
@@ -581,7 +592,9 @@ fn sum_reduction_detects_canonical_pattern() {
     //   for x in list_of_ints:
     //       total += x
     let mut ops = vec![
-        list_int_new("my_list"),
+        storage_const("storage_count", 4),
+        storage_const("storage_fill", 0),
+        list_int_new("my_list", "storage_count", "storage_fill"),
         // 0: loop_start
         OpIR {
             kind: "loop_start".to_string(),
@@ -591,7 +604,7 @@ fn sum_reduction_detects_canonical_pattern() {
         OpIR {
             kind: "loop_index_start".to_string(),
             out: Some("idx".to_string()),
-            args: Some(vec!["start_val".to_string()]),
+            args: Some(vec!["storage_fill".to_string()]),
             ..OpIR::default()
         },
         // 2: index  list[idx]  -> elem
@@ -619,7 +632,7 @@ fn sum_reduction_detects_canonical_pattern() {
         // 5: loop_index_next
         OpIR {
             kind: "loop_index_next".to_string(),
-            args: Some(vec!["next_idx".to_string()]),
+            args: Some(vec!["idx".to_string()]),
             out: Some("idx_next".to_string()),
             ..OpIR::default()
         },
@@ -636,34 +649,41 @@ fn sum_reduction_detects_canonical_pattern() {
     ];
 
     let plan = representation_plan_for_ops(&ops);
-    let result = scan_loop_int_sum_reduction(&ops, 2, "idx", &plan);
+    let result = match_loop_int_sum_shape(&ops, 4, "idx", &plan);
     assert!(result.is_some(), "canonical sum reduction must be detected");
     let candidate = result.unwrap();
     assert_eq!(candidate.list_name, "my_list");
     assert_eq!(candidate.acc_store_slot, "total");
     assert_eq!(candidate.add_out_name, "sum_result");
     assert_eq!(candidate.acc_operand_name, "total");
-    assert_eq!(candidate.loop_end_idx, 8);
+    assert_eq!(candidate.loop_end_idx, 10);
     // A result-carrying store cannot be erased by the reduction rewrite. The
     // sentinel and binding-only out shapes still describe the same one slot.
-    ops[5].out = Some("snapshot".into());
-    assert!(scan_loop_int_sum_reduction(&ops, 2, "idx", &plan).is_none());
-    ops[5].out = Some("none".into());
-    assert!(scan_loop_int_sum_reduction(&ops, 2, "idx", &plan).is_some());
-    ops[5].var = None;
-    ops[5].out = Some("total".into());
-    assert!(scan_loop_int_sum_reduction(&ops, 2, "idx", &plan).is_some());
+    ops[7].out = Some("snapshot".into());
+    assert!(match_loop_int_sum_shape(&ops, 4, "idx", &plan).is_none());
+    ops[7].out = Some("none".into());
+    assert!(match_loop_int_sum_shape(&ops, 4, "idx", &plan).is_some());
+    ops[7].var = None;
+    ops[7].out = Some("total".into());
+    assert!(match_loop_int_sum_shape(&ops, 4, "idx", &plan).is_some());
+    // Nothing proves `total` an inline int: its adds stay checked, since
+    // unrolled unchecked `i64` adds would wrap where Python promotes.
+    assert!(!plan.is_inline_safe_int_name("total"));
+    assert!(scan_loop_int_sum_reduction(&ops, 4, "idx", &plan).is_none());
 }
 
 #[test]
 fn sum_reduction_detects_reversed_add_operands() {
     // add [elem, total] instead of [total, elem]
     let ops = vec![
-        list_int_new("lst"),
+        storage_const("storage_count", 4),
+        storage_const("storage_fill", 0),
+        list_int_new("lst", "storage_count", "storage_fill"),
+        op_kind("loop_start"),
         OpIR {
             kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
-            args: Some(vec!["zero".to_string()]),
+            args: Some(vec!["storage_fill".to_string()]),
             ..OpIR::default()
         },
         OpIR {
@@ -686,13 +706,20 @@ fn sum_reduction_detects_reversed_add_operands() {
             ..OpIR::default()
         },
         OpIR {
+            kind: "loop_index_next".to_string(),
+            args: Some(vec!["i".to_string()]),
+            out: Some("i_next".to_string()),
+            ..OpIR::default()
+        },
+        op_kind("loop_continue"),
+        OpIR {
             kind: "loop_end".to_string(),
             ..OpIR::default()
         },
     ];
 
     let plan = representation_plan_for_ops(&ops);
-    let result = scan_loop_int_sum_reduction(&ops, 1, "i", &plan);
+    let result = match_loop_int_sum_shape(&ops, 4, "i", &plan);
     assert!(
         result.is_some(),
         "reversed operand sum reduction must be detected"
@@ -705,11 +732,13 @@ fn sum_reduction_detects_reversed_add_operands() {
 #[test]
 fn sum_reduction_rejects_non_bce_safe() {
     let ops = vec![
-        list_int_new("lst"),
+        storage_const("storage_count", 4),
+        storage_const("storage_fill", 0),
+        list_int_new("lst", "storage_count", "storage_fill"),
         OpIR {
             kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
-            args: Some(vec!["zero".to_string()]),
+            args: Some(vec!["storage_fill".to_string()]),
             ..OpIR::default()
         },
         OpIR {
@@ -739,7 +768,7 @@ fn sum_reduction_rejects_non_bce_safe() {
     let plan = representation_plan_for_ops(&ops);
 
     assert!(
-        scan_loop_int_sum_reduction(&ops, 1, "i", &plan).is_none(),
+        match_loop_int_sum_shape(&ops, 3, "i", &plan).is_none(),
         "non-bce_safe index must disqualify sum reduction"
     );
 }
@@ -747,11 +776,13 @@ fn sum_reduction_rejects_non_bce_safe() {
 #[test]
 fn sum_reduction_rejects_call_in_body() {
     let ops = vec![
-        list_int_new("lst"),
+        storage_const("storage_count", 4),
+        storage_const("storage_fill", 0),
+        list_int_new("lst", "storage_count", "storage_fill"),
         OpIR {
             kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
-            args: Some(vec!["zero".to_string()]),
+            args: Some(vec!["storage_fill".to_string()]),
             ..OpIR::default()
         },
         OpIR {
@@ -788,7 +819,7 @@ fn sum_reduction_rejects_call_in_body() {
     let plan = representation_plan_for_ops(&ops);
 
     assert!(
-        scan_loop_int_sum_reduction(&ops, 1, "i", &plan).is_none(),
+        match_loop_int_sum_shape(&ops, 3, "i", &plan).is_none(),
         "call in loop body must disqualify sum reduction"
     );
 }
@@ -796,11 +827,13 @@ fn sum_reduction_rejects_call_in_body() {
 #[test]
 fn sum_reduction_rejects_nested_loop() {
     let ops = vec![
-        list_int_new("lst"),
+        storage_const("storage_count", 4),
+        storage_const("storage_fill", 0),
+        list_int_new("lst", "storage_count", "storage_fill"),
         OpIR {
             kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
-            args: Some(vec!["zero".to_string()]),
+            args: Some(vec!["storage_fill".to_string()]),
             ..OpIR::default()
         },
         OpIR {
@@ -839,7 +872,7 @@ fn sum_reduction_rejects_nested_loop() {
     let plan = representation_plan_for_ops(&ops);
 
     assert!(
-        scan_loop_int_sum_reduction(&ops, 1, "i", &plan).is_none(),
+        match_loop_int_sum_shape(&ops, 3, "i", &plan).is_none(),
         "nested loop must disqualify sum reduction"
     );
 }
@@ -848,11 +881,13 @@ fn sum_reduction_rejects_nested_loop() {
 fn sum_reduction_rejects_wrong_index_var() {
     // Index uses a different variable than the loop induction variable
     let ops = vec![
-        list_int_new("lst"),
+        storage_const("storage_count", 4),
+        storage_const("storage_fill", 0),
+        list_int_new("lst", "storage_count", "storage_fill"),
         OpIR {
             kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
-            args: Some(vec!["zero".to_string()]),
+            args: Some(vec!["storage_fill".to_string()]),
             ..OpIR::default()
         },
         OpIR {
@@ -882,7 +917,7 @@ fn sum_reduction_rejects_wrong_index_var() {
     let plan = representation_plan_for_ops(&ops);
 
     assert!(
-        scan_loop_int_sum_reduction(&ops, 1, "i", &plan).is_none(),
+        match_loop_int_sum_shape(&ops, 3, "i", &plan).is_none(),
         "index with non-induction variable must disqualify"
     );
 }
@@ -924,7 +959,7 @@ fn sum_reduction_rejects_non_list_int() {
     let plan = representation_plan_for_ops(&ops);
 
     assert!(
-        scan_loop_int_sum_reduction(&ops, 0, "i", &plan).is_none(),
+        match_loop_int_sum_shape(&ops, 0, "i", &plan).is_none(),
         "non-list_int container must disqualify"
     );
 }
@@ -932,11 +967,13 @@ fn sum_reduction_rejects_non_list_int() {
 #[test]
 fn sum_reduction_rejects_multiple_stores() {
     let ops = vec![
-        list_int_new("lst"),
+        storage_const("storage_count", 4),
+        storage_const("storage_fill", 0),
+        list_int_new("lst", "storage_count", "storage_fill"),
         OpIR {
             kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
-            args: Some(vec!["zero".to_string()]),
+            args: Some(vec!["storage_fill".to_string()]),
             ..OpIR::default()
         },
         OpIR {
@@ -972,7 +1009,7 @@ fn sum_reduction_rejects_multiple_stores() {
     let plan = representation_plan_for_ops(&ops);
 
     assert!(
-        scan_loop_int_sum_reduction(&ops, 1, "i", &plan).is_none(),
+        match_loop_int_sum_shape(&ops, 3, "i", &plan).is_none(),
         "multiple store_var ops must disqualify"
     );
 }
@@ -981,11 +1018,13 @@ fn sum_reduction_rejects_multiple_stores() {
 fn sum_reduction_rejects_add_elem_mismatch() {
     // add operands don't include the index element
     let ops = vec![
-        list_int_new("lst"),
+        storage_const("storage_count", 4),
+        storage_const("storage_fill", 0),
+        list_int_new("lst", "storage_count", "storage_fill"),
         OpIR {
             kind: "loop_index_start".to_string(),
             out: Some("i".to_string()),
-            args: Some(vec!["zero".to_string()]),
+            args: Some(vec!["storage_fill".to_string()]),
             ..OpIR::default()
         },
         OpIR {
@@ -1015,7 +1054,7 @@ fn sum_reduction_rejects_add_elem_mismatch() {
     let plan = representation_plan_for_ops(&ops);
 
     assert!(
-        scan_loop_int_sum_reduction(&ops, 1, "i", &plan).is_none(),
+        match_loop_int_sum_shape(&ops, 3, "i", &plan).is_none(),
         "add operand mismatch must disqualify"
     );
 }
@@ -1025,7 +1064,9 @@ fn sum_reduction_rejects_add_elem_mismatch() {
 #[test]
 fn scan_loop_hoistable_lists_treats_store_index_as_mutation() {
     let flat_ops = vec![
-        list_int_new("lst"),
+        storage_const("storage_count", 4),
+        storage_const("storage_fill", 0),
+        list_int_new("lst", "storage_count", "storage_fill"),
         OpIR {
             kind: "loop_start".to_string(),
             ..OpIR::default()
@@ -1051,9 +1092,9 @@ fn scan_loop_hoistable_lists_treats_store_index_as_mutation() {
         },
     ];
     let flat_plan = representation_plan_for_ops(&flat_ops);
-    let flat_pre_loop_defined = collect_pre_loop_defined_names(&flat_ops, 1);
+    let flat_pre_loop_defined = collect_pre_loop_defined_names(&flat_ops, 3);
     let (flat_hoist, generic_hoist) =
-        scan_loop_hoistable_lists(&flat_ops, 1, &flat_pre_loop_defined, &flat_plan);
+        scan_loop_hoistable_lists(&flat_ops, 3, &flat_pre_loop_defined, &flat_plan);
     assert!(
         !flat_hoist.contains("lst"),
         "store_index must invalidate flat-list hoisting"
@@ -1114,7 +1155,9 @@ fn scan_loop_hoistable_lists_treats_call_and_alias_escape_as_mutation() {
     // the callee (e.g. list.append), leaving a hoisted data_ptr/len stale — a silent
     // wrong answer or use-after-free. It must NOT be hoistable.
     let call_ops = vec![
-        list_int_new("lst"),
+        storage_const("storage_count", 4),
+        storage_const("storage_fill", 0),
+        list_int_new("lst", "storage_count", "storage_fill"),
         OpIR {
             kind: "loop_start".to_string(),
             ..OpIR::default()
@@ -1138,8 +1181,8 @@ fn scan_loop_hoistable_lists_treats_call_and_alias_escape_as_mutation() {
         },
     ];
     let plan = representation_plan_for_ops(&call_ops);
-    let pre = collect_pre_loop_defined_names(&call_ops, 1);
-    let (flat_hoist, _generic) = scan_loop_hoistable_lists(&call_ops, 1, &pre, &plan);
+    let pre = collect_pre_loop_defined_names(&call_ops, 3);
+    let (flat_hoist, _generic) = scan_loop_hoistable_lists(&call_ops, 3, &pre, &plan);
     assert!(
         !flat_hoist.contains("lst"),
         "a list passed to an opaque call must not be hoistable (callee may realloc it)"
@@ -1148,7 +1191,9 @@ fn scan_loop_hoistable_lists_treats_call_and_alias_escape_as_mutation() {
     // Aliasing: `alias = copy_var(lst); alias.append(cur)` mutates the shared
     // buffer, so `lst` (indexed hoist candidate) must be non-hoistable too.
     let alias_ops = vec![
-        list_int_new("lst"),
+        storage_const("storage_count", 4),
+        storage_const("storage_fill", 0),
+        list_int_new("lst", "storage_count", "storage_fill"),
         OpIR {
             kind: "loop_start".to_string(),
             ..OpIR::default()
@@ -1176,8 +1221,8 @@ fn scan_loop_hoistable_lists_treats_call_and_alias_escape_as_mutation() {
         },
     ];
     let plan = representation_plan_for_ops(&alias_ops);
-    let pre = collect_pre_loop_defined_names(&alias_ops, 1);
-    let (flat_hoist, _generic) = scan_loop_hoistable_lists(&alias_ops, 1, &pre, &plan);
+    let pre = collect_pre_loop_defined_names(&alias_ops, 3);
+    let (flat_hoist, _generic) = scan_loop_hoistable_lists(&alias_ops, 3, &pre, &plan);
     assert!(
         !flat_hoist.contains("lst"),
         "mutation of an alias must invalidate hoisting of the original list buffer"
@@ -1195,9 +1240,37 @@ fn scan_loop_hoistable_lists_treats_call_and_alias_escape_as_mutation() {
     );
 }
 
+#[test]
+fn generic_list_raw_indexing_requires_exact_constructor_provenance() {
+    use super::super::fc::list_index_fast_path::generic_list_int_lane_eligible;
+    let mut ops = typed_list_hoist_fixture();
+    let index = ops[4].clone();
+    // A constructor still authorizes the generic lane even when the stronger
+    // flat-storage fact is unavailable.
+    ops[2] = OpIR {
+        kind: "list_new".into(),
+        args: Some(vec!["total".into()]),
+        out: Some("lst".into()),
+        ..OpIR::default()
+    };
+    let plan = representation_plan_for_ops(&ops);
+    assert!(generic_list_int_lane_eligible(&plan, &index, true));
+    ops[2] = OpIR {
+        kind: "call".into(),
+        args: Some(vec!["make_list".into()]),
+        out: Some("lst".into()),
+        type_hint: Some("list".into()),
+        ..OpIR::default()
+    };
+    let plan = representation_plan_for_ops(&ops);
+    assert!(!generic_list_int_lane_eligible(&plan, &index, true));
+    let pre = collect_pre_loop_defined_names(&ops, 3);
+    let (flat, generic) = scan_loop_hoistable_lists(&ops, 3, &pre, &plan);
+    assert!(!flat.contains("lst") && !generic.contains("lst"));
+}
+
 fn typed_list_hoist_fixture() -> Vec<OpIR> {
     vec![
-        list_int_new("lst"),
         OpIR {
             kind: "const".into(),
             value: Some(0),
@@ -1210,6 +1283,7 @@ fn typed_list_hoist_fixture() -> Vec<OpIR> {
             out: Some("total".into()),
             ..OpIR::default()
         },
+        list_int_new("lst", "total", "idx"),
         OpIR {
             kind: "loop_start".into(),
             ..OpIR::default()
@@ -1422,7 +1496,7 @@ fn list_hoisting_fences_nested_effects_and_pairs_indexed_preludes() {
     let plan = representation_plan_for_ops(&ops);
     let pre = collect_pre_loop_defined_names(&ops, 3);
     assert!(
-        scan_loop_hoistable_lists(&ops, 3, &pre, &plan)
+        !scan_loop_hoistable_lists(&ops, 3, &pre, &plan)
             .0
             .contains("lst")
     );
@@ -1500,14 +1574,14 @@ fn list_hoisting_requires_real_preheader_and_definition_dominance() {
     });
     bypass.extend_from_slice(&fixture[4..]);
 
-    let mut partial_definition = fixture[1..3].to_vec();
+    let mut partial_definition = fixture[..2].to_vec();
     partial_definition.push(OpIR {
         kind: "br_if".into(),
         args: Some(vec!["idx".into()]),
         value: Some(91),
         ..OpIR::default()
     });
-    partial_definition.push(fixture[0].clone());
+    partial_definition.push(fixture[2].clone());
     partial_definition.push(OpIR {
         kind: "label".into(),
         value: Some(91),
@@ -1571,4 +1645,27 @@ fn pre_loop_definitions_follow_result_and_binding_roles() {
         .map(str::to_string)
         .collect()
     );
+}
+
+#[test]
+fn generic_list_observation_caches_every_physical_layout_discriminator() {
+    use super::super::fc::list_index_fast_path::observe_generic_list_storage;
+    with_list_storage_state(|builder, state, _, _| {
+        let entry = builder.current_block().unwrap();
+        let object = builder.block_params(entry)[1];
+        let first = observe_generic_list_storage(builder, state, "list", object);
+        let second = observe_generic_list_storage(builder, state, "list", object);
+        assert_eq!(first.data, second.data);
+        assert_eq!(first.len, second.len);
+        assert_eq!(first.is_bool, second.is_bool);
+        assert_eq!(first.is_int, second.is_int);
+        for field in [
+            ListStorageField::Data,
+            ListStorageField::Len,
+            ListStorageField::IsBool,
+            ListStorageField::IsInt,
+        ] {
+            assert!(state.get(field, "list", builder).is_some());
+        }
+    });
 }

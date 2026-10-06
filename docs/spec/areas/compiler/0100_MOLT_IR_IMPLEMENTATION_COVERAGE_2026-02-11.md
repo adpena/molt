@@ -6,7 +6,10 @@ Scope: `docs/spec/areas/compiler/0100_MOLT_IR.md` instruction list vs repository
 
 ## Snapshot Summary
 - Historical baseline (before 2026-02-11 closure work): 109 implemented, 13 partial, 12 missing.
-- Current snapshot in this document: 109 implemented, 25 partial, 0 missing.
+- Original snapshot: 109 implemented, 25 partial, 0 missing.
+- Constructor consolidation retires `MemoryViewNew` and `MemoryViewToBytes`;
+  ordinary callable binding now owns both Python operations. Remaining inventory:
+  107 implemented, 25 partial, 0 missing.
 - Gate alignment:
   - The shared verifier core, exposed publicly via
     `python3 -m molt.cli debug verify`, is green (`missing=0`) for spec-op
@@ -96,8 +99,6 @@ Scope: `docs/spec/areas/compiler/0100_MOLT_IR.md` instruction list vs repository
 | Object/Layout | SliceNew | implemented | `SLICE_NEW` | `src/molt/frontend/__init__.py:17273` |  |
 | Object/Layout | BytearrayFromObj | implemented | `BYTEARRAY_FROM_OBJ` | `src/molt/frontend/__init__.py:18147` |  |
 | Object/Layout | IntArrayFromSeq | implemented | `INTARRAY_FROM_SEQ` | `src/molt/frontend/__init__.py:8326` |  |
-| Object/Layout | MemoryViewNew | implemented | `MEMORYVIEW_NEW` | `src/molt/frontend/__init__.py:18197` |  |
-| Object/Layout | MemoryViewToBytes | implemented | `MEMORYVIEW_TOBYTES` | `src/molt/frontend/__init__.py:14274` |  |
 | Object/Layout | RangeNew | implemented | `RANGE_NEW` | `src/molt/frontend/__init__.py:7706` |  |
 | Object/Layout | Buffer2DNew | implemented | `BUFFER2D_NEW` | `src/molt/frontend/__init__.py:13425` |  |
 | Object/Layout | Buffer2DGet | implemented | `BUFFER2D_GET` | `src/molt/frontend/__init__.py:13436` |  |
@@ -126,7 +127,7 @@ Scope: `docs/spec/areas/compiler/0100_MOLT_IR.md` instruction list vs repository
 | Exceptions | ExceptionClear | implemented | `EXCEPTION_CLEAR` | `src/molt/frontend/__init__.py:3898` |  |
 | Exceptions | ExceptionKind | implemented | `EXCEPTION_KIND` | `src/molt/frontend/__init__.py:3889` |  |
 | Exceptions | ExceptionMessage | partial | `EXCEPTION_MESSAGE` | `src/molt/frontend/__init__.py:26747` | Lowering case exists; direct emitter usage is not obvious in current frontend paths. |
-| Exceptions | ExceptionSetCause | implemented | `EXCEPTION_SET_CAUSE` | `src/molt/frontend/__init__.py:23191` |  |
+| Exceptions | Source raise admission | implemented | `CALL molt_exception_prepare_raise` | `src/molt/frontend/visitors/statement_control_flow.py` | Owned normalized instance, including class cause. |
 | Exceptions | ExceptionContextSet | implemented | `EXCEPTION_CONTEXT_SET` | `src/molt/frontend/__init__.py:21181` |  |
 | Exceptions | Raise | implemented | `RAISE` | `src/molt/frontend/__init__.py:3703` |  |
 | Generators/Async | AllocGenerator | partial | `ASYNCGEN_NEW` | `src/molt/frontend/__init__.py:9978` | Generator allocation is represented via asyncgen/generator op family, not literal `ALLOC_GENERATOR`. |

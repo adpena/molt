@@ -174,10 +174,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
             return self._emit_global_get(name)
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        if self.current_func_name == "molt_main" and self.module_obj is not None:
-            module_val = self.module_obj
-        else:
-            module_val = self._get_or_emit_module_cache(self.module_name)
+        module_val = self._lexical_module_owner()
         # Propagate the last-known type hint for this module attribute.
         # When a module-scope variable was assigned from a typed expression
         # (e.g., count = 0 → int), the MODULE_GET_ATTR result inherits
@@ -194,14 +191,19 @@ class AttributeAccessMixin(GeneratorMixinBase):
         return res
 
     def _record_imported_module_attr_mutation(self, target: ast.Attribute) -> None:
-        if not isinstance(target.value, ast.Name):
-            return
-        module_name = self._imported_module_binding_target(target.value.id)
+        module_name = None
+        if isinstance(target.value, ast.Name):
+            module_name = self._imported_module_binding_target(target.value.id)
+        else:
+            parts = self._dotted_attribute_parts(target.value)
+            if parts is not None:
+                module_name = self._dotted_imported_module_target(parts)
         if module_name is None:
             return
         mutation = (module_name, target.attr)
         self.imported_module_attr_mutations.add(mutation)
-        self.global_imported_module_attr_mutations.add(mutation)
+        if self.current_func_name == "molt_main":
+            self.global_imported_module_attr_mutations.add(mutation)
 
     def _imported_module_attr_is_stable(self, module_name: str, attr: str) -> bool:
         mutation = (module_name, attr)
@@ -225,10 +227,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
             return
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
-        if self.current_func_name == "molt_main" and self.module_obj is not None:
-            module_val = self.module_obj
-        else:
-            module_val = self._get_or_emit_module_cache(self.module_name)
+        module_val = self._lexical_module_owner()
         self.emit(
             MoltOp(
                 kind="MODULE_SET_ATTR",
@@ -1129,11 +1128,15 @@ class AttributeAccessMixin(GeneratorMixinBase):
     def _emit_attribute_store(
         self,
         obj: MoltValue | None,
-        obj_expr: ast.AST | None,
+        obj_expr: ast.expr | None,
         obj_name: str | None,
         attr: str,
         value_node: MoltValue,
     ) -> None:
+        if obj_expr is not None:
+            self._record_imported_module_attr_mutation(
+                ast.Attribute(value=obj_expr, attr=attr, ctx=ast.Store())
+            )
         if obj_expr is not None and isinstance(obj_expr, ast.Name):
             class_name = obj_expr.id
             if class_name in self.classes:

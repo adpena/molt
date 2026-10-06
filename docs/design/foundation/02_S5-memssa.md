@@ -212,6 +212,7 @@ Dependencies: `AliasAnalysis` (must be computed first), `ImmediateDoms`, `DomChi
 Responsibilities:
 - Store-to-load forwarding: for each `LoadAttr` with `load_purity == ProvenPure`, consult MemorySSA for the single reaching def. If the reaching def is a `store` with an exact-site callback-free proof from the shared typed-slot plan, at a statically-known offset that matches the load's region, and the stored `ValueId` is in scope (dominates the load), replace the load with a `Copy` of the stored value. An unproved replacing `store` is not a source: releasing the old value can reenter Python and change the slot before the store returns.
 - Redundant-load elimination: for each `LoadAttr`, if MemorySSA shows the same `(object_root, offset)` was already loaded under the same reaching def version in a dominating block, replace the load with a `Copy` of the earlier load's result.
+- Ownership: a load returns an owned reference, and its replacement keeps it. The `Copy` of a heap value is an owned alias (`binding_alias`), and the `Copy` of a raw carrier stays transparent (`ownership_lattice_min::Replacements`, design 20 §1.2). No `IncRef` is placed beside it.
 - Post-replacement: call `MemorySsaResult::invalidate_op` for removed loads (they are now Uses of nothing), then invalidate `AnalysisId::AliasAnalysis` and `AnalysisId::MemorySSA` (the copy prop and DCE passes that follow will clean up the `Copy` chains).
 - Mutation class: `Mutates::OpsOnly` (no new blocks or edges).
 
@@ -561,7 +562,7 @@ def f(x: int) -> int:
 
 assert f(1 << 60) == 1 << 60  # must stay BigInt-correct after forwarding
 ```
-Expected: `n.v` forwarded to `x`, which is `MaybeBigInt`. The forwarded `Copy(x)` carries the `MaybeBigInt` repr — no trusted-unbox introduced.
+Expected: `n.v` forwarded to `x`, which is `MaybeBigInt`. The forwarded `Copy(x)`, an owned alias of a heap-capable value, stays boxed — no trusted-unbox introduced.
 
 **Cross-backend: all 4 backends must produce identical results on all of the above.**
 
@@ -612,7 +613,7 @@ Every benchmark is run on all 3 backends (native Cranelift, WASM, LLVM) in relea
    slot planner may remove neutral overwrites before SROA; it cannot erase a
    terminal store or a callback-capable class allocation to force eligibility.
 
-3. **Cross-backend parity on forwarded values.** Store-to-load forwarding introduces `Copy` ops that must round-trip through `lower_to_simple` and back. The `Copy` with no `_original_kind` is the pure SSA-move case, which all backends already handle correctly (confirmed by `copy_is_known_local_alias` in `alias_analysis.rs`). Risk: WASM `emit_get_boxed_for_repr` or LIR repr inference may assign a different repr to the forwarded value than to the original load. Mitigation: the forwarded `Copy` inherits the `ValueId` type from the store's value operand, which carries the correct repr from `representation_plan.rs`; this is the same path that `unboxing.rs` already exercises.
+3. **Cross-backend parity on forwarded values.** Store-to-load forwarding introduces `Copy` ops that must round-trip through `lower_to_simple` and back. A well-formed `Copy` with no `_original_kind` is the pure SSA-move case recognized by `value_identity::copy_value_source`. The separate `value_identity::no_heap_alias_source` fact preserves heap identity and ownership roots, including effectful runtime guards; that fact never grants permission to erase their checks or exceptions. Risk: WASM `emit_get_boxed_for_repr` or LIR repr inference may assign a different repr to the forwarded value than to the original load. Mitigation: the forwarded `Copy` inherits the `ValueId` type from the store's value operand, which carries the correct repr from `representation_plan.rs`; this is the same path that `unboxing.rs` already exercises.
 
 4. **LICM-of-loads needs destination admission.** Original-site purity is necessary but insufficient for hoisting, especially across zero-iteration or exception paths. The receiver must be alive, its backing and present slot established at the destination, and memory invariant. The illustrative hook above is not this complete proof; current LICM excludes field loads. Missing/dictionary fallback cannot be suppressed by an opcode or offset classifier.
 

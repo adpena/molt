@@ -71,6 +71,7 @@ fn verify_lir_accepts_matching_branch_argument_representations() {
     blocks.insert(BlockId(1), exit);
 
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "matching_branch_repr".to_string(),
         param_names: vec!["x".to_string()],
         param_types: vec![TirType::I64],
@@ -111,6 +112,7 @@ fn verify_lir_rejects_branch_argument_repr_mismatch() {
     blocks.insert(BlockId(1), exit);
 
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "mismatched_branch_repr".to_string(),
         param_names: vec!["x".to_string()],
         param_types: vec![TirType::DynBox],
@@ -173,6 +175,7 @@ fn verify_lir_rejects_non_bool_branch_condition() {
     blocks.insert(BlockId(2), else_block);
 
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "non_bool_cond".to_string(),
         param_names: vec!["cond".to_string(), "a".to_string(), "b".to_string()],
         param_types: vec![TirType::I64, TirType::I64, TirType::I64],
@@ -207,6 +210,7 @@ fn verify_lir_rejects_entry_block_arity_mismatch() {
     blocks.insert(BlockId(0), entry);
 
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "entry_arity_mismatch".to_string(),
         param_names: vec!["x".to_string()],
         param_types: vec![TirType::I64],
@@ -241,6 +245,7 @@ fn verify_lir_rejects_entry_block_repr_mismatch() {
     blocks.insert(BlockId(0), entry);
 
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "entry_repr_mismatch".to_string(),
         param_names: vec!["x".to_string()],
         param_types: vec![TirType::I64],
@@ -298,6 +303,7 @@ fn verify_lir_accepts_loop_carried_i64_block_params() {
     blocks.insert(BlockId(2), body);
 
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "loop_i64".to_string(),
         param_names: vec!["x".to_string()],
         param_types: vec![TirType::I64],
@@ -361,6 +367,7 @@ fn verify_lir_rejects_non_dominating_branch_value_use() {
     blocks.insert(BlockId(3), exit);
 
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "nondominating_branch_value".to_string(),
         param_names: vec!["cond".to_string()],
         param_types: vec![TirType::Bool],
@@ -427,6 +434,7 @@ fn verify_lir_rejects_conditional_branch_with_non_bool_semantic_type() {
     blocks.insert(BlockId(2), else_block);
 
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "wrong_bool_semantics".to_string(),
         param_names: vec!["cond".to_string(), "a".to_string(), "b".to_string()],
         param_types: vec![TirType::Bool, TirType::I64, TirType::I64],
@@ -474,6 +482,7 @@ fn verify_lir_accepts_explicit_box_unbox_ops() {
     blocks.insert(BlockId(0), entry);
 
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "box_then_unbox".to_string(),
         param_names: vec!["x".to_string()],
         param_types: vec![TirType::I64],
@@ -509,6 +518,7 @@ fn verify_lir_rejects_result_id_drift_between_tir_and_lir_op_surfaces() {
     blocks.insert(BlockId(0), entry);
 
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "result_id_drift".to_string(),
         param_names: vec!["x".to_string()],
         param_types: vec![TirType::I64],
@@ -556,6 +566,7 @@ fn print_lir_function_emits_representation_annotations() {
     blocks.insert(BlockId(0), entry);
 
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "print_me".to_string(),
         param_names: vec!["x".to_string()],
         param_types: vec![TirType::I64],
@@ -615,6 +626,7 @@ fn verify_lir_rejects_malformed_checked_i64_arithmetic_contract() {
     blocks.insert(BlockId(0), entry);
 
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "bad_checked_add".to_string(),
         param_names: vec!["a".to_string(), "b".to_string()],
         param_types: vec![TirType::I64, TirType::I64],

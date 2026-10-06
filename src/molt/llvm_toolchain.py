@@ -1520,6 +1520,11 @@ def _content_paths(
     prefix: Path,
     required_libraries: tuple[Path, ...],
 ) -> tuple[Path, ...]:
+    """The SDK content LLVM consumers read: headers and the link-closure libraries.
+
+    Only regular files enter, so unrelated trees (lldb's Python bindings, tools,
+    docs) and dangling distro symlinks never become build inputs.
+    """
     headers: set[Path] = set()
     headers.update(path for path in (prefix / "include").rglob("*") if path.is_file())
     clang_resource_root = prefix / "lib" / "clang"
@@ -1531,6 +1536,14 @@ def _content_paths(
             if path.is_file()
         )
     return tuple(sorted(headers.union(required_libraries)))
+
+
+def sdk_content_paths(verification: LlvmPrefixVerification) -> tuple[Path, ...]:
+    """The verified SDK's consumed content set (headers plus attested libraries)."""
+    return _content_paths(
+        verification.prefix,
+        tuple(verification.prefix / fact.path for fact in verification.library_facts),
+    )
 
 
 def _content_manifest(
@@ -2009,10 +2022,7 @@ def write_llvm_toolchain_attestation(
             )
     content_facts = verification.content_facts
     content_digest = verification.content_digest
-    required_libraries = tuple(
-        verification.prefix / fact.path for fact in verification.library_facts
-    )
-    content_paths = _content_paths(verification.prefix, required_libraries)
+    content_paths = sdk_content_paths(verification)
     rehashed_for_publication = False
     if content_digest is None or any(not fact.sha256 for fact in content_facts):
         content_facts, content_digest = _content_manifest(

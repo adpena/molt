@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import ast
 from itertools import product
 
+import pytest
+
 from molt.compiler_analysis import python_binding_flow as flow
-from molt.compiler_analysis.python_binding_facts import (
+from molt.compiler_analysis.python_value_identity import (
     OTHER_IDENTITY,
     UNBOUND_IDENTITY,
     PythonIdentity,
@@ -17,6 +20,20 @@ from molt.compiler_analysis.static_truth import (
 )
 
 INERT = int(PythonIdentity.INERT_VALUE)
+
+
+def _has_unknown_shape(result: StaticExpressionResult) -> bool:
+    # Provenance is orthogonal to shape; preserve all prior shape/lifetime checks.
+    from dataclasses import replace
+
+    return (
+        replace(
+            result,
+            identities=UNKNOWN_EXPRESSION_RESULT.identities,
+            exposes_module_globals=False,
+        )
+        == UNKNOWN_EXPRESSION_RESULT
+    )
 
 
 def _shapes() -> tuple[StaticExpressionResult, ...]:
@@ -181,7 +198,7 @@ def test_mutation_frontier_matches_exhaustive_expiry_across_storage_transitions(
             state = pool.taint_slots(base, 1 << 0)
             state = pool.taint_slots(state, 1 << (far + 1))
         elif mode in {"namespace", "rebound", "join-dirty", "domain-growth"}:
-            state = pool.taint_module_bindings(base)
+            state = pool.taint_exposed_bindings(base)
             if mode == "rebound":
                 state = pool.set_binding(
                     state, 0, OTHER_IDENTITY, result=shape, owner_token=owner
@@ -392,7 +409,7 @@ def test_owner_comparison_and_resolution_follow_late_domain_growth() -> None:
         0,
         ((0, OTHER_IDENTITY, None, result, 7), (4095, OTHER_IDENTITY, None, result, 9)),
     )
-    exposed = pool.taint_module_bindings(base)
+    exposed = pool.taint_exposed_bindings(base)
     assert pool._binding_environments[exposed] is pool._binding_environments[base]
     assert pool.owner_tokens_equal(base, exposed)
     assert pool._binding_resolution(exposed, 0).clean
@@ -400,7 +417,7 @@ def test_owner_comparison_and_resolution_follow_late_domain_growth() -> None:
     assert not pool._binding_resolution(exposed, 0).clean
     assert pool._binding_resolution(exposed, 0).owner_token == 7
     assert pool.owner_token(exposed, 0) == 0
-    assert pool.result(exposed, 0) == UNKNOWN_EXPRESSION_RESULT
+    assert _has_unknown_shape(pool.result(exposed, 0))
     assert pool.binding(exposed, 4096) == UNBOUND_IDENTITY | OTHER_IDENTITY
     assert not pool.owner_tokens_equal(base, exposed)
     rebound = pool.set_binding(exposed, 0, OTHER_IDENTITY, result=result, owner_token=7)
@@ -415,7 +432,7 @@ def test_owner_comparison_and_resolution_follow_late_domain_growth() -> None:
         _assert_frontier(pool, left)
 
 
-def test_taint_batch_and_radix_removal_preserve_absent_slot_resolution() -> None:
+def test_taint_batch_preserves_deleted_slot_custody() -> None:
     pool = flow._StatePool()
     result = StaticExpressionResult(
         kind="list", element_result=StaticExpressionResult.scalar(1)
@@ -431,16 +448,48 @@ def test_taint_batch_and_radix_removal_preserve_absent_slot_resolution() -> None
     assert pool._binding_environments[dirty].root.mutation_mask == 0
     assert pool._binding_environments[dirty].root.owner_mutation_mask == 0
     assert pool.invalidate_mutable_contents(dirty) == dirty
-    # Deleting then tainting an unbound local drops its empty trailing chunk.
+    # A deletion is present storage, not pristine absence. Taint must retain
+    # the tombstone even when its payload has no value or mutable contents.
     deleted = pool.set_binding(dirty, slots[-1], UNBOUND_IDENTITY)
-    removed = pool.taint_slots(deleted, 1 << slots[-1])
+    assert pool._binding_resolution(deleted, slots[-1]).present
+    assert pool._binding_resolution(deleted, slots[-1]).clean
+    tainted = pool.taint_slots(deleted, 1 << slots[-1])
     assert (
-        pool._binding_environments[removed].chunk_count
-        == (128 >> flow._BINDING_CHUNK_SHIFT) + 1
+        pool._binding_environments[tainted].chunk_count
+        == (slots[-1] >> flow._BINDING_CHUNK_SHIFT) + 1
     )
-    assert pool.binding(removed, slots[-1]) == UNBOUND_IDENTITY
-    assert pool._binding_resolution(removed, slots[-1]).clean
-    _assert_frontier(pool, removed)
+    assert pool.binding(tainted, slots[-1]) == UNBOUND_IDENTITY | OTHER_IDENTITY
+    raw = pool._binding_resolution(tainted, slots[-1])
+    assert raw.present and not raw.clean and raw.identities == UNBOUND_IDENTITY
+    _assert_frontier(pool, tainted)
+    pool.set_taint_domain(sum(1 << slot for slot in (*slots, 2049)))
+    assert pool.binding(tainted, slots[-1]) == UNBOUND_IDENTITY | OTHER_IDENTITY
+    assert pool._binding_resolution(tainted, slots[-1]).present
+    assert not pool._binding_resolution(tainted, 2049).present
+    rebound = pool.set_binding(tainted, slots[-1], INERT, 7)
+    assert pool.binding(rebound, slots[-1]) == INERT
+    assert pool._binding_resolution(rebound, slots[-1]).clean
+    assert pool.static_value(rebound, slots[-1]) == 7
+    _assert_frontier(pool, rebound)
+
+
+def test_radix_removal_trims_only_genuinely_absent_children() -> None:
+    pool = flow._StatePool()
+    state = pool.set_binding(0, 0, INERT, 7)
+    retained = pool._binding_environments[state].root.children[0]
+    extent = 1
+    for level in range(3):
+        filler = flow._EMPTY_BINDING_CHUNK if level == 0 else flow._EMPTY_BINDING_BRANCH
+        children = (filler, retained, filler, filler)
+        trimmed = flow._binding_branch(children, level)
+        assert trimmed.children == (filler, retained)
+        extent = (1 << (level * flow._BINDING_TREE_SHIFT)) + extent
+        assert trimmed.chunk_count == extent
+        assert flow._binding_branch(children, level, trimmed) is trimmed
+        assert (
+            flow._binding_branch((filler, filler), level) is flow._EMPTY_BINDING_BRANCH
+        )
+        retained = trimmed
 
 
 def test_duplicate_slot_batches_preserve_ordered_effective_writes() -> None:
@@ -534,7 +583,7 @@ def test_storage_diff_does_not_replace_epoch_or_absent_domain_comparison() -> No
     pool = flow._StatePool()
     pool.set_taint_domain((1 << 0) | (1 << 4096))
     base = pool.set_binding(0, 0, INERT, 1, StaticExpressionResult.scalar(1), 9)
-    exposed = pool.taint_module_bindings(base)
+    exposed = pool.taint_exposed_bindings(base)
     assert pool.changed_slots_between(base, exposed) == ()
     assert not pool.equivalent(base, exposed)
     assert not pool.owner_tokens_equal(base, exposed)
@@ -542,3 +591,128 @@ def test_storage_diff_does_not_replace_epoch_or_absent_domain_comparison() -> No
     assert pool.binding(exposed, 4096) == UNBOUND_IDENTITY | OTHER_IDENTITY
     summary = flow._HistorySummary.build(pool, (base, exposed))
     assert summary.binding(pool, 0, 4096) == UNBOUND_IDENTITY | OTHER_IDENTITY
+
+
+def test_augmented_scalar_operation_does_not_become_target_callback() -> None:
+    tree = ast.parse("counter = 0\ncounter += 1\n")
+    analysis = flow._Analyzer(
+        flow.PythonBindingFlowPolicy(), "augmented-scalar-effects"
+    ).analyze(tree)
+    statement = tree.body[-1]
+    assert isinstance(statement, ast.AugAssign)
+    fact = analysis.facts.statement_fact(statement)
+    assert fact is not None
+    # Exact builtin scalar operands have no user dispatch. Their real effect
+    # fact must not taint storage and invent a displaced callback-capable value.
+    assert not fact.effects & flow.NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS
+    completion = analysis.assignment_effects[
+        flow.PythonNodeKey.from_node(statement.target)
+    ]
+    assert not completion & (
+        flow.NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS | flow.WRITES_MODULE_METADATA
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "required_effects"),
+    [
+        ("counter = unknown\ncounter += 1\n", flow.RUNS_FINALIZER),
+        (
+            "receiver.attribute += 1\n",
+            flow.INVOKES_DESCRIPTOR | flow.RUNS_FINALIZER,
+        ),
+        (
+            "receiver[index] += 1\n",
+            flow.EXECUTES_ARBITRARY_PYTHON | flow.RUNS_FINALIZER,
+        ),
+        (
+            "exposed = globals()\nexposed |= {'__package__': 'other'}\n",
+            flow.WRITES_GLOBAL_NAMESPACE | flow.WRITES_MODULE_METADATA,
+        ),
+    ],
+)
+def test_augmented_assignment_preserves_publication_effects(
+    source: str, required_effects: int
+) -> None:
+    tree = ast.parse(source)
+    analysis = flow._Analyzer(
+        flow.PythonBindingFlowPolicy(), "augmented-publication-effects"
+    ).analyze(tree)
+    statement = tree.body[-1]
+    assert isinstance(statement, ast.AugAssign)
+    completion = analysis.assignment_effects[
+        flow.PythonNodeKey.from_node(statement.target)
+    ]
+    assert completion & required_effects == required_effects
+
+
+@pytest.mark.parametrize("inplace", [False, True])
+@pytest.mark.parametrize(
+    ("left", "operator", "right", "expected"),
+    [
+        (12, "+", 2, 14),
+        (12, "-", 2, 10),
+        (12, "*", 2, 24),
+        (12, "/", 2, 6.0),
+        (12, "//", 2, 6),
+        (12, "%", 2, 0),
+        (12, "**", 2, 144),
+        (12, "<<", 2, 48),
+        (12, ">>", 2, 3),
+        (12, "&", 2, 0),
+        (12, "|", 2, 14),
+        (12, "^", 2, 14),
+        ("a", "+", "b", "ab"),
+        ("%d", "%", 2, "2"),
+        (b"a", "*", 2, b"aa"),
+        (True, "&", False, False),
+        (1.5, "+", 2.5, 4.0),
+        (1j, "+", 2j, 3j),
+    ],
+)
+def test_binary_operator_capability_uses_retained_scalar_facts(
+    left: object, operator: str, right: object, expected: object, inplace: bool
+) -> None:
+    from molt.compiler_analysis.python_effects import expression_effect_mask
+
+    update = (
+        f"value {operator}= {right!r}"
+        if inplace
+        else f"value = value {operator} {right!r}"
+    )
+    source = f"value = {left!r}\n{update}\n"
+    namespace: dict[str, object] = {}
+    exec(compile(source, "<binary-scalar-capability-oracle>", "exec"), namespace)
+    assert namespace["value"] == expected
+    assert type(namespace["value"]) is type(expected)
+    tree = ast.parse(source)
+    analysis = flow._Analyzer(
+        flow.PythonBindingFlowPolicy(), "binary-scalar-capability"
+    ).analyze(tree)
+    statement = analysis.facts.statement_fact(tree.body[-1])
+    assert statement is not None
+    assert not statement.effects & flow.NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS
+    literal = ast.parse(f"{left!r} {operator} {right!r}", mode="eval").body
+    assert (
+        not expression_effect_mask(literal) & flow.NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS
+    )
+
+
+@pytest.mark.parametrize("inplace", [False, True])
+def test_binary_operator_unknown_values_keep_dispatch_callbacks(inplace: bool) -> None:
+    from molt.compiler_analysis.python_effects import expression_effect_mask
+
+    source = "value = unknown\n" + (
+        "value += 1\n" if inplace else "value = value + 1\n"
+    )
+    tree = ast.parse(source)
+    analysis = flow._Analyzer(
+        flow.PythonBindingFlowPolicy(), "binary-unknown-capability"
+    ).analyze(tree)
+    statement = analysis.facts.statement_fact(tree.body[-1])
+    assert statement is not None
+    assert statement.effects & flow.EXECUTES_ARBITRARY_PYTHON
+    if not inplace:
+        assert (
+            expression_effect_mask(tree.body[-1].value) & flow.EXECUTES_ARBITRARY_PYTHON
+        )

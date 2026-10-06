@@ -11,18 +11,23 @@ use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
+include!(concat!(env!("OUT_DIR"), "/protocol.rs"));
+
 pub mod evidence;
 pub mod image_cache;
 pub mod platform;
+mod process_ledger;
 
-pub use evidence::{ArtifactSummary, EventJournal, IdentitySummary, PublishedEvidence};
+pub use evidence::{
+    ArtifactSummary, EventJournal, IdentitySummary, PublishedEvidence, VerifiedEventLog,
+};
 pub use image_cache::{ImageCacheKey, ImageHashCache};
+pub use process_ledger::RecordOutcome;
 
-pub const POLICY_SCHEMA: &str = "molt.proof-process-closure.v2";
-pub const CAPABILITY_SCHEMA: &str = "molt.proof-supervisor-capability.v2";
-pub const RECEIPT_SCHEMA: &str = "molt.proof-process-closure-receipt.v3";
 const MAX_DIAGNOSTICS_PER_CLASS: usize = 16;
-const MAX_DIAGNOSTIC_BYTES: usize = 2048;
+// Keep both full diagnostic classes inside 48 KiB, leaving room for the sealed
+// capability, lifecycle, accounting and JSON framing in the 64 KiB receipt.
+const MAX_DIAGNOSTIC_BYTES: usize = (48 * 1024) / (2 * MAX_DIAGNOSTICS_PER_CLASS);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -85,19 +90,9 @@ pub struct Policy {
 pub struct ValidatedPolicy {
     pub policy: Policy,
     pub policy_sha256: String,
+    pub root_path: PathBuf,
     pub fixed: BTreeMap<PathBuf, FixedAuthority>,
     pub derived: Vec<DerivedRoot>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum EventKind {
-    ProcessCreate,
-    ProcessExit,
-    Fork,
-    Exec,
-    ThreadCreate,
-    CloneUnclassified,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -135,26 +130,54 @@ pub struct FileIdentity {
 #[serde(deny_unknown_fields)]
 pub struct ProcessEvent {
     pub sequence: u64,
-    pub kind: EventKind,
     pub process_id: u32,
-    pub parent_process_id: Option<u32>,
     pub stable_process_id: String,
-    pub image: Option<FileIdentity>,
-    pub exit_code: Option<i64>,
+    pub event: ProcessEventKind,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ProcessEventKind {
+    ProcessCreate {
+        parent_process_id: Option<u32>,
+        image: Option<FileIdentity>,
+    },
+    ProcessExit {
+        exit_code: i64,
+    },
+    Fork {
+        parent_process_id: u32,
+        image: Option<FileIdentity>,
+    },
+    Exec {
+        image: FileIdentity,
+    },
+    CloneUnclassified {
+        parent_process_id: u32,
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Accounting {
-    pub total_processes: u64,
     pub active_processes: u64,
-    pub observed_process_creates: u64,
-    pub observed_process_exits: u64,
-    pub observed_execs: u64,
+    pub process_creates: u64,
+    pub process_exits: u64,
+    pub execs: u64,
     pub root_execs: u64,
     pub root_exit_terminated_processes: u64,
-    pub completion_port_new_processes: Option<u64>,
-    pub completion_port_exits: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "source", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum KernelAccounting {
+    WindowsJob {
+        total_processes: u64,
+        active_processes: u64,
+        completion_port_new_processes: u64,
+        completion_port_exits: u64,
+    },
 }
 
 impl RootExitDisposition {
@@ -172,6 +195,7 @@ pub struct Capability {
     pub backend: String,
     pub available: bool,
     pub pre_entry_exec_authority: bool,
+    pub pre_entry_process_create_authority: bool,
     pub recursive_descendant_authority: bool,
     pub required_environment: BTreeMap<String, String>,
     pub reason: Option<String>,
@@ -181,8 +205,7 @@ pub struct Capability {
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
     pub schema: String,
-    pub platform: String,
-    pub backend: String,
+    pub capability: Capability,
     pub policy_sha256: String,
     pub nonce_sha256: String,
     pub state: SupervisorState,
@@ -190,6 +213,7 @@ pub struct Receipt {
     pub event_log: Option<ArtifactSummary>,
     pub derived_image_summary: IdentitySummary,
     pub accounting: Accounting,
+    pub kernel_accounting: Option<KernelAccounting>,
     pub violation_count: u64,
     pub violations: Vec<String>,
     pub error_count: u64,
@@ -204,8 +228,7 @@ impl Receipt {
     pub fn running(policy: &ValidatedPolicy, capability: &Capability) -> Self {
         let mut receipt = Self {
             schema: RECEIPT_SCHEMA.to_owned(),
-            platform: capability.platform.clone(),
-            backend: capability.backend.clone(),
+            capability: capability.clone(),
             policy_sha256: policy.policy_sha256.clone(),
             nonce_sha256: sha256_bytes(policy.policy.nonce.as_bytes()),
             state: SupervisorState::Created,
@@ -213,6 +236,7 @@ impl Receipt {
             event_log: None,
             derived_image_summary: IdentitySummary::empty(),
             accounting: Accounting::default(),
+            kernel_accounting: None,
             violation_count: 0,
             violations: Vec::new(),
             error_count: 0,
@@ -238,8 +262,7 @@ impl Receipt {
     ) -> Self {
         let mut receipt = Self {
             schema: RECEIPT_SCHEMA.to_owned(),
-            platform: capability.platform.clone(),
-            backend: capability.backend.clone(),
+            capability: capability.clone(),
             policy_sha256: policy.policy_sha256.clone(),
             nonce_sha256: sha256_bytes(policy.policy.nonce.as_bytes()),
             state: SupervisorState::Created,
@@ -247,6 +270,7 @@ impl Receipt {
             event_log: None,
             derived_image_summary: IdentitySummary::empty(),
             accounting: Accounting::default(),
+            kernel_accounting: None,
             violation_count: 0,
             violations: Vec::new(),
             error_count: 0,
@@ -291,10 +315,26 @@ impl Receipt {
         self.seal();
     }
 
-    pub fn attach_evidence(&mut self, evidence: PublishedEvidence) {
+    pub fn apply_verified_event_log(&mut self, verified: &VerifiedEventLog) {
+        self.derived_image_summary = verified.derived_images.clone();
+        self.accounting = verified.accounting.clone();
+        self.root_exit_code = verified.root_exit_code;
+        self.violation_count = verified.violation_count;
+        self.violations.clone_from(&verified.violations);
+    }
+
+    pub fn attach_evidence(&mut self, evidence: PublishedEvidence) -> Result<(), String> {
+        if self.derived_image_summary != evidence.verified.derived_images
+            || self.accounting != evidence.verified.accounting
+            || self.root_exit_code != evidence.verified.root_exit_code
+            || self.violation_count != evidence.verified.violation_count
+            || self.violations != evidence.verified.violations
+        {
+            return Err("published event replay disagrees with terminal receipt".to_owned());
+        }
         self.event_log = Some(evidence.event_log);
-        self.derived_image_summary = evidence.derived_images;
         self.seal();
+        Ok(())
     }
 
     pub fn record_violation(&mut self, value: impl Into<String>) {
@@ -333,11 +373,16 @@ impl Receipt {
         let complete_consistent = !self.complete
             || (self.violation_count == 0
                 && self.error_count == 0
+                && self.capability.available
+                && self.capability.pre_entry_exec_authority
+                && self.capability.recursive_descendant_authority
+                && (self.capability.mode != ClosureMode::Leaf
+                    || self.capability.pre_entry_process_create_authority)
                 && self.accounting.active_processes == 0
                 && self.accounting.root_execs >= 1
-                && self.accounting.total_processes == self.accounting.observed_process_creates
-                && self.accounting.observed_process_creates
-                    == self.accounting.observed_process_exits);
+                && self.root_exit_code.is_some()
+                && self.accounting.process_creates == self.accounting.process_exits
+                && self.kernel_accounting_supports_complete());
         terminal
             && diagnostics_consistent
             && complete_consistent
@@ -358,9 +403,35 @@ impl Receipt {
         }
         current == self.state
     }
+
+    pub fn kernel_accounting_is_valid(&self) -> bool {
+        match &self.kernel_accounting {
+            Some(KernelAccounting::WindowsJob {
+                total_processes,
+                active_processes,
+                ..
+            }) => {
+                self.capability.platform == "windows"
+                    && *total_processes == self.accounting.process_creates
+                    && *active_processes == self.accounting.active_processes
+            }
+            None => true,
+        }
+    }
+
+    pub(crate) fn kernel_accounting_supports_complete(&self) -> bool {
+        if self.capability.platform == "windows" {
+            matches!(
+                self.kernel_accounting,
+                Some(KernelAccounting::WindowsJob { .. })
+            ) && self.kernel_accounting_is_valid()
+        } else {
+            self.kernel_accounting.is_none()
+        }
+    }
 }
 
-fn push_bounded_diagnostic(values: &mut Vec<String>, mut value: String) {
+pub(crate) fn push_bounded_diagnostic(values: &mut Vec<String>, mut value: String) {
     if values.len() >= MAX_DIAGNOSTICS_PER_CLASS {
         return;
     }
@@ -484,7 +555,7 @@ impl Policy {
             return Err("policy must contain at least the root fixed image".to_owned());
         }
         let root_path = canonical_file(Path::new(&self.command[0]), "root command")?;
-        let root_key = root_path;
+        let root_key = root_path.clone();
         let root = fixed
             .get(&root_key)
             .ok_or_else(|| "root command is outside fixed image authority".to_owned())?;
@@ -538,6 +609,7 @@ impl Policy {
         Ok(ValidatedPolicy {
             policy: canonical,
             policy_sha256: sha256_bytes(&bytes),
+            root_path,
             fixed,
             derived,
         })
@@ -545,11 +617,9 @@ impl Policy {
 }
 
 impl ValidatedPolicy {
-    pub fn root_exit_disposition(&self, path: &Path) -> RootExitDisposition {
-        let canonical =
-            dunce::canonicalize(path).unwrap_or_else(|_| dunce::simplified(path).to_path_buf());
+    pub fn root_exit_disposition(&self, canonical_path: &Path) -> RootExitDisposition {
         self.fixed
-            .get(&canonical)
+            .get(canonical_path)
             .map_or(RootExitDisposition::RequireExit, |authority| {
                 authority.root_exit_disposition
             })
@@ -564,6 +634,17 @@ impl ValidatedPolicy {
     ) -> FileIdentity {
         let canonical =
             dunce::canonicalize(path).unwrap_or_else(|_| dunce::simplified(path).to_path_buf());
+        self.classify_observed_image(&canonical, file_id, size_bytes, sha256)
+    }
+
+    pub fn classify_observed_image(
+        &self,
+        canonical_path: &Path,
+        file_id: String,
+        size_bytes: u64,
+        sha256: String,
+    ) -> FileIdentity {
+        let canonical = canonical_path.to_path_buf();
         if let Some(authority) = self.fixed.get(&canonical) {
             let matches = constant_time_eq(authority.sha256.as_bytes(), sha256.as_bytes());
             return FileIdentity {
@@ -866,6 +947,7 @@ mod tests {
                 derived_roots: Vec::new(),
             },
             policy_sha256: "b".repeat(64),
+            root_path: PathBuf::from("proof"),
             fixed: BTreeMap::new(),
             derived: Vec::new(),
         };
@@ -876,21 +958,31 @@ mod tests {
             backend: "test".to_owned(),
             available: false,
             pre_entry_exec_authority: false,
+            pre_entry_process_create_authority: false,
             recursive_descendant_authority: false,
             required_environment: platform::required_environment(),
             reason: Some("test".to_owned()),
         };
         let mut receipt = Receipt::rejected(&policy, &capability, "unavailable");
-        receipt.attach_evidence(PublishedEvidence {
-            event_log: ArtifactSummary {
-                schema: evidence::EVENT_LOG_SCHEMA.to_owned(),
-                file: "receipt.events.jsonl".to_owned(),
-                count: 0,
-                bytes: 0,
-                sha256: sha256_bytes(b""),
-            },
-            derived_images: IdentitySummary::empty(),
-        });
+        receipt
+            .attach_evidence(PublishedEvidence {
+                event_log: ArtifactSummary {
+                    schema: evidence::EVENT_LOG_SCHEMA.to_owned(),
+                    file: "receipt.events.jsonl".to_owned(),
+                    count: 0,
+                    bytes: 0,
+                    sha256: sha256_bytes(b""),
+                },
+                verified: VerifiedEventLog {
+                    derived_images: IdentitySummary::empty(),
+                    accounting: receipt.accounting.clone(),
+                    root_exit_code: receipt.root_exit_code,
+                    violation_count: receipt.violation_count,
+                    violations: receipt.violations.clone(),
+                    active_processes: BTreeSet::new(),
+                },
+            })
+            .unwrap();
         assert_eq!(receipt.identity_sha256.len(), 64);
         assert!(receipt.identity_is_valid());
         assert!(receipt.terminal_is_consistent());
@@ -912,6 +1004,7 @@ mod tests {
                 derived_roots: Vec::new(),
             },
             policy_sha256: "b".repeat(64),
+            root_path: PathBuf::from("proof"),
             fixed: BTreeMap::new(),
             derived: Vec::new(),
         };
@@ -922,6 +1015,7 @@ mod tests {
             backend: "test".to_owned(),
             available: false,
             pre_entry_exec_authority: false,
+            pre_entry_process_create_authority: false,
             recursive_descendant_authority: false,
             required_environment: platform::required_environment(),
             reason: Some("test".to_owned()),
@@ -931,16 +1025,25 @@ mod tests {
             receipt.record_error(format!("error-{index}-{}", "x".repeat(4096)));
             receipt.record_violation(format!("violation-{index}-{}", "y".repeat(4096)));
         }
-        receipt.attach_evidence(PublishedEvidence {
-            event_log: ArtifactSummary {
-                schema: evidence::EVENT_LOG_SCHEMA.to_owned(),
-                file: "receipt.events.jsonl".to_owned(),
-                count: 0,
-                bytes: 0,
-                sha256: sha256_bytes(b""),
-            },
-            derived_images: IdentitySummary::empty(),
-        });
+        receipt
+            .attach_evidence(PublishedEvidence {
+                event_log: ArtifactSummary {
+                    schema: evidence::EVENT_LOG_SCHEMA.to_owned(),
+                    file: "receipt.events.jsonl".to_owned(),
+                    count: 0,
+                    bytes: 0,
+                    sha256: sha256_bytes(b""),
+                },
+                verified: VerifiedEventLog {
+                    derived_images: IdentitySummary::empty(),
+                    accounting: receipt.accounting.clone(),
+                    root_exit_code: receipt.root_exit_code,
+                    violation_count: receipt.violation_count,
+                    violations: receipt.violations.clone(),
+                    active_processes: BTreeSet::new(),
+                },
+            })
+            .unwrap();
         assert_eq!(receipt.errors.len(), MAX_DIAGNOSTICS_PER_CLASS);
         assert_eq!(receipt.violations.len(), MAX_DIAGNOSTICS_PER_CLASS);
         assert_eq!(receipt.error_count, 1_001);

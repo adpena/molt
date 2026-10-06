@@ -6,7 +6,7 @@ use crate::wasm_data::DataSegmentRef;
 use std::collections::BTreeMap;
 use wasm_encoder::{
     CodeSection, EntityType, ExportKind, ExportSection, Function, FunctionSection, ImportSection,
-    Module, TypeSection,
+    MemorySection, MemoryType, Module, TypeSection,
 };
 
 pub(super) fn executable_module(body: &WasmBody) -> Vec<u8> {
@@ -31,8 +31,19 @@ pub(super) fn executable_module(body: &WasmBody) -> Vec<u8> {
     }
     let mut functions = FunctionSection::new();
     functions.function(function_type);
+    // Word-range transports (tuple construction, unpack outputs) address
+    // linear memory; hosts read it through the exported memory.
+    let mut memories = MemorySection::new();
+    memories.memory(MemoryType {
+        minimum: 1,
+        maximum: None,
+        memory64: false,
+        shared: false,
+        page_size_log2: None,
+    });
     let mut exports = ExportSection::new();
     exports.export("run", ExportKind::Func, import_indices.len() as u32);
+    exports.export("memory", ExportKind::Memory, 0);
     let mut function = Function::new(body.locals.iter().map(|&ty| (1, ty)));
     body.emit_into(
         "lir_test_execution",
@@ -52,6 +63,7 @@ pub(super) fn executable_module(body: &WasmBody) -> Vec<u8> {
     module.section(&types);
     module.section(&imports);
     module.section(&functions);
+    module.section(&memories);
     module.section(&exports);
     module.section(&code);
     let bytes = module.finish();

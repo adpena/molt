@@ -49,8 +49,7 @@ fn numeric_admission_failure(
     match role {
         Role::None => None,
         Role::IntegerLiteral => {
-            if !op_has_integer_literal_payload(op)
-                || capabilities.arbitrary_precision_integers
+            if capabilities.arbitrary_precision_integers
                 || capabilities
                     .exact_integer_literal_max_magnitude
                     .is_some_and(|max| exact_integer_literal_value(op, max).is_some())
@@ -134,23 +133,12 @@ fn numeric_admission_failure(
     }
 }
 
-fn op_has_integer_literal_payload(op: &OpIR) -> bool {
-    match op.kind.as_str() {
-        "const" => op.value.is_some(),
-        "const_int" | "const_bigint" => true,
-        _ => false,
-    }
-}
-
 /// Return a canonical concrete integer literal when its complete decimal value
-/// fits the target's exact carrier.
+/// fits the target's exact carrier. All aliases share IR's payload authority.
 pub fn exact_integer_literal_value(op: &OpIR, max_magnitude: u128) -> Option<i128> {
-    let value = match op.kind.as_str() {
-        "const" | "const_int" => i128::from(op.value?),
-        "const_bigint" => op.s_value.as_deref()?.parse::<i128>().ok()?,
-        _ => return None,
-    };
-    (value.unsigned_abs() <= max_magnitude).then_some(value)
+    molt_ir::literal_payload::SimpleLiteral::from_simple(op)
+        .ok()??
+        .exact_integer_value(max_magnitude)
 }
 
 fn operands(op: &OpIR, arity: usize) -> Option<&[String]> {

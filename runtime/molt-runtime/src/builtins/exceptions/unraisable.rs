@@ -1,11 +1,14 @@
 //! Canonical unraisable-exception transaction and reporting authority.
 
+use super::raised_state::{
+    RaisedSnapshot, discard_current_raised, release_raised, resolve_raised, take_raised,
+};
 use super::*;
+use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
 use crate::{
-    alloc_property_obj, call_callable1, exception_materialize_traceback_bits, missing_bits,
-    molt_get_attr_name, molt_is_callable, molt_module_import, molt_sys_stderr, object_class_bits,
-    tuple_from_iter_bits,
+    alloc_property_obj, call_callable1, missing_bits, molt_get_attr_name, molt_is_callable,
+    molt_sys_stderr, object_class_bits, tuple_from_iter_bits,
 };
 
 const UNRAISABLE_FIELDS: [&str; 5] = [
@@ -26,13 +29,6 @@ fn try_join_text(parts: &[&str]) -> Option<String> {
         out.push_str(part);
     }
     Some(out)
-}
-
-#[derive(Copy, Clone)]
-enum RaisedSnapshot {
-    None,
-    Thread(u64),
-    Task(PtrSlot, u64),
 }
 
 struct HandledSnapshot {
@@ -56,42 +52,6 @@ struct UnraisableTransaction<'a, 'py> {
     handled: Option<HandledSnapshot>,
     reporting: Option<RaisedSnapshot>,
     armed: bool,
-}
-
-fn take_raised(_py: &PyToken<'_>) -> RaisedSnapshot {
-    let raised = if let Some(key) = current_task_key() {
-        let mut guard = task_last_exceptions(_py)
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match guard.get(&key).copied() {
-            None => RaisedSnapshot::None,
-            Some(slot) => {
-                assert!(
-                    exception_slot_is_valid(slot),
-                    "owned task exception slot must reference a live exception"
-                );
-                let removed = guard
-                    .remove(&key)
-                    .expect("validated task exception slot must remain present");
-                RaisedSnapshot::Task(key, MoltObject::from_ptr(removed.0).bits())
-            }
-        }
-    } else {
-        match thread_last_exception_raw_slot() {
-            None => RaisedSnapshot::None,
-            Some(slot) => {
-                assert!(
-                    exception_slot_is_valid(slot),
-                    "owned thread exception slot must reference a live exception"
-                );
-                let removed = thread_last_exception_take()
-                    .expect("validated thread exception slot must remain present");
-                RaisedSnapshot::Thread(MoltObject::from_ptr(removed.0).bits())
-            }
-        }
-    };
-    CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(false));
-    raised
 }
 
 fn flush_deferred_handled(_py: &PyToken<'_>) -> bool {
@@ -206,73 +166,6 @@ fn resolve_handled(_py: &PyToken<'_>, saved: &mut Option<HandledSnapshot>) -> bo
     }
 }
 
-fn release_raised(_py: &PyToken<'_>, saved: &mut Option<RaisedSnapshot>) {
-    let Some(saved) = saved.take() else {
-        return;
-    };
-    match saved {
-        RaisedSnapshot::Thread(bits) | RaisedSnapshot::Task(_, bits)
-            if !obj_from_bits(bits).is_none() =>
-        {
-            dec_ref_bits(_py, bits);
-        }
-        RaisedSnapshot::None | RaisedSnapshot::Thread(_) | RaisedSnapshot::Task(_, _) => {}
-    }
-}
-
-fn resolve_raised(_py: &PyToken<'_>, saved: &mut Option<RaisedSnapshot>) {
-    let Some(saved_snapshot) = *saved else {
-        return;
-    };
-    match saved_snapshot {
-        RaisedSnapshot::None => {}
-        RaisedSnapshot::Thread(bits) => {
-            if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-                let old = THREAD_LAST_EXCEPTION.with(|slot| slot.replace(ptr));
-                // Publication transfers the saved strong edge to TLS.
-                *saved = None;
-                if current_task_key().is_none() {
-                    CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
-                }
-                if !old.is_null() && old != ptr {
-                    dec_ref_bits(_py, MoltObject::from_ptr(old).bits());
-                }
-            }
-        }
-        RaisedSnapshot::Task(key, bits) => {
-            if let Some(ptr) = obj_from_bits(bits).as_ptr() {
-                let mut guard = task_last_exceptions(_py)
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let old = guard.insert(key, PtrSlot(ptr));
-                drop(guard);
-                // Map publication transfers the saved strong edge.
-                *saved = None;
-                if current_task_key() == Some(key) {
-                    CURRENT_EXCEPTION_PENDING.with(|pending| pending.set(true));
-                }
-                if let Some(old) = old
-                    && old.0 != ptr
-                {
-                    dec_ref_bits(_py, MoltObject::from_ptr(old.0).bits());
-                }
-            }
-        }
-    }
-    // None or an invalid non-object carries no strong edge.
-    if saved.is_some() {
-        *saved = None;
-    }
-}
-
-fn discard_current_raised(_py: &PyToken<'_>) {
-    // Use the transaction's poison-tolerant detach path rather than the public
-    // clear helper: unraisable cleanup must remain available after a task-map
-    // panic poisoned its mutex.
-    let mut raised = Some(take_raised(_py));
-    release_raised(_py, &mut raised);
-}
-
 impl<'a, 'py> UnraisableTransaction<'a, 'py> {
     fn begin(_py: &'a PyToken<'py>) -> Self {
         // Arm before the first detach so unwinding any later acquisition
@@ -324,6 +217,25 @@ impl<'a, 'py> UnraisableTransaction<'a, 'py> {
             Some(RaisedSnapshot::Thread(bits) | RaisedSnapshot::Task(_, bits)) => {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     reporter(self.py, context_bits, *bits, err_msg);
+                }))
+            }
+            Some(RaisedSnapshot::Emergency(_)) => {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // The snapshot itself is allocation-free. Materialize only
+                    // when reporting can recover enough memory to do so.
+                    let pointer = alloc_exception(self.py, "MemoryError", "");
+                    if pointer.is_null() {
+                        eprintln!("Exception ignored in unraisable callback: MemoryError");
+                        return;
+                    }
+                    let bits = MoltObject::from_ptr(pointer).bits();
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        reporter(self.py, context_bits, bits, err_msg);
+                    }));
+                    dec_ref_bits(self.py, bits);
+                    if let Err(payload) = result {
+                        std::panic::resume_unwind(payload);
+                    }
                 }))
             }
             Some(RaisedSnapshot::None) | None => Ok(()),
@@ -480,20 +392,11 @@ pub(crate) fn report_captured_unraisable(
 }
 
 fn sys_attr_bits(_py: &PyToken<'_>, name: &[u8]) -> u64 {
-    let sys_name_ptr = alloc_string(_py, b"sys");
-    if sys_name_ptr.is_null() {
+    let Some(sys_bits) = crate::builtins::modules::interpreter_sys_module(_py) else {
         return MoltObject::none().bits();
-    }
-    let sys_name_bits = MoltObject::from_ptr(sys_name_ptr).bits();
-    let sys_bits = molt_module_import(sys_name_bits);
-    dec_ref_bits(_py, sys_name_bits);
-    if exception_pending(_py) || obj_from_bits(sys_bits).is_none() {
-        discard_current_raised(_py);
-        if !obj_from_bits(sys_bits).is_none() {
-            dec_ref_bits(_py, sys_bits);
-        }
-        return MoltObject::none().bits();
-    }
+    };
+    inc_ref_bits(_py, sys_bits);
+
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
         dec_ref_bits(_py, sys_bits);
         return MoltObject::none().bits();
@@ -546,50 +449,13 @@ fn set_class_attr(_py: &PyToken<'_>, class_ptr: *mut u8, name: &str, value_bits:
     !exception_pending(_py)
 }
 
-fn alloc_runtime_method(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> u64 {
-    crate::builtins::methods::alloc_builtin_function(_py, fn_ptr, arity)
-}
-
 fn init_class_edge(_py: &PyToken<'_>, ptr: *mut u8, class_bits: u64) -> bool {
     unsafe { object_init_class_edge_unpublished(_py, ptr, class_bits, ClassEdgeOwnership::Owned) }
 }
 
-fn install_method(
-    _py: &PyToken<'_>,
-    class_ptr: *mut u8,
-    name: &str,
-    fn_ptr: u64,
-    arity: u64,
-) -> bool {
-    let func_bits = alloc_runtime_method(_py, fn_ptr, arity);
-    if func_bits == 0 {
-        return false;
-    }
-    let installed = set_class_attr(_py, class_ptr, name, func_bits);
-    dec_ref_bits(_py, func_bits);
-    installed
-}
-
-fn install_method_with_defaults(
-    py: &PyToken<'_>,
-    class_ptr: *mut u8,
-    name: &str,
-    fn_ptr: u64,
-    arity: u64,
-    defaults: &[u64],
-) -> bool {
-    let function =
-        crate::builtins::methods::alloc_builtin_function_with_defaults(py, fn_ptr, arity, defaults);
-    if function == 0 {
-        return false;
-    }
-    let installed = set_class_attr(py, class_ptr, name, function);
-    dec_ref_bits(py, function);
-    installed
-}
-
 fn install_readonly_field(_py: &PyToken<'_>, class_ptr: *mut u8, name: &str, getter: u64) -> bool {
-    let getter_bits = alloc_runtime_method(_py, getter, 1);
+    // Property dispatch passes self explicitly, so its callback must not bind.
+    let getter_bits = crate::builtins::methods::alloc_builtin_function(_py, getter, 1);
     if getter_bits == 0 {
         return false;
     }
@@ -606,15 +472,17 @@ fn install_readonly_field(_py: &PyToken<'_>, class_ptr: *mut u8, name: &str, get
 }
 
 fn discard_unraisable_args_class(_py: &PyToken<'_>, class_bits: u64) -> u64 {
-    if !obj_from_bits(class_bits).is_none() {
-        // This constructor-owned class was never published. Release its
-        // namespace first while any already-built identity remains readable.
-        if let Some(ptr) = obj_from_bits(class_bits).as_ptr() {
-            unsafe { crate::object::class_storage::clear_class_runtime_contents(_py, ptr) };
+    molt_cpython_abi::api::errors::with_preserved_error(|| {
+        if !obj_from_bits(class_bits).is_none() {
+            // Retire constructor-owned contents before detaching identity and
+            // the new descriptor/constructor back-edges to the declaring class.
+            if let Some(ptr) = obj_from_bits(class_bits).as_ptr() {
+                unsafe { crate::object::class_storage::clear_class_runtime_contents(_py, ptr) };
+            }
+            class_break_cycles(_py, class_bits);
+            dec_ref_bits(_py, class_bits);
         }
-        class_break_cycles(_py, class_bits);
-        dec_ref_bits(_py, class_bits);
-    }
+    });
     0
 }
 
@@ -631,8 +499,12 @@ fn build_unraisable_args_class(_py: &PyToken<'_>) -> u64 {
     }
     let class_bits = MoltObject::from_ptr(class_ptr).bits();
     unsafe {
-        if !crate::object::class_set_not_base(_py, class_ptr)
-            || !crate::object::class_set_immutable(_py, class_ptr)
+        crate::object::class_storage::class_declare_native_slots(
+            class_ptr,
+            crate::object::class_storage::ClassSlotPolicy::default(),
+        );
+        if !crate::object::class_storage::ClassSemanticPolicy::static_type(false)
+            .apply(_py, class_ptr)
         {
             return discard_unraisable_args_class(_py, class_bits);
         }
@@ -699,21 +571,23 @@ fn build_unraisable_args_class(_py: &PyToken<'_>) -> u64 {
     let match_args_set = set_class_attr(_py, class_ptr, "__match_args__", match_args_bits);
     dec_ref_bits(_py, match_args_bits);
     if !match_args_set
-        || !install_method_with_defaults(
+        || crate::builtins::methods::builtin_func_bits_with_defaults_tuple(
             _py,
-            class_ptr,
-            "__new__",
+            NativeCallableSpec::constructor(class_bits),
             molt_unraisable_hook_args_new as *const () as usize as u64,
             3,
             &[missing_bits(_py)],
-        )
-        || !install_method(
+        ) == 0
+        || crate::builtins::methods::builtin_func_bits(
             _py,
-            class_ptr,
-            "__repr__",
+            NativeCallableSpec::declared(
+                NativeCallableKind::MethodDescriptor,
+                class_bits,
+                "__repr__",
+            ),
             molt_unraisable_hook_args_repr as *const () as usize as u64,
             1,
-        )
+        ) == 0
         || !install_readonly_field(
             _py,
             class_ptr,
@@ -744,6 +618,11 @@ fn build_unraisable_args_class(_py: &PyToken<'_>) -> u64 {
             "object",
             molt_unraisable_hook_args_object as *const () as usize as u64,
         )
+    {
+        return discard_unraisable_args_class(_py, class_bits);
+    }
+    if exception_pending(_py)
+        || unsafe { crate::object::class_finish_definition(_py, class_ptr) }.is_err()
     {
         return discard_unraisable_args_class(_py, class_bits);
     }
@@ -1009,28 +888,34 @@ fn build_hook_args(
     } else {
         MoltObject::none().bits()
     };
-    let mut exc_type_bits = MoltObject::none().bits();
-    let mut trace_bits = MoltObject::none().bits();
-    if let Some(exc_ptr) = obj_from_bits(exc_bits).as_ptr()
-        && unsafe { object_type_id(exc_ptr) } == TYPE_ID_EXCEPTION
-    {
-        let class = unsafe { object_class_bits(exc_ptr) };
-        if !obj_from_bits(class).is_none() {
-            exc_type_bits = class;
-        }
-        let trace = exception_materialize_traceback_bits(_py, exc_ptr);
-        if !obj_from_bits(trace).is_none() {
-            // Borrowed from the exception payload; the arguments tuple retains it.
-            trace_bits = trace;
-        }
-    }
+    let message = ExceptionValue::adopt(_py, msg_bits);
+    let exception = ExceptionValue::pin(_py, exc_bits);
+    let (class, traceback) = if exception_is_instance(_py, exception.bits()) {
+        let Some(class) = exception_class(_py, exception.bits()) else {
+            discard_current_raised(_py);
+            return MoltObject::none().bits();
+        };
+        let Some(traceback) = exception_traceback(_py, exception.bits()) else {
+            discard_current_raised(_py);
+            return MoltObject::none().bits();
+        };
+        (class, traceback)
+    } else {
+        (
+            ExceptionValue::pin(_py, MoltObject::none().bits()),
+            ExceptionValue::pin(_py, MoltObject::none().bits()),
+        )
+    };
     let out = alloc_unraisable_hook_args(
         _py,
-        &[exc_type_bits, exc_bits, trace_bits, msg_bits, context_bits],
+        &[
+            class.bits(),
+            exception.bits(),
+            traceback.bits(),
+            message.bits(),
+            context_bits,
+        ],
     );
-    if !obj_from_bits(msg_bits).is_none() {
-        dec_ref_bits(_py, msg_bits);
-    }
     if exception_pending(_py) {
         discard_current_raised(_py);
         if !obj_from_bits(out).is_none() {
@@ -1293,6 +1178,27 @@ mod tests {
             assert!(!repr_name_ptr.is_null());
             let repr_name_bits = MoltObject::from_ptr(repr_name_ptr).bits();
             let original_repr = class_dict_value(_py, class_bits, "__repr__");
+            let repr_ptr = obj_from_bits(original_repr).as_ptr().unwrap();
+            assert_eq!(
+                unsafe { object_class_bits(repr_ptr) },
+                builtin_classes(_py).method_descriptor
+            );
+            assert_eq!(
+                unsafe {
+                    crate::call::function::function_metadata_bits(_py, repr_ptr, b"__objclass__")
+                },
+                class_bits
+            );
+            let bound_repr = molt_get_attr_name(args_bits, repr_name_bits);
+            assert!(!exception_pending(_py));
+            let repr_bits = unsafe { crate::call_callable0(_py, bound_repr) };
+            assert!(
+                !exception_pending(_py),
+                "instance repr must receive its bound receiver"
+            );
+            assert_eq!(string_obj_to_owned(obj_from_bits(repr_bits)), Some("UnraisableHookArgs(exc_type=1, exc_value=2, exc_traceback=None, err_msg=4, object=True)".to_string()));
+            dec_ref_bits(_py, repr_bits);
+            dec_ref_bits(_py, bound_repr);
             let class_mutation =
                 crate::molt_set_attr_name(class_bits, repr_name_bits, MoltObject::none().bits());
             assert_eq!(
@@ -1310,8 +1216,22 @@ mod tests {
             let source_ptr = alloc_tuple(_py, &fields);
             assert!(!source_ptr.is_null());
             let source_bits = MoltObject::from_ptr(source_ptr).bits();
-            let constructed_bits =
-                molt_unraisable_hook_args_new(class_bits, source_bits, missing_bits(_py));
+            let new_name = attr_name_bits_from_bytes(_py, b"__new__").unwrap();
+            let constructor = molt_get_attr_name(args_bits, new_name);
+            assert_eq!(constructor, class_dict_value(_py, class_bits, "__new__"));
+            let builder = crate::molt_callargs_new(
+                MoltObject::from_int(2).bits(),
+                MoltObject::from_int(0).bits(),
+            );
+            unsafe { crate::molt_callargs_push_pos(builder, class_bits) };
+            unsafe { crate::molt_callargs_push_pos(builder, source_bits) };
+            let constructed_bits = crate::molt_call_bind(constructor, builder);
+            assert!(
+                !exception_pending(_py),
+                "nonbinding constructor must retain its optional argument"
+            );
+            dec_ref_bits(_py, constructor);
+            dec_ref_bits(_py, new_name);
             assert!(unraisable_args_is_exact(_py, constructed_bits));
             assert_ne!(constructed_bits, source_bits);
             dec_ref_bits(_py, constructed_bits);
@@ -1467,7 +1387,7 @@ mod tests {
             inc_ref_bits(_py, original);
             let original_baseline = ref_count(original);
             let reported = std::cell::Cell::new(0_u64);
-            let reported_baseline = std::cell::Cell::new(0_u32);
+            let reported_baseline = std::cell::Cell::new(0_isize);
 
             let unwind = crate::test_support::catch_expected_unwind(|| {
                 run_unraisable_with_policy(
@@ -1477,7 +1397,10 @@ mod tests {
                         let bits = pending_exception(_py, "inner");
                         inc_ref_bits(_py, bits);
                         reported.set(bits);
-                        reported_baseline.set(ref_count(bits));
+                        reported_baseline.set(
+                            ref_count(bits) as isize
+                                + molt_cpython_abi::bridge::GLOBAL_BRIDGE.gc_ref_adjustment(bits),
+                        );
                     },
                 );
             });
@@ -1485,14 +1408,28 @@ mod tests {
             assert_eq!(exception_last_bits_noinc(_py), Some(original));
             assert_eq!(ref_count(original), original_baseline);
             assert_eq!(
-                ref_count(reported.get()),
+                // Formatting can lazily acquire the canonical C-view hold.
+                // Count external owners through the collector's authority,
+                // then independently require the view to retire below.
+                ref_count(reported.get()) as isize
+                    + molt_cpython_abi::bridge::GLOBAL_BRIDGE.gc_ref_adjustment(reported.get()),
                 reported_baseline.get() - 1,
                 "the detached reporting channel owns exactly one reference"
             );
 
             clear_exception(_py);
             dec_ref_bits(_py, original);
+            let reported_view = unsafe {
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.handle_to_borrowed_pyobj(reported.get())
+            };
+            assert!(!reported_view.is_null());
             dec_ref_bits(_py, reported.get());
+            assert!(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .managed_handle_for_pyobj(reported_view)
+                    .is_none(),
+                "the report's final owner must retire its C view"
+            );
         });
     }
 

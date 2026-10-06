@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Land-or-blocker Stop gate (APPARATUS Wave 1, A2) -- M12 mechanized.
 
-M12 is the operator's #1 fury: *reporting/planning/handing-off without LANDING
-is POISON. Every work turn lands a commit / proof / passing test, or names a
-real external blocker.* This gate turns that into a Stop-hook mechanism.
+Potentially mutating work requires a landed outcome or a real external blocker.
+Read-only reviews are complete outcomes and do not activate this requirement.
+The canonical READ_ONLY_TOOLS protocol set drives both activity classification
+and the SessionStart explanation.
 
 Per-worktree window = **session-start HEAD .. current HEAD** (a marker in
 ``.molt/state/landing_gate_marker.json``, written by ``session_digest`` at
 SessionStart and re-baselined defensively here). If a turn produced substantive
-tool activity but the window shows:
+potentially mutating tool activity but the window shows:
   * NO landed commit, AND
   * NO proof_queue row in flight, AND
   * NO named blocker in ``.molt/state/blockers.jsonl``,
@@ -170,22 +171,67 @@ def _blocker_recorded(root: Path, session_id: str, start_ts: float) -> bool:
     return False
 
 
-def _count_tool_uses(transcript_path: str | None) -> int:
+# These are protocol tool identities, not command-text guesses. Shells and
+# unfamiliar tools remain potentially mutating even if their prose says "review".
+READ_ONLY_TOOLS = frozenset(
+    {
+        "Read",
+        "Grep",
+        "Glob",
+        "WebFetch",
+        "WebSearch",
+        "ToolSearch",
+        "TaskOutput",
+        "ListMcpResourcesTool",
+        "ReadMcpResourceTool",
+    }
+)
+_TRANSCRIPT_TAIL_BYTES = 4_000_000
+
+
+def _count_execution_tools(transcript_path: str | None) -> int:
+    """Count potentially mutating assistant tools in the bounded transcript tail.
+
+    Read-only inspection is an authorized deliverable. Quoted tool records,
+    tool results and replayed IDs must not manufacture implementation activity.
+    This is a recent-activity signal, not an audit of the whole session.
+    """
     if not transcript_path:
         return 0
-    try:
-        p = Path(transcript_path)
-        if not p.exists():
-            return 0
-        # Read at most the last ~4MB to stay fast on long sessions.
-        size = p.stat().st_size
-        with open(p, "rb") as fh:
-            if size > 4_000_000:
-                fh.seek(size - 4_000_000)
-            blob = fh.read().decode("utf-8", errors="replace")
-        return blob.count('"tool_use"')
-    except Exception:
-        return 0
+    count = 0
+    seen: set[str] = set()
+    with Path(transcript_path).open("rb") as stream:
+        size = stream.seek(0, 2)
+        if size > _TRANSCRIPT_TAIL_BYTES:
+            stream.seek(size - _TRANSCRIPT_TAIL_BYTES - 1)
+            # Retain a complete first line, but discard a truncated JSON record.
+            if stream.read(1) != b"\n":
+                stream.readline()
+        else:
+            stream.seek(0)
+        for raw in stream:
+            if not raw.strip():
+                continue
+            row = json.loads(raw)
+            if not isinstance(row, dict) or row.get("type") != "assistant":
+                continue
+            message = row.get("message")
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_use":
+                    continue
+                tool_id = block.get("id")
+                if isinstance(tool_id, str) and tool_id:
+                    if tool_id in seen:
+                        continue
+                    seen.add(tool_id)
+                if block.get("name") not in READ_ONLY_TOOLS:
+                    count += 1
+    return count
 
 
 # --- evaluate (called by stop_gates) ---------------------------------------
@@ -208,7 +254,15 @@ def evaluate(data: dict, root: Path) -> str | None:
     start_head = marker.get("start_head")
     start_ts = marker.get("start_ts") or 0.0
 
-    substantive = _count_tool_uses(transcript_path) >= SUBSTANTIVE_TOOL_THRESHOLD
+    try:
+        substantive = (
+            _count_execution_tools(transcript_path) >= SUBSTANTIVE_TOOL_THRESHOLD
+        )
+    except (OSError, ValueError) as exc:
+        _common.log_error("landing_gate.transcript", exc, root)
+        return None
+    if not substantive:
+        return None
     window_commit = _window_has_commit(root, start_head)
     subjects = _window_subjects(root, start_head) if window_commit else ""
     report_only = "[report-only]" in subjects

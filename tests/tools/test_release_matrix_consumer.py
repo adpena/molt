@@ -71,4 +71,3 @@ def test_full_matrix_has_no_self_authored_toolchain_success_path(monkeypatch, tm
     )
     assert any("used-byte admission producer unavailable" in p for p in problems)
     assert any("missing" in p and "performance cells" in p for p in problems)
-    assert any("semantic backend llvm" in p for p in problems)

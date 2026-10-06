@@ -236,9 +236,9 @@ def test_baseline_matches_live_counts():
     counts, _sites = CGM.collect_backlog_sites(ROOT)
     baseline = CGM.load_baseline(ROOT)
     for name, live in counts.items():
-        assert name in baseline, f"closed domain {name} missing from baseline"
-        assert live <= baseline[name], (
-            f"closed domain {name} regressed: live={live} > baseline={baseline[name]}"
+        allowed = baseline.get(name, 0)
+        assert live <= allowed, (
+            f"closed domain {name} regressed: live={live} > baseline={allowed}"
         )
 
 
@@ -494,6 +494,30 @@ def test_canonical_structural_audit_scans_synthetic_root(tmp_path: Path):
         and finding.location.split(":", 1)[0].endswith("synthetic_probe.rs")
         for finding in findings
     )
+
+
+def test_closed_domain_test_ownership_does_not_exclude_production(tmp_path: Path):
+    root = _mirror_min_tree(tmp_path)
+    crate = root / "runtime" / "molt-passes"
+    crate.mkdir(parents=True, exist_ok=True)
+    (crate / "Cargo.toml").write_text(
+        '[package]\nname = "synthetic"\nversion = "0.1.0"\n', encoding="utf-8"
+    )
+    fixture = crate / "tests" / "independent_oracle.rs"
+    fixture.parent.mkdir(parents=True, exist_ok=True)
+    fixture.write_text(_silent_default_match("Terminator"), encoding="utf-8")
+    production = crate / "src" / "tests" / "production.rs"
+    production.parent.mkdir(parents=True, exist_ok=True)
+    production.write_text(_silent_default_match("Terminator"), encoding="utf-8")
+
+    findings = CGM.audit_closed_domains(
+        root, CGM.load_manifest(root), CGM._load_structural_audit()
+    )
+    sites = [
+        finding.location for finding in findings if finding.kind == "closed_domain"
+    ]
+    assert any("src/tests/production.rs" in site for site in sites)
+    assert not any("independent_oracle.rs" in site for site in sites)
 
 
 def test_injected_regression_fails_the_gate(tmp_path: Path):

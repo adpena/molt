@@ -46,7 +46,6 @@ pub(crate) const NON_RUNTIME_CALLABLE_INTRINSICS: &[&str] = &[
     "molt_json_parse_scalar",
     "molt_list_getitem_borrowed",
     "molt_tuple_getitem_borrowed",
-    "molt_type_of_borrowed",
 ];
 
 #[inline]
@@ -54,12 +53,12 @@ pub(crate) fn runtime_callable_symbol_is_non_callable(symbol_name: &str) -> bool
     NON_RUNTIME_CALLABLE_INTRINSICS.contains(&symbol_name)
 }
 
-pub(crate) const WASM_POLL_SLOT_MAX_OFFSET: u64 = 32;
+pub(crate) const WASM_POLL_SLOT_MAX_OFFSET: u64 = 29;
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = 1 + 32;
+pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = 1 + 29;
 #[cfg(target_arch = "wasm32")]
-pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = 30;
+pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = 37;
 #[cfg(target_arch = "wasm32")]
 pub(crate) const RESERVED_WASM_RUNTIME_TRAMPOLINE_BASE: u64 =
     RESERVED_WASM_RUNTIME_CALLABLE_BASE + RESERVED_WASM_RUNTIME_CALLABLE_COUNT;
@@ -91,9 +90,9 @@ pub(crate) enum GeneratedBuiltinDefaultValue {
 
 #[derive(Clone, Copy)]
 pub(crate) struct PythonBuiltinFunctionInfo {
-    pub(crate) index: usize,
     pub(crate) python_name: &'static str,
     pub(crate) python_module: &'static str,
+    pub(crate) text_signature: Option<&'static str>,
     pub(crate) runtime_name: &'static str,
     pub(crate) arity: u64,
     pub(crate) posonly_params: &'static [&'static str],
@@ -105,8 +104,6 @@ pub(crate) struct PythonBuiltinFunctionInfo {
     pub(crate) kw_defaults: &'static [(&'static str, GeneratedBuiltinDefaultValue)],
     pub(crate) bind_kind: Option<i64>,
 }
-
-pub(crate) const PYTHON_BUILTIN_FUNCTION_COUNT: usize = PYTHON_BUILTIN_FUNCTIONS.len();
 
 #[rustfmt::skip]
 pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[
@@ -320,6 +317,55 @@ pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[
         arity: 1,
         dispatch: ReservedRuntimeCallableDispatch::Direct,
     },
+    ReservedRuntimeCallableInfo {
+        index: 30,
+        runtime_name: "molt_coroutine_send_method",
+        import_name: "coroutine_send_method",
+        arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 31,
+        runtime_name: "molt_coroutine_throw_method",
+        import_name: "coroutine_throw_method",
+        arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 32,
+        runtime_name: "molt_coroutine_close_method",
+        import_name: "coroutine_close_method",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 33,
+        runtime_name: "molt_awaitable_await",
+        import_name: "awaitable_await",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 34,
+        runtime_name: "molt_coroutine_wrapper_iter",
+        import_name: "coroutine_wrapper_iter",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 35,
+        runtime_name: "molt_coroutine_wrapper_next",
+        import_name: "coroutine_wrapper_next",
+        arity: 1,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
+    ReservedRuntimeCallableInfo {
+        index: 36,
+        runtime_name: "molt_generator_throw_method",
+        import_name: "generator_throw_method",
+        arity: 2,
+        dispatch: ReservedRuntimeCallableDispatch::Direct,
+    },
 ];
 
 #[inline]
@@ -339,30 +385,27 @@ pub(crate) fn wasm_poll_table_slot_from_symbol_name(symbol_name: &str) -> Option
         "molt_thread_poll" => Some(6),
         "molt_process_poll" => Some(7),
         "molt_ws_wait" => Some(8),
-        "molt_asyncio_wait_for_poll" => Some(9),
-        "molt_asyncio_wait_poll" => Some(10),
-        "molt_asyncio_gather_poll" => Some(11),
-        "molt_asyncio_socket_reader_read_poll" => Some(12),
-        "molt_asyncio_socket_reader_readline_poll" => Some(13),
-        "molt_asyncio_stream_reader_read_poll" => Some(14),
-        "molt_asyncio_stream_reader_readline_poll" => Some(15),
-        "molt_asyncio_stream_send_all_poll" => Some(16),
-        "molt_asyncio_sock_recv_poll" => Some(17),
-        "molt_asyncio_sock_connect_poll" => Some(18),
-        "molt_asyncio_sock_accept_poll" => Some(19),
-        "molt_asyncio_sock_recv_into_poll" => Some(20),
-        "molt_asyncio_sock_sendall_poll" => Some(21),
-        "molt_asyncio_sock_recvfrom_poll" => Some(22),
-        "molt_asyncio_sock_recvfrom_into_poll" => Some(23),
-        "molt_asyncio_sock_sendto_poll" => Some(24),
-        "molt_asyncio_timer_handle_poll" => Some(25),
-        "molt_asyncio_fd_watcher_poll" => Some(26),
-        "molt_asyncio_server_accept_loop_poll" => Some(27),
-        "molt_asyncio_ready_runner_poll" => Some(28),
-        "molt_contextlib_asyncgen_enter_poll" => Some(29),
-        "molt_contextlib_asyncgen_exit_poll" => Some(30),
-        "molt_contextlib_async_exitstack_exit_poll" => Some(31),
-        "molt_contextlib_async_exitstack_enter_context_poll" => Some(32),
+        "molt_asyncio_socket_reader_read_poll" => Some(9),
+        "molt_asyncio_socket_reader_readline_poll" => Some(10),
+        "molt_asyncio_stream_reader_read_poll" => Some(11),
+        "molt_asyncio_stream_reader_readline_poll" => Some(12),
+        "molt_asyncio_stream_send_all_poll" => Some(13),
+        "molt_asyncio_sock_recv_poll" => Some(14),
+        "molt_asyncio_sock_connect_poll" => Some(15),
+        "molt_asyncio_sock_accept_poll" => Some(16),
+        "molt_asyncio_sock_recv_into_poll" => Some(17),
+        "molt_asyncio_sock_sendall_poll" => Some(18),
+        "molt_asyncio_sock_recvfrom_poll" => Some(19),
+        "molt_asyncio_sock_recvfrom_into_poll" => Some(20),
+        "molt_asyncio_sock_sendto_poll" => Some(21),
+        "molt_asyncio_fd_watcher_poll" => Some(22),
+        "molt_asyncio_server_accept_loop_poll" => Some(23),
+        "molt_contextlib_asyncgen_enter_poll" => Some(24),
+        "molt_contextlib_asyncgen_exit_poll" => Some(25),
+        "molt_contextlib_async_exitstack_exit_poll" => Some(26),
+        "molt_contextlib_async_exitstack_enter_context_poll" => Some(27),
+        "molt_await_iterator_poll" => Some(28),
+        "molt_coroutine_wrapper_poll" => Some(29),
         _ => None,
     }
 }
@@ -386,32 +429,29 @@ fn runtime_poll_callable_key_from_symbol_name(symbol_name: &str) -> Option<u64> 
         "molt_thread_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 6),
         "molt_process_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 7),
         "molt_ws_wait" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 8),
-        "molt_asyncio_wait_for_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 9),
-        "molt_asyncio_wait_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 10),
-        "molt_asyncio_gather_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 11),
-        "molt_asyncio_socket_reader_read_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 12),
-        "molt_asyncio_socket_reader_readline_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 13),
-        "molt_asyncio_stream_reader_read_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 14),
-        "molt_asyncio_stream_reader_readline_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 15),
-        "molt_asyncio_stream_send_all_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 16),
-        "molt_asyncio_sock_recv_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 17),
-        "molt_asyncio_sock_connect_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 18),
-        "molt_asyncio_sock_accept_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 19),
-        "molt_asyncio_sock_recv_into_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 20),
-        "molt_asyncio_sock_sendall_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 21),
-        "molt_asyncio_sock_recvfrom_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 22),
-        "molt_asyncio_sock_recvfrom_into_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 23),
-        "molt_asyncio_sock_sendto_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 24),
-        "molt_asyncio_timer_handle_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 25),
-        "molt_asyncio_fd_watcher_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 26),
-        "molt_asyncio_server_accept_loop_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 27),
-        "molt_asyncio_ready_runner_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 28),
-        "molt_contextlib_asyncgen_enter_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 29),
-        "molt_contextlib_asyncgen_exit_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 30),
-        "molt_contextlib_async_exitstack_exit_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 31),
+        "molt_asyncio_socket_reader_read_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 9),
+        "molt_asyncio_socket_reader_readline_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 10),
+        "molt_asyncio_stream_reader_read_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 11),
+        "molt_asyncio_stream_reader_readline_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 12),
+        "molt_asyncio_stream_send_all_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 13),
+        "molt_asyncio_sock_recv_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 14),
+        "molt_asyncio_sock_connect_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 15),
+        "molt_asyncio_sock_accept_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 16),
+        "molt_asyncio_sock_recv_into_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 17),
+        "molt_asyncio_sock_sendall_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 18),
+        "molt_asyncio_sock_recvfrom_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 19),
+        "molt_asyncio_sock_recvfrom_into_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 20),
+        "molt_asyncio_sock_sendto_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 21),
+        "molt_asyncio_fd_watcher_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 22),
+        "molt_asyncio_server_accept_loop_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 23),
+        "molt_contextlib_asyncgen_enter_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 24),
+        "molt_contextlib_asyncgen_exit_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 25),
+        "molt_contextlib_async_exitstack_exit_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 26),
         "molt_contextlib_async_exitstack_enter_context_poll" => {
-            Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 32)
+            Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 27)
         }
+        "molt_await_iterator_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 28),
+        "molt_coroutine_wrapper_poll" => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + 29),
         _ => None,
     }
 }
@@ -456,6 +496,13 @@ fn runtime_reserved_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
         27 => Some(molt_importlib_compiled_loader_load_module as *const ()),
         28 => Some(molt_importlib_module_spec_repr as *const ()),
         29 => Some(molt_importlib_module_spec_parent as *const ()),
+        30 => Some(crate::molt_coroutine_send_method as *const ()),
+        31 => Some(crate::molt_coroutine_throw_method as *const ()),
+        32 => Some(crate::molt_coroutine_close_method as *const ()),
+        33 => Some(crate::molt_awaitable_await as *const ()),
+        34 => Some(crate::molt_coroutine_wrapper_iter as *const ()),
+        35 => Some(crate::molt_coroutine_wrapper_next as *const ()),
+        36 => Some(crate::molt_generator_throw_method as *const ()),
         _ => None,
     }
 }
@@ -471,30 +518,27 @@ fn runtime_poll_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
         6 => Some(crate::molt_thread_poll as *const ()),
         7 => Some(crate::molt_process_poll as *const ()),
         8 => Some(crate::molt_ws_wait as *const ()),
-        9 => Some(crate::molt_asyncio_wait_for_poll as *const ()),
-        10 => Some(crate::molt_asyncio_wait_poll as *const ()),
-        11 => Some(crate::molt_asyncio_gather_poll as *const ()),
-        12 => Some(crate::molt_asyncio_socket_reader_read_poll as *const ()),
-        13 => Some(crate::molt_asyncio_socket_reader_readline_poll as *const ()),
-        14 => Some(crate::molt_asyncio_stream_reader_read_poll as *const ()),
-        15 => Some(crate::molt_asyncio_stream_reader_readline_poll as *const ()),
-        16 => Some(crate::molt_asyncio_stream_send_all_poll as *const ()),
-        17 => Some(crate::molt_asyncio_sock_recv_poll as *const ()),
-        18 => Some(crate::molt_asyncio_sock_connect_poll as *const ()),
-        19 => Some(crate::molt_asyncio_sock_accept_poll as *const ()),
-        20 => Some(crate::molt_asyncio_sock_recv_into_poll as *const ()),
-        21 => Some(crate::molt_asyncio_sock_sendall_poll as *const ()),
-        22 => Some(crate::molt_asyncio_sock_recvfrom_poll as *const ()),
-        23 => Some(crate::molt_asyncio_sock_recvfrom_into_poll as *const ()),
-        24 => Some(crate::molt_asyncio_sock_sendto_poll as *const ()),
-        25 => Some(crate::molt_asyncio_timer_handle_poll as *const ()),
-        26 => Some(crate::molt_asyncio_fd_watcher_poll as *const ()),
-        27 => Some(crate::molt_asyncio_server_accept_loop_poll as *const ()),
-        28 => Some(crate::molt_asyncio_ready_runner_poll as *const ()),
-        29 => Some(crate::molt_contextlib_asyncgen_enter_poll as *const ()),
-        30 => Some(crate::molt_contextlib_asyncgen_exit_poll as *const ()),
-        31 => Some(crate::molt_contextlib_async_exitstack_exit_poll as *const ()),
-        32 => Some(crate::molt_contextlib_async_exitstack_enter_context_poll as *const ()),
+        9 => Some(crate::molt_asyncio_socket_reader_read_poll as *const ()),
+        10 => Some(crate::molt_asyncio_socket_reader_readline_poll as *const ()),
+        11 => Some(crate::molt_asyncio_stream_reader_read_poll as *const ()),
+        12 => Some(crate::molt_asyncio_stream_reader_readline_poll as *const ()),
+        13 => Some(crate::molt_asyncio_stream_send_all_poll as *const ()),
+        14 => Some(crate::molt_asyncio_sock_recv_poll as *const ()),
+        15 => Some(crate::molt_asyncio_sock_connect_poll as *const ()),
+        16 => Some(crate::molt_asyncio_sock_accept_poll as *const ()),
+        17 => Some(crate::molt_asyncio_sock_recv_into_poll as *const ()),
+        18 => Some(crate::molt_asyncio_sock_sendall_poll as *const ()),
+        19 => Some(crate::molt_asyncio_sock_recvfrom_poll as *const ()),
+        20 => Some(crate::molt_asyncio_sock_recvfrom_into_poll as *const ()),
+        21 => Some(crate::molt_asyncio_sock_sendto_poll as *const ()),
+        22 => Some(crate::molt_asyncio_fd_watcher_poll as *const ()),
+        23 => Some(crate::molt_asyncio_server_accept_loop_poll as *const ()),
+        24 => Some(crate::molt_contextlib_asyncgen_enter_poll as *const ()),
+        25 => Some(crate::molt_contextlib_asyncgen_exit_poll as *const ()),
+        26 => Some(crate::molt_contextlib_async_exitstack_exit_poll as *const ()),
+        27 => Some(crate::molt_contextlib_async_exitstack_enter_context_poll as *const ()),
+        28 => Some(crate::molt_await_iterator_poll as *const ()),
+        29 => Some(crate::molt_coroutine_wrapper_poll as *const ()),
         _ => None,
     }
 }
@@ -530,9 +574,9 @@ pub(crate) fn reserved_wasm_runtime_callable_dispatch_for_index(
 #[rustfmt::skip]
 pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
         PythonBuiltinFunctionInfo {
-            index: 43,
             python_name: "__import__",
             python_module: "builtins",
+            text_signature: Some("($module, /, name, globals=None, locals=None, fromlist=(),\n           level=0)"),
             runtime_name: "molt_importlib_import_transaction",
             arity: 5,
             posonly_params: &[],
@@ -540,14 +584,14 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             kwonly_params: &[],
             vararg: None,
             varkw: None,
-            defaults: &[GeneratedBuiltinDefaultValue::None, GeneratedBuiltinDefaultValue::None, GeneratedBuiltinDefaultValue::EmptyTuple, GeneratedBuiltinDefaultValue::Int(0)],
+            defaults: &[GeneratedBuiltinDefaultValue::Missing, GeneratedBuiltinDefaultValue::None, GeneratedBuiltinDefaultValue::EmptyTuple, GeneratedBuiltinDefaultValue::Int(0)],
             kw_defaults: &[],
-            bind_kind: None,
+            bind_kind: Some(1),
         },
         PythonBuiltinFunctionInfo {
-            index: 6,
             python_name: "abs",
             python_module: "builtins",
+            text_signature: Some("($module, x, /)"),
             runtime_name: "molt_abs_builtin",
             arity: 1,
             posonly_params: &["obj"],
@@ -560,9 +604,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 32,
             python_name: "aiter",
             python_module: "builtins",
+            text_signature: Some("($module, async_iterable, /)"),
             runtime_name: "molt_aiter",
             arity: 1,
             posonly_params: &["obj"],
@@ -575,9 +619,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 24,
             python_name: "all",
             python_module: "builtins",
+            text_signature: Some("($module, iterable, /)"),
             runtime_name: "molt_all_builtin",
             arity: 1,
             posonly_params: &["iterable"],
@@ -590,9 +634,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 33,
             python_name: "anext",
             python_module: "builtins",
+            text_signature: Some("($module, aiterator, default=<unrepresentable>, /)"),
             runtime_name: "molt_anext_builtin",
             arity: 2,
             posonly_params: &["aiter", "default"],
@@ -605,9 +649,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 23,
             python_name: "any",
             python_module: "builtins",
+            text_signature: Some("($module, iterable, /)"),
             runtime_name: "molt_any_builtin",
             arity: 1,
             posonly_params: &["iterable"],
@@ -620,9 +664,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 7,
             python_name: "ascii",
             python_module: "builtins",
+            text_signature: Some("($module, obj, /)"),
             runtime_name: "molt_ascii_from_obj",
             arity: 1,
             posonly_params: &["obj"],
@@ -635,9 +679,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 8,
             python_name: "bin",
             python_module: "builtins",
+            text_signature: Some("($module, number, /)"),
             runtime_name: "molt_bin_builtin",
             arity: 1,
             posonly_params: &["obj"],
@@ -650,9 +694,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 14,
             python_name: "callable",
             python_module: "builtins",
+            text_signature: Some("($module, obj, /)"),
             runtime_name: "molt_callable_builtin",
             arity: 1,
             posonly_params: &["obj"],
@@ -665,9 +709,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 5,
             python_name: "chr",
             python_module: "builtins",
+            text_signature: Some("($module, i, /)"),
             runtime_name: "molt_chr",
             arity: 1,
             posonly_params: &["obj"],
@@ -680,9 +724,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 38,
             python_name: "compile",
             python_module: "builtins",
+            text_signature: Some("($module, /, source, filename, mode, flags=0,\n        dont_inherit=False, optimize=-1, *, _feature_version=-1)"),
             runtime_name: "molt_compile_builtin",
             arity: 6,
             posonly_params: &["source", "filename", "mode", "flags", "dont_inherit", "optimize"],
@@ -695,9 +739,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 36,
             python_name: "delattr",
             python_module: "builtins",
+            text_signature: Some("($module, obj, name, /)"),
             runtime_name: "molt_del_attr_name",
             arity: 2,
             posonly_params: &["obj", "name"],
@@ -710,9 +754,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 29,
             python_name: "dir",
             python_module: "builtins",
+            text_signature: None,
             runtime_name: "molt_dir_builtin",
             arity: 1,
             posonly_params: &["obj"],
@@ -725,9 +769,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 11,
             python_name: "divmod",
             python_module: "builtins",
+            text_signature: Some("($module, x, y, /)"),
             runtime_name: "molt_divmod_builtin",
             arity: 2,
             posonly_params: &["a", "b"],
@@ -740,9 +784,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 16,
             python_name: "enumerate",
             python_module: "builtins",
+            text_signature: Some("(iterable, start=0)"),
             runtime_name: "molt_enumerate_builtin",
             arity: 2,
             posonly_params: &["iterable", "start"],
@@ -755,9 +799,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 20,
             python_name: "filter",
             python_module: "builtins",
+            text_signature: None,
             runtime_name: "molt_filter_builtin",
             arity: 2,
             posonly_params: &["func", "iterable"],
@@ -770,9 +814,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 13,
             python_name: "format",
             python_module: "builtins",
+            text_signature: Some("($module, value, format_spec='', /)"),
             runtime_name: "molt_format_builtin",
             arity: 2,
             posonly_params: &["value"],
@@ -785,9 +829,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 34,
             python_name: "getattr",
             python_module: "builtins",
+            text_signature: None,
             runtime_name: "molt_getattr_builtin",
             arity: 3,
             posonly_params: &["obj", "name", "default"],
@@ -800,9 +844,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 41,
             python_name: "globals",
             python_module: "builtins",
+            text_signature: Some("($module, /)"),
             runtime_name: "molt_globals_builtin",
             arity: 0,
             posonly_params: &[],
@@ -815,9 +859,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 37,
             python_name: "hasattr",
             python_module: "builtins",
+            text_signature: Some("($module, obj, name, /)"),
             runtime_name: "molt_has_attr_name",
             arity: 2,
             posonly_params: &["obj", "name"],
@@ -830,9 +874,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 3,
             python_name: "hash",
             python_module: "builtins",
+            text_signature: Some("($module, obj, /)"),
             runtime_name: "molt_hash_builtin",
             arity: 1,
             posonly_params: &["obj"],
@@ -845,9 +889,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 10,
             python_name: "hex",
             python_module: "builtins",
+            text_signature: Some("($module, number, /)"),
             runtime_name: "molt_hex_builtin",
             arity: 1,
             posonly_params: &["obj"],
@@ -860,9 +904,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 15,
             python_name: "id",
             python_module: "builtins",
+            text_signature: Some("($module, obj, /)"),
             runtime_name: "molt_id",
             arity: 1,
             posonly_params: &["obj"],
@@ -875,9 +919,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 0,
             python_name: "isinstance",
             python_module: "builtins",
+            text_signature: Some("($module, obj, class_or_tuple, /)"),
             runtime_name: "molt_isinstance",
             arity: 2,
             posonly_params: &["obj", "classinfo"],
@@ -890,9 +934,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 1,
             python_name: "issubclass",
             python_module: "builtins",
+            text_signature: Some("($module, cls, class_or_tuple, /)"),
             runtime_name: "molt_issubclass",
             arity: 2,
             posonly_params: &["sub", "classinfo"],
@@ -905,9 +949,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 18,
             python_name: "iter",
             python_module: "builtins",
+            text_signature: None,
             runtime_name: "molt_iter_checked",
             arity: 1,
             posonly_params: &["obj"],
@@ -920,9 +964,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 2,
             python_name: "len",
             python_module: "builtins",
+            text_signature: Some("($module, obj, /)"),
             runtime_name: "molt_len",
             arity: 1,
             posonly_params: &["obj"],
@@ -935,9 +979,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 42,
             python_name: "locals",
             python_module: "builtins",
+            text_signature: Some("($module, /)"),
             runtime_name: "molt_locals_builtin",
             arity: 0,
             posonly_params: &[],
@@ -950,9 +994,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 19,
             python_name: "map",
             python_module: "builtins",
+            text_signature: None,
             runtime_name: "molt_map_builtin",
             arity: 2,
             posonly_params: &["func"],
@@ -965,9 +1009,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 27,
             python_name: "max",
             python_module: "builtins",
+            text_signature: None,
             runtime_name: "molt_max_builtin",
             arity: 3,
             posonly_params: &[],
@@ -980,9 +1024,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 26,
             python_name: "min",
             python_module: "builtins",
+            text_signature: None,
             runtime_name: "molt_min_builtin",
             arity: 3,
             posonly_params: &[],
@@ -995,9 +1039,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 31,
             python_name: "next",
             python_module: "builtins",
+            text_signature: None,
             runtime_name: "molt_next_builtin",
             arity: 2,
             posonly_params: &["iterator", "default"],
@@ -1010,9 +1054,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 9,
             python_name: "oct",
             python_module: "builtins",
+            text_signature: Some("($module, number, /)"),
             runtime_name: "molt_oct_builtin",
             arity: 1,
             posonly_params: &["obj"],
@@ -1025,9 +1069,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 30,
             python_name: "open",
             python_module: "_io",
+            text_signature: Some("($module, /, file, mode='r', buffering=-1, encoding=None,\n     errors=None, newline=None, closefd=True, opener=None)"),
             runtime_name: "molt_open_builtin",
             arity: 8,
             posonly_params: &[],
@@ -1040,9 +1084,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: Some(1),
         },
         PythonBuiltinFunctionInfo {
-            index: 4,
             python_name: "ord",
             python_module: "builtins",
+            text_signature: Some("($module, c, /)"),
             runtime_name: "molt_ord",
             arity: 1,
             posonly_params: &["obj"],
@@ -1055,9 +1099,24 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 39,
+            python_name: "pow",
+            python_module: "builtins",
+            text_signature: Some("($module, /, base, exp, mod=None)"),
+            runtime_name: "molt_pow_mod",
+            arity: 3,
+            posonly_params: &[],
+            pos_or_kw_params: &["base", "exp", "mod"],
+            kwonly_params: &[],
+            vararg: None,
+            varkw: None,
+            defaults: &[GeneratedBuiltinDefaultValue::None],
+            kw_defaults: &[],
+            bind_kind: Some(1),
+        },
+        PythonBuiltinFunctionInfo {
             python_name: "print",
             python_module: "builtins",
+            text_signature: Some("($module, /, *args, sep=' ', end='\\n', file=None, flush=False)"),
             runtime_name: "molt_print_builtin",
             arity: 5,
             posonly_params: &[],
@@ -1070,9 +1129,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 12,
             python_name: "repr",
             python_module: "builtins",
+            text_signature: Some("($module, obj, /)"),
             runtime_name: "molt_repr_builtin",
             arity: 1,
             posonly_params: &["obj"],
@@ -1085,9 +1144,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 22,
             python_name: "reversed",
             python_module: "builtins",
+            text_signature: Some("(sequence, /)"),
             runtime_name: "molt_reversed_builtin",
             arity: 1,
             posonly_params: &["seq"],
@@ -1100,9 +1159,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 17,
             python_name: "round",
             python_module: "builtins",
+            text_signature: Some("($module, /, number, ndigits=None)"),
             runtime_name: "molt_round_builtin",
             arity: 2,
             posonly_params: &[],
@@ -1112,12 +1171,12 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             varkw: None,
             defaults: &[GeneratedBuiltinDefaultValue::Missing],
             kw_defaults: &[],
-            bind_kind: None,
+            bind_kind: Some(1),
         },
         PythonBuiltinFunctionInfo {
-            index: 35,
             python_name: "setattr",
             python_module: "builtins",
+            text_signature: Some("($module, obj, name, value, /)"),
             runtime_name: "molt_set_attr_name",
             arity: 3,
             posonly_params: &["obj", "name", "value"],
@@ -1130,9 +1189,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 28,
             python_name: "sorted",
             python_module: "builtins",
+            text_signature: Some("($module, iterable, /, *, key=None, reverse=False)"),
             runtime_name: "molt_sorted_builtin",
             arity: 3,
             posonly_params: &["iterable", "key", "reverse"],
@@ -1145,9 +1204,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 25,
             python_name: "sum",
             python_module: "builtins",
+            text_signature: Some("($module, iterable, /, start=0)"),
             runtime_name: "molt_sum_builtin",
             arity: 2,
             posonly_params: &["iterable"],
@@ -1160,9 +1219,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 40,
             python_name: "vars",
             python_module: "builtins",
+            text_signature: None,
             runtime_name: "molt_vars_builtin",
             arity: 1,
             posonly_params: &["obj"],
@@ -1175,9 +1234,9 @@ pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[
             bind_kind: None,
         },
         PythonBuiltinFunctionInfo {
-            index: 21,
             python_name: "zip",
             python_module: "builtins",
+            text_signature: None,
             runtime_name: "molt_zip_builtin",
             arity: 2,
             posonly_params: &[],
@@ -1238,6 +1297,7 @@ pub(crate) fn resolve_test_python_builtin_symbol(symbol: &str) -> Option<u64> {
         "molt_oct_builtin" => crate::molt_oct_builtin as *const (),
         "molt_open_builtin" => crate::molt_open_builtin as *const (),
         "molt_ord" => crate::molt_ord as *const (),
+        "molt_pow_mod" => crate::molt_pow_mod as *const (),
         "molt_print_builtin" => crate::molt_print_builtin as *const (),
         "molt_repr_builtin" => crate::molt_repr_builtin as *const (),
         "molt_reversed_builtin" => crate::molt_reversed_builtin as *const (),
@@ -1285,4 +1345,11 @@ pub(crate) fn assert_reserved_runtime_symbols_resolve() {
     let _ = molt_importlib_compiled_loader_load_module as *const ();
     let _ = molt_importlib_module_spec_repr as *const ();
     let _ = molt_importlib_module_spec_parent as *const ();
+    let _ = crate::molt_coroutine_send_method as *const ();
+    let _ = crate::molt_coroutine_throw_method as *const ();
+    let _ = crate::molt_coroutine_close_method as *const ();
+    let _ = crate::molt_awaitable_await as *const ();
+    let _ = crate::molt_coroutine_wrapper_iter as *const ();
+    let _ = crate::molt_coroutine_wrapper_next as *const ();
+    let _ = crate::molt_generator_throw_method as *const ();
 }

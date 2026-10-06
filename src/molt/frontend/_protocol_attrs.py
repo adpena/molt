@@ -27,9 +27,9 @@ from molt.frontend._types import (
     ActiveException,
     AsyncFrameSlot,
     ClassInfo,
+    CodeSlotDeclaration,
     ComprehensionBinding,
     ExactClassFact,
-    FormatToken,
     FuncInfo,
     MoltOp,
     MoltValue,
@@ -56,7 +56,6 @@ class _GeneratorProtocolAttrs(Protocol):
     _midend_env_snapshot: Any
     _midend_stats_reported: Any
     _module_attr_type_hints: dict[str, str]
-    _module_cache_values: dict[str, MoltValue]
     _module_pressure_funcs_map_ref: Any
     _module_pressure_function_count: Any
     _module_pressure_total_ops: Any
@@ -122,7 +121,8 @@ class _GeneratorProtocolAttrs(Protocol):
     explicit_type_hints: dict[str, str]
     fallback_policy: Any
     finally_depth: Any
-    format_token_cache: dict[tuple[str, int, tuple[str, ...]], list[FormatToken]]
+    frame_code_slots: CodeSlotDeclaration | None
+    frame_home_slots: dict[str, int] | None
     free_var_hints: dict[str, str]
     free_vars: dict[str, int]
     func_aliases: dict[str, str]
@@ -143,4 +143,3 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_modules: dict[str, str]
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
-    gpu_kernel_symbols_by_name: dict[str, str]

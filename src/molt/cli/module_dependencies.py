@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 from collections import deque
 import functools
 from collections.abc import Collection, Iterable, Mapping, Sequence
@@ -49,29 +48,6 @@ def _module_dependencies_from_imports(
                 ) and stdlib_candidate != module_name:
                     deps.add(stdlib_candidate)
     return deps
-
-
-def _module_dependencies(
-    tree: ast.AST,
-    module_name: str,
-    module_graph: dict[str, Path],
-    *,
-    imports: list[str] | None = None,
-    known_modules: Collection[str] = (),
-) -> set[str]:
-    path = module_graph.get(module_name)
-    is_package = path is not None and path.name == "__init__.py"
-    collected_imports = (
-        imports
-        if imports is not None
-        else _module_import_scanner._collect_imports(tree, module_name, is_package)
-    )
-    return _module_dependencies_from_imports(
-        module_name,
-        module_graph,
-        collected_imports,
-        known_modules=known_modules,
-    )
 
 
 def _module_dependency_layers(

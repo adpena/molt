@@ -17,10 +17,8 @@ from molt.cli.compiler_metadata import (
     _compiler_clean_pathspec_source_state,
     _compiler_root,
     _compiler_python_source_root,
-    _rustc_version,
 )
 from molt.file_hashing import (
-    _hash_source_tree_metadata,
     _sha256_file,
     _source_fingerprint_files,
 )
@@ -36,45 +34,6 @@ from molt.cli.python_source_closure import (
 
 _CACHE_SOURCE_FINGERPRINT_SCHEMA_VERSION = "source-tree-v3"
 _BACKEND_FACADE_CRATE = Path("runtime/molt-backend")
-_BACKEND_CACHE_ALL_FEATURES = (
-    "cbor",
-    "egraphs",
-    "free-threaded",
-    "jemalloc",
-    "llvm",
-    "luau-backend",
-    "mlx",
-    "native-backend",
-    "polly",
-    "rust-backend",
-    "wasm-backend",
-)
-
-
-def _backend_source_feature_names(project_root: Path) -> tuple[str, ...]:
-    from molt.cli.cargo_source_closure import _read_cargo_manifest
-
-    data = _read_cargo_manifest(project_root / _BACKEND_FACADE_CRATE / "Cargo.toml")
-    features = data.get("features")
-    if not isinstance(features, dict):
-        return _BACKEND_CACHE_ALL_FEATURES
-    names = tuple(sorted(name for name in features if name != "default"))
-    return names or _BACKEND_CACHE_ALL_FEATURES
-
-
-def _backend_manifest_cache_stamp(project_root: Path) -> str:
-    runtime_root = project_root / "runtime"
-    manifests = {
-        project_root / "Cargo.toml",
-        project_root / "Cargo.lock",
-        runtime_root / "molt-backend" / "Cargo.toml",
-        runtime_root / "molt-ir" / "Cargo.toml",
-        runtime_root / "molt-tir" / "Cargo.toml",
-        runtime_root / "molt-codegen-abi" / "Cargo.toml",
-    }
-    manifests.update(runtime_root.glob("molt-backend*/Cargo.toml"))
-    metadata = _hash_source_tree_metadata(sorted(manifests), project_root)
-    return metadata[0] if metadata is not None else "metadata-unavailable"
 
 
 def _backend_crate_source_closure(
@@ -87,32 +46,35 @@ def _backend_crate_source_closure(
         project_root=project_root,
         crate_root=project_root / _BACKEND_FACADE_CRATE,
         crate_features=backend_features,
-        extra_source_paths=(project_root / "Cargo.toml", project_root / "Cargo.lock"),
+        extra_source_paths=(
+            project_root / "Cargo.toml",
+            # molt-ir embeds this catalog from outside its Cargo crate root.
+            project_root / "src" / "molt" / "backend_environment.json",
+        ),
     )
-
-
-@functools.lru_cache(maxsize=256)
-def _backend_source_paths_cached(
-    project_root_str: str,
-    backend_features: tuple[str, ...],
-    manifest_cache_stamp: str,
-) -> tuple[Path, ...]:
-    project_root = Path(project_root_str)
-    source_paths = _backend_crate_source_closure(project_root, backend_features)
-    return tuple(source_paths)
 
 
 def _backend_source_paths(
     project_root: Path,
     backend_features: tuple[str, ...] = (),
 ) -> list[Path]:
-    normalized_features = tuple(sorted(set(backend_features)))
-    return list(
-        _backend_source_paths_cached(
-            os.fspath(project_root),
-            normalized_features,
-            _backend_manifest_cache_stamp(project_root),
-        )
+    # Reachable manifests own topology. Re-read their admitted content instead
+    # of caching a graph behind a hand-enumerated manifest/stat stamp.
+    return _backend_crate_source_closure(
+        project_root, tuple(sorted(set(backend_features)))
+    )
+
+
+def _backend_source_identity_inputs(
+    project_root: Path, source_paths: Sequence[Path]
+) -> tuple[list[Path], str]:
+    """Replace the workspace lockfile with its compiler dependency identity."""
+    from molt.cli.cargo_source_closure import _cargo_locked_dependency_digest
+
+    lock_path = (project_root / "Cargo.lock").resolve()
+    paths = [path for path in source_paths if path.resolve() != lock_path]
+    return paths, _cargo_locked_dependency_digest(
+        project_root, project_root / _BACKEND_FACADE_CRATE
     )
 
 
@@ -123,6 +85,8 @@ def _frontend_tooling_source_paths_cached(project_root_str: str) -> tuple[Path, 
     return (
         molt_root / "cli",
         molt_root / "frontend",
+        molt_root / "backend_environment.py",
+        molt_root / "backend_environment.json",
         molt_root / "type_facts.py",
         molt_root / "capabilities.py",
         molt_root / "capability_manifest.py",
@@ -164,8 +128,9 @@ _FRONTEND_AUX_SOURCE_RELPATHS: tuple[str, ...] = (
 
 
 # Roots of the frontend lowering computation. Reachability starts here and
-# follows module-level ``molt`` imports; anything not reached provably never runs
-# while a module is lowered and so cannot change the lowering result.
+# follows module-level ``molt`` imports. If a literal-relative anchor becomes
+# unknown, every admitted local owner can execute before a suffix fails; the
+# shared closure then captures the complete ``molt`` source domain.
 #
 #   * ``frontend/`` -- the whole Python->TIR frontend (visitors, sema, lowering),
 #     kept wholesale because its subpackages import one another.
@@ -182,16 +147,22 @@ _FRONTEND_AUX_SOURCE_RELPATHS: tuple[str, ...] = (
 #
 # These are a structural naming rule, not a hand-maintained membership list: a new
 # ``frontend_*`` / ``module_*`` driver is picked up automatically, and a new
-# backend/link/cargo file is excluded automatically because it is not a seed and
-# is not reachable from one.
+# backend/link/cargo file is excluded when no reachable edge or unknown-relative
+# coverage obligation includes it. Coverage deliberately broadens invalidation.
 _LOWERING_SCOPE_SEED_CLI_PREFIXES: tuple[str, ...] = ("frontend_", "module_")
 
 
 _FRONTEND_LOWERING_IMPORT_POLICY = PythonImportPolicy(
     module_level_only=True,
     include_parent_packages=False,
-    fail_on_nonliteral_dynamic_import=False,
+    # Persisted lowering results require complete eager dependency identity.
+    # Deferred bodies stay outside this projection. Unknown literal-relative
+    # anchors require full local byte coverage; nonliteral names still require
+    # the existing exact dynamic contract rather than partial candidates.
+    fail_on_nonliteral_dynamic_import=True,
     allowed_prefix="molt",
+    purpose="source_dependency",
+    unknown_relative_sources="local_inventory",
 )
 
 
@@ -220,6 +191,8 @@ def _lowering_scope_source_closure(project_root: Path) -> LocalPythonSourceClosu
     inputs remain seeds. Grouped fromlist requests prefer actual named submodules
     without importing package aggregates. New edges/topology are discovered on
     every build; only the explicit build transaction may reuse a whole closure.
+    Unknown literal-relative anchors widen source coverage to all admitted local
+    owners, including sources that can execute before the import fails.
     """
     return local_python_import_closure(
         project_root,
@@ -235,6 +208,7 @@ class _SourceFingerprintInputs:
 
     paths: tuple[Path, ...]
     source_sha256: Mapping[Path, str] = field(default_factory=dict)
+    topology_digest: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -253,9 +227,12 @@ def _frontend_semantic_tooling_sources(project_root: Path) -> _SourceFingerprint
     ``_lowering_scope_source_closure``): the whole ``frontend/`` tree plus
     every ``molt``-owned file reachable from the frontend/module drivers by
     module-level import, plus the shared aux semantic files. No hand-maintained
-    denylist: adding a backend/link/cargo file never enters this scope (it is not
-    reachable from a lowering seed), while a new lowering-relevant module that a
-    driver imports is picked up automatically.
+    denylist: known requests remain reachability-scoped. An unknown literal
+    relative anchor requires complete local-owner coverage and consequently
+    includes backend/link/cargo, guest stdlib and GPU Python sources as bytes.
+    This is an invalidation cost, not a claim that these sources execute on the
+    host or a grant of guest import metadata. New files and namespace topology
+    are recaptured on the next operation.
 
     The bias is strictly toward inclusion -- every file on the frontend import
     path is hashed, so a spurious cold-start is the worst outcome; a stale
@@ -279,7 +256,9 @@ def _frontend_semantic_tooling_sources(project_root: Path) -> _SourceFingerprint
         # Existing aux sources have already been admitted and captured by the
         # closure. Only absent or aliased lexical paths still need resolving.
         paths.append(source if source in closure.source_sha256 else source.resolve())
-    return _SourceFingerprintInputs(tuple(sorted(set(paths))), closure.source_sha256)
+    return _SourceFingerprintInputs(
+        tuple(sorted(set(paths))), closure.source_sha256, closure.topology_digest
+    )
 
 
 # Per-process cache of source-tree content digests. The key includes a
@@ -305,6 +284,9 @@ class _FrontendSemanticSourceSnapshot(NamedTuple):
 @dataclass
 class _SourceTreeFingerprintTransaction:
     fingerprints: dict[tuple[str, ...], str] = field(default_factory=dict)
+    compiler_plans: dict[tuple[str, ...], object] = field(default_factory=dict)
+    installed_sources: set[tuple[str, str]] = field(default_factory=set)
+    cargo_documents: dict[str, object] = field(default_factory=dict)
     frontend_semantic_sources: dict[Path, _FrontendSemanticSourceSnapshot] = field(
         default_factory=dict
     )
@@ -319,7 +301,7 @@ _SOURCE_TREE_FINGERPRINT_TRANSACTION: ContextVar[
 def _source_tree_fingerprint_transaction() -> Iterator[None]:
     """Share immutable tooling snapshots within one frontend operation.
 
-    Build commands own the outer transaction. Independently callable graph,
+    Build and shared run/deploy wrappers own the outer transaction. Graph,
     analysis and cache operations enter the same reentrant authority, so their
     cache keys, validation and publication share one identity even without the
     CLI wrapper. A new operation recaptures source bytes, import topology and
@@ -332,14 +314,27 @@ def _source_tree_fingerprint_transaction() -> Iterator[None]:
     if current is not None:
         yield
         return
-    token = _SOURCE_TREE_FINGERPRINT_TRANSACTION.set(
+    transaction_token = _SOURCE_TREE_FINGERPRINT_TRANSACTION.set(
         _SourceTreeFingerprintTransaction()
     )
     try:
         with local_python_import_graph_transaction():
             yield
     finally:
-        _SOURCE_TREE_FINGERPRINT_TRANSACTION.reset(token)
+        _SOURCE_TREE_FINGERPRINT_TRANSACTION.reset(transaction_token)
+
+
+@contextmanager
+def _fresh_compiler_identity_inputs() -> Iterator[None]:
+    """Force live publication checks without reusing operation snapshots."""
+    transaction_token = _SOURCE_TREE_FINGERPRINT_TRANSACTION.set(
+        _SourceTreeFingerprintTransaction()
+    )
+    try:
+        with local_python_import_graph_transaction(fresh=True):
+            yield
+    finally:
+        _SOURCE_TREE_FINGERPRINT_TRANSACTION.reset(transaction_token)
 
 
 def _file_content_signature(path: Path) -> str:
@@ -456,6 +451,10 @@ def _source_tree_cache_fingerprint(
     extra_fingerprint_inputs: str,
 ) -> str:
     path_keys = tuple(str(path) for path in inputs.paths)
+    if inputs.topology_digest:
+        extra_fingerprint_inputs += (
+            f"\nlocal-python-topology:{inputs.topology_digest}\n"
+        )
     root = root.resolve()
     transaction = _SOURCE_TREE_FINGERPRINT_TRANSACTION.get()
     transaction_key = (
@@ -508,48 +507,79 @@ def _cache_fingerprint(
     backend_features: Sequence[str] | None = None,
     runtime_features: Sequence[str] | None = None,
     include_runtime_sources: bool = True,
+    env: Mapping[str, str] | None = None,
+    cargo_profile: str | None = None,
 ) -> str:
-    root = _compiler_root()
-    rustc_info = _rustc_version() or ""
-    rustflags = os.environ.get("RUSTFLAGS", "")
-    # Hash source trees, not backend binaries: binary fingerprints over-invalidate
-    # on incremental rebuilds even when source semantics are unchanged.
-    selected_backend_features = (
-        _backend_source_feature_names(root)
-        if backend_features is None
-        else _selected_source_features(backend_features)
+    from molt.cli.compiler_identity import (
+        CompilerIdentityError,
+        backend_build_admission,
+        compiler_cargo_profile,
+        installed_compiler_admission,
     )
-    source_paths = _backend_source_paths(root, selected_backend_features)
-    if include_runtime_sources:
-        from molt.cli.runtime_source_closure import runtime_source_paths
+    from molt.backend_executable_names import backend_features_for_target
 
-        if runtime_features is None:
-            source_paths += runtime_source_paths(root)
-        else:
+    try:
+        root = _compiler_root()
+        source = os.environ if env is None else env
+        profile = cargo_profile or compiler_cargo_profile(source)
+        selected_features = (
+            backend_features_for_target(
+                is_wasm=False,
+                is_luau_transpile=False,
+                is_rust_transpile=False,
+                env=source,
+            )
+            if backend_features is None
+            else _selected_source_features(backend_features)
+        )
+        installed = installed_compiler_admission(root, selected_features, profile)
+        if installed is not None:
+            return installed.fingerprint
+        admission = backend_build_admission(root, selected_features, profile, source)
+        source_paths, lock_digest = _backend_source_identity_inputs(
+            root, _backend_source_paths(root, selected_features)
+        )
+        if include_runtime_sources:
+            from molt.cli.runtime_source_closure import runtime_source_paths
+
             source_paths += runtime_source_paths(
                 root,
-                runtime_features=_selected_source_features(runtime_features),
+                **(
+                    {}
+                    if runtime_features is None
+                    else {
+                        "runtime_features": _selected_source_features(runtime_features)
+                    }
+                ),
             )
-    runtime_feature_contract = (
-        "all-source-features"
-        if runtime_features is None
-        else ",".join(_selected_source_features(runtime_features))
-    )
-    return _source_tree_cache_fingerprint(
-        root=root,
-        inputs=_SourceFingerprintInputs.from_paths(source_paths),
-        scope="compiler-runtime-backend",
-        extra_fingerprint_inputs=(
-            f"rustc:{rustc_info}\n"
-            f"rustflags:{rustflags}\n"
-            f"backend_features:{','.join(selected_backend_features)}\n"
-            f"runtime_features:{runtime_feature_contract}\n"
-        ),
-    )
+        runtime_contract = (
+            "all-source-features"
+            if runtime_features is None
+            else ",".join(_selected_source_features(runtime_features))
+        )
+        return _source_tree_cache_fingerprint(
+            root=root,
+            inputs=_SourceFingerprintInputs.from_paths(source_paths),
+            scope="compiler-runtime-backend",
+            extra_fingerprint_inputs=(
+                f"build:{admission.fingerprint}\n"
+                f"backend_locked_dependencies:{lock_digest}\n"
+                f"runtime_features:{runtime_contract}\n"
+            ),
+        )
+    except CompilerIdentityError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise CompilerIdentityError(f"Compiler cache identity: {exc}") from exc
 
 
 def _cache_tooling_fingerprint() -> str:
+    from molt.cli.compiler_identity import installed_compiler_admission
+
     root = _compiler_root()
+    installed = installed_compiler_admission(root)
+    if installed is not None:
+        return installed.fingerprint
     return _source_tree_cache_fingerprint(
         root=root,
         inputs=_SourceFingerprintInputs.from_paths(
@@ -565,8 +595,8 @@ def _frontend_semantic_tooling_fingerprint() -> str:
 
     Identical in construction to ``_cache_tooling_fingerprint`` but over the
     lowering-relevant scope only (see ``_frontend_semantic_tooling_sources``),
-    so an unrelated backend/link/daemon/cargo/toolchain edit does not cold-start a
-    module's persisted analysis / lowering / import-graph entry. The distinct
+    so known import graphs exclude unrelated backend/link/daemon/cargo/toolchain
+    edits. Unknown relative anchors require broader local coverage. The distinct
     ``scope`` tag keeps this digest namespace-separated from the broad
     ``frontend-tooling`` fingerprint.
     """
@@ -583,17 +613,32 @@ def _frontend_semantic_tooling_snapshot() -> _FrontendSemanticSourceSnapshot:
         snapshot = transaction.frontend_semantic_sources.get(root)
         if snapshot is not None:
             return snapshot
-    inputs = _frontend_semantic_tooling_sources(root)
-    snapshot = _FrontendSemanticSourceSnapshot(
-        root=root,
-        source_paths=inputs.paths,
-        fingerprint=_source_tree_cache_fingerprint(
+    from molt.cli.compiler_identity import installed_compiler_admission
+
+    installed = installed_compiler_admission(root)
+    if installed is not None:
+        # The admitted release already commits to every shipped input. Reuse
+        # that generation authority without walking its mutable-source graph.
+        # Domain separation is for this cache consumer, not runtime metadata.
+        snapshot = _FrontendSemanticSourceSnapshot(
             root=root,
-            inputs=inputs,
-            scope="frontend-semantic-tooling",
-            extra_fingerprint_inputs="",
-        ),
-    )
+            source_paths=(),
+            fingerprint=_compute_source_tree_content_digest(
+                (), "frontend-semantic-tooling", f"installed:{installed.fingerprint}\n"
+            ),
+        )
+    else:
+        inputs = _frontend_semantic_tooling_sources(root)
+        snapshot = _FrontendSemanticSourceSnapshot(
+            root=root,
+            source_paths=inputs.paths,
+            fingerprint=_source_tree_cache_fingerprint(
+                root=root,
+                inputs=inputs,
+                scope="frontend-semantic-tooling",
+                extra_fingerprint_inputs="",
+            ),
+        )
     if transaction is not None:
         transaction.frontend_semantic_sources[root] = snapshot
     return snapshot

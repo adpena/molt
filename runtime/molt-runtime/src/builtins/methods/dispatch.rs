@@ -1,320 +1,217 @@
-use super::common::{
-    builtin_classmethod_bits, builtin_func_bits, builtin_func_bits_with_defaults_tuple,
-};
-use super::core_types::{
-    memoryview_method_bits, object_method_bits, range_method_bits, type_method_bits,
-};
-use super::io::file_method_bits;
-use super::numeric::{
-    complex_class_method_bits, complex_method_bits, float_class_method_bits, float_method_bits,
-    int_class_method_bits, int_method_bits,
-};
-use super::sequence::{
-    bytearray_method_bits, bytes_method_bits, slice_method_bits, string_method_bits,
-};
-use super::singletons::missing_bits;
-use super::specialized::{classmethod_method_bits, property_method_bits, staticmethod_method_bits};
-use crate::PyToken;
-use crate::builtins::containers::tuple_method_bits;
+use super::common::{builtin_func_bits, builtin_func_bits_with_defaults_tuple};
+use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 use crate::*;
 
-pub(crate) fn builtin_class_method_bits(
-    _py: &PyToken<'_>,
-    class_bits: u64,
-    name: &str,
-) -> Option<u64> {
-    super::method_dispatch(_py, || {
-        let builtins = builtin_classes(_py);
-        if name == "__class_getitem__"
-            && (class_bits == builtins.list
-                || class_bits == builtins.dict
-                || class_bits == builtins.tuple
-                || class_bits == builtins.set
-                || class_bits == builtins.frozenset
-                || class_bits == builtins.type_obj)
-        {
-            return Some(builtin_classmethod_bits(
-                _py,
-                &runtime_state(_py).method_cache.generic_alias_class_getitem,
-                fn_addr!(molt_generic_alias_new),
-                2,
-            ));
-        }
-        if class_bits == builtins.tuple && name == "__new__" {
-            return Some(builtin_func_bits_with_defaults_tuple(
-                _py,
-                &runtime_state(_py).method_cache.tuple_new,
-                fn_addr!(molt_tuple_new_bound),
-                2,
-                &[missing_bits(_py)],
-            ));
-        }
-        if class_bits == builtins.generic_alias && name == "__new__" {
-            return Some(builtin_func_bits(
-                _py,
-                &runtime_state(_py).method_cache.generic_alias_new,
-                fn_addr!(molt_generic_alias_type_new),
-                3,
-            ));
-        }
-        if class_bits == builtins.reference_type && name == "__new__" {
-            return Some(builtin_func_bits_with_defaults_tuple(
-                _py,
-                &runtime_state(_py).method_cache.weakref_new,
-                fn_addr!(molt_weakref_new),
-                3,
-                &[MoltObject::none().bits()],
-            ));
-        }
-        if issubclass_bits(class_bits, builtins.reference_type) {
-            if name == "__new__" {
-                return Some(builtin_func_bits_with_defaults_tuple(
-                    _py,
-                    &runtime_state(_py).method_cache.weakref_new,
-                    fn_addr!(molt_weakref_new),
-                    3,
-                    &[MoltObject::none().bits()],
-                ));
-            }
-            if let Some(bits) = crate::builtins::methods::weakref_method_bits(_py, name) {
-                return Some(bits);
-            }
-        }
-        if class_bits == builtins.object {
-            return object_method_bits(_py, name);
-        }
-        if class_bits == builtins.type_obj {
-            return type_method_bits(_py, name);
-        }
-        if class_bits == builtins.int {
-            if let Some(bits) = int_method_bits(_py, name) {
-                return Some(bits);
-            }
-            if let Some(bits) = int_class_method_bits(_py, name) {
-                return Some(bits);
-            }
-        }
-        if class_bits == builtins.float {
-            if let Some(bits) = float_method_bits(_py, name) {
-                return Some(bits);
-            }
-            if let Some(bits) = float_class_method_bits(_py, name) {
-                return Some(bits);
-            }
-        }
-        if class_bits == builtins.complex {
-            if let Some(bits) = complex_method_bits(_py, name) {
-                return Some(bits);
-            }
-            if let Some(bits) = complex_class_method_bits(_py, name) {
-                return Some(bits);
-            }
-        }
-        if class_bits == builtins.base_exception_group || class_bits == builtins.exception_group {
-            if name == "__init__" {
-                return crate::builtins::exceptions::exception_method_bits_for_owner(
-                    _py,
-                    builtins.base_exception_group,
-                    name,
-                );
-            }
-            return exception_group_method_bits(_py, name);
-        }
-        if issubclass_bits(class_bits, builtins.base_exception) {
-            return crate::builtins::exceptions::exception_method_bits_for_owner(
-                _py, class_bits, name,
-            );
-        }
-        if class_bits == builtins.dict {
-            return dict_method_bits(_py, name);
-        }
-        if class_bits == builtins.tuple {
-            return tuple_method_bits(_py, name);
-        }
-        if class_bits == builtins.list {
-            return list_method_bits(_py, name);
-        }
-        if class_bits == builtins.set {
-            return set_method_bits(_py, name);
-        }
-        if class_bits == builtins.frozenset {
-            return frozenset_method_bits(_py, name);
-        }
-        if class_bits == builtins.str {
-            return string_method_bits(_py, name);
-        }
-        if class_bits == builtins.bytes {
-            return bytes_method_bits(_py, name);
-        }
-        if class_bits == builtins.bytearray {
-            return bytearray_method_bits(_py, name);
-        }
-        if class_bits == builtins.slice {
-            return slice_method_bits(_py, name);
-        }
-        if class_bits == builtins.memoryview {
-            return memoryview_method_bits(_py, name);
-        }
-        if class_bits == builtins.range {
-            return range_method_bits(_py, name);
-        }
-        if class_bits == builtins.staticmethod {
-            return staticmethod_method_bits(_py, name);
-        }
-        if class_bits == builtins.classmethod {
-            return classmethod_method_bits(_py, name);
-        }
-        if class_bits == builtins.property {
-            return property_method_bits(_py, name);
-        }
+super::native_method_table!(builtin_special_method_bits, publish_special_methods, py, name, [class_bits], {
+    let builtins = builtin_classes(py);
+    let none = MoltObject::none().bits();
+}, {
+    "__class_getitem__" if [builtins.list, builtins.dict, builtins.tuple, builtins.set, builtins.frozenset, builtins.type_obj].contains(&class_bits) => Some(builtin_func_bits(
+        py, NativeCallableSpec::declared(NativeCallableKind::ClassMethodDescriptor, class_bits, "__class_getitem__"), fn_addr!(molt_generic_alias_new), 2,
+    )),
+    "__get__" if [builtins.method_descriptor, builtins.wrapper_descriptor, builtins.classmethod_descriptor].contains(&class_bits) => Some(builtin_func_bits_with_defaults_tuple(
+        py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class_bits, "__get__"),
+        fn_addr!(molt_function_descriptor_get), 3, &[none],
+    )),
+    "__new__" => {
+        let spec = NativeCallableSpec::constructor(class_bits);
+        if class_bits == builtins.generic_alias {
+            Some(builtin_func_bits(py, spec, fn_addr!(molt_generic_alias_type_new), 3))
+        } else if class_bits == builtins.reference_type {
+            Some(crate::builtins::methods::builtin_variadic_func_bits(py, spec, fn_addr!(crate::builtins::weakref_type::weakref_new_method)))
+        } else if class_bits == builtins.file_io {
+            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_file_io_new), 5, &[none, none, none]))
+        } else if [builtins.buffered_reader, builtins.buffered_writer, builtins.buffered_random].contains(&class_bits) {
+            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_buffered_new), 3, &[MoltObject::from_int(-1).bits()]))
+        } else if class_bits == builtins.text_io_wrapper {
+            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_text_io_wrapper_new), 7, &[none, none, none, MoltObject::from_bool(false).bits(), MoltObject::from_bool(false).bits()]))
+        } else if class_bits == builtins.bytes_io {
+            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_bytesio_new), 2, &[none]))
+        } else if class_bits == builtins.string_io {
+            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_stringio_new), 3, &[none, none]))
+        } else { None }
+    },
+    "__init__" => {
+        let spec = NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class_bits, "__init__");
         if class_bits == builtins.file_io {
-            // FileIO(name, mode='r', closefd=True, opener=None)
-            // __defaults__ = (None, None, None) for the last 3 params
-            let none = MoltObject::none().bits();
-            match name {
-                "__new__" => {
-                    return Some(builtin_func_bits_with_defaults_tuple(
-                        _py,
-                        &runtime_state(_py).method_cache.file_io_new,
-                        fn_addr!(molt_file_io_new),
-                        5,
-                        &[none, none, none],
-                    ));
-                }
-                "__init__" => {
-                    return Some(builtin_func_bits_with_defaults_tuple(
-                        _py,
-                        &runtime_state(_py).method_cache.file_io_init,
-                        fn_addr!(molt_file_io_init),
-                        5,
-                        &[none, none, none],
-                    ));
-                }
-                _ => {}
-            }
+            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_file_io_init), 5, &[none, none, none]))
+        } else if [builtins.buffered_reader, builtins.buffered_writer, builtins.buffered_random].contains(&class_bits) {
+            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_buffered_init), 3, &[MoltObject::from_int(-1).bits()]))
+        } else if class_bits == builtins.text_io_wrapper {
+            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_text_io_wrapper_init), 7, &[none, none, none, MoltObject::from_bool(false).bits(), MoltObject::from_bool(false).bits()]))
+        } else if class_bits == builtins.bytes_io {
+            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_bytesio_init), 2, &[none]))
+        } else if class_bits == builtins.string_io {
+            Some(builtin_func_bits_with_defaults_tuple(py, spec, fn_addr!(molt_stringio_init), 3, &[none, none]))
+        } else { None }
+    },
+});
+
+/// Routing is shared by direct lookup and requested-owner namespace publication.
+/// The method arms, not a second list of spellings, define each public surface.
+macro_rules! native_method_families {
+    ($( $field:ident => $lookup:path, $publish:path; )*) => {
+        fn declared_method(py: &PyToken<'_>, class: u64, name: &str) -> Option<u64> {
+            let classes = builtin_classes(py);
+            $(if class == classes.$field { return $lookup(py, name); })*
+            None
         }
-        if class_bits == builtins.buffered_reader
-            || class_bits == builtins.buffered_writer
-            || class_bits == builtins.buffered_random
-        {
-            // BufferedReader(raw, buffer_size=-1)
-            let neg_one = MoltObject::from_int(-1).bits();
-            match name {
-                "__new__" => {
-                    return Some(builtin_func_bits_with_defaults_tuple(
-                        _py,
-                        &runtime_state(_py).method_cache.buffered_new,
-                        fn_addr!(molt_buffered_new),
-                        3,
-                        &[neg_one],
-                    ));
-                }
-                "__init__" => {
-                    return Some(builtin_func_bits_with_defaults_tuple(
-                        _py,
-                        &runtime_state(_py).method_cache.buffered_init,
-                        fn_addr!(molt_buffered_init),
-                        3,
-                        &[neg_one],
-                    ));
-                }
-                _ => {}
-            }
+        fn publish_declared_methods(py: &PyToken<'_>, class: u64) -> bool {
+            let classes = builtin_classes(py);
+            $(if class == classes.$field { return $publish(py); })*
+            true
         }
-        if class_bits == builtins.text_io_wrapper {
-            // TextIOWrapper(buffer, encoding=None, errors=None, newline=None,
-            //               line_buffering=False, write_through=False)
-            let none = MoltObject::none().bits();
-            let false_bits = MoltObject::from_bool(false).bits();
-            match name {
-                "__new__" => {
-                    return Some(builtin_func_bits_with_defaults_tuple(
-                        _py,
-                        &runtime_state(_py).method_cache.text_io_wrapper_new,
-                        fn_addr!(molt_text_io_wrapper_new),
-                        7,
-                        &[none, none, none, false_bits, false_bits],
-                    ));
-                }
-                "__init__" => {
-                    return Some(builtin_func_bits_with_defaults_tuple(
-                        _py,
-                        &runtime_state(_py).method_cache.text_io_wrapper_init,
-                        fn_addr!(molt_text_io_wrapper_init),
-                        7,
-                        &[none, none, none, false_bits, false_bits],
-                    ));
-                }
-                _ => {}
-            }
+    };
+}
+
+native_method_families! {
+    union_type => super::specialized::union_method_bits, super::specialized::publish_union_methods;
+    dict_keys => super::specialized::dict_keys_method_bits, super::specialized::publish_dict_keys_methods;
+    dict_items => super::specialized::dict_items_method_bits, super::specialized::publish_dict_items_methods;
+    dict_values => super::specialized::dict_values_method_bits, super::specialized::publish_dict_values_methods;
+    generic_alias => super::specialized::generic_alias_method_bits, super::specialized::publish_generic_alias_methods;
+    object => super::core_types::object_method_bits, super::core_types::publish_object_methods;
+    type_obj => super::core_types::type_method_bits, super::core_types::publish_type_methods;
+    module => crate::builtins::modules::module_method_bits, crate::builtins::modules::publish_module_methods;
+    int => super::numeric::int_method_bits, super::numeric::publish_int_methods;
+    float => super::numeric::float_method_bits, super::numeric::publish_float_methods;
+    complex => super::numeric::complex_method_bits, super::numeric::publish_complex_methods;
+    dict => crate::builtins::containers::dict_method_bits, crate::builtins::containers::publish_dict_methods;
+    tuple => crate::builtins::containers::tuple_method_bits, crate::builtins::containers::publish_tuple_methods;
+    list => crate::builtins::containers::list_method_bits, crate::builtins::containers::publish_list_methods;
+    set => crate::builtins::containers::set_method_bits, crate::builtins::containers::publish_set_methods;
+    frozenset => crate::builtins::containers::frozenset_method_bits, crate::builtins::containers::publish_frozenset_methods;
+    str => super::sequence::string_method_bits, super::sequence::publish_string_methods;
+    bytes => super::sequence::bytes_method_bits, super::sequence::publish_bytes_methods;
+    bytearray => super::sequence::bytearray_method_bits, super::sequence::publish_bytearray_methods;
+    slice => super::sequence::slice_method_bits, super::sequence::publish_slice_methods;
+    memoryview => super::core_types::memoryview_method_bits, super::core_types::publish_memoryview_methods;
+    range => super::core_types::range_method_bits, super::core_types::publish_range_methods;
+    staticmethod => super::specialized::staticmethod_method_bits, super::specialized::publish_staticmethod_methods;
+    classmethod => super::specialized::classmethod_method_bits, super::specialized::publish_classmethod_methods;
+    property => super::specialized::property_method_bits, super::specialized::publish_property_methods;
+    reference_type => super::specialized::weakref_method_bits, super::specialized::publish_weakref_methods;
+    generator => super::specialized::generator_method_bits, super::specialized::publish_generator_methods;
+    coroutine => super::specialized::coroutine_method_bits, super::specialized::publish_coroutine_methods;
+    coroutine_wrapper => super::specialized::coroutine_wrapper_method_bits, super::specialized::publish_coroutine_wrapper_methods;
+    async_generator => super::specialized::asyncgen_method_bits, super::specialized::publish_asyncgen_methods;
+}
+
+fn io_class(py: &PyToken<'_>, class: u64) -> bool {
+    let b = builtin_classes(py);
+    [
+        b.file,
+        b.file_io,
+        b.buffered_reader,
+        b.buffered_writer,
+        b.buffered_random,
+        b.text_io_wrapper,
+        b.bytes_io,
+        b.string_io,
+    ]
+    .contains(&class)
+}
+
+pub(crate) fn builtin_class_method_bits(py: &PyToken<'_>, class: u64, name: &str) -> Option<u64> {
+    super::method_dispatch(py, || {
+        if let Some(bits) = builtin_special_method_bits(py, class, name) {
+            return Some(bits);
         }
-        if class_bits == builtins.bytes_io {
-            // BytesIO(initial_bytes=None)
-            let none = MoltObject::none().bits();
-            match name {
-                "__new__" => {
-                    return Some(builtin_func_bits_with_defaults_tuple(
-                        _py,
-                        &runtime_state(_py).method_cache.bytes_io_new,
-                        fn_addr!(molt_bytesio_new),
-                        2,
-                        &[none],
-                    ));
-                }
-                "__init__" => {
-                    return Some(builtin_func_bits_with_defaults_tuple(
-                        _py,
-                        &runtime_state(_py).method_cache.bytes_io_init,
-                        fn_addr!(molt_bytesio_init),
-                        2,
-                        &[none],
-                    ));
-                }
-                _ => {}
-            }
+        if exception_pending(py) {
+            return None;
         }
-        if class_bits == builtins.string_io {
-            // StringIO(initial_value='', newline=None)
-            let none = MoltObject::none().bits();
-            match name {
-                "__new__" => {
-                    return Some(builtin_func_bits_with_defaults_tuple(
-                        _py,
-                        &runtime_state(_py).method_cache.string_io_new,
-                        fn_addr!(molt_stringio_new),
-                        3,
-                        &[none, none],
-                    ));
-                }
-                "__init__" => {
-                    return Some(builtin_func_bits_with_defaults_tuple(
-                        _py,
-                        &runtime_state(_py).method_cache.string_io_init,
-                        fn_addr!(molt_stringio_init),
-                        3,
-                        &[none, none],
-                    ));
-                }
-                _ => {}
-            }
+        if let Some(bits) = declared_method(py, class, name) {
+            return Some(bits);
         }
-        if class_bits == builtins.file
-            || class_bits == builtins.file_io
-            || class_bits == builtins.buffered_reader
-            || class_bits == builtins.buffered_writer
-            || class_bits == builtins.buffered_random
-            || class_bits == builtins.text_io_wrapper
-            || class_bits == builtins.bytes_io
-            || class_bits == builtins.string_io
-        {
-            if name == "reconfigure" && class_bits != builtins.text_io_wrapper {
-                return None;
-            }
-            return file_method_bits(_py, name);
+        if exception_pending(py) {
+            return None;
         }
-        if is_builtin_class_bits(_py, class_bits) {
-            return object_method_bits(_py, name);
+        let b = builtin_classes(py);
+        let extra = if class == b.int {
+            super::numeric::int_class_method_bits(py, name)
+        } else if class == b.float {
+            super::numeric::float_class_method_bits(py, name)
+        } else if class == b.complex {
+            super::numeric::complex_class_method_bits(py, name)
+        } else if issubclass_bits(class, b.base_exception) {
+            if name == "__init__" {
+                let owner = if class == b.exception_group {
+                    b.base_exception_group
+                } else {
+                    class
+                };
+                crate::builtins::exceptions::exception_method_bits_for_owner(py, owner, name)
+            } else if class == b.base_exception_group || class == b.exception_group {
+                crate::builtins::exceptions::exception_group_method_bits(py, name)
+            } else if class == b.base_exception {
+                crate::builtins::exceptions::exception_method_bits(py, name)
+            } else {
+                None
+            }
+        } else if io_class(py, class) {
+            super::io::file_method_bits(py, class, name)
+        } else {
+            None
+        };
+        if extra.is_some() || exception_pending(py) {
+            return extra;
         }
         None
     })
+}
+
+pub(crate) fn publish_builtin_class_methods(py: &PyToken<'_>, class: u64) -> bool {
+    if !is_builtin_class_bits(py, class)
+        && !crate::builtins::exceptions::is_builtin_exception_class_bits(py, class)
+    {
+        return true;
+    }
+    let Some(pointer) = obj_from_bits(class).as_ptr() else {
+        return false;
+    };
+    use crate::object::class_storage::{ClassDeclaration, class_declare, class_declares};
+    if unsafe { class_declares(pointer, ClassDeclaration::NativeNamespacePublished) } {
+        return true;
+    }
+    if !publish_special_methods(py, class) || !publish_declared_methods(py, class) {
+        return false;
+    }
+    let b = builtin_classes(py);
+    let complete = if class == b.int {
+        super::numeric::publish_int_class_methods(py)
+    } else if class == b.float {
+        super::numeric::publish_float_class_methods(py)
+    } else if class == b.complex {
+        super::numeric::publish_complex_class_methods(py)
+    } else if issubclass_bits(class, b.base_exception) {
+        if !crate::builtins::exceptions::publish_exception_fields(py, class) {
+            return false;
+        }
+        let owner = if class == b.exception_group {
+            b.base_exception_group
+        } else {
+            class
+        };
+        let _ = crate::builtins::exceptions::exception_method_bits_for_owner(py, owner, "__init__");
+        if exception_pending(py) {
+            return false;
+        }
+        if class == b.base_exception {
+            crate::builtins::exceptions::publish_exception_methods(py)
+        } else if class == b.base_exception_group || class == b.exception_group {
+            crate::builtins::exceptions::publish_exception_group_methods(py)
+        } else {
+            true
+        }
+    } else if io_class(py, class) {
+        super::io::publish_file_methods(py, class)
+    } else {
+        true
+    };
+    if complete && !exception_pending(py) {
+        unsafe { class_declare(pointer, ClassDeclaration::NativeNamespacePublished) };
+        true
+    } else {
+        false
+    }
 }

@@ -41,32 +41,18 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         })
         .collect();
     let mut state_yield_resume_after: HashMap<BlockId, BlockId> = HashMap::new();
-    let mut state_yield_resume_states: HashMap<BlockId, Option<i64>> = HashMap::new();
     for (bid, block) in &func.blocks {
-        let Some(state_id) = block.ops.iter().find_map(|op| {
+        if let Some(target) = block.ops.iter().find_map(|op| {
             (op.opcode == OpCode::StateYield)
                 .then(|| attr_int(&op.attrs, "value"))
                 .flatten()
-        }) else {
-            continue;
-        };
-        let Some(&resume_target) = state_dispatch_targets_by_state.get(&state_id) else {
-            continue;
-        };
-        state_yield_resume_after.insert(*bid, resume_target);
-        state_yield_resume_states
-            .entry(resume_target)
-            .and_modify(|slot| {
-                if *slot != Some(state_id) {
-                    *slot = None;
-                }
-            })
-            .or_insert(Some(state_id));
+                .and_then(|state| state_dispatch_targets_by_state.get(&state).copied())
+        }) {
+            state_yield_resume_after.insert(*bid, target);
+        }
     }
-    let state_yield_resume_state_for_block: HashMap<BlockId, i64> = state_yield_resume_states
-        .into_iter()
-        .filter_map(|(bid, state)| state.map(|state| (bid, state)))
-        .collect();
+    let state_resume_blocks: HashSet<BlockId> =
+        state_dispatch_targets_by_state.values().copied().collect();
 
     // RC drop-insertion substrate (design 20): function-level attrs do NOT
     // round-trip through `FunctionIR`, so drop facts are carried as leading no-op
@@ -115,15 +101,10 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
     // block's fallback) are assigned fresh IDs guaranteed not to collide.
     let label_id_for_block: HashMap<BlockId, i64> = {
         let used_ids: HashSet<i64> = func.label_id_map.values().copied().collect();
-        let reserved_state_ids: HashSet<i64> = state_yield_resume_state_for_block
-            .values()
-            .copied()
-            .collect();
         let mut fresh_labels = LabelAllocator::after_labels(
             used_ids
                 .iter()
                 .copied()
-                .chain(reserved_state_ids.iter().copied())
                 .chain(func.blocks.keys().map(|block| block.0 as i64)),
         );
         let mut mapping = HashMap::new();
@@ -131,16 +112,6 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         let mut block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
         block_ids.sort_by_key(|bid| bid.0);
         for bid in block_ids {
-            if let Some(&state_id) = state_yield_resume_state_for_block.get(&bid) {
-                let collides_with_other_original_label = func
-                    .label_id_map
-                    .iter()
-                    .any(|(&other_bid, &label_id)| other_bid != bid.0 && label_id == state_id);
-                if !collides_with_other_original_label && assigned_ids.insert(state_id) {
-                    mapping.insert(bid, state_id);
-                    continue;
-                }
-            }
             if let Some(&label_val) = func.label_id_map.get(&bid.0)
                 && assigned_ids.insert(label_val)
             {
@@ -882,10 +853,7 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
         // here creates a half-structured loop with no matching loop_end.
         if *bid != func.entry_block || entry_needs_join {
             let label_id = block_label_id(bid);
-            let label_kind = if state_yield_resume_state_for_block
-                .get(bid)
-                .is_some_and(|state_id| *state_id == label_id)
-            {
+            let label_kind = if state_resume_blocks.contains(bid) {
                 "state_label"
             } else {
                 "label"
@@ -963,7 +931,15 @@ pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
                     Terminator::Branch { target, args } => {
                         emit_block_arg_stores(*target, args, &block_param_vars, &mut out);
                     }
-                    Terminator::Unreachable => {}
+                    Terminator::Unreachable => emit_terminator(
+                        arm,
+                        &block_param_vars,
+                        &block_label_id,
+                        &trampoline_label_id,
+                        &if_inlined_blocks,
+                        &mut out,
+                        &func.loop_break_kinds,
+                    ),
                     _ => unreachable!("non-simple terminator in structured if arm"),
                 }
             }

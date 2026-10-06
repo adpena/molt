@@ -976,6 +976,20 @@ uv run --python 3.12 python3 tools/compile_progress.py --clean-state
 Add `--diagnostics` to collect per-case compiler phase timings/module reason
 payloads automatically.
 
+The diagnostic total runs from the build preamble through the terminal artifact
+result, including native link reuse checks, finalization/publication and
+requested artifact analysis. Its timing_scope field identifies this boundary.
+It excludes interpreter startup, reporting and subsequent cleanup; compare it
+with the runner's process wall time as a separate interval. Both embedded build
+JSON and the diagnostics file use the same terminal snapshot. Use phase_sec for
+sequential costs; phase_attribution contains overlapping aggregates and child
+timings. See [diagnostic timing scope](cli-reference.md#diagnostics) for failure
+and diagnostics-disabled behavior.
+
+Requested diagnostics publication must succeed before a build is reported as
+successful. A reporting failure preserves the valid artifact and yields a
+nonzero result; an existing build failure keeps its primary error and code.
+
 - Outputs:
   - `compile_progress.json` (machine-readable snapshot)
   - `compile_progress.md` (human summary table)

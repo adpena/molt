@@ -99,9 +99,25 @@ def _contexts_for(
     *,
     module_name: str = "pkg.entry",
     is_package: bool = False,
+    include_import_discovery: bool = False,
 ) -> tuple[ast.Module, ModuleImportContext, python_imports.ModuleImportFlow]:
     tree = ast.parse(source)
     context = ModuleImportContext(module_name, is_package)
+    if include_import_discovery:
+        from molt.compiler_analysis.python_binding_flow import (
+            PythonBindingPolicy,
+            analyze_python_source_bindings,
+        )
+
+        index = analyze_python_source_bindings(
+            source,
+            policy=PythonBindingPolicy(
+                module_name=module_name,
+                module_is_package=is_package,
+                include_import_discovery=True,
+            ),
+        )
+        return tree, context, index.module_import_flow
     return tree, context, analyze_module_import_flow(tree, context)
 
 
@@ -123,6 +139,76 @@ def test_loader_package_precedes_mismatched_source_spec() -> None:
     resolution = resolve_relative_import("child", 1, context.with_state(state[0]))
     assert resolution.module == "pkg.child"
     assert resolution.requires_runtime
+
+
+def test_star_import_invalidates_metadata_after_resolving_its_own_request() -> None:
+    tree, context, flow = _contexts_for(
+        "from importlib.machinery import ModuleSpec\n"
+        "from .owner import *\n"
+        "from .child import value\n"
+    )
+    owner, child = tree.body[-2:]
+    incoming = flow.states_for(owner)
+    assert (
+        resolve_relative_import("owner", 1, context.with_state(incoming[0])).module
+        == "pkg.owner"
+    )
+    states = flow.states_for(child)
+    assert len(states) == 1
+    assert (
+        states[0].package.kind
+        == states[0].spec_parent.kind
+        == states[0].name.kind
+        == "unknown"
+    )
+    assert states[0].has_path is None
+    resolution = resolve_relative_import("child", 1, context.with_state(states[0]))
+    assert resolution.module is None and resolution.error == "unknown_package"
+
+
+@pytest.mark.parametrize(
+    "form", ["import owner as {name}", "from owner import value as {name}"]
+)
+@pytest.mark.parametrize("name", ["__package__", "__spec__", "__name__", "__path__"])
+def test_import_aliases_update_the_shared_metadata_state(form: str, name: str) -> None:
+    tree, _, flow = _contexts_for(
+        form.format(name=name) + "\nfrom .child import value\n"
+    )
+    state = flow.states_for(tree.body[-1])[0]
+    if name == "__path__":
+        assert state.has_path is True
+    else:
+        field = {
+            "__package__": "package",
+            "__spec__": "spec_parent",
+            "__name__": "name",
+        }[name]
+        assert getattr(state, field).kind == "unknown"
+
+
+@pytest.mark.parametrize("global_binding", [False, True])
+def test_class_import_alias_obeys_its_binding_scope(global_binding: bool) -> None:
+    declaration = "    global __package__\n" if global_binding else ""
+    tree, _, flow = _contexts_for(
+        "class Holder:\n" + declaration + "    import owner as __package__\n"
+        "from .child import value\n"
+    )
+    state = flow.states_for(tree.body[-1])[0]
+    assert state.package.kind == ("unknown" if global_binding else "known")
+
+
+def test_import_failure_preserves_partially_bound_metadata_for_handlers() -> None:
+    tree, _, flow = _contexts_for(
+        "try:\n"
+        "    from owner import first as __package__, second as __path__\n"
+        "except ImportError:\n"
+        "    from .child import value\n"
+    )
+    request = tree.body[0].handlers[0].body[0]
+    assert any(
+        state.package.kind == "unknown" and state.has_path is False
+        for state in flow.states_for(request)
+    )
 
 
 def test_package_none_falls_back_to_valid_module_spec_parent() -> None:
@@ -220,6 +306,78 @@ def test_context_independent_dependency_requests_do_not_build_binding_facts(
     ) == {"package.eager", "package", "package.member"}
 
 
+def test_full_dependency_graph_without_importer_origins_skips_binding_fixpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "entry.py"
+    path.write_text(
+        "import sys\nimport inspect\nfrom package import member\n"
+        "def deferred(value):\n"
+        "    namespace = vars(value)\n"
+        "    return inspect.currentframe(), globals(), namespace, value.call()\n"
+        "registry = make_registry()\n",
+        encoding="utf-8",
+    )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("no canonical importer identity can reach these calls")
+
+    monkeypatch.setattr(python_import_resolution, "analyze_python_bindings", forbidden)
+    assert local_import_targets(
+        path,
+        LocalPythonModuleResolver((tmp_path,)),
+        PythonImportPolicy(False, False, True),
+        nonliteral_dynamic_import_targets=("manifest_dependency",),
+    ) == {"sys", "inspect", "package", "package.member", "manifest_dependency"}
+
+
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        ("load = __import__\nload('dependency')\n", {"dependency"}),
+        (
+            "from importlib import import_module as load\n"
+            "def deferred():\n    load('dependency')\n",
+            {"importlib", "importlib.import_module", "dependency"},
+        ),
+        (
+            "import builtins as b\nload = b.__import__\nload('dependency')\n",
+            {"builtins", "dependency"},
+        ),
+        (
+            "import importlib as i\nload = i.import_module\nload('dependency')\n",
+            {"importlib", "dependency"},
+        ),
+        (
+            "def deferred(__import__):\n    __import__('not_a_dependency')\n",
+            set(),
+        ),
+    ],
+)
+def test_importer_origins_still_demand_semantic_alias_and_shadow_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str, expected: set[str]
+) -> None:
+    path = tmp_path / "entry.py"
+    path.write_text(source, encoding="utf-8")
+    analyze = python_import_resolution.analyze_python_bindings
+    calls = []
+
+    def record(*args, **kwargs):
+        calls.append(kwargs["source_digest"])
+        return analyze(*args, **kwargs)
+
+    monkeypatch.setattr(python_import_resolution, "analyze_python_bindings", record)
+    assert (
+        local_import_targets(
+            path,
+            LocalPythonModuleResolver((tmp_path,)),
+            PythonImportPolicy(False, False, True),
+        )
+        == expected
+    )
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize("module_only", [False, True])
 def test_relative_dependency_requests_demand_canonical_binding_facts_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module_only: bool
@@ -227,7 +385,9 @@ def test_relative_dependency_requests_demand_canonical_binding_facts_once(
     path = tmp_path / "pkg" / "entry.py"
     path.parent.mkdir()
     path.write_text(
-        "__package__ = 'selected'\nfrom .first import one\nfrom .second import two\n",
+        "__package__ = 'selected'\n"
+        "if flag is None:\n    from .first import one\n"
+        "else:\n    from .second import two\n",
         encoding="utf-8",
     )
     analyze = python_import_resolution.analyze_python_bindings
@@ -758,13 +918,18 @@ def test_python_execution_effects_never_leave_a_stale_static_anchor(
         )
 
 
-def test_deferred_function_graph_unions_call_time_module_states() -> None:
+def test_deferred_function_graph_keeps_call_time_states_as_discovery_only() -> None:
     source = "def load():\n    from .child import value\n__package__ = 'other.pkg'\n"
-    assert set(
+    projection = module_import_scanner._collect_imports_for_graph(
+        ast.parse(source), module_name="pkg.entry", is_package=False
+    )
+    assert projection.requires_runtime_package_anchor
+    assert not projection.imports
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
         module_import_scanner._collect_imports(
-            ast.parse(source), module_name="pkg.entry", is_package=False
+            ast.parse(source), module_name="pkg.entry"
         )
-    ) == {
+    assert set(projection.dynamic_relative_import_candidates) == {
         "pkg.child",
         "pkg.child.value",
         "other.pkg.child",
@@ -779,32 +944,80 @@ def test_deferred_explicit_package_store_keeps_successful_graph_root() -> None:
         "    __package__ = 'other'\n"
         "    from .child import value\n"
     )
-    # The deferred entry makes __spec__ unknown, not the freshly stored exact
-    # package string. Its parent callback still requires runtime execution, but
-    # CPython retains that package before consulting the spec (oracle above).
-    assert set(
+    # Source-state possibilities remain graph candidates. A deferred activation
+    # can replace its globals; no statement may promote them to execution facts.
+    projection = module_import_scanner._collect_imports_for_graph(
+        ast.parse(source), module_name="pkg.entry", is_package=False
+    )
+    assert projection.requires_runtime_package_anchor
+    assert not projection.imports
+    assert {"other.child", "other.child.value"} <= set(
+        projection.dynamic_relative_import_candidates
+    )
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
         module_import_scanner._collect_imports(
-            ast.parse(source), module_name="pkg.entry", is_package=False
+            ast.parse(source), module_name="pkg.entry"
         )
-    ) == {"other.child", "other.child.value"}
 
 
 def test_modulespec_signature_and_parent_are_cpython_valid() -> None:
-    assert parse_module_spec_parent(
-        ast.parse("ModuleSpec('a.b.entry', None)", mode="eval").body,
-        {"ModuleSpec"},
-    ) == StaticMetadataValue.known("a.b")
-    assert parse_module_spec_parent(
-        ast.parse("ModuleSpec('a.b', None, is_package=True)", mode="eval").body,
-        {"ModuleSpec"},
-    ) == StaticMetadataValue.known("a.b")
-    assert (
-        parse_module_spec_parent(
-            ast.parse("ModuleSpec('a.b', None, None, True)", mode="eval").body,
-            {"ModuleSpec"},
-        )
-        == INVALID_VALUE
+    from molt.compiler_analysis.python_binding_flow import (
+        analyze_python_source_bindings,
     )
+
+    for expression, expected in [
+        ("ModuleSpec('a.b.entry', None)", StaticMetadataValue.known("a.b")),
+        ("ModuleSpec('a.b', None, is_package=True)", StaticMetadataValue.known("a.b")),
+        ("ModuleSpec('a.b', None, None, True)", INVALID_VALUE),
+    ]:
+        source = "from importlib.machinery import ModuleSpec\n" + expression + "\n"
+        node = ast.parse(source).body[-1].value
+        index = analyze_python_source_bindings(source)
+        assert parse_module_spec_parent(node, index.call_fact(node)) == expected
+        assert parse_module_spec_parent(node).kind == "unknown"
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "ModuleSpec = dict\nclass Holder:\n    from importlib.machinery import ModuleSpec\n",
+        "from importlib.machinery import ModuleSpec\nModuleSpec = dict\n",
+    ],
+)
+def test_modulespec_name_never_overrides_canonical_callee_identity(
+    binding: str,
+) -> None:
+    tree, context, flow = _contexts_for(
+        "__package__ = None\n__spec__ = None\n"
+        + binding
+        + "__spec__ = ModuleSpec(name='foreign.leaf', loader=None)\n"
+        + "from .child import value\n"
+    )
+    states = flow.states_for(tree.body[-1])
+    assert states
+    assert all(
+        resolve_relative_import("child", 1, context.with_state(state)).module is None
+        for state in states
+    )
+
+
+@pytest.mark.parametrize(
+    "binding, callee",
+    [
+        ("from importlib.machinery import ModuleSpec as Factory", "Factory"),
+        ("import importlib.machinery as machinery", "machinery.ModuleSpec"),
+    ],
+)
+def test_modulespec_parent_proof_follows_identity_through_aliases(binding, callee):
+    tree, context, flow = _contexts_for(
+        binding
+        + "\n__package__ = None\n"
+        + f"__spec__ = {callee}('foreign.leaf', None)\nfrom .child import value\n"
+    )
+    assert {
+        resolve_relative_import("child", 1, context.with_state(state)).module
+        for state in flow.states_for(tree.body[-1])
+    } == {"foreign.child"}
 
 
 def test_import_module_explicit_package_never_uses_current_fallback() -> None:
@@ -862,6 +1075,142 @@ def test_dunder_globals_dict_unpack_respects_order_and_unknown_overwrite() -> No
     assert state.package.kind == "unknown"
 
 
+@pytest.mark.parametrize(
+    "preamble,callee,arguments,expected",
+    [
+        ("", "__import__", "", set()),
+        (
+            "from builtins import __import__ as load\n",
+            "load",
+            "unknown=1",
+            {"builtins", "builtins.__import__"},
+        ),
+        (
+            "import importlib\n",
+            "importlib.import_module",
+            "'unbundled.binding_target', name='duplicate'",
+            {"importlib"},
+        ),
+        (
+            "from importlib import import_module as load\n",
+            "load",
+            "'unbundled.binding_target', None, None",
+            {"importlib", "importlib.import_module"},
+        ),
+        (
+            "import importlib.util\n",
+            "importlib.util.find_spec",
+            "'unbundled.binding_target', unexpected=1",
+            {"importlib.util"},
+        ),
+    ],
+)
+def test_invalid_import_call_binding_is_left_for_runtime(
+    tmp_path: Path,
+    preamble: str,
+    callee: str,
+    expected: set[str],
+    arguments: str,
+) -> None:
+    source = preamble + (
+        f"try:\n    {callee}({arguments})\nexcept TypeError:\n    pass\n"
+    )
+    path = tmp_path / "entry.py"
+    path.write_text(source, encoding="utf-8")
+    assert set(module_import_scanner._collect_imports(ast.parse(source))) == expected
+    assert (
+        local_import_targets(
+            path,
+            LocalPythonModuleResolver((tmp_path,)),
+            PythonImportPolicy(False, True, True),
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "preamble,callee",
+    [("", "__import__"), ("import importlib\n", "importlib.import_module")],
+)
+def test_invalid_import_call_still_collects_argument_imports(
+    tmp_path: Path, preamble: str, callee: str
+) -> None:
+    source = preamble + (
+        "try:\n"
+        f"    {callee}(__import__('argument_dependency'), unexpected=True)\n"
+        "except TypeError:\n    pass\n"
+    )
+    path = tmp_path / "entry.py"
+    path.write_text(source, encoding="utf-8")
+    assert "argument_dependency" in module_import_scanner._collect_imports(
+        ast.parse(source)
+    )
+    assert "argument_dependency" in local_import_targets(
+        path,
+        LocalPythonModuleResolver((tmp_path,)),
+        PythonImportPolicy(False, True, True),
+    )
+
+
+@pytest.mark.parametrize(
+    "preamble,callee",
+    [("", "__import__"), ("import importlib\n", "importlib.import_module")],
+)
+@pytest.mark.parametrize("arguments", ["*args", "'target', **kwargs"])
+def test_unknown_import_argument_expansion_stays_fail_closed(
+    tmp_path: Path, preamble: str, callee: str, arguments: str
+) -> None:
+    source = preamble + (
+        f"def deferred(args, kwargs):\n    return {callee}({arguments})\n"
+    )
+    path = tmp_path / "entry.py"
+    path.write_text(source, encoding="utf-8")
+    with pytest.raises(
+        ValueError, match="argument expansion requires runtime import custody"
+    ):
+        module_import_scanner._collect_imports(ast.parse(source))
+    with pytest.raises(ValueError, match="argument expansion requires a manifest"):
+        local_import_targets(
+            path,
+            LocalPythonModuleResolver((tmp_path,)),
+            PythonImportPolicy(False, True, True),
+        )
+    assert "manifest_target" in local_import_targets(
+        path,
+        LocalPythonModuleResolver((tmp_path,)),
+        PythonImportPolicy(False, True, True),
+        expected_nonliteral_dynamic_imports=1,
+        nonliteral_dynamic_import_targets=("manifest_target",),
+    )
+
+
+@pytest.mark.parametrize("kind", ["dunder_import", "import_module"])
+@pytest.mark.parametrize(
+    "arguments",
+    ["*args, unexpected=1", "*args, 'first', name='duplicate'"],
+)
+def test_import_expansion_does_not_hide_proven_binding_failure(
+    kind: python_imports.ImportOperationKind, arguments: str
+) -> None:
+    call = cast(ast.Call, ast.parse(f"load({arguments})", mode="eval").body)
+    assert python_imports.bind_static_import_call_arguments(call, kind) is None
+
+
+@pytest.mark.parametrize("kind", ["dunder_import", "import_module"])
+def test_import_expansion_retains_only_fixed_parameter_positions(
+    kind: python_imports.ImportOperationKind,
+) -> None:
+    keyword = "package" if kind == "import_module" else "level"
+    call = cast(
+        ast.Call,
+        ast.parse(f"load(*args, 'later', {keyword}=1)", mode="eval").body,
+    )
+    binding = python_imports.bind_static_import_call_arguments(call, kind)
+    assert binding is not None and binding.requires_runtime_binding
+    assert binding.name is None
+    assert getattr(binding, keyword) is call.keywords[0].value
+
+
 def test_absolute_import_module_ignores_dynamic_package(tmp_path: Path) -> None:
     source = (
         "from importlib import import_module\nimport_module('pkg.child', object())\n"
@@ -908,15 +1257,10 @@ def test_expression_effect_projection_uses_generated_capability_lattice() -> Non
     assert not python_effects.expression_preserves_import_state(opaque_call)
     assert python_effects.expression_may_execute_python(opaque_call)
 
+    # A spelling-only expression query cannot inherit ModuleSpec purity.
     module_spec = ast.parse("ModuleSpec('pkg.mod', None)", mode="eval").body
-    assert python_effects.expression_preserves_import_state(
-        module_spec,
-        proven_pure_calls={"ModuleSpec"},
-    )
-    assert not python_effects.expression_may_execute_python(
-        module_spec,
-        proven_pure_calls={"ModuleSpec"},
-    )
+    assert not python_effects.expression_preserves_import_state(module_spec)
+    assert python_effects.expression_may_execute_python(module_spec)
 
     descriptor_read = ast.parse("owner.value", mode="eval").body
     assert not python_effects.expression_preserves_import_state(descriptor_read)
@@ -994,21 +1338,51 @@ def test_import_completion_exception_before_assignment_keeps_prior_metadata() ->
 @pytest.mark.parametrize("backedge", ["", "    continue\n"])
 def test_import_completion_revisits_loop_import_sites_on_backedges(
     backedge: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import sys
+    import types
+
     source = (
         "__package__ = 'first'\n"
         "while predicate():\n"
         "    from .child import value\n"
         "    __package__ = 'later'\n" + backedge
     )
-    tree, _context, flow = _contexts_for(source)
+    tree, _context, flow = _contexts_for(source, include_import_discovery=True)
     request = next(node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
-    assert "first" in _known_completion_packages(flow, request)
-    # The backedge must add the callback/release-tainted successor instead of
-    # caching the first visit or publishing an unjustified 'later' anchor.
+    candidates = {
+        state.package.value
+        for state in flow.source_states_for(request)
+        if state.package.kind == "known"
+    }
+    assert {"first", "later"} <= candidates
+    # An unknown predicate can replace metadata even on the first visit. The
+    # backedge adds observations, never a proof for either lexical candidate.
     assert any(state.package.kind == "unknown" for state in flow.states_for(request))
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
         module_import_scanner._collect_imports(tree, module_name="pkg.entry")
+
+    package = types.ModuleType("callback_package")
+    package.__path__ = []
+    child = types.ModuleType("callback_package.child")
+    child.value = "first runtime visit"
+    monkeypatch.setitem(sys.modules, package.__name__, package)
+    monkeypatch.setitem(sys.modules, child.__name__, child)
+    namespace = {"__name__": "pkg.entry", "__spec__": None}
+    visits = []
+
+    def predicate():
+        visits.append(namespace["__package__"])
+        if len(visits) == 1:
+            namespace["__package__"] = "callback_package"
+            return True
+        return False
+
+    namespace["predicate"] = predicate
+    exec(compile(source, "<loop-predicate-package-oracle>", "exec"), namespace)
+    assert visits == ["first", "later"]
+    assert namespace["value"] == "first runtime visit"
 
 
 def test_import_completion_break_does_not_enter_loop_else() -> None:
@@ -1026,6 +1400,19 @@ def test_import_completion_break_does_not_enter_loop_else() -> None:
     imports = set(module_import_scanner._collect_imports(tree, module_name="pkg.entry"))
     assert "broken.child" in imports
     assert "not_exhausted.child" not in imports
+
+
+def test_opaque_metadata_replacement_discards_prior_source_candidate() -> None:
+    tree, _context, flow = _contexts_for(
+        "__package__ = 'stale'\n__package__ = dynamic\nfrom .child import value\n",
+        include_import_discovery=True,
+    )
+    request = tree.body[-1]
+    states = flow.source_states_for(request)
+    assert states
+    assert all(state.package.kind == "unknown" for state in states)
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+        module_import_scanner._collect_imports(tree, module_name="pkg.entry")
 
 
 def test_import_completion_try_star_keeps_pending_exception_provenance() -> None:
@@ -1063,9 +1450,17 @@ def test_import_completion_local_walrus_does_not_write_module_metadata(
     tree, _context, flow = _contexts_for(source)
     request = next(node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
     assert _known_completion_packages(flow, request) == {"pkg"}
-    imports = set(module_import_scanner._collect_imports(tree, module_name="pkg.entry"))
-    assert "pkg.child" in imports
-    assert "local_only.child" not in imports
+    projection = module_import_scanner._collect_imports_for_graph(
+        tree, module_name="pkg.entry"
+    )
+    if owner == "function":
+        assert projection.requires_runtime_package_anchor
+        assert "pkg.child" in projection.dynamic_relative_import_candidates
+        assert "pkg.child" not in projection.imports
+    else:
+        assert "pkg.child" in projection.imports
+    assert "local_only.child" not in projection.imports
+    assert "local_only.child" not in projection.dynamic_relative_import_candidates
 
 
 @pytest.mark.parametrize(
@@ -1287,7 +1682,8 @@ def test_unobserved_deferred_lambda_import_is_not_treated_as_dead() -> None:
             "rhs",
         ),
         (
-            "items[(__package__ := 'target')] += __import__('child', globals(), level=1)",
+            "items[(__package__ := 'target', "
+            "__import__('child', globals(), level=1))] += 0",
             "target",
         ),
         (
@@ -1315,6 +1711,447 @@ def test_import_completion_assignment_family_evaluates_target_expressions_in_ord
     imports = module_import_scanner._collect_imports(tree, module_name="pkg.entry")
     assert f"{expected}.child" in imports
     assert "pkg.child" not in imports
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["items[(__package__ := 'target')]", "items.attribute"],
+)
+@pytest.mark.parametrize("namespace", ["globals()", "{'__package__': __package__}"])
+def test_augmented_target_getter_requires_runtime_import_metadata(
+    target: str, namespace: str
+) -> None:
+    # Retain the original failing subscript source verbatim. Its getter runs
+    # after the target walrus and before either RHS namespace expression.
+    source = f"{target} += __import__('child', {namespace}, level=1)\n"
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+        module_import_scanner._collect_imports(
+            ast.parse(source), module_name="pkg.entry"
+        )
+
+
+@pytest.mark.parametrize("read", ["items.attribute", "items['index']"])
+@pytest.mark.parametrize("placement", ["before_request", "nested_target_owner"])
+def test_member_read_callback_metadata_reaches_every_following_operand(
+    read: str, placement: str
+) -> None:
+    request = "__import__('child', {'__package__': __package__}, level=1)"
+    source = (
+        f"{read}\n{request}\n"
+        if placement == "before_request"
+        else f"{read}[{request}] = 0\n"
+    )
+    with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+        module_import_scanner._collect_imports(
+            ast.parse("__package__ = 'target'\n" + source), module_name="pkg.entry"
+        )
+
+
+@pytest.mark.parametrize("target", ["sys.modules", "sys.modules[__name__]"])
+def test_canonical_callback_free_target_read_preserves_import_metadata(
+    target: str,
+) -> None:
+    source = (
+        "import sys\n__package__ = 'target'\n"
+        f"{target} += __import__('child', globals(), level=1)\n"
+    )
+    imports = module_import_scanner._collect_imports(
+        ast.parse(source), module_name="pkg.entry"
+    )
+    assert "target.child" in imports
+    assert "pkg.child" not in imports
+
+
+@pytest.mark.parametrize("target", ["items['index']", "items.attribute"])
+def test_augmented_getter_does_not_erase_explicit_foreign_package(
+    target: str,
+) -> None:
+    source = (
+        f"{target} += __import__('child', {{'__package__': 'explicit'}}, level=1)\n"
+    )
+    imports = module_import_scanner._collect_imports(
+        ast.parse(source), module_name="pkg.entry"
+    )
+    assert "explicit.child" in imports
+    assert "pkg.child" not in imports
+
+
+@pytest.mark.parametrize("target_kind", ["subscript", "attribute"])
+@pytest.mark.parametrize(
+    "namespace_expression", ["globals()", "{'__package__': __package__}"]
+)
+@pytest.mark.parametrize("mutation", ["package", "globals"])
+def test_cpython_augmented_getter_precedes_import_namespace_operand(
+    monkeypatch: pytest.MonkeyPatch,
+    target_kind: str,
+    namespace_expression: str,
+    mutation: str,
+) -> None:
+    import sys
+    from types import ModuleType
+
+    callback_package = "_molt_target_getter_oracle"
+    children = {}
+    for name in ("target", callback_package):
+        package = ModuleType(name)
+        package.__path__ = []
+        child = ModuleType(name + ".child")
+        monkeypatch.setitem(sys.modules, name, package)
+        monkeypatch.setitem(sys.modules, child.__name__, child)
+        children[name] = child
+    namespace: dict[str, object] = {"__package__": "target"}
+    events: list[tuple[object, ...]] = []
+    expected_package = (
+        callback_package
+        if mutation == "package" or namespace_expression == "globals()"
+        else "target"
+    )
+
+    class Value:
+        def __iadd__(self, operand):
+            # The operand is a module returned by CPython's real __import__.
+            assert operand is children[expected_package]
+            events.append(("iadd", operand.__name__))
+            return self
+
+    value = Value()
+
+    class Items:
+        def read(self, key):
+            events.append(("get", key, namespace["__package__"]))
+            if mutation == "package":
+                namespace["__package__"] = callback_package
+            else:
+                namespace["globals"] = lambda: {"__package__": callback_package}
+            # Rebinding the receiver must not redirect augmented writeback.
+            namespace["items"] = object()
+            return value
+
+        def write(self, key, assigned):
+            assert assigned is value
+            events.append(("set", key))
+
+        def __getitem__(self, key):
+            return self.read(key)
+
+        def __setitem__(self, key, assigned):
+            self.write(key, assigned)
+
+        @property
+        def attribute(self):
+            return self.read("attribute")
+
+        @attribute.setter
+        def attribute(self, assigned):
+            self.write("attribute", assigned)
+
+    namespace["items"] = Items()
+    target = (
+        "items[(__package__ := 'target')]"
+        if target_kind == "subscript"
+        else "items.attribute"
+    )
+    source = f"{target} += __import__('child', {namespace_expression}, level=1)\n"
+    exec(compile(source, "<augmented-target-oracle>", "exec"), namespace)
+    key = "target" if target_kind == "subscript" else "attribute"
+    assert events == [
+        ("get", key, "target"),
+        ("iadd", expected_package + ".child"),
+        ("set", key),
+    ]
+
+
+@pytest.mark.parametrize("kind", ["assignment", "delete", "annotation"])
+def test_cpython_non_read_target_callbacks_follow_target_operands(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    import sys
+    from types import ModuleType
+
+    package = ModuleType("_molt_target_operand_oracle")
+    package.__path__ = []
+    child = ModuleType(package.__name__ + ".child")
+    monkeypatch.setitem(sys.modules, package.__name__, package)
+    monkeypatch.setitem(sys.modules, child.__name__, child)
+    namespace: dict[str, object] = {"__package__": "unavailable.before_target"}
+    events = []
+
+    class Items:
+        def __getitem__(self, key):
+            raise AssertionError("this target family does not read the member")
+
+        def __setitem__(self, key, assigned):
+            assert key is child and assigned == package.__name__
+            events.append(("set", namespace["__package__"]))
+            namespace["__package__"] = "after_set"
+
+        def __delitem__(self, key):
+            assert key == (package.__name__, child)
+            events.append(("delete", namespace["__package__"]))
+            namespace["__package__"] = "after_delete"
+
+    namespace["items"] = Items()
+    package_store = f"(__package__ := {package.__name__!r})"
+    import_call = "__import__('child', globals(), level=1)"
+    if kind == "assignment":
+        source = f"items[{import_call}] = {package_store}\n"
+        expected = [("set", package.__name__)]
+    elif kind == "delete":
+        source = f"del items[({package_store}, {import_call})]\n"
+        expected = [("delete", package.__name__)]
+    else:
+        source = f"from __future__ import annotations\nitems[{package_store}]: None\n"
+        expected = []
+    exec(compile(source, "<target-operand-oracle>", "exec"), namespace)
+    assert events == expected
+    assert (
+        namespace["__package__"]
+        == {
+            "assignment": "after_set",
+            "delete": "after_delete",
+            "annotation": package.__name__,
+        }[kind]
+    )
+
+
+def _metadata_borrowing_consumer(
+    source: str,
+    consumer: str,
+    target_python: tuple[int, int],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> set[str]:
+    from molt.compiler_analysis.python_binding_flow import PythonBindingPolicy
+    from molt.target_python import TargetPythonVersion
+
+    if consumer == "scanner":
+        return set(
+            module_import_scanner._collect_imports(
+                ast.parse(source),
+                module_name="pkg.entry",
+                target_python=TargetPythonVersion(*target_python, 0),
+            )
+        )
+    package = tmp_path / "pkg"
+    package.mkdir(exist_ok=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    path = package / "entry.py"
+    path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(
+        python_import_resolution,
+        "_local_import_binding_policy",
+        lambda: PythonBindingPolicy(target_python=target_python),
+    )
+    return local_import_targets(
+        path,
+        LocalPythonModuleResolver((tmp_path,)),
+        PythonImportPolicy(False, True, True),
+    )
+
+
+@pytest.mark.parametrize("target_python", [(3, 12), (3, 13)])
+@pytest.mark.parametrize("consumer", ["scanner", "strict_local"])
+@pytest.mark.parametrize(
+    "source",
+    [
+        "__import__('child', globals(), items[(__package__ := 'x')], [], 1)\n",
+        "__package__ = 'x'\nitems.attribute\n"
+        "__import__('child', {'__package__': __package__}, level=1)\n",
+        "import importlib\n__package__ = 'x'\nitems.attribute\n"
+        "importlib.import_module('.child', __package__)\n",
+        # No metadata writes: binding flow can use its invariant import-flow path.
+        "items.attribute\n__import__('child', {'__package__': __package__}, level=1)\n",
+        "value + 1\n__import__('child', {'__package__': __package__}, level=1)\n",
+        "if value:\n    pass\n"
+        "__import__('child', {'__package__': __package__}, level=1)\n",
+        "items.attribute\n"
+        "__import__('child', {'__package__': None, '__name__': __name__}, level=1)\n",
+        # A later clean write cannot change the already-captured loader value.
+        "__import__('child', {'__package__': __package__}, (__package__ := 'later'), [], 1)\n",
+    ],
+)
+def test_import_consumers_reject_unclean_or_replaced_metadata_borrowing(
+    target_python,
+    consumer,
+    source,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    with pytest.raises(ValueError):
+        _metadata_borrowing_consumer(
+            source,
+            consumer,
+            target_python,
+            tmp_path,
+            monkeypatch,
+        )
+
+
+@pytest.mark.parametrize("target_python", [(3, 12), (3, 13)])
+@pytest.mark.parametrize("consumer", ["scanner", "strict_local"])
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        ("__import__('child', globals(), level=1)\n", "pkg.child"),
+        ("__import__('child', {'__package__': __package__}, level=1)\n", "pkg.child"),
+        (
+            "import importlib\nimportlib.import_module('.child', __package__)\n",
+            "pkg.child",
+        ),
+        (
+            "import sys\n__package__ = 'x'\n"
+            "sys.modules += __import__('child', globals(), level=1)\n",
+            "x.child",
+        ),
+        (
+            "[(__package__ := 'x')].append += __import__('child', globals(), level=1)\n",
+            "x.child",
+        ),
+        (
+            "{(__package__ := 'x'): 0}.get += __import__('child', globals(), level=1)\n",
+            "x.child",
+        ),
+        (
+            "[(__package__ := 'x')][0] += __import__('child', globals(), level=1)\n",
+            "x.child",
+        ),
+        (
+            "factory = lambda token=(__package__ := 'x'): None\n"
+            "__import__('child', globals(), level=1)\n",
+            "x.child",
+        ),
+        (
+            "__import__('child', {'__package__': 'explicit'}, items[0], [], 1)\n",
+            "explicit.child",
+        ),
+        (
+            "import importlib\nitems.attribute\n"
+            "importlib.import_module('.child', 'explicit')\n",
+            "explicit.child",
+        ),
+        (
+            "__package__ = 'early'\n"
+            "__import__('child', {'__package__': __package__}, (__package__ := 'later'), [], 1)\n",
+            "early.child",
+        ),
+    ],
+)
+def test_import_consumers_preserve_clean_borrows_and_captured_scalar_values(
+    target_python,
+    consumer,
+    source,
+    expected,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    assert expected in _metadata_borrowing_consumer(
+        source,
+        consumer,
+        target_python,
+        tmp_path,
+        monkeypatch,
+    )
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "[(__package__ := 'x')].append",
+        "{(__package__ := 'x'): 0}.get",
+        "[(__package__ := 'x')][0]",
+    ],
+)
+def test_cpython_temporary_augassign_import_precedes_operator_failure(
+    target, monkeypatch
+):
+    import builtins
+    import sys
+    import types
+
+    package = types.ModuleType("x")
+    package.__path__ = []
+    child = types.ModuleType("x.child")
+    monkeypatch.setitem(sys.modules, "x", package)
+    monkeypatch.setitem(sys.modules, "x.child", child)
+    events = []
+
+    def observed_import(name, globals=None, locals=None, fromlist=(), level=0):
+        events.append((name, globals["__package__"], level))
+        return builtins.__import__(name, globals, locals, fromlist, level)
+
+    namespace = {
+        "__builtins__": {**vars(builtins), "__import__": observed_import},
+        "__name__": "pkg.entry",
+        "__package__": "pkg",
+        "__spec__": None,
+    }
+    source = f"{target} += __import__('child', globals(), level=1)\n"
+    with pytest.raises(TypeError):
+        exec(compile(source, "<temporary-augassign-import-oracle>", "exec"), namespace)
+    assert events == [("child", "x", 1)]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "__import__('child', globals(), items[(__package__ := 'x')], [], 1)\n",
+        "items.attribute\n__import__('child', {'__package__': __package__}, level=1)\n",
+        "import importlib\nitems.attribute\nimportlib.import_module('.child', __package__)\n",
+    ],
+)
+def test_unclean_metadata_keeps_lexical_discovery_without_semantic_admission(source):
+    projection = module_import_scanner._collect_imports_for_graph(
+        ast.parse(source),
+        module_name="pkg.entry",
+    )
+    assert projection.requires_runtime_package_anchor
+    assert "pkg.child" in projection.dynamic_relative_import_candidates
+    assert "pkg.child" not in projection.imports
+    assert "x.child" not in projection.imports
+
+
+@pytest.mark.parametrize("form", ["captured_globals", "explicit_dict", "import_module"])
+def test_cpython_import_reads_namespace_at_the_actual_execution_point(
+    monkeypatch: pytest.MonkeyPatch,
+    form: str,
+) -> None:
+    import importlib
+    import sys
+    from types import ModuleType
+
+    package = ModuleType("_molt_metadata_execution_oracle")
+    package.__path__ = []
+    child = ModuleType(package.__name__ + ".child")
+    monkeypatch.setitem(sys.modules, package.__name__, package)
+    monkeypatch.setitem(sys.modules, child.__name__, child)
+    namespace = {"__package__": "unavailable.initial", "importlib": importlib}
+    events = []
+
+    class Items:
+        def __getitem__(self, key):
+            events.append(("get", key, namespace["__package__"]))
+            namespace["__package__"] = package.__name__
+            return None
+
+        @property
+        def attribute(self):
+            return self["attribute"]
+
+    namespace["items"] = Items()
+    if form == "captured_globals":
+        source = "result = __import__('child', globals(), items[(__package__ := 'x')], [], 1)"
+        expected_event = ("get", "x", "x")
+    elif form == "explicit_dict":
+        source = "items.attribute\nresult = __import__('child', {'__package__': __package__}, level=1)"
+        expected_event = ("get", "attribute", "unavailable.initial")
+    else:
+        source = (
+            "items.attribute\nresult = importlib.import_module('.child', __package__)"
+        )
+        expected_event = ("get", "attribute", "unavailable.initial")
+    exec(compile(source, "<metadata-execution-oracle>", "exec"), namespace)
+    assert namespace["result"] is child
+    assert events == [expected_event]
 
 
 @pytest.mark.parametrize("target_python", [(3, 12), (3, 13), (3, 14)])
@@ -1364,3 +2201,474 @@ def test_import_completion_function_local_annotation_never_executes(
         if isinstance(node, ast.ImportFrom) and node.level
     )
     assert _known_completion_packages(flow, request) == {"pkg"}
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        ("__import__('child', {'__package__': 'pkg'}, level=+1)\n", "pkg.child"),
+        ("__import__('child', {'__package__': 'pkg'}, level=-(-1))\n", "pkg.child"),
+        (
+            "level = True\n__import__('child', {'__package__': 'pkg'}, level=level)\n",
+            "pkg.child",
+        ),
+        ("children = None\n__import__('pkg.child', fromlist=children)\n", "pkg.child"),
+    ],
+)
+def test_strict_local_imports_use_canonical_scalar_operand_results(
+    tmp_path: Path,
+    source: str,
+    expected: str,
+) -> None:
+    path = tmp_path / "entry.py"
+    path.write_text(source, encoding="utf-8")
+    assert expected in local_import_targets(
+        path,
+        LocalPythonModuleResolver((tmp_path,)),
+        PythonImportPolicy(False, True, True),
+    )
+
+
+@pytest.mark.parametrize(
+    "source,error",
+    [
+        ("__import__('child', level=~0)\n", "negative __import__ level"),
+        ("__import__('child', level=1.5)\n", "invalid __import__ level"),
+        (
+            "bad = -1\n__import__('child', {'__package__': bad}, level=1)\n",
+            "invalid import package",
+        ),
+    ],
+)
+def test_strict_local_imports_preserve_known_scalar_errors(
+    tmp_path: Path,
+    source: str,
+    error: str,
+) -> None:
+    path = tmp_path / "entry.py"
+    path.write_text(source, encoding="utf-8")
+    with pytest.raises(ValueError, match=error):
+        local_import_targets(
+            path,
+            LocalPythonModuleResolver((tmp_path,)),
+            PythonImportPolicy(False, True, True),
+        )
+
+
+@pytest.mark.parametrize("expression", ["-1", "+1.5", "~0"])
+def test_current_metadata_assignment_uses_canonical_scalar_results(
+    expression: str,
+) -> None:
+    tree, context, flow = _contexts_for(
+        f"value = {expression}\n__package__ = value\nfrom . import child\n"
+    )
+    assert {
+        resolve_relative_import("child", 1, context.with_state(state)).error
+        for state in flow.states_for(tree.body[-1])
+    } == {"invalid_package"}
+
+
+@pytest.mark.parametrize(
+    "source,expected",
+    [
+        ("loader = __import__ if flag else None\nloader('child')\n", True),
+        ("loader = __import__\nloader = None\nloader('child')\n", False),
+        ("def __import__(*args):\n    return None\n__import__('child')\n", False),
+        ("def load(loader):\n    loader('child')\n", False),
+        ("loader = __import__\nraise RuntimeError()\nloader('child')\n", False),
+    ],
+)
+def test_runtime_protocol_detection_uses_canonical_possible_identity(
+    source: str,
+    expected: bool,
+) -> None:
+    assert (
+        module_import_scanner._tree_uses_runtime_import_protocol(
+            ast.parse(source),
+            module_name="pkg.entry",
+            is_package=False,
+        )
+        is expected
+    )
+
+
+@pytest.mark.parametrize("target_python", [(3, 12), (3, 13)])
+@pytest.mark.parametrize("consumer", ["scanner", "strict_local"])
+@pytest.mark.parametrize(
+    "source",
+    [
+        "__import__('child', {'__package__': __package__, '__name__': 'other.mod'}, globals().__delitem__('__package__'), [], 1)\n",
+        "del __package__\n__import__('child', {'__package__': __package__, '__name__': 'other.mod'}, level=1)\n",
+        "items.attribute\nfrom . import child\n",
+        "items.attribute\n__import__('child', globals(), level=1)\n",
+        "import importlib\nfrom . import sibling\nfrom . import child\n",
+        "import importlib\nfrom . import sibling\nimportlib.import_module('.child', __package__)\n",
+        "def load():\n    from . import child\n",
+    ],
+)
+def test_import_consumers_require_pristine_borrows_and_statement_custody(
+    target_python, consumer, source, tmp_path, monkeypatch
+):
+    with pytest.raises(ValueError):
+        _metadata_borrowing_consumer(
+            source, consumer, target_python, tmp_path, monkeypatch
+        )
+
+
+@pytest.mark.parametrize("prefix", ["", "__package__ = 'explicit'\n"])
+@pytest.mark.parametrize("consumer", ["scanner", "strict_local"])
+def test_pristine_relative_statement_preserves_normal_package_support(
+    prefix, consumer, tmp_path, monkeypatch
+):
+    expected = "explicit.child" if prefix else "pkg.child"
+    assert expected in _metadata_borrowing_consumer(
+        prefix + "from . import child\n", consumer, (3, 12), tmp_path, monkeypatch
+    )
+
+
+def test_cpython_captured_loader_package_survives_later_argument_deletion(monkeypatch):
+    import sys
+    from types import ModuleType
+
+    package = ModuleType("_molt_pristine_loader_oracle")
+    package.__path__ = []
+    child = ModuleType(package.__name__ + ".child")
+    monkeypatch.setitem(sys.modules, package.__name__, package)
+    monkeypatch.setitem(sys.modules, child.__name__, child)
+    namespace = {
+        "__package__": package.__name__,
+        "__name__": package.__name__ + ".entry",
+        # Make the NameError witness independent of metadata exposed by the
+        # host builtins module. The import and globals calls remain CPython's.
+        "__builtins__": {"__import__": __import__, "globals": globals},
+    }
+    exec(
+        "result = __import__('child', {'__package__': __package__, '__name__': 'other.mod'}, globals().__delitem__('__package__'), [], 1)",
+        namespace,
+    )
+    assert namespace["result"] is child
+    assert "__package__" not in namespace
+    with pytest.raises(NameError, match="__package__"):
+        exec(
+            "__import__('child', {'__package__': __package__, '__name__': 'other.mod'}, level=1)",
+            namespace,
+        )
+
+
+@pytest.mark.parametrize("boundary", ["getter", "import", "opaque_call"])
+@pytest.mark.parametrize("form", ["statement", "current_globals", "import_module"])
+def test_cpython_callback_updates_statement_and_expression_imports_equally(
+    tmp_path, monkeypatch, boundary, form
+):
+    import builtins
+    import importlib
+    import sys
+    from types import ModuleType
+
+    package = ModuleType("_molt_statement_metadata_oracle")
+    package.__path__ = []
+    child = ModuleType(package.__name__ + ".child")
+    package.child = child
+    monkeypatch.setitem(sys.modules, package.__name__, package)
+    monkeypatch.setitem(sys.modules, child.__name__, child)
+    namespace = {
+        "__package__": "unavailable.initial",
+        "__spec__": None,
+        "importlib": importlib,
+    }
+    events = []
+
+    class Items:
+        @property
+        def attribute(self):
+            events.append("getter")
+            namespace["__package__"] = package.__name__
+
+    namespace["items"] = Items()
+    original_import = builtins.__import__
+
+    def importing(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "_molt_metadata_trigger":
+            events.append("import")
+            namespace["__package__"] = package.__name__
+            return ModuleType(name)
+        return original_import(name, globals, locals, fromlist, level)
+
+    # This is an actual import callback at the previous statement, including
+    # its access to the shared execution namespace, not a planner simulation.
+    namespace["__builtins__"] = dict(vars(builtins), __import__=importing)
+
+    def callback():
+        events.append("opaque_call")
+        namespace["__package__"] = package.__name__
+
+    namespace["callback"] = callback
+    source = "import importlib\n" if form == "import_module" else ""
+    source += {
+        "getter": "items.attribute\n",
+        "import": "import _molt_metadata_trigger\n",
+        "opaque_call": "callback()\n",
+    }[boundary]
+    source += {
+        "statement": "from . import child as result",
+        "current_globals": "result = __import__('child', globals(), level=1)",
+        "import_module": "result = importlib.import_module('.child', __package__)",
+    }[form]
+    exec(compile(source, "<statement-metadata-oracle>", "exec"), namespace)
+    assert namespace["result"] is child
+    assert events == [boundary]
+    path = tmp_path / "entry.py"
+    path.write_text(source, encoding="utf-8")
+    resolver = LocalPythonModuleResolver((tmp_path,))
+    snapshot = resolver.capture_source(path)
+    owner = python_import_resolution.LocalPythonModuleSource("pkg.entry", path)
+    policy = PythonImportPolicy(False, False, True, purpose="source_dependency")
+    analysis = python_import_resolution.analyze_local_imports(
+        snapshot, owner, policy, expected_nonliteral_dynamic_imports=1
+    )
+    assert len(analysis.unresolved_dynamic_imports) == 1
+    with pytest.raises(ValueError, match="manifest drift"):
+        python_import_resolution.analyze_local_imports(
+            snapshot, owner, policy, expected_nonliteral_dynamic_imports=0
+        )
+    with pytest.raises(ValueError):
+        python_import_resolution.analyze_local_imports(
+            snapshot,
+            owner,
+            PythonImportPolicy(True, False, True, purpose="source_dependency"),
+        )
+    projection = module_import_scanner._collect_imports_for_graph(
+        ast.parse(source), "pkg.entry"
+    )
+    assert projection.requires_runtime_package_anchor
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "items.attribute\nfrom . import child\n",
+        "def load():\n    from . import child\n",
+        "__import__('child', {'__package__': __package__, '__name__': 'other.mod'}, globals().__delitem__('__package__'), [], 1)\n",
+    ],
+)
+def test_local_uncertain_metadata_uses_existing_manifest_contract(tmp_path, source):
+    path = tmp_path / "pkg" / "entry.py"
+    path.parent.mkdir()
+    path.write_text(source, encoding="utf-8")
+    resolver = LocalPythonModuleResolver((tmp_path,))
+    policy = PythonImportPolicy(False, True, True)
+    with pytest.raises(ValueError):
+        local_import_targets(path, resolver, policy)
+    with pytest.raises(ValueError, match="manifest drift"):
+        local_import_targets(
+            path, resolver, policy, expected_nonliteral_dynamic_imports=0
+        )
+    targets = local_import_targets(
+        path,
+        resolver,
+        policy,
+        expected_nonliteral_dynamic_imports=1,
+        nonliteral_dynamic_import_targets=("pkg.child",),
+    )
+    assert "pkg.child" in targets
+    assert "other.child" not in targets
+
+
+def test_module_only_uncertain_statement_cannot_silently_drop_dependency(tmp_path):
+    path = tmp_path / "pkg" / "entry.py"
+    path.parent.mkdir()
+    path.write_text("from . import first\nfrom . import second\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        local_import_targets(
+            path,
+            LocalPythonModuleResolver((tmp_path,)),
+            PythonImportPolicy(True, False, True),
+        )
+
+
+@pytest.mark.parametrize("module_only", [False, True])
+@pytest.mark.parametrize(
+    "prefix", ["import os\n", "items.attribute\n", "from . import first\n"]
+)
+def test_source_dependency_purpose_keeps_candidates_and_callback_obligations(
+    tmp_path, module_only, prefix
+):
+    path = tmp_path / "pkg" / "entry.py"
+    path.parent.mkdir()
+    path.write_text(prefix + "from . import child\n", encoding="utf-8")
+    resolver = LocalPythonModuleResolver((tmp_path,))
+    source = resolver.capture_source(path)
+    owner = python_import_resolution.LocalPythonModuleSource("pkg.entry", path)
+    policy = PythonImportPolicy(module_only, False, True, purpose="source_dependency")
+    if module_only:
+        with pytest.raises(ValueError):
+            python_import_resolution.analyze_local_imports(source, owner, policy)
+    full_policy = PythonImportPolicy(False, False, True, purpose="source_dependency")
+    analysis = python_import_resolution.analyze_local_imports(
+        source, owner, full_policy, expected_nonliteral_dynamic_imports=1
+    )
+    assert len(analysis.unresolved_dynamic_imports) == 1
+    assert any("pkg.child" in row.candidates for row in analysis.discovery_requests)
+    assert all("pkg.child" not in row.candidates for row in analysis.requests)
+    assert "pkg.child" in local_import_targets(
+        path, resolver, full_policy, expected_nonliteral_dynamic_imports=1
+    )
+    strict = PythonImportPolicy(module_only, False, True)
+    assert all(
+        "pkg.child" not in row.candidates for row in analysis.requests_for(strict)
+    )
+    with pytest.raises(ValueError):
+        local_import_targets(path, resolver, strict)
+
+
+def test_deferred_source_dependency_purpose_retains_source_state_candidate(tmp_path):
+    path = tmp_path / "pkg" / "entry.py"
+    path.parent.mkdir()
+    path.write_text(
+        "import os\ndef load():\n    from . import child\n", encoding="utf-8"
+    )
+    resolver = LocalPythonModuleResolver((tmp_path,))
+    assert "pkg.child" in local_import_targets(
+        path,
+        resolver,
+        PythonImportPolicy(False, False, True, purpose="source_dependency"),
+        expected_nonliteral_dynamic_imports=1,
+    )
+    assert "pkg.child" not in local_import_targets(
+        path,
+        resolver,
+        PythonImportPolicy(True, False, True, purpose="source_dependency"),
+    )
+
+
+@pytest.mark.parametrize("module_only", [False, True])
+def test_lexical_discovery_twin_cannot_fill_unknown_source_package(
+    tmp_path, module_only
+):
+    path = tmp_path / "pkg" / "entry.py"
+    path.parent.mkdir()
+    path.write_text("__package__ = choose()\nfrom . import child\n", encoding="utf-8")
+    tree = ast.parse(path.read_text())
+    projection = module_import_scanner._collect_imports_for_graph(tree, "pkg.entry")
+    assert "pkg.child" in projection.dynamic_relative_import_candidates
+    assert "pkg.child" not in projection.imports
+    assert projection.requires_runtime_package_anchor
+    with pytest.raises(ValueError):
+        local_import_targets(
+            path,
+            LocalPythonModuleResolver((tmp_path,)),
+            PythonImportPolicy(module_only, False, True, purpose="source_dependency"),
+        )
+
+
+def test_module_only_dependencies_include_eager_regions_and_exclude_deferred_calls(
+    tmp_path,
+):
+    path = tmp_path / "entry.py"
+    path.write_text(
+        "if flag:\n    import package.branch\n"
+        "@__import__('package.decorator')\n"
+        "def load(value=__import__('package.default')):\n    __import__('package.body')\n"
+        "class Example(__import__('package.base')):\n"
+        "    import package.class_body\n"
+        "    def method(value=__import__('package.method_default')):\n"
+        "        import package.method_body\n"
+        "values = [__import__('package.eager_item') for x in items]\n"
+        "lazy = (__import__('package.lazy_item') for x in __import__('package.outer'))\n",
+        encoding="utf-8",
+    )
+    targets = local_import_targets(
+        path,
+        LocalPythonModuleResolver((tmp_path,)),
+        PythonImportPolicy(True, False, True, purpose="source_dependency"),
+    )
+    assert targets == {
+        "package.branch",
+        "package.decorator",
+        "package.default",
+        "package.base",
+        "package.class_body",
+        "package.method_default",
+        "package.eager_item",
+        "package.outer",
+    }
+
+
+@pytest.mark.parametrize("version", [(3, 12), (3, 13), (3, 14)])
+@pytest.mark.parametrize("future", [False, True])
+def test_eager_region_projection_respects_generic_and_lazy_annotations(version, future):
+    from molt.compiler_analysis.python_lexical_scope import python_eager_nodes
+
+    tree = ast.parse(
+        ("from __future__ import annotations\n" if future else "")
+        + "def normal(x: annotation() = default()) -> returns(): pass\n"
+        "def generic[T: bound()](x: generic_annotation()): pass\n"
+        "class Generic[T: class_bound()](base()):\n    value: variable_annotation()\n"
+        "type Alias[T: alias_bound()] = alias_value()\n"
+    )
+    calls = {
+        node.func.id
+        for node in python_eager_nodes(tree, target_python=version)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    expected = {"default", "base"}
+    if version < (3, 14) and not future:
+        expected |= {
+            "annotation",
+            "returns",
+            "generic_annotation",
+            "variable_annotation",
+        }
+    assert calls == expected
+
+
+@pytest.mark.parametrize("rebound", [False, True])
+def test_eager_dependency_guard_uses_binding_identity(tmp_path, rebound):
+    path = tmp_path / "entry.py"
+    path.write_text(
+        "from typing import TYPE_CHECKING\n"
+        + ("TYPE_CHECKING = True\n" if rebound else "")
+        + "if TYPE_CHECKING:\n    import package.type_branch\n"
+        "else:\n    import package.runtime_branch\n"
+        "while False:\n    import package.dead_loop\n"
+        "left = False and __import__('package.dead_bool')\n"
+        "right = __import__('package.live_expr') if True else __import__('package.dead_expr')\n",
+        encoding="utf-8",
+    )
+    targets = local_import_targets(
+        path,
+        LocalPythonModuleResolver((tmp_path,)),
+        PythonImportPolicy(True, False, True, purpose="source_dependency"),
+    )
+    # The unresolved fromlist member remains a topology candidate regardless
+    # of which branch its binding identity proves reachable.
+    assert targets == {
+        "typing",
+        "typing.TYPE_CHECKING",
+        "package.type_branch" if rebound else "package.runtime_branch",
+        "package.live_expr",
+    }
+
+
+@pytest.mark.parametrize(
+    "comprehension",
+    [
+        "[0 for __import__('package.target').sink in values]",
+        "{0 for __import__('package.target').sink in values}",
+        "{0: 1 for __import__('package.target').sink in values}",
+    ],
+)
+def test_eager_dependency_comprehension_keeps_target_effects(tmp_path, comprehension):
+    path = tmp_path / "entry.py"
+    path.write_text(
+        "eager = "
+        + comprehension
+        + "\n"
+        + "lazy = (0 for __import__('package.deferred').sink in values)\n",
+        encoding="utf-8",
+    )
+    assert local_import_targets(
+        path,
+        LocalPythonModuleResolver((tmp_path,)),
+        PythonImportPolicy(True, False, True, purpose="source_dependency"),
+    ) == {"package.target"}

@@ -68,6 +68,13 @@ jobs:
       - name: Install WASM validator
         run: python3 -m molt.tool_releases provision wasm-tools --github-path "$GITHUB_PATH"
 
+      - name: Install pinned executable Luau proof runner
+        run: python3 -m molt.tool_releases provision lune --github-path "$GITHUB_PATH"
+
+      - name: Setup canonical WASM optimizer
+        id: binaryen
+        uses: ./.github/actions/setup-binaryen
+
       - name: Setup canonical native and WASM linker SDK
         uses: ./.github/actions/setup-llvm
         with:
@@ -80,6 +87,8 @@ jobs:
           uv run --no-sync python -m tools.build_control_path >> "$GITHUB_OUTPUT"
 
       - name: Execute WASM, Luau, and parity partitions
+        env:
+          MOLT_WASM_OPT: ${{ steps.binaryen.outputs.wasm_opt }}
         run: python3 tools/proof_plan.py --run-family wasm --receipt proof-receipts/wasm.json
 
       - name: Upload WASM receipt

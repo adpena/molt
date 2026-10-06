@@ -10,9 +10,9 @@ or a source different from the workflow's signed GitHub identity.
 Artifact reproducibility and the native/WASM installation smoke tests are necessary,
 not sufficient, for semantic release acceptance. The
 [initial-release contract](../ROADMAP.md#first-release-milestone) requires
-current-revision end-to-end evidence for the declared verified subset on native
-and WASM, including Python API, C-API/ABI and ecosystem consumers across every
-advertised version/OS/architecture/backend/profile cell. Missing, skipped or
+current-revision end-to-end evidence for the declared verified subset on LLVM,
+native and WASM, including Python API, C-API/ABI and ecosystem consumers across
+every advertised version/OS/architecture/backend/profile cell. Missing, skipped or
 diagnostic-only cells do not count as passes. The packaging workflow below does
 not currently establish that complete acceptance matrix by itself.
 
@@ -27,6 +27,30 @@ coordinates and scientific witness also do not establish complete public/C-API
 coverage, browser execution, or determinism across every advertised profile.
 These remain release blockers, not implicit passes from packaging success.
 
+Candidate wiring must run both independent native generations and both runtime
+inventories, and pass their four roots to the assembler. The two invocations
+establish build independence; equal receipts alone cannot distinguish a copied
+secondary output from a second build. The structural pipeline below defines
+this complete contract.
+The verified-subset policy requires LLVM, native and WASM with both `dev` and
+`release` guest profiles. Declared coordinates do not establish passing coverage.
+Execution receipts bind source, reference/toolchain/CI identities and selected
+profile labels, but omit the actual Molt compiler digest/profile/features and
+selected runtime cell or generation identity. Candidate smoke execution cannot
+replace that semantic chain. Bind observed build diagnostics and runtime
+inventories through verified-subset receipts and candidate admission before claiming that
+the semantically qualified compiler and runtime are the ones shipped.
+
+Wheel production currently yields release assets; no PyPI upload stage is
+wired. Registry publication, package-manager availability and native OS binary
+signing/notarization need their own delivery evidence. Semantic H0
+authentication and supply-chain attestations remain distinct mandatory gates.
+
+Runtime-cell materialization and verified-subset execution also need measured
+campaign capacity within their current job budgets (ninety minutes and six
+hours respectively). This is a scheduling and product-latency obligation, not
+permission to omit cells or raise every timeout without diagnosis.
+
 ## Structural pipeline
 
 1. `config/release_targets.toml` generates the release target matrix;
@@ -35,17 +59,66 @@ These remain release blockers, not implicit passes from packaging success.
 2. One Linux job builds the pure-Python wheel. It builds twice from independent
    `git archive` exports and admits exactly one byte-identical wheel.
 3. Every target independently builds `molt-worker`, the production compiler and
-   the native `molt` launcher twice with locked Cargo inputs. The worker uses
+   the native `molt` launcher twice through `tools/release/native_build.py`.
+   `build_compiler.py` is its public entry point. Each invocation materializes
+   the exact Git snapshot, uses a fresh Cargo home and target directory, pins
+   the native compiler/linker executables, strips ambient build overrides and
+   checks source and tool identities again after building. The worker uses
    `release-output`; the compiler and launcher use the independent `release`
-   profile, enforced by `build_compiler.py`. Byte identity is mandatory for all
-   three binaries.
+   profile. Each output publishes its three binaries and `native-build.json`
+   atomically; an existing output cannot be reused or replaced. Candidate
+   admission requires different output roots, equal location-neutral receipts
+   (source inventory, epoch, target, profiles, features and native tool bytes),
+   matching binary architectures, and byte identity for all three binaries.
+   Build Python uses the existing runtime identity admission and is checked
+   again before publication. The installed consumer binds its worker bytes and
+   shipped source inventory back to the admitted native receipt.
+   Darwin builds pin `DEVELOPER_DIR`, use actual xcrun-selected tools, retain
+   `SDKROOT`, and record SDK metadata, version and deployment target. Windows
+   builds retain the activated Visual Studio installation and SDK environment;
+   LLVM's ATL requirement is enforced only by the LLVM bootstrap. Rust channel
+   admission reads the original `rust-toolchain.toml` Git blob with replacement
+   objects disabled. `--build-root` selects a configuration-free build parent;
+   its default is `RUNNER_TEMP` or the system temporary root, and a rejection
+   names the interfering Cargo configuration. The narrowed tool search requires
+   native CMake and Ninja, plus NASM on Windows x86_64 for aws-lc-sys. Missing
+   dependencies fail before building and must be provisioned explicitly.
+   `tools/release/runtime_cells.py` twice materializes the tagged commit with the
+   canonical Git snapshot and produces every runtime cell the guest surface can
+   select (profile x stdlib tier x source-extension loader; WASM hosted SIMD or
+   freestanding, with the full CPython C-API export surface). Both inventories
+   must match byte for byte and carry the snapshot's Git identity. Each complete
+   inventory and its cells are validated in a private sibling directory, then
+   published atomically without replacing an existing output. A failed build
+   or admission leaves no partial distribution at the requested output path.
+   The bundle
+   ships them under `runtime/<cell-id>/`, declared in
+   `release-compiler-source.json`. `COMPILER_BUNDLE_DIRECTORIES` in
+   `molt.compiler_distribution` owns the top-level directory projection; the
+   bundle builder checks it and the Homebrew renderer consumes it. Installers
+   retain whole directories, including hidden source inputs and every runtime
+   cell. Homebrew binds the current frontend to Python 3.14 and its package test
+   compiles and executes an existing differential guest. This does not replace
+   the complete installed native/WASM/version/profile campaign.
+   Installed compilation selects, admits and
+   retains only those cells and never runs Cargo. The same assembled tree is
+   projected into a `py3-none-<platform>` wheel for pip. Its tag is derived
+   from the shipped binaries by the exact-pinned audit tools: auditwheel for
+   Linux (library closure, GLIBC/GLIBCXX/CXXABI versions, ISA level) and
+   delocate for macOS (system-only dylibs, minimum deployment target); Windows
+   tags are exact. The written wheel is re-audited, and the consumer audits it
+   and every program it links from shipped runtime cells. An unsatisfied policy
+   fails with the tool's evidence; nothing is repaired or re-tagged.
 4. `tools/release/release_authority.py candidate` creates deterministic Molt and
    worker archives twice, compares them, and emits a target candidate receipt.
 5. `tools/release/verify_consumer.py` extracts that immutable candidate into a
    clean temporary root, explicitly authorizes its private CLI dependencies, and
    runs the shipped launcher for every Python version
    in the candidate source's verified-subset policy. Each coordinate selects its
-   exact reference interpreter and explicit guest Python semantics, then runs one
+   exact reference interpreter and explicit guest Python semantics, with Cargo,
+   rustc and rustup unavailable. It verifies the shipped runtime cells equal the
+   candidate and the derived policy, installs the platform wheel with pip into a
+   separate environment for one native release build, then runs one
    version-gated guest for every shipped target with both `dev` and `release`
    program profiles: `molt build --target native` followed by direct execution
    of the requested executable, and one public `molt run --target wasm` that

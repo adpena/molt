@@ -35,7 +35,7 @@ from molt.cli.native_link_custody import (  # noqa: E402
 from molt.cli.runtime_artifact_selection import (  # noqa: E402
     RUNTIME_STATICLIB_ARTIFACTS,
 )
-from molt.cli.runtime_build_identity import (  # noqa: E402
+from molt.cli.runtime_identity_schema import (  # noqa: E402
     RuntimeBuildIdentity,
     require_native_runtime_staticlib_identity,
 )
@@ -785,7 +785,7 @@ def _validate_staged_link_metadata(
 ) -> None:
     try:
         payload = read_native_link_dependency_manifest_payload(path)
-        manifest, _items = validate_native_link_dependency_manifest(
+        facts = validate_native_link_dependency_manifest(
             payload,
             runtime_identity=runtime_identity,
             context=str(path),
@@ -794,7 +794,7 @@ def _validate_staged_link_metadata(
             runtime_build_identity=runtime_build_identity,
         )
         custody, entries = validate_native_link_custody(
-            manifest.get("custody"),
+            facts.custody,
             context=str(path),
         )
         if bool(entries) is not (custody_archive is not None):

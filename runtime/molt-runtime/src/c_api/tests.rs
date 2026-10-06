@@ -800,8 +800,7 @@ extern "C" fn c_api_test_init_stores_tag_and_borrows_self(self_bits: u64, tag_bi
         }
         let name_bits = unsafe { molt_string_from(b"tag".as_ptr(), 3) };
         assert!(!obj_from_bits(name_bits).is_none());
-        let result =
-            crate::object::ops_builtins::molt_object_setattr(self_bits, name_bits, tag_bits);
+        let result = crate::molt_set_attr_name(self_bits, name_bits, tag_bits);
         dec_ref_bits(_py, name_bits);
         if exception_pending(_py) {
             return MoltObject::none().bits();
@@ -1166,7 +1165,7 @@ fn guarded_class_def_arms_and_runs_instance_finalizer() {
         let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
         let inst_ptr = obj_from_bits(inst_bits).as_ptr().expect("instance ptr");
         assert!(
-            unsafe { crate::object::object_class_has_finalizer(_py, inst_ptr) },
+            unsafe { crate::object::object_has_finalizer(_py, inst_ptr) },
             "instance finalization must derive from the current class authority"
         );
 
@@ -1207,7 +1206,7 @@ fn weakref_callback_runs_with_live_target_not_rc0() {
         let inst_bits = unsafe { crate::alloc_instance_for_class(_py, class_ptr) };
         let inst_ptr = obj_from_bits(inst_bits).as_ptr().expect("instance ptr");
         assert!(
-            !unsafe { crate::object::object_class_has_finalizer(_py, inst_ptr) },
+            !unsafe { crate::object::object_has_finalizer(_py, inst_ptr) },
             "plain instance must not derive finalizer sensitivity"
         );
 

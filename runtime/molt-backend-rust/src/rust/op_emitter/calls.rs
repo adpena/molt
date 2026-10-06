@@ -241,13 +241,6 @@ impl RustBackend {
         }
     }
 
-    pub(super) fn emit_op_callargs_push_kw(&mut self, op: &OpIR) {
-        self.emit_unsupported_op(
-            op,
-            "keyword argument builders are not supported by the Rust backend",
-        );
-    }
-
     pub(super) fn emit_op_func_new(&mut self, op: &OpIR) {
         let out = || out_var(op);
         let declare = |out_name: &str, rhs: &str, hoisted: &BTreeSet<String>| -> String {

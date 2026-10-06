@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Sequence
+import json
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from tools import memory_guard
+from molt.file_publication import atomic_write_bytes
 
 
 class HarnessLimitsView(Protocol):
@@ -223,3 +227,250 @@ def guarded_command_status(
     if orphaned_process_groups:
         return "pass_with_orphan_cleanup"
     return "pass"
+
+
+SUITE_TRIP_FILE_ENV = "MOLT_DIFF_MEMORY_GUARD_TRIP_FILE"
+
+
+@dataclass(frozen=True, slots=True)
+class SuiteRssTrip:
+    message: str
+    victim_pgid: int
+    process_identities: tuple[tuple[int, int], ...]
+    termination_attempted: bool
+    unidentified_samples: int = 0
+    observed_at_ns: int | None = None
+    # (victim PID, birth, live-admission time, frozen ancestor identities)
+    custody_ancestry: tuple[tuple[int, int, int, tuple[tuple[int, int], ...]], ...] = ()
+
+    @property
+    def details(self) -> str:
+        if not self.unidentified_samples:
+            return self.message
+        return (
+            f"{self.message}\nmemory_guard: omitted {self.unidentified_samples} "
+            "unidentified victim samples; attribution uses captured births only"
+        )
+
+    def matches(
+        self,
+        child: memory_guard.GuardedChildProcess | None,
+        owned: Sequence[tuple[int, memory_guard.ProcessIdentity]],
+        *,
+        request_started_at_ns: int | None = None,
+    ) -> bool:
+        if child is None or not self.termination_attempted:
+            return False
+        if request_started_at_ns is not None and (
+            self.observed_at_ns is None or self.observed_at_ns < request_started_at_ns
+        ):
+            return False
+        direct = (
+            (type(child.started_at_ns) is int and child.started_at_ns > 0)
+            and (child.pgid if child.pgid is not None else child.pid)
+            == self.victim_pgid
+            and (
+                child.pid,
+                child.started_at_ns,
+            )
+            in self.process_identities
+        )
+        # The guard's existing tree/job tracker admitted these exact births
+        # while live. Windows descendants can occupy separate process groups.
+        # No ancestry reconstruction or current PID lookup happens after exit.
+        descendant = any(
+            pid != child.pid
+            and type(identity.started_at_ns) is int
+            and (pid, identity.started_at_ns) in self.process_identities
+            for pid, identity in owned
+        )
+        request_descendant = request_started_at_ns is not None and any(
+            admitted >= request_started_at_ns
+            and (child.pid, child.started_at_ns) in ancestors
+            for _pid, _born, admitted, ancestors in self.custody_ancestry
+        )
+        return direct or descendant or request_descendant
+
+
+@dataclass(frozen=True, slots=True)
+class SuiteTripEvidence:
+    trips: tuple[SuiteRssTrip, ...] = ()
+    infrastructure_failure: memory_guard.GuardInfrastructureFailure | None = None
+
+    @property
+    def message(self) -> str:
+        if self.infrastructure_failure is not None:
+            return "\n".join(self.infrastructure_failure.details)
+        return "\n".join(dict.fromkeys(trip.details for trip in self.trips))
+
+
+def suite_trip_failure(message: str) -> SuiteTripEvidence:
+    return SuiteTripEvidence(
+        infrastructure_failure=memory_guard.GuardInfrastructureFailure(
+            phase="rss_trip_evidence", details=(message,)
+        )
+    )
+
+
+def _suite_rss_trip(payload: object) -> SuiteRssTrip:
+    if not isinstance(payload, dict) or payload.get("event") != "guard_tripped":
+        raise ValueError("trip entry is not a guard_tripped object")
+    violation = payload.get("violation")
+    if (
+        not isinstance(violation, dict)
+        or type(violation.get("rss_kb")) is not int
+        or violation["rss_kb"] <= 0
+        or not isinstance(violation.get("scope"), str)
+        or violation["scope"]
+        not in {"process", "process_tree", "diff_global_process_groups"}
+    ):
+        raise ValueError("trip entry has no measured RSS violation")
+    event = payload.get("shared_sentinel_event")
+    if (
+        not isinstance(event, dict)
+        or event.get("event") != "repo_process_guard_tripped"
+    ):
+        raise ValueError("trip entry has no sentinel victim custody")
+    pgid = event.get("victim_pgid")
+    measured = event.get("violation")
+    termination = event.get("termination")
+    if (
+        type(pgid) is not int
+        or pgid <= 0
+        or not isinstance(measured, dict)
+        or type(measured.get("pgid")) is not int
+        or measured["pgid"] != pgid
+        or not isinstance(termination, dict)
+        or termination.get("rss_triggered") is not True
+        or type(termination.get("attempted")) is not bool
+    ):
+        raise ValueError("trip entry has invalid victim group or termination custody")
+    samples = measured.get("process_samples")
+    if not isinstance(samples, list) or not samples:
+        raise ValueError("trip entry has no victim process identities")
+    identities = []
+    unidentified = 0
+    for sample in samples:
+        if not isinstance(sample, dict):
+            unidentified += 1
+            continue
+        pid, born = sample.get("pid"), sample.get("started_at_ns")
+        if type(pid) is not int or pid <= 0 or type(born) is not int or born <= 0:
+            unidentified += 1
+            continue
+        identities.append((pid, born))
+    if not identities:
+        raise ValueError(
+            f"trip has no identifiable victim births; omitted {unidentified} samples"
+        )
+    observed = event.get("observed_at_ns")
+    if observed is not None and (type(observed) is not int or observed <= 0):
+        raise ValueError("trip observation clock is invalid")
+    ancestry = []
+    raw_ancestry = event.get("custody_ancestry", [])
+    if not isinstance(raw_ancestry, list):
+        raise ValueError("trip custody ancestry must be a list")
+    for record in raw_ancestry:
+        if not isinstance(record, dict):
+            raise ValueError("trip custody ancestry record must be an object")
+        victim = (record.get("pid"), record.get("started_at_ns"))
+        admitted = record.get("admitted_at_ns")
+        ancestors = record.get("ancestors")
+        if (
+            any(type(value) is not int or value <= 0 for value in victim)
+            or victim not in identities
+            or observed is None
+            or type(admitted) is not int
+            or not 0 < admitted <= observed
+            or not isinstance(ancestors, list)
+            or not ancestors
+        ):
+            raise ValueError("trip custody ancestry is not bound to a victim birth")
+        chain = []
+        for ancestor in ancestors:
+            if not isinstance(ancestor, dict) or any(
+                type(ancestor.get(key)) is not int or ancestor[key] <= 0
+                for key in ("pid", "started_at_ns")
+            ):
+                raise ValueError("trip custody ancestor lacks a creation identity")
+            identity = (ancestor["pid"], ancestor["started_at_ns"])
+            if identity == victim or identity in chain:
+                raise ValueError("trip custody ancestry contains a cycle")
+            chain.append(identity)
+        ancestry.append((*victim, admitted, tuple(chain)))
+    message = payload.get("message")
+    if not isinstance(message, str) or not message:
+        message = "memory_guard: RSS limit exceeded under suite sentinel"
+    return SuiteRssTrip(
+        message,
+        pgid,
+        tuple(sorted(set(identities))),
+        termination["attempted"],
+        unidentified,
+        observed,
+        tuple(ancestry),
+    )
+
+
+def _suite_trip_entries(payload: object) -> list[dict[str, object]]:
+    if not isinstance(payload, dict) or payload.get("event") != "guard_tripped":
+        raise ValueError("suite trip record must be a guard_tripped object")
+    entries = payload.get("trips")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("suite trip record has no victim entries")
+    for entry in entries:
+        _suite_rss_trip(entry)
+    return entries
+
+
+def read_suite_trip(
+    environ: Mapping[str, str], *, path: Path | None = None
+) -> SuiteTripEvidence | None:
+    if path is None:
+        raw = environ.get(SUITE_TRIP_FILE_ENV, "").strip()
+        if not raw:
+            return None
+        path = Path(raw).expanduser()
+    try:
+        entries = _suite_trip_entries(json.loads(path.read_text(encoding="utf-8")))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        return suite_trip_failure(
+            f"memory_guard: invalid suite trip evidence at {path}: {exc}"
+        )
+    return SuiteTripEvidence(tuple(_suite_rss_trip(entry) for entry in entries))
+
+
+def publish_suite_trip(path: Path, entry: dict[str, object]) -> None:
+    """Atomically extend the sole suite marker; the suite sentinel is its writer.
+
+    Failed serialization/publication propagates to the sentinel's retained typed
+    outcome. Preserve earlier victims so later terminations cannot erase custody.
+    """
+    incoming = _suite_rss_trip(entry)
+    try:
+        entries = _suite_trip_entries(json.loads(path.read_text(encoding="utf-8")))
+    except FileNotFoundError:
+        entries = []
+    for index, previous in enumerate(entries):
+        recorded = _suite_rss_trip(previous)
+        if (recorded.victim_pgid, recorded.process_identities) == (
+            incoming.victim_pgid,
+            incoming.process_identities,
+        ):
+            if not incoming.termination_attempted or recorded.termination_attempted:
+                return
+            entries[index] = entry
+            break
+    else:
+        entries.append(entry)
+    atomic_write_bytes(
+        path,
+        (
+            json.dumps(
+                {"event": "guard_tripped", "trips": entries}, indent=2, sort_keys=True
+            )
+            + "\n"
+        ).encode("utf-8"),
+    )

@@ -11,14 +11,15 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use crate::ir::ExecutionContextPolicy;
 use crate::ir::{FunctionIR, OpIR, SimpleIR};
-use crate::tir::dominators::is_simple_exception_transfer_kind;
+use crate::tir::dominators::{
+    exception_edge_binds_handler_arguments, is_simple_exception_transfer_kind,
+};
 use crate::tir::op_kinds_generated::{
-    SimpleIrCallTargetRole, SimpleIrVerifierRegionRole, simpleir_call_target_role,
-    simpleir_kind_is_repoll, simpleir_kind_is_return_terminator, simpleir_kind_is_suspend,
+    SimpleIrCallTargetRole, SimpleIrVerifierRegionRole, kind_to_opcode_table,
+    simpleir_call_target_role, simpleir_kind_is_repoll, simpleir_kind_is_suspend,
     simpleir_kind_is_terminator, simpleir_kind_is_verifier_label_definition,
     simpleir_kind_is_verifier_label_reference, simpleir_kind_is_verifier_loop_scoped,
-    simpleir_kind_is_verifier_phi, simpleir_kind_is_wasm_stateful_dispatch,
-    simpleir_verifier_region_role,
+    simpleir_kind_is_verifier_phi, simpleir_verifier_region_role,
 };
 use crate::tir::simple_def_use::{visit_simple_ir_defined_names, visit_simple_ir_reads};
 
@@ -93,6 +94,34 @@ struct StructuredTargets {
 }
 
 #[derive(Debug, Clone)]
+struct OpFlow {
+    edges: Vec<Vec<LogicalEdge>>,
+    /// Sources of executable transfers beyond the operation stream. Keep these
+    /// outside the real-index graph so block/liveness consumers cannot mistake
+    /// an implicit exit for an operation, or lose it while clipping successors.
+    implicit_exits: BTreeSet<usize>,
+}
+
+impl OpFlow {
+    fn executable_reachable(&self) -> Vec<bool> {
+        let mut reachable = vec![false; self.edges.len()];
+        let mut pending: Vec<_> = (!self.edges.is_empty()).then_some(0).into_iter().collect();
+        while let Some(index) = pending.pop() {
+            if std::mem::replace(&mut reachable[index], true) {
+                continue;
+            }
+            pending.extend(
+                self.edges[index]
+                    .iter()
+                    .filter(|edge| edge.executable)
+                    .map(|edge| edge.target),
+            );
+        }
+        reachable
+    }
+}
+
+#[derive(Debug, Clone)]
 struct BasicBlocks {
     ranges: Vec<(usize, usize)>,
     op_to_block: Vec<usize>,
@@ -120,7 +149,8 @@ pub fn simple_ir_logical_flow(ops: &[OpIR]) -> SimpleIrLogicalFlow {
             cross_block_values: BTreeSet::new(),
         };
     }
-    let edges: Vec<Vec<_>> = op_edges(ops)
+    let edges: Vec<Vec<_>> = op_flow(ops)
+        .edges
         .into_iter()
         .map(|edges| {
             edges
@@ -258,25 +288,41 @@ fn verify_function(
         ));
         return;
     }
-    verify_definite_definitions(function, errors);
+    let flow = op_flow(ops);
+    verify_definite_definitions(function, &flow.edges, errors);
     verify_function_references(function, function_names, errors);
     verify_control_flow(function, errors);
-    if !simpleir_kind_is_return_terminator(&ops[ops.len() - 1].kind) {
-        errors.push(diagnostic(
-            &function.name,
-            (ops.len() - 1) as isize,
-            "missing-return",
-            format!(
-                "function does not end with ret/ret_void (last op is {:?})",
-                ops[ops.len() - 1].kind
-            ),
-        ));
+    verify_completion(function, &flow, errors);
+}
+
+fn verify_completion(function: &FunctionIR, flow: &OpFlow, errors: &mut Vec<SimpleIrDiagnostic>) {
+    let reachable = flow.executable_reachable();
+    for &index in &flow.implicit_exits {
+        if reachable[index] {
+            errors.push(diagnostic(
+                &function.name,
+                index as isize,
+                "missing-return",
+                format!(
+                    "executable control flow leaves the function without a terminator at {:?}",
+                    function.ops[index].kind
+                ),
+            ));
+        }
     }
 }
 
 fn verify_control_flow(function: &FunctionIR, errors: &mut Vec<SimpleIrDiagnostic>) {
     verify_block_structure(function, errors);
     verify_labels(function, errors);
+    if let Err(message) = crate::ir_schema::validate_state_dispatch(&function.ops) {
+        errors.push(diagnostic(
+            &function.name,
+            -1,
+            "invalid-state-dispatch",
+            message,
+        ));
+    }
 }
 
 fn verify_function_references(
@@ -478,7 +524,128 @@ fn structured_targets(ops: &[OpIR]) -> StructuredTargets {
     }
 }
 
-fn op_edges(ops: &[OpIR]) -> Vec<Vec<LogicalEdge>> {
+/// Operation-index resume transfers shared by verification and CFG/SSA lifting.
+/// Explicit maps are authoritative, including an empty map. Source IR without
+/// a map establishes resume identity at suspension sites before CFG lifting;
+/// terminal lowering serializes that identity and never infers it again.
+/// The target may be `ops.len()`: that is a real missing continuation, which
+/// whole-function verification must observe before block projection clips it.
+pub(crate) fn state_resume_op_edges(ops: &[OpIR]) -> Vec<(usize, usize, i64)> {
+    let Some(switch) = ops.iter().position(|op| op.kind == "state_switch") else {
+        return Vec::new();
+    };
+    let labels: BTreeMap<i64, usize> = ops
+        .iter()
+        .enumerate()
+        .filter_map(|(index, op)| {
+            simpleir_kind_is_verifier_label_definition(&op.kind)
+                .then_some(op.value.map(|label| (label, index)))
+                .flatten()
+        })
+        .collect();
+    if let Some(targets) = &ops[switch].state_targets {
+        // Missing and duplicate labels/states are rejected by the shared
+        // dispatch validator. Do not turn malformed maps into inferred edges.
+        return targets
+            .iter()
+            .filter_map(|&(state, label)| labels.get(&label).map(|&target| (switch, target, state)))
+            .collect();
+    }
+    let state_labels: BTreeMap<i64, usize> = ops
+        .iter()
+        .enumerate()
+        .filter_map(|(index, op)| {
+            (op.kind == "state_label")
+                .then_some(op.value.map(|state| (state, index)))
+                .flatten()
+        })
+        .collect();
+    let mut edges = Vec::new();
+    for (index, state) in suspension_saved_states(ops) {
+        let Some(state) = state else {
+            continue;
+        };
+        let target = state_labels
+            .get(&state)
+            .copied()
+            .or_else(|| (!simpleir_kind_is_repoll(&ops[index].kind)).then_some(index + 1));
+        if let Some(target) = target {
+            edges.push((switch, target, state));
+        }
+    }
+    edges.sort_unstable();
+    edges.dedup();
+    edges
+}
+
+/// Decode the state actually saved when a suspension ends its invocation.
+/// A repoll's `value` is the running/ready state, not its pending resume state.
+/// Both source inference and explicit-map admission must use this same fact.
+fn suspension_saved_states(ops: &[OpIR]) -> Vec<(usize, Option<i64>)> {
+    let const_values: BTreeMap<&str, i64> = ops
+        .iter()
+        .filter_map(|op| {
+            (op.kind == "const")
+                .then_some(op.out.as_deref().zip(op.value))
+                .flatten()
+        })
+        .collect();
+    ops.iter()
+        .enumerate()
+        .filter(|(_, op)| simpleir_kind_is_suspend(&op.kind))
+        .map(|(index, op)| {
+            let state = if simpleir_kind_is_repoll(&op.kind) {
+                op.args
+                    .as_deref()
+                    .and_then(|args| args.last())
+                    .and_then(|name| const_values.get(name.as_str()).copied())
+            } else {
+                op.value
+            };
+            (index, state)
+        })
+        .collect()
+}
+
+/// Complete the shared schema check after explicit map shape/labels have been
+/// admitted. This reads the canonical executable graph directly; it does not
+/// call a validator, infer replacement cases, or recurse through CFG lifting.
+pub(crate) fn validate_explicit_state_resume_coverage(ops: &[OpIR]) -> Result<(), String> {
+    let Some((switch, targets)) = ops.iter().enumerate().find_map(|(index, op)| {
+        (op.kind == "state_switch")
+            .then_some(op.state_targets.as_ref().map(|targets| (index, targets)))
+            .flatten()
+    }) else {
+        return Ok(());
+    };
+    // Terminal ownership removes suspension operations. StateSet alone also
+    // records running/ready states, so it cannot require a resume case.
+    if !ops.iter().any(|op| simpleir_kind_is_suspend(&op.kind)) {
+        return Ok(());
+    }
+    let states: BTreeSet<_> = targets.iter().map(|&(state, _)| state).collect();
+    let reachable = op_flow(ops).executable_reachable();
+    for (index, state) in suspension_saved_states(ops) {
+        if !reachable[index] {
+            continue;
+        }
+        let state = state.ok_or_else(|| {
+            format!(
+                "op#{index}: reachable {} requires a statically known saved resume state for state_switch op#{switch}",
+                ops[index].kind
+            )
+        })?;
+        if !states.contains(&state) {
+            return Err(format!(
+                "op#{index}: reachable {} saves state {state} absent from state_switch op#{switch} state_targets",
+                ops[index].kind
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn op_flow(ops: &[OpIR]) -> OpFlow {
     let count = ops.len();
     let labels: BTreeMap<i64, usize> = ops
         .iter()
@@ -490,52 +657,30 @@ fn op_edges(ops: &[OpIR]) -> Vec<Vec<LogicalEdge>> {
         })
         .collect();
     let targets = structured_targets(ops);
-    let state_labels: BTreeMap<i64, usize> = ops
-        .iter()
-        .enumerate()
-        .filter_map(|(index, op)| {
-            (op.kind == "state_label")
-                .then_some(op.value.map(|v| (v, index)))
-                .flatten()
-        })
-        .collect();
-    let const_values: BTreeMap<&str, i64> = ops
-        .iter()
-        .filter_map(|op| {
-            (op.kind == "const")
-                .then_some(op.out.as_deref().zip(op.value))
-                .flatten()
-        })
-        .collect();
-    let mut state_entries = BTreeSet::new();
-    for (index, op) in ops.iter().enumerate() {
-        if simpleir_kind_is_suspend(&op.kind) && !simpleir_kind_is_repoll(&op.kind) {
-            if let Some(state) = op.value {
-                state_entries.insert(*state_labels.get(&state).unwrap_or(&(index + 1)));
-            }
-        } else if simpleir_kind_is_repoll(&op.kind)
-            && let Some(pending_name) = op.args.as_deref().and_then(|args| args.last())
-            && let Some(state) = const_values.get(pending_name.as_str())
-            && let Some(entry) = state_labels.get(state)
-        {
-            state_entries.insert(*entry);
-        }
-    }
+    let resume_edges = state_resume_op_edges(ops);
     let if_by_end: BTreeMap<usize, (usize, Option<usize>)> = targets
         .if_regions
         .iter()
         .map(|(start, (alternate, end))| (*end, (*start, *alternate)))
         .collect();
     let mut edges = vec![Vec::new(); count];
+    let mut implicit_exits = BTreeSet::new();
     let mut add = |source: usize, target: usize, mut role: EdgeRole| {
-        if target >= count {
-            return;
-        }
         // TRY_START describes handler reachability for verification, not a
         // runtime pending-state observation. LOOP_END's exit is likewise a
         // conservative verifier join; actual execution takes its latch.
-        let executable = !((ops[source].kind == "try_start" && role == EdgeRole::Exception)
-            || (ops[source].kind == "loop_end" && role == EdgeRole::LoopExit));
+        let executable = match role {
+            EdgeRole::Exception => kind_to_opcode_table(&ops[source].kind)
+                .is_some_and(exception_edge_binds_handler_arguments),
+            EdgeRole::LoopExit => ops[source].kind != "loop_end",
+            _ => true,
+        };
+        if target >= count {
+            if executable {
+                implicit_exits.insert(source);
+            }
+            return;
+        }
         let execution_role = role;
         if let Some((start, alternate)) = if_by_end.get(&target) {
             role = match alternate {
@@ -635,10 +780,12 @@ fn op_edges(ops: &[OpIR]) -> Vec<Vec<LogicalEdge>> {
                 }
                 add(index, next, EdgeRole::BranchFalse);
             }
-            kind if simpleir_kind_is_wasm_stateful_dispatch(kind) => {
+            "state_switch" => {
                 add(index, next, EdgeRole::DispatchDefault);
-                for entry in &state_entries {
-                    add(index, *entry, EdgeRole::Resume);
+                for &(source, target, _) in &resume_edges {
+                    if source == index {
+                        add(index, target, EdgeRole::Resume);
+                    }
                 }
             }
             kind if simpleir_kind_is_suspend(kind) => {
@@ -657,7 +804,10 @@ fn op_edges(ops: &[OpIR]) -> Vec<Vec<LogicalEdge>> {
             }
         }
     }
-    edges
+    OpFlow {
+        edges,
+        implicit_exits,
+    }
 }
 
 fn basic_blocks(ops: &[OpIR], edges: &[Vec<LogicalEdge>]) -> BasicBlocks {
@@ -759,10 +909,13 @@ fn definitions(op: &OpIR) -> BTreeSet<String> {
     result
 }
 
-fn verify_definite_definitions(function: &FunctionIR, errors: &mut Vec<SimpleIrDiagnostic>) {
+fn verify_definite_definitions(
+    function: &FunctionIR,
+    edges: &[Vec<LogicalEdge>],
+    errors: &mut Vec<SimpleIrDiagnostic>,
+) {
     let ops = &function.ops;
-    let edges = op_edges(ops);
-    let blocks = basic_blocks(ops, &edges);
+    let blocks = basic_blocks(ops, edges);
     let mut successors = vec![BTreeSet::new(); blocks.ranges.len()];
     let mut predecessors = vec![BTreeSet::new(); blocks.ranges.len()];
     let mut incoming = vec![Vec::new(); blocks.ranges.len()];
@@ -911,6 +1064,7 @@ mod tests {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
             }],
             profile: None,
@@ -1005,6 +1159,519 @@ mod tests {
                 .any(|error| error.kind == "missing-return"),
             "full module verification retains its stronger completion contract"
         );
+    }
+
+    #[test]
+    fn completion_follows_executable_paths_not_the_last_lexical_op() {
+        let branch = OpIR {
+            args: Some(vec!["condition".into()]),
+            ..op("if")
+        };
+        for (ops, missing) in [
+            (
+                vec![
+                    branch.clone(),
+                    op("ret_void"),
+                    op("else"),
+                    op("ret_void"),
+                    op("end_if"),
+                ],
+                vec![],
+            ),
+            (vec![branch, op("ret_void"), op("end_if")], vec![2]),
+            (vec![op("ret_void"), op("nop")], vec![]),
+            (vec![op("loop_start"), op("loop_end")], vec![]),
+            (
+                vec![op("loop_start"), op("loop_continue"), op("loop_end")],
+                vec![],
+            ),
+        ] {
+            let report = verify(&["condition"], ops.clone());
+            assert_eq!(
+                report
+                    .errors
+                    .iter()
+                    .map(|error| (error.kind.as_str(), error.op_index))
+                    .collect::<Vec<_>>(),
+                missing
+                    .into_iter()
+                    .map(|index| ("missing-return", index))
+                    .collect::<Vec<_>>(),
+                "{ops:?}: {report:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn completion_keeps_clipped_conditional_loop_and_exception_exits() {
+        for kind in [
+            "loop_break",
+            "loop_break_if_true",
+            "loop_break_if_false",
+            "loop_break_if_exception",
+        ] {
+            let ops = vec![
+                op("loop_start"),
+                OpIR {
+                    args: Some(vec!["condition".into()]),
+                    ..op(kind)
+                },
+                op("loop_end"),
+            ];
+            let report = verify(&["condition"], ops);
+            assert_eq!(report.errors.len(), 1, "{kind}: {report:?}");
+            assert_eq!(report.errors[0].kind, "missing-return");
+            assert_eq!(
+                report.errors[0].op_index, 1,
+                "break falls off before the lexical tail"
+            );
+        }
+        for kind in ["br_if", "check_exception", "async_work_poll"] {
+            let ops = vec![
+                OpIR {
+                    value: Some(5),
+                    ..op("label")
+                },
+                OpIR {
+                    value: Some(5),
+                    args: Some(vec!["condition".into()]),
+                    ..op(kind)
+                },
+            ];
+            let flow = simple_ir_logical_flow(&ops);
+            assert!(flow.edges[1].iter().any(|edge| edge.target == 0), "{kind}");
+            assert!(
+                flow.edges
+                    .iter()
+                    .flatten()
+                    .all(|edge| edge.target < ops.len())
+            );
+            let report = verify(&["condition"], ops);
+            assert_eq!(report.errors.len(), 1, "{kind}: {report:?}");
+            assert_eq!(report.errors[0].kind, "missing-return");
+            assert_eq!(report.errors[0].op_index, 1);
+        }
+    }
+
+    #[test]
+    fn completion_does_not_execute_try_registration_edges() {
+        for (kind, missing) in [
+            ("try_start", false),
+            ("check_exception", true),
+            ("async_work_poll", true),
+        ] {
+            let report = verify(
+                &[],
+                vec![
+                    OpIR {
+                        value: Some(9),
+                        ..op(kind)
+                    },
+                    op("ret_void"),
+                    OpIR {
+                        value: Some(9),
+                        ..op("label")
+                    },
+                ],
+            );
+            assert_eq!(
+                report.errors.len(),
+                usize::from(missing),
+                "{kind}: {report:?}"
+            );
+            if missing {
+                assert_eq!(report.errors[0].kind, "missing-return");
+                assert_eq!(report.errors[0].op_index, 2);
+            }
+        }
+    }
+
+    #[test]
+    fn suspension_ends_or_repolls_the_activation_without_dispatching() {
+        for (kind, continues) in [("state_yield", false), ("state_transition", true)] {
+            let suspend = OpIR {
+                args: Some(vec!["value".into()]),
+                value: Some(7),
+                ..op(kind)
+            };
+            let ops = vec![suspend.clone(), op("ret_void")];
+            let flow = simple_ir_logical_flow(&ops);
+            assert_eq!(flow.edges[0].len(), usize::from(continues), "{kind}");
+            if continues {
+                assert_eq!(flow.edges[0][0].role, EdgeRole::Fallthrough);
+                assert_eq!(flow.edges[0][0].target, 1);
+            }
+            let report = verify(&["value"], vec![suspend]);
+            assert_eq!(
+                report.errors.len(),
+                usize::from(continues),
+                "{kind}: {report:?}"
+            );
+            if continues {
+                assert_eq!(report.errors[0].kind, "missing-return");
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_resume_maps_own_reachability_and_cfg_projection() {
+        for (targets, expected) in [
+            (Some(vec![(7, 200), (9, 200)]), vec![(4, 7), (4, 9)]),
+            (Some(vec![]), vec![]),
+            (None, vec![(2, 7)]),
+        ] {
+            let ops = vec![
+                OpIR {
+                    state_targets: targets,
+                    ..op("state_switch")
+                },
+                op("ret_void"),
+                OpIR {
+                    value: Some(7),
+                    ..op("state_label")
+                },
+                OpIR {
+                    value: Some(7),
+                    args: Some(vec!["value".into()]),
+                    ..op("state_yield")
+                },
+                OpIR {
+                    value: Some(200),
+                    ..op("label")
+                },
+                op("nop"),
+            ];
+            let flow = simple_ir_logical_flow(&ops);
+            assert_eq!(flow.edges[0][0].role, EdgeRole::DispatchDefault);
+            assert_eq!(flow.edges[0][0].target, 1);
+            assert_eq!(
+                flow.edges[0]
+                    .iter()
+                    .filter(|edge| edge.role == EdgeRole::Resume)
+                    .map(|edge| edge.target)
+                    .collect::<Vec<_>>(),
+                expected
+                    .iter()
+                    .map(|&(target, _)| target)
+                    .collect::<Vec<_>>(),
+            );
+            assert!(
+                flow.edges[3].is_empty(),
+                "a yield does not dispatch or fall through"
+            );
+            let cfg = crate::tir::cfg::CFG::build(&ops);
+            let projected: Vec<_> = cfg
+                .state_resume_edges
+                .iter()
+                .map(|&(_, block, state)| (cfg.blocks[block].start_op, state))
+                .collect();
+            assert_eq!(
+                projected, expected,
+                "CFG must consume the same declared resume identity"
+            );
+            let report = verify(&["value"], ops);
+            let has_resume_falloff = expected.iter().any(|&(target, _)| target == 4);
+            assert_eq!(
+                report.errors.len(),
+                usize::from(has_resume_falloff),
+                "{report:?}"
+            );
+            if has_resume_falloff {
+                assert_eq!(report.errors[0].kind, "missing-return");
+                assert_eq!(report.errors[0].op_index, 5);
+            }
+        }
+    }
+
+    #[test]
+    fn dispatch_keeps_missing_default_and_source_resume_continuations() {
+        for ops in [
+            vec![OpIR {
+                state_targets: Some(vec![]),
+                ..op("state_switch")
+            }],
+            vec![
+                op("state_switch"),
+                OpIR {
+                    value: Some(7),
+                    args: Some(vec!["value".into()]),
+                    ..op("state_yield")
+                },
+            ],
+        ] {
+            let flow = simple_ir_logical_flow(&ops);
+            assert!(
+                flow.edges
+                    .iter()
+                    .flatten()
+                    .all(|edge| edge.target < ops.len())
+            );
+            let report = verify(&["value"], ops);
+            assert_eq!(report.errors.len(), 1, "{report:?}");
+            assert_eq!(report.errors[0].kind, "missing-return");
+            assert_eq!(
+                report.errors[0].op_index, 0,
+                "dispatch exposes the missing invocation path"
+            );
+        }
+    }
+
+    #[test]
+    fn source_resume_reentry_keeps_its_real_self_edge() {
+        let ops = vec![
+            OpIR {
+                value: Some(7),
+                ..op("state_label")
+            },
+            op("state_switch"),
+            OpIR {
+                value: Some(7),
+                args: Some(vec!["value".into()]),
+                ..op("state_yield")
+            },
+        ];
+        let flow = simple_ir_logical_flow(&ops);
+        assert!(
+            flow.edges[1]
+                .iter()
+                .any(|edge| edge.role == EdgeRole::Resume && edge.target == 0)
+        );
+        let cfg = crate::tir::cfg::CFG::build(&ops);
+        assert_eq!(cfg.state_resume_edges.len(), 1);
+        let (dispatch, resume, state) = cfg.state_resume_edges[0];
+        assert_eq!(
+            dispatch, resume,
+            "resumption can reenter the dispatch block"
+        );
+        assert_ne!(
+            dispatch, cfg.entry,
+            "invocation must remain a distinct predecessor"
+        );
+        assert_eq!(state, 7);
+        let report = verify(&["value"], ops);
+        assert!(
+            report.is_ok(),
+            "resumption loops without falling off: {report:?}"
+        );
+    }
+
+    #[test]
+    fn explicit_maps_reject_reachable_omitted_suspension_states() {
+        for targets in [vec![], vec![(8, 70)], vec![(7, 70)]] {
+            for slot in [None, Some("slot")] {
+                let mut args = vec!["future".into()];
+                args.extend(slot.map(str::to_string));
+                args.push("pending".into());
+                let ops = vec![
+                    OpIR {
+                        value: Some(7),
+                        out: Some("pending".into()),
+                        ..op("const")
+                    },
+                    OpIR {
+                        state_targets: Some(targets.clone()),
+                        ..op("state_switch")
+                    },
+                    OpIR {
+                        value: Some(70),
+                        ..op("label")
+                    },
+                    OpIR {
+                        value: Some(8),
+                        args: Some(args),
+                        out: Some("polled".into()),
+                        ..op("state_transition")
+                    },
+                    OpIR {
+                        args: Some(vec!["polled".into()]),
+                        ..op("ret")
+                    },
+                ];
+                let admitted = targets.iter().any(|&(state, _)| state == 7);
+                let validation = crate::ir_schema::validate_state_dispatch(&ops);
+                assert_eq!(validation.is_ok(), admitted, "{validation:?}");
+                if !admitted {
+                    assert!(validation.unwrap_err().contains("saves state 7 absent"));
+                }
+                let report = verify(&["future", "slot"], ops);
+                assert_eq!(report.is_ok(), admitted, "{report:?}");
+                if !admitted {
+                    assert_eq!(report.errors.len(), 1);
+                    assert_eq!(report.errors[0].kind, "invalid-state-dispatch");
+                }
+            }
+        }
+        // A declared first resume case exposes a second suspension whose state
+        // is missing. Checking only the initial invocation would miss this.
+        let mut ops = vec![
+            OpIR {
+                state_targets: Some(vec![(1, 10)]),
+                ..op("state_switch")
+            },
+            OpIR {
+                value: Some(1),
+                args: Some(vec!["value".into()]),
+                ..op("state_yield")
+            },
+            OpIR {
+                value: Some(10),
+                ..op("state_label")
+            },
+            OpIR {
+                value: Some(2),
+                args: Some(vec!["value".into()]),
+                ..op("state_yield")
+            },
+            OpIR {
+                value: Some(20),
+                ..op("label")
+            },
+            op("ret_void"),
+        ];
+        let error = crate::ir_schema::validate_state_dispatch(&ops).unwrap_err();
+        assert!(
+            error.contains("op#3: reachable state_yield saves state 2 absent"),
+            "{error}"
+        );
+        ops[0].state_targets.as_mut().unwrap().push((2, 20));
+        assert!(crate::ir_schema::validate_state_dispatch(&ops).is_ok());
+        assert!(verify(&["value"], ops).is_ok());
+    }
+
+    #[test]
+    fn empty_resume_maps_do_not_infer_cases_from_dead_or_running_state() {
+        let switch = OpIR {
+            state_targets: Some(vec![]),
+            ..op("state_switch")
+        };
+        for ops in [
+            vec![switch.clone(), op("ret_void")],
+            vec![
+                switch.clone(),
+                OpIR {
+                    value: Some(99),
+                    ..op("state_set")
+                },
+                op("ret_void"),
+            ],
+            vec![
+                switch.clone(),
+                op("ret_void"),
+                OpIR {
+                    value: Some(7),
+                    args: Some(vec!["value".into()]),
+                    ..op("state_yield")
+                },
+            ],
+        ] {
+            assert!(crate::ir_schema::validate_state_dispatch(&ops).is_ok());
+            let flow = simple_ir_logical_flow(&ops);
+            assert!(
+                !flow.edges[0]
+                    .iter()
+                    .any(|edge| edge.role == EdgeRole::Resume)
+            );
+            assert!(verify(&["value"], ops).is_ok());
+        }
+        for (kind, executable) in [("try_start", false), ("check_exception", true)] {
+            let ops = vec![
+                switch.clone(),
+                OpIR {
+                    value: Some(70),
+                    ..op(kind)
+                },
+                op("ret_void"),
+                OpIR {
+                    value: Some(70),
+                    ..op("label")
+                },
+                OpIR {
+                    value: Some(7),
+                    args: Some(vec!["value".into()]),
+                    ..op("state_yield")
+                },
+            ];
+            assert_eq!(
+                crate::ir_schema::validate_state_dispatch(&ops).is_err(),
+                executable
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_maps_require_known_saved_states_only_on_executable_suspensions() {
+        for suspend in [
+            OpIR {
+                args: Some(vec!["value".into()]),
+                ..op("state_yield")
+            },
+            OpIR {
+                value: Some(8),
+                args: Some(vec!["future".into(), "unknown_pending".into()]),
+                out: Some("polled".into()),
+                ..op("state_transition")
+            },
+        ] {
+            for reachable in [false, true] {
+                let mut ops = vec![OpIR {
+                    state_targets: Some(vec![]),
+                    ..op("state_switch")
+                }];
+                if !reachable {
+                    ops.push(op("ret_void"));
+                }
+                ops.extend([suspend.clone(), op("ret_void")]);
+                let result = crate::ir_schema::validate_state_dispatch(&ops);
+                assert_eq!(result.is_err(), reachable);
+                if reachable {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .contains("requires a statically known saved resume state")
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn control_flow_admission_reuses_state_map_validation() {
+        for (kind, targets) in [
+            ("state_switch", vec![(7, 404)]),
+            ("state_switch", vec![(7, 9), (7, 9)]),
+            ("nop", vec![(7, 9)]),
+        ] {
+            let ir = SimpleIR {
+                functions: vec![FunctionIR {
+                    name: "molt_main".into(),
+                    ops: vec![
+                        OpIR {
+                            state_targets: Some(targets),
+                            ..op(kind)
+                        },
+                        op("ret_void"),
+                        OpIR {
+                            value: Some(9),
+                            ..op("label")
+                        },
+                        op("ret_void"),
+                    ],
+                    ..FunctionIR::default()
+                }],
+                profile: None,
+            };
+            assert!(
+                validate_simple_ir_control_flow(&ir)
+                    .unwrap_err()
+                    .contains("invalid-state-dispatch")
+            );
+            assert!(
+                verify_simple_ir(&ir)
+                    .errors
+                    .iter()
+                    .any(|error| error.kind == "invalid-state-dispatch")
+            );
+        }
     }
 
     #[test]
@@ -1113,7 +1780,7 @@ mod tests {
             labelled("label"),
             op("ret_void"),
         ];
-        let analysis = op_edges(&ops);
+        let analysis = op_flow(&ops).edges;
         assert!(
             analysis[0]
                 .iter()

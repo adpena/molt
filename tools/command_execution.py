@@ -8,6 +8,9 @@ environment, timeout custody, and subprocess-compatible check/output behavior.
 from __future__ import annotations
 
 import hashlib
+import json
+import uuid
+from datetime import datetime, timezone
 import re
 import subprocess
 import sys
@@ -81,6 +84,104 @@ def _is_bounded_metadata_probe(command: Sequence[str]) -> bool:
             return True
         return subcommand == "config" and "--get" in command[index + 1 :]
     return any(flag in _VERSION_FLAGS for flag in command[1:])
+
+
+@dataclass(slots=True)
+class GuardedCommand:
+    """Launch handle and admitted guard identity, with cancellation custody.
+
+    Only the guard may terminate its sampled/Job-owned child tree. The caller
+    requests cancellation and waits; a stalled owner keeps its evidence and
+    handle instead of being killed while a child might still be alive.
+    """
+
+    process: subprocess.Popen[Any]
+    cancellation_path: Path
+    summary_path: Path
+    evidence_path: Path
+    launch_id: str
+    startup_path: Path
+    command: tuple[str, ...]
+    terminal: bool = False
+    guard_pid: int | None = None
+    child_identity: dict[str, object] | None = None
+
+    @property
+    def stdin(self):
+        return self.process.stdin
+
+    @property
+    def stdout(self):
+        return self.process.stdout
+
+    @property
+    def stderr(self):
+        return self.process.stderr
+
+    @property
+    def pid(self) -> int:
+        """The owned launcher PID; admitted guard_pid can be different."""
+        return self.process.pid
+
+    @property
+    def args(self):
+        return self.process.args
+
+    @property
+    def returncode(self):
+        return self.process.returncode
+
+    def poll(self):
+        return self.process.poll()
+
+    def request_cancel(self) -> None:
+        # The exclusive launch directory is the capability. No PID lookup,
+        # signal, process-group kill, or authority transfer occurs here.
+        try:
+            with self.cancellation_path.open("x", encoding="utf-8") as handle:
+                handle.write("cancel\n")
+        except FileExistsError:
+            pass
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.terminal = False
+        result = int(self.process.wait(timeout=timeout))
+        try:
+            startup = json.loads(self.startup_path.read_text(encoding="utf-8"))
+            payload = json.loads(self.summary_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(
+                f"guard exited without startup/terminal child custody; inspect {self.evidence_path}"
+            ) from exc
+        valid_startup = bool(
+            isinstance(startup, dict)
+            and startup.get("launch_id") == self.launch_id
+            and startup.get("command") == list(self.command)
+            and type(startup.get("guard_pid")) is int
+            and startup["guard_pid"] > 0
+            and (self.guard_pid is None or startup["guard_pid"] == self.guard_pid)
+            and isinstance(startup.get("child_process"), dict)
+            and type(startup["child_process"].get("pid")) is int
+            and startup["child_process"]["pid"] > 0
+            and isinstance(startup["child_process"].get("started_at"), str)
+        )
+        self.terminal = bool(
+            valid_startup
+            and isinstance(payload, dict)
+            and payload.get("launch_id") == self.launch_id
+            and payload.get("guard_pid") == startup["guard_pid"]
+            and payload.get("command") == list(self.command)
+            and payload.get("child_process") == startup["child_process"]
+            and payload.get("descendants_closed") is True
+            and type(payload.get("child_returncode")) is int
+        )
+        if not self.terminal:
+            raise RuntimeError(
+                f"guard exited with unresolved child custody; inspect {self.evidence_path}"
+            )
+        self.guard_pid = startup["guard_pid"]
+        self.child_identity = startup["child_process"]
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,7 +318,7 @@ class CommandExecutor:
 
     def wait_owned(
         self,
-        process: subprocess.Popen[Any],
+        process: subprocess.Popen[Any] | GuardedCommand,
         *,
         timeout: float,
         terminate_timeout: float = 5.0,
@@ -229,6 +330,23 @@ class CommandExecutor:
         try:
             return int(process.wait(timeout=timeout))
         except subprocess.TimeoutExpired as timeout_error:
+            if isinstance(process, GuardedCommand):
+                try:
+                    process.request_cancel()
+                    process.wait(timeout=terminate_timeout)
+                except (
+                    subprocess.SubprocessError,
+                    OSError,
+                    RuntimeError,
+                ) as cleanup_error:
+                    timeout_error.add_note(
+                        f"guard cancellation remains unresolved: {cleanup_error}; "
+                        f"custody: {process.evidence_path}"
+                    )
+                    # Keep both errors and the exact live handle inspectable.
+                    timeout_error.guard_command = process
+                    timeout_error.cleanup_error = cleanup_error
+                raise timeout_error
             process.terminate()
             try:
                 process.wait(timeout=terminate_timeout)
@@ -252,8 +370,8 @@ class CommandExecutor:
         bufsize: int = -1,
         timeout: float | None = None,
         summary_json: str | Path | None = None,
-    ) -> subprocess.Popen[Any]:
-        """Start an interactive child through the canonical memory-guard owner."""
+    ) -> GuardedCommand:
+        """Start an interactive command with admitted actual-worker custody."""
 
         if isinstance(args, (str, bytes)):
             raise TypeError("command must be typed argv, not shell text")
@@ -271,6 +389,54 @@ class CommandExecutor:
             repo_root=self.repo_root,
         )
         limits = context.limits
+        from molt.memory_guard_paths import memory_guard_state_root
+
+        launch_id = uuid.uuid4().hex
+        custody = (
+            memory_guard_state_root(self.repo_root, context.env)
+            / "commands"
+            / launch_id
+        )
+        custody.mkdir(parents=True, exist_ok=False)
+        cancellation_path = custody / "cancel"
+        startup_path = custody / "startup.json"
+        summary_path = (
+            custody / "guard.json"
+            if summary_json is None
+            else Path(summary_json).resolve(strict=False)
+        )
+        # Revoke a caller-selected summary from any previous launch before
+        # spawning; a worker crash must never borrow an old terminal receipt.
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_path.write_text(
+            json.dumps(
+                {
+                    "status": "launching",
+                    "launch_id": launch_id,
+                    "guard_pid": None,
+                    "descendants_closed": False,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        evidence_path = custody / "custody.json"
+        evidence = {
+            "command": command,
+            "cwd": str(Path.cwd() if cwd is None else Path(cwd).resolve()),
+            "launch_id": launch_id,
+            "launch_pid": None,
+            "guard_pid": None,
+            "child_pid": None,
+            "startup_path": str(startup_path),
+            "status": "launching",
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "summary_path": str(summary_path),
+            "cancellation_path": str(cancellation_path),
+        }
+        evidence_path.write_text(
+            json.dumps(evidence, sort_keys=True) + "\n", encoding="utf-8"
+        )
         guarded_argv = [
             sys.executable,
             str(self.repo_root / "tools" / "memory_guard.py"),
@@ -289,13 +455,24 @@ class CommandExecutor:
             if timeout <= 0:
                 raise ValueError("timeout must be positive")
             guarded_argv.extend(("--timeout", str(timeout)))
-        if summary_json is not None:
-            guarded_argv.extend(("--summary-json", str(summary_json)))
-        guarded_argv.extend(("--", *command))
-        return self.start_owned(
+        guarded_argv.extend(
+            (
+                "--summary-json",
+                str(summary_path),
+                "--cancel-file",
+                str(cancellation_path),
+            )
+        )
+        # Use the existing hidden-command worker contract directly. On Windows
+        # memory_guard's command-line facade otherwise adds a detached wrapper
+        # whose Popen is not the worker that owns the Job or active marker.
+        worker_environment = harness_memory_guard.memory_guard._worker_env(
+            context.env, command, launch_id=launch_id, startup_json=str(startup_path)
+        )
+        process = self.start_owned(
             guarded_argv,
             cwd=cwd,
-            env=context.env,
+            env=worker_environment,
             stdin=stdin,
             stdout=stdout,
             stderr=stderr,
@@ -304,3 +481,27 @@ class CommandExecutor:
             errors=errors,
             bufsize=bufsize,
         )
+        owned = GuardedCommand(
+            process,
+            cancellation_path,
+            summary_path,
+            evidence_path,
+            launch_id,
+            startup_path,
+            tuple(command),
+        )
+        evidence.update(launch_pid=process.pid, status="launched")
+        try:
+            evidence_path.write_text(
+                json.dumps(evidence, sort_keys=True) + "\n", encoding="utf-8"
+            )
+        except OSError as exc:
+            exc.guard_command = owned
+            try:
+                owned.request_cancel()
+                self.wait_owned(owned, timeout=5.0)
+            except (OSError, RuntimeError, subprocess.SubprocessError) as cleanup_error:
+                exc.add_note(f"guard cancellation failed: {cleanup_error}")
+            exc.add_note(f"guard custody retained at {evidence_path}")
+            raise
+        return owned

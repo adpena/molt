@@ -10,7 +10,10 @@ owns their output root and retention; tests do not create a second temp-root or
 destructor cleanup policy. Exclusive owner directories have compact identities,
 with descriptive labels retained as metadata so linker intermediate filenames
 do not inherit unbounded path lengths. Commands use lossless owner-relative
-arguments through the same helper on Windows, macOS and Linux.
+arguments through the same helper on Windows, macOS and Linux. Tests that
+re-execute their own image use `runtime/test_support/captured_runtime_children.rs`,
+which retains the child's complete streams under the same custody and publishes
+a source/image-bound descendant record (see `docs/agent/PROOF_QUEUE.md`).
 
 ## Test quality and agent-written tests
 
@@ -242,3 +245,90 @@ test binary, confirms child readiness, then exercises the same retained-Child
 termination, reap and captured-output path used by execution tests. It does not
 depend on Node availability or require a forcibly terminated language runtime
 to deliver a graceful custody handshake. Neither control relaxes proof custody.
+
+
+## Proof executor failure and candidate binding
+
+The proof-plan DAG executor records an ordinary failed partition without
+cancelling independent work. Its transitive dependents are skipped with the
+failed dependency identity; unrelated running or ready commands remain subject
+to the existing dependency, resource, and custody limits. The enclosing receipt
+remains failed even if all independent commands succeed.
+
+Global cancellation covers unsafe memory pressure, missing or invalid guard
+metrics, unresolved guard or Cargo-quarantine ownership, uncertain descendant
+closure, source changes, guard or child signals and host exceptions, lost
+executor outcomes, dependency deadlock, and operator or control-plane
+interruption. Exit code 124 alone does not establish a
+safe deadline: the guard must attest its timeout and completed process closure,
+and any Cargo recovery must have completed with exact ownership and no errors.
+A complete birth-custodied native interruption inventory with no active
+incremental compiler records recovery as unnecessary and retains completed
+caches only with a native process-birth fence through termination. Windows Job
+lifetime accounting must retain the same process generation from before the
+inventory reads until the Job is empty; even a short-lived unseen child changes
+that generation. A changed generation, unknown arguments or an unfenced POSIX
+snapshot leaves recovery uncertain and preserves the global stop. Missing
+observations alone cannot establish that state.
+Rustc and in-process Clippy share one compiler-argument authority. Unexpanded
+response files and unknown compiler wrappers cannot grant recovery ownership.
+Quarantining an observed cache is insufficient if another compiler's ownership
+is unknown; both recovered and unnecessary states require a complete inventory
+before the executor admits a partition failure.
+The executor never performs a second Cargo recovery or a process-name sweep.
+Operator interruption drains classified outcomes from cancelled siblings before
+writing the final failed receipt and propagating the interruption.
+
+Receipts bind the actual checkout HEAD and immutable Git tree identities. A
+provided `GITHUB_SHA` must equal that HEAD. A clean working tree is an additional
+condition, not a substitute for candidate identity; a clean checkout switch or
+new commit invalidates the active run. The executor compares these identities
+before scheduling waves and after partition completion and preserves the initial
+candidate in the receipt. These are boundary observations, not proof that no
+transient mutation occurred between observations, nor a claim of deterministic
+semantics. Existing immutable source-snapshot consumers retain their own stronger
+source custody.
+
+
+## Suite RSS victim attribution
+
+Suite trip decoding retains every positive PID-and-birth pair, reports the
+number of unidentified samples, and rejects an entry only when no victim birth
+can be identified. Missing root birth does not discard an independently
+captured descendant birth. PID-only matching is never sufficient.
+
+Persistent batch builds use the shared suite-trip result merger before strict
+retry or subprocess fallback. The client captures the server launch birth and
+each serialized request's monotonic start. The existing suite sentinel records
+the sample clock and ancestor chains captured by ProcessTreeTracker during live
+admission. New custody edges require positive exact-integer parent and child
+births with the parent no younger than the child. This shared rule also governs
+live descendant adoption and live or persisted Cargo incremental observations;
+an old child carrying a reused parent PID cannot enter membership or request
+ancestry. Equal native timestamps are admitted. Previously admitted exact
+instances retain custody after reparenting, while released identities stay cut.
+A descendant can identify a batch request only when its exact birth
+entered that server's custody during that request. Old trip records, reused
+PIDs, and earlier or suite-adopted daemons cannot identify a later request.
+These remain suite-level resource evidence. Success, deadlines, and existing
+infrastructure failures retain their precedence. No extra sampler, scheduler,
+request worker, or post-exit ancestry lookup is introduced.
+
+
+## WASM stage audit boundaries
+
+`MOLT_WASM_STAGE_AUDIT=1` enables the existing stage stream. Module emission
+begins before the module emitter and closes with `after-module-emission`,
+including final byte size. `before-module-finalization` follows the function
+loop and precedes resolver, trampoline, table, registry, section, and diagnostic
+emission. `after-module-finalization` follows module finishing, optional import
+stripping and validation, and relocation sections. The final byte count belongs
+to the returned artifact; an interrupted stage has no closing marker.
+
+The audit selection is resolved once per compilation and passed through TIR,
+function emission, finalization and import stripping. Disabled auditing performs
+no per-function environment lookups. Audit shapes and elapsed projections are
+lazy at the shared emission entry point. Audit-only clocks start only when enabled, and the shared TIR module
+pipeline samples its observer-only duration only when an observer is installed.
+The WASM observer is absent when this audit is disabled. Ordinary TIR progress
+and optimization timing retain their existing independent controls.

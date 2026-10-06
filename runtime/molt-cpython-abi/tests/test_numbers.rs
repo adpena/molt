@@ -137,10 +137,11 @@ fn init() {
     hooks.complex_from_doubles = support::fake_complex::from_doubles;
     hooks.complex_parts = support::fake_complex::parts;
     hooks.number_power = capture_number_power;
+    hooks.number_unary_op = support::fake_numbers::unary;
     hooks.alloc_list_presized = alloc_uninitialized_list;
     hooks.list_len = uninitialized_list_len;
     hooks.list_item = uninitialized_list_item;
-    support::prepare_abi_test_thread(hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
     POWER_MODULUS_BITS.with(|value| value.set(None));
     POWER_HOOK_FAILS.with(|value| value.set(false));
     FOREIGN_POWER_CALLS.with(|calls| calls.set(0));

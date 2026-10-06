@@ -286,9 +286,13 @@ fn object_new_bound_into_dict_new_passthrough_escapes() {
     attrs.insert("value".into(), AttrValue::Int(8));
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    entry
-        .ops
-        .push(make_op(OpCode::ConstStr, vec![], vec![key_val]));
+    entry.ops.push(TirOp {
+        attrs: AttrDict::from([(
+            "s_value".into(),
+            molt_ir::tir::ops::AttrValue::Str("fixture".into()),
+        )]),
+        ..make_op(OpCode::ConstStr, vec![], vec![key_val])
+    });
     entry.ops.push(TirOp {
         dialect: Dialect::Molt,
         opcode: OpCode::ObjectNewBound,

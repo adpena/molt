@@ -39,7 +39,7 @@ fn bytes_contain_ascii(bytes: &[u8], needle: &str) -> bool {
         .any(|window| window == needle.as_bytes())
 }
 
-fn code_body_ranges(wasm: &[u8]) -> (usize, Vec<std::ops::Range<usize>>) {
+fn code_body_ranges(wasm: &[u8]) -> (u64, Vec<std::ops::Range<u64>>) {
     let mut code_start = None;
     let mut ranges = Vec::new();
     for payload in Parser::new(0).parse_all(wasm) {

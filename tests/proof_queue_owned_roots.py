@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import secrets
 import sys
+from molt.dx import checkout_custody
 from tools.proof_queue_pkg import cargo_output_layout, custody_cas
 
 
@@ -68,19 +69,23 @@ def native_case_path(default: Path, *, source: Path, nodeid: str) -> Path:
 
 def native_build_environment(*, source: Path) -> dict[str, str]:
     env = dict(os.environ)
-    if sys.platform != "win32":
-        return env
     configured = env.get("MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT")
-    if configured is None:
+    if configured is None and sys.platform == "win32":
         raise ValueError(
             "Windows native supervisor tests require owner-selected MOLT_PROOF_TEST_CARGO_OUTPUT_ROOT"
         )
     case = native_case_path(
-        Path.cwd(), source=source, nodeid=source.name + "::supervisor-build"
+        checkout_custody(source.resolve().parents[2]).custody_root
+        / "tmp"
+        / "supervisor-fixtures",
+        source=source,
+        nodeid=source.name + "::supervisor-build",
     )
     layout = cargo_output_layout.CargoOutputLayout.create(
         result_root=case,
-        declaration=cargo_output_layout.declare_root(configured),
+        declaration=(
+            cargo_output_layout.declare_root(configured) if configured else None
+        ),
         source_root=source.resolve().parents[2],
     )
     layout.admit_supervisor_target_path()

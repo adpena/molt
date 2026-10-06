@@ -644,6 +644,14 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 return NotImplemented
             if op.kind == "CONST_ELLIPSIS":
                 return Ellipsis
+            if op.kind in {"GUARD_TAG", "GUARD_TYPE"} and len(op.args) == 2:
+                # Runtime guards return the source unchanged, even on mismatch.
+                # They observe profiling and reject invalid tags; neither fact
+                # establishes the source's type or traps this block on mismatch.
+                source = op.args[0]
+                if isinstance(source, MoltValue):
+                    return value_lattice(source.name, known)
+                return _SCCP_OVERDEFINED
             if op.kind == "PHI" and op.args:
                 block_id = cfg.index_to_block.get(op_index)
                 if block_id is not None:
@@ -1030,23 +1038,6 @@ class MidendDataflowMixin(GeneratorMixinBase):
                 # Include no-result operations: a callback need not produce an
                 # SSA value to invalidate observations of captured objects.
                 invalidate_heap_facts(op, known)
-                if op.kind in {"GUARD_TAG", "GUARD_TYPE"} and len(op.args) == 2:
-                    guarded = op.args[0]
-                    expected = op.args[1]
-                    if isinstance(guarded, MoltValue) and isinstance(
-                        expected, MoltValue
-                    ):
-                        expected_value = known.get(expected.name, _SCCP_UNKNOWN)
-                        if isinstance(expected_value, int):
-                            guarded_tag = value_type_tag(guarded.name, known)
-                            if (
-                                guarded_tag is not None
-                                and guarded_tag != expected_value
-                            ):
-                                block_traps = True
-                                break
-                            known[type_fact_key(guarded.name)] = expected_value
-                    continue
                 if op.kind == "GUARD_DICT_SHAPE" and len(op.args) == 3:
                     guarded = op.args[0]
                     dict_type = op.args[1]

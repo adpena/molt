@@ -27,7 +27,7 @@ inputs:
     description: Cache uv downloads
     default: "true"
   cache-cargo:
-    description: Cache Cargo registry and git source downloads
+    description: Cache non-incremental Cargo build artifacts and source downloads
     default: "false"
   cache-lean:
     description: Cache Lean lake artifacts
@@ -141,19 +141,32 @@ runs:
           uv-${{ steps.inputs.outputs.cache-namespace }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.python-version',
           'pyproject.toml', 'uv.lock') }}
 
-    - name: Cache Cargo source downloads
+    - name: Configure non-incremental Cargo cache
+      id: cargo-cache
+      if: steps.inputs.outputs.cache-cargo == 'true'
+      shell: bash
+      run: python3 tools/ci_cargo_cache.py
+
+    # actions/cache is GitHub-owned, so the repository's Actions policy allows
+    # it; third-party cache actions are rejected before any job step runs.
+    - name: Cache Cargo builds and source downloads
       if: steps.inputs.outputs.cache-cargo == 'true'
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: |
-          ~/.cargo/registry
-          ~/.cargo/git
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ${{ steps.cargo-cache.outputs.target-dir }}
         key: >-
-          cargo-${{ steps.inputs.outputs.cache-namespace }}-${{ runner.os }}-${{ runner.arch }}-${{
-          steps.inputs.outputs.rust-cache-token }}-${{
+          cargo-${{ steps.inputs.outputs.cache-namespace }}-${{ runner.os }}-${{
+          runner.arch }}-${{ steps.inputs.outputs.rust-cache-token }}-${{
           hashFiles('rust-toolchain.toml',
-          'Cargo.lock', 'Cargo.toml', '.cargo/config.toml',
+          'Cargo.lock', '**/Cargo.toml', '.cargo/config.toml', 'tools/proof_plan.toml',
           'config/llvm_toolchain_releases.toml', 'config/llvm_toolchain_arches.toml') }}
+        restore-keys: >-
+          cargo-${{ steps.inputs.outputs.cache-namespace }}-${{ runner.os }}-${{
+          runner.arch }}-${{ steps.inputs.outputs.rust-cache-token }}-
 
     - name: Cache Lean lake artifacts
       if: steps.inputs.outputs.cache-lean == 'true'

@@ -1243,14 +1243,18 @@ def _validate_external_package_native_artifact(
                 f"{package}: cannot read runtime import source {source_path}: {exc}"
             )
             return set()
-        names = set(
-            _module_import_scanner._collect_imports(
-                tree,
-                module_name=module_name,
-                is_package=source_path.name == "__init__.py",
-                import_scan_mode="module_init",
-                target_python=expected_target_python,
-            )
+        # This closure captures source files for support custody. Discovery
+        # candidates are not sealed execution imports; the product graph still
+        # establishes exact source/AST/catalog custody before compiling them.
+        projection = _module_import_scanner._collect_imports_for_graph(
+            tree,
+            module_name=module_name,
+            is_package=source_path.name == "__init__.py",
+            import_scan_mode="module_init",
+            target_python=expected_target_python,
+        )
+        names = set(projection.imports) | set(
+            projection.dynamic_relative_import_candidates
         )
         return {
             name for name in names if name == package or name.startswith(package_prefix)

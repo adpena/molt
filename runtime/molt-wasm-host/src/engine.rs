@@ -93,7 +93,7 @@ impl EngineOptions {
 pub(super) fn build_engine() -> Result<Engine> {
     let options = EngineOptions::from_lookup(|name| env::var_os(name))?;
     log::debug!("wasmtime engine options: {options:?}");
-    Ok(Engine::new(&options.build_config()?)?)
+    Engine::new(&options.build_config()?)
 }
 
 #[cfg(test)]

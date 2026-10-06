@@ -124,6 +124,158 @@ for (const test of config.cases) {
     );
 }
 
+#[test]
+fn fixed_arity_constructors_transport_borrowed_words_through_private_scratch() {
+    let node = real_execution_tool(
+        PathBuf::from("node"),
+        "MOLT_REQUIRE_REAL_NODE_TESTS",
+        "fixed-arity constructor transport",
+    )
+    .expect("Node is required to prove emitted constructor transport");
+    let (temp, _remove_temp) = wasm_test_temp_dir();
+    let params = vec!["p0", "p1", "p2", "p3", "p4"];
+    let mut cases = Vec::new();
+    for (kind, args) in [
+        ("list_new", vec![]),
+        ("list_new", vec!["p2"]),
+        ("list_new", vec!["p0", "p1", "p2", "p3", "p4"]),
+        ("tuple_new", vec![]),
+        ("tuple_new", vec!["p2"]),
+        ("tuple_new", vec!["p0", "p1", "p2", "p3", "p4"]),
+        ("dataclass_new_values", vec!["p0", "p1", "p2"]),
+        ("dataclass_new_values", vec!["p0", "p1", "p2", "p3", "p4"]),
+    ] {
+        for (shape, out) in [
+            ("absent", None),
+            ("none", Some("none")),
+            ("dead", Some("unused")),
+            ("live", Some("result")),
+        ] {
+            let bound = shape == "live";
+            let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
+                functions: vec![wasm_test_function(
+                    "molt_main",
+                    params.clone(),
+                    None,
+                    vec![
+                        wasm_test_op(kind, out, args.clone()),
+                        wasm_test_op("ret", None, vec![if bound { "result" } else { "none" }]),
+                    ],
+                )],
+                profile: None,
+            })
+            .wasm;
+            wasmparser::Validator::new().validate_all(&wasm).unwrap();
+            let (memory_pages, table_entries) = wasm_import_minimums(&wasm);
+            let name = format!("{kind}-{}-{shape}", args.len());
+            let path = temp.join(format!("{name}.wasm"));
+            fs::write(&path, wasm).unwrap();
+            cases.push(json!({"name":name, "kind":kind, "args":args, "bound":bound,
+                "path":path, "memory_pages":memory_pages, "table_entries":table_entries}));
+        }
+    }
+    let config = temp.join("fixed-arity-construction.json");
+    fs::write(
+        &config,
+        serde_json::to_vec(&json!({
+            "cases":cases, "none":molt_codegen_abi::box_none_bits().to_string()
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    run_node_test_script(
+        &node,
+        r#"
+const fs = require('fs'), assert = require('assert/strict');
+const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const none = BigInt(config.none), owner = 777n;
+const operands = [101n, 102n, 103n, 104n, 105n];
+for (const test of config.cases) {
+  const module = new WebAssembly.Module(fs.readFileSync(test.path));
+  const imported = WebAssembly.Module.imports(module).map(entry => entry.name);
+  assert.ok(!imported.some(name => name.startsWith('list_builder') || name === 'tuple_builder_finish'),
+    test.name + ': fixed-arity construction needs no builder custody');
+  const values = test.args.map(arg => operands[Number(arg.slice(1))]);
+  const fixed = test.kind === 'dataclass_new_values' ? values.slice(0, 3) : [];
+  const words = test.kind === 'dataclass_new_values' ? values.slice(3) : values;
+  for (const failure of ['success', 'scratch', 'constructor']) {
+    if (failure === 'scratch' && words.length === 0) continue;
+    const name = test.name + '/' + failure;
+    let owners = 0, pending = false, live = null, allocations = 0, frees = 0, constructed = 0;
+    // The range lives in an extra page that no data segment can occupy.
+    const memory = new WebAssembly.Memory({initial: test.memory_pages + 1});
+    const range = BigInt(test.memory_pages * 65536 + 64);
+    const imports = {env: {
+      memory,
+      __indirect_function_table: new WebAssembly.Table({initial: test.table_entries, element: 'anyfunc'}),
+    }};
+    const construct = (ptr, len) => {
+      constructed++;
+      if (len !== 0n) assert.deepEqual({ptr, size: len * 8n}, live, name + ': read the live range');
+      const view = new DataView(memory.buffer);
+      const read = Array.from({length: Number(len)}, (_, i) => view.getBigInt64(Number(ptr) + 8 * i, true));
+      assert.deepEqual(read, words, name + ': borrowed words in operand order');
+      if (failure === 'constructor') { pending = true; return none; }
+      owners++;
+      return owner;
+    };
+    const providers = {
+      scratch_alloc: size => {
+        assert.equal(live, null, name + ': one private range per construction');
+        assert.equal(size, BigInt(words.length * 8), name + ': exact range size');
+        allocations++;
+        if (failure === 'scratch') { pending = true; return 0n; }
+        live = {ptr: range, size};
+        return range;
+      },
+      scratch_free: (ptr, size) => {
+        assert.deepEqual({ptr, size}, live, name + ': free exactly the live range');
+        live = null;
+        frees++;
+      },
+      tuple_from_values: (ptr, len) => construct(ptr, len),
+      list_from_values: (ptr, len) => construct(ptr, len),
+      dataclass_new_from_values: (nameBits, fields, ptr, len, flags) => {
+        assert.deepEqual([nameBits, fields, flags], fixed, name + ': fixed operands');
+        return construct(ptr, len);
+      },
+      exception_pending: () => pending ? 1n : 0n,
+      dec_ref_obj: bits => {
+        if (bits === none) return;
+        assert.equal(bits, owner, name + ': only the constructed owner is released');
+        assert.equal(owners, 1, name + ': duplicate release');
+        owners--;
+      },
+    };
+    for (const entry of WebAssembly.Module.imports(module)) {
+      imports[entry.module] ??= {};
+      if (entry.kind !== 'function') {
+        assert.ok(entry.module === 'env' && entry.name in imports.env, name + ': unknown host resource');
+        continue;
+      }
+      imports[entry.module][entry.name] = providers[entry.name] ??
+        (() => { throw new Error(name + ': unexpected runtime call ' + entry.name); });
+    }
+    const app = new WebAssembly.Instance(module, imports).exports;
+    const result = app.molt_main(...operands);
+    const retained = test.bound && failure === 'success';
+    assert.equal(result, retained ? owner : none, name + ': result');
+    assert.equal(allocations, words.length ? 1 : 0, name + ': scratch only for a nonempty range');
+    assert.equal(frees, words.length && failure !== 'scratch' ? 1 : 0, name + ': range freed once');
+    assert.equal(live, null, name + ': no range outlives the operation');
+    assert.equal(constructed, failure === 'scratch' ? 0 : 1, name + ': one constructor call');
+    assert.equal(pending, failure !== 'success', name + ': failure stays pending');
+    assert.equal(owners, retained ? 1 : 0, name + ': owner balance');
+    if (retained) providers.dec_ref_obj(result);
+    assert.equal(owners, 0, name + ': caller releases final owner');
+  }
+}
+"#,
+        &[&config],
+        "WASM fixed-arity constructor transport and failure atomicity",
+    );
+}
+
 fn compile_literal_body(params: Vec<&str>, ops: Vec<OpIR>) -> (Vec<String>, BTreeMap<String, u32>) {
     let ir = SimpleIR {
         functions: vec![wasm_test_function("molt_main", params, None, ops)],
@@ -200,11 +352,12 @@ fn owned_runtime_and_constructor_results_release_every_discard_shape() {
     for (kind, argc, temporary_releases) in [
         ("list_new", 0, 0),
         ("tuple_new", 0, 0),
+        ("tuple_new", 2, 0),
         ("dict_new", 0, 0),
         ("set_new", 0, 0),
         ("frozenset_new", 0, 0),
         ("dataclass_new", 4, 0),
-        ("dataclass_new_values", 3, 1),
+        ("dataclass_new_values", 3, 0),
         ("tuple_index", 2, 0),
         ("get_attr_name", 2, 0),
         ("class_new", 1, 0),
@@ -359,7 +512,7 @@ for (const test of config.cases) {
 
 #[test]
 fn raw_and_borrowed_runtime_results_do_not_acquire_discarded_owners() {
-    for (kind, argc, borrowed) in [("call", 1, false), ("guard_tag", 2, true)] {
+    for (kind, argc) in [("call", 1), ("guard_tag", 2), ("guard_type", 2)] {
         for result in [None, Some("none"), Some("unused"), Some("result")] {
             let retained = result == Some("result");
             let mut operation = wasm_test_op(kind, result, vec!["value"; argc]);
@@ -382,7 +535,7 @@ fn raw_and_borrowed_runtime_results_do_not_acquire_discarded_owners() {
             assert_eq!(releases, 0, "{kind} {result:?}: {operators:?}");
             assert_eq!(
                 retains,
-                usize::from(borrowed && retained),
+                0, // Runtime guard aliases share their source root; no new owner.
                 "{kind} {result:?}: {operators:?}"
             );
         }
@@ -791,7 +944,7 @@ fn dynamic_calls_release_discarded_owned_results() {
             assert_eq!(
                 releases,
                 usize::from(!bound)
-                    + ["frame_invocation_exit", "callargs_push_pos"]
+                    + ["callargs_push_pos"]
                         .iter()
                         .map(|name| {
                             imports
@@ -801,6 +954,14 @@ fn dynamic_calls_release_discarded_owned_results() {
                         .sum::<usize>(),
                 "{kind} {target:?}, bound={bound}: {operators:?}"
             );
+            if let Some(index) = imports.get("frame_invocation_exit") {
+                let exit = format!("Call {{ function_index: {index} }}");
+                for (position, operator) in operators.iter().enumerate() {
+                    if operator == &exit {
+                        assert_eq!(operators[position + 1], "Drop");
+                    }
+                }
+            }
         }
     }
 }
@@ -1033,39 +1194,33 @@ fn closure_extraction_retains_only_bound_borrowed_results() {
     }
 }
 
-pub(super) fn assert_every_exit_releases_anchor(
-    operators: &[String],
-    dec_ref_index: u32,
-    expected_minimum_returns: usize,
-) -> usize {
+pub(super) fn assert_single_anchor_epilogue(operators: &[String], dec_ref_index: u32) {
     let release = format!("Call {{ function_index: {dec_ref_index} }}");
-    let mut exit_positions: Vec<usize> = operators
+    let exit_positions: Vec<usize> = operators
         .iter()
         .enumerate()
         .filter_map(|(index, operator)| (operator == "Return").then_some(index))
         .collect();
-    assert!(
-        exit_positions.len() >= expected_minimum_returns,
-        "expected at least {expected_minimum_returns} return paths; operators={operators:?}"
+    assert_eq!(
+        exit_positions.len(),
+        1,
+        "all normal and pending-exception exits must share one epilogue; operators={operators:?}"
     );
     assert_eq!(operators.last().map(String::as_str), Some("End"));
-    // Plain bodies include an implicit fallthrough epilogue even when the IR
-    // ends with an explicit return. Dispatch bodies end in an explicit Return.
-    if operators
-        .get(operators.len().wrapping_sub(2))
-        .map(String::as_str)
-        != Some("Return")
-    {
-        exit_positions.push(operators.len() - 1);
-    }
-    for &return_index in &exit_positions {
-        assert_eq!(
-            operators.get(return_index.wrapping_sub(1)),
-            Some(&release),
-            "every explicit or implicit function exit must release its unique anchor immediately before returning; operators={operators:?}"
-        );
-    }
-    exit_positions.len()
+    let return_index = exit_positions[0];
+    assert_eq!(
+        operators.get(return_index.wrapping_sub(1)),
+        Some(&release),
+        "the shared epilogue must release its unique anchor before returning; operators={operators:?}"
+    );
+    assert!(
+        operators[return_index.saturating_sub(3)].starts_with("I64Const {"),
+        "anchor owner must be cleared before release; operators={operators:?}"
+    );
+    assert!(
+        operators[return_index.saturating_sub(2)].starts_with("LocalSet {"),
+        "anchor owner must be cleared before release; operators={operators:?}"
+    );
 }
 
 #[test]
@@ -1099,7 +1254,7 @@ fn jumpful_literals_share_one_anchor_and_mint_each_dynamic_result_owner() {
         2,
         "each original literal op must mint its own result owner from the shared anchor; operators={operators:?}"
     );
-    assert_every_exit_releases_anchor(&operators, imports["dec_ref_obj"], 2);
+    assert_single_anchor_epilogue(&operators, imports["dec_ref_obj"]);
 }
 
 #[test]
@@ -1112,10 +1267,10 @@ fn discarded_literal_results_release_their_owner_without_writing_none() {
             vec![literal, wasm_test_op("ret", None, vec!["none"])],
         );
         assert_eq!(call_count(&operators, imports["inc_ref_obj"]), 1);
-        let exits = assert_every_exit_releases_anchor(&operators, imports["dec_ref_obj"], 1);
+        assert_single_anchor_epilogue(&operators, imports["dec_ref_obj"]);
         assert_eq!(
             call_count(&operators, imports["dec_ref_obj"]),
-            exits + 1,
+            2,
             "{out}: discard must release the site owner as well as its anchor"
         );
     }
@@ -1143,5 +1298,138 @@ fn full_i64_const_uses_fallible_anchor_instead_of_inline_47_truncation() {
             .any(|operator| operator == &format!("I64Const {{ value: {} }}", i64::MAX)),
         "full-width constant must reach int_from_i64 without a 47-bit mask; operators={operators:?}"
     );
-    assert_every_exit_releases_anchor(&operators, imports["dec_ref_obj"], 2);
+    assert_single_anchor_epilogue(&operators, imports["dec_ref_obj"]);
+}
+
+#[test]
+fn anchor_cleanup_size_is_independent_of_return_site_count() {
+    // Many distinct fallible constants and exits exposed quadratic cleanup
+    // emission in real asyncio module bodies. Count release sites, not timing.
+    for constant_count in [1, 16] {
+        for return_count in [1, 16] {
+            let mut ops = Vec::new();
+            for index in 0..constant_count {
+                let mut literal = wasm_test_op("const_str", Some("unused"), vec![]);
+                literal.s_value = Some(format!("distinct-payload-{index}"));
+                ops.push(literal);
+            }
+            for _ in 0..return_count {
+                ops.push(wasm_test_op("if", None, vec!["cond"]));
+                ops.push(wasm_test_op("ret_void", None, vec![]));
+                ops.push(wasm_test_op("end_if", None, vec![]));
+            }
+            ops.push(wasm_test_op("ret_void", None, vec![]));
+            let (operators, imports) = compile_literal_body(vec!["cond"], ops);
+            assert_single_anchor_epilogue(&operators, imports["dec_ref_obj"]);
+            assert_eq!(
+                call_count(&operators, imports["dec_ref_obj"]),
+                constant_count * 2,
+                "one release per discarded result and anchor, independent of {return_count} exits"
+            );
+        }
+    }
+}
+
+#[test]
+fn shared_anchor_epilogue_executes_branches_and_partial_construction_failures() {
+    let node = real_execution_tool(
+        PathBuf::from("node"),
+        "MOLT_REQUIRE_REAL_NODE_TESTS",
+        "shared anchor epilogue",
+    )
+    .expect("Node is required to prove emitted anchor cleanup");
+    let (temp, _remove_temp) = wasm_test_temp_dir();
+    let mut ops = Vec::new();
+    for index in 0..3 {
+        let mut literal = wasm_test_op("const_str", Some("unused"), vec![]);
+        literal.s_value = Some(format!("anchor-{index}"));
+        ops.push(literal);
+    }
+    ops.extend([
+        wasm_test_op("if", None, vec!["cond"]),
+        wasm_test_op("ret", None, vec!["cond"]),
+        wasm_test_op("end_if", None, vec![]),
+        wasm_test_op("ret_void", None, vec![]),
+    ]);
+    let wasm = wasm_compile_final_ir_for_op_loop_tests_with_diagnostics(SimpleIR {
+        functions: vec![wasm_test_function("molt_main", vec!["cond"], None, ops)],
+        profile: None,
+    })
+    .wasm;
+    wasmparser::Validator::new().validate_all(&wasm).unwrap();
+    let (memory_pages, table_entries) = wasm_import_minimums(&wasm);
+    let path = temp.join("anchor-epilogue.wasm");
+    fs::write(&path, wasm).unwrap();
+    let config = temp.join("anchor-epilogue.json");
+    fs::write(
+        &config,
+        serde_json::to_vec(&json!({
+            "path":path, "memory_pages":memory_pages, "table_entries":table_entries,
+            "none":molt_codegen_abi::box_none_bits().to_string(),
+            "yes":molt_codegen_abi::box_bool_bits(1).to_string(),
+            "no":molt_codegen_abi::box_bool_bits(0).to_string(),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    run_node_test_script(
+        &node,
+        r#"
+const fs = require('fs'), assert = require('assert/strict');
+const config = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
+const none = BigInt(config.none), yes = BigInt(config.yes), no = BigInt(config.no);
+const module = new WebAssembly.Module(fs.readFileSync(config.path));
+for (const failure of [0, 1, 2, 3]) {
+  for (const condition of [no, yes]) {
+    let constructed = 0, pending = false;
+    const owners = new Map(), destroyed = [];
+    const imports = {env: {
+      memory: new WebAssembly.Memory({initial:config.memory_pages}),
+      __indirect_function_table: new WebAssembly.Table({initial:config.table_entries, element:'anyfunc'}),
+    }};
+    const hooks = {
+      string_from_bytes(ptr, length, out) {
+        assert.equal(pending, false, 'constructor called after a failure');
+        constructed++;
+        const view = new DataView(imports.env.memory.buffer);
+        view.setBigInt64(out, none, true);
+        if (constructed === failure) { pending = true; return 2; }
+        const owner = BigInt(constructed);
+        owners.set(owner, 1);
+        view.setBigInt64(out, owner, true);
+        return 0;
+      },
+      exception_pending: () => pending ? 1n : 0n,
+      is_truthy: bits => { assert.equal(bits, condition); return bits === yes ? 1n : 0n; },
+      inc_ref_obj(bits) {
+        assert.ok(owners.get(bits) > 0, 'retain must use a live anchor');
+        owners.set(bits, owners.get(bits) + 1);
+      },
+      dec_ref_obj(bits) {
+        if (bits === none) return;
+        assert.ok(owners.get(bits) > 0, 'anchor must not be released twice');
+        const count = owners.get(bits) - 1;
+        owners.set(bits, count);
+        if (!count) destroyed.push(Number(bits));
+      },
+    };
+    for (const entry of WebAssembly.Module.imports(module)) {
+      if (entry.kind !== 'function') continue;
+      imports[entry.module] ??= {};
+      imports[entry.module][entry.name] = hooks[entry.name] ?? (() => {
+        throw new Error('unexpected runtime call ' + entry.name);
+      });
+    }
+    const app = new WebAssembly.Instance(module, imports).exports;
+    assert.equal(app.molt_main(condition), failure || condition === no ? none : yes);
+    assert.equal(pending, failure !== 0, 'cleanup preserves the constructor exception');
+    assert.equal(constructed, failure || 3);
+    assert.ok([...owners.values()].every(count => count === 0), 'all owners must be retired');
+    assert.deepEqual(destroyed, Array.from({length:failure ? failure - 1 : 3}, (_, i) => i + 1).reverse());
+  }
+}
+"#,
+        &[&config],
+        "WASM shared anchor epilogue branches and failure atomicity",
+    );
 }

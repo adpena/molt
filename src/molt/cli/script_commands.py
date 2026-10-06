@@ -11,6 +11,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
+from molt.source_root import compiler_source_root
 from molt.cli import build_inputs as _build_inputs
 from molt.browser_asset_closure import (
     NODE_RUNNER_ENTRY_ASSETS,
@@ -62,7 +63,6 @@ from molt.cli.output import json_payload as _json_payload
 from molt.cli.output import success as _success
 from molt.cli.progress import notice as _notice
 from molt.cli.project_roots import (
-    _find_molt_root,
     _find_project_root,
     _require_molt_root,
 )
@@ -216,6 +216,8 @@ def _run_script_cross(
     if not file_path and not module:
         return _fail("Missing entry file or module.", json_output, command="run")
 
+    if file_path is not None:
+        file_path = str(Path(file_path).absolute())
     project_root = (
         _find_project_root(Path(file_path).resolve())
         if file_path
@@ -227,6 +229,14 @@ def _run_script_cross(
             build_args = _wasm_run_build_args(build_args)
         except ValueError as exc:
             return _fail(str(exc), json_output, command="run")
+    molt_root = compiler_source_root()
+    env = _base_env(
+        project_root,
+        Path(file_path).resolve() if file_path else None,
+        molt_root=molt_root,
+    )
+    if file_path:
+        env.update(_build_inputs._collect_env_overrides(file_path))
     resolved_build_entry, resolved_build_entry_error = (
         _build_inputs._resolve_wrapper_build_entry(
             file_path=file_path,
@@ -235,20 +245,13 @@ def _run_script_cross(
             json_output=json_output,
             command="run",
             build_args=build_args,
+            env=env,
+            source_cwd=project_root,
         )
     )
     if resolved_build_entry_error is not None:
         return resolved_build_entry_error
     assert resolved_build_entry is not None
-    molt_root = _find_molt_root(project_root, Path.cwd())
-    source_path = resolved_build_entry.source_path
-    env = _base_env(
-        project_root,
-        source_path if file_path else None,
-        molt_root=molt_root,
-    )
-    if file_path:
-        env.update(_build_inputs._collect_env_overrides(file_path))
     if trusted:
         env["MOLT_CAPABILITY_TIER"] = MAXIMUM_BUILTIN_CAPABILITY_TIER
     capability_error = _apply_run_capability_policy(
@@ -432,12 +435,22 @@ def _deploy(
     if not file_path and not module:
         return _fail("Missing entry file or module.", json_output, command="deploy")
 
+    if file_path is not None:
+        file_path = str(Path(file_path).absolute())
     project_root = (
         _find_project_root(Path(file_path).resolve())
         if file_path
         else _find_project_root(Path.cwd())
     )
     build_cmd_args = list(build_args)
+    molt_root = compiler_source_root()
+    env = _base_env(
+        project_root,
+        Path(file_path).resolve() if file_path else None,
+        molt_root=molt_root,
+    )
+    if file_path:
+        env.update(_build_inputs._collect_env_overrides(file_path))
     resolved_build_entry, resolved_build_entry_error = (
         _build_inputs._resolve_wrapper_build_entry(
             file_path=file_path,
@@ -446,19 +459,13 @@ def _deploy(
             json_output=json_output,
             command="deploy",
             build_args=build_cmd_args,
+            env=env,
+            source_cwd=project_root,
         )
     )
     if resolved_build_entry_error is not None:
         return resolved_build_entry_error
     assert resolved_build_entry is not None
-    molt_root = _find_molt_root(project_root, Path.cwd())
-    env = _base_env(
-        project_root,
-        resolved_build_entry.source_path if file_path else None,
-        molt_root=molt_root,
-    )
-    if file_path:
-        env.update(_build_inputs._collect_env_overrides(file_path))
 
     # Construct build command
     if platform == "cloudflare":
@@ -627,12 +634,22 @@ def run_script(
         )
     if not file_path and not module:
         return _fail("Missing entry file or module.", json_output, command="run")
+    if file_path is not None:
+        file_path = str(Path(file_path).absolute())
     project_root = (
         _find_project_root(Path(file_path).resolve())
         if file_path
         else _find_project_root(Path.cwd())
     )
     build_args = list(build_args or [])
+    molt_root = compiler_source_root()
+    env = _base_env(
+        project_root,
+        Path(file_path).resolve() if file_path else None,
+        molt_root=molt_root,
+    )
+    if file_path:
+        env.update(_build_inputs._collect_env_overrides(file_path))
     resolved_build_entry, resolved_build_entry_error = (
         _build_inputs._resolve_wrapper_build_entry(
             file_path=file_path,
@@ -641,20 +658,13 @@ def run_script(
             json_output=json_output,
             command="run",
             build_args=build_args,
+            env=env,
+            source_cwd=project_root,
         )
     )
     if resolved_build_entry_error is not None:
         return resolved_build_entry_error
     assert resolved_build_entry is not None
-    molt_root = _find_molt_root(project_root, Path.cwd())
-    source_path = resolved_build_entry.source_path
-    env = _base_env(
-        project_root,
-        source_path if file_path else None,
-        molt_root=molt_root,
-    )
-    if file_path:
-        env.update(_build_inputs._collect_env_overrides(file_path))
     if trusted:
         env["MOLT_CAPABILITY_TIER"] = MAXIMUM_BUILTIN_CAPABILITY_TIER
     capability_error = _apply_run_capability_policy(
@@ -797,7 +807,7 @@ def compare(
         if file_path
         else _find_project_root(Path.cwd())
     )
-    molt_root = _find_molt_root(project_root, Path.cwd())
+    molt_root = compiler_source_root()
     env = _base_env(project_root, source_path, molt_root=molt_root)
     if file_path:
         env.update(_build_inputs._collect_env_overrides(file_path))
@@ -1077,7 +1087,7 @@ def parity_run(
         if file_path
         else _find_project_root(Path.cwd())
     )
-    molt_root = _find_molt_root(project_root, Path.cwd())
+    molt_root = compiler_source_root()
     env = _base_env(project_root, source_path, molt_root=molt_root)
     if file_path:
         env.update(_build_inputs._collect_env_overrides(file_path))
@@ -1149,7 +1159,7 @@ def diff(
     json_output: bool = False,
     verbose: bool = False,
 ) -> int:
-    root = _find_molt_root(Path.cwd())
+    root = compiler_source_root()
     root_error = _require_molt_root(root, json_output, "diff")
     if root_error is not None:
         return root_error

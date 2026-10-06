@@ -9,7 +9,7 @@ pub(super) fn urllib_request_set_attr(
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name) else {
         return false;
     };
-    crate::bridge::molt_object_setattr(obj_bits, name_bits, value_bits);
+    crate::bridge::molt_set_attr_name(obj_bits, name_bits, value_bits);
     dec_ref_bits(_py, name_bits);
     !exception_pending(_py)
 }
@@ -1938,8 +1938,9 @@ pub(super) fn urllib_http_try_inmemory_dispatch(
     let module_bits = crate::bridge::molt_module_import(module_name_bits);
     dec_ref_bits(_py, module_name_bits);
     if exception_pending(_py) {
-        let kind = urllib_request_pending_exception_kind_name(_py).unwrap_or_default();
-        if kind == "ImportError" || kind == "TypeError" {
+        if pending_exception_matches_builtin(_py, "ImportError")
+            || pending_exception_matches_builtin(_py, "TypeError")
+        {
             clear_exception(_py);
             if !obj_from_bits(module_bits).is_none() {
                 dec_ref_bits(_py, module_bits);

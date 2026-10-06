@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -294,6 +295,12 @@ def bundle_signal(rows: list[dict], bundle_path: Path) -> set[str]:
 
 
 def main() -> int:
+    # Gate verdicts must reach a cp1252 Windows console intact rather than
+    # crash the pre-push hook mid-report.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="backslashreplace")
     ap = argparse.ArgumentParser()
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--prune", action="store_true")

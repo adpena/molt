@@ -7,21 +7,10 @@
 //! own `keys()`/`values()`/`items()` methods (CPython `method_output_as_list`).
 
 use crate::abi_types::{Py_ssize_t, PyObject};
-use crate::bridge::GLOBAL_BRIDGE;
 use crate::hooks::hooks_or_stubs;
 use molt_lang_obj_model::MoltObject;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
-
-/// Helper: resolve a PyObject to its Molt bits.
-fn resolve_bits(op: *mut PyObject) -> Option<u64> {
-    if op.is_null() {
-        return None;
-    }
-    GLOBAL_BRIDGE
-        .molt_handle_for_pyobj(op)
-        .map(|value| value.bits())
-}
 
 /// Helper: classify a heap-pointer handle.
 fn classify(bits: u64) -> u8 {
@@ -82,16 +71,12 @@ pub unsafe extern "C" fn PyMapping_Check(o: *mut PyObject) -> c_int {
     if o.is_null() {
         return 0;
     }
-    if let Some(bits) = resolve_bits(o) {
-        let tag = classify(bits);
-        if tag == tag_dict()
-            || tag == crate::abi_types::MoltTypeTag::List as u8
-            || tag == crate::abi_types::MoltTypeTag::Tuple as u8
-            || tag == crate::abi_types::MoltTypeTag::Str as u8
-            || tag == crate::abi_types::MoltTypeTag::Bytes as u8
-        {
-            return 1;
+    match crate::bridge::observe_pyobject(o) {
+        Some(crate::bridge::ResolvedPyObject::ManagedMolt(value)) => {
+            return unsafe { (hooks_or_stubs().object_supports_subscript)(value.bits()) };
         }
+        None => return 0,
+        Some(crate::bridge::ResolvedPyObject::Foreign) => {}
     }
     unsafe { has_mp_subscript(o) as c_int }
 }
@@ -103,41 +88,74 @@ pub unsafe extern "C" fn PyMapping_Length(o: *mut PyObject) -> Py_ssize_t {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMapping_Size(o: *mut PyObject) -> Py_ssize_t {
-    // CPython: NULL → null_error (SystemError); mp_length when present; else
-    // TypeError "object of type '%.200s' has no len()". Every -1 carries an
-    // exception (the pre-fix body returned silent -1 for non-dicts).
     if o.is_null() {
-        unsafe { set_null_error() };
+        unsafe { crate::api::object::null_argument_error() };
         return -1;
     }
-    if let Some(bits) = resolve_bits(o) {
-        let tag = classify(bits);
-        if tag == tag_dict() {
-            let h = hooks_or_stubs();
-            return unsafe { (h.dict_len)(bits) as Py_ssize_t };
+    // Exact physical containers permit a length query during construction.
+    // Every other receiver must commit its semantic projection before dispatch.
+    let Some(identity) = crate::bridge::resolve_pyobject(o) else {
+        return -1;
+    };
+    let storage_type = unsafe { crate::bridge::semantic_type_for_resolved(o, identity) };
+    if std::ptr::eq(storage_type, &raw mut crate::abi_types::PyList_Type) {
+        return unsafe { crate::api::sequences::PyList_Size(o) };
+    }
+    if std::ptr::eq(storage_type, &raw mut crate::abi_types::PyTuple_Type) {
+        return unsafe { crate::api::sequences::PyTuple_Size(o) };
+    }
+    if storage_type.is_null() && matches!(identity, crate::bridge::ResolvedPyObject::ManagedMolt(_))
+    {
+        unsafe { crate::api::errors::check_native_status(-1, "mapping type inquiry") };
+        return -1;
+    }
+    let Some(resolved) = crate::bridge::observe_pyobject(o) else {
+        return -1;
+    };
+    let tp = unsafe { crate::bridge::semantic_type_for_resolved(o, resolved) };
+    if let crate::bridge::ResolvedPyObject::ManagedMolt(value) = resolved {
+        if tp.is_null() {
+            unsafe { crate::api::errors::check_native_status(-1, "mapping type inquiry") };
+            return -1;
         }
-        // Native list/tuple/str/bytes all expose mp_length in CPython; their
-        // length authority here is PySequence_Size (code-point-correct str).
-        if tag == crate::abi_types::MoltTypeTag::List as u8
-            || tag == crate::abi_types::MoltTypeTag::Tuple as u8
-            || tag == crate::abi_types::MoltTypeTag::Str as u8
-            || tag == crate::abi_types::MoltTypeTag::Bytes as u8
+        let bits = value.bits();
+        let tag = classify(bits);
+        if tag == tag_dict() && std::ptr::eq(tp, &raw mut crate::abi_types::PyDict_Type) {
+            return unsafe { (hooks_or_stubs().dict_len)(bits) as Py_ssize_t };
+        }
+        // Exact builtin containers share physical sequence/mapping lengths.
+        // Subtypes instead read their own mp_length below; their sequence and
+        // mapping slots need not agree.
+        if (tag == crate::abi_types::MoltTypeTag::Str as u8
+            && std::ptr::eq(tp, &raw mut crate::abi_types::PyUnicode_Type))
+            || (tag == crate::abi_types::MoltTypeTag::Bytes as u8
+                && std::ptr::eq(tp, &raw mut crate::abi_types::PyBytes_Type))
         {
             return unsafe { crate::api::abstract_sequence::PySequence_Size(o) };
         }
     }
-    // Foreign tier: mp_length via the type slot.
-    let tp = unsafe { (*o).ob_type };
     if !tp.is_null() {
-        let m = unsafe { (*tp).tp_as_mapping }.cast::<crate::abi_types::PyMappingMethods>();
-        if !m.is_null() {
-            let mp_length = unsafe { (*m).mp_length };
-            if !mp_length.is_null() {
+        let mapping = unsafe { (*tp).tp_as_mapping }.cast::<crate::abi_types::PyMappingMethods>();
+        if !mapping.is_null() {
+            let slot = unsafe { (*mapping).mp_length };
+            if !slot.is_null() {
                 type LenFunc = unsafe extern "C" fn(*mut PyObject) -> Py_ssize_t;
-                let f: LenFunc =
-                    unsafe { std::mem::transmute::<*mut std::os::raw::c_void, LenFunc>(mp_length) };
-                return unsafe { f(o) };
+                let length: LenFunc =
+                    unsafe { std::mem::transmute::<*mut std::os::raw::c_void, LenFunc>(slot) };
+                return unsafe { length(o) };
             }
+        }
+        // CPython distinguishes a sequence-only length from no length at all.
+        let sequence =
+            unsafe { (*tp).tp_as_sequence }.cast::<crate::abi_types::PySequenceMethods>();
+        if !sequence.is_null() && !unsafe { (*sequence).sq_length }.is_null() {
+            unsafe {
+                set_type_error(format!(
+                    "{} is not a mapping",
+                    crate::api::object::type_name_lossy(o)
+                ));
+            }
+            return -1;
         }
     }
     unsafe {
@@ -267,23 +285,6 @@ pub unsafe extern "C" fn PyMapping_SetItemString(
     rc
 }
 
-/// CPython `method_output_as_list(o, meth)`: call `o.<meth>()` and materialize
-/// the result as a list via the iterator protocol.
-unsafe fn method_output_as_list(o: *mut PyObject, meth: &'static core::ffi::CStr) -> *mut PyObject {
-    let bound = unsafe { crate::api::object::PyObject_GetAttrString(o, meth.as_ptr()) };
-    if bound.is_null() {
-        return ptr::null_mut();
-    }
-    let output = unsafe { crate::api::object::PyObject_CallNoArgs(bound) };
-    unsafe { crate::api::refcount::Py_DECREF(bound) };
-    if output.is_null() {
-        return ptr::null_mut();
-    }
-    let list = unsafe { crate::api::abstract_sequence::PySequence_List(output) };
-    unsafe { crate::api::refcount::Py_DECREF(output) };
-    list
-}
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyMapping_Keys(o: *mut PyObject) -> *mut PyObject {
     // CPython: exact dict → PyDict_Keys; otherwise call o.keys() and
@@ -293,12 +294,10 @@ pub unsafe extern "C" fn PyMapping_Keys(o: *mut PyObject) -> *mut PyObject {
         unsafe { set_null_error() };
         return ptr::null_mut();
     }
-    if let Some(bits) = resolve_bits(o)
-        && classify(bits) == tag_dict()
-    {
+    if unsafe { crate::api::mapping::PyDict_CheckExact(o) } != 0 {
         return unsafe { crate::api::mapping::PyDict_Keys(o) };
     }
-    unsafe { method_output_as_list(o, c"keys") }
+    unsafe { crate::api::mapping::mapping_op(crate::hooks::DictOp::MappingKeys, o) }
 }
 
 #[unsafe(no_mangle)]
@@ -307,12 +306,10 @@ pub unsafe extern "C" fn PyMapping_Values(o: *mut PyObject) -> *mut PyObject {
         unsafe { set_null_error() };
         return ptr::null_mut();
     }
-    if let Some(bits) = resolve_bits(o)
-        && classify(bits) == tag_dict()
-    {
+    if unsafe { crate::api::mapping::PyDict_CheckExact(o) } != 0 {
         return unsafe { crate::api::mapping::PyDict_Values(o) };
     }
-    unsafe { method_output_as_list(o, c"values") }
+    unsafe { crate::api::mapping::mapping_op(crate::hooks::DictOp::MappingValues, o) }
 }
 
 #[unsafe(no_mangle)]
@@ -324,10 +321,25 @@ pub unsafe extern "C" fn PyMapping_Items(o: *mut PyObject) -> *mut PyObject {
         unsafe { set_null_error() };
         return ptr::null_mut();
     }
-    if let Some(bits) = resolve_bits(o)
-        && classify(bits) == tag_dict()
-    {
+    if unsafe { crate::api::mapping::PyDict_CheckExact(o) } != 0 {
         return unsafe { crate::api::mapping::PyDict_Items(o) };
     }
-    unsafe { method_output_as_list(o, c"items") }
+    unsafe { crate::api::mapping::mapping_op(crate::hooks::DictOp::MappingItems, o) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyMapping_DelItemString(obj: *mut PyObject, key: *const c_char) -> c_int {
+    if key.is_null() {
+        unsafe { set_null_error() };
+        return -1;
+    }
+    let key = unsafe {
+        crate::api::refcount::OwnedPyObject::from_owned(crate::api::strings::PyUnicode_FromString(
+            key,
+        ))
+    };
+    if key.as_ptr().is_null() {
+        return -1;
+    }
+    unsafe { crate::api::object::PyObject_DelItem(obj, key.as_ptr()) }
 }

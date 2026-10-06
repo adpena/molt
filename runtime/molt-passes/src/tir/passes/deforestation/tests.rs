@@ -246,14 +246,21 @@ fn tuple_scalarize_fib_swap() {
     assert_eq!(entry.ops[0].opcode, OpCode::Copy);
     assert_eq!(entry.ops[0].operands, vec![ValueId(0)]);
     assert_eq!(entry.ops[0].results, vec![ValueId(3)]);
-    // Should NOT have _original_kind (it's a real Copy, not a passthrough).
-    assert!(!entry.ops[0].attrs.contains_key("_original_kind"));
+    // The annotated parameters prove no raw carrier, so each unpacked
+    // result keeps its own reference: an owned alias of its element.
+    assert_eq!(
+        entry.ops[0].attrs.get("_original_kind"),
+        Some(&AttrValue::Str("binding_alias".into()))
+    );
 
     // Second Copy: %4 = Copy(%1)  (new_b = a_plus_b)
     assert_eq!(entry.ops[1].opcode, OpCode::Copy);
     assert_eq!(entry.ops[1].operands, vec![ValueId(1)]);
     assert_eq!(entry.ops[1].results, vec![ValueId(4)]);
-    assert!(!entry.ops[1].attrs.contains_key("_original_kind"));
+    assert_eq!(
+        entry.ops[1].attrs.get("_original_kind"),
+        Some(&AttrValue::Str("binding_alias".into()))
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -361,7 +368,10 @@ fn tuple_scalarize_no_tuples_no_changes() {
     let c = func.fresh_value();
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![c]));
+        entry.ops.push(TirOp {
+            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(24))]),
+            ..make_op(OpCode::ConstInt, vec![], vec![c])
+        });
         entry.terminator = Terminator::Return { values: vec![c] };
     }
 

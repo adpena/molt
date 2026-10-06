@@ -132,9 +132,7 @@ def test_nested_build_keeps_platform_profile_and_forwards_build_profile(
         return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(
-        cli_commands, "_find_molt_root", lambda start, cwd=None: project
-    )
+    monkeypatch.setattr(cli_commands, "compiler_source_root", lambda: project)
     monkeypatch.setattr(wrapper_build, "_run_completed_command", fake_subprocess_run)
     # Profile forwarding owns neither import closure computation nor cache
     # publication. Exercise an uncacheable entry; the real closure/cache

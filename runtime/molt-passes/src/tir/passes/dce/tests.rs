@@ -31,7 +31,10 @@ fn unused_constant_removed() {
     let v0 = func.fresh_value();
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![v0]));
+    entry.ops.push(TirOp {
+        attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(17))]),
+        ..make_op(OpCode::ConstInt, vec![], vec![v0])
+    });
     entry.terminator = Terminator::Return { values: vec![] };
 
     let stats = run(&mut func);
@@ -77,8 +80,14 @@ fn unused_arithmetic_removed() {
     let sum = func.fresh_value();
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![p0]));
-    entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![p1]));
+    entry.ops.push(TirOp {
+        attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(18))]),
+        ..make_op(OpCode::ConstInt, vec![], vec![p0])
+    });
+    entry.ops.push(TirOp {
+        attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(19))]),
+        ..make_op(OpCode::ConstInt, vec![], vec![p1])
+    });
     entry
         .ops
         .push(make_op(OpCode::Add, vec![p0, p1], vec![sum]));
@@ -103,7 +112,10 @@ fn used_value_kept() {
     let v0 = func.fresh_value();
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![v0]));
+    entry.ops.push(TirOp {
+        attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(20))]),
+        ..make_op(OpCode::ConstInt, vec![], vec![v0])
+    });
     entry.terminator = Terminator::Return { values: vec![v0] };
 
     let stats = run(&mut func);
@@ -127,9 +139,10 @@ fn unused_call_result_with_runtime_effect_is_kept() {
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     // Pretend callee is a "known" value: const for the callee pointer.
-    entry
-        .ops
-        .push(make_op(OpCode::ConstInt, vec![], vec![callee]));
+    entry.ops.push(TirOp {
+        attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(21))]),
+        ..make_op(OpCode::ConstInt, vec![], vec![callee])
+    });
     entry
         .ops
         .push(make_op(OpCode::Call, vec![callee], vec![result]));
@@ -461,7 +474,10 @@ fn cascade_removal() {
     let c = func.fresh_value();
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    entry.ops.push(make_op(OpCode::ConstInt, vec![], vec![a]));
+    entry.ops.push(TirOp {
+        attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(22))]),
+        ..make_op(OpCode::ConstInt, vec![], vec![a])
+    });
     entry.ops.push(make_op(OpCode::Neg, vec![a], vec![b]));
     entry.ops.push(make_op(OpCode::Neg, vec![b], vec![c]));
     entry.terminator = Terminator::Return { values: vec![] };
@@ -492,9 +508,10 @@ fn block_arg_not_removed() {
         // Produce the initial arg value (before borrowing blocks mutably).
         let init = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry
-            .ops
-            .push(make_op(OpCode::ConstInt, vec![], vec![init]));
+        entry.ops.push(TirOp {
+            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(23))]),
+            ..make_op(OpCode::ConstInt, vec![], vec![init])
+        });
         entry.terminator = Terminator::Branch {
             target: loop_id,
             args: vec![init],

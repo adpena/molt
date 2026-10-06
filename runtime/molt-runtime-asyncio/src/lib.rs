@@ -18,7 +18,7 @@ pub use asyncio_core::*;
 pub use asyncio_helpers::*;
 pub use asyncio_queue::*;
 pub(crate) use bridge::{
-    dec_ref_bits, inc_ref_bits, int_bits_from_i64, is_truthy, raise_exception, to_i64, type_name,
+    dec_ref_bits, inc_ref_bits, int_bits_from_i64, is_truthy, raise_exception, to_i64,
 };
 pub(crate) use molt_runtime_core::prelude::*;
 

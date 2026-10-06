@@ -18,6 +18,7 @@ from molt.exact_json import canonical_json_sha256, read_exact
 from molt.compiler_distribution import (
     validate_compiler_record,
     validate_launcher_record,
+    validate_runtime_inventory,
 )
 from molt.file_publication import durable_publish_directory_exclusive
 from molt.python_identity_common import _valid_sha256
@@ -28,6 +29,12 @@ from tools.git_identity import clean_checkout_status_arguments, require_git_obje
 
 from .build_bundle import build_bundle
 from .compiler_payload import compiler_record, launcher_record, source_snapshot
+from .runtime_cells import read_runtime_inventory
+from .native_build import (
+    read_native_build,
+    snapshot_rust_channel,
+    validate_receipt as validate_native_receipt,
+)
 from . import release_evidence
 from .release_remote import (
     download_evidence,
@@ -67,9 +74,9 @@ from .release_model import (
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 
-CANDIDATE_SCHEMA = "molt.release-candidate.v3"
+CANDIDATE_SCHEMA = "molt.release-candidate.v5"
 CONSUMER_EXPECTED_OUTPUT = "MOLT_RELEASE_CONSUMER_OK"
-CONSUMER_SCHEMA = "molt.release-consumer-proof.v5"
+CONSUMER_SCHEMA = "molt.release-consumer-proof.v6"
 # The installed guest matrix for every declared Python coordinate, in receipt
 # order: each shipped target with each program profile.
 CONSUMER_GUEST_CELLS = (
@@ -311,15 +318,44 @@ def assemble_candidate(
     source_sha: str,
     source_date_epoch: int,
     wheel: Path,
-    primary_worker: Path,
-    secondary_worker: Path,
-    primary_compiler: Path,
-    secondary_compiler: Path,
-    primary_launcher: Path,
-    secondary_launcher: Path,
+    primary_native_build: Path,
+    secondary_native_build: Path,
+    primary_runtime_cells: Path,
+    secondary_runtime_cells: Path,
     output: Path,
 ) -> dict[str, object]:
     target = target_by_id(target_id)
+    if primary_native_build.samefile(secondary_native_build):
+        raise ValueError("independent native builds must use distinct output roots")
+    if primary_runtime_cells.samefile(secondary_runtime_cells):
+        raise ValueError("independent runtime builds must use distinct output roots")
+    snapshot = source_snapshot(ROOT, source_sha)
+    expected_rust_channel = snapshot_rust_channel(ROOT, snapshot)
+    native = read_native_build(
+        primary_native_build,
+        snapshot=snapshot,
+        expected_rust_channel=expected_rust_channel,
+        source_date_epoch=source_date_epoch,
+        platform=target.platform,
+        arch=target.arch,
+    )
+    if native != read_native_build(
+        secondary_native_build,
+        snapshot=snapshot,
+        expected_rust_channel=expected_rust_channel,
+        source_date_epoch=source_date_epoch,
+        platform=target.platform,
+        arch=target.arch,
+    ):
+        raise ValueError(f"{target_id}: native build receipts are not reproducible")
+    primary_worker, primary_compiler, primary_launcher = (
+        primary_native_build / native["artifacts"][role]["path"]
+        for role in ("worker", "compiler", "launcher")
+    )
+    secondary_worker, secondary_compiler, secondary_launcher = (
+        secondary_native_build / native["artifacts"][role]["path"]
+        for role in ("worker", "compiler", "launcher")
+    )
     compiler = compiler_record(
         primary_compiler, platform=target.platform, arch=target.arch
     )
@@ -334,7 +370,17 @@ def assemble_candidate(
         secondary_launcher, platform=target.platform, arch=target.arch
     ):
         raise ValueError(f"{target_id}: production launcher is not reproducible")
-    snapshot = source_snapshot(ROOT, source_sha)
+    runtime = read_runtime_inventory(
+        primary_runtime_cells, platform=target.platform, arch=target.arch
+    )
+    if runtime != read_runtime_inventory(
+        secondary_runtime_cells, platform=target.platform, arch=target.arch
+    ):
+        raise ValueError(f"{target_id}: runtime cells are not reproducible")
+    if runtime["source"] != {
+        key: native["source"][key] for key in ("object_format", "commit", "tree")
+    }:
+        raise ValueError(f"{target_id}: runtime cells come from different source")
     worker_primary = file_record(primary_worker, kind="worker-repro-primary")
     worker_secondary = file_record(secondary_worker, kind="worker-repro-secondary")
     if worker_primary["sha256"] != worker_secondary["sha256"]:
@@ -350,16 +396,30 @@ def assemble_candidate(
             filename = target.artifact_filename(kind, version)
             primary_bundle = output / filename
             repeat_bundle = repeat_root / filename
-            for worker, compiler_binary, launcher_binary, destination in (
-                (primary_worker, primary_compiler, primary_launcher, primary_bundle),
+            projected: list[Path] = []
+            for (
+                worker,
+                compiler_binary,
+                launcher_binary,
+                runtime_cells,
+                destination,
+            ) in (
+                (
+                    primary_worker,
+                    primary_compiler,
+                    primary_launcher,
+                    primary_runtime_cells,
+                    primary_bundle,
+                ),
                 (
                     secondary_worker,
                     secondary_compiler,
                     secondary_launcher,
+                    secondary_runtime_cells,
                     repeat_bundle,
                 ),
             ):
-                build_bundle(
+                platform_wheel = build_bundle(
                     version=version,
                     platform=target.platform,
                     worker=worker if kind == "molt-worker" else None,
@@ -370,7 +430,12 @@ def assemble_candidate(
                     compiler=compiler_binary if kind == "molt" else None,
                     launcher=launcher_binary if kind == "molt" else None,
                     snapshot=snapshot if kind == "molt" else None,
+                    runtime_cells=runtime_cells if kind == "molt" else None,
+                    pure_wheel=wheel if kind == "molt" else None,
+                    wheel_output_dir=destination.parent if kind == "molt" else None,
                 )
+                if platform_wheel is not None:
+                    projected.append(platform_wheel)
             if sha256_file(primary_bundle) != sha256_file(repeat_bundle):
                 raise ValueError(f"{target_id}: {kind} bundle is not reproducible")
             record = file_record(primary_bundle, kind=kind)
@@ -384,6 +449,21 @@ def assemble_candidate(
                 }
             )
             artifacts.append(record)
+            if projected:
+                primary_wheel, repeat_wheel = projected
+                if sha256_file(primary_wheel) != sha256_file(repeat_wheel):
+                    raise ValueError(f"{target_id}: platform wheel is not reproducible")
+                wheel_artifact = file_record(primary_wheel, kind="wheel")
+                wheel_artifact.update(
+                    {
+                        "name": "molt-wheel",
+                        "version": version,
+                        "platform": target.platform,
+                        "arch": target.arch,
+                        "libc": "gnu" if target.platform == "linux" else None,
+                    }
+                )
+                artifacts.append(wheel_artifact)
 
     wheel_record = file_record(wheel, kind="wheel")
     wheel_record.update(
@@ -409,6 +489,8 @@ def assemble_candidate(
         "wheel": wheel_record,
         "compiler": compiler,
         "launcher": launcher,
+        "runtime": runtime,
+        "native_build": native,
         "artifacts": sorted(artifacts, key=lambda item: str(item["filename"])),
         "reproducibility": {
             "worker_sha256": worker_primary["sha256"],
@@ -416,6 +498,7 @@ def assemble_candidate(
             "independent_worker_builds": 2,
             "independent_compiler_builds": 2,
             "independent_launcher_builds": 2,
+            "independent_runtime_builds": 2,
             "independent_bundle_assemblies": 2,
             "matched": True,
         },
@@ -426,7 +509,7 @@ def assemble_candidate(
 
 def _load_candidate(path: Path) -> dict[str, Any]:
     """Admit the complete current candidate shape before any nested access."""
-    payload = read_exact(path, max_bytes=1024 * 1024, label="release candidate")
+    payload = read_exact(path, max_bytes=16 * 1024 * 1024, label="release candidate")
     if (
         not isinstance(payload, dict)
         or set(payload)
@@ -439,6 +522,8 @@ def _load_candidate(path: Path) -> dict[str, Any]:
             "wheel",
             "compiler",
             "launcher",
+            "runtime",
+            "native_build",
             "artifacts",
             "reproducibility",
         }
@@ -462,8 +547,10 @@ def _load_candidate(path: Path) -> dict[str, Any]:
     ):
         raise ValueError(f"release candidate target metadata is invalid: {path}")
     artifacts = payload["artifacts"]
-    if not isinstance(artifacts, list) or len(artifacts) != 2:
-        raise ValueError(f"{target['id']}: expected exactly two release artifacts")
+    if not isinstance(artifacts, list) or len(artifacts) != 3:
+        raise ValueError(
+            f"{target['id']}: expected a bundle, a worker and a platform wheel"
+        )
     for record in [payload["wheel"], *artifacts]:
         if (
             not isinstance(record, dict)
@@ -484,6 +571,26 @@ def _load_candidate(path: Path) -> dict[str, Any]:
         raise ValueError("release compiler target differs from candidate")
     if (launcher["platform"], launcher["arch"]) != (target["platform"], target["arch"]):
         raise ValueError("release launcher target differs from candidate")
+    runtime = validate_runtime_inventory(
+        payload["runtime"], platform=target["platform"], arch=target["arch"]
+    )
+    native = validate_native_receipt(payload["native_build"])
+    if (
+        native["source"]["commit"] != payload["source_sha"]
+        or native["source_date_epoch"] != payload["source_date_epoch"]
+        or (native["target"]["platform"], native["target"]["arch"])
+        != (target["platform"], target["arch"])
+        or any(
+            (native["artifacts"][role]["sha256"], native["artifacts"][role]["size"])
+            != (record["sha256"], record["size"])
+            for role, record in (("compiler", compiler), ("launcher", launcher))
+        )
+    ):
+        raise ValueError("native build receipt differs from candidate inputs")
+    if runtime["source"] != {
+        key: native["source"][key] for key in ("object_format", "commit", "tree")
+    }:
+        raise ValueError("release runtime cells come from different source")
     if (
         not isinstance(proof, dict)
         or set(proof)
@@ -493,6 +600,7 @@ def _load_candidate(path: Path) -> dict[str, Any]:
             "independent_worker_builds",
             "independent_compiler_builds",
             "independent_launcher_builds",
+            "independent_runtime_builds",
             "independent_bundle_assemblies",
             "matched",
         }
@@ -502,12 +610,14 @@ def _load_candidate(path: Path) -> dict[str, Any]:
                 "independent_worker_builds",
                 "independent_compiler_builds",
                 "independent_launcher_builds",
+                "independent_runtime_builds",
                 "independent_bundle_assemblies",
             )
         )
         or proof.get("matched") is not True
         or not isinstance(proof.get("worker_sha256"), str)
         or re.fullmatch(r"[0-9a-f]{64}", proof["worker_sha256"]) is None
+        or proof["worker_sha256"] != native["artifacts"]["worker"]["sha256"]
         or proof.get("launcher_sha256") != launcher["sha256"]
     ):
         raise ValueError(f"{target['id']}: reproducibility proof is incomplete")
@@ -770,6 +880,8 @@ def validate_consumer_proof(consumer: object, candidate: dict[str, Any]) -> None
             "errors",
             "compiler",
             "launcher",
+            "runtime",
+            "pip_proof",
             "guest_cells",
             "expected_stdout",
             "python_policy_sha256",
@@ -795,6 +907,7 @@ def validate_consumer_proof(consumer: object, candidate: dict[str, Any]) -> None
         or consumer.get("uninstall_verified") is not True
         or consumer.get("compiler") != candidate["compiler"]
         or consumer.get("launcher") != candidate["launcher"]
+        or consumer.get("runtime") != candidate["runtime"]
         or consumer.get("guest_cells") != [list(cell) for cell in CONSUMER_GUEST_CELLS]
         or consumer.get("expected_stdout") != CONSUMER_EXPECTED_STDOUT
     ):
@@ -866,6 +979,114 @@ def validate_consumer_proof(consumer: object, candidate: dict[str, Any]) -> None
             "release consumer coordinates must share one installed launcher "
             "and build into separate output directories"
         )
+    _validate_consumer_pip_proof(consumer["pip_proof"], candidate)
+
+
+_CONSUMER_PIP_ROLES = (
+    "pip_environment",
+    "pip_install",
+    "pip_build_native_release",
+    "pip_run_native_release",
+    "pip_uninstall",
+)
+
+
+def _validate_consumer_pip_proof(proof: object, candidate: dict[str, Any]) -> None:
+    """Bind one ordinary pip install of the target's platform wheel to its build."""
+    windows = candidate["target"]["platform"] == "windows"
+    path_type = PureWindowsPath if windows else PurePosixPath
+    wheels = [
+        record for record in candidate["artifacts"] if record["name"] == "molt-wheel"
+    ]
+    if (
+        len(wheels) != 1
+        or not isinstance(proof, dict)
+        or set(proof)
+        != {
+            "wheel",
+            "python",
+            "reference_python",
+            "commands",
+            "artifact",
+            "compiler_sha256",
+        }
+    ):
+        raise ValueError("release consumer pip proof is incomplete")
+    wheel = wheels[0]
+    coordinates, _policy = consumer_python_policy()
+    if (
+        (proof["python"], proof["reference_python"]) != coordinates[0]
+        or proof["wheel"] != {key: wheel[key] for key in ("filename", "sha256", "size")}
+        or proof["compiler_sha256"] != candidate["compiler"]["sha256"]
+    ):
+        raise ValueError(
+            "release consumer pip proof is not bound to the candidate wheel"
+        )
+    commands = proof["commands"]
+    fields = {
+        "role",
+        "argv",
+        "returncode",
+        "duration_seconds",
+        "stdout_sha256",
+        "stderr_sha256",
+    }
+    if (
+        not isinstance(commands, list)
+        or [c.get("role") if isinstance(c, dict) else None for c in commands]
+        != list(_CONSUMER_PIP_ROLES)
+        or any(
+            set(command) != fields
+            or type(command["returncode"]) is not int
+            or command["returncode"] != 0
+            or not isinstance(command["argv"], list)
+            or not all(isinstance(item, str) and item for item in command["argv"])
+            or not _valid_sha256(command["stdout_sha256"])
+            or not _valid_sha256(command["stderr_sha256"])
+            for command in commands
+        )
+    ):
+        raise ValueError("release consumer pip commands are incomplete")
+    by_role = {command["role"]: command for command in commands}
+    environment = by_role["pip_environment"]["argv"]
+    install = by_role["pip_install"]["argv"]
+    build = by_role["pip_build_native_release"]["argv"]
+    run = by_role["pip_run_native_release"]
+    venv = path_type(environment[-1])
+    output = build[build.index("--output") + 1] if "--output" in build[:-1] else None
+    if (
+        len(environment) != 6
+        or path_type(environment[0]).name.lower() not in {"uv", "uv.exe"}
+        or environment[1:5]
+        != ["venv", "--no-config", "--python", proof["reference_python"]]
+        or not venv.is_absolute()
+        or len(install) != 7
+        or install[:1] != environment[:1]
+        or install[1:5] != ["pip", "install", "--no-config", "--python"]
+        or path_type(install[5])
+        != venv.joinpath("Scripts/python.exe" if windows else "bin/python")
+        or path_type(install[6]).name != wheel["filename"]
+        or path_type(build[0])
+        != venv.joinpath("Scripts/molt.exe" if windows else "bin/molt")
+        or build[1:6] != ["build", "--target", "native", "--profile", "release"]
+        or output is None
+        or run["argv"] != [output, *CONSUMER_GUEST_ARGV]
+        or run["stdout_sha256"]
+        != hashlib.sha256(CONSUMER_EXPECTED_STDOUT.encode("utf-8")).hexdigest()
+        or by_role["pip_uninstall"]["argv"]
+        != [install[0], "pip", "uninstall", "--python", install[5], "molt"]
+    ):
+        raise ValueError("release consumer pip commands are not one pip installation")
+    artifact = proof["artifact"]
+    if (
+        not isinstance(artifact, dict)
+        or set(artifact) != {"path", "sha256", "size"}
+        or artifact["path"] != output
+        or not _valid_sha256(artifact["sha256"])
+        or type(artifact["size"]) is not int
+        or artifact["size"] <= 0
+    ):
+        raise ValueError("release consumer pip artifact is invalid")
 
 
 def _admit_candidate(
@@ -902,9 +1123,13 @@ def _admit_candidate(
     )
     validate_consumer_proof(consumer, candidate)
     artifacts = candidate["artifacts"]
-    if {record["name"] for record in artifacts} != {"molt", "molt-worker"}:
+    if {record["name"] for record in artifacts} != {
+        "molt",
+        "molt-worker",
+        "molt-wheel",
+    }:
         raise ValueError(
-            f"{target.id}: expected one Molt and one worker release artifact"
+            f"{target.id}: expected one Molt bundle, worker and platform wheel"
         )
     for record in artifacts:
         if (record["platform"], record["arch"]) != (target.platform, target.arch):
@@ -1368,12 +1593,10 @@ def main() -> None:
     candidate.add_argument("--source-sha", required=True)
     candidate.add_argument("--source-date-epoch", type=int, required=True)
     candidate.add_argument("--wheel", type=Path, required=True)
-    candidate.add_argument("--primary-worker", type=Path, required=True)
-    candidate.add_argument("--secondary-worker", type=Path, required=True)
-    candidate.add_argument("--primary-compiler", type=Path, required=True)
-    candidate.add_argument("--secondary-compiler", type=Path, required=True)
-    candidate.add_argument("--primary-launcher", type=Path, required=True)
-    candidate.add_argument("--secondary-launcher", type=Path, required=True)
+    candidate.add_argument("--primary-native-build", type=Path, required=True)
+    candidate.add_argument("--secondary-native-build", type=Path, required=True)
+    candidate.add_argument("--primary-runtime-cells", type=Path, required=True)
+    candidate.add_argument("--secondary-runtime-cells", type=Path, required=True)
     candidate.add_argument("--output", type=Path, required=True)
 
     index = subparsers.add_parser("index")
@@ -1509,12 +1732,10 @@ def main() -> None:
             source_sha=args.source_sha,
             source_date_epoch=args.source_date_epoch,
             wheel=args.wheel,
-            primary_worker=args.primary_worker,
-            secondary_worker=args.secondary_worker,
-            primary_compiler=args.primary_compiler,
-            secondary_compiler=args.secondary_compiler,
-            primary_launcher=args.primary_launcher,
-            secondary_launcher=args.secondary_launcher,
+            primary_native_build=args.primary_native_build,
+            secondary_native_build=args.secondary_native_build,
+            primary_runtime_cells=args.primary_runtime_cells,
+            secondary_runtime_cells=args.secondary_runtime_cells,
             output=args.output,
         )
         print(json.dumps(payload, sort_keys=True))

@@ -24,12 +24,15 @@ from molt.memory_guard_paths import (
 )
 
 
-def test_infrastructure_failure_has_one_exact_wire_authority() -> None:
+@pytest.mark.parametrize("phase", ["temporary_artifact_custody", "rss_trip_evidence"])
+def test_infrastructure_failure_has_one_exact_wire_authority(
+    phase: process_custody.GuardInfrastructurePhase,
+) -> None:
     failure = memory_guard.GuardInfrastructureFailure(
-        phase="temporary_artifact_custody", details=("invalid index", "closure unknown")
+        phase=phase, details=("invalid index", "closure unknown")
     )
     payload = {
-        "phase": "temporary_artifact_custody",
+        "phase": phase,
         "details": ["invalid index", "closure unknown"],
     }
     assert failure.json_payload() == payload
@@ -47,6 +50,9 @@ def test_infrastructure_failure_has_one_exact_wire_authority() -> None:
         [],
         {},
         {"phase": "unknown", "details": ["failure"]},
+        {"phase": [], "details": ["failure"]},
+        {"phase": {}, "details": ["failure"]},
+        {"phase": False, "details": ["failure"]},
         {"phase": "temporary_artifact_custody", "details": []},
         {"phase": "temporary_artifact_custody", "details": [""]},
         {"phase": "temporary_artifact_custody", "details": [" "]},
@@ -562,6 +568,128 @@ def test_temporary_artifact_posix_closure_rejects_prior_custody_gap(
         assert evidence["termination_action_gaps"][0]["result"] == "still_live"
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        "proven_exit",
+        "missing_only",
+        "sent_only",
+        "different_target",
+        "different_report",
+        "remaining_marker",
+        "prior_failure",
+        "later_failure",
+        "prior_custody_gap",
+        "later_custody_gap",
+        "later_missing",
+        "later_liveness",
+        "unsupported_target_kind",
+        "exit_with_signal",
+        "exit_with_error",
+        "prior_failure_then_completed",
+        "prior_custody_gap_then_completed",
+    ],
+)
+def test_temporary_artifact_posix_closure_reconciles_only_terminal_liveness(
+    monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    def action(result: str, *, target: int = 101):
+        return memory_guard.GuardTerminationAction(
+            target_kind="process_group",
+            target_id=target,
+            signal=None,
+            signal_name=None,
+            result=result,
+        )
+
+    actions = [action("still_live"), action("exited")]
+    if case in {"missing_only", "sent_only"}:
+        actions[-1] = action("missing" if case == "missing_only" else "sent")
+    elif case == "different_target":
+        actions[-1] = action("exited", target=202)
+    elif case in {"prior_failure", "later_failure"}:
+        actions.insert(0 if case == "prior_failure" else len(actions), action("failed"))
+    elif case in {"prior_custody_gap", "later_custody_gap"}:
+        actions.insert(
+            0 if case == "prior_custody_gap" else len(actions),
+            action("skipped_identity_mismatch"),
+        )
+    elif case in {"later_missing", "later_liveness"}:
+        actions.append(action("missing" if case == "later_missing" else "still_live"))
+    elif case == "unsupported_target_kind":
+        actions = [
+            dataclasses.replace(row, target_kind="process_tree") for row in actions
+        ]
+    elif case == "exit_with_signal":
+        actions[-1] = dataclasses.replace(actions[-1], signal=signal.SIGTERM)
+    elif case == "exit_with_error":
+        actions[-1] = dataclasses.replace(actions[-1], error="unresolved observation")
+    elif case in {"prior_failure_then_completed", "prior_custody_gap_then_completed"}:
+        actions.insert(
+            0,
+            action(
+                "failed"
+                if case == "prior_failure_then_completed"
+                else "skipped_identity_mismatch"
+            ),
+        )
+        actions[-1] = action("completed_or_missing")
+    reports = (
+        _guard_termination_report(
+            reason="tracked_orphan_cleanup", actions=tuple(actions)
+        ),
+    )
+    if case == "different_report":
+        reports = tuple(
+            _guard_termination_report(reason="tracked_orphan_cleanup", actions=(row,))
+            for row in actions
+        )
+    elif case == "remaining_marker":
+        reports = (dataclasses.replace(reports[0], remaining_pgids=(101,)),)
+    monkeypatch.setattr(
+        memory_guard,
+        "_process_group_exited_or_unobservable",
+        lambda _pid, *, grace: True,
+    )
+    closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        proc=types.SimpleNamespace(returncode=0),
+        child_process=_guarded_child(),
+        tracker=memory_guard.ProcessTreeTracker(101),
+        sampler=lambda: {},
+        windows_job_cleanup=None,
+        windows_process_model=False,
+        posix_process_model=True,
+        cleanup_orphans=True,
+        guard_interrupted=False,
+        termination_wait_expired=False,
+        sampling_telemetry=_complete_sampling_telemetry(),
+        termination_reports=reports,
+        probe_grace=0.0,
+    )
+    assert closed is (case == "proven_exit"), evidence
+    assert bool(evidence["termination_action_gaps"]) is (case != "proven_exit")
+    result = memory_guard.GuardResult(
+        returncode=0,
+        violation=None,
+        peak=None,
+        peak_total=None,
+        stdout="",
+        stderr="",
+        orphaned_process_groups=(101,),
+        termination_reports=reports,
+    )
+    incident = memory_guard._incident_payload(result)
+    assert incident is not None
+    assert incident["reason"] == (
+        "orphaned_processes_cleaned"
+        if case == "proven_exit"
+        else "orphan_cleanup_incomplete"
+    )
+    assert (incident.get("orphan_cleanup_status") == "incomplete") is (
+        case != "proven_exit"
+    )
+
+
 def test_temporary_artifact_posix_closure_requires_orphan_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -621,6 +749,7 @@ def test_active_guard_marker_records_death_capsule(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     marker_dir = tmp_path / "active"
+    monkeypatch.setattr(process_model, "process_started_at_ns", lambda pid: 100)
 
     token, marker = memory_guard._write_active_guard_marker(
         os.getpid(),
@@ -631,9 +760,11 @@ def test_active_guard_marker_records_death_capsule(
 
     assert marker.parent == marker_dir
     payload = json.loads(marker.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["pid"] == os.getpid()
     assert payload["token"] == token
+    assert payload["guard_process"] == {"pid": os.getpid(), "started_at_ns": 100}
+    assert payload["child_launch_state"] == "not_started"
     assert payload["command"] == ["python", "-c", "print('ok')"]
     assert payload["cwd"] == str(tmp_path.resolve(strict=False))
     assert payload["status"] == "guard_starting"
@@ -653,11 +784,13 @@ def test_active_guard_marker_records_death_capsule(
         marker,
         token,
         status="child_running",
-        child_process={"pid": 123, "command": ["python"]},
+        child_launch_state="recorded",
+        child_process={"pid": 123, "started_at_ns": 200, "command": ["python"]},
     )
     updated = json.loads(marker.read_text(encoding="utf-8"))
     assert updated["status"] == "child_running"
     assert updated["child_process"]["pid"] == 123
+    assert updated["child_process"]["started_at_ns"] == 200
 
 
 def test_new_guard_preserves_prior_custody_records(tmp_path: Path) -> None:
@@ -692,7 +825,8 @@ def test_new_guard_preserves_prior_custody_records(tmp_path: Path) -> None:
     )
 
     assert new_marker not in prior
-    assert set(marker_dir.iterdir()) == {*prior, new_marker}
+    assert set(marker_dir.glob("*.json")) == {*prior, new_marker}
+    assert set(marker_dir.glob("*.lock")) == {new_marker.with_suffix(".lock")}
     assert {path: path.read_bytes() for path in prior} == prior
 
 
@@ -947,12 +1081,154 @@ def test_timeout_sampler_uses_bounded_windows_snapshot_only_for_default_sampler(
     )
 
 
+def test_custody_ancestry_freezes_live_births_and_request_admission():
+    sample = memory_guard.ProcessSample
+    tracker = memory_guard.ProcessTreeTracker(100)
+    # Deliberately leaf-first: lineage cannot depend on sampler row ordering.
+    samples = {
+        300: sample(300, 200, 10, "compiler", pgid=300, started_at_ns=3000),
+        200: sample(200, 100, 10, "batch", pgid=200, started_at_ns=2000),
+        100: sample(100, 1, 10, "suite", pgid=100, started_at_ns=1000),
+    }
+    tracker.update(samples, observed_at_ns=100)
+    record = tracker.custody_ancestry_payload({300: samples[300]})[0]
+    assert record["admitted_at_ns"] == 100
+    assert record["ancestors"] == [
+        {"pid": 200, "started_at_ns": 2000},
+        {"pid": 100, "started_at_ns": 1000},
+    ]
+    reparented = {300: sample(300, 1, 10, "compiler", pgid=300, started_at_ns=3000)}
+    tracker.update(reparented, observed_at_ns=200)
+    assert tracker.custody_ancestry_payload(reparented) == [record]
+    assert tracker.custody_ancestry_payload(reparented, excluded_roots={200}) == []
+    degraded = {300: sample(300, 1, 10, "compiler", pgid=300)}
+    tracker.update(degraded, observed_at_ns=300)
+    assert tracker.custody_ancestry_payload(degraded) == []
+    assert tracker.custody_ancestry_payload(reparented) == [record]
+    reused = {300: sample(300, 1, 10, "unrelated", pgid=300, started_at_ns=3001)}
+    tracker.update(reused, observed_at_ns=400)
+    assert tracker.custody_ancestry_payload(reused) == []
+
+
+@pytest.mark.parametrize("leaf_first", [False, True])
+def test_stale_parent_birth_cannot_admit_membership_or_request_ancestry(leaf_first):
+    sample = memory_guard.ProcessSample
+    tracker = memory_guard.ProcessTreeTracker(100)
+    rows = [
+        sample(100, 1, 10, "suite", started_at_ns=1000),
+        sample(200, 100, 10, "batch", started_at_ns=2000),
+        sample(300, 200, 10, "compiler", started_at_ns=3000),
+        sample(400, 300, 10, "older unrelated", started_at_ns=2500),
+        sample(500, 400, 10, "unrelated child", started_at_ns=4000),
+    ]
+    samples = {row.pid: row for row in (reversed(rows) if leaf_first else rows)}
+    assert tracker.update(samples, observed_at_ns=100) == {100, 200, 300}
+    assert memory_guard.watched_pids(samples, 100) == {100, 200, 300}
+    assert memory_guard.total_rss(samples, root_pid=100).rss_kb == 30
+    assert tracker.custody_identities({400, 500}) == {}
+    assert (
+        tracker.custody_ancestry_payload({400: samples[400], 500: samples[500]}) == []
+    )
+    assert tracker.custody_ancestry_payload({300: samples[300]})[0]["ancestors"] == [
+        {"pid": 200, "started_at_ns": 2000},
+        {"pid": 100, "started_at_ns": 1000},
+    ]
+
+
+@pytest.mark.parametrize(
+    "parent_birth,child_birth,admitted",
+    [
+        (1000, 1000, True),
+        (1000, 1001, True),
+        (1001, 1000, False),
+        (None, 1000, False),
+        (1000, None, False),
+        (0, 1000, False),
+        (1000, 0, False),
+        (-1, 1000, False),
+        (1000, -1, False),
+        (True, 1000, False),
+        (1, True, False),
+        (1000.0, 1000, False),
+        (1000, 1000.0, False),
+        ("1000", 1000, False),
+        (1000, "1000", False),
+    ],
+)
+def test_new_custody_edge_requires_ordered_exact_births(
+    parent_birth, child_birth, admitted
+):
+    sample = memory_guard.ProcessSample
+    tracker = memory_guard.ProcessTreeTracker(100)
+    samples = {
+        200: sample(200, 100, 10, "worker", started_at_ns=child_birth),
+        100: sample(100, 1, 10, "suite", started_at_ns=parent_birth),
+    }
+    assert tracker.update(samples, observed_at_ns=100) == (
+        {100, 200} if admitted else {100}
+    )
+    assert memory_guard.watched_pids(samples, 100) == (
+        {100, 200} if admitted else {100}
+    )
+    payload = tracker.custody_ancestry_payload({200: samples[200]})
+    assert bool(payload) is admitted
+
+
+def test_historical_custody_does_not_create_an_impossible_new_parent_edge():
+    sample = memory_guard.ProcessSample
+    # Explicitly adopted members can predate the command root. Their historical
+    # membership is authoritative, but a stale PPID cannot manufacture ancestry.
+    tracker = memory_guard.ProcessTreeTracker(
+        100,
+        known_pids={200},
+        known_identities={200: memory_guard.ProcessIdentity(1000)},
+    )
+    samples = {
+        100: sample(100, 1, 10, "new command", started_at_ns=2000),
+        200: sample(200, 100, 10, "adopted worker", started_at_ns=1000),
+    }
+    assert tracker.update(samples, observed_at_ns=100) == {100, 200}
+    assert tracker.custody_ancestry_payload({200: samples[200]}) == []
+
+
+def test_custody_ancestry_stays_cut_after_suite_adopted_daemon_exits():
+    sample = memory_guard.ProcessSample
+    tracker = memory_guard.ProcessTreeTracker(100)
+    samples = {
+        100: sample(100, 1, 10, "suite", started_at_ns=1000),
+        200: sample(200, 100, 10, "batch", started_at_ns=2000),
+        300: sample(300, 200, 10, "daemon", started_at_ns=3000),
+        400: sample(400, 300, 10, "compiler", started_at_ns=4000),
+    }
+    tracker.update(samples, observed_at_ns=100)
+    tracker.cut_ancestry_at(
+        {300: memory_guard.ProcessIdentity(3000)}, observed_at_ns=110
+    )
+    assert tracker.custody_ancestry_payload({300: samples[300]}) == []
+    assert tracker.custody_ancestry_payload({400: samples[400]})[0]["ancestors"] == [
+        {"pid": 300, "started_at_ns": 3000}
+    ]
+    remaining = {400: sample(400, 1, 10, "compiler", started_at_ns=4000)}
+    tracker.update(remaining, observed_at_ns=200)
+    assert tracker.custody_ancestry_payload(remaining)[0]["ancestors"] == [
+        {"pid": 300, "started_at_ns": 3000}
+    ]
+
+
 def test_watched_pids_excludes_unobserved_reparented_process_group_members() -> None:
     samples = {
-        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
-        101: memory_guard.ProcessSample(101, 100, 20, "child", pgid=100),
-        102: memory_guard.ProcessSample(102, 1, 30, "reparented", pgid=100),
-        200: memory_guard.ProcessSample(200, 1, 999_999, "unrelated", pgid=200),
+        100: memory_guard.ProcessSample(
+            100, 1, 10, "root", pgid=100, started_at_ns=1000
+        ),
+        101: memory_guard.ProcessSample(
+            101, 100, 20, "child", pgid=100, started_at_ns=2000
+        ),
+        102: memory_guard.ProcessSample(
+            102, 1, 30, "reparented", pgid=100, started_at_ns=1000
+        ),
+        200: memory_guard.ProcessSample(
+            200, 1, 999_999, "unrelated", pgid=200, started_at_ns=1000
+        ),
     }
 
     assert memory_guard.watched_pids(samples, 100) == {100, 101}
@@ -1575,6 +1851,7 @@ def test_protected_process_groups_include_external_codex_descendant_not_owned_ch
             500_000,
             "/Applications/Codex.app/Contents/MacOS/Codex",
             pgid=100,
+            started_at_ns=1000,
         ),
         101: memory_guard.ProcessSample(
             101,
@@ -1582,6 +1859,7 @@ def test_protected_process_groups_include_external_codex_descendant_not_owned_ch
             10_000,
             "/bin/zsh -l",
             pgid=101,
+            started_at_ns=2000,
         ),
         777: memory_guard.ProcessSample(
             777,
@@ -1589,6 +1867,7 @@ def test_protected_process_groups_include_external_codex_descendant_not_owned_ch
             250_000,
             "/Users/adpena/Projects/molt/target/dev-fast/molt-backend",
             pgid=777,
+            started_at_ns=3000,
         ),
         999: memory_guard.ProcessSample(
             999,
@@ -1596,6 +1875,7 @@ def test_protected_process_groups_include_external_codex_descendant_not_owned_ch
             30_000,
             "python tools/memory_guard.py -- pytest",
             pgid=999,
+            started_at_ns=2000,
         ),
         200: memory_guard.ProcessSample(
             200,
@@ -1603,6 +1883,7 @@ def test_protected_process_groups_include_external_codex_descendant_not_owned_ch
             250_000,
             "/Users/adpena/Projects/molt/target/dev-fast/molt-backend",
             pgid=200,
+            started_at_ns=3000,
         ),
     }
 
@@ -1630,6 +1911,7 @@ def test_protected_process_groups_include_external_claude_descendant_not_owned_c
             500_000,
             "claude --dangerously-skip-permissions",
             pgid=100,
+            started_at_ns=1000,
         ),
         101: memory_guard.ProcessSample(
             101,
@@ -1637,6 +1919,7 @@ def test_protected_process_groups_include_external_claude_descendant_not_owned_c
             10_000,
             "/bin/zsh -c source /Users/adpena/.claude/shell-snapshots/snapshot-zsh",
             pgid=101,
+            started_at_ns=2000,
         ),
         777: memory_guard.ProcessSample(
             777,
@@ -1644,6 +1927,7 @@ def test_protected_process_groups_include_external_claude_descendant_not_owned_c
             250_000,
             "/Users/adpena/Projects/molt/target/dev-fast/molt-backend",
             pgid=777,
+            started_at_ns=3000,
         ),
         999: memory_guard.ProcessSample(
             999,
@@ -1651,6 +1935,7 @@ def test_protected_process_groups_include_external_claude_descendant_not_owned_c
             30_000,
             "python tools/memory_guard.py -- pytest",
             pgid=999,
+            started_at_ns=1000,
         ),
         200: memory_guard.ProcessSample(
             200,
@@ -1658,6 +1943,7 @@ def test_protected_process_groups_include_external_claude_descendant_not_owned_c
             250_000,
             "/Users/adpena/Projects/molt/target/dev-fast/molt-backend",
             pgid=200,
+            started_at_ns=2000,
         ),
     }
 
@@ -2029,9 +2315,15 @@ def test_terminate_watched_processes_never_kills_learned_group_peer(
         pytest.skip("requires POSIX process custody")
     tracker = process_custody.ProcessTreeTracker(100)
     samples = {
-        100: process_custody.ProcessSample(100, 1, 10, "root", pgid=100),
-        101: process_custody.ProcessSample(101, 100, 20, "child", pgid=777),
-        200: process_custody.ProcessSample(200, 1, 999, "unrelated", pgid=777),
+        100: process_custody.ProcessSample(
+            100, 1, 10, "root", pgid=100, started_at_ns=100
+        ),
+        101: process_custody.ProcessSample(
+            101, 100, 20, "child", pgid=777, started_at_ns=101
+        ),
+        200: process_custody.ProcessSample(
+            200, 1, 999, "unrelated", pgid=777, started_at_ns=200
+        ),
     }
     assert tracker.update(samples) == {100, 101}
     sent_groups: list[tuple[int, int]] = []
@@ -2151,9 +2443,13 @@ def test_terminate_watched_processes_never_kills_host_control_plane_group(
 
 def test_find_rss_violation_ignores_unrelated_processes() -> None:
     samples = {
-        100: memory_guard.ProcessSample(100, 1, 10, "root"),
-        101: memory_guard.ProcessSample(101, 100, 26_000_000, "child"),
-        200: memory_guard.ProcessSample(200, 1, 40_000_000, "unrelated"),
+        100: memory_guard.ProcessSample(100, 1, 10, "root", started_at_ns=1000),
+        101: memory_guard.ProcessSample(
+            101, 100, 26_000_000, "child", started_at_ns=2000
+        ),
+        200: memory_guard.ProcessSample(
+            200, 1, 40_000_000, "unrelated", started_at_ns=1000
+        ),
     }
 
     violation = memory_guard.find_rss_violation(
@@ -2169,9 +2465,13 @@ def test_find_rss_violation_ignores_unrelated_processes() -> None:
 
 def test_find_rss_violation_returns_highest_descendant() -> None:
     samples = {
-        100: memory_guard.ProcessSample(100, 1, 10, "root"),
-        101: memory_guard.ProcessSample(101, 100, 28_000_000, "smaller"),
-        102: memory_guard.ProcessSample(102, 100, 29_000_000, "larger"),
+        100: memory_guard.ProcessSample(100, 1, 10, "root", started_at_ns=1000),
+        101: memory_guard.ProcessSample(
+            101, 100, 28_000_000, "smaller", started_at_ns=2000
+        ),
+        102: memory_guard.ProcessSample(
+            102, 100, 29_000_000, "larger", started_at_ns=2000
+        ),
     }
 
     violation = memory_guard.find_rss_violation(
@@ -2185,10 +2485,18 @@ def test_find_rss_violation_returns_highest_descendant() -> None:
 
 def test_find_rss_violation_catches_aggregate_process_tree_rss() -> None:
     samples = {
-        100: memory_guard.ProcessSample(100, 1, 10, "root", pgid=100),
-        101: memory_guard.ProcessSample(101, 100, 15_000_000, "child-a", pgid=100),
-        102: memory_guard.ProcessSample(102, 100, 15_000_000, "child-b", pgid=100),
-        200: memory_guard.ProcessSample(200, 1, 40_000_000, "unrelated", pgid=200),
+        100: memory_guard.ProcessSample(
+            100, 1, 10, "root", pgid=100, started_at_ns=1000
+        ),
+        101: memory_guard.ProcessSample(
+            101, 100, 15_000_000, "child-a", pgid=100, started_at_ns=2000
+        ),
+        102: memory_guard.ProcessSample(
+            102, 100, 15_000_000, "child-b", pgid=100, started_at_ns=2000
+        ),
+        200: memory_guard.ProcessSample(
+            200, 1, 40_000_000, "unrelated", pgid=200, started_at_ns=1000
+        ),
     }
 
     violation = memory_guard.find_rss_violation(
@@ -2848,6 +3156,7 @@ def test_run_guarded_observed_rss_violation_remains_fail_closed_after_timeout(
 def test_run_guarded_binds_root_identity_before_first_sampler(
     monkeypatch: pytest.MonkeyPatch,
     fake_popen_without_windows_job: None,
+    tmp_path: Path,
 ) -> None:
     root_pid = 6262
 
@@ -2885,14 +3194,20 @@ def test_run_guarded_binds_root_identity_before_first_sampler(
     )
     monkeypatch.setattr(memory_guard, "terminate_watched_processes", fake_terminate)
 
+    def first_snapshot():
+        (marker,) = (tmp_path / "active").glob("guard-*.json")
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        assert payload["child_launch_state"] == "recorded"
+        assert payload["child_process"]["started_at_ns"] == 987_654_300
+        raise RuntimeError("first snapshot failed")
+
     with pytest.raises(RuntimeError, match="first snapshot failed"):
         memory_guard.run_guarded(
             ["fake-python"],
             max_rss_kb=1_000_000,
             poll_interval=0.01,
-            sampler=lambda: (_ for _ in ()).throw(
-                RuntimeError("first snapshot failed")
-            ),
+            sampler=first_snapshot,
+            env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path)},
         )
 
     tracker = reports[0]["tracker"]
@@ -2900,6 +3215,39 @@ def test_run_guarded_binds_root_identity_before_first_sampler(
     assert tracker.custody_identities({root_pid}) == {
         root_pid: memory_guard.ProcessIdentity(987_654_300)
     }
+
+
+def test_run_guarded_does_not_spawn_without_durable_launch_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    update = memory_guard.update_active_guard_marker
+
+    def fail_pending(path, token, *, status, **fields):
+        if status == "spawn_pending":
+            return False
+        return update(path, token, status=status, **fields)
+
+    spawned = []
+
+    def unexpected_spawn(*args, **kwargs):
+        spawned.append(True)
+        raise AssertionError("child started without marker custody")
+
+    _patch_guard_popen_without_windows_job(monkeypatch, unexpected_spawn)
+    monkeypatch.setattr(memory_guard, "update_active_guard_marker", fail_pending)
+    with pytest.raises(RuntimeError, match="child launch boundary"):
+        memory_guard.run_guarded(
+            ["fake-python"],
+            max_rss_kb=1_000_000,
+            poll_interval=0.01,
+            env={**os.environ, "MOLT_MEMORY_GUARD_STATE_ROOT": str(tmp_path)},
+        )
+    assert spawned == []
+    (marker,) = (tmp_path / "active").glob("guard-*.json")
+    payload = json.loads(marker.read_text(encoding="utf-8"))
+    assert payload["child_launch_state"] == "not_started"
+    assert payload["child_process"] is None
 
 
 def test_run_guarded_persistent_sampler_failure_reaps_owned_child_handle(
@@ -3352,6 +3700,234 @@ def test_reaped_root_cleanup_composes_with_scratch_closure(
         )
 
 
+@pytest.mark.parametrize("target_kind", ["process_group", "process"])
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "delayed_exit",
+        "killed",
+        "survivor",
+        "sample_survivor_after_probe",
+        "sampler_missing_only",
+        "reused_at_escalation",
+        "reused_at_terminal",
+        "unowned_member",
+        "protected_member",
+        "escalation_sample_failure",
+        "terminal_sample_failure",
+        "terminal_probe_failure",
+        "signal_failure",
+        "final_group_live",
+        "final_sample_failure",
+    ],
+)
+def test_escalation_reconciles_only_proven_terminal_exit(
+    monkeypatch: pytest.MonkeyPatch, target_kind: str, outcome: str
+) -> None:
+    # Real tracker, admission, signal-time custody, report and closure; only the
+    # OS boundary is controlled. No signal can reach a real process.
+    monkeypatch.setattr(
+        process_custody,
+        "os",
+        types.SimpleNamespace(name="posix", getpid=lambda: 999, getpgrp=lambda: 999),
+    )
+    custody_signal = types.SimpleNamespace(**vars(signal))
+    custody_signal.SIGKILL = 9
+    monkeypatch.setattr(process_custody, "signal", custody_signal)
+    root = process_custody.ProcessSample(
+        101, 999, 10, "python root.py", pgid=101, started_at_ns=11
+    )
+    child = process_custody.ProcessSample(
+        202, 101, 20, "python child.py", pgid=101, started_at_ns=22
+    )
+    tracker = process_custody.ProcessTreeTracker(101)
+    tracker.update({101: root, 202: child})
+    escaped = target_kind == "process"
+    live = {202: dataclasses.replace(child, ppid=1, pgid=202 if escaped else 101)}
+    target = 202 if escaped else 101
+    probes = 0
+    signals: list[tuple[str, int, int]] = []
+    closure_started = False
+
+    def sample() -> dict[int, process_custody.ProcessSample]:
+        if closure_started and outcome == "final_sample_failure":
+            raise OSError("final snapshot unavailable")
+        if probes == 1 and outcome == "escalation_sample_failure":
+            raise OSError("escalation snapshot unavailable")
+        if probes >= 2 and outcome == "terminal_sample_failure":
+            raise OSError("terminal snapshot unavailable")
+        return dict(live)
+
+    def send(kind: str, pid: int, signum: int):
+        signals.append((kind, pid, signum))
+        assert (kind, pid) == (target_kind, target)
+        if signum == custody_signal.SIGKILL:
+            if outcome == "signal_failure":
+                live.clear()  # A later empty sample cannot erase this failure.
+                return process_custody._termination_action(
+                    target_kind=kind,
+                    target_id=pid,
+                    signum=signum,
+                    result="failed",
+                    error="permission denied",
+                )
+            if outcome not in {"survivor", "sample_survivor_after_probe"}:
+                live.clear()
+        return process_custody._termination_action(
+            target_kind=kind, target_id=pid, signum=signum, result="sent"
+        )
+
+    monkeypatch.setattr(
+        process_custody,
+        "_send_process_group_signal_action",
+        lambda pid, signum: send("process_group", pid, signum),
+    )
+    monkeypatch.setattr(
+        process_custody,
+        "_send_pid_signal_action",
+        lambda pid, signum: send("process", pid, signum),
+    )
+
+    def probe(pid: int, *, grace: float) -> bool:
+        nonlocal probes
+        assert pid == target
+        probes += 1
+        if probes == 1:
+            # SIGTERM grace expires; the descendant can then exit before the
+            # escalation snapshot. This is the retained macOS ordering.
+            if outcome in {"delayed_exit", "sampler_missing_only"}:
+                live.clear()
+            elif outcome == "reused_at_escalation":
+                live[202] = dataclasses.replace(live[202], started_at_ns=99)
+            elif outcome in {"unowned_member", "protected_member"}:
+                if escaped:
+                    live[202] = dataclasses.replace(
+                        live[202],
+                        command="codex app-server"
+                        if outcome == "protected_member"
+                        else "peer",
+                        started_at_ns=22 if outcome == "protected_member" else 99,
+                    )
+                else:
+                    live[303] = process_custody.ProcessSample(
+                        303,
+                        1,
+                        20,
+                        "codex app-server" if outcome == "protected_member" else "peer",
+                        pgid=101,
+                        started_at_ns=33,
+                    )
+            return False
+        if outcome == "reused_at_terminal":
+            live[202] = dataclasses.replace(
+                child, ppid=1, pgid=target, started_at_ns=99
+            )
+        if outcome == "terminal_probe_failure":
+            raise OSError("kernel liveness unavailable")
+        # An empty sampler snapshot is deliberately independent of the kernel
+        # liveness oracle, including after escalation reports missing.
+        return outcome not in {"survivor", "sampler_missing_only"}
+
+    monkeypatch.setattr(process_custody, "_process_group_exited_or_unobservable", probe)
+    monkeypatch.setattr(process_custody, "_pid_exited_or_unobservable", probe)
+    final_probes: list[int] = []
+
+    def final_probe(pgid: int, *, grace: float) -> bool:
+        final_probes.append(pgid)
+        return outcome != "final_group_live"
+
+    monkeypatch.setattr(
+        memory_guard, "_process_group_exited_or_unobservable", final_probe
+    )
+    cleanup = process_custody.cleanup_tracked_orphans(
+        101, tracker=tracker, sampler=sample, grace=0.0, root_reaped=True
+    )
+    closure_started = True
+    closed, evidence = memory_guard._temporary_artifact_descendant_closure(
+        proc=types.SimpleNamespace(returncode=0),
+        child_process=_guarded_child(),
+        tracker=tracker,
+        sampler=sample,
+        windows_job_cleanup=None,
+        windows_process_model=False,
+        posix_process_model=True,
+        cleanup_orphans=True,
+        guard_interrupted=False,
+        termination_wait_expired=False,
+        sampling_telemetry=_complete_sampling_telemetry(),
+        termination_reports=cleanup.termination_reports,
+        probe_grace=0.0,
+    )
+    expected_closed = outcome in {"delayed_exit", "killed"}
+    assert closed is expected_closed, evidence
+    (report,) = cleanup.termination_reports
+    actions = [
+        a
+        for a in report.actions
+        if (a.target_kind, a.target_id) == (target_kind, target)
+    ]
+    assert actions[0].result == "still_live"  # Historical evidence is retained.
+    assert signals[0] == (target_kind, target, signal.SIGTERM)
+    terminal_proven = expected_closed or outcome in {
+        "final_group_live",
+        "final_sample_failure",
+    }
+    if terminal_proven:
+        assert actions[-1].result == "exited"
+        assert actions[-1].signal is None
+        assert report.remaining_pgids == report.remaining_pids == ()
+        assert cleanup.process_groups == (target,)
+        assert final_probes == [101]
+        assert probes == 2
+    else:
+        assert not any(action.result == "exited" for action in actions)
+        assert target in (report.remaining_pids if escaped else report.remaining_pgids)
+        assert cleanup.process_groups == ()
+        assert evidence["termination_action_gaps"]
+    if outcome == "delayed_exit":
+        assert actions[1].result == "missing"
+        assert signals == [(target_kind, target, signal.SIGTERM)]
+    elif outcome in {
+        "reused_at_escalation",
+        "unowned_member",
+        "protected_member",
+        "escalation_sample_failure",
+    }:
+        assert signals == [(target_kind, target, signal.SIGTERM)]
+        assert any(action.result.startswith("skipped_") for action in actions)
+    elif outcome == "final_group_live":
+        assert evidence["root_process_group_closed"] is False
+    elif outcome == "final_sample_failure":
+        assert evidence["final_sample_error"] == "OSError: final snapshot unavailable"
+    if expected_closed:
+        result = memory_guard.GuardResult(
+            returncode=0,
+            violation=None,
+            peak=None,
+            peak_total=None,
+            stdout="",
+            stderr="",
+            orphaned_process_groups=cleanup.process_groups,
+            termination_reports=cleanup.termination_reports,
+        )
+        incident = memory_guard._incident_payload(result)
+        assert incident is not None
+        assert incident["reason"] == "orphaned_processes_cleaned"
+        assert incident["process_groups"] == list(cleanup.process_groups)
+        assert "orphan_cleanup_status" not in incident
+        for override, reason in [
+            ({"timed_out": True}, "timeout"),
+            ({"guard_signal": int(signal.SIGTERM)}, "guard_interrupted"),
+        ]:
+            incident = memory_guard._incident_payload(
+                dataclasses.replace(result, **override)
+            )
+            assert incident is not None
+            assert incident["reason"] == reason
+            assert "cleanup incomplete" not in str(incident["cleanup"])
+            assert "orphan_cleanup_status" not in incident
+
+
 def test_cleanup_tracked_orphans_terminates_live_tracked_groups(monkeypatch) -> None:
     tracker = process_custody.ProcessTreeTracker(100)
     assert tracker.known_pids is not None
@@ -3475,23 +4051,48 @@ def test_cleanup_group_completion_requires_every_detected_member() -> None:
     assert (
         memory_guard._fully_completed_process_groups(
             {777: {200, 201}},
-            (completed, failed),
+            _guard_termination_report(actions=(completed, failed)),
         )
         == set()
     )
     assert memory_guard._fully_completed_process_groups(
         {777: {200, 201}},
-        (
-            completed,
-            memory_guard.GuardTerminationAction(
-                target_kind="process",
-                target_id=201,
-                signal=memory_guard.signal.SIGTERM,
-                signal_name="SIGTERM",
-                result="completed_or_missing",
-            ),
+        _guard_termination_report(
+            actions=(
+                completed,
+                memory_guard.GuardTerminationAction(
+                    target_kind="process",
+                    target_id=201,
+                    signal=memory_guard.signal.SIGTERM,
+                    signal_name="SIGTERM",
+                    result="completed_or_missing",
+                ),
+            )
         ),
     ) == {777}
+    # Neither successful group exit nor a later PID success erases a member's
+    # failed authority; remaining markers independently prevent a clean claim.
+    group_exit = dataclasses.replace(
+        completed,
+        target_kind="process_group",
+        target_id=777,
+        signal=None,
+        signal_name=None,
+        result="exited",
+    )
+    for report in (
+        _guard_termination_report(actions=(completed, failed, group_exit)),
+        _guard_termination_report(
+            actions=(failed, dataclasses.replace(completed, target_id=201), completed)
+        ),
+        dataclasses.replace(
+            _guard_termination_report(actions=(group_exit,)), remaining_pgids=(777,)
+        ),
+    ):
+        assert (
+            memory_guard._fully_completed_process_groups({777: {200, 201}}, report)
+            == set()
+        )
 
 
 def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
@@ -3509,6 +4110,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
                 pgid=100,
                 rss_kb=64,
                 command=f"{root}/.venv/bin/python3 -m pytest tests/root.py",
+                started_at_ns=100,
             ),
             200: memory_guard.ProcessSample(
                 pid=200,
@@ -3516,6 +4118,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
                 pgid=200,
                 rss_kb=64,
                 command=f"{root}/.venv/bin/python3 -m molt.cli build main.py",
+                started_at_ns=200,
             ),
             300: memory_guard.ProcessSample(
                 pid=300,
@@ -3523,6 +4126,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
                 pgid=300,
                 rss_kb=64,
                 command=f"{root}/target/dev-fast/molt-backend --ir-file ir.json",
+                started_at_ns=300,
             ),
         }
     )
@@ -3533,6 +4137,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
             pgid=50,
             rss_kb=64,
             command="/bin/zsh -l",
+            started_at_ns=50,
         ),
         200: memory_guard.ProcessSample(
             pid=200,
@@ -3540,6 +4145,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
             pgid=200,
             rss_kb=64,
             command=f"{root}/.venv/bin/python3 -m molt.cli build main.py",
+            started_at_ns=200,
         ),
         300: memory_guard.ProcessSample(
             pid=300,
@@ -3547,6 +4153,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
             pgid=300,
             rss_kb=64,
             command=f"{root}/target/dev-fast/molt-backend --ir-file ir.json",
+            started_at_ns=300,
         ),
         400: memory_guard.ProcessSample(
             pid=400,
@@ -3554,6 +4161,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
             pgid=400,
             rss_kb=64,
             command=f"{root}/.venv/bin/python3 -m pytest tests/some_test.py",
+            started_at_ns=400,
         ),
         500: memory_guard.ProcessSample(
             pid=500,
@@ -3561,6 +4169,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
             pgid=500,
             rss_kb=64,
             command=f"{root}/target/dev-fast/molt-backend --old",
+            started_at_ns=500,
         ),
         550: memory_guard.ProcessSample(
             pid=550,
@@ -3568,6 +4177,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
             pgid=550,
             rss_kb=64,
             command=f"{root}/target/dev-fast/molt-backend --untracked",
+            started_at_ns=550,
         ),
         600: memory_guard.ProcessSample(
             pid=600,
@@ -3575,6 +4185,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
             pgid=600,
             rss_kb=64,
             command="/Applications/Claude.app/Contents/MacOS/Claude",
+            started_at_ns=600,
         ),
         601: memory_guard.ProcessSample(
             pid=601,
@@ -3582,6 +4193,7 @@ def test_cleanup_repo_scoped_orphans_since_baseline_only_drains_tracked_orphans(
             pgid=600,
             rss_kb=64,
             command=f"{root}/target/dev-fast/molt-backend --protected",
+            started_at_ns=601,
         ),
     }
     terminated: list[tuple[int, int]] = []
@@ -3641,6 +4253,7 @@ def test_cleanup_repo_scoped_orphans_revalidates_identity_before_signal(
                 pgid=100,
                 rss_kb=64,
                 command=f"{root}/.venv/bin/python3 -m pytest tests/root.py",
+                started_at_ns=100,
             ),
             200: memory_guard.ProcessSample(
                 pid=200,
@@ -3648,6 +4261,7 @@ def test_cleanup_repo_scoped_orphans_revalidates_identity_before_signal(
                 pgid=200,
                 rss_kb=64,
                 command=f"{root}/target/dev-fast/molt-backend --owned",
+                started_at_ns=200,
             ),
         }
     )
@@ -3658,6 +4272,7 @@ def test_cleanup_repo_scoped_orphans_revalidates_identity_before_signal(
             pgid=200,
             rss_kb=64,
             command=f"{root}/target/dev-fast/molt-backend --owned",
+            started_at_ns=200,
         )
     }
     reused_pid = {
@@ -3667,6 +4282,7 @@ def test_cleanup_repo_scoped_orphans_revalidates_identity_before_signal(
             pgid=200,
             rss_kb=64,
             command="/Applications/Claude.app/Contents/MacOS/Claude",
+            started_at_ns=201,
         )
     }
     sampler_calls = 0
@@ -6418,7 +7034,7 @@ def test_incident_reports_incomplete_orphan_cleanup_without_false_success() -> N
 
     assert incident is not None
     assert incident["reason"] == "orphan_cleanup_incomplete"
-    assert incident["candidate_pids"] == [200]
+    assert incident["candidate_pids"] == [100, 200]
     assert "reported as cleaned" in str(incident["cleanup"])
     assert incident["termination_reports"][0]["actions"][1]["result"] == "failed"
 
@@ -6445,10 +7061,15 @@ def test_incident_reports_incomplete_orphan_cleanup_without_false_success() -> N
         ),
     ],
 )
+@pytest.mark.parametrize(
+    "history",
+    ["failed", "failed_then_completed", "skipped_then_exited", "remaining_only"],
+)
 def test_primary_incidents_preserve_incomplete_cleanup_truth(
     result_overrides: dict[str, object],
     expected_reason: str,
     report_reason: str,
+    history: str,
 ) -> None:
     report = _guard_termination_report(
         reason=report_reason,
@@ -6464,6 +7085,34 @@ def test_primary_incidents_preserve_incomplete_cleanup_truth(
             ),
         ),
     )
+    if history == "failed_then_completed":
+        report = dataclasses.replace(
+            report,
+            actions=report.actions
+            + (
+                dataclasses.replace(
+                    report.actions[0], result="completed_or_missing", error=None
+                ),
+            ),
+        )
+    elif history == "skipped_then_exited":
+        report = dataclasses.replace(
+            report,
+            actions=(
+                dataclasses.replace(
+                    report.actions[0], result="skipped_identity_mismatch", error=None
+                ),
+                dataclasses.replace(
+                    report.actions[0],
+                    result="exited",
+                    signal=None,
+                    signal_name=None,
+                    error=None,
+                ),
+            ),
+        )
+    elif history == "remaining_only":
+        report = dataclasses.replace(report, actions=(), remaining_pids=(200,))
     kwargs: dict[str, object] = {
         "returncode": 1,
         "violation": None,
@@ -6486,7 +7135,12 @@ def test_primary_incidents_preserve_incomplete_cleanup_truth(
     assert incident["process_tree_cleanup_candidate_pids"] == [200]
 
 
-def test_owned_child_handle_success_reconciles_only_direct_child_failure() -> None:
+@pytest.mark.parametrize(
+    "root_result", ["still_live", "failed", "skipped_identity_mismatch"]
+)
+def test_owned_child_handle_success_reconciles_only_direct_child_liveness(
+    root_result: str,
+) -> None:
     primary = _guard_termination_report(
         reason="timeout",
         root_pid=100,
@@ -6496,7 +7150,7 @@ def test_owned_child_handle_success_reconciles_only_direct_child_failure() -> No
                 target_id=100,
                 signal=memory_guard.signal.SIGTERM,
                 signal_name="SIGTERM",
-                result="still_live",
+                result=root_result,
             ),
             memory_guard.GuardTerminationAction(
                 target_kind="process",
@@ -6538,7 +7192,9 @@ def test_owned_child_handle_success_reconciles_only_direct_child_failure() -> No
 
     assert incident is not None
     assert incident["process_tree_cleanup_status"] == "incomplete"
-    assert incident["process_tree_cleanup_candidate_pids"] == [200]
+    assert incident["process_tree_cleanup_candidate_pids"] == (
+        [200] if root_result == "still_live" else [100, 200]
+    )
 
     fully_reaped = dataclasses.replace(
         result,
@@ -6549,11 +7205,35 @@ def test_owned_child_handle_success_reconciles_only_direct_child_failure() -> No
     )
     fully_reaped_incident = memory_guard._incident_payload(fully_reaped)
     assert fully_reaped_incident is not None
-    assert "process_tree_cleanup_status" not in fully_reaped_incident
-    assert fully_reaped_incident["cleanup"] == "terminated tracked process tree"
+    if root_result == "still_live":
+        assert "process_tree_cleanup_status" not in fully_reaped_incident
+        assert fully_reaped_incident["cleanup"] == "terminated tracked process tree"
+    else:
+        assert fully_reaped_incident["process_tree_cleanup_status"] == "incomplete"
+        assert fully_reaped_incident["process_tree_cleanup_candidate_pids"] == [100]
+    corroborating_reap = _guard_termination_report(
+        reason="tracked_orphan_cleanup",
+        root_pid=100,
+        actions=(
+            dataclasses.replace(
+                primary.actions[0], result="reaped", signal=None, signal_name=None
+            ),
+        ),
+    )
+    corroborated = memory_guard._incident_payload(
+        dataclasses.replace(
+            fully_reaped,
+            termination_reports=fully_reaped.termination_reports
+            + (corroborating_reap,),
+        )
+    )
+    assert corroborated is not None
+    assert (corroborated.get("process_tree_cleanup_status") == "incomplete") is (
+        root_result != "still_live"
+    )
 
 
-def test_completed_group_outcome_supersedes_preliminary_root_group_skip() -> None:
+def test_completed_group_outcome_preserves_protected_root_group_skip() -> None:
     report = _guard_termination_report(
         reason="tracked_orphan_cleanup",
         root_pid=100,
@@ -6589,8 +7269,55 @@ def test_completed_group_outcome_supersedes_preliminary_root_group_skip() -> Non
     incident = memory_guard._incident_payload(result)
 
     assert incident is not None
-    assert incident["reason"] == "orphaned_processes_cleaned"
-    assert "orphan_cleanup_status" not in incident
+    assert incident["reason"] == "orphan_cleanup_incomplete"
+    assert incident["orphan_cleanup_status"] == "incomplete"
+
+
+@pytest.mark.parametrize("job_completed", [False, True])
+@pytest.mark.parametrize("timed_out", [False, True])
+def test_incident_cleanup_preserves_exact_windows_job_authority(
+    job_completed: bool, timed_out: bool
+) -> None:
+    report = _guard_termination_report(
+        reason="tracked_orphan_cleanup",
+        actions=(
+            memory_guard.GuardTerminationAction(
+                target_kind="process",
+                target_id=200,
+                signal=None,
+                signal_name=None,
+                result="skipped_identity_mismatch",
+            ),
+        ),
+    )
+    result = memory_guard.GuardResult(
+        returncode=memory_guard.TIMEOUT_RETURN_CODE if timed_out else 0,
+        violation=None,
+        peak=None,
+        peak_total=None,
+        stdout="",
+        stderr="",
+        timed_out=timed_out,
+        orphaned_process_groups=(200,),
+        termination_reports=(report,),
+        windows_job_cleanup=_windows_job_cleanup(
+            active_processes=0 if job_completed else 1
+        ),
+    )
+    incident = memory_guard._incident_payload(result)
+    assert incident is not None
+    assert incident["reason"] == (
+        "timeout"
+        if timed_out
+        else "orphaned_processes_cleaned"
+        if job_completed
+        else "orphan_cleanup_incomplete"
+    )
+    assert (incident.get("orphan_cleanup_status") == "incomplete") is (
+        not job_completed
+    )
+    if timed_out:
+        assert ("cleanup incomplete" in str(incident["cleanup"])) is (not job_completed)
 
 
 def test_main_writes_samples_jsonl(tmp_path) -> None:
@@ -6667,6 +7394,47 @@ def test_main_streams_samples_without_sample_artifact(
     assert rc == 0
     assert "memory_guard sample:" in captured.err
     assert not samples_path.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX launch group identity")
+@pytest.mark.parametrize("child_rlimit_kb", [None, 2 * 1024 * 1024])
+def test_posix_launch_identity_survives_reap_before_clock_returns(
+    monkeypatch, child_rlimit_kb
+):
+    real_clock = process_custody.ChildExecutionClock
+
+    def reap_before_return(proc, started):
+        clock = real_clock(proc, started)
+        # Force the adversarial schedule through the actual sole reaper.
+        # No timing race or repeated fast-command loop is needed.
+        assert proc.wait(timeout=5) == 0
+        assert clock.done.is_set()
+        return clock
+
+    monkeypatch.setattr(process_custody, "ChildExecutionClock", reap_before_return)
+    result = memory_guard.run_guarded(
+        [getattr(sys, "_base_executable", sys.executable), "-I", "-S", "-c", "pass"],
+        max_rss_kb=1024 * 1024,
+        max_total_rss_kb=2 * 1024 * 1024,
+        capture_output=True,
+        text=False,
+        poll_interval=0.01,
+        timeout=10,
+        child_rlimit_kb=child_rlimit_kb,
+    )
+    assert result.child_returncode == 0
+    assert result.returncode == 0, result.stderr
+    assert result.infrastructure_failure is None
+    assert result.child_process is not None
+    assert result.child_process.pgid == result.child_process.pid
+    assert result.child_process.sid == result.child_process.pid
+    assert result.descendants_closed
+    assert result.temporary_artifacts is not None
+    closure = result.temporary_artifacts["closure"]
+    assert closure["authority"] == "posix-sampled-process-group"
+    assert closure["root_process_group_closed"] is True
+    assert closure["remaining_tracked_pids"] == []
+    assert closure["root_process_group_members"] == []
 
 
 @pytest.mark.parametrize("delayed_boundary", ["sampler", "scratch"])
@@ -6803,3 +7571,67 @@ def test_windows_child_clock_publishes_exit_only_after_timestamp():
     assert proc.wait(timeout=1.0) == 0
     assert clock.finished is not None
     assert proc.poll() == 0
+
+
+@pytest.mark.parametrize(
+    "parent_birth,child_birth,admitted",
+    [
+        (100, 100, True),
+        (100, 200, True),
+        (200, 100, False),
+        (None, 200, False),
+        (100, None, False),
+        (0, 200, False),
+        (100, 0, False),
+        (True, 200, False),
+        (100, True, False),
+    ],
+)
+def test_host_protection_exemptions_require_birth_fenced_current_ancestry(
+    parent_birth,
+    child_birth,
+    admitted,
+):
+    sample = memory_guard.ProcessSample
+    samples = {
+        50: sample(50, 1, 1, "codex", pgid=50),
+        100: sample(
+            100,
+            50,
+            1,
+            "python tools/memory_guard.py",
+            pgid=100,
+            started_at_ns=parent_birth,
+        ),
+        200: sample(200, 100, 1, "molt-backend", pgid=200, started_at_ns=child_birth),
+        201: sample(201, 200, 1, "worker", pgid=201, started_at_ns=300),
+        300: sample(300, 100, 1, "node node_repl.js", pgid=300, started_at_ns=300),
+    }
+    protected = process_model.protected_process_group_ids(
+        samples,
+        self_pid=100,
+        owned_pids={200, 201, 300},
+    )
+    assert {50, 100, 300} <= protected
+    assert (200 not in protected) is admitted
+    assert (201 not in protected) is admitted
+    assert process_model.has_external_host_control_plane_lineage(
+        samples,
+        200,
+        current_pid=100,
+        owned_pids={200},
+    ) is (not admitted)
+    assert process_model.has_external_host_control_plane_lineage(
+        samples,
+        300,
+        current_pid=100,
+        owned_pids={300},
+    )
+    # Protection must keep possible host lineage even when its birth is unknown.
+    assert process_model.host_control_plane_ancestor_pids(samples, 201) == {50}
+
+
+def test_untracked_watch_cannot_admit_children_of_an_absent_root():
+    sample = memory_guard.ProcessSample
+    samples = {200: sample(200, 100, 1, "stale parent pid", started_at_ns=200)}
+    assert memory_guard.watched_pids(samples, 100) == set()

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from molt import disk_capacity
+from tools.proof_queue_pkg import supervisor_generation
 from tools.proof_queue_pkg import (
     cargo_cache_custody as cache,
     cargo_output_environment,
@@ -33,6 +34,9 @@ from tools.proof_queue_pkg import (
     supervisor_custody,
     state,
 )
+
+
+pytestmark = pytest.mark.usefixtures("cargo_output_implementation_source")
 
 
 def _root(tmp_path):
@@ -101,8 +105,10 @@ def test_windows_target_budget_counts_utf16_before_creating_outputs(tmp_path):
 
 
 def test_windows_supervisor_budget_is_independent_of_payload_toolchains(tmp_path):
+    root = tmp_path / ("\U0001f600" * 35) / ("\U0001f600" * 35)
+    root.mkdir(parents=True)
     selected = layout.CargoOutputLayout(
-        tmp_path / ("\U0001f600" * 35) / ("\U0001f600" * 35)
+        tmp_path / "receipts", layout.declare_root(str(root))
     )
     selected.admit_supervisor_target_path(platform="linux")
     with pytest.raises(ValueError, match="reserved_descendant_units=128; limit=259"):
@@ -134,7 +140,7 @@ def test_actual_supervisor_provisioning_checks_target_before_launch(
         lambda *args, **kwargs: calls.append(args),
     )
     with pytest.raises(ValueError, match="shorter --cargo-output-root"):
-        supervisor_custody._provision_proof_supervisor(
+        supervisor_generation.provision(
             cwd=tmp_path, env={"CARGO_TARGET_DIR": str(target)}
         )
     assert calls == []
@@ -143,7 +149,7 @@ def test_actual_supervisor_provisioning_checks_target_before_launch(
 
 def test_actual_supervisor_provisioning_requires_absolute_explicit_target(tmp_path):
     with pytest.raises(ValueError, match="explicit absolute Cargo target"):
-        supervisor_custody._provision_proof_supervisor(
+        supervisor_generation.provision(
             cwd=tmp_path, env={"CARGO_TARGET_DIR": "relative-target"}
         )
 
@@ -153,12 +159,14 @@ def test_python_payload_rejects_supervisor_path_before_preflight_or_command(
 ):
     source = tmp_path / "source"
     source.mkdir()
-    receipts = tmp_path / ("long-control-plane-path-" * 5)
+    receipts = tmp_path / "receipts"
     receipts.mkdir()
     result = receipts / "result.json"
     request = receipts / "request.json"
     command = [sys.executable, "-c", "raise AssertionError('must not run')"]
-    envelope = admission.envelope_for_command(command)
+    output = tmp_path / ("long-control-plane-path-" * 5)
+    output.mkdir()
+    envelope = admission.envelope_for_command(command, cargo_output_root=str(output))
     assert "cargo" not in envelope["toolchains"]
     request.write_text(
         json.dumps(
@@ -188,8 +196,8 @@ def test_python_payload_rejects_supervisor_path_before_preflight_or_command(
         lambda **kwargs: calls.append("preflight"),
     )
     monkeypatch.setattr(
-        supervisor_custody,
-        "_provision_proof_supervisor",
+        supervisor_generation,
+        "provision",
         lambda **kwargs: calls.append("provision"),
     )
     assert guarded_execution.execute_guarded_request(request) == 2
@@ -255,8 +263,8 @@ def test_supervisor_boundary_rejects_root_replaced_during_preflight(
 
     monkeypatch.setattr(policy, "_ensure_run_toolchain_preflight", replace_root)
     monkeypatch.setattr(
-        supervisor_custody,
-        "_provision_proof_supervisor",
+        supervisor_generation,
+        "provision",
         lambda **kwargs: calls.append("provision"),
     )
     assert guarded_execution.execute_guarded_request(request) == 2
@@ -667,6 +675,22 @@ def test_cli_propagates_root_without_opt_in_to_disposal(tmp_path, monkeypatch, d
     assert captured["cargo_output_lifetime"] == "retain"
 
 
+@pytest.mark.parametrize("protected", ["source", "receipts"])
+def test_supervisor_store_rejects_overlapping_custody(
+    tmp_path, cargo_output_implementation_source, protected
+):
+    root = (
+        cargo_output_implementation_source if protected == "source" else _root(tmp_path)
+    )
+    metadata = (
+        root / "proof-supervisor" if protected == "receipts" else tmp_path / "receipts"
+    )
+    selected = layout.CargoOutputLayout(metadata, layout.declare_root(str(root)))
+    with pytest.raises(ValueError, match="overlaps source or receipt custody"):
+        _ = selected.supervisor_store
+    assert not (root / "proof-supervisor").exists()
+
+
 def test_supervisor_intermediates_are_external_but_executable_cas_stays_canonical(
     tmp_path,
 ):
@@ -688,7 +712,7 @@ def test_supervisor_intermediates_are_external_but_executable_cas_stays_canonica
     )
     assert env["CARGO_TARGET_DIR"] == str(target)
     assert all(
-        env[name] == str(selected.temporary) for name in ("TEMP", "TMP", "TMPDIR")
+        env[name] == str(target.parent / "tmp") for name in ("TEMP", "TMP", "TMPDIR")
     )
     binary = target / "supervisor.exe"
     binary.write_bytes(b"sealed supervisor image")
@@ -705,10 +729,12 @@ def test_external_supervisor_rejects_known_impossible_sccache_socket_prefix(
     monkeypatch.setattr(
         guarded_execution, "os", SimpleNamespace(name="posix", fsencode=os.fsencode)
     )
+    target = tmp_path / ("long-supervisor-store-" * 7) / "target"
+    target.mkdir(parents=True)
     with pytest.raises(ValueError, match="shorter --cargo-output-root"):
         guarded_execution._supervisor_build_environment(
             {"TMPDIR": "/" + "x" * 108, "RUSTC_WRAPPER": "/usr/bin/sccache"},
-            target=tmp_path,
+            target=target,
             external_placement=True,
         )
 
@@ -1008,8 +1034,8 @@ def test_oversized_metadata_image_rejects_before_preflight_or_provision(
         lambda **kwargs: calls.append("preflight"),
     )
     monkeypatch.setattr(
-        supervisor_custody,
-        "_provision_proof_supervisor",
+        supervisor_generation,
+        "provision",
         lambda **kwargs: calls.append("provision"),
     )
     assert guarded_execution.execute_guarded_request(request) == 2

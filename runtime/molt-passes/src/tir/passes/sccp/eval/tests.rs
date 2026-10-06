@@ -1,7 +1,7 @@
 //! CPython-semantic teeth for SCCP builtin and operation folding.
 
 use super::super::ConstVal;
-use super::builtins::eval_concrete_builtin;
+use super::builtins::evaluate_builtin_call;
 use super::ops::evaluate_op;
 use crate::tir::ops::OpCode;
 
@@ -57,99 +57,17 @@ fn s(v: &str) -> ConstVal {
 }
 
 fn builtin(name: &str, args: &[ConstVal]) -> Option<ConstVal> {
-    let ops: Vec<Option<&ConstVal>> = args.iter().map(Some).collect();
-    eval_concrete_builtin(name, &ops)
-}
-
-#[test]
-fn len_counts_code_points_not_bytes() {
-    assert_eq!(builtin("len", &[s("café")]), Some(ConstVal::Int(4)));
-    assert_eq!(builtin("len", &[s("héllo")]), Some(ConstVal::Int(5)));
-    assert_eq!(builtin("len", &[s("a😀b")]), Some(ConstVal::Int(3)));
-    assert_eq!(builtin("len", &[s("abc")]), Some(ConstVal::Int(3)));
-}
-
-#[test]
-fn str_repr_fold_matches_cpython_or_refuses() {
-    for v in [
-        0.0_f64,
-        -0.0,
-        1.5,
-        100.0,
-        0.1,
-        1234.5678,
-        0.0001,
-        9.5e15,
-        f64::from_bits(0x4289368ec8725340),
-        1e-5_f64,
-        1e16,
-        1e17,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        f64::NAN,
-    ] {
-        assert_eq!(
-            builtin("str", &[ConstVal::Float(v)]),
-            None,
-            "str({v}) must defer"
-        );
-        assert_eq!(
-            builtin("repr", &[ConstVal::Float(v)]),
-            None,
-            "repr({v}) must defer"
-        );
-    }
-
-    for (input, expected) in [
-        ("abc", "'abc'"),
-        ("a b c", "'a b c'"),
-        ("a\"b", "'a\"b'"),
-        ("x!@#$%", "'x!@#$%'"),
-    ] {
-        assert_eq!(
-            builtin("repr", &[s(input)]),
-            Some(ConstVal::Str(expected.to_string())),
-            "repr({input:?})"
-        );
-    }
-    for input in ["it's", "a\\b", "a\nb", "café"] {
-        assert_eq!(
-            builtin("repr", &[s(input)]),
-            None,
-            "repr({input:?}) must defer"
-        );
-    }
-    assert_eq!(builtin("str", &[s("café")]), None);
-}
-
-#[test]
-fn builtin_argument_forms_reject_missing_and_extra_operands() {
-    let int = ConstVal::Int(2);
-    let cases = vec![
-        ("len", vec![s("abc")]),
-        ("abs", vec![int.clone()]),
-        ("repr", vec![int.clone()]),
-        ("chr", vec![int.clone()]),
-        ("ord", vec![s("a")]),
-        ("hex", vec![int.clone()]),
-        ("oct", vec![int.clone()]),
-        ("bin", vec![int.clone()]),
-        ("sum", vec![ConstVal::Tuple(vec![int.clone()].into())]),
-        ("min", vec![int.clone(), int.clone()]),
-        ("max", vec![int.clone(), int.clone()]),
-    ];
-    for (name, args) in cases {
-        assert!(builtin(name, &args).is_some(), "valid {name} {args:?}");
-        assert_eq!(builtin(name, &args[..args.len() - 1]), None, "short {name}");
-        let mut extra = args;
-        extra.push(ConstVal::Int(999));
-        assert_eq!(builtin(name, &extra), None, "extra {name}");
-    }
-    for count in 0..=4 {
-        let args = vec![int.clone(); count];
-        assert_eq!(builtin("range_new", &args).is_some(), count == 3);
-        assert_eq!(builtin("range", &args), None);
-    }
+    use crate::tir::ops::{AttrDict, AttrValue, Dialect, TirOp};
+    use crate::tir::values::ValueId;
+    let op = TirOp {
+        dialect: Dialect::Molt,
+        opcode: OpCode::CallBuiltin,
+        operands: (0..args.len()).map(|index| ValueId(index as u32)).collect(),
+        results: vec![ValueId(args.len() as u32)],
+        attrs: AttrDict::from([("name".into(), AttrValue::Str(name.into()))]),
+        source_span: None,
+    };
+    evaluate_builtin_call(&op, &args.iter().map(Some).collect::<Vec<_>>())
 }
 
 #[test]
@@ -174,47 +92,6 @@ fn opcode_evaluator_uses_generated_operand_and_result_admission() {
                 "{opcode:?}/{count}"
             );
         }
-    }
-}
-
-#[test]
-fn integer_magnitude_folds_cover_the_signed_minimum_without_overflow() {
-    assert_eq!(
-        builtin("hex", &[ConstVal::Int(i64::MIN)]),
-        Some(s("-0x8000000000000000"))
-    );
-    assert_eq!(
-        builtin("oct", &[ConstVal::Int(i64::MIN)]),
-        Some(s("-0o1000000000000000000000"))
-    );
-    assert_eq!(
-        builtin("bin", &[ConstVal::Int(i64::MIN)]),
-        Some(s(&format!("-0b1{}", "0".repeat(63))))
-    );
-    assert_eq!(builtin("abs", &[ConstVal::Int(i64::MIN)]), None);
-}
-
-#[test]
-fn float_min_max_preserve_python_selected_operand_bits() {
-    let nan = f64::from_bits(0x7ff8_0000_0000_0042);
-    for name in ["min", "max"] {
-        for (left, right, expected) in [
-            (nan, 1.0, nan.to_bits()),
-            (1.0, nan, 1.0_f64.to_bits()),
-            (-0.0, 0.0, (-0.0_f64).to_bits()),
-            (0.0, -0.0, 0.0_f64.to_bits()),
-        ] {
-            let Some(ConstVal::Float(value)) =
-                builtin(name, &[ConstVal::Float(left), ConstVal::Float(right)])
-            else {
-                panic!("valid {name} must fold");
-            };
-            assert_eq!(value.to_bits(), expected, "{name}({left:?}, {right:?})");
-        }
-        assert_eq!(
-            builtin(name, &[ConstVal::Float(2.0), ConstVal::Float(1.0)]),
-            Some(ConstVal::Float(if name == "min" { 1.0 } else { 2.0 }))
-        );
     }
 }
 
@@ -430,4 +307,68 @@ fn arithmetic_never_embeds_host_selected_nan_payloads() {
         super::ops::evaluate_op(OpCode::Add, &[Some(&values[0]), Some(&values[1])]),
         Some(ConstVal::Float(4.0))
     );
+}
+
+#[test]
+fn public_builtin_constant_arguments_never_prove_callee_identity() {
+    let values = [
+        s("abc"),
+        ConstVal::Int(2),
+        ConstVal::Float(-0.0),
+        ConstVal::Tuple(vec![ConstVal::Int(1)].into()),
+    ];
+    for name in [
+        "len",
+        "abs",
+        "repr",
+        "chr",
+        "ord",
+        "hex",
+        "oct",
+        "bin",
+        "sum",
+        "min",
+        "max",
+        "range_new",
+    ] {
+        for value in &values {
+            for count in 0..=3 {
+                assert_eq!(
+                    builtin(name, &vec![value.clone(); count]),
+                    None,
+                    "{name}/{count}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn explicit_range_primitive_retains_constant_domain_without_public_name_folding() {
+    use crate::tir::ops::{AttrDict, AttrValue, Dialect, TirOp};
+    use crate::tir::values::ValueId;
+    for step in [-1, 0, 1] {
+        let values = [ConstVal::Int(0), ConstVal::Int(3), ConstVal::Int(step)];
+        let mut op = TirOp {
+            dialect: Dialect::Molt,
+            opcode: OpCode::CallBuiltin,
+            operands: vec![ValueId(0), ValueId(1), ValueId(2)],
+            results: vec![ValueId(3)],
+            attrs: AttrDict::from([("_original_kind".into(), AttrValue::Str("range_new".into()))]),
+            source_span: None,
+        };
+        assert_eq!(
+            evaluate_builtin_call(&op, &values.iter().map(Some).collect::<Vec<_>>()),
+            (step != 0).then_some(ConstVal::Range {
+                start: 0,
+                stop: 3,
+                step
+            })
+        );
+        op.attrs = AttrDict::from([("name".into(), AttrValue::Str("range_new".into()))]);
+        assert_eq!(
+            evaluate_builtin_call(&op, &values.iter().map(Some).collect::<Vec<_>>()),
+            None
+        );
+    }
 }

@@ -94,10 +94,13 @@ def _validate_precomputed_module_import_scan(
         != record.scan.requires_runtime_package_anchor
         or record.target_python_tag != target_python.tag
         or record.capability_config_digest != capability_config_digest
-        or _module_source._source_content_sha256(path, path.stat())
-        != record.source_sha256
     ):
         raise ValueError(f"precomputed source scan lost custody: {module_name!r}")
+    if _module_source._source_content_sha256(path) != record.source_sha256:
+        raise _module_source.PythonSourceChangedError(
+            f"precomputed source scan lost custody: {module_name!r}; "
+            f"source changed or became unavailable: {path}"
+        )
 
 
 def _merge_discovered_module_graph(
@@ -319,7 +322,7 @@ def _extend_module_graph_with_static_import_modules(
     if errors:
         return errors
     explicit_imports.update(module_names)
-    _extend_module_graph_with_closure(
+    closure = _extend_module_graph_with_closure(
         module_graph,
         scan_authorities=scan_authorities,
         entry_paths=tuple(resolved.values()),
@@ -338,6 +341,7 @@ def _extend_module_graph_with_static_import_modules(
         target_python=target_python,
         capability_config_digest=capability_config_digest,
     )
+    explicit_imports.update(closure.explicit_imports)
     return []
 
 
@@ -858,10 +862,8 @@ def _load_module_import_scan(
         tree,
         source_path=path,
         module_name=module_name,
-        is_package=is_package,
         import_scan_mode=import_scan_mode,
         target_python=target_python,
-        runtime_import_custody=runtime_import_custody,
         ast_digest_admission=ast_digest_admission,
         source=source,
     )

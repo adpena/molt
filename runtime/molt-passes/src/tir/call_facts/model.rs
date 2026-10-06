@@ -94,6 +94,7 @@ pub enum InlineWhyNot {
     Generator,
     EntryHasPredecessor,
     Closure,
+    UnownedParameterRelease,
     OverBudget,
 }
 
@@ -108,6 +109,7 @@ impl InlineWhyNot {
             Self::Generator => "Generator",
             Self::EntryHasPredecessor => "EntryHasPredecessor",
             Self::Closure => "Closure",
+            Self::UnownedParameterRelease => "UnownedParameterRelease",
             Self::OverBudget => "OverBudget",
         }
     }

@@ -3,22 +3,23 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import tomllib
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _load_workspace_manifest() -> dict[str, object]:
+def _load_workspace_manifest() -> dict[str, Any]:
     with (ROOT / "Cargo.toml").open("rb") as handle:
         return tomllib.load(handle)
 
 
-def _load_backend_manifest() -> dict[str, object]:
+def _load_backend_manifest() -> dict[str, Any]:
     with (ROOT / "runtime" / "molt-backend" / "Cargo.toml").open("rb") as handle:
         return tomllib.load(handle)
 
 
-def _load_native_backend_manifest() -> dict[str, object]:
+def _load_native_backend_manifest() -> dict[str, Any]:
     with (ROOT / "runtime" / "molt-backend-native" / "Cargo.toml").open("rb") as handle:
         return tomllib.load(handle)
 
@@ -103,8 +104,8 @@ def test_backend_manifest_keeps_wasmparser_test_only() -> None:
 
     assert "wasmparser" not in dependencies
     assert "wasm-encoder" not in dependencies
-    assert dev_dependencies["wasmparser"] == "0.252.0"
-    assert dev_dependencies["wasm-encoder"] == "0.252.0"
+    assert dev_dependencies["wasmparser"] == "0.259.0"
+    assert dev_dependencies["wasm-encoder"] == "0.259.0"
 
 
 def test_backend_manifest_uses_serde_with_derive_feature() -> None:
@@ -293,7 +294,7 @@ def test_shipping_profiles_share_one_memory_bounded_codegen_policy() -> None:
 def test_runtime_wasm_shipping_has_no_fallback_compiler_authority() -> None:
     runtime_cli = ROOT / "src" / "molt" / "cli"
     runtime_sources = "\n".join(
-        (runtime_cli / name).read_text()
+        (runtime_cli / name).read_text(encoding="utf-8")
         for name in (
             "runtime_build.py",
             "runtime_wasm_build.py",
@@ -303,11 +304,15 @@ def test_runtime_wasm_shipping_has_no_fallback_compiler_authority() -> None:
             "runtime_wasm_pair_build.py",
         )
     )
-    runtime_wasm_build = (runtime_cli / "runtime_wasm_build.py").read_text()
-    runtime_wasm_pair_build = (runtime_cli / "runtime_wasm_pair_build.py").read_text()
+    runtime_wasm_build = (runtime_cli / "runtime_wasm_build.py").read_text(
+        encoding="utf-8"
+    )
+    runtime_wasm_pair_build = (runtime_cli / "runtime_wasm_pair_build.py").read_text(
+        encoding="utf-8"
+    )
     non_native_output = (
         ROOT / "src" / "molt" / "cli" / "non_native_output.py"
-    ).read_text()
+    ).read_text(encoding="utf-8")
 
     for deleted_authority in (
         "MOLT_WASM_RUNTIME_FALLBACK_PROFILE",
@@ -342,10 +347,12 @@ def test_runtime_manifest_uses_flate2_zip_deflate_only() -> None:
 
 
 def test_runtime_net_io_cfg_requires_supported_native_socket_abi() -> None:
-    build_rs = (ROOT / "runtime" / "molt-runtime" / "build.rs").read_text()
+    build_rs = (ROOT / "runtime" / "molt-runtime" / "build.rs").read_text(
+        encoding="utf-8"
+    )
     net_stubs = (
         ROOT / "runtime" / "molt-runtime" / "src" / "async_rt" / "net_stubs.rs"
-    ).read_text()
+    ).read_text(encoding="utf-8")
 
     assert 'env::var("CARGO_CFG_TARGET_FAMILY")' in build_rs
     assert 'target_arch != "wasm32"' in build_rs
@@ -497,13 +504,13 @@ def test_cli_profile_availability_covers_every_always_linked_micro_feature() -> 
 def test_runtime_micro_tls_from_fd_stub_matches_intrinsic_arity() -> None:
     manifest_source = (
         ROOT / "runtime" / "molt-runtime" / "src" / "intrinsics" / "manifest.pyi"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     generated_source = (
         ROOT / "runtime" / "molt-runtime" / "src" / "intrinsics" / "generated.rs"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     stub_source = (
         ROOT / "runtime" / "molt-runtime" / "src" / "async_rt" / "net_stubs.rs"
-    ).read_text()
+    ).read_text(encoding="utf-8")
 
     assert (
         "def molt_asyncio_tls_client_from_fd_new(\n"
@@ -556,7 +563,9 @@ def test_runtime_manifest_avoids_url_compile_graph_for_websocket_client() -> Non
 
 
 def test_backend_ir_model_and_passes_are_split_out_of_lib_rs() -> None:
-    lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text()
+    lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text(
+        encoding="utf-8"
+    )
     manifest = _load_backend_manifest()
     dependencies = manifest["dependencies"]
 
@@ -572,7 +581,9 @@ def test_backend_native_trampoline_identity_is_split_out_of_lib_rs() -> None:
     native_backend_mod_path = (
         ROOT / "runtime" / "molt-backend-native" / "src" / "native_backend" / "mod.rs"
     )
-    lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text()
+    lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text(
+        encoding="utf-8"
+    )
 
     assert native_backend_mod_path.exists()
     # The god-file split extracted trampoline identity OUT of the lib.rs facade
@@ -580,11 +591,13 @@ def test_backend_native_trampoline_identity_is_split_out_of_lib_rs() -> None:
     # not a standalone trampolines.rs).  Assert the real current home so the
     # guard pins the actual structure rather than a renamed-away filename.
     assert "struct TrampolineKey" not in lib_rs
-    assert "struct TrampolineKey" in native_backend_mod_path.read_text()
+    assert "struct TrampolineKey" in native_backend_mod_path.read_text(encoding="utf-8")
 
 
 def test_backend_native_compile_func_is_split_out_of_lib_rs() -> None:
-    lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text()
+    lib_rs = (ROOT / "runtime" / "molt-backend" / "src" / "lib.rs").read_text(
+        encoding="utf-8"
+    )
     function_compiler_rs = (
         ROOT
         / "runtime"
@@ -608,7 +621,7 @@ def test_native_backend_codegen_failures_are_fail_closed() -> None:
         / "native_backend"
         / "function_compiler.rs",
     ]
-    combined = "\n".join(path.read_text() for path in native_sources)
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in native_sources)
 
     assert "catch_unwind" not in combined
     assert "emit_trap_stub" not in combined

@@ -83,7 +83,7 @@ pub mod hooks;
 #[cfg(feature = "l7-attestation-core")]
 pub mod l7_attestation;
 pub(crate) mod platform;
-pub(crate) mod type_slots;
+pub mod type_slots;
 
 #[cfg(all(feature = "extension-loader", not(target_arch = "wasm32")))]
 pub mod loader;
@@ -92,6 +92,10 @@ pub mod loader;
 // Test-only: never compiled into the shipped cdylib/rlib.
 #[cfg(test)]
 mod buffer_export_bench;
+
+/// A Python operation failed; its error indicator is owned by the calling boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ErrorIndicatorSet;
 
 pub use abi_types::{Py_ssize_t, PyObject, PyTypeObject};
 pub use api::memory::{

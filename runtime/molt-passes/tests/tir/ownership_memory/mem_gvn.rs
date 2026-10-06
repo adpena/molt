@@ -31,7 +31,7 @@ fn const_str(value: &str, result: ValueId) -> TirOp {
     let mut result_op = op(OpCode::ConstStr, vec![], vec![result]);
     result_op
         .attrs
-        .insert("value".into(), AttrValue::Str(value.into()));
+        .insert("s_value".into(), AttrValue::Str(value.into()));
     result_op
 }
 
@@ -78,6 +78,13 @@ fn run_fresh(func: &mut TirFunction) -> PassStats {
     run(func, &mut am)
 }
 
+/// Whether `operation` is an owned alias: a `Copy` whose result holds a
+/// reference of its own, which its lowering retains.
+fn is_owned_alias(operation: &TirOp) -> bool {
+    operation.opcode == OpCode::Copy
+        && operation.attrs.get("_original_kind") == Some(&AttrValue::Str("binding_alias".into()))
+}
+
 // ── 1. Simple same-block store-to-load forwarding ──────────────────────
 
 #[test]
@@ -104,18 +111,13 @@ fn forward_same_block_store_to_load() {
     let stats = run_fresh(&mut func);
     assert_eq!(stats.values_changed, 1, "the load is forwarded");
     let ops = &func.blocks[&func.entry_block].ops;
-    // alloc@0; const@1; store@2; the load@3 becomes IncRef(val)@3 + Copy@4 (the
-    // IncRef reproduces the owned-result +1 the load performed).
-    assert_eq!(
-        ops[3].opcode,
-        OpCode::IncRef,
-        "owned-ref acquired before the Copy"
-    );
-    assert_eq!(ops[3].operands, vec![val], "IncRef of the forwarded value");
-    assert_eq!(ops[4].opcode, OpCode::Copy, "load rewritten to Copy");
-    assert_eq!(ops[4].operands, vec![val], "copies the stored value");
-    assert_eq!(ops[4].results, vec![r], "result ValueId preserved");
-    assert!(ops[4].attrs.is_empty(), "pure SSA move — no _original_kind");
+    // alloc@0; const@1; store@2; the load@3 becomes an owned alias of the
+    // stored value: the result keeps the owned +1 the load performed, and
+    // no separate reference operation is placed.
+    assert_eq!(ops.len(), 4, "the load is rewritten in place");
+    assert!(is_owned_alias(&ops[3]), "load rewritten to an owned alias");
+    assert_eq!(ops[3].operands, vec![val], "copies the stored value");
+    assert_eq!(ops[3].results, vec![r], "result ValueId preserved");
 }
 
 #[test]
@@ -389,10 +391,9 @@ fn exact_integer_add_does_not_block_forwarding() {
         "exact I64 addition has no callback and must preserve the reaching store"
     );
     let ops = &func.blocks[&func.entry_block].ops;
-    assert_eq!(ops[6].opcode, OpCode::IncRef);
-    assert_eq!(ops[7].opcode, OpCode::Copy);
-    assert_eq!(ops[7].operands, vec![val]);
-    assert_eq!(ops[7].results, vec![loaded]);
+    assert!(is_owned_alias(&ops[6]));
+    assert_eq!(ops[6].operands, vec![val]);
+    assert_eq!(ops[6].results, vec![loaded]);
 }
 
 #[test]
@@ -494,9 +495,9 @@ fn interposed_other_offset_store_does_not_misforward() {
         "the disjoint offset-8 store preserves the offset-0 reaching value"
     );
     let ops = &func.blocks[&func.entry_block].ops;
-    assert_eq!(ops[5].opcode, OpCode::IncRef);
+    assert!(is_owned_alias(&ops[5]));
     assert_eq!(ops[5].operands, vec![v0]);
-    assert_eq!(ops[6].opcode, OpCode::Copy);
+    assert_eq!(ops[5].results, vec![r]);
 }
 
 // ── 4. Cross-block forward through a single dominating def ─────────────
@@ -554,15 +555,12 @@ fn forward_cross_block_through_dominating_store() {
         "cross-block forward through linear chain"
     );
     let bb2_ops = &func.blocks[&bb2].ops;
-    assert_eq!(
-        bb2_ops[0].opcode,
-        OpCode::IncRef,
-        "owned-ref acquired in the use block"
+    assert!(
+        is_owned_alias(&bb2_ops[0]),
+        "the result keeps its own reference in the use block"
     );
     assert_eq!(bb2_ops[0].operands, vec![val]);
-    assert_eq!(bb2_ops[1].opcode, OpCode::Copy);
-    assert_eq!(bb2_ops[1].operands, vec![val]);
-    assert_eq!(bb2_ops[1].results, vec![r]);
+    assert_eq!(bb2_ops[0].results, vec![r]);
 }
 
 // ── 5. NO forward through a MemoryPhi merge ────────────────────────────
@@ -669,18 +667,12 @@ fn redundant_load_elim_same_block() {
     let stats = run_fresh(&mut func);
     assert_eq!(stats.values_changed, 1, "the second load is redundant");
     let ops = &func.blocks[&func.entry_block].ops;
-    // load@1 stays the leader; the redundant load@2 becomes IncRef(r1)@2 +
-    // Copy(r1)->r2@3 (each owned load duplicates the +1, so r2 must too).
+    // load@1 stays the leader; the redundant load@2 becomes an owned alias
+    // of r1 (each owned load holds its own +1, so r2 still does).
     assert_eq!(ops[1].opcode, OpCode::LoadAttr, "first load is the leader");
-    assert_eq!(
-        ops[2].opcode,
-        OpCode::IncRef,
-        "second load's owned +1 is reacquired"
-    );
+    assert!(is_owned_alias(&ops[2]), "second load reuses the first");
     assert_eq!(ops[2].operands, vec![r1]);
-    assert_eq!(ops[3].opcode, OpCode::Copy, "second load reuses the first");
-    assert_eq!(ops[3].operands, vec![r1]);
-    assert_eq!(ops[3].results, vec![r2]);
+    assert_eq!(ops[2].results, vec![r2]);
 }
 
 // ── 7. Redundant-load blocked by a clobber between the two loads ───────
@@ -856,12 +848,11 @@ fn forward_through_transparent_alias() {
         "load through a transparent alias of the store target forwards"
     );
     // alloc@0; const@1; Copy(obj)->a@2; store@3; load@4
-    // → IncRef(val)@4 + Copy(val)->r@5.
+    // → an owned alias Copy(val)->r@4.
     let ops = &func.blocks[&func.entry_block].ops;
-    assert_eq!(ops[4].opcode, OpCode::IncRef);
+    assert!(is_owned_alias(&ops[4]));
     assert_eq!(ops[4].operands, vec![val]);
-    assert_eq!(ops[5].opcode, OpCode::Copy);
-    assert_eq!(ops[5].operands, vec![val]);
+    assert_eq!(ops[4].results, vec![r]);
 }
 
 #[test]
@@ -900,11 +891,9 @@ fn same_allocation_base_and_derived_views_forward_one_physical_store() {
         "class metadata does not split one admitted physical word"
     );
     let ops = &func.blocks[&func.entry_block].ops;
-    assert_eq!(ops[3].opcode, OpCode::IncRef);
+    assert!(is_owned_alias(&ops[3]));
     assert_eq!(ops[3].operands, vec![base_value]);
-    assert_eq!(ops[4].opcode, OpCode::Copy);
-    assert_eq!(ops[4].operands, vec![base_value]);
-    assert_eq!(ops[4].results, vec![loaded]);
+    assert_eq!(ops[3].results, vec![loaded]);
 }
 
 #[test]
@@ -1045,14 +1034,12 @@ fn redundant_plain_load_across_check_exception_collapses() {
         OpCode::CheckException,
         "the check is preserved"
     );
-    assert_eq!(ops[3].opcode, OpCode::IncRef, "the duplicated owned +1");
-    assert_eq!(ops[3].operands, vec![r1]);
-    assert_eq!(
-        ops[4].opcode,
-        OpCode::Copy,
+    assert!(
+        is_owned_alias(&ops[3]),
         "the second plain load collapses across the local check"
     );
-    assert_eq!(ops[4].operands, vec![r1]);
+    assert_eq!(ops[3].operands, vec![r1]);
+    assert_eq!(ops[3].results, vec![r2]);
 }
 
 // ── Unconditional production path ──────────────────────────────────────
@@ -1079,30 +1066,28 @@ fn run_forwards_without_ambient_disable_path() {
     let mut am = AnalysisManager::new();
     let stats = run(&mut func, &mut am);
     assert_eq!(stats.values_changed, 1, "production pass forwards the load");
-    assert_eq!(
-        func.blocks[&func.entry_block].ops[3].opcode,
-        OpCode::IncRef,
-        "forwarded load acquires the owned reference"
+    assert!(
+        is_owned_alias(&func.blocks[&func.entry_block].ops[3]),
+        "the forwarded load keeps its owned reference"
     );
-    assert_eq!(func.blocks[&func.entry_block].ops[4].opcode, OpCode::Copy);
 }
 
 // ── Refcount discipline (the soundness keystone) ───────────────────────
 
-/// EVERY forwarded load must be immediately preceded by an `IncRef` of the
-/// SAME source it copies. A typed-slot load returns an OWNED (+1) reference
-/// (`object_field_get_ptr_raw` unconditionally `inc_ref_bits`); a bare
-/// `Copy` would drop that +1 while the frontend's matching `DecRef` still
-/// runs → use-after-free. This test pins the `IncRef(source); Copy(source)`
-/// shape so a future "simplify to a plain Copy" regresses LOUDLY here, not
-/// as a silent heap-corruption miscompile in production.
+/// A typed-slot load returns an OWNED (+1) reference
+/// (`object_field_get_ptr_raw` unconditionally `inc_ref_bits`), and the drop
+/// plane releases the loaded result on its own. So EVERY forward of a heap
+/// value is an owned alias of its source, whose lowering retains exactly that
+/// +1. A transparent `Copy` would fold the result into its source's one
+/// reference, and a separate `IncRef` beside it would be a reference no owner
+/// releases. This test pins the owned-alias shape so a future "simplify to a
+/// plain Copy" regresses LOUDLY here, not as a silent use-after-free in
+/// production.
 #[test]
-fn every_forward_acquires_a_reference() {
-    // Two forwards in one block (a store-to-load AND a redundant-load), so
-    // the descending-index apply order is exercised too:
-    //   obj = alloc(16); store(obj,val,0); r1 = load(obj,0);
-    //   r2 = load(obj,0); sum=r1+r2
-    // r1 forwards from the store; r2 is redundant against r1.
+fn every_forward_keeps_its_own_reference() {
+    // Distinct slots expose both forwarding authorities in the same fixture:
+    // slot 0 has a reaching store; slot 8 has only a prior load witness.
+    // Both replacements must mint an independent owned alias.
     let mut func = TirFunction::new(
         "f".into(),
         vec![],
@@ -1112,6 +1097,7 @@ fn every_forward_acquires_a_reference() {
     let obj = func.fresh_value();
     let val = func.fresh_value();
     let r1 = func.fresh_value();
+    let leader = func.fresh_value();
     let r2 = func.fresh_value();
     let sum = func.fresh_value();
     {
@@ -1120,29 +1106,63 @@ fn every_forward_acquires_a_reference() {
         entry.ops.push(const_str("stored", val));
         entry.ops.push(store(obj, val, 0));
         entry.ops.push(load(obj, 0, r1));
-        entry.ops.push(load(obj, 0, r2));
+        entry.ops.push(load(obj, 8, leader));
+        entry.ops.push(load(obj, 8, r2));
         entry.ops.push(op(OpCode::Add, vec![r1, r2], vec![sum]));
         entry.terminator = Terminator::Return { values: vec![sum] };
     }
     let stats = run_fresh(&mut func);
     assert_eq!(stats.values_changed, 2, "both loads forward");
-    assert_eq!(stats.ops_added, 2, "one IncRef inserted per forward");
+    assert_eq!(stats.ops_added, 0, "each load is rewritten in place");
 
-    // Invariant: scanning the block, every `Copy` whose result was an
-    // original load result is immediately preceded by `IncRef(sameSource)`.
     let ops = &func.blocks[&func.entry_block].ops;
-    let mut checked = 0;
-    for (i, o) in ops.iter().enumerate() {
-        if o.opcode == OpCode::Copy && (o.results == vec![r1] || o.results == vec![r2]) {
-            assert!(i >= 1, "a forwarded Copy must have a preceding op");
-            let prev = &ops[i - 1];
-            assert_eq!(prev.opcode, OpCode::IncRef, "Copy is preceded by IncRef");
-            assert_eq!(
-                prev.operands, o.operands,
-                "the IncRef acquires exactly the value the Copy forwards"
-            );
-            checked += 1;
-        }
+    assert_eq!(
+        ops[4].opcode,
+        OpCode::LoadAttr,
+        "the second slot has a real load leader"
+    );
+    assert_eq!(ops[4].results, vec![leader]);
+    assert!(
+        ops.iter().all(|o| o.opcode != OpCode::IncRef),
+        "no forward places a reference operation beside its Copy"
+    );
+    let forwarded: Vec<(ValueId, ValueId)> = ops
+        .iter()
+        .filter(|o| is_owned_alias(o))
+        .map(|o| (o.operands[0], o.results[0]))
+        .collect();
+    assert_eq!(
+        forwarded,
+        [(val, r1), (leader, r2)],
+        "each forwarded result owns a reference of its own"
+    );
+}
+
+/// A raw carrier holds no reference: its forward is a transparent `Copy`
+/// that `copy_prop` folds, beside no reference operation.
+#[test]
+fn raw_forward_stays_a_transparent_copy() {
+    let mut func = TirFunction::new(
+        "raw_forward".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let obj = func.fresh_value();
+    let val = func.fresh_value();
+    let r = func.fresh_value();
+    {
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(fixed_boxed_alloc(obj));
+        entry.ops.push(const_int(7, val));
+        entry.ops.push(store(obj, val, 0));
+        entry.ops.push(load(obj, 0, r));
+        entry.terminator = Terminator::Return { values: vec![r] };
     }
-    assert_eq!(checked, 2, "both forwarded copies validated");
+    let stats = run_fresh(&mut func);
+    assert_eq!(stats.values_changed, 1, "the load is forwarded");
+    let ops = &func.blocks[&func.entry_block].ops;
+    assert_eq!(ops.len(), 4, "no reference operation");
+    assert!(ops[3].is_plain_value_copy(), "a raw forward is transparent");
+    assert_eq!(ops[3].operands, vec![val]);
 }

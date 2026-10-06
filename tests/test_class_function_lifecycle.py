@@ -135,7 +135,7 @@ def test_only_real_code_object_dependencies_require_enclosing_cells(
 ):
     generator = SimpleTIRGenerator(target_python=(3, 12))
     body = ast.parse(expression).body
-    assert generator._collect_scope_cell_vars(body, {"x"}) == captured
+    assert generator._collect_scope_cell_vars(body, {"x"}).enclosing == captured
 
 
 @pytest.mark.parametrize(

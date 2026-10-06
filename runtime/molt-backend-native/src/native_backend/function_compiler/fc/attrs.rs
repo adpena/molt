@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::tir::simple_def_use::simple_ir_out_result;
 
 /// Single-source kind authority for [`handle_attr_op`], consulted by
 /// `op_family::FAMILY_DISPATCH_TABLE`. Mirror the `match op.kind.as_str()` arms below.
@@ -153,7 +154,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let res = builder.inst_results(call)[0];
             // The canonical boxed runtime entrypoints return exactly one owned
             // result on success for every spelling in this branch.
-            if let Some(out__) = op.out.as_ref() {
+            if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
@@ -201,7 +202,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 .call(local_callee, &[*obj, attr_ptr, attr_len]);
             let res = builder.inst_results(call)[0];
             // `molt_get_attr_special` returns one owned result on success.
-            if let Some(out__) = op.out.as_ref() {
+            if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
@@ -240,7 +241,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let call = builder.ins().call(local_callee, &[*obj, *name]);
             let res = builder.inst_results(call)[0];
             // `molt_get_attr_name` returns one owned result on success.
-            if let Some(out__) = op.out.as_ref() {
+            if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
@@ -290,7 +291,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let call = builder.ins().call(local_callee, &[*obj, *name, *default]);
             let res = builder.inst_results(call)[0];
             // `molt_get_attr_name_default` owns both lookup and default results.
-            if let Some(out__) = op.out.as_ref() {
+            if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
@@ -328,7 +329,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*obj, *name]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
+            if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
@@ -377,7 +378,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*obj, *name, *val]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
+            if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
@@ -449,7 +450,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 .ins()
                 .call(local_callee, &[*obj, attr_ptr, attr_len, *val]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
+            if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
@@ -506,7 +507,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let call = builder
                 .ins()
                 .call(local_callee, &[*obj, attr_ptr, attr_len, *val]);
-            if let Some(out_name) = op.out.as_ref() {
+            if let Some(out_name) = simple_ir_out_result(op) {
                 let res = builder.inst_results(call)[0];
                 def_var_named(&mut *builder, vars, out_name, res);
             }
@@ -562,7 +563,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 .ins()
                 .call(local_callee, &[*obj, attr_ptr, attr_len]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
+            if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
@@ -609,7 +610,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
                 .ins()
                 .call(local_callee, &[*obj, attr_ptr, attr_len]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
+            if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
@@ -647,7 +648,7 @@ pub(in crate::native_backend::function_compiler) fn handle_attr_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[*obj, *name]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
+            if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }

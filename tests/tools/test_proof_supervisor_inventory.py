@@ -16,6 +16,7 @@ from tools.proof_queue_pkg import (
     execution_custody,
     process_image_capture,
     supervisor_custody,
+    supervisor_generation,
 )
 
 
@@ -43,7 +44,7 @@ def test_supervisor_sources_follow_local_dependencies_and_workspace_inheritance(
         '[package]\nname="shared"\nversion="0.1.0"\nedition.workspace=true\n',
         encoding="utf-8",
     )
-    for name in ("build.py", "Cargo.lock"):
+    for name in ("build.py", "Cargo.lock", "protocol.json"):
         (source / name).write_text("", encoding="utf-8")
     shared_asset = shared / "src" / "schema.json"
     shared_asset.write_text("{}", encoding="utf-8")
@@ -58,6 +59,7 @@ def test_supervisor_sources_follow_local_dependencies_and_workspace_inheritance(
     assert (shared / "Cargo.toml").resolve() in paths
     assert (shared / "src" / "lib.rs").resolve() in paths
     assert shared_asset.resolve() in paths
+    assert (source / "protocol.json").resolve() in paths
     assert unrelated.resolve() not in paths
     (shared / "Cargo.toml").unlink()
     with pytest.raises(ValueError, match="Cargo manifest"):
@@ -104,19 +106,11 @@ def test_supervisor_policy_cannot_publish_nonfinite_json(tmp_path: Path) -> None
 
 @functools.lru_cache(maxsize=1)
 def _test_proof_supervisor_binary() -> Path:
-    build = (
-        Path(supervisor_custody.__file__).resolve().parents[1]
-        / "proof_supervisor"
-        / "build.py"
-    )
-    completed = run_custody_subject_process(
-        [sys.executable, str(build), "--release"],
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
+    binary, _receipt = supervisor_generation.provision(
+        cwd=Path(supervisor_custody.__file__).resolve().parents[2],
         env=proof_queue_owned_roots.native_build_environment(source=Path(__file__)),
     )
-    return Path(completed.stdout.splitlines()[-1]).resolve(strict=True)
+    return binary
 
 
 def test_supervisor_admits_exact_platform_image_without_directory_authority(

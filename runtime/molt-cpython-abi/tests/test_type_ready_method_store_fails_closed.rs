@@ -9,109 +9,57 @@
 //! marked ready while missing methods, surfacing much later as an
 //! `AttributeError` / wrong dispatch with no exec-time failure.
 //!
-//! CPython's `add_methods` (Objects/typeobject.c) propagates a `PyDict` store
-//! failure as -1 so `PyType_Ready` FAILS CLOSED. This test reproduces the store
-//! failure deterministically: it installs a runtime backend WITHOUT
-//! `register_c_function`, so `PyCFunction_NewEx` falls back to a raw,
-//! non-bridge-registered object that `PyDict_SetItem` cannot store ("unresolved
-//! value") — the exact witness failure shape. It asserts `PyType_Ready` returns
-//! -1 with a pending exception (never READY-with-dropped-method).
-//!
-//! Pre-fix this test FAILS (rc == 0, no exception, method missing); post-fix it
-//! PASSES (rc == -1, exception pending). Dedicated test binary so it owns a
-//! fresh runtime-hooks `OnceLock` with the `register_c_function` stub intact.
+//! CPython's add_methods propagates a dictionary-store error. The fixture
+//! supplies normal native-callable crossing and dictionary ownership, then
+//! rejects the declared "reduce" entry in the dict_mutate hook. An attempt counter
+//! proves readiness failed at that store, rather than at missing fake runtime
+//! capabilities before method publication.
 
 #![allow(non_snake_case)]
 
 mod support;
 
 use molt_cpython_abi::abi_types::*;
-use molt_cpython_abi::hooks::{BorrowedHandleResult, RuntimeHooks};
-use molt_lang_obj_model::MoltObject;
-use std::collections::HashMap;
+use molt_cpython_abi::hooks::RuntimeHooks;
 use std::os::raw::c_char;
 use std::ptr;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-static NEXT_HANDLE: AtomicU64 = AtomicU64::new(0x6100_0000);
-static DICTS: Mutex<Option<HashMap<u64, HashMap<u64, u64>>>> = Mutex::new(None);
+static METHOD_STORE_FAILURES: AtomicUsize = AtomicUsize::new(0);
 
-fn fresh_handle() -> u64 {
-    let address = NEXT_HANDLE.fetch_add(0x10, Ordering::Relaxed) as usize;
-    MoltObject::from_ptr(ptr::with_exposed_provenance_mut(address)).bits()
-}
-
-fn dicts() -> std::sync::MutexGuard<'static, Option<HashMap<u64, HashMap<u64, u64>>>> {
-    let mut g = DICTS.lock().unwrap();
-    if g.is_none() {
-        *g = Some(HashMap::new());
-    }
-    g
-}
-
-unsafe extern "C" fn fake_alloc_dict() -> u64 {
-    let h = fresh_handle();
-    dicts().as_mut().unwrap().insert(h, HashMap::new());
-    h
-}
-
-unsafe extern "C" fn fake_dict_set(dict_bits: u64, key_bits: u64, val_bits: u64) -> i32 {
-    if let Some(m) = dicts().as_mut().unwrap().get_mut(&dict_bits) {
-        m.insert(key_bits, val_bits);
-    }
-    0
-}
-
-unsafe extern "C" fn fake_dict_get(dict_bits: u64, key_bits: u64) -> BorrowedHandleResult {
-    match dicts()
-        .as_ref()
-        .unwrap()
-        .get(&dict_bits)
-        .and_then(|m| m.get(&key_bits).copied())
+unsafe extern "C" fn reject_method_store(
+    dict: u64,
+    key: u64,
+    value: u64,
+    delete: u8,
+    publish: Option<unsafe extern "C" fn(*mut std::ffi::c_void) -> i32>,
+    context: *mut std::ffi::c_void,
+) -> i32 {
+    let mut len = 0;
+    let bytes = unsafe { support::fake_runtime::str_data(key, &mut len) };
+    if delete == 0
+        && !bytes.is_null()
+        && unsafe { std::slice::from_raw_parts(bytes, len) } == b"reduce"
     {
-        Some(bits) => BorrowedHandleResult::ok(bits),
-        None => BorrowedHandleResult::missing(),
-    }
-}
-
-unsafe extern "C" fn fake_alloc_str(data: *const u8, len: usize) -> u64 {
-    static STR_HANDLES: Mutex<Option<HashMap<Vec<u8>, u64>>> = Mutex::new(None);
-    let bytes = if data.is_null() {
-        Vec::new()
+        METHOD_STORE_FAILURES.fetch_add(1, Ordering::Relaxed);
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_SetString(
+                (&raw mut PyExc_RuntimeError).cast(),
+                c"fixture method store rejected".as_ptr(),
+            );
+        }
+        -1
     } else {
-        unsafe { std::slice::from_raw_parts(data, len) }.to_vec()
-    };
-    let mut g = STR_HANDLES.lock().unwrap();
-    if g.is_none() {
-        *g = Some(HashMap::new());
+        unsafe { support::fake_runtime::dict_mutate(dict, key, value, delete, publish, context) }
     }
-    *g.as_mut()
-        .unwrap()
-        .entry(bytes)
-        .or_insert_with(fresh_handle)
 }
 
-unsafe extern "C" fn fake_classify_heap(_bits: u64) -> u8 {
-    0xFF
-}
-
-unsafe extern "C" fn fake_noop_ref(_bits: u64) {}
-
-/// Install a dict/str backend but deliberately leave `register_c_function` as
-/// the STUB (returns 0), so `PyCFunction_NewEx` yields a raw, non-bridge-
-/// registered object that cannot be stored in a dict.
-fn install_hooks_without_cfunction_registration() {
+fn install_hooks_with_rejected_method_store() {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.alloc_dict = fake_alloc_dict;
-    hooks.dict_set = fake_dict_set;
-    hooks.dict_get = fake_dict_get;
-    hooks.alloc_str = fake_alloc_str;
-    hooks.classify_heap = fake_classify_heap;
-    hooks.inc_ref = fake_noop_ref;
-    hooks.dec_ref = fake_noop_ref;
-    // NOTE: hooks.register_c_function is intentionally left as the stub.
-    support::prepare_abi_test_thread(hooks);
+    support::fake_runtime::wire(&mut hooks);
+    hooks.dict_mutate = reject_method_store;
+    support::prepare_runtime_class_abi_test_thread(hooks);
+    METHOD_STORE_FAILURES.store(0, Ordering::Relaxed);
 }
 
 unsafe extern "C" fn dummy_method(_self: *mut PyObject, _args: *mut PyObject) -> *mut PyObject {
@@ -129,7 +77,7 @@ fn method_def(name: &'static [u8]) -> PyMethodDef {
 
 #[test]
 fn type_ready_fails_closed_when_method_store_fails() {
-    install_hooks_without_cfunction_registration();
+    install_hooks_with_rejected_method_store();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
     let mut methods = [
@@ -141,12 +89,17 @@ fn type_ready_fails_closed_when_method_store_fails() {
             ml_doc: ptr::null(),
         },
     ];
-    let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
+    let mut tp = support::StaticType::new();
     tp.tp_name = c"scalar_store_fail".as_ptr();
     tp.tp_basicsize = std::mem::size_of::<PyObject>() as Py_ssize_t;
     tp.tp_methods = methods.as_mut_ptr();
 
-    let rc = unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(&mut tp) };
+    let rc = unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(tp.as_ptr()) };
+    assert_eq!(
+        METHOD_STORE_FAILURES.load(Ordering::Relaxed),
+        1,
+        "readiness must reach the declared method store"
+    );
 
     // The whole point of the fix: a method that cannot be stored in tp_dict must
     // FAIL PyType_Ready, not leave a "ready" type with a silently-dropped method.
@@ -167,4 +120,176 @@ fn type_ready_fails_closed_when_method_store_fails() {
         "a type whose method population failed must not be marked READY"
     );
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+}
+
+struct PublicationObservation {
+    dict: u64,
+    key: u64,
+    displaced: u64,
+    expected: Option<u64>,
+    calls: usize,
+    committed: bool,
+    owners_alive: bool,
+    reentered: bool,
+    fail: bool,
+    error_value: usize,
+}
+
+unsafe extern "C" fn observe_publication(context: *mut std::ffi::c_void) -> i32 {
+    use molt_cpython_abi::hooks::{DecodedHandleResult, DictHashSource};
+    let observation = unsafe { &mut *context.cast::<PublicationObservation>() };
+    let hooks = molt_cpython_abi::hooks::hooks_or_stubs();
+    observation.calls += 1;
+    observation.committed = match unsafe {
+        (hooks.dict_get)(
+            observation.dict,
+            observation.key,
+            DictHashSource::Compute,
+            0,
+        )
+    }
+    .decode()
+    {
+        DecodedHandleResult::Ok(value) => observation.expected == Some(value),
+        DecodedHandleResult::Missing => observation.expected.is_none(),
+        DecodedHandleResult::Error => false,
+    };
+    observation.owners_alive = unsafe {
+        (hooks.ref_count)(observation.key) > 0 && (hooks.ref_count)(observation.displaced) == 1
+    };
+    // Mutating this same dictionary in the callback also proves that the
+    // fixture has released its storage lock before publishing.
+    observation.reentered = unsafe {
+        (hooks.dict_mutate)(
+            observation.dict,
+            molt_lang_obj_model::MoltObject::from_int(91).bits(),
+            molt_lang_obj_model::MoltObject::from_int(92).bits(),
+            0,
+            None,
+            ptr::null_mut(),
+        ) == 0
+    };
+    if observation.fail {
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_SetString(
+                (&raw mut PyExc_RuntimeError).cast(),
+                c"publication rejected".as_ptr(),
+            );
+        }
+        let error = molt_cpython_abi::api::errors::take_current_error().unwrap();
+        observation.error_value = error.value.addr();
+        molt_cpython_abi::api::errors::restore_current_error_exact(error);
+        -1
+    } else {
+        0
+    }
+}
+
+#[test]
+fn dict_mutation_publishes_committed_storage_before_retiring_owners() {
+    use molt_cpython_abi::hooks::DecodedHandleResult;
+    install_hooks_with_rejected_method_store();
+    let hooks = molt_cpython_abi::hooks::hooks_or_stubs();
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_Clear();
+        let dict = (hooks.alloc_dict)();
+        let key = support::fake_runtime::fresh_handle();
+        let old = support::fake_runtime::fresh_handle();
+        let new = support::fake_runtime::fresh_handle();
+        assert_eq!(
+            (hooks.dict_mutate)(dict, key, old, 0, None, ptr::null_mut()),
+            0
+        );
+        (hooks.dec_ref)(key);
+        (hooks.dec_ref)(old);
+        let mut observation = PublicationObservation {
+            dict,
+            key,
+            displaced: old,
+            expected: Some(new),
+            calls: 0,
+            committed: false,
+            owners_alive: false,
+            reentered: false,
+            fail: false,
+            error_value: 0,
+        };
+        // Drop the caller's new owner only after the transaction has borrowed it.
+        assert_eq!(
+            (hooks.dict_mutate)(
+                dict,
+                key,
+                new,
+                0,
+                Some(observe_publication),
+                (&raw mut observation).cast()
+            ),
+            0
+        );
+        assert!(observation.committed && observation.owners_alive && observation.reentered);
+        assert_eq!(observation.calls, 1);
+        assert!(
+            !support::fake_runtime::contains(old),
+            "old owner retires after publication"
+        );
+        (hooks.dec_ref)(new);
+        observation.displaced = new;
+        observation.expected = None;
+        observation.fail = true;
+        assert_eq!(
+            (hooks.dict_mutate)(
+                dict,
+                key,
+                0,
+                1,
+                Some(observe_publication),
+                (&raw mut observation).cast()
+            ),
+            -1
+        );
+        assert!(observation.committed && observation.owners_alive && observation.reentered);
+        assert_eq!(observation.calls, 2);
+        assert!(!support::fake_runtime::contains(key));
+        assert!(!support::fake_runtime::contains(new));
+        let error = molt_cpython_abi::api::errors::take_current_error().unwrap();
+        assert_eq!(error.exc_type, (&raw mut PyExc_RuntimeError).cast());
+        assert_eq!(error.value.addr(), observation.error_value);
+        drop(error);
+        assert_eq!(
+            (hooks.dict_mutate)(
+                dict,
+                key,
+                0,
+                1,
+                Some(observe_publication),
+                (&raw mut observation).cast()
+            ),
+            1
+        );
+        assert_eq!(observation.calls, 2, "absent deletion does not publish");
+
+        // Same-object keys/values retain distinct edges, including replacement
+        // and pop's transfer of the removed value owner.
+        let alias = support::fake_runtime::fresh_handle();
+        for _ in 0..2 {
+            assert_eq!(
+                (hooks.dict_mutate)(dict, alias, alias, 0, None, ptr::null_mut()),
+                0
+            );
+            assert_eq!((hooks.ref_count)(alias), 3);
+        }
+        (hooks.dec_ref)(alias);
+        assert!(
+            matches!((hooks.dict_pop)(dict, alias).decode(), DecodedHandleResult::Ok(value) if value == alias)
+        );
+        assert_eq!((hooks.ref_count)(alias), 1);
+        (hooks.dec_ref)(alias);
+        assert!(!support::fake_runtime::contains(alias));
+        assert!(matches!(
+            (hooks.dict_pop)(dict, alias).decode(),
+            DecodedHandleResult::Missing
+        ));
+        (hooks.dec_ref)(dict);
+        assert!(molt_cpython_abi::api::errors::PyErr_Occurred().is_null());
+    }
 }

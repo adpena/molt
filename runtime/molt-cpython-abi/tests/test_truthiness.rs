@@ -1,28 +1,27 @@
-//! Integration gate for the native-container tier of the CPYTHON-ABI-AUDIT lane
-//! F3 fixes (`object.rs`), which need the runtime hook boundary (a `classify_heap`
-//! that reports `List`, plus `list_len`/`list_item`). Its own binary so the
-//! process-global `RUNTIME_HOOKS` table it installs is isolated from the crate's
-//! other tests. Companion to the `object::f3_divergence_tests` unit module (which
-//! covers the foreign-slot dispatch tier on STUB hooks).
-//!
-//! The headline divergence: `bool([]) == 1`. A native empty container hit the
-//! prior `else => 1` and was reported truthy; here it must be FALSY.
+//! The managed inquiry boundary must use semantic hooks even when physical
+//! storage reports a different length. Runtime protocol behavior is exercised
+//! in molt-runtime's cpython_abi_hooks::inquiry_tests; foreign C slot behavior
+//! is covered by object::f3_divergence_tests. This binary isolates its hooks.
 
 #![allow(non_snake_case)]
 
 mod support;
 
 use molt_cpython_abi::abi_types::{MoltTypeTag, PyObject};
-use molt_cpython_abi::api::object::{PyIter_Next, PyObject_IsTrue, PyObject_Size, PySeqIter_New};
+use molt_cpython_abi::api::object::{
+    PyIter_Next, PyObject_IsTrue, PyObject_Length, PyObject_Not, PyObject_Size, PySeqIter_New,
+};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 use molt_lang_obj_model::MoltObject;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicIsize, AtomicUsize, Ordering};
 
 // A single hook table for this binary: every is_ptr handle classifies as `List`,
 // `list_len` reads the `LIST_LEN` cell, and `list_item(i)` yields the native int
 // `i` (so `PySequence_GetItem` drives the sequence iterator). `LIST_LEN` is only
 // mutated inside the one sequential `#[test]`, so no cross-test race.
 static LIST_LEN: AtomicUsize = AtomicUsize::new(0);
+static OBJECT_LENGTH: AtomicIsize = AtomicIsize::new(0);
+static OBJECT_TRUTH: AtomicI32 = AtomicI32::new(0);
 
 #[repr(align(16))]
 struct ListBacking(u8);
@@ -35,6 +34,12 @@ unsafe extern "C" fn list_classify(_bits: u64) -> u8 {
 }
 unsafe extern "C" fn list_len_hook(_bits: u64) -> usize {
     LIST_LEN.load(Ordering::SeqCst)
+}
+unsafe extern "C" fn object_length_hook(_bits: u64) -> isize {
+    OBJECT_LENGTH.load(Ordering::SeqCst)
+}
+unsafe extern "C" fn object_truth_hook(_bits: u64) -> i32 {
+    OBJECT_TRUTH.load(Ordering::SeqCst)
 }
 unsafe extern "C" fn list_item_hook(
     _bits: u64,
@@ -49,7 +54,9 @@ fn init_hooks() {
     hooks.classify_heap = list_classify;
     hooks.list_len = list_len_hook;
     hooks.list_item = list_item_hook;
-    support::prepare_abi_test_thread(hooks);
+    hooks.object_length = object_length_hook;
+    hooks.object_is_true = object_truth_hook;
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 fn native_list(nonempty: bool) -> *mut PyObject {
@@ -89,6 +96,8 @@ fn native_container_truthiness_size_and_seqiter() {
 
     // ── Non-empty native list is truthy, and Size reports its length ──
     LIST_LEN.store(3, Ordering::SeqCst);
+    OBJECT_LENGTH.store(3, Ordering::SeqCst);
+    OBJECT_TRUTH.store(1, Ordering::SeqCst);
     let list = native_list(true);
     assert_eq!(
         unsafe { PyObject_IsTrue(list) },
@@ -96,6 +105,18 @@ fn native_container_truthiness_size_and_seqiter() {
         "bool([_, _, _]) must be 1"
     );
     assert_eq!(unsafe { PyObject_Size(list) }, 3, "len must be 3");
+
+    // A nonempty physical list can be semantically empty. Size and its alias
+    // must retain the complete signed result, not a status validator's zero.
+    OBJECT_LENGTH.store(0, Ordering::SeqCst);
+    OBJECT_TRUTH.store(0, Ordering::SeqCst);
+    assert_eq!(unsafe { PyObject_IsTrue(list) }, 0);
+    assert_eq!(unsafe { PyObject_Not(list) }, 1);
+    assert_eq!(unsafe { PyObject_Size(list) }, 0);
+    OBJECT_LENGTH.store(isize::MAX, Ordering::SeqCst);
+    assert_eq!(unsafe { PyObject_Length(list) }, isize::MAX);
+    OBJECT_LENGTH.store(3, Ordering::SeqCst);
+    OBJECT_TRUTH.store(1, Ordering::SeqCst);
 
     // ── The real index-based sequence iterator drains to exhaustion, clearing
     // the terminal IndexError so the final PyIter_Next is a clean NULL. ──

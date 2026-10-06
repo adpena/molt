@@ -157,6 +157,7 @@ fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFu
         source_file: ir.source_file.clone(),
         is_extern: false,
         codegen_partition: ir.codegen_partition,
+        parameter_custody: ir.parameter_custody.clone(),
         execution_context: ir.execution_context,
     };
     let mut tir_func =
@@ -328,6 +329,12 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
                 a.insert(
                     super::function::CODEGEN_PARTITION_ATTR.into(),
                     super::ops::AttrValue::Bool(true),
+                );
+            }
+            if let Some(custody) = crate::ir::ParameterCustody::encode(&ir.parameter_custody) {
+                a.insert(
+                    super::function::PARAMETER_CUSTODY_ATTR.into(),
+                    super::ops::AttrValue::Bytes(custody),
                 );
             }
             if let Some(source_file) = &ir.source_file

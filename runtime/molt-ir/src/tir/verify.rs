@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use crate::native_callable_abi::{NATIVE_CALLABLE_ABI_CHOICES, parse_native_callable_abi};
 
 use super::blocks::{BlockId, Terminator};
-use super::dominators::{self, CfgEdgePolicy};
+use super::dominators::{self, ProgramPointDominance};
 use super::function::TirFunction;
 use super::op_kinds_generated::{
     TirVerifyAttrRule, opcode_accepts_operand_count, opcode_accepts_result_count,
@@ -32,28 +32,6 @@ pub struct VerifyError {
     pub op_index: Option<usize>,
     /// Human-readable description.
     pub message: String,
-}
-
-#[derive(Debug, Default)]
-struct DominatorInfo {
-    preorder: HashMap<BlockId, usize>,
-    postorder: HashMap<BlockId, usize>,
-}
-
-impl DominatorInfo {
-    fn dominates(&self, a: BlockId, b: BlockId) -> bool {
-        match (
-            self.preorder.get(&a),
-            self.preorder.get(&b),
-            self.postorder.get(&a),
-            self.postorder.get(&b),
-        ) {
-            (Some(&a_pre), Some(&b_pre), Some(&a_post), Some(&b_post)) => {
-                a_pre <= b_pre && b_post <= a_post
-            }
-            _ => false,
-        }
-    }
 }
 
 impl VerifyError {
@@ -198,6 +176,12 @@ pub fn verify_operation_shapes(func: &TirFunction) -> Result<(), Vec<VerifyError
                 crate::ir_schema::validate_op_shape(kind, Some(op.operands.len()), value)
             {
                 errors.push(VerifyError::op(*bid, op_index, error.to_string()));
+                continue;
+            }
+            // Retired origins and malformed shapes own diagnostic precedence;
+            // do not diagnose the payload of a carrier already rejected above.
+            if let Err(error) = crate::literal_payload::validate_tir_literal(op) {
+                errors.push(VerifyError::op(*bid, op_index, error));
             }
         }
     }
@@ -223,21 +207,18 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                 ));
             }
             // Check required attributes per opcode.
-            // NOTE: Constant ops (ConstInt, ConstFloat, ConstStr, ConstBytes)
-            // intentionally skip attribute checks because the lowering from
-            // SimpleIR may produce placeholder constants (e.g. `const` with
-            // no value) that are later consumed by type refinement. These
-            // ops are structurally valid even without their value attribute.
+            // String, bytes and bigint payloads are admitted by the shared
+            // literal authority in verify_operation_shapes. Numeric constant
+            // attribute handling remains separate from this generated table.
             match opcode_tir_verify_attr_rule_table(op.opcode) {
                 TirVerifyAttrRule::CallCallee if !op_has_call_callee(op) => {
-                    // Callee can be either an attribute or the first operand
-                    // (SimpleIR encodes it as `var`, which becomes an
-                    // operand). Direct native symbols carry executable callee
-                    // identity in metadata and may be zero-argument calls.
+                    // Direct calls carry a symbol; opaque calls carry a
+                    // callable operand. Native direct symbols may have no
+                    // operands, and builtins retain their own dispatch form.
                     errors.push(VerifyError::op(
                         *bid,
                         op_idx,
-                        format!("{:?} op has no callee (attr or operand)", op.opcode),
+                        format!("{:?} op has no callee for its call target role", op.opcode),
                     ));
                 }
                 TirVerifyAttrRule::CallMethod
@@ -303,21 +284,30 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 }
 
 fn op_has_call_callee(op: &super::ops::TirOp) -> bool {
-    if op.attrs.contains_key("callee")
-        || op.attrs.contains_key("s_value")
-        || !op.operands.is_empty()
-    {
+    use super::op_kinds_generated::{SimpleIrCallTargetRole, simpleir_call_target_role};
+
+    // Admit exactly the builtin identity and argument convention consumed by
+    // lowering and analysis; attribute or operand presence is not authority.
+    if op.opcode == super::ops::OpCode::CallBuiltin {
+        return op.builtin_call().is_some();
+    }
+    if super::call_targets::direct_call_symbol_for_op(op).is_some() {
         return true;
     }
-
-    matches!(
-        (
-            op.attrs.get("native_callable_binding"),
-            op.attrs.get("native_callable_symbol"),
-        ),
-        (Some(AttrValue::Str(binding)), Some(AttrValue::Str(symbol)))
-            if binding == "direct_symbol" && !symbol.is_empty()
-    )
+    let kind = match op.attrs.get("_original_kind") {
+        None => "call",
+        Some(AttrValue::Str(kind)) => kind.as_str(),
+        Some(_) => return false,
+    };
+    if simpleir_call_target_role(kind) != Some(SimpleIrCallTargetRole::Opaque) {
+        return false;
+    }
+    // The native ABI validator below checks the complete metadata and arity.
+    // Only invoke_ffi can replace its callable operand with a native symbol.
+    !op.operands.is_empty()
+        || (kind == "invoke_ffi"
+            && attr_str(op, "native_callable_binding") == Some("direct_symbol")
+            && attr_str(op, "native_callable_symbol").is_some_and(|symbol| !symbol.is_empty()))
 }
 
 fn attr_str<'a>(op: &'a super::ops::TirOp, key: &str) -> Option<&'a str> {
@@ -695,28 +685,19 @@ fn verify_block_args(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 // ---------------------------------------------------------------------------
 
 fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
-    // The strict dominator tree owns both reachability and dominance.
-    let dom = compute_dominator_tree(func);
-
-    // Only check reachable blocks. Unreachable blocks (dead code left by
-    // optimization passes like SCCP branch folding) may reference values
-    // whose definitions no longer dominate them. Checking them would report
-    // false SSA dominance violations.
-
-    // Build a map: ValueId → BlockId where it is defined.
-    let mut def_block: HashMap<ValueId, BlockId> = HashMap::new();
-    // Also track the op index within the block (for same-block use-before-def checks).
-    let mut def_op_index: HashMap<ValueId, Option<usize>> = HashMap::new(); // None = block arg
+    // Include every executable exceptional entry at its observation position.
+    // Retained, unreachable region labels remain structurally verified above,
+    // but do not manufacture execution paths or SSA dominance obligations.
+    let dom = ProgramPointDominance::compute_executable(func);
+    let mut definitions = HashMap::new();
 
     for (bid, block) in &func.blocks {
         for arg in &block.args {
-            def_block.insert(arg.id, *bid);
-            def_op_index.insert(arg.id, None);
+            definitions.insert(arg.id, (*bid, None));
         }
         for (op_idx, op) in block.ops.iter().enumerate() {
             for result in &op.results {
-                def_block.insert(*result, *bid);
-                def_op_index.insert(*result, Some(op_idx));
+                definitions.insert(*result, (*bid, Some(op_idx)));
             }
         }
     }
@@ -724,7 +705,7 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
     // Check every operand use.
     let check_use =
         |bid: BlockId, op_idx: Option<usize>, used: ValueId, errors: &mut Vec<VerifyError>| {
-            match def_block.get(&used) {
+            match definitions.get(&used) {
                 None => {
                     let msg = format!("{} used but never defined", used);
                     match op_idx {
@@ -732,35 +713,26 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                         None => errors.push(VerifyError::block(bid, msg)),
                     }
                 }
-                Some(&def_bid) => {
-                    if def_bid == bid {
-                        // Same block: ensure definition comes before use.
-                        if let (Some(use_idx), Some(def_idx_opt)) =
-                            (op_idx, def_op_index.get(&used))
-                            && let Some(def_idx) = def_idx_opt
-                            && *def_idx >= use_idx
+                Some(&(def_bid, def_op)) => {
+                    let position = op_idx.unwrap_or(usize::MAX);
+                    if !dom.definition_available(def_bid, def_op, bid, position) {
+                        let msg = if def_bid == bid && def_op.is_some_and(|index| index >= position)
                         {
-                            errors.push(VerifyError::op(
-                                bid,
-                                use_idx,
-                                format!(
-                                    "{} used at op#{} but defined later at op#{}",
-                                    used, use_idx, def_idx
-                                ),
-                            ));
-                        }
-                        // def_idx_opt == None means it's a block arg, always dominates.
-                    } else {
-                        // Different block: def_bid must dominate bid.
-                        if !dom.dominates(def_bid, bid) {
-                            let msg = format!(
+                            format!(
+                                "{} used at op#{} but defined later at op#{}",
+                                used,
+                                position,
+                                def_op.unwrap()
+                            )
+                        } else {
+                            format!(
                                 "{} defined in ^{} does not dominate use in ^{}",
                                 used, def_bid, bid
-                            );
-                            match op_idx {
-                                Some(i) => errors.push(VerifyError::op(bid, i, msg)),
-                                None => errors.push(VerifyError::block(bid, msg)),
-                            }
+                            )
+                        };
+                        match op_idx {
+                            Some(i) => errors.push(VerifyError::op(bid, i, msg)),
+                            None => errors.push(VerifyError::block(bid, msg)),
                         }
                     }
                 }
@@ -771,7 +743,7 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
         // Skip unreachable blocks — their ops may reference values whose
         // definitions no longer dominate them after optimization passes
         // changed the CFG (e.g., SCCP branch folding).
-        if !dom.preorder.contains_key(bid) {
+        if !dom.is_reachable(*bid) {
             continue;
         }
         for (op_idx, op) in block.ops.iter().enumerate() {
@@ -841,79 +813,266 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 }
 
 // ---------------------------------------------------------------------------
-// Dominator helpers
-// ---------------------------------------------------------------------------
-
-/// Compute immediate dominator for each reachable block, returning a map
-/// `BlockId -> Option<BlockId>` (None = entry block / no idom).
-///
-/// Delegates to the single shared dominator implementation
-/// ([`dominators::compute_idoms_with`]) under the **strict-CFG** edge policy
-/// ([`CfgEdgePolicy::TerminatorOnly`]): the verifier intentionally restricts
-/// SSA-dominance to terminator-reachable blocks (handler blocks reached only
-/// via implicit exception edges are not SSA-dominance-checked). There is now
-/// exactly ONE dominator implementation over `TirFunction`.
-fn compute_dominators(func: &TirFunction) -> HashMap<BlockId, Option<BlockId>> {
-    if func.blocks.is_empty() {
-        return HashMap::new();
-    }
-    let pred_map = dominators::build_pred_map_with(func, CfgEdgePolicy::TerminatorOnly);
-    dominators::compute_idoms_with(func, &pred_map, CfgEdgePolicy::TerminatorOnly)
-}
-
-/// Compute dominator-tree metadata for reachable blocks.
-fn compute_dominator_tree(func: &TirFunction) -> DominatorInfo {
-    let idom = compute_dominators(func);
-    if idom.is_empty() {
-        return DominatorInfo::default();
-    }
-
-    let children = dominators::build_dom_children(&idom);
-
-    // Iterative DFS to assign preorder/postorder intervals for O(1) dominates checks.
-    let mut preorder: HashMap<BlockId, usize> = HashMap::with_capacity(idom.len());
-    let mut postorder: HashMap<BlockId, usize> = HashMap::with_capacity(idom.len());
-    let mut tick = 0usize;
-    let entry = func.entry_block;
-
-    if idom.contains_key(&entry) {
-        preorder.insert(entry, tick);
-        tick += 1;
-        let mut stack: Vec<(BlockId, usize)> = vec![(entry, 0)];
-        while let Some((node, child_idx)) = stack.last_mut() {
-            let next_child = children
-                .get(node)
-                .and_then(|child_list| child_list.get(*child_idx))
-                .copied();
-            if let Some(child) = next_child {
-                *child_idx += 1;
-                if preorder.contains_key(&child) {
-                    continue;
-                }
-                preorder.insert(child, tick);
-                tick += 1;
-                stack.push((child, 0));
-            } else {
-                postorder.insert(*node, tick);
-                tick += 1;
-                stack.pop();
-            }
-        }
-    }
-
-    DominatorInfo {
-        preorder,
-        postorder,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The verifier must admit the identity that lowering actually transports.
+    /// Operand presence cannot turn a direct call into a dynamic one, and a
+    /// symbol on an opaque spelling cannot replace its callable operand.
+    #[test]
+    fn call_target_roles_require_transportable_identity() {
+        use super::super::ops::{AttrDict, Dialect, OpCode, TirOp};
+        use super::super::types::TirType;
+
+        let check = |opcode,
+                     original: Option<AttrValue>,
+                     target: Option<(&str, AttrValue)>,
+                     operands,
+                     valid| {
+            let mut func = TirFunction::new(
+                "call_role".into(),
+                vec![TirType::DynBox],
+                TirType::None,
+                crate::FunctionReturnAbi::Void,
+            );
+            let mut attrs = AttrDict::new();
+            if let Some(kind) = original {
+                attrs.insert("_original_kind".into(), kind);
+            }
+            if let Some((key, value)) = target {
+                attrs.insert(key.into(), value);
+            }
+            let block = func.blocks.get_mut(&func.entry_block).unwrap();
+            block.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode,
+                operands: if operands { vec![ValueId(0)] } else { vec![] },
+                results: vec![],
+                attrs,
+                source_span: None,
+            });
+            block.terminator = Terminator::Return { values: vec![] };
+            let result = verify_function(&func);
+            if valid {
+                assert!(result.is_ok(), "{func:?}: {result:?}");
+            } else {
+                let errors = result.expect_err("untransportable call identity must fail");
+                assert!(
+                    errors
+                        .iter()
+                        .any(|error| error.message.contains("has no callee")),
+                    "{errors:?}"
+                );
+            }
+        };
+        for kind in [None, Some("call"), Some("call_internal")] {
+            for operands in [false, true] {
+                let original = kind.map(|kind| AttrValue::Str(kind.into()));
+                check(
+                    OpCode::Call,
+                    original.clone(),
+                    Some(("s_value", AttrValue::Str("fixture_target".into()))),
+                    operands,
+                    true,
+                );
+                for target in [
+                    None,
+                    Some(("callee", AttrValue::Str("fixture_target".into()))),
+                    Some(("s_value", AttrValue::Str(String::new()))),
+                    Some(("s_value", AttrValue::Int(1))),
+                ] {
+                    check(OpCode::Call, original.clone(), target, operands, false);
+                }
+            }
+        }
+        for kind in [
+            "call_func",
+            "call_function",
+            "call_indirect",
+            "call_bind",
+            "call_guarded",
+            "invoke_ffi",
+        ] {
+            for target in [
+                None,
+                Some(("s_value", AttrValue::Str("incidental".into()))),
+                Some(("callee", AttrValue::Str("incidental".into()))),
+            ] {
+                for operands in [false, true] {
+                    check(
+                        OpCode::Call,
+                        Some(AttrValue::Str(kind.into())),
+                        target.clone(),
+                        operands,
+                        operands,
+                    );
+                }
+            }
+        }
+        for original in [AttrValue::Str("unknown_call".into()), AttrValue::Bool(true)] {
+            check(
+                OpCode::Call,
+                Some(original),
+                Some(("s_value", AttrValue::Str("fixture_target".into()))),
+                true,
+                false,
+            );
+        }
+        for kind in ["gpu_thread_id", "gpu_barrier"] {
+            let symbol =
+                super::super::call_targets::gpu_runtime_symbol_for_simple_kind(kind).unwrap();
+            check(
+                OpCode::Call,
+                Some(AttrValue::Str(kind.into())),
+                Some(("s_value", AttrValue::Str(symbol.into()))),
+                false,
+                true,
+            );
+            check(
+                OpCode::Call,
+                Some(AttrValue::Str(kind.into())),
+                Some(("s_value", AttrValue::Str("wrong_symbol".into()))),
+                true,
+                false,
+            );
+        }
+        // Dedicated builtin dispatch retains its separate admission contract.
+        check(OpCode::CallBuiltin, None, None, true, true);
+        check(
+            OpCode::CallBuiltin,
+            None,
+            Some(("s_value", AttrValue::Str("len".into()))),
+            false,
+            true,
+        );
+        check(OpCode::CallBuiltin, None, None, false, false);
+    }
+
+    /// Admission follows the executable builtin convention, including named
+    /// zero-argument calls and the specialized range/print wire spellings.
+    #[test]
+    fn builtin_call_admission_uses_canonical_dispatch_contract() {
+        use super::super::ops::{AttrDict, Dialect, OpCode, TirOp};
+        use super::super::types::TirType;
+
+        let check = |attrs: AttrDict, operands: usize, results: usize, valid: bool| {
+            let mut func = TirFunction::new(
+                "builtin_admission".into(),
+                vec![TirType::DynBox; operands],
+                TirType::None,
+                crate::FunctionReturnAbi::Void,
+            );
+            let results = (0..results).map(|_| func.fresh_value()).collect();
+            let block = func.blocks.get_mut(&func.entry_block).unwrap();
+            block.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::CallBuiltin,
+                operands: (0..operands).map(|index| ValueId(index as u32)).collect(),
+                results,
+                attrs,
+                source_span: None,
+            });
+            block.terminator = Terminator::Return { values: vec![] };
+            let result = verify_function(&func);
+            if valid {
+                assert!(result.is_ok(), "{func:?}: {result:?}");
+            } else {
+                let errors = result.expect_err("malformed builtin dispatch must fail admission");
+                assert!(
+                    errors
+                        .iter()
+                        .any(|error| error.message.contains("CallBuiltin op has no callee")),
+                    "{errors:?}"
+                );
+            }
+        };
+        for operands in [0, 1, 3] {
+            for results in [0, 1] {
+                for key in ["name", "s_value"] {
+                    check(
+                        AttrDict::from([(key.into(), AttrValue::Str("len".into()))]),
+                        operands,
+                        results,
+                        true,
+                    );
+                }
+                check(
+                    AttrDict::from([
+                        ("name".into(), AttrValue::Str("len".into())),
+                        ("s_value".into(), AttrValue::Str("len".into())),
+                    ]),
+                    operands,
+                    results,
+                    true,
+                );
+                check(AttrDict::new(), operands, results, operands != 0);
+                for kind in ["print", "builtin_print"] {
+                    check(
+                        AttrDict::from([("_original_kind".into(), AttrValue::Str(kind.into()))]),
+                        operands,
+                        results,
+                        true,
+                    );
+                }
+            }
+        }
+        for operands in 0..=4 {
+            check(
+                AttrDict::from([("_original_kind".into(), AttrValue::Str("range_new".into()))]),
+                operands,
+                1,
+                operands == 3,
+            );
+        }
+        for operands in [0, 1] {
+            for key in ["name", "s_value", "_original_kind"] {
+                for value in [AttrValue::Str(String::new()), AttrValue::Int(1)] {
+                    check(AttrDict::from([(key.into(), value)]), operands, 1, false);
+                }
+            }
+            for key in [
+                "callee",
+                "runtime_symbol",
+                "native_callable_symbol",
+                "native_callable_export",
+            ] {
+                let mut attrs = AttrDict::from([(key.into(), AttrValue::Str("len".into()))]);
+                check(attrs.clone(), operands, 1, false);
+                attrs.insert("name".into(), AttrValue::Str("len".into()));
+                check(attrs, operands, 1, false);
+            }
+        }
+        for attrs in [
+            AttrDict::from([
+                ("name".into(), AttrValue::Str("len".into())),
+                ("s_value".into(), AttrValue::Str("abs".into())),
+            ]),
+            AttrDict::from([
+                ("name".into(), AttrValue::Str("len".into())),
+                ("_original_kind".into(), AttrValue::Str("print".into())),
+            ]),
+            AttrDict::from([
+                ("name".into(), AttrValue::Str("len".into())),
+                ("_original_kind".into(), AttrValue::Str("range_new".into())),
+            ]),
+            AttrDict::from([(
+                "_original_kind".into(),
+                AttrValue::Str("unknown_builtin".into()),
+            )]),
+        ] {
+            check(attrs, 3, 1, false);
+        }
+        check(
+            AttrDict::from([("name".into(), AttrValue::Str("len".into()))]),
+            1,
+            2,
+            false,
+        );
+    }
 
     #[test]
     fn generated_preserved_shapes_fail_before_target_lowering() {
@@ -1663,6 +1822,179 @@ mod tests {
         );
     }
 
+    fn capture_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands,
+            results,
+            attrs: AttrDict::new(),
+            source_span: None,
+        }
+    }
+
+    fn capture_transfer(opcode: OpCode, label: i64, operands: Vec<ValueId>) -> TirOp {
+        let mut op = capture_op(opcode, operands, vec![]);
+        op.attrs.insert("value".into(), AttrValue::Int(label));
+        op
+    }
+
+    #[test]
+    fn exceptional_captures_require_definition_before_every_observation() {
+        for early_observation in [false, true] {
+            let mut func = TirFunction::new(
+                "exceptional_capture".into(),
+                vec![],
+                TirType::None,
+                crate::FunctionReturnAbi::Void,
+            );
+            let handler = func.fresh_block();
+            let continuation = func.fresh_block();
+            let owner = func.fresh_value();
+            let handler_owner = func.fresh_value();
+            for value in [owner, handler_owner] {
+                func.value_types.insert(value, TirType::DynBox);
+            }
+            func.label_id_map.insert(handler.0, 17);
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            // Registration precedes allocation but does not execute the handler.
+            entry
+                .ops
+                .push(capture_transfer(OpCode::TryStart, 17, vec![]));
+            if early_observation {
+                entry
+                    .ops
+                    .push(capture_transfer(OpCode::CheckException, 17, vec![]));
+            }
+            entry
+                .ops
+                .push(capture_op(OpCode::BuildList, vec![], vec![owner]));
+            entry
+                .ops
+                .push(capture_transfer(OpCode::CheckException, 17, vec![]));
+            entry.terminator = Terminator::Return { values: vec![] };
+            func.blocks.insert(
+                handler,
+                TirBlock {
+                    id: handler,
+                    args: vec![],
+                    ops: vec![
+                        capture_op(OpCode::DecRef, vec![owner], vec![]),
+                        capture_op(OpCode::BuildList, vec![], vec![handler_owner]),
+                    ],
+                    terminator: Terminator::Branch {
+                        target: continuation,
+                        args: vec![],
+                    },
+                },
+            );
+            func.blocks.insert(
+                continuation,
+                TirBlock {
+                    id: continuation,
+                    args: vec![],
+                    ops: vec![capture_op(OpCode::DecRef, vec![handler_owner], vec![])],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+            let result = verify_function(&func);
+            if early_observation {
+                let errors = result.expect_err("early exceptional entry skips the captured owner");
+                assert!(
+                    errors.iter().any(|error| error.block == Some(handler)
+                        && error.op_index == Some(0)
+                        && error.message.contains("does not dominate")),
+                    "missing captured-owner rejection: {errors:?}"
+                );
+            } else {
+                result.expect("protected and handler-local definitions reach every executable use");
+            }
+        }
+    }
+
+    #[test]
+    fn shared_exceptional_tail_checks_all_arms_and_explicit_payloads() {
+        for capture_arm_local in [false, true] {
+            let mut func = TirFunction::new(
+                "shared_capture".into(),
+                vec![TirType::Bool],
+                TirType::None,
+                crate::FunctionReturnAbi::Void,
+            );
+            let left = func.fresh_block();
+            let right = func.fresh_block();
+            let cleanup = func.fresh_block();
+            let common = func.fresh_value();
+            let left_owner = func.fresh_value();
+            let right_owner = func.fresh_value();
+            let payload = func.fresh_value();
+            for value in [common, left_owner, right_owner, payload] {
+                func.value_types.insert(value, TirType::DynBox);
+            }
+            func.label_id_map.insert(cleanup.0, 19);
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry
+                .ops
+                .push(capture_op(OpCode::BuildList, vec![], vec![common]));
+            entry.terminator = Terminator::CondBranch {
+                cond: ValueId(0),
+                then_block: left,
+                then_args: vec![],
+                else_block: right,
+                else_args: vec![],
+            };
+            for (id, owner) in [(left, left_owner), (right, right_owner)] {
+                func.blocks.insert(
+                    id,
+                    TirBlock {
+                        id,
+                        args: vec![],
+                        ops: vec![
+                            capture_op(OpCode::BuildList, vec![], vec![owner]),
+                            capture_transfer(OpCode::CheckException, 19, vec![owner]),
+                        ],
+                        terminator: Terminator::Return { values: vec![] },
+                    },
+                );
+            }
+            func.blocks.insert(
+                cleanup,
+                TirBlock {
+                    id: cleanup,
+                    args: vec![TirValue {
+                        id: payload,
+                        ty: TirType::DynBox,
+                    }],
+                    ops: vec![
+                        capture_op(
+                            OpCode::DecRef,
+                            vec![if capture_arm_local {
+                                left_owner
+                            } else {
+                                common
+                            }],
+                            vec![],
+                        ),
+                        capture_op(OpCode::DecRef, vec![payload], vec![]),
+                    ],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+            let result = verify_function(&func);
+            if capture_arm_local {
+                let errors = result.expect_err("right entry does not define left's captured owner");
+                assert!(
+                    errors.iter().any(|error| error.block == Some(cleanup)
+                        && error.op_index == Some(0)
+                        && error.message.contains("does not dominate")),
+                    "missing cross-arm capture rejection: {errors:?}"
+                );
+            } else {
+                result.expect("common capture and arm-specific explicit payload are available");
+            }
+        }
+    }
+
     #[test]
     fn dominator_metadata_handles_reachable_and_unreachable_blocks() {
         let mut func = TirFunction::new(
@@ -1730,15 +2062,15 @@ mod tests {
             },
         );
 
-        let dom_tree = compute_dominator_tree(&func);
-        assert!(dom_tree.dominates(func.entry_block, bb_then));
-        assert!(dom_tree.dominates(func.entry_block, bb_else));
-        assert!(dom_tree.dominates(func.entry_block, bb_join));
-        assert!(!dom_tree.dominates(bb_then, bb_join));
-        assert!(!dom_tree.dominates(bb_else, bb_join));
-        assert!(!dom_tree.dominates(bb_dead, bb_dead));
-        assert!(!dom_tree.dominates(BlockId(99), BlockId(99)));
-        assert!(!dom_tree.dominates(func.entry_block, bb_dead));
+        let dom_tree = ProgramPointDominance::compute_executable(&func);
+        assert!(dom_tree.definition_available(func.entry_block, None, bb_then, 0));
+        assert!(dom_tree.definition_available(func.entry_block, None, bb_else, 0));
+        assert!(dom_tree.definition_available(func.entry_block, None, bb_join, 0));
+        assert!(!dom_tree.definition_available(bb_then, None, bb_join, 0));
+        assert!(!dom_tree.definition_available(bb_else, None, bb_join, 0));
+        assert!(!dom_tree.definition_available(bb_dead, None, bb_dead, 0));
+        assert!(!dom_tree.definition_available(BlockId(99), None, BlockId(99), 0));
+        assert!(!dom_tree.definition_available(func.entry_block, None, bb_dead, 0));
     }
 
     #[test]
@@ -1803,8 +2135,10 @@ mod tests {
             },
         );
 
-        let dom_tree = compute_dominator_tree(&func);
-        let idom = compute_dominators(&func);
+        let dom_tree = ProgramPointDominance::compute_executable(&func);
+        let policy = dominators::CfgEdgePolicy::TerminatorOnly;
+        let predecessors = dominators::build_pred_map_with(&func, policy);
+        let idom = dominators::compute_idoms_with(&func, &predecessors, policy);
         let mut all_blocks = vec![entry];
         all_blocks.extend(blocks.iter().copied());
         all_blocks.push(unreachable);
@@ -1812,7 +2146,7 @@ mod tests {
         for &a in &all_blocks {
             for &b in &all_blocks {
                 assert_eq!(
-                    dom_tree.dominates(a, b),
+                    dom_tree.definition_available(a, None, b, 0),
                     dominators::dominates(a, b, &idom),
                     "dominance mismatch: {} -> {}",
                     a,

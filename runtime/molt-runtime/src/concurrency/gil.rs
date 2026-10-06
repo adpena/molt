@@ -26,9 +26,17 @@ pub(crate) struct GilGuard {
     _not_send_sync: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
-#[cfg(target_arch = "wasm32")]
 pub(crate) struct PyToken<'gil> {
     _guard: &'gil GilGuard,
+    core: molt_runtime_core::PyToken,
+}
+
+impl PyToken<'_> {
+    /// Borrow the shared-runtime proof from this live GIL guard's token.
+    #[inline(always)]
+    pub(crate) fn core_token(&self) -> &molt_runtime_core::PyToken {
+        &self.core
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -48,7 +56,11 @@ impl GilGuard {
 
     #[inline(always)]
     pub(crate) fn token(&self) -> PyToken<'_> {
-        PyToken { _guard: self }
+        PyToken {
+            _guard: self,
+            // This guard is the runtime's actual GIL custody boundary.
+            core: unsafe { molt_runtime_core::PyToken::assume_gil_held() },
+        }
     }
 
     #[inline(always)]
@@ -195,11 +207,6 @@ pub(crate) struct GilGuard {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct PyToken<'gil> {
-    _guard: &'gil GilGuard,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 impl GilGuard {
     #[inline(always)]
     pub(crate) fn new_if_held() -> Option<Self> {
@@ -247,7 +254,11 @@ impl GilGuard {
     }
 
     pub(crate) fn token(&self) -> PyToken<'_> {
-        PyToken { _guard: self }
+        PyToken {
+            _guard: self,
+            // This guard is the runtime's actual GIL custody boundary.
+            core: unsafe { molt_runtime_core::PyToken::assume_gil_held() },
+        }
     }
 
     fn transfer_custody_unit(mut self) {

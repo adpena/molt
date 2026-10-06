@@ -3,6 +3,9 @@ from __future__ import annotations
 import ast
 
 from .errors import OpKindTableError
+from .runtime_requirements import (
+    registered_runtime_kinds as _simpleir_registered_runtime_kinds,
+)
 from .schema import _FRONTEND_EFFECT_VALUES
 from .primitive_effects import PRIMITIVE_FRONTEND_TYPES, frontend_operator_map
 
@@ -25,21 +28,6 @@ def _frontend_effect_from_opcode(row: dict) -> str:
     if row["purity"] == "impure":
         return "reads_heap"
     return "pure"
-
-
-def _simpleir_registered_runtime_kinds(data: dict) -> set[str]:
-    """Derive every wire spelling covered by runtime-semantic admission."""
-
-    registered: set[str] = set()
-    for row in data.get("kind", []):
-        registered.add(row["canonical"])
-        registered.update(row.get("aliases", []))
-    for table in ("simpleir_control_kind", "frontend_effect_kind"):
-        registered.update(row["kind"] for row in data.get(table, []))
-    for row in data.get("simpleir_runtime_requirement_roles", []):
-        registered.update(data.get(row["table"], []))
-    registered.update(data.get("simpleir_runtime_neutral_semantics_kinds", []))
-    return registered
 
 
 def _frontend_effect_class_map(data: dict) -> dict[str, str]:
@@ -394,3 +382,12 @@ def _validate_frontend_tables(data: dict, opcodes: list[dict]) -> None:
                 f"frontend raising-axis invariant {kind}: expected {should_raise}, "
                 f"got {actual}"
             )
+
+    # Both vocabularies have semantic owners. A frontend optimizer token cannot
+    # also be a runtime wire spelling; do not infer one from casing the other.
+    overlap = _simpleir_registered_runtime_kinds(data).intersection(effect_map)
+    if overlap:
+        raise OpKindTableError(
+            "frontend effect tokens leak into runtime wire vocabulary: "
+            + ", ".join(sorted(overlap))
+        )

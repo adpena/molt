@@ -42,8 +42,9 @@ use super::analysis::{
     StrictReachable,
 };
 use super::function::TirFunction;
+use super::op_kinds_generated::SimpleIrRuntimeRequirements;
 use super::passes::{self, PassStats};
-use super::target_info::{TargetInfo, TargetKind};
+use super::target_info::TargetInfo;
 
 fn trace_func_enabled(name: &str) -> bool {
     std::env::var("MOLT_TIR_TRACE_FUNC")
@@ -72,11 +73,17 @@ fn function_op_count(func: &TirFunction) -> usize {
 ///   raw/heap representation blocker is pinned by
 ///   `reachable_heap_incoming_poisons_raw_loop_phi`, so the shared TIR drop
 ///   plane is now the native RC authority as well.
-const fn target_uses_tir_drop_insertion(target: TargetKind) -> bool {
-    match target {
-        TargetKind::Llvm | TargetKind::Wasm | TargetKind::NativeCranelift => true,
-        TargetKind::Luau | TargetKind::Rust | TargetKind::Mlir => false,
-    }
+///
+/// Activation reads the target plan's claim rather than a backend list: the
+/// pass runs exactly where the plan claims deterministic Python lifetimes, the
+/// generated `DETERMINISTIC_LIFETIME` runtime capability. The drop plane is
+/// also the one consumer of parameter and argument custody (design 20 §1.6),
+/// so custody moves references on exactly the targets that claim Python
+/// lifetimes. The `Rust` and `Mlir` source targets claim none either.
+const fn target_uses_tir_drop_insertion(target_info: &TargetInfo) -> bool {
+    target_info
+        .supported_runtime_semantics
+        .contains(SimpleIrRuntimeRequirements::DETERMINISTIC_LIFETIME)
 }
 
 /// How a pass may mutate the function — drives analysis invalidation.
@@ -475,8 +482,8 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         // MemGVN consumes MemorySSA (built on the physical Field alias
         // regions) to forward stores into proven-pure typed-slot loads and dedup
         // redundant loads. Placed AFTER dead_store_elim so it sees the final set
-        // of live stores, and its replacement IncRef is final (refcount_elim has
-        // already run). OpsOnly: replaces a load with IncRef+Copy in place.
+        // of live stores. OpsOnly: replaces a load with a Copy in place, an
+        // owned alias that keeps the load's reference unless the value is raw.
         pass("mem_gvn", OpsOnly, |f, am, _tti| {
             passes::mem_gvn::run(f, am)
         }),
@@ -597,7 +604,7 @@ pub fn build_drop_pipeline(target_info: TargetInfo) -> PassManager {
         // fixes the mutation class. (The straight-line / edge-dying / suspension
         // insertions remain pure op additions that carry no exception edge.)
         pass("drop_insertion", Cfg, |f, am, tti| {
-            if target_uses_tir_drop_insertion(tti.target) {
+            if target_uses_tir_drop_insertion(tti) {
                 passes::drop_insertion::run(f, am)
             } else {
                 PassStats {
@@ -607,7 +614,7 @@ pub fn build_drop_pipeline(target_info: TargetInfo) -> PassManager {
             }
         }),
         pass("refcount_elim_post", OpsOnly, |f, am, tti| {
-            if target_uses_tir_drop_insertion(tti.target) {
+            if target_uses_tir_drop_insertion(tti) {
                 passes::refcount_elim::run_post_drop(f, am)
             } else {
                 PassStats {
@@ -862,7 +869,10 @@ mod tests {
                 opcode: OpCode::Call,
                 operands: vec![ValueId(0)],
                 results: vec![],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::from([(
+                    "s_value".into(),
+                    AttrValue::Str("fixture_borrow_operands".into()),
+                )]),
                 source_span: None,
             },
             labeled(OpCode::CheckException),
@@ -1015,14 +1025,14 @@ mod tests {
         // body → header (back-edge).
         let mut func = TirFunction::new(
             "loopfn".into(),
-            vec![],
+            vec![TirType::Bool],
             TirType::None,
             molt_ir::FunctionReturnAbi::Void,
         );
         let header = func.fresh_block();
         let body = func.fresh_block();
         let exit = func.fresh_block();
-        let cond = func.fresh_value();
+        let cond = func.blocks[&func.entry_block].args[0].id;
         func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::Branch {
             target: header,
             args: vec![],
@@ -1032,14 +1042,7 @@ mod tests {
             TirBlock {
                 id: header,
                 args: vec![],
-                ops: vec![TirOp {
-                    dialect: Dialect::Molt,
-                    opcode: OpCode::ConstBool,
-                    operands: vec![],
-                    results: vec![cond],
-                    attrs: AttrDict::new(),
-                    source_span: None,
-                }],
+                ops: vec![],
                 terminator: Terminator::CondBranch {
                     cond,
                     then_block: body,
@@ -1080,6 +1083,7 @@ mod tests {
         func.label_id_map.insert(exit.0, 90);
         func.loop_roles.insert(header, LoopRole::LoopHeader);
 
+        crate::tir::verify::verify_function(&func).expect("valid dynamic loop fixture");
         let pm = build_default_pipeline(TargetInfo::native_release_fast());
         // Force the per-pass analysis self-check on for this run.
         let stats = pm.run_inner(&mut func, true);
@@ -1088,6 +1092,12 @@ mod tests {
         // moved them to the separate terminal `build_drop_pipeline`), and
         // block-argument pruning waits for that terminal phase.
         assert_eq!(stats.len(), 27);
+        assert!(
+            func.blocks
+                .values()
+                .any(|block| matches!(block.terminator, Terminator::CondBranch { .. })),
+            "the unknown input must retain the loop branch through optimization"
+        );
 
         // The drop pipeline runs its two passes under the same verify guard.
         // (This trivial loop carries no heap-allocated values, so drop_insertion
@@ -1150,24 +1160,16 @@ mod tests {
     fn ambiguous_exception_match_ref_depth_function() -> TirFunction {
         let mut func = TirFunction::new(
             "ambiguous_exception_region".into(),
-            vec![],
+            vec![TirType::Bool],
             TirType::None,
             molt_ir::FunctionReturnAbi::Void,
         );
         let before_try = func.fresh_block();
         let handler = func.fresh_block();
-        let cond = func.fresh_value();
+        let cond = func.blocks[&func.entry_block].args[0].id;
         let exc = func.fresh_value();
         func.label_id_map.insert(handler.0, 7);
 
-        func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![TirOp {
-            dialect: Dialect::Molt,
-            opcode: OpCode::ConstBool,
-            operands: vec![],
-            results: vec![cond],
-            attrs: AttrDict::new(),
-            source_span: None,
-        }];
         func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::CondBranch {
             cond,
             then_block: before_try,
@@ -1255,5 +1257,64 @@ mod tests {
         let mut func = exception_match_ref_without_reachable_pop_function();
         let pm = build_drop_pipeline(TargetInfo::native_release_fast());
         let _ = pm.run_inner(&mut func, true);
+    }
+
+    /// Parameter custody is a lifetime fact whose one consumer is the drop
+    /// plane. The plane runs on the target plan's deterministic-lifetime claim,
+    /// not on a backend list: a transferred parameter is released on exactly the
+    /// plans that claim Python lifetimes, and a plan without the claim gets no
+    /// target-dead release, whichever backend it names.
+    #[test]
+    fn drop_plane_activation_follows_the_deterministic_lifetime_claim() {
+        use crate::tir::op_kinds_generated::SimpleIrRuntimeRequirements as Requirement;
+        let releases = |target_info: TargetInfo| {
+            let mut func = TirFunction::new(
+                "owns_parameter".into(),
+                vec![TirType::DynBox],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Void,
+            );
+            func.set_parameter_custody(&[molt_ir::ParameterCustody::Transferred]);
+            let entry = func.entry_block;
+            let parameter = func.blocks[&entry].args[0].id;
+            let block = func.blocks.get_mut(&entry).unwrap();
+            block.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Call,
+                operands: vec![parameter],
+                results: vec![],
+                attrs: AttrDict::from([(
+                    "s_value".into(),
+                    AttrValue::Str("fixture_borrow_operands".into()),
+                )]),
+                source_span: None,
+            });
+            block.terminator = Terminator::Return { values: vec![] };
+            build_drop_pipeline(target_info).run(&mut func);
+            func.blocks
+                .values()
+                .flat_map(|block| &block.ops)
+                .filter(|op| op.opcode == OpCode::DecRef && op.operands == [parameter])
+                .count()
+        };
+        let mut withdrawn = TargetInfo::native_release_fast();
+        withdrawn.supported_runtime_semantics = withdrawn
+            .supported_runtime_semantics
+            .difference(Requirement::DETERMINISTIC_LIFETIME);
+        for (target_info, expected) in [
+            (TargetInfo::native_release_fast(), 1),
+            (TargetInfo::wasm_release_fast(), 1),
+            (TargetInfo::llvm_release_fast(), 1),
+            (withdrawn, 0),
+            (TargetInfo::luau_release_fast(), 0),
+            (TargetInfo::rust_release_fast(), 0),
+            (TargetInfo::mlir_release_fast(), 0),
+        ] {
+            let plan = format!(
+                "{:?} claiming {:?}",
+                target_info.target, target_info.supported_runtime_semantics
+            );
+            assert_eq!(releases(target_info), expected, "{plan}");
+        }
     }
 }

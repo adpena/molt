@@ -20,7 +20,7 @@ fn generic_wasm_exception_pop_then_drop_keeps_dec_ref_import_across_eh_modes() {
         functions: vec![func],
         profile: None,
     };
-    for (native_eh_enabled, expect_exception_pop) in [(true, false), (false, true)] {
+    for native_eh_enabled in [true, false] {
         let options = WasmCompileOptions {
             native_eh_enabled,
             reloc_enabled: false,
@@ -28,10 +28,9 @@ fn generic_wasm_exception_pop_then_drop_keeps_dec_ref_import_across_eh_modes() {
         };
         let wasm = WasmBackend::with_options(options).compile(ir.clone());
         let imports = wasm_function_import_names(&wasm);
-        assert_eq!(
+        assert!(
             imports.iter().any(|name| name == "exception_pop"),
-            expect_exception_pop,
-            "generic WASM exception_pop import mismatch for native_eh_enabled={native_eh_enabled}; imports={imports:?}"
+            "the runtime owns handled exception state in every EH mode: native_eh_enabled={native_eh_enabled}; imports={imports:?}"
         );
         assert!(
             imports.iter().any(|name| name == "dec_ref_obj"),
@@ -125,15 +124,11 @@ fn generic_wasm_local_alias_retain_policy_follows_function_rc_authority() {
         .iter()
         .filter(|call_index| **call_index == dec_index)
         .count();
-    let exit_count = super::super::literal_ownership::assert_every_exit_releases_anchor(
-        &drop_operators,
-        dec_index,
-        2,
-    );
+    super::super::literal_ownership::assert_single_anchor_epilogue(&drop_operators, dec_index);
     assert_eq!(
         (inc_count, dec_count),
-        (1, exit_count + 1),
-        "the literal site mints one result owner; store_var/load_var alias it without another retain. DelBoundary has one release site and every explicit or implicit exit releases the distinct anchor: calls={drop_calls:?} imports={drop_imports:?}"
+        (1, 2),
+        "the literal site mints one result owner; store_var/load_var alias it without another retain. DelBoundary has one release site and the shared epilogue releases the distinct anchor: calls={drop_calls:?} imports={drop_imports:?}"
     );
 
     let (binding_calls, _, binding_imports) = compile_local_alias_body(

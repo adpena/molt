@@ -744,11 +744,7 @@ fn importlib_runtime_state_payload_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
     let mut path_hooks_bits = MoltObject::none().bits();
     let mut path_importer_cache_bits = MoltObject::none().bits();
 
-    let sys_bits = {
-        let cache = crate::builtins::exceptions::internals::module_cache(_py);
-        let guard = cache.lock().unwrap();
-        guard.get("sys").copied()
-    };
+    let sys_bits = crate::builtins::modules::interpreter_sys_module(_py);
 
     if let Some(sys_bits) = sys_bits
         && !obj_from_bits(sys_bits).is_none()
@@ -831,6 +827,7 @@ fn importlib_runtime_state_payload_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
     Ok(dict_bits)
 }
 
+#[cfg(not(all(feature = "cext_loader", not(target_arch = "wasm32"))))]
 fn importlib_extension_exec_unavailable(
     _py: &PyToken<'_>,
     module_name: &str,
@@ -1440,35 +1437,69 @@ fn removed_stdlib_313_missing_name(resolved: &str) -> Option<&'static str> {
     })
 }
 
-pub(crate) fn known_absent_module_missing_name(
+/// Provider absence permits another resolver; a declared execution dependency
+/// failure does not. The rule table assigns provenance, never error text.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum KnownImportAbsence {
+    Provider(String),
+    Dependency(&'static str),
+}
+
+impl KnownImportAbsence {
+    fn diagnostic_name(&self) -> &str {
+        match self {
+            Self::Provider(name) => name,
+            Self::Dependency(name) => name,
+        }
+    }
+}
+
+pub(crate) fn known_import_absence(
     _py: &PyToken<'_>,
     resolved: &str,
-) -> Option<String> {
+) -> Option<KnownImportAbsence> {
     let target_minor = runtime_target_minor(_py);
     if target_minor >= 13
         && let Some(missing_name) = removed_stdlib_313_missing_name(resolved)
     {
-        return Some(missing_name.to_string());
+        return Some(KnownImportAbsence::Provider(missing_name.to_string()));
     }
     match resolved {
-        "asyncio.graph" if target_minor < 14 => Some(resolved.to_string()),
-        "json.__main__" if target_minor < 14 => Some(resolved.to_string()),
-        "_android_support" if !cfg!(target_os = "android") => Some(resolved.to_string()),
-        "_remote_debugging" if target_minor < 13 => Some(resolved.to_string()),
-        "_interpchannels" if target_minor < 13 => Some(resolved.to_string()),
-        "_opcode_metadata" if target_minor < 14 => Some(resolved.to_string()),
-        "importlib.metadata.diagnose" if target_minor < 13 => Some(resolved.to_string()),
-        "importlib.resources._functional" => Some(resolved.to_string()),
-        "encodings._win_cp_codecs" if !cfg!(target_os = "windows") => Some(resolved.to_string()),
+        "asyncio.graph" if target_minor < 14 => {
+            Some(KnownImportAbsence::Provider(resolved.to_string()))
+        }
+        "json.__main__" if target_minor < 14 => {
+            Some(KnownImportAbsence::Provider(resolved.to_string()))
+        }
+        "_android_support" if !cfg!(target_os = "android") => {
+            Some(KnownImportAbsence::Provider(resolved.to_string()))
+        }
+        "_remote_debugging" if target_minor < 13 => {
+            Some(KnownImportAbsence::Provider(resolved.to_string()))
+        }
+        "_interpchannels" if target_minor < 13 => {
+            Some(KnownImportAbsence::Provider(resolved.to_string()))
+        }
+        "_opcode_metadata" if target_minor < 14 => {
+            Some(KnownImportAbsence::Provider(resolved.to_string()))
+        }
+        "importlib.metadata.diagnose" if target_minor < 13 => {
+            Some(KnownImportAbsence::Provider(resolved.to_string()))
+        }
+        "importlib.resources._functional" => {
+            Some(KnownImportAbsence::Provider(resolved.to_string()))
+        }
+        "encodings._win_cp_codecs" if !cfg!(target_os = "windows") => {
+            Some(KnownImportAbsence::Provider(resolved.to_string()))
+        }
         "multiprocessing.popen_spawn_win32" if !cfg!(target_os = "windows") => {
-            Some(String::from("msvcrt"))
+            Some(KnownImportAbsence::Dependency("msvcrt"))
         }
         _ => None,
     }
 }
 
 const IMPORTLIB_SPEC_FIRST_IMPORTS: [&str; 1] = ["asyncio.graph"];
-const IMPORTLIB_EMPTY_MODULE_RETRY_PREFIXES: [&str; 1] = ["multiprocessing"];
 
 fn importlib_modules_runtime_error(_py: &PyToken<'_>) -> u64 {
     raise_exception::<_>(
@@ -1502,33 +1533,15 @@ impl Drop for ImportlibSystemModule<'_, '_> {
 fn importlib_system_module<'a, 'py>(
     _py: &'a PyToken<'py>,
 ) -> Result<ImportlibSystemModule<'a, 'py>, u64> {
-    let cached_sys_bits = {
-        let cache = crate::builtins::exceptions::internals::module_cache(_py);
-        let guard = cache.lock().unwrap();
-        guard.get("sys").copied()
+    let Some(sys_bits) = crate::builtins::modules::ensure_interpreter_sys_module(_py) else {
+        return Err(if exception_pending(_py) {
+            MoltObject::none().bits()
+        } else {
+            importlib_modules_runtime_error(_py)
+        });
     };
-    let sys_bits = if let Some(sys_bits) = cached_sys_bits {
-        inc_ref_bits(_py, sys_bits);
-        sys_bits
-    } else {
-        let sys_name_bits = alloc_str_bits(_py, "sys")?;
-        let imported_bits = crate::molt_module_import(sys_name_bits);
-        dec_ref_bits(_py, sys_name_bits);
-        if exception_pending(_py) {
-            if !obj_from_bits(imported_bits).is_none() {
-                dec_ref_bits(_py, imported_bits);
-            }
-            return Err(MoltObject::none().bits());
-        }
-        if obj_from_bits(imported_bits).is_none() {
-            return Err(importlib_modules_runtime_error(_py));
-        }
-        imported_bits
-    };
-    if obj_from_bits(sys_bits).is_none() {
-        dec_ref_bits(_py, sys_bits);
-        return Err(importlib_modules_runtime_error(_py));
-    }
+    inc_ref_bits(_py, sys_bits);
+
     Ok(ImportlibSystemModule {
         py: _py,
         bits: sys_bits,
@@ -1954,168 +1967,7 @@ fn importlib_module_cache_lookup_bits(_py: &PyToken<'_>, module_name: &str) -> O
     guard.get(module_name).copied()
 }
 
-fn importlib_key_starts_with_underscore(key_bits: u64) -> bool {
-    let Some(key_ptr) = obj_from_bits(key_bits).as_ptr() else {
-        return false;
-    };
-    if unsafe { object_type_id(key_ptr) } != TYPE_ID_STRING {
-        return false;
-    }
-    let key_len = unsafe { string_len(key_ptr) };
-    if key_len == 0 {
-        return false;
-    }
-    let key_bytes = unsafe { std::slice::from_raw_parts(string_bytes(key_ptr), key_len) };
-    key_bytes[0] == b'_'
-}
-
-fn importlib_module_dict_ptr(module_bits: u64) -> Option<*mut u8> {
-    let module_ptr = obj_from_bits(module_bits).as_ptr()?;
-    if unsafe { object_type_id(module_ptr) } != TYPE_ID_MODULE {
-        return None;
-    }
-    let dict_bits = unsafe { module_dict_bits(module_ptr) };
-    let dict_ptr = obj_from_bits(dict_bits).as_ptr()?;
-    if unsafe { object_type_id(dict_ptr) } != TYPE_ID_DICT {
-        return None;
-    }
-    Some(dict_ptr)
-}
-
-fn importlib_module_name_matches(
-    _py: &PyToken<'_>,
-    module_name: &str,
-    module_bits: u64,
-) -> Result<bool, u64> {
-    let name_attr = intern_runtime_static_name(_py, b"__name__");
-    let Some(name_bits) = getattr_optional_bits(_py, module_bits, name_attr)? else {
-        return Ok(false);
-    };
-    let matches = string_obj_to_owned(obj_from_bits(name_bits))
-        .map(|value| value == module_name)
-        .unwrap_or(false);
-    if !obj_from_bits(name_bits).is_none() {
-        dec_ref_bits(_py, name_bits);
-    }
-    Ok(matches)
-}
-
-fn importlib_module_public_surface_empty(
-    _py: &PyToken<'_>,
-    module_name: &str,
-    module_bits: u64,
-) -> Result<bool, u64> {
-    if !importlib_module_name_matches(_py, module_name, module_bits)? {
-        return Ok(false);
-    }
-    let Some(dict_ptr) = importlib_module_dict_ptr(module_bits) else {
-        return Ok(false);
-    };
-    let entries = unsafe { dict_order(dict_ptr) };
-    for idx in (0..entries.len()).step_by(2) {
-        if !importlib_key_starts_with_underscore(entries[idx]) {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-fn importlib_module_has_key(
-    _py: &PyToken<'_>,
-    module_bits: u64,
-    name_slot: &AtomicU64,
-    name: &'static [u8],
-) -> Result<bool, u64> {
-    let Some(dict_ptr) = importlib_module_dict_ptr(module_bits) else {
-        return Ok(false);
-    };
-    let key_bits = intern_static_name(_py, name_slot, name);
-    Ok(importlib_dict_get_string_key_bits(_py, dict_ptr, key_bits)?.is_some())
-}
-
-fn importlib_module_is_intrinsic_shell(
-    _py: &PyToken<'_>,
-    module_name: &str,
-    module_bits: u64,
-) -> Result<bool, u64> {
-    if !importlib_module_public_surface_empty(_py, module_name, module_bits)? {
-        return Ok(false);
-    }
-    Ok(importlib_module_has_key(
-        _py,
-        module_bits,
-        runtime_static_name_slot(_py, b"_molt_intrinsic_lookup"),
-        b"_molt_intrinsic_lookup",
-    )? || importlib_module_has_key(
-        _py,
-        module_bits,
-        runtime_static_name_slot(_py, b"_molt_intrinsics"),
-        b"_molt_intrinsics",
-    )? || importlib_module_has_key(
-        _py,
-        module_bits,
-        runtime_static_name_slot(_py, b"_molt_runtime"),
-        b"_molt_runtime",
-    )?)
-}
-
-fn importlib_module_is_empty_placeholder(
-    _py: &PyToken<'_>,
-    module_name: &str,
-    module_bits: u64,
-) -> Result<bool, u64> {
-    if !importlib_module_name_matches(_py, module_name, module_bits)? {
-        return Ok(false);
-    }
-    let Some(dict_ptr) = importlib_module_dict_ptr(module_bits) else {
-        return Ok(false);
-    };
-    let entries = unsafe { dict_order(dict_ptr) };
-    for idx in (0..entries.len()).step_by(2) {
-        if !importlib_key_starts_with_underscore(entries[idx]) {
-            return Ok(false);
-        }
-    }
-
-    let spec_name = intern_runtime_static_name(_py, b"__spec__");
-    let file_name = intern_runtime_static_name(_py, b"__file__");
-    let loader_name = intern_runtime_static_name(_py, b"loader");
-    let spec_bits = importlib_dict_get_string_key_bits(_py, dict_ptr, spec_name)?;
-    let file_bits = importlib_dict_get_string_key_bits(_py, dict_ptr, file_name)?;
-
-    let file_is_none = file_bits.is_none();
-    let loader_is_none = match spec_bits {
-        None => true,
-        Some(spec_bits) => {
-            let attr = getattr_optional_bits(_py, spec_bits, loader_name)?;
-            let loader_bits = attr.unwrap_or_else(|| MoltObject::none().bits());
-            let out = obj_from_bits(loader_bits).is_none();
-            if !obj_from_bits(loader_bits).is_none() {
-                dec_ref_bits(_py, loader_bits);
-            }
-            out
-        }
-    };
-    Ok(file_is_none && loader_is_none)
-}
-
-fn importlib_module_should_retry_empty(
-    _py: &PyToken<'_>,
-    module_name: &str,
-    module_bits: u64,
-) -> Result<bool, u64> {
-    if importlib_module_is_intrinsic_shell(_py, module_name, module_bits)? {
-        return Ok(true);
-    }
-    if !IMPORTLIB_EMPTY_MODULE_RETRY_PREFIXES
-        .iter()
-        .any(|prefix| module_name.starts_with(prefix))
-    {
-        return Ok(false);
-    }
-    importlib_module_public_surface_empty(_py, module_name, module_bits)
-}
-
+#[cfg(test)]
 fn pending_exception_kind_and_message(_py: &PyToken<'_>) -> Option<(String, String)> {
     if !exception_pending(_py) {
         return None;
@@ -2127,69 +1979,12 @@ fn pending_exception_kind_and_message(_py: &PyToken<'_>) -> Option<(String, Stri
         }
         return None;
     };
-    let kind_bits = unsafe { exception_kind_bits(exc_ptr) };
-    let Some(kind) = string_obj_to_owned(obj_from_bits(kind_bits)) else {
-        if !obj_from_bits(exc_bits).is_none() {
-            dec_ref_bits(_py, exc_bits);
-        }
-        return None;
-    };
+    let kind = crate::builtins::exceptions::exception_diagnostic_name(exc_ptr);
     let message = format_obj_str(_py, obj_from_bits(exc_bits));
     if !obj_from_bits(exc_bits).is_none() {
         dec_ref_bits(_py, exc_bits);
     }
     Some((kind, message))
-}
-
-fn missing_module_name_from_message(message: &str) -> Option<&str> {
-    for (prefix, quote) in [("No module named '", '\''), ("No module named \"", '"')] {
-        let Some(rest) = message.strip_prefix(prefix) else {
-            continue;
-        };
-        let end = rest.find(quote)?;
-        return Some(&rest[..end]);
-    }
-    message
-        .strip_prefix("No module named ")
-        .and_then(|rest| rest.split_whitespace().next())
-        .filter(|name| !name.is_empty())
-}
-
-fn missing_module_matches_import(missing: &str, resolved: &str) -> bool {
-    missing == resolved
-        || resolved
-            .strip_prefix(missing)
-            .is_some_and(|suffix| suffix.starts_with('.'))
-}
-
-fn importlib_rethrow_pending_exception(_py: &PyToken<'_>) {
-    let Some((kind, message)) = pending_exception_kind_and_message(_py) else {
-        return;
-    };
-    clear_exception(_py);
-    let _ = raise_exception::<u64>(_py, &kind, &message);
-}
-
-fn importlib_exception_should_fallback(_py: &PyToken<'_>, resolved: &str) -> bool {
-    let is_import = pending_exception_matches_any(_py, &["ImportError", "ModuleNotFoundError"]);
-    let is_type_error = pending_exception_matches_any(_py, &["TypeError"]);
-    let Some((_kind, message)) = pending_exception_kind_and_message(_py) else {
-        return false;
-    };
-    if is_import {
-        if missing_module_name_from_message(&message)
-            .is_some_and(|missing| missing_module_matches_import(missing, resolved))
-        {
-            clear_exception(_py);
-            return true;
-        }
-        return false;
-    }
-    if is_type_error && message.contains("import returned non-module payload") {
-        clear_exception(_py);
-        return true;
-    }
-    false
 }
 
 fn importlib_required_callable(
@@ -2252,7 +2047,7 @@ fn importlib_set_attr(
     value_bits: u64,
 ) -> Result<(), u64> {
     let attr_name = intern_static_name(_py, slot, name);
-    let result_bits = crate::molt_object_setattr(target_bits, attr_name, value_bits);
+    let result_bits = crate::molt_set_attr_name(target_bits, attr_name, value_bits);
     if !obj_from_bits(result_bits).is_none() {
         dec_ref_bits(_py, result_bits);
     }
@@ -2888,7 +2683,7 @@ fn importlib_import_via_spec(
     resolved: &str,
     resolved_bits: u64,
     modules_ptr: *mut u8,
-) -> Result<u64, u64> {
+) -> Result<Option<u64>, u64> {
     let util_bits = importlib_module_support_bits(_py, modules_ptr, "importlib.util")?;
     let out = importlib_import_via_spec_with_support(
         _py,
@@ -2909,12 +2704,19 @@ fn importlib_import_via_spec_with_support(
     resolved_bits: u64,
     modules_ptr: *mut u8,
     util_bits: u64,
-) -> Result<u64, u64> {
+) -> Result<Option<u64>, u64> {
     if let Some(existing_bits) =
         importlib_dict_get_string_key_bits(_py, modules_ptr, resolved_bits)?
     {
+        if obj_from_bits(existing_bits).is_none() {
+            return Err(raise_exception::<_>(
+                _py,
+                "ModuleNotFoundError",
+                &format!("import of {resolved} halted; None in sys.modules"),
+            ));
+        }
         inc_ref_bits(_py, existing_bits);
-        return Ok(existing_bits);
+        return Ok(Some(existing_bits));
     }
 
     let find_spec_bits = importlib_required_callable(
@@ -2932,26 +2734,20 @@ fn importlib_import_via_spec_with_support(
             MoltObject::none().bits(),
         )
     };
+    let _spec_owner = obj_from_bits(spec_bits)
+        .as_ptr()
+        .map(crate::PtrDropGuard::new);
     dec_ref_bits(_py, find_spec_bits);
     if exception_pending(_py) {
         return Err(MoltObject::none().bits());
     }
     if obj_from_bits(spec_bits).is_none() {
-        return Err(raise_exception::<_>(
-            _py,
-            "ModuleNotFoundError",
-            &format!("No module named '{resolved}'"),
-        ));
+        return Ok(None);
     }
-    if let Err(err) = importlib_enforce_extension_spec_object_boundary(_py, resolved, spec_bits) {
-        if !obj_from_bits(spec_bits).is_none() {
-            dec_ref_bits(_py, spec_bits);
-        }
-        return Err(err);
-    }
+    importlib_enforce_extension_spec_object_boundary(_py, resolved, spec_bits)?;
 
     let preseed_modules = importlib_spec_transaction_should_preseed(_py, spec_bits)?;
-    let out_bits = importlib_spec_execution_transaction(
+    let result = importlib_spec_execution_transaction(
         _py,
         resolved,
         resolved_bits,
@@ -2962,11 +2758,15 @@ fn importlib_import_via_spec_with_support(
             preseed_new_module: preseed_modules,
             allow_load_module_fallback: true,
         },
-    )?;
-    if !obj_from_bits(spec_bits).is_none() {
-        dec_ref_bits(_py, spec_bits);
+    );
+    let out_bits = result?;
+    // This branch executed a fresh spec. Cache hits and explicit loader/reload
+    // transactions never reach its parent-publication operation.
+    if let Err(error) = importlib_bind_submodule_on_parent(_py, resolved, out_bits, modules_ptr) {
+        dec_ref_bits(_py, out_bits);
+        return Err(error);
     }
-    Ok(out_bits)
+    Ok(Some(out_bits))
 }
 
 #[derive(Clone, Copy)]
@@ -2998,6 +2798,7 @@ impl Drop for ImportlibSpecExecTargetGuard {
     }
 }
 
+#[cfg(any(test, all(feature = "cext_loader", not(target_arch = "wasm32"))))]
 fn importlib_spec_exec_owns(module_bits: u64) -> bool {
     IMPORTLIB_SPEC_EXEC_TARGET.with(|target| target.get() == Some(module_bits))
 }
@@ -3294,64 +3095,32 @@ fn importlib_import_with_fallback(
     resolved_bits: u64,
     modules_ptr: *mut u8,
 ) -> Result<u64, u64> {
-    let result = importlib_import_with_fallback_inner(_py, resolved, resolved_bits, modules_ptr);
+    if !IMPORTLIB_SPEC_FIRST_IMPORTS.contains(&resolved)
+        && let crate::builtins::modules::ModuleImportOutcome::Imported(module) =
+            crate::builtins::modules::module_import_attempt(resolved_bits)?
+    {
+        return Ok(module);
+    }
+    if let Some(module) = importlib_import_via_spec(_py, resolved, resolved_bits, modules_ptr)? {
+        return Ok(module);
+    }
 
-    // If every import mechanism failed with ModuleNotFoundError, try loading a
-    // native C extension (.so / .dylib) from sys.path before giving up.
+    // Only an actual resolver miss reaches another admission mechanism. Errors
+    // from a registered initializer, finder, loader or publication propagate as
+    // the original pending exception, without text inspection or reconstruction.
     #[cfg(all(feature = "cext_loader", not(target_arch = "wasm32")))]
-    if result.is_err() && importlib_exception_should_fallback(_py, resolved) {
-        if let Some(module_bits) = importlib_try_cext_on_sys_path(_py, resolved)? {
-            return Ok(module_bits);
+    if let Some(module) = importlib_try_cext_on_sys_path(_py, resolved)? {
+        if let Err(error) = importlib_bind_submodule_on_parent(_py, resolved, module, modules_ptr) {
+            dec_ref_bits(_py, module);
+            return Err(error);
         }
-        // Extension search failed too – restore the original error.
-        return Err(raise_exception::<_>(
-            _py,
-            "ModuleNotFoundError",
-            &format!("No module named '{resolved}'"),
-        ));
+        return Ok(module);
     }
-
-    result
-}
-
-fn importlib_import_with_fallback_inner(
-    _py: &PyToken<'_>,
-    resolved: &str,
-    resolved_bits: u64,
-    modules_ptr: *mut u8,
-) -> Result<u64, u64> {
-    if IMPORTLIB_SPEC_FIRST_IMPORTS.contains(&resolved) {
-        return importlib_import_via_spec(_py, resolved, resolved_bits, modules_ptr);
-    }
-
-    let module_bits = crate::molt_module_import(resolved_bits);
-    if exception_pending(_py) {
-        if importlib_exception_should_fallback(_py, resolved) {
-            if !obj_from_bits(module_bits).is_none() {
-                dec_ref_bits(_py, module_bits);
-            }
-            return importlib_import_via_spec(_py, resolved, resolved_bits, modules_ptr);
-        }
-        // Exceptions raised while importing in another runtime lane can carry
-        // non-canonical class identities; rethrow in the current lane so
-        // Python-level try/except matching uses the local hierarchy.
-        importlib_rethrow_pending_exception(_py);
-        return Err(MoltObject::none().bits());
-    }
-
-    if !obj_from_bits(module_bits).is_none() {
-        let should_retry = importlib_module_is_empty_placeholder(_py, resolved, module_bits)?
-            || importlib_module_should_retry_empty(_py, resolved, module_bits)?;
-        if should_retry {
-            clear_exception(_py);
-            dec_ref_bits(_py, module_bits);
-            return importlib_import_via_spec(_py, resolved, resolved_bits, modules_ptr);
-        }
-        return Ok(module_bits);
-    }
-
-    clear_exception(_py);
-    importlib_import_via_spec(_py, resolved, resolved_bits, modules_ptr)
+    Err(raise_exception::<_>(
+        _py,
+        "ModuleNotFoundError",
+        &format!("No module named '{resolved}'"),
+    ))
 }
 
 /// Scan `sys.path` directories for a native C extension matching `module_name`,
@@ -3419,41 +3188,18 @@ fn importlib_bind_submodule_on_parent(
     }
 
     let parent_key_bits = alloc_str_bits(_py, parent_name)?;
-    let parent_bits = match importlib_dict_get_string_key_bits(_py, modules_ptr, parent_key_bits)? {
-        Some(bits) => bits,
-        None => {
-            if !obj_from_bits(parent_key_bits).is_none() {
-                dec_ref_bits(_py, parent_key_bits);
-            }
-            return Ok(());
-        }
+    let parent = importlib_dict_get_string_key_bits(_py, modules_ptr, parent_key_bits);
+    dec_ref_bits(_py, parent_key_bits);
+    let Some(parent_bits) = parent? else {
+        return Ok(());
     };
-    if !obj_from_bits(parent_key_bits).is_none() {
-        dec_ref_bits(_py, parent_key_bits);
-    }
-    let child_name_bits = alloc_str_bits(_py, child_name)?;
-    let set_result = match obj_from_bits(parent_bits).as_ptr() {
-        Some(parent_ptr) if unsafe { object_type_id(parent_ptr) } == TYPE_ID_MODULE => {
-            crate::builtins::modules::molt_module_set_attr(
-                parent_bits,
-                child_name_bits,
-                module_bits,
-            )
-        }
-        _ => molt_object_setattr(parent_bits, child_name_bits, module_bits),
-    };
-    if !obj_from_bits(set_result).is_none() {
-        dec_ref_bits(_py, set_result);
-    }
-    if !obj_from_bits(child_name_bits).is_none() {
-        dec_ref_bits(_py, child_name_bits);
-    }
-    // CPython binds submodules on parents as best-effort metadata; if a parent
-    // rejects setattr, keep import success and suppress the side-effect error.
-    if exception_pending(_py) {
-        clear_exception(_py);
-    }
-    Ok(())
+    crate::builtins::modules::publish_import_child(
+        _py,
+        parent_bits,
+        parent_name,
+        child_name,
+        module_bits,
+    )
 }
 
 fn string_sequence_arg_from_bits(

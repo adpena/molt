@@ -3,7 +3,6 @@ use super::*;
 #[test]
 fn raw_borrowed_intrinsics_keep_transport_without_callable_publication() {
     for runtime_name in [
-        "molt_type_of_borrowed",
         "molt_dict_getitem_borrowed",
         "molt_list_getitem_borrowed",
         "molt_tuple_getitem_borrowed",

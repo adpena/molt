@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from molt.cli.native_link_plan import resolve_native_target_spec
+
+from types import SimpleNamespace
+
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 import subprocess
 import sys
 
 import pytest
+from tools.command_execution import CommandExecutor
 
 import molt.cli as cli
 from molt.cli import build_results, link_pipeline, native_link_command, native_link_plan
@@ -20,6 +25,9 @@ from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkLoadingPolicy,
     source_extension_link_file,
 )
+
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 def _managed_tool(directory: Path, name: str) -> Path:
@@ -63,12 +71,12 @@ def _plan(
     monkeypatch.setattr(
         native_link_command,
         "_collect_cargo_native_link_deps",
-        lambda _runtime_lib, **_kwargs: [],
+        lambda _runtime_lib, **_kwargs: SimpleNamespace(flags=(), verify=lambda: None),
     )
     monkeypatch.setattr(
         native_link_command,
         "_append_darwin_runtime_frameworks",
-        lambda _command, *, target_triple: None,
+        lambda _command, *, target: None,
     )
     return native_link_command._build_native_link_plan(
         output_obj=output_obj,
@@ -77,7 +85,9 @@ def _plan(
         stub_path=stub_path,
         runtime_lib=runtime_lib,
         output_binary=tmp_path / "app",
-        target_triple=None,
+        target=resolve_native_target_spec(
+            None, host_platform=host_platform, host_arch=host_arch
+        ),
         sysroot_path=None,
         profile=profile,
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
@@ -230,7 +240,7 @@ def test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_r
     cc, ar, nm = (str(candidates[kind][0]) for kind in ("cc", "ar", "nm"))
 
     def run(command):
-        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        result = _COMMANDS.run(command, capture_output=True, text=True, timeout=30)
         assert result.returncode == 0, result.stderr
         return result.stdout
 
@@ -297,14 +307,14 @@ def test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_r
     monkeypatch.setattr(
         native_link_command,
         "_collect_cargo_native_link_deps",
-        lambda *args, **kwargs: [],
+        lambda *args, **kwargs: SimpleNamespace(flags=(), verify=lambda: None),
     )
     plan = native_link_command._build_native_link_plan(
         output_obj=app,
         stub_path=stub,
         runtime_lib=runtime,
         output_binary=tmp_path / "app.elf",
-        target_triple=target,
+        target=resolve_native_target_spec(target),
         sysroot_path=None,
         profile="dev",
         runtime_build_identity=RUNTIME_BUILD_IDENTITY,
@@ -529,7 +539,7 @@ def test_fast_linker_auto_detection_does_not_leak_across_target_formats(
     assert (
         native_link_command._resolve_native_linker_hint(
             profile="dev",
-            target_triple=None,
+            target=resolve_native_target_spec(None, host_platform="darwin"),
             host_platform="darwin",
         )
         is None
@@ -548,7 +558,7 @@ def test_windows_native_link_selects_available_lld_explicitly(
     assert (
         native_link_command._resolve_native_linker_hint(
             profile="dev",
-            target_triple=None,
+            target=resolve_native_target_spec(None, host_platform="win32"),
             host_platform="win32",
         )
         == "lld"
@@ -556,7 +566,7 @@ def test_windows_native_link_selects_available_lld_explicitly(
     assert (
         native_link_command._resolve_native_linker_hint(
             profile="release",
-            target_triple=None,
+            target=resolve_native_target_spec(None, host_platform="win32"),
             host_platform="win32",
         )
         == "lld"
@@ -586,7 +596,7 @@ def test_explicit_lld_selection_requests_the_target_specific_role(
     assert (
         native_link_command._resolve_native_linker_hint(
             profile="dev",
-            target_triple=None,
+            target=resolve_native_target_spec(None, host_platform=host_platform),
             host_platform=host_platform,
         )
         == "lld"
@@ -624,7 +634,9 @@ def test_native_driver_and_linker_prefer_one_managed_llvm_family(
     command, linker_hint, _target = (
         native_link_command._build_native_link_driver_command(
             output_obj=None,
-            target_triple=None,
+            target=resolve_native_target_spec(
+                None, host_platform="win32", host_arch="AMD64"
+            ),
             sysroot_path=None,
             profile="dev",
             host_platform="win32",
@@ -648,7 +660,7 @@ def test_explicit_cc_overrides_managed_driver(tmp_path: Path, monkeypatch) -> No
     command, linker_hint, _target = (
         native_link_command._build_native_link_driver_command(
             output_obj=None,
-            target_triple=None,
+            target=resolve_native_target_spec(None),
             sysroot_path=None,
             profile="dev",
         )
@@ -666,7 +678,7 @@ def test_explicit_mold_non_elf_selection_fails_before_link(
     with pytest.raises(RuntimeError, match="Linux ELF"):
         native_link_command._resolve_native_linker_hint(
             profile="dev",
-            target_triple=None,
+            target=resolve_native_target_spec(None, host_platform="darwin"),
             host_platform="darwin",
         )
 
@@ -946,3 +958,102 @@ def test_native_identity_flags_are_driver_ready(
         )
         == expected
     )
+
+
+@pytest.mark.parametrize(
+    "host_platform,host_arch",
+    [("linux", "x86_64"), ("win32", "AMD64"), ("darwin", "arm64")],
+)
+def test_host_spec_keeps_driver_and_runtime_selection_native(
+    tmp_path, monkeypatch, host_platform, host_arch
+):
+    from molt.cli.native_link_manifest import read_native_link_flags
+    from tests.cli.native_link_test_support import (
+        write_test_native_link_manifest,
+        write_test_static_archive,
+    )
+    from tests.runtime_build_identity_helper import native_runtime_staticlib_identity
+
+    target = resolve_native_target_spec(
+        None, host_platform=host_platform, host_arch=host_arch
+    )
+    driver = _managed_tool(tmp_path / "driver", "clang")
+    monkeypatch.setenv("CC", str(driver))
+    monkeypatch.delenv("MOLT_CROSS_CC", raising=False)
+    monkeypatch.delenv("CFLAGS", raising=False)
+    monkeypatch.delenv("MOLT_ARCH", raising=False)
+    monkeypatch.setenv("MOLT_DEV_LINKER", "off")
+    monkeypatch.setattr(
+        native_link_command, "llvm_named_tool_candidates", lambda *a, **k: ()
+    )
+    monkeypatch.setattr(
+        native_link_command, "validate_compiler_target", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        native_link_command, "_detect_macos_deployment_target", lambda _arch: "11.0"
+    )
+    runtime = tmp_path / "dev-fast" / "runtime.a"
+    runtime.parent.mkdir()
+    write_test_static_archive(runtime)
+    identity = native_runtime_staticlib_identity(
+        cargo_profile="dev-fast",
+        target_triple=None,
+        host_target=target.triple,
+        family_seed="host-target-selection",
+    )
+    write_test_native_link_manifest(
+        runtime, build_identity=identity, target_triple=None
+    )
+    command, _, normalized = native_link_command._build_native_link_driver_command(
+        output_obj=None,
+        target=target,
+        sysroot_path=None,
+        profile="dev",
+        host_platform=host_platform,
+        host_arch=host_arch,
+    )
+    assert Path(command[0]) == driver.resolve()
+    assert "-target" not in command
+    assert normalized is None
+    if host_platform == "darwin":
+        assert "-arch" in command
+        assert "-mmacosx-version-min=11.0" in command
+    inputs = read_native_link_flags(
+        runtime,
+        target_triple=target.cargo_target,
+        object_format=target.object_format.value,
+        runtime_build_identity=identity,
+    )
+    assert "-lc" in inputs.flags
+    with pytest.raises(RuntimeError, match="target mismatch"):
+        read_native_link_flags(
+            runtime,
+            target_triple=target.triple,
+            object_format=target.object_format.value,
+            runtime_build_identity=identity,
+        )
+
+
+def test_host_darwin_sdk_paths_are_not_injected_from_explicit_identity(monkeypatch):
+    from molt.cli import native_toolchain
+
+    target = resolve_native_target_spec(None, host_platform="darwin", host_arch="arm64")
+
+    def unexpected_sdk_lookup():
+        raise AssertionError("host target must use the native SDK selection")
+
+    monkeypatch.setattr(
+        native_toolchain, "_resolve_macos_sdk_root", unexpected_sdk_lookup
+    )
+    args = ["clang"]
+    native_toolchain._append_darwin_runtime_frameworks(args, target=target)
+    assert args[1:5] == ["-framework", "Security", "-framework", "CoreFoundation"]
+
+
+def test_linux_host_triple_projects_musl_abi(monkeypatch):
+    import sysconfig
+
+    monkeypatch.setattr(sysconfig, "get_config_var", lambda name: "x86_64-linux-musl")
+    target = resolve_native_target_spec(None, host_platform="linux", host_arch="x86_64")
+    assert target.triple == "x86_64-unknown-linux-musl"
+    assert target.cargo_target is None

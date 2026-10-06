@@ -206,7 +206,10 @@ fn exact_bool_store_value_is_neutral() {
     let obj = func.fresh_value();
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        entry.ops.push(op(OpCode::ConstBool, vec![], vec![b]));
+        entry.ops.push(TirOp {
+            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
+            ..op(OpCode::ConstBool, vec![], vec![b])
+        });
         entry.ops.push(raw_alloc(obj, 32));
         entry.ops.push(store(obj, b, 0));
         entry.terminator = Terminator::Return { values: vec![] };

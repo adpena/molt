@@ -49,7 +49,7 @@ def test_build_slot_dir_defaults_to_repo_tmp(monkeypatch, tmp_path: Path):
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     for name in ("MOLT_DIFF_TMPDIR", "TMPDIR", "TMP", "TEMP"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(cargo_execution, "_find_molt_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr(cargo_execution, "compiler_source_root", lambda: tmp_path)
 
     assert cargo_execution._build_slot_dir() == tmp_path / "tmp" / "molt-build-slots"
 

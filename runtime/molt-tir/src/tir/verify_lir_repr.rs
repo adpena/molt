@@ -82,6 +82,7 @@ mod tests {
 
     fn make_lir_function(blocks: HashMap<BlockId, LirBlock>) -> LirFunction {
         LirFunction {
+            container_storage: std::collections::HashMap::new(),
             name: "test_fn".into(),
             param_names: vec![],
             param_types: vec![],
@@ -102,7 +103,13 @@ mod tests {
                 id: entry,
                 args: vec![],
                 ops: vec![LirOp {
-                    tir_op: make_tir_op(OpCode::ConstInt, vec![], vec![ValueId(0)]),
+                    tir_op: TirOp {
+                        attrs: AttrDict::from([(
+                            "value".into(),
+                            molt_ir::tir::ops::AttrValue::Int(44),
+                        )]),
+                        ..make_tir_op(OpCode::ConstInt, vec![], vec![ValueId(0)])
+                    },
                     result_values: vec![LirValue {
                         id: ValueId(0),
                         ty: TirType::I64,
@@ -132,7 +139,13 @@ mod tests {
                 id: entry,
                 args: vec![],
                 ops: vec![LirOp {
-                    tir_op: make_tir_op(OpCode::ConstInt, vec![], vec![ValueId(0)]),
+                    tir_op: TirOp {
+                        attrs: AttrDict::from([(
+                            "value".into(),
+                            molt_ir::tir::ops::AttrValue::Int(45),
+                        )]),
+                        ..make_tir_op(OpCode::ConstInt, vec![], vec![ValueId(0)])
+                    },
                     result_values: vec![LirValue {
                         id: ValueId(0),
                         ty: TirType::I64,

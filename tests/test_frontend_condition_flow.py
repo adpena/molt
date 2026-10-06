@@ -1,11 +1,106 @@
 from __future__ import annotations
 
 import ast
+import sys
+import types
 from collections import Counter
 
 import pytest
 
 from molt.frontend import MoltOp, SimpleTIRGenerator
+from molt.frontend._types import CodeSlotDeclaration
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "if flag: later\nearly = 1\nlater = 2",
+        "x = (y := 1)",
+        "@decorator(later)\ndef nested(x=default): pass\n"
+        "later = 1\ndefault = 2\ndecorator = 3",
+        "try:\n a = 1\nexcept E as error:\n b = 2\nelse:\n c = 3\nfinally:\n d = 4",
+        "match subject:\n case cls(field) if guard: pass\n"
+        "subject = 1\ncls = 2\nguard = 3",
+        "result = [item + local for item in source]\nlocal = 1\nsource = []",
+        "result = [(found := item) for item in source]\nsource = []",
+        "local = 1\ndef inner(): return local\nother = 2",
+        "x: T\nT = 1",
+        "res = [[j for j in row] for row in source]\nsource = []",
+        "result = [x for x in source]\nreturn x",
+        "result = {(a := 1): (b := 2), (c := 3): (d := 4)}",
+        "from .foo import bar\nimport a.b.c as named",
+        "if False:\n hidden = missing\nreturn\nafter = other",
+        "with manager as first, other(first) as second:\n result = second",
+        "gen = (item + outside for item in source)\nsource = []\noutside = 1",
+        "return sum(arg for item in (1, 2))",
+        "return [lambda: item for item in (1, 2)]",
+        "item = 7\nearly = 8\nreaders = [lambda: item for item in (1, 2)]\n"
+        "return item, readers",
+        "readers = [lambda: arg for arg in (1, 2)]\nreturn arg, readers",
+        "readers = [lambda: item for item in (1, 2)]\nreturn item",
+        "if arg:\n factory = lambda values=[(found := item) for item in (1, 2)]: values\n"
+        "return found",
+    ],
+)
+def test_callable_code_names_match_independent_cpython_layout(body: str) -> None:
+    source = "def probe(arg, /, *args, kw=0, **kwargs):\n" + "".join(
+        "    " + line + "\n" for line in body.splitlines()
+    )
+    reference = next(
+        value
+        for value in compile(
+            source, "<code-layout>", "exec", dont_inherit=True
+        ).co_consts
+        if isinstance(value, types.CodeType)
+    )
+    node = ast.parse(source).body[0]
+    assert isinstance(node, ast.FunctionDef)
+    generator = SimpleTIRGenerator(target_python=sys.version_info[:2])
+    cells = generator._callable_cell_plan(node).cellvars
+    assert cells == reference.co_cellvars
+    layout = generator._collect_callable_name_layout(
+        posonly_params=["arg"],
+        pos_or_kw_params=[],
+        kwonly_params=["kw"],
+        vararg="args",
+        varkw="kwargs",
+        body=node.body,
+        cell_vars=cells,
+    )
+    assert layout.varnames == reference.co_varnames
+    assert layout.names == reference.co_names
+
+
+def test_inlined_cell_metadata_preserves_enclosing_binding_identity() -> None:
+    generator = SimpleTIRGenerator(target_python=(3, 12))
+    node = ast.parse(
+        "def probe(arg):\n"
+        "    readers = [lambda: item for item in (1, 2)]\n"
+        "    return item, readers\n"
+    ).body[0]
+    plan = generator._callable_cell_plan(node)
+    assert plan.cellvars == ("item",)
+    assert plan.captured == ()  # The final item read still resolves globally.
+    node = ast.parse(
+        "def probe(arg):\n"
+        "    readers = [lambda: arg for arg in (1, 2)]\n"
+        "    return arg, readers\n"
+    ).body[0]
+    plan = generator._callable_cell_plan(node)
+    assert plan.cellvars == plan.captured == ("arg",)
+
+
+def test_default_comprehension_private_cell_is_planned_before_branch() -> None:
+    generator = SimpleTIRGenerator(target_python=(3, 12))
+    node = ast.parse(
+        "def probe(flag):\n"
+        "    if flag:\n"
+        "        factory = lambda values=[(found := item) for item in (1, 2)]: values\n"
+        "    return found\n"
+    ).body[0]
+    plan = generator._callable_cell_plan(node)
+    assert plan.private == ("found",)
+    assert plan.cellvars == plan.captured == ()
 
 
 @pytest.mark.parametrize("target", [(3, 12), (3, 13), (3, 14)])
@@ -430,3 +525,158 @@ def test_conditional_module_alias_retains_all_provenance_paths() -> None:
     provenance = generator.imported_module_provenance["namespace"]
     assert "sys" in provenance
     assert len(provenance) == 2
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def f(arg):\n    item = 7\n    readers = [lambda: item for item in (1, 2)]\n    return item, readers",
+        "def f(arg):\n    return [lambda: item for item in (1, 2)]",
+        "def f(arg):\n    local = 7\n    reader = lambda: (arg, local)\n    return reader",
+        "def f(arg, /, extra=1, *rest, key=2, **kw):\n    return lambda: (arg, rest, kw)",
+        "def outer(value):\n    def f(arg):\n        return [lambda: (item, value, arg) for item in (1, 2)]\n    return f",
+    ],
+)
+def test_code_slot_declaration_matches_cpython_slot_lookup(source: str) -> None:
+    # CPython's own lookup checks non-parameter overlaps independently of the
+    # public-table projection used by the frontend and runtime.
+    pending = [compile(source, "<slots>", "exec")]
+    while pending:
+        code = pending.pop()
+        pending.extend(
+            item for item in code.co_consts if isinstance(item, types.CodeType)
+        )
+        if code.co_name != "f":
+            continue
+        parameter_count = code.co_argcount + code.co_kwonlyargcount
+        parameter_count += bool(code.co_flags & 0x04) + bool(code.co_flags & 0x08)
+        declaration = CodeSlotDeclaration(
+            code.co_varnames[:parameter_count],
+            code.co_varnames,
+            code.co_cellvars,
+            code.co_freevars,
+        )
+        expected = []
+        for index in range(
+            len(code.co_varnames) + len(code.co_cellvars) + len(code.co_freevars)
+        ):
+            try:
+                expected.append(code._varname_from_oparg(index))
+            except IndexError:
+                break
+        assert declaration.slots() == tuple(expected)
+        assert declaration.slots() is declaration.slots()
+        assert list(declaration.release_order((3, 12))) == list(range(len(expected)))
+        assert list(declaration.release_order((3, 13))) == list(range(len(expected)))
+        assert list(declaration.release_order((3, 14))) == list(
+            reversed(range(len(expected)))
+        )
+        return
+    raise AssertionError("the oracle fixture has no f code object")
+
+
+def test_code_slot_declaration_rejects_inconsistent_parameter_prefix() -> None:
+    with pytest.raises(ValueError, match="parameters must prefix"):
+        CodeSlotDeclaration(("argument",), ("other",), (), ())
+
+
+@pytest.mark.parametrize("future", [False, True])
+@pytest.mark.parametrize("dead", [False, True])
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "value: Annotation",
+        "value: Annotation = Initial",
+        "(value): Annotation",
+        "(value): Annotation = Initial",
+        "owner.member: Annotation",
+        "owner.member: Annotation = Initial",
+        "owner[index]: Annotation",
+        "owner[index]: Annotation = Initial",
+        "owner[start:stop:step]: Annotation",
+        "__annotations__: Annotation = Initial",
+        "__conditional_annotations__: Annotation = Initial",
+        "__annotate__: Annotation = Initial",
+        "class Inner:\n    value: Annotation",
+        "def inner():\n    value: Annotation",
+    ],
+)
+def test_annotation_code_names_match_independent_cpython_scope_and_version(
+    statement: str, dead: bool, future: bool
+) -> None:
+    # Run on each supported CPython oracle; the selected target always matches
+    # that oracle. Only compile the reference: annotation/target effects never
+    # execute. The same lexical visitor must isolate nested class/function bodies.
+    if dead:
+        statement = "if False:\n" + "\n".join(
+            "    " + line for line in statement.splitlines()
+        )
+    body = "before = Before\n" + statement + "\nafter = After\n"
+    prefix = "from __future__ import annotations\n" if future else ""
+    for module_scope in (True, False):
+        source = prefix + (
+            body
+            if module_scope
+            else "def probe():\n"
+            + "".join("    " + line + "\n" for line in body.splitlines())
+        )
+        reference = compile(source, "<annotation-names>", "exec", dont_inherit=True)
+        tree = ast.parse(source)
+        nodes = tree.body
+        if not module_scope:
+            function = next(node for node in nodes if isinstance(node, ast.FunctionDef))
+            nodes = function.body
+            reference = next(
+                value
+                for value in reference.co_consts
+                if isinstance(value, types.CodeType) and value.co_name == "probe"
+            )
+        generator = SimpleTIRGenerator(target_python=sys.version_info[:2])
+        generator.future_annotations = future
+        names = generator._collect_code_names_for_body(
+            nodes,
+            varnames=reference.co_varnames,
+            free_vars=reference.co_freevars,
+            module_scope=module_scope,
+        )
+        assert tuple(names) == reference.co_names
+
+
+@pytest.mark.parametrize("phi", [False, True])
+def test_if_lowering_keeps_cpython_branch_after_index_mutates_owner(phi: bool) -> None:
+    source = (
+        "values = [1]\n"
+        "def replace():\n    values[0] = 0\n    return 0\n"
+        "if values[(replace(), 0)[1]]:\n    result = 'before-index'\n"
+        "else:\n    result = 'after-index'\n"
+    )
+    namespace = {}
+    exec(compile(source, "<if-post-index-oracle>", "exec"), namespace)
+    assert namespace["result"] == "after-index"
+    ops = _ops(source, phi=phi)
+    strings = {op.args[0] for op in ops if op.kind == "CONST_STR" and op.args}
+    assert {"before-index", "after-index"} <= strings
+    generator = SimpleTIRGenerator(
+        module_name="condition_flow", enable_phi=phi, target_python=(3, 12)
+    )
+    tree = ast.parse(source)
+    generator.visit(tree)
+    live = generator._module_live_statements_for_target(tree.body)
+    assert any(isinstance(node, ast.If) for node in live)
+
+
+@pytest.mark.parametrize("phi", [False, True])
+def test_if_lowering_keeps_later_comprehension_iteration(phi: bool) -> None:
+    source = (
+        "y = 0\n"
+        "if [(y, (y := 1))[0] for _ in (0, 1)][1]:\n"
+        "    result = 'later-iteration'\n"
+        "else:\n    result = 'first-iteration'\n"
+    )
+    namespace = {}
+    exec(compile(source, "<comprehension-if-oracle>", "exec"), namespace)
+    assert namespace["result"] == "later-iteration"
+    strings = {
+        op.args[0] for op in _ops(source, phi=phi) if op.kind == "CONST_STR" and op.args
+    }
+    assert {"later-iteration", "first-iteration"} <= strings

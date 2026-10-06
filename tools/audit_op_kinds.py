@@ -13,9 +13,9 @@ copy of the table:
      any kind it does not recognize is silently lifted to ``OpCode::Copy`` with
      the spelling stashed in ``_original_kind`` (the ``_ => OpCode::Copy`` arm),
   3. the LLVM ``preserved_ops`` handler-owned ``HANDLED_KINDS`` slices,
-     vector-reduction table, and ABI-exact ``molt_<kind>`` runtime fallback,
+     and ABI-exact ``molt_<kind>`` runtime fallback,
   4. the RC/alias ``CopyLowering`` classifier ``classify_copy_kind`` /
-     ``copy_kind_mints_fresh_owned_ref`` / ``copy_kind_mints_owned_alias_ref`` /
+     ``copy_kind_mints_owned_value`` / ``copy_kind_mints_owned_alias_ref`` /
      ``copy_kind_is_explicit_no_heap_move``
      (``alias_analysis.rs``) — whose ``_ => TransparentAlias`` default is the
      UAF-escalation precondition,
@@ -47,7 +47,7 @@ Usage::
 
     python3 tools/audit_op_kinds.py                # human report (drift matrix)
     python3 tools/audit_op_kinds.py --json         # machine-readable matrix
-    python3 tools/audit_op_kinds.py --check        # CI: exit 1 on NEW danger
+    python3 tools/audit_op_kinds.py --check        # CI: exit 1 on new or stale findings
     python3 tools/audit_op_kinds.py --write-baseline
 
 THE AUTHORITATIVE LAYER. The ``MoltOp.kind`` vocabulary (~1777 uppercase
@@ -94,7 +94,6 @@ LLVM_PRESERVED_OPS_RS = (
     ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops.rs"
 )
 LLVM_PRESERVED_OPS_DIR = LLVM_PRESERVED_OPS_RS.with_suffix("")
-LLVM_VEC_REDUCTIONS_RS = LLVM_PRESERVED_OPS_DIR / "vector_reductions.rs"
 ALIAS_RS = tir_path("passes/alias_analysis.rs")
 NATIVE_RS = ROOT / "runtime/molt-backend-native/src/native_backend/function_compiler.rs"
 NATIVE_FC_DIR = (
@@ -143,11 +142,12 @@ def _load_op_kinds_toml() -> dict:
     return tomllib.loads(OP_KINDS_TOML.read_text(encoding="utf-8"))
 
 
-def mapper_kinds_from_registry(data: dict) -> set[str]:
-    """The kind_to_opcode mapper vocabulary = every canonical + alias spelling of
-    every [[kind]] row in the registry."""
+def mapper_kinds_from_registry(data: dict, *, opcode: str | None = None) -> set[str]:
+    """Canonical + alias spellings, optionally for one mapped opcode."""
     out: set[str] = set()
     for row in data.get("kind", []):
+        if opcode is not None and row["mapper_opcode"] != opcode:
+            continue
         out.add(row["canonical"])
         out.update(row.get("aliases", []))
     return out
@@ -382,9 +382,8 @@ def extract_llvm_preserved_op_kinds(root: Path = ROOT) -> set[str]:
     """LLVM dedicated preserved-op coverage from handler-owned slices.
 
     `preserved_ops.rs` is only a dispatcher. The source of truth for dedicated
-    LLVM coverage is each handler's local `HANDLED_KINDS` const, while
-    vectorized reductions remain in their arity-bearing table and are reported
-    separately by `extract_vec_reduction_ops`.
+    LLVM coverage is each handler's local `HANDLED_KINDS` const. Exact boxed
+    calls, including vector reductions, use the shared runtime ABI projection.
     """
     kinds: set[str] = set()
     for path, _, const_name in _llvm_preserved_handler_slices():
@@ -699,6 +698,18 @@ def extract_llvm_boxed_runtime_abis():
     return {fact.symbol: fact for fact in runtime_boxed_abi_facts().values()}
 
 
+def extract_owned_result_runtime_kinds() -> set[str]:
+    """Read canonical return custody and exact operation aliases, not i64 shape."""
+    import tools.llvm_runtime_abi_audit  # noqa: F401 - puts tools/ on sys.path
+    from wasm_abi_gen.manifest import load_manifest, runtime_operation_return_specs
+
+    return {
+        kind
+        for kind, contract in runtime_operation_return_specs(load_manifest()).items()
+        if contract == "owned_object"
+    }
+
+
 def runtime_extern_boxed_shape_matches(ext: RuntimeExtern, boxed) -> bool:
     """Shape checking is secondary to membership in the boxed semantic authority."""
     return (
@@ -936,7 +947,9 @@ def extract_native_handler_arm_kinds(
         if canonical in arms:
             arms.update(spellings)
         return arms
-    if len(routed_kinds) == 1 and not re.search(r"\bmatch\b", masked):
+    # A sole routed kind needs no wire-kind dispatch. Matches on value,
+    # representation or optional results do not create an operation domain.
+    if len(routed_kinds) == 1 and not re.search(r"\bop\s*\.\s*kind\b", masked):
         return set(routed_kinds)
     raise RustMatchParseError(
         f"{path}:{fn_name} handles {len(routed_kinds)} routed native kinds "
@@ -1123,37 +1136,14 @@ def structural_kinds_from_registry(data: dict) -> set[str]:
     return out
 
 
-def extract_vec_reduction_ops(path: Path = LLVM_VEC_REDUCTIONS_RS) -> set[str]:
-    """The LLVM `VEC_REDUCTION_OPS` exact table (kind, arity). The vec-* family is
-    lowered on LLVM by `vec_reduction_runtime_symbol(kind)` BEFORE the dedicated
-    `match`, so membership here is real LLVM coverage the arm-extractor misses."""
-    src = path.read_text(encoding="utf-8")
-    m = re.search(r"VEC_REDUCTION_OPS\s*:\s*&\[\(&str, usize\)\]\s*=\s*&\[", src)
-    if m is None:
-        return set()
-    start = m.end()
-    depth = 1
-    i = start
-    while i < len(src) and depth > 0:
-        c = src[i]
-        if c == "[":
-            depth += 1
-        elif c == "]":
-            depth -= 1
-        i += 1
-    block = src[start : i - 1]
-    return set(re.findall(r'\(\s*"([a-z0-9_]+)"\s*,', block))
-
-
 @dataclass
 class KindRow:
     kind: str
     frontend_emits: bool
     mapper_maps: bool
     llvm_dedicated_arm: bool
-    llvm_vec_table: bool  # in VEC_REDUCTION_OPS (lowered before the match)
     llvm_runtime_fallback_eligible: bool
-    classifier_class: str  # FreshValue / OwnedAlias / TransparentAlias / InertMarker
+    classifier_class: str  # OwnedValue / OwnedAlias / TransparentAlias / InertMarker
     native_arm: bool  # ADVISORY: textual function_compiler.rs scan ∪ routing slices
     native_routing_slice: (
         bool  # EXACT: in a fc/*::HANDLED_KINDS/INLINE/NO_CODEGEN slice
@@ -1167,13 +1157,9 @@ class KindRow:
     @property
     def llvm_covered(self) -> bool:
         """A `Copy`-carried kind is soundly lowered on the LLVM lane iff it has a
-        dedicated arm, is in the vec table, or the runtime-call fallback can emit
-        its exact ABI. Otherwise the LLVM `Copy` arm FAILS LOUD at build."""
-        return (
-            self.llvm_dedicated_arm
-            or self.llvm_vec_table
-            or self.llvm_runtime_fallback_eligible
-        )
+        dedicated arm or the runtime-call fallback can emit its exact ABI.
+        Otherwise the LLVM `Copy` arm FAILS LOUD at build."""
+        return self.llvm_dedicated_arm or self.llvm_runtime_fallback_eligible
 
     def as_dict(self) -> dict:
         return {
@@ -1181,7 +1167,6 @@ class KindRow:
             "frontend_emits": self.frontend_emits,
             "mapper_maps": self.mapper_maps,
             "llvm_dedicated_arm": self.llvm_dedicated_arm,
-            "llvm_vec_table": self.llvm_vec_table,
             "llvm_runtime_fallback_eligible": self.llvm_runtime_fallback_eligible,
             "llvm_covered": self.llvm_covered,
             "classifier_class": self.classifier_class,
@@ -1199,9 +1184,7 @@ class AuditResult:
     frontend: FrontendKinds
     mapper_kinds: set[str]
     llvm_arms: set[str]
-    llvm_vec_table: set[str]
-    fresh_value: set[str]
-    fresh_value_prefixes: list[str]
+    owned_value: set[str]
     owned_alias: set[str]
     inert_marker: set[str]
     transparent_alias: set[str]
@@ -1211,6 +1194,8 @@ class AuditResult:
     llvm_boxed_runtime_abi_mismatch: list[str]
     llvm_preserved_handler_routing_drift: list[str]
     native_handler_routing_drift: list[str]
+    owned_result_runtime_kinds: set[str] = field(default_factory=set)
+    copy_mapper_kinds: set[str] = field(default_factory=set)
 
     def dangerous(self) -> dict[str, list[str]]:
         """Categorize dangerous cells by the PRECISE bug preconditions.
@@ -1224,40 +1209,41 @@ class AuditResult:
         cats: dict[str, list[str]] = {
             # D1 — LLVM-coverage gap (the floordiv-class precondition). Emitted,
             # not structural, NOT mapped to a first-class opcode, and NOT covered
-            # on the LLVM lane (no dedicated arm, not in the vec table, no
+            # on the LLVM lane (no dedicated arm and no
             # ABI-eligible runtime fallback). On LLVM this hits the `Copy` fail-loud guard
             # = a HARD BUILD ERROR for any program that reaches the op. (Loud, not
             # silent — but still a real compile gap for that op on LLVM.)
             "llvm_coverage_gap": [],
-            # D2 — UAF precondition (the worst class). Classified `FreshValue`
+            # D2 — UAF precondition (the worst class). Classified `OwnedValue`
             # (the drop pass emits an independent DecRef on its result) but NOT
             # covered on the LLVM lane. If it reached LLVM codegen it would be a
             # silent operand-0 passthrough AND a drop-insertion double-free. The
             # LLVM fatal gate (`copy_kind_reaches_no_incref_passthrough`) is
             # designed to make this set EMPTY; a non-empty result is classifier <->
             # backend drift.
-            "freshvalue_llvm_gap": [],
+            "ownedvalue_llvm_gap": [],
             # D3 — silent-alias precondition (the alias_analysis.rs `_ =>`
             # fallthrough = the UAF-escalation root). Emitted, not structural,
             # unmapped, AND the classifier did NOT place it in an EXPLICIT class
             # (it fell through to the `_ => TransparentAlias` default), yet it is a
             # value/heap producer (heuristic: an ABI-eligible `molt_<kind>`
             # runtime fallback exists, i.e. it is a real boxed runtime op). Such a
-            # kind is unioned-by-default into operand 0's alias root; if it ever
-            # mints a fresh ref the drop pass leaks it (today) and a future
-            # promotion to FreshValue without a backend arm escalates to UAF.
+            # kind has its own alias root, but no release obligation. If it
+            # mints an owned ref the drop pass leaks it, and a future
+            # promotion to OwnedValue without a backend arm escalates to UAF.
             "classifier_silent_fallthrough": [],
             # D4 — no SimpleIR-lane lowering. Emitted, not structural, unmapped,
             # AND neither native nor WASM has a dispatch arm AND no ABI-eligible
             # runtime fallback. Nothing can lower it on the native/WASM lanes (subject to
             # the arm-detector's over-counting caveat — see extract_simpleir_arm_kinds).
             "simpleir_lane_gap": [],
-            # D5 — dead mapper vocabulary. A first-class opcode mapping the
-            # frontend never emits (a STALE-BASE smell: the spelling the emitter
-            # uses may have diverged, à la floor_div).
+            # D5 — frontend-dormant mapper vocabulary. This records absence
+            # from serialization handlers, not from typed passes or reverse
+            # serialization. Explicit aliases may also be intentionally absent.
             "mapped_never_emitted": [],
-            # D6 — dead FreshValue allow-list entry the frontend never emits.
-            "freshvalue_never_emitted": [],
+            # D6 — frontend-dormant OwnedValue vocabulary; an internal
+            # producer can still require the ownership row.
+            "ownedvalue_never_emitted": [],
             # D7 — normalized boxed-call contracts must match runtime export
             # shapes, including both owned-value and void results.
             "llvm_boxed_runtime_abi_mismatch": list(
@@ -1284,6 +1270,18 @@ class AuditResult:
             # const and `match op.kind.as_str()` body must be exact peers; this
             # catches both unreachable arms and routed kinds that have no arm.
             "native_handler_routing_drift": list(self.native_handler_routing_drift),
+            # D10 — owned Copy return classified as a transparent alias.
+            # The audit finds an emitted or explicitly lowered Copy operation
+            # with a result and a canonical owned-object return contract, yet
+            # the classifier records no independent result custody. This is a
+            # heap-result leak candidate, not proof of one: the boxed ABI does
+            # not distinguish heap from immediate results. Establish the actual
+            # producer and returned representation before changing the shared
+            # ownership contract. A heap-capable result needs independent result
+            # custody; exact bool, None, or float results need no heap release.
+            # A runtime service callable through an ordinary Call is outside
+            # this Copy-classifier contract.
+            "owned_result_transparent_alias": [],
         }
         for kind, row in self.rows.items():
             if row.structural:
@@ -1292,8 +1290,7 @@ class AuditResult:
                 continue
             emitted_unmapped = row.frontend_emits and not row.mapper_maps
             explicit_classified = (
-                kind in self.fresh_value
-                or any(kind.startswith(p) for p in self.fresh_value_prefixes)
+                kind in self.owned_value
                 or kind in self.owned_alias
                 or kind in self.inert_marker
                 or kind in self.transparent_alias
@@ -1302,10 +1299,10 @@ class AuditResult:
             if emitted_unmapped and not row.llvm_covered:
                 cats["llvm_coverage_gap"].append(kind)
             if (
-                row.classifier_class in {"FreshValue", "OwnedAlias"}
+                row.classifier_class in {"OwnedValue", "OwnedAlias"}
                 and not row.llvm_covered
             ):
-                cats["freshvalue_llvm_gap"].append(kind)
+                cats["ownedvalue_llvm_gap"].append(kind)
             if (
                 emitted_unmapped
                 and not explicit_classified
@@ -1321,28 +1318,45 @@ class AuditResult:
                 cats["simpleir_lane_gap"].append(kind)
             if row.mapper_maps and not row.frontend_emits:
                 cats["mapped_never_emitted"].append(kind)
-            if row.classifier_class == "FreshValue" and not row.frontend_emits:
-                cats["freshvalue_never_emitted"].append(kind)
+            if row.classifier_class == "OwnedValue" and not row.frontend_emits:
+                cats["ownedvalue_never_emitted"].append(kind)
             # D8 — native codegen gap. A frontend-emitted, non-structural kind
             # with no native routing SLICE is either a result-producing panic or
             # a no-result side-effect/control-flow skip. Keyed on the exact
             # routing slices, not the advisory textual native_arm.
             if row.frontend_emits and not row.native_routing_slice:
                 cats["native_codegen_gap"].append(kind)
+            # The emitter and exact preserved lowering routes establish the
+            # operation vocabulary, including internally generated operations.
+            # Boxed-call eligibility alone only says a runtime service is
+            # callable; it does not emit a Copy or run its result classifier.
+            # The advisory textual native/WASM arm scans cannot establish this
+            # scope either. First-class non-Copy opcodes have their own result
+            # custody even when a same-named boxed runtime fallback exists.
+            copy_operation = (
+                row.frontend_emits or row.native_routing_slice or row.llvm_dedicated_arm
+            ) and (not row.mapper_maps or kind in self.copy_mapper_kinds)
+            if (
+                copy_operation
+                and row.produces_result
+                and row.classifier_class == "TransparentAlias"
+                and kind in self.owned_result_runtime_kinds
+                and kind not in self.no_heap_move
+            ):
+                cats["owned_result_transparent_alias"].append(kind)
         return {k: sorted(v) for k, v in cats.items()}
 
 
 def classify(
     kind: str,
-    fresh_value: set[str],
-    fresh_prefixes: list[str],
+    owned_value: set[str],
     owned_alias: set[str],
     inert: set[str],
     transparent_alias: set[str],
     no_heap_move: set[str],
 ) -> str:
-    if kind in fresh_value or any(kind.startswith(p) for p in fresh_prefixes):
-        return "FreshValue"
+    if kind in owned_value:
+        return "OwnedValue"
     if kind in owned_alias:
         return "OwnedAlias"
     if kind in inert:
@@ -1351,8 +1365,8 @@ def classify(
         return "TransparentAlias"
     if kind in no_heap_move:
         return "TransparentAlias"
-    # The classifier's `_ =>` default. Every kind reaching here is treated as a
-    # transparent alias of operand 0 by `classify_copy_kind`.
+    # The classifier's `_ =>` default establishes non-owning custody only.
+    # Source identity requires the separate shared no_heap_alias_source fact.
     return "TransparentAlias"
 
 
@@ -1363,8 +1377,8 @@ def run_audit() -> AuditResult:
     # generated tables). See the OP_KINDS_TOML note above.
     registry = _load_op_kinds_toml()
     mapper = mapper_kinds_from_registry(registry)
-    fresh = set(registry.get("classifier_fresh_value", []))
-    fresh_prefixes = list(registry.get("classifier_fresh_value_prefixes", []))
+    copy_mapper = mapper_kinds_from_registry(registry, opcode="Copy")
+    owned = set(registry.get("classifier_owned_value", []))
     owned_alias = set(registry.get("classifier_owned_alias", []))
     inert = set(registry.get("classifier_inert_marker", []))
     transparent_alias = set(registry.get("classifier_transparent_alias", []))
@@ -1372,7 +1386,6 @@ def run_audit() -> AuditResult:
     # Dedicated routes remain handler-owned. Generic boxed-call eligibility
     # comes only from the normalized ABI projection shared with the generator.
     llvm_arms = extract_llvm_preserved_op_kinds()
-    llvm_vec = extract_vec_reduction_ops()
     runtime_externs = extract_runtime_molt_externs()
     runtime_import_abis = extract_llvm_boxed_runtime_abis()
     runtime_syms = set(runtime_externs)
@@ -1382,7 +1395,6 @@ def run_audit() -> AuditResult:
         if (classified := runtime_import_abis.get(symbol)) is not None
         if symbol.startswith("molt_")
         and symbol.removeprefix("molt_") not in llvm_arms
-        and symbol.removeprefix("molt_") not in llvm_vec
         and runtime_extern_boxed_shape_matches(ext, classified)
     }
     boxed_runtime_mismatches = llvm_boxed_runtime_abi_mismatches()
@@ -1404,9 +1416,9 @@ def run_audit() -> AuditResult:
         fk.all
         | mapper
         | llvm_arms
-        | llvm_vec
         | llvm_runtime_fallback
-        | fresh
+        | native_routing
+        | owned
         | owned_alias
         | inert
         | transparent_alias
@@ -1420,12 +1432,10 @@ def run_audit() -> AuditResult:
             frontend_emits=kind in fk.all,
             mapper_maps=kind in mapper,
             llvm_dedicated_arm=kind in llvm_arms,
-            llvm_vec_table=kind in llvm_vec,
             llvm_runtime_fallback_eligible=kind in llvm_runtime_fallback,
             classifier_class=classify(
                 kind,
-                fresh,
-                fresh_prefixes,
+                owned,
                 owned_alias,
                 inert,
                 transparent_alias,
@@ -1443,9 +1453,7 @@ def run_audit() -> AuditResult:
         frontend=fk,
         mapper_kinds=mapper,
         llvm_arms=llvm_arms,
-        llvm_vec_table=llvm_vec,
-        fresh_value=fresh,
-        fresh_value_prefixes=fresh_prefixes,
+        owned_value=owned,
         owned_alias=owned_alias,
         inert_marker=inert,
         transparent_alias=transparent_alias,
@@ -1455,6 +1463,8 @@ def run_audit() -> AuditResult:
         llvm_boxed_runtime_abi_mismatch=boxed_runtime_mismatches,
         llvm_preserved_handler_routing_drift=llvm_preserved_handler_routing_drift,
         native_handler_routing_drift=native_handler_routing_drift,
+        owned_result_runtime_kinds=extract_owned_result_runtime_kinds(),
+        copy_mapper_kinds=copy_mapper,
     )
 
 
@@ -1514,8 +1524,8 @@ def self_validate(res: AuditResult) -> list[str]:
         )
     # Classifier anchors.
     check(
-        res.rows["slice"].classifier_class == "FreshValue",
-        "'slice' must classify FreshValue",
+        res.rows["slice"].classifier_class == "OwnedValue",
+        "'slice' must classify OwnedValue",
     )
     check(
         res.rows.get("guard_int") is not None
@@ -1585,6 +1595,39 @@ def self_validate(res: AuditResult) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+# Reporting context only. These explanations do not establish producer
+# reachability, refine result representation, or change any finding predicate.
+_FINDING_GUIDANCE = {
+    "mapped_never_emitted": (
+        "Frontend-only observation: no serialization handler emits this mapped "
+        "spelling. Typed compiler passes, reverse serialization, and explicit "
+        "aliases may still require it. This category does not prove dead "
+        "operations or missing mappings; inspect those producers before removal."
+    ),
+    "ownedvalue_never_emitted": (
+        "Frontend-only observation: no serialization handler emits this "
+        "OwnedValue spelling. Internal producers may still require its ownership "
+        "classification. Frontend absence does not prove an unused ownership row."
+    ),
+    "owned_result_transparent_alias": (
+        "Owned-return candidate: a Copy operation's canonical return contract "
+        "transfers an owner, but its classifier treats the result as a "
+        "transparent alias. A heap-capable result needs independent result "
+        "custody; exact bool, None, or float results need no heap release. "
+        "Establish result representation and the actual producer path before "
+        "changing the ownership class. This count is not a count of proven leaks."
+    ),
+    "native_codegen_gap": (
+        "A frontend-emitted kind has no exact native routing slice. "
+        "Result-producing operations fail at dispatch; resultless side effects "
+        "can disappear. Reconcile the owning handler and routing authority."
+    ),
+    "native_handler_routing_drift": (
+        "Reconcile the handler's HANDLED_KINDS with its adjacent dispatch arms."
+    ),
+}
+
+
 def _b(v: bool) -> str:
     return "Y" if v else "."
 
@@ -1605,9 +1648,7 @@ def print_report(res: AuditResult) -> None:
             print(f"      {rel_path}:{ln}: {dump}")
     print(f"  ssa.rs kind_to_opcode arms               : {len(res.mapper_kinds)}")
     print(f"  llvm dedicated arms                      : {len(res.llvm_arms)}")
-    print(f"  llvm VEC_REDUCTION_OPS table              : {len(res.llvm_vec_table)}")
-    print(f"  classifier FreshValue allow-list         : {len(res.fresh_value)}")
-    print(f"    + prefix rules                         : {res.fresh_value_prefixes}")
+    print(f"  classifier OwnedValue allow-list         : {len(res.owned_value)}")
     print(f"  classifier OwnedAlias allow-list         : {len(res.owned_alias)}")
     print(f"  classifier InertMarker arms              : {len(res.inert_marker)}")
     print(f"  classifier transparent-alias set         : {len(res.transparent_alias)}")
@@ -1626,6 +1667,8 @@ def print_report(res: AuditResult) -> None:
         if not items:
             continue
         print(f"-- {cat} ({len(items)}) --")
+        if guidance := _FINDING_GUIDANCE.get(cat):
+            print(f"   {guidance}")
         for k in items:
             if k not in res.rows:
                 print(f"   {k}")
@@ -1634,7 +1677,6 @@ def print_report(res: AuditResult) -> None:
             print(
                 f"   {k:32s} mapper={_b(row.mapper_maps)} "
                 f"llvm_arm={_b(row.llvm_dedicated_arm)} "
-                f"llvm_vec={_b(row.llvm_vec_table)} "
                 f"llvm_abi={_b(row.llvm_runtime_fallback_eligible)} "
                 f"class={row.classifier_class:16s} "
                 f"native={_b(row.native_arm)} wasm={_b(row.wasm_arm)}"
@@ -1643,15 +1685,15 @@ def print_report(res: AuditResult) -> None:
 
     print(
         "FULL DRIFT MATRIX  (fe=frontend-emits map=mapper-arm la=llvm-arm "
-        "lv=llvm-vec ls=llvm-sym st=structural/pre-SSA)"
+        "ls=llvm-sym st=structural/pre-SSA)"
     )
-    hdr = f"{'kind':34s} fe map  la lv ls {'classifier':16s} nat wasm st"
+    hdr = f"{'kind':34s} fe map  la ls {'classifier':16s} nat wasm st"
     print(hdr)
     print("-" * len(hdr))
     for kind, row in res.rows.items():
         print(
             f"{kind:34s} {_b(row.frontend_emits)}   {_b(row.mapper_maps)}   "
-            f"{_b(row.llvm_dedicated_arm)}  {_b(row.llvm_vec_table)}  "
+            f"{_b(row.llvm_dedicated_arm)}  "
             f"{_b(row.llvm_runtime_fallback_eligible)}  "
             f"{row.classifier_class:16s} {_b(row.native_arm)}   {_b(row.wasm_arm)}   "
             f"{_b(row.structural)}"
@@ -1679,11 +1721,14 @@ def check_against_baseline(res: AuditResult) -> int:
     base = baseline.get("dangerous", {})
     current = res.dangerous()
     rc = 0
+    changed_categories: set[str] = set()
     for cat in sorted(set(current) | set(base)):
         current_items = set(current.get(cat, []))
         base_items = set(base.get(cat, []))
         new = sorted(current_items - base_items)
         stale = sorted(base_items - current_items)
+        if new or stale:
+            changed_categories.add(cat)
         if new:
             rc = 1
             print(
@@ -1700,26 +1745,15 @@ def check_against_baseline(res: AuditResult) -> int:
         print("op-kind drift check: OK (dangerous-cell baseline is exact)")
     else:
         print(
-            "\nA new op kind drifted across the frontend/backend boundary. "
-            "Add a mapper arm in ssa.rs kind_to_opcode (or, for a CFG/SSA-consumed "
-            "control kind, add a [[simpleir_control_kind]] row in op_kinds.toml), "
-            "classify it in alias_analysis.rs, ensure LLVM coverage "
-            "(dedicated arm or molt_<kind> symbol), and refresh the baseline once "
-            "the fix lands. If the error is stale baseline-only danger, refresh "
-            "the baseline from the current audit after verifying the removal is "
-            "intentional.\n"
-            "If the failure is in 'native_codegen_gap', a frontend-emitted kind "
-            "has no native routing slice: result-producing ops panic in the "
-            "native dispatch catch-all, while no-result side-effect/control-flow "
-            "ops silently disappear. Add the kind to the owning "
-            "`function_compiler/fc/*::HANDLED_KINDS` (or, if it legitimately "
-            "needs no native codegen, to `op_family::NATIVE_NO_CODEGEN_RESULT_KINDS`). "
-            "If the failure is in 'native_handler_routing_drift', align the "
-            "handler's `HANDLED_KINDS` const with its adjacent "
-            "`match op.kind.as_str()` arms. Refresh the baseline only after the "
-            "structural fix lands.",
+            "\nThe audit differs from its committed baseline. New and stale "
+            "entries both fail. Investigate the named category and current "
+            "source evidence before changing mappings, ownership, routing, or "
+            "the baseline.",
             file=sys.stderr,
         )
+        for cat in sorted(changed_categories):
+            if guidance := _FINDING_GUIDANCE.get(cat):
+                print(f"{cat}: {guidance}", file=sys.stderr)
     return rc
 
 
@@ -1729,7 +1763,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument(
         "--check",
         action="store_true",
-        help="CI mode: exit 1 if new dangerous cells appear vs the baseline",
+        help="CI mode: exit 1 if findings are new or stale vs the baseline",
     )
     ap.add_argument(
         "--write-baseline",

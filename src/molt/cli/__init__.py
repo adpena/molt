@@ -47,6 +47,7 @@ from typing import (
     cast,
 )
 
+from molt.source_root import compiler_source_root
 from molt.compat import CompatibilityError
 from molt import backend_daemon_custody as _daemon_custody
 from molt import process_guard as _process_guard
@@ -244,15 +245,11 @@ from molt.cli.lockfiles import (
     _write_lock_check_cache,
 )
 from molt.cli.project_roots import (
-    _find_molt_root,
-    _find_molt_root_cached,
     _find_project_root,
-    _find_project_root_cached,
     _has_molt_repo_markers,
     _has_project_markers,
     _is_path_within,
     _require_molt_root,
-    _resolve_root_override,
 )
 from molt.cli.runtime_paths import (
     _RUNTIME_STDLIB_PROFILE_ALIASES,

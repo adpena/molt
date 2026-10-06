@@ -9,6 +9,7 @@ import subprocess
 import pytest
 
 from molt.cli import source_build_environment as authority
+from molt.cli import source_build_environment_schema as authority_schema
 from tests.python_environment_test_support import runtime_identity_manifest
 
 
@@ -82,7 +83,7 @@ def test_recipe_probe_rejects_invalid_or_unattested_runtime(monkeypatch, output)
         lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, output, ""),
     )
     with pytest.raises(
-        authority.SourceBuildEnvironmentError, match="runtime probe returned"
+        authority_schema.SourceBuildEnvironmentError, match="runtime probe returned"
     ):
         authority._probe_source_build_python(Path("selected-python"))
 
@@ -96,6 +97,7 @@ def test_recipe_probe_reports_failure_instead_of_inprocess_fallback(monkeypatch)
         ),
     )
     with pytest.raises(
-        authority.SourceBuildEnvironmentError, match="runtime content: capture refused"
+        authority_schema.SourceBuildEnvironmentError,
+        match="runtime content: capture refused",
     ):
         authority._probe_source_build_python(Path("selected-python"))

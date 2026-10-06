@@ -1,6 +1,68 @@
 use super::*;
 
 #[test]
+fn owned_literal_payload_survives_repeated_ssa_sccp_roundtrips() {
+    let byte_cases = [
+        ("const_str", vec![]),
+        ("const_str", vec![0, b'a', 0]),
+        ("const_str", vec![0xed, 0xa0, 0x80]),
+        ("const_str", vec![0xed, 0xbf, 0xbf, b'f']),
+        ("const_bytes", vec![]),
+        ("const_bytes", vec![0, 0xff, 0x80]),
+    ];
+    let mut cases: Vec<OpIR> = byte_cases
+        .into_iter()
+        .map(|(kind, bytes)| OpIR {
+            kind: kind.into(),
+            bytes: Some(bytes),
+            out: Some("v0".into()),
+            ..OpIR::default()
+        })
+        .collect();
+    cases.extend(
+        [
+            ("const_str", ""),
+            ("const_str", "a\0é"),
+            ("const_bigint", "-9223372036854775809"),
+        ]
+        .into_iter()
+        .map(|(kind, text)| OpIR {
+            kind: kind.into(),
+            s_value: Some(text.into()),
+            out: Some("v0".into()),
+            ..OpIR::default()
+        }),
+    );
+    for literal in cases {
+        let mut function = FunctionIR {
+            name: "owned_literal_roundtrip".into(),
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            ops: vec![
+                literal.clone(),
+                OpIR {
+                    kind: "ret".into(),
+                    args: Some(vec!["v0".into()]),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        };
+        for _ in 0..2 {
+            let mut tir = lower_to_tir(&function);
+            crate::tir::passes::sccp::run(&mut tir);
+            function.ops = lower_to_simple_ir(&tir);
+            let actual = function
+                .ops
+                .iter()
+                .find(|op| op.kind == literal.kind)
+                .unwrap();
+            assert_eq!(actual.s_value, literal.s_value);
+            assert_eq!(actual.bytes, literal.bytes);
+        }
+    }
+}
+
+#[test]
 fn boxed_projection_preserves_independent_box_and_unbox_drop_obligations() {
     let mut func = TirFunction::new(
         "full_width_projection".into(),
@@ -166,6 +228,104 @@ fn callable_provenance_and_execution_context_survive_tir_roundtrip() {
     assert!(call.passes_execution_context);
 }
 
+/// `builtin_func` keeps its paired `builtin_name` and name operand across
+/// repeated TIR roundtrips, so every backend admits the same encoding.
+#[test]
+fn named_builtin_encoding_survives_repeated_tir_roundtrips() {
+    for (symbol, builtin_name, arity) in [
+        ("molt_len", "len", 1),
+        ("molt_zip", "zip", 1),
+        ("molt_iter_sentinel", "molt_iter_sentinel", 2),
+    ] {
+        let mut function = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: "builtin_encoding".into(),
+            params: vec!["name".into()],
+            ops: vec![
+                OpIR {
+                    kind: "builtin_func".into(),
+                    s_value: Some(symbol.into()),
+                    builtin_name: Some(builtin_name.into()),
+                    value: Some(arity),
+                    args: Some(vec!["name".into()]),
+                    out: Some("callable".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "return".into(),
+                    args: Some(vec!["callable".into()]),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        };
+        for _ in 0..2 {
+            function.ops = lower_to_simple_ir(&lower_to_tir(&function));
+            let builtin = function
+                .ops
+                .iter()
+                .find(|op| op.kind == "builtin_func")
+                .unwrap();
+            assert_eq!(builtin.s_value.as_deref(), Some(symbol));
+            assert_eq!(builtin.builtin_name.as_deref(), Some(builtin_name));
+            assert_eq!(builtin.value, Some(arity));
+            assert_eq!(builtin.args.as_ref().map(Vec::len), Some(1));
+            crate::validate_simple_ir(&crate::ir::SimpleIR {
+                functions: vec![function.clone()],
+                profile: None,
+            })
+            .expect("shared builtin encoding must remain valid after every TIR roundtrip");
+        }
+    }
+}
+
+/// A source call's typed operand custody survives the lift and the lowering
+/// position by position: a `super()` method call borrows its class and adopts
+/// its `self` and argument, and an unmarked call borrows every operand.
+#[test]
+fn source_call_argument_custody_survives_tir_roundtrip() {
+    use molt_ir::ParameterCustody::{Borrowed, Transferred};
+    let call = |out: &str, custody: Option<Vec<molt_ir::ParameterCustody>>| OpIR {
+        kind: "call_super_method_ic".into(),
+        args: Some(vec!["class".into(), "receiver".into(), "argument".into()]),
+        s_value: Some("method".into()),
+        argument_custody: custody,
+        out: Some(out.into()),
+        ..OpIR::default()
+    };
+    let func = FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
+        name: "caller".into(),
+        params: vec!["class".into(), "receiver".into(), "argument".into()],
+        ops: vec![
+            call("adopting", Some(vec![Borrowed, Transferred, Transferred])),
+            call("borrowing", None),
+            OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            },
+        ],
+        ..FunctionIR::default()
+    };
+    let expected = [Some(vec![Borrowed, Transferred, Transferred]), None];
+
+    let tir = lower_to_tir(&func);
+    let lifted = tir.blocks[&tir.entry_block]
+        .ops
+        .iter()
+        .filter(|op| op.opcode == OpCode::CallSuperMethodIc)
+        .map(TirOp::argument_custody)
+        .collect::<Vec<_>>();
+    assert_eq!(lifted, expected);
+
+    let lowered = lower_to_simple_ir(&tir)
+        .into_iter()
+        .filter(|op| op.kind == "call_super_method_ic")
+        .map(|op| op.argument_custody)
+        .collect::<Vec<_>>();
+    assert_eq!(lowered, expected);
+}
+
 #[test]
 fn every_runtime_requirement_carrier_survives_tir_roundtrip() {
     let carrier_kinds = crate::tir::op_kinds_generated::SIMPLEIR_RUNTIME_REQUIREMENT_CARRIER_KINDS;
@@ -308,6 +468,8 @@ fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
     let resume_block = func.fresh_block();
     let yielded_pair = func.fresh_value();
     let done_value = func.fresh_value();
+    // Saved states and control labels have independent identities.
+    func.label_id_map.insert(resume_block.0, 91);
 
     func.blocks.get_mut(&entry).unwrap().terminator = Terminator::StateDispatch {
         cases: vec![(5, resume_block, vec![])],
@@ -380,7 +542,31 @@ fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
         .get(state_yield_idx + 1)
         .expect("resume continuation after state_yield");
     assert_eq!(next.kind, "state_label", "{ops:?}");
-    assert_eq!(next.value, Some(5), "{ops:?}");
+    assert_eq!(ops[state_yield_idx].value, Some(5), "{ops:?}");
+    let state_targets = ops
+        .iter()
+        .find(|op| op.kind == "state_switch")
+        .and_then(|op| op.state_targets.as_ref())
+        .expect("state dispatch must transport its saved-state/control-label map");
+    assert_eq!(state_targets.as_slice(), &[(5, 91)], "{ops:?}");
+    assert_eq!(next.value, Some(state_targets[0].1), "{ops:?}");
+    molt_ir::ir_schema::validate_state_dispatch(&ops)
+        .expect("production state/label transport covers its suspension");
+    let mut omitted = ops.clone();
+    omitted
+        .iter_mut()
+        .find(|op| op.kind == "state_switch")
+        .unwrap()
+        .state_targets = Some(vec![]);
+    let error = molt_ir::ir_schema::validate_state_dispatch(&omitted).unwrap_err();
+    assert!(
+        error.contains("state_yield saves state 5 absent"),
+        "{error}"
+    );
+    assert!(
+        std::panic::catch_unwind(|| crate::tir::cfg::CFG::build(&omitted)).is_err(),
+        "CFG lifting cannot erase a real resume continuation through an incomplete explicit map"
+    );
     assert!(
         ops[state_yield_idx + 1..]
             .iter()
@@ -463,6 +649,7 @@ fn result_carrying_store_var_lowers_to_defined_alias_value() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     });
     assert!(
@@ -868,6 +1055,7 @@ fn tir_round_trip_preserves_ret_args() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -939,6 +1127,7 @@ fn checked_add_two_result_round_trip_survives_relift() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -1025,6 +1214,7 @@ fn checked_mul_two_result_round_trip_survives_relift() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 

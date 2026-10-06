@@ -650,6 +650,8 @@ dependencies = [
  "molt-tir",
  "rayon",
  "serde",
+ "serde_json",
+ "target-lexicon",
 ]
 
 [[package]]
@@ -664,6 +666,7 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

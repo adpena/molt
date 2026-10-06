@@ -1,33 +1,64 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shlex
-from typing import Any, Mapping, cast
+from typing import Any, Mapping, TYPE_CHECKING, cast
 
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.diagnostic_text import strip_terminal_decoration
 from molt.cli.native_link_custody import (
     NativeLinkCustodyEntry,
     NativeLinkCustodyError,
+    NativeLinkCustodyObservation,
+    observe_native_link_custody,
     ensure_native_link_custody,
     publish_native_link_custody,
     validate_native_link_custody,
 )
 from molt.cli.native_link_plan import resolve_native_target_spec
 from molt.cli.runtime_artifact_selection import RUNTIME_STATICLIB_ARTIFACTS
-from molt.cli.runtime_build_identity import (
+from molt.cli.runtime_identity_schema import (
     RuntimeBuildIdentity,
     require_native_runtime_staticlib_identity,
 )
-from molt.cli.runtime_identity_schema import RUNTIME_ARTIFACT_METADATA_MAX_BYTES
+from molt.cli.runtime_identity_schema import (
+    RUNTIME_ARTIFACT_METADATA_MAX_BYTES,
+    RuntimeBuildIdentityMismatch,
+    _freeze_json,
+    _thaw_json,
+)
 from molt.cli.static_archive_identity import (
     StaticArchiveIdentityError,
     artifact_content_identity,
     validate_artifact_content_identity,
 )
 from molt.exact_json import loads_exact, read_exact
+
+if TYPE_CHECKING:
+    from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
+
+
+@dataclass(frozen=True, slots=True)
+class NativeLinkManifestFacts:
+    """Owned canonical semantics, independent of any mutable receipt selection."""
+
+    manifest: Mapping[str, object]
+    items: tuple[Mapping[str, object], ...]
+    build_identity: RuntimeBuildIdentity
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "manifest", _freeze_json(self.manifest))
+        object.__setattr__(self, "items", _freeze_json(self.items))
+
+    @property
+    def custody(self) -> Mapping[str, object]:
+        return cast(Mapping[str, object], _thaw_json(self.manifest["custody"]))
+
+    def to_dict(self) -> dict[str, object]:
+        return cast(dict[str, object], _thaw_json(self.manifest))
 
 
 _SCHEMA_VERSION = 5
@@ -158,14 +189,20 @@ def _validated_native_runtime_build_identity(
     *,
     cargo_profile: str,
     target_triple: str | None,
+    expected: RuntimeBuildIdentity | None = None,
+    context: str = "runtime build",
 ) -> RuntimeBuildIdentity:
     try:
         return require_native_runtime_staticlib_identity(
-            value,
+            RuntimeBuildIdentity.from_dict(value, expected=expected),
             cargo_profile=cargo_profile,
             target_triple=target_triple,
             artifact_selection=RUNTIME_STATICLIB_ARTIFACTS,
         )
+    except RuntimeBuildIdentityMismatch as exc:
+        raise NativeLinkDependencyManifestError(
+            f"native link manifest runtime build identity mismatch: {context}"
+        ) from exc
     except (TypeError, ValueError) as exc:
         raise NativeLinkDependencyManifestError(
             "runtime build identity is not the selected native staticlib identity: "
@@ -615,7 +652,7 @@ def validate_native_link_dependency_manifest(
     target_triple: str | None,
     cargo_profile: str | None = None,
     runtime_build_identity: RuntimeBuildIdentity | None = None,
-) -> tuple[Mapping[str, object], tuple[Mapping[str, object], ...]]:
+) -> NativeLinkManifestFacts:
     """Validate one decoded manifest against its artifact and build authorities."""
     if set(manifest) != {
         "schema_version",
@@ -667,14 +704,9 @@ def validate_native_link_dependency_manifest(
         stored_build_identity_value,
         cargo_profile=cargo_profile_value,
         target_triple=target_triple,
+        expected=runtime_build_identity,
+        context=context,
     )
-    if (
-        runtime_build_identity is not None
-        and stored_build_identity != runtime_build_identity
-    ):
-        raise NativeLinkDependencyManifestError(
-            f"native link manifest runtime build identity mismatch: {context}"
-        )
     expected_dir_for_profile = (
         "debug" if cargo["profile"] == "dev" else cargo["profile"]
     )
@@ -699,7 +731,7 @@ def validate_native_link_dependency_manifest(
         raise NativeLinkDependencyManifestError(
             f"native link manifest archive digest mismatch: {context}"
         )
-    return manifest, link_items
+    return NativeLinkManifestFacts(manifest, link_items, stored_build_identity)
 
 
 def read_native_link_dependency_manifest_payload(path: Path) -> Mapping[str, object]:
@@ -727,7 +759,7 @@ def _read_native_link_dependency_manifest(
     target_triple: str | None,
     cargo_profile: str | None = None,
     runtime_build_identity: RuntimeBuildIdentity | None = None,
-) -> tuple[Mapping[str, object], tuple[Mapping[str, object], ...]]:
+) -> NativeLinkManifestFacts:
     path = native_link_dependency_manifest_path(runtime_lib)
     manifest = read_native_link_dependency_manifest_payload(path)
     return validate_native_link_dependency_manifest(
@@ -747,7 +779,7 @@ def read_native_link_dependency_manifest(
     cargo_profile: str | None = None,
     runtime_build_identity: RuntimeBuildIdentity | None = None,
 ) -> Mapping[str, object]:
-    manifest, _scripts = _read_native_link_dependency_manifest(
+    facts = _read_native_link_dependency_manifest(
         runtime_lib,
         target_triple=target_triple,
         cargo_profile=cargo_profile,
@@ -755,7 +787,7 @@ def read_native_link_dependency_manifest(
     )
     try:
         custody, _entries = validate_native_link_custody(
-            manifest.get("custody"),
+            facts.custody,
             context=str(runtime_lib),
         )
         ensure_native_link_custody(runtime_lib, custody)
@@ -763,7 +795,7 @@ def read_native_link_dependency_manifest(
         raise NativeLinkDependencyManifestError(
             f"native link custody archive is unavailable or invalid: {exc}"
         ) from exc
-    return manifest
+    return facts.to_dict()
 
 
 def _directive_parts(raw: str) -> tuple[str | None, str]:
@@ -1040,29 +1072,79 @@ def native_link_flags_from_manifest(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class NativeLinkInputs:
+    """The actual link operands and the custody closure observed to build them."""
+
+    flags: tuple[str, ...]
+    runtime_lib: Path
+    facts: NativeLinkManifestFacts
+    custody: NativeLinkCustodyObservation
+
+    def verify(self) -> None:
+        # Recheck closure membership, detect changed bytes, and permit only the
+        # existing identical-byte custody replacement rule.
+        observe_native_link_custody(
+            self.runtime_lib, self.facts.custody, previous=self.custody
+        )
+
+
 def read_native_link_flags(
     runtime_lib: Path,
     *,
     target_triple: str | None,
     object_format: str,
     runtime_build_identity: RuntimeBuildIdentity,
-) -> list[str]:
+    runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
+) -> NativeLinkInputs:
     _require_object_format(runtime_build_identity, object_format)
-    manifest, items = _read_native_link_dependency_manifest(
-        runtime_lib,
-        target_triple=target_triple,
-        runtime_build_identity=runtime_build_identity,
-    )
+    if (
+        runtime_codegen_binding is not None
+        and runtime_codegen_binding.link_facts is not None
+    ):
+        runtime_codegen_binding.verify()
+        if (
+            runtime_codegen_binding.runtime_lib != runtime_lib
+            or runtime_codegen_binding.build_identity != runtime_build_identity
+            or cast(
+                Mapping[str, object],
+                runtime_codegen_binding.link_facts.manifest["cargo"],
+            )["target_triple"]
+            != target_triple
+        ):
+            raise NativeLinkDependencyManifestError(
+                "native link binding changed selection"
+            )
+        facts = runtime_codegen_binding.link_facts
+    else:
+        facts = _read_native_link_dependency_manifest(
+            runtime_lib,
+            target_triple=target_triple,
+            runtime_build_identity=runtime_build_identity,
+        )
     try:
         custody, _entries = validate_native_link_custody(
-            manifest.get("custody"),
+            facts.custody,
             context=str(runtime_lib),
         )
-        custody_paths = ensure_native_link_custody(runtime_lib, custody)
+        custody_observation = observe_native_link_custody(
+            runtime_lib,
+            custody,
+            previous=runtime_codegen_binding.custody
+            if runtime_codegen_binding is not None
+            else None,
+        )
     except NativeLinkCustodyError as exc:
         raise NativeLinkDependencyManifestError(str(exc)) from exc
-    return _native_link_flags(
-        items,
-        object_format=object_format,
-        custody_paths=custody_paths,
+    return NativeLinkInputs(
+        tuple(
+            _native_link_flags(
+                facts.items,
+                object_format=object_format,
+                custody_paths=custody_observation.paths(),
+            )
+        ),
+        runtime_lib,
+        facts,
+        custody_observation,
     )

@@ -125,14 +125,6 @@ class SerializationExceptionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == "EXCEPTION_SET_CAUSE":
-            ctx.json_ops.append(
-                {
-                    "kind": "exception_set_cause",
-                    "args": [op.args[0].name, op.args[1].name],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == "EXCEPTION_SET_LAST":
             ctx.json_ops.append(
                 {

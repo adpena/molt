@@ -119,14 +119,16 @@ pub extern "C" fn molt_super_new(type_bits: u64, obj_bits: u64) -> u64 {
 }
 
 pub(crate) fn super_from_current_frame(_py: &PyToken<'_>) -> u64 {
-    use crate::builtins::frames::{PythonArgumentZero, frame_python_context_snapshot};
+    use crate::builtins::frames::{
+        PythonArgumentZero, frame_argument_zero, frame_python_context_snapshot,
+    };
     use crate::builtins::methods::is_missing_bits;
     let frame = frame_python_context_snapshot(_py);
     let argument_item = match frame.context.argument_zero {
         PythonArgumentZero::NoArgument => {
             return raise_exception::<_>(_py, "RuntimeError", "super(): no arguments");
         }
-        PythonArgumentZero::Value(_) => None,
+        PythonArgumentZero::Value(_) | PythonArgumentZero::Home => None,
         PythonArgumentZero::Cell(bits) => Some(unsafe {
             crate::object::cells::pin_cell_value(
                 _py,
@@ -136,15 +138,33 @@ pub(crate) fn super_from_current_frame(_py: &PyToken<'_>) -> u64 {
             )
         }),
     };
+    // A synchronous frame's home is the only owner of its argument zero: read
+    // it now, as CPython reads `localsplus[0]`, and own it until the super
+    // object holds its own reference.
+    let home_argument = match frame.context.argument_zero {
+        PythonArgumentZero::Home => match frame_argument_zero(_py) {
+            Ok(argument) => argument,
+            Err(()) => return MoltObject::none().bits(),
+        },
+        _ => None,
+    };
+    let release_home = |py: &PyToken<'_>| {
+        if let Some(bits) = home_argument {
+            dec_ref_bits(py, bits);
+        }
+    };
     let argument_bits = match frame.context.argument_zero {
         PythonArgumentZero::Value(bits) => Some(bits),
         PythonArgumentZero::Cell(_) => argument_item.as_ref().map(|item| item.bits()),
+        PythonArgumentZero::Home => home_argument,
         PythonArgumentZero::NoArgument => unreachable!(),
     };
     let Some(argument_bits) = argument_bits.filter(|bits| !is_missing_bits(_py, *bits)) else {
+        release_home(_py);
         return raise_exception::<_>(_py, "RuntimeError", "super(): arg[0] deleted");
     };
     let Some(cell_bits) = frame.context.class_cell_bits else {
+        release_home(_py);
         return raise_exception::<_>(_py, "RuntimeError", "super(): __class__ cell not found");
     };
     let class_item = unsafe {
@@ -156,14 +176,17 @@ pub(crate) fn super_from_current_frame(_py: &PyToken<'_>) -> u64 {
         )
     };
     if is_missing_bits(_py, class_item.bits()) {
+        release_home(_py);
         return raise_exception::<_>(_py, "RuntimeError", "super(): empty __class__ cell");
     }
-    super_construct(
+    let result = super_construct(
         _py,
         class_item.bits(),
         argument_bits,
         SuperConstructionMode::Implicit,
-    )
+    );
+    release_home(_py);
+    result
 }
 
 #[unsafe(no_mangle)]
@@ -193,6 +216,194 @@ pub(crate) fn super_call(_py: &PyToken<'_>, args: &[u64], has_keywords: bool) ->
             &format!("super() expected at most 2 arguments, got {}", args.len()),
         ),
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_bootstrap_descriptor_types() -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let builtins = builtin_classes(_py);
+        let tuple_ptr = alloc_tuple(
+            _py,
+            &[
+                builtins.classmethod,
+                builtins.staticmethod,
+                builtins.property,
+            ],
+        );
+        if tuple_ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(tuple_ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_generic_alias_new(origin_bits: u64, args_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let args_obj = obj_from_bits(args_bits);
+        // Always create a fresh heap-allocated args tuple.  This is
+        // necessary because the incoming tuple may be stack-allocated
+        // (from the Cranelift stack-tuple optimisation) and would become
+        // a dangling pointer once the caller's stack frame is unwound.
+        // Copying the elements into a new heap tuple is cheap and safe.
+        let args_tuple_bits = if let Some(args_ptr) = args_obj.as_ptr() {
+            unsafe {
+                if object_type_id(args_ptr) == TYPE_ID_TUPLE {
+                    let Some(elems) = snapshot(
+                        _py,
+                        args_ptr,
+                        "GenericAlias argument tuple allocation failed",
+                    ) else {
+                        return MoltObject::none().bits();
+                    };
+                    let new_ptr = alloc_tuple(_py, &elems);
+                    if new_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    MoltObject::from_ptr(new_ptr).bits()
+                } else {
+                    let tuple_ptr = alloc_tuple(_py, &[args_bits]);
+                    if tuple_ptr.is_null() {
+                        return MoltObject::none().bits();
+                    }
+                    MoltObject::from_ptr(tuple_ptr).bits()
+                }
+            }
+        } else {
+            let tuple_ptr = alloc_tuple(_py, &[args_bits]);
+            if tuple_ptr.is_null() {
+                return MoltObject::none().bits();
+            }
+            MoltObject::from_ptr(tuple_ptr).bits()
+        };
+        let ptr = alloc_generic_alias(_py, origin_bits, args_tuple_bits);
+        // The new tuple was created above; dec_ref since alloc_generic_alias
+        // inc_refs it.
+        dec_ref_bits(_py, args_tuple_bits);
+        if ptr.is_null() {
+            MoltObject::none().bits()
+        } else {
+            MoltObject::from_ptr(ptr).bits()
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_generic_alias_mro_entries(alias_bits: u64, _bases_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let Some(alias_ptr) = obj_from_bits(alias_bits).as_ptr() else {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "GenericAlias.__mro_entries__ expected GenericAlias",
+            );
+        };
+        unsafe {
+            if object_type_id(alias_ptr) != TYPE_ID_GENERIC_ALIAS {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "GenericAlias.__mro_entries__ expected GenericAlias",
+                );
+            }
+            let origin_bits = generic_alias_origin_bits(alias_ptr);
+            let tuple_ptr = alloc_tuple(_py, &[origin_bits]);
+            if tuple_ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(tuple_ptr).bits()
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_generic_alias_type_new(
+    cls_bits: u64,
+    origin_bits: u64,
+    args_bits: u64,
+) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let cls_obj = obj_from_bits(cls_bits);
+        let Some(cls_ptr) = cls_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "GenericAlias.__new__ expects type");
+        };
+        unsafe {
+            if object_type_id(cls_ptr) != TYPE_ID_TYPE {
+                return raise_exception::<_>(_py, "TypeError", "GenericAlias.__new__ expects type");
+            }
+        }
+        let builtins = builtin_classes(_py);
+        let is_generic_alias_subtype =
+            cls_bits == builtins.generic_alias || issubclass_bits(cls_bits, builtins.generic_alias);
+        if !is_generic_alias_subtype {
+            return raise_exception::<_>(
+                _py,
+                "TypeError",
+                "GenericAlias.__new__ expected GenericAlias subtype",
+            );
+        }
+
+        let out_bits = molt_generic_alias_new(origin_bits, args_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let Some(out_ptr) = obj_from_bits(out_bits).as_ptr() else {
+            return out_bits;
+        };
+        unsafe {
+            if !object_init_class_edge_unpublished(
+                _py,
+                out_ptr,
+                cls_bits,
+                ClassEdgeOwnership::Owned,
+            ) {
+                dec_ref_bits(_py, out_bits);
+                return MoltObject::none().bits();
+            }
+        }
+        out_bits
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_typing_type_param(typevar_ctor_bits: u64, name_bits: u64) -> u64 {
+    crate::with_gil_entry_nopanic!(_py, {
+        let name_obj = obj_from_bits(name_bits);
+        let Some(name_ptr) = name_obj.as_ptr() else {
+            return raise_exception::<_>(_py, "TypeError", "type parameter name must be str");
+        };
+        unsafe {
+            if object_type_id(name_ptr) != TYPE_ID_STRING {
+                return raise_exception::<_>(_py, "TypeError", "type parameter name must be str");
+            }
+        }
+        let builder_bits = molt_callargs_new(1, 0);
+        if builder_bits == 0 {
+            return MoltObject::none().bits();
+        }
+        unsafe {
+            let _ = molt_callargs_push_pos(builder_bits, name_bits);
+        }
+        let typevar_bits = molt_call_bind(typevar_ctor_bits, builder_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        let Some(flag_name_bits) = attr_name_bits_from_bytes(_py, b"_pep695") else {
+            return MoltObject::none().bits();
+        };
+        let _ = molt_set_attr_name(
+            typevar_bits,
+            flag_name_bits,
+            MoltObject::from_bool(true).bits(),
+        );
+        dec_ref_bits(_py, flag_name_bits);
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
+        }
+        typevar_bits
+    })
 }
 
 #[cfg(test)]
@@ -382,192 +593,4 @@ mod super_frame_tests {
             );
         });
     }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_bootstrap_descriptor_types() -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let builtins = builtin_classes(_py);
-        let tuple_ptr = alloc_tuple(
-            _py,
-            &[
-                builtins.classmethod,
-                builtins.staticmethod,
-                builtins.property,
-            ],
-        );
-        if tuple_ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(tuple_ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_generic_alias_new(origin_bits: u64, args_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let args_obj = obj_from_bits(args_bits);
-        // Always create a fresh heap-allocated args tuple.  This is
-        // necessary because the incoming tuple may be stack-allocated
-        // (from the Cranelift stack-tuple optimisation) and would become
-        // a dangling pointer once the caller's stack frame is unwound.
-        // Copying the elements into a new heap tuple is cheap and safe.
-        let args_tuple_bits = if let Some(args_ptr) = args_obj.as_ptr() {
-            unsafe {
-                if object_type_id(args_ptr) == TYPE_ID_TUPLE {
-                    let Some(elems) = snapshot(
-                        _py,
-                        args_ptr,
-                        "GenericAlias argument tuple allocation failed",
-                    ) else {
-                        return MoltObject::none().bits();
-                    };
-                    let new_ptr = alloc_tuple(_py, &elems);
-                    if new_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    MoltObject::from_ptr(new_ptr).bits()
-                } else {
-                    let tuple_ptr = alloc_tuple(_py, &[args_bits]);
-                    if tuple_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    MoltObject::from_ptr(tuple_ptr).bits()
-                }
-            }
-        } else {
-            let tuple_ptr = alloc_tuple(_py, &[args_bits]);
-            if tuple_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            MoltObject::from_ptr(tuple_ptr).bits()
-        };
-        let ptr = alloc_generic_alias(_py, origin_bits, args_tuple_bits);
-        // The new tuple was created above; dec_ref since alloc_generic_alias
-        // inc_refs it.
-        dec_ref_bits(_py, args_tuple_bits);
-        if ptr.is_null() {
-            MoltObject::none().bits()
-        } else {
-            MoltObject::from_ptr(ptr).bits()
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_generic_alias_mro_entries(alias_bits: u64, _bases_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let Some(alias_ptr) = obj_from_bits(alias_bits).as_ptr() else {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "GenericAlias.__mro_entries__ expected GenericAlias",
-            );
-        };
-        unsafe {
-            if object_type_id(alias_ptr) != TYPE_ID_GENERIC_ALIAS {
-                return raise_exception::<_>(
-                    _py,
-                    "TypeError",
-                    "GenericAlias.__mro_entries__ expected GenericAlias",
-                );
-            }
-            let origin_bits = generic_alias_origin_bits(alias_ptr);
-            let tuple_ptr = alloc_tuple(_py, &[origin_bits]);
-            if tuple_ptr.is_null() {
-                MoltObject::none().bits()
-            } else {
-                MoltObject::from_ptr(tuple_ptr).bits()
-            }
-        }
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_generic_alias_type_new(
-    cls_bits: u64,
-    origin_bits: u64,
-    args_bits: u64,
-) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let cls_obj = obj_from_bits(cls_bits);
-        let Some(cls_ptr) = cls_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "GenericAlias.__new__ expects type");
-        };
-        unsafe {
-            if object_type_id(cls_ptr) != TYPE_ID_TYPE {
-                return raise_exception::<_>(_py, "TypeError", "GenericAlias.__new__ expects type");
-            }
-        }
-        let builtins = builtin_classes(_py);
-        let is_generic_alias_subtype =
-            cls_bits == builtins.generic_alias || issubclass_bits(cls_bits, builtins.generic_alias);
-        if !is_generic_alias_subtype {
-            return raise_exception::<_>(
-                _py,
-                "TypeError",
-                "GenericAlias.__new__ expected GenericAlias subtype",
-            );
-        }
-
-        let out_bits = molt_generic_alias_new(origin_bits, args_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        let Some(out_ptr) = obj_from_bits(out_bits).as_ptr() else {
-            return out_bits;
-        };
-        unsafe {
-            if !object_init_class_edge_unpublished(
-                _py,
-                out_ptr,
-                cls_bits,
-                ClassEdgeOwnership::Owned,
-            ) {
-                dec_ref_bits(_py, out_bits);
-                return MoltObject::none().bits();
-            }
-        }
-        out_bits
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn molt_typing_type_param(typevar_ctor_bits: u64, name_bits: u64) -> u64 {
-    crate::with_gil_entry_nopanic!(_py, {
-        let name_obj = obj_from_bits(name_bits);
-        let Some(name_ptr) = name_obj.as_ptr() else {
-            return raise_exception::<_>(_py, "TypeError", "type parameter name must be str");
-        };
-        unsafe {
-            if object_type_id(name_ptr) != TYPE_ID_STRING {
-                return raise_exception::<_>(_py, "TypeError", "type parameter name must be str");
-            }
-        }
-        let builder_bits = molt_callargs_new(1, 0);
-        if builder_bits == 0 {
-            return MoltObject::none().bits();
-        }
-        unsafe {
-            let _ = molt_callargs_push_pos(builder_bits, name_bits);
-        }
-        let typevar_bits = molt_call_bind(typevar_ctor_bits, builder_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        let Some(flag_name_bits) = attr_name_bits_from_bytes(_py, b"_pep695") else {
-            return MoltObject::none().bits();
-        };
-        let _ = molt_object_setattr(
-            typevar_bits,
-            flag_name_bits,
-            MoltObject::from_bool(true).bits(),
-        );
-        dec_ref_bits(_py, flag_name_bits);
-        if exception_pending(_py) {
-            return MoltObject::none().bits();
-        }
-        typevar_bits
-    })
 }

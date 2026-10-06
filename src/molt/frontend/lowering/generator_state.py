@@ -17,17 +17,16 @@ from molt.frontend._types import (
     _ClassNsScope,
     AsyncFrameSlot,
     ClassInfo,
+    CodeSlotDeclaration,
     CompatibilityReporter,
     ComprehensionBinding,
     ExactClassFact,
     FallbackPolicy,
-    FormatToken,
     FuncInfo,
     LoopScope,
     MidendProfile,
     MoltOp,
     MoltValue,
-    ScratchCell,
 )
 from molt.frontend.sema import FunctionKind, SemaResult
 from molt.native_callable_exports import (
@@ -42,7 +41,8 @@ if TYPE_CHECKING:
 
 FUNCTION_LOCAL_BINDING_STATE_ATTRS = (
     "locals",
-    "locals_cache_cell",
+    "frame_code_slots",
+    "frame_home_slots",
     "compiler_bindings",
     "parameter_bindings",
     "boxed_locals",
@@ -100,7 +100,6 @@ FUNCTION_TYPE_HINT_SCOPE_STATE_ATTRS = (
 FUNCTION_CACHE_STATE_ATTRS = (
     "const_ints",
     "_op_by_result",
-    "_module_cache_values",
     "in_generator",
     "async_context",
     "current_line",
@@ -186,14 +185,13 @@ class GeneratorStateMixin(GeneratorMixinBase):
     def _reset_local_binding_state(
         self,
         *,
-        reset_locals_cache: bool,
         reset_del_targets: bool,
     ) -> None:
         self.locals = {}
-        if reset_locals_cache:
-            # Backing store for the current frame's `locals()` snapshot semantics.
-            # Stored outside `self.locals` to avoid accidental shadowing/rewrites.
-            self.locals_cache_cell: ScratchCell | None = None
+        # A synchronous frame's code slots and each binding's home among them
+        # (`start_function`); None in module code and stateful activations.
+        self.frame_code_slots: CodeSlotDeclaration | None = None
+        self.frame_home_slots: dict[str, int] | None = None
         self.compiler_bindings: dict[str, MoltValue] = {}
         self.parameter_bindings: dict[str, str] = {}
         self.boxed_locals = {}
@@ -262,8 +260,6 @@ class GeneratorStateMixin(GeneratorMixinBase):
         # Value names are globally unique (next_var), so no per-function reset is
         # needed beyond clearing the current function/chunk view.
         self._op_by_result = {}
-        # Per-function cache: module name -> cached MoltValue from MODULE_CACHE_GET.
-        self._module_cache_values = {}
         self.in_generator = False
         self.async_context = False
         self.current_line = None
@@ -350,10 +346,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         # function scope. Restoring an outer scope must never recycle a token
         # that was already used while lowering a nested function.
         self._next_exact_class_token = 0
-        self._reset_local_binding_state(
-            reset_locals_cache=True,
-            reset_del_targets=True,
-        )
+        self._reset_local_binding_state(reset_del_targets=True)
         self._expr_col: tuple[int, int] | None = (
             None  # expression-level col_offset for traceback carets
         )
@@ -493,9 +486,6 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.func_aliases: dict[str, str] = {}
         self.reserved_func_symbols: dict[str, str] = {}
         self._reset_function_cache_state()
-        self.format_token_cache: dict[
-            tuple[str, int, tuple[str, ...]], list[FormatToken]
-        ] = {}
         self.lambda_counter = 0
         self.genexpr_counter = 0
         self.qualname_stack: list[tuple[str, bool]] = []

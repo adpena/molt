@@ -60,7 +60,7 @@ Sections 1-5 were originally marked "DONE (2026-03-20)" but this was based on Cr
 | `enable_verifier` | debug=`"false"`, release=`"true"` | IR verification |
 | `log2_min_function_alignment` | debug=`"0"`, release=`"4"` | 16-byte alignment in release |
 
-Host CPU feature detection is enabled by default via `cranelift_native::builder_with_options(true)` (lib.rs:1125), allowing AVX2, BMI2, POPCNT on x86_64 and NEON/AES/CRC on aarch64. `MOLT_PORTABLE=1` disables this for reproducible builds.
+Native standalone artifacts use the selected target baseline by default. `MOLT_PORTABLE=0` explicitly enables host CPU specialization when the selected target matches the host; `MOLT_PORTABLE=1` forces the baseline. Cranelift TIR vector widths use the selected ISA flags, and LLVM uses the same portability policy. Every outer native object cache and the inner stdlib cache bind the backend's effective codegen identity, including ISA flags and LLVM CPU/features; a target triple or machine name alone is insufficient identity.
 
 ### Proposed Improvements
 

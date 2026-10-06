@@ -7,8 +7,8 @@ import json
 import shlex
 import sys
 from contextlib import redirect_stderr, redirect_stdout
-from pathlib import Path
 from typing import Any, Mapping, cast
+from molt.source_root import compiler_source_root
 from molt.dx import DEFAULT_UV_PROJECT_PYTHON, DxConfigError, DxProject
 from molt.cli.command_runtime import (
     _CLI_MEMORY_GUARD_PREFIX,
@@ -31,7 +31,6 @@ from molt.cli.models import (
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import json_payload as _json_payload
 from molt.cli.project_roots import (
-    _find_molt_root,
     _require_molt_root,
 )
 from molt._host_capabilities_generated import MAXIMUM_BUILTIN_CAPABILITY_TIER
@@ -206,7 +205,7 @@ def _internal_batch_build_server(
 
 
 def lint(json_output: bool = False, verbose: bool = False) -> int:
-    root = _find_molt_root(Path.cwd())
+    root = compiler_source_root()
     root_error = _require_molt_root(root, json_output, "lint")
     if root_error is not None:
         return root_error
@@ -282,7 +281,7 @@ def test(
     json_output: bool = False,
     verbose: bool = False,
 ) -> int:
-    root = _find_molt_root(Path.cwd())
+    root = compiler_source_root()
     root_error = _require_molt_root(root, json_output, "test")
     if root_error is not None:
         return root_error
@@ -329,7 +328,7 @@ def bench(
     json_output: bool = False,
     verbose: bool = False,
 ) -> int:
-    root = _find_molt_root(Path.cwd())
+    root = compiler_source_root()
     root_error = _require_molt_root(root, json_output, "bench")
     if root_error is not None:
         return root_error
@@ -353,7 +352,7 @@ def profile(
     json_output: bool = False,
     verbose: bool = False,
 ) -> int:
-    root = _find_molt_root(Path.cwd())
+    root = compiler_source_root()
     root_error = _require_molt_root(root, json_output, "profile")
     if root_error is not None:
         return root_error

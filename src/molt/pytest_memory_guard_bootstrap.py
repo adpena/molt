@@ -8,7 +8,7 @@ import shlex
 import shutil
 import subprocess
 from collections.abc import Mapping, Sequence
-from pathlib import Path
+from pathlib import Path, WindowsPath
 import sys
 import time
 import uuid
@@ -17,7 +17,7 @@ import uuid
 from molt._host_exit import process_returncode_for_direct_os_exit
 from molt.dx import checkout_custody
 from molt.source_root import compiler_source_root
-from molt.temporary_artifacts import guard_scratch
+from molt.temporary_artifacts import guard_scratch, windows_temporary_directory_mode
 from molt.process_spawn import (
     ProcessGroupKwargs,
     hidden_windows_process_group_kwargs,
@@ -47,7 +47,6 @@ PROOF_QUEUE_DB_ENV = "MOLT_PROOF_QUEUE_DB"
 PYTEST_COMMAND_NAMES = frozenset({"pytest", "py.test", "pytest.exe", "py.test.exe"})
 PYTEST_GUARD_PLUGIN_NAMES = frozenset(
     {
-        "molt_memory_guard",
         "molt.pytest_memory_guard_bootstrap",
         "molt.pytest_memory_guard_config_plugin",
     }
@@ -619,23 +618,16 @@ def _active_guard_marker_valid(
         return False
     if marker_resolved.parent != marker_root:
         return False
-    try:
-        payload = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return False
-    if not isinstance(payload, dict):
+    from tools.memory_guard_core.active_custody import read_marker_record
+
+    record = read_marker_record(marker)
+    payload = record.payload
+    if not record.accepts_inherited_guard or payload is None:
         return False
     if payload.get("pid") != guard_pid or payload.get("token") != token:
         return False
     guard_path = payload.get("path")
     if not isinstance(guard_path, str):
-        return False
-    if payload.get("status") in {
-        "completed",
-        "finalizer_cleanup",
-        "finalizer_completed",
-        "guard_exception",
-    }:
         return False
     try:
         return Path(guard_path).resolve(strict=False) == (
@@ -930,6 +922,21 @@ def ensure_python_test_memory_guard() -> bool:
     )
 
 
+class _WindowsPytestTemporaryPath(WindowsPath):
+    """Pytest-only paths retain inherited ACLs, including xdist's given basetemp."""
+
+    __slots__ = ()
+
+    def mkdir(
+        self, mode: int = 0o777, parents: bool = False, exist_ok: bool = False
+    ) -> None:
+        super().mkdir(
+            mode=windows_temporary_directory_mode(mode),
+            parents=parents,
+            exist_ok=exist_ok,
+        )
+
+
 def install_windows_pytest_tempdir_mode_patch() -> bool:
     if not _is_windows_process_model():
         return False
@@ -948,7 +955,7 @@ def install_windows_pytest_tempdir_mode_patch() -> bool:
         def make_numbered_dir_windows_readable(
             root: Path, prefix: str, mode: int = 0o700
         ) -> Path:
-            safe_mode = 0o755 if mode == 0o700 else mode
+            safe_mode = windows_temporary_directory_mode(mode)
             return original(root, prefix, mode=safe_mode)
 
         setattr(
@@ -959,9 +966,11 @@ def install_windows_pytest_tempdir_mode_patch() -> bool:
     changed = (
         pytest_pathlib.make_numbered_dir is not patched
         or pytest_tmpdir.make_numbered_dir is not patched
+        or pytest_tmpdir.Path is not _WindowsPytestTemporaryPath
     )
     setattr(pytest_pathlib, "make_numbered_dir", patched)
     setattr(pytest_tmpdir, "make_numbered_dir", patched)
+    setattr(pytest_tmpdir, "Path", _WindowsPytestTemporaryPath)
     return changed
 
 

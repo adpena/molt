@@ -31,6 +31,51 @@ from tools.proof_queue_pkg import evidence as proof_queue_evidence
 PLAN = proof_plan.ProofPlan.load()
 
 
+def test_execution_authority_covers_its_transitive_python_imports() -> None:
+    """Receipt-producing and classifying consumers must invalidate together."""
+    root = Path(__file__).resolve().parents[1]
+    pending = [
+        "tools/proof_plan.py",
+        "tools/proof_executor.py",
+        "tools/guarded_exec.py",
+        "tools/memory_guard.py",
+    ]
+    seen: set[str] = set()
+    while pending:
+        relative = pending.pop()
+        if relative in seen:
+            continue
+        seen.add(relative)
+        parts = Path(relative).with_suffix("").parts
+        if parts[0] == "src":
+            parts = parts[1:]
+        package = list(parts[:-1])
+        for node in ast.walk(ast.parse((root / relative).read_bytes())):
+            modules = []
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                if node.level:
+                    base = ".".join(
+                        package[: len(package) - node.level + 1]
+                        + ([base] if base else [])
+                    )
+                modules = [base] + [
+                    base + "." + alias.name for alias in node.names if alias.name != "*"
+                ]
+            for module in modules:
+                if module != "molt" and not module.startswith(("tools.", "molt.")):
+                    continue
+                parent = root / "src" if module.startswith("molt") else root
+                path = parent.joinpath(*module.split("."))
+                for candidate in (path.with_suffix(".py"), path / "__init__.py"):
+                    if candidate.is_file():
+                        pending.append(candidate.relative_to(root).as_posix())
+                        break
+    assert seen <= set(PLAN.authority_inputs), sorted(seen - set(PLAN.authority_inputs))
+
+
 def test_python_capture_source_closure_is_proof_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -350,6 +395,25 @@ def test_shipping_runtime_gate_requires_full_parallel_and_fresh_child_accounting
     ):
         assert path in PLAN.authority_inputs
         assert _classes(path)["rust"] is True
+
+
+def test_runtime_descendant_authority_is_hashed_and_its_tests_execute() -> None:
+    for path in (
+        "tools/runtime_descendant_receipts.py",
+        "tests/tools/test_runtime_descendant_receipts.py",
+        "tests/runtime_descendant_test_support.py",
+    ):
+        assert path in PLAN.authority_inputs
+        assert _classes(path)["rust"] is True
+    # The Rust producer is test source of the runtime family it records.
+    assert _classes("runtime/test_support/captured_runtime_children.rs")["rust"] is True
+    executed = {part for command in PLAN.commands for part in command.argv}
+    for path in (
+        "tests/tools/test_runtime_descendant_receipts.py",
+        "tests/tools/test_runtime_test_gate.py",
+        "tests/tools/test_cargo_test_truth.py",
+    ):
+        assert path in executed
 
 
 def test_libtest_accounting_is_hashed_and_selects_rust_consumers() -> None:
@@ -1554,6 +1618,7 @@ def _receipt_for(
         "schema": PLAN.receipt_schema,
         "authority_sha256": proof_plan._authority_sha256(PLAN),
         "source_commit": proof_plan._source_commit(),
+        "source_tree": proof_plan._source_identity()["tree"],
         "source_tree_state": "clean",
         "family": command.family,
         "environment": {"os": "linux", "arch": "x86_64", "python": "3.12"},
@@ -1731,6 +1796,23 @@ def test_receipt_verdict_rejects_source_commit_replay(tmp_path: Path) -> None:
     assert any("source commit" in error for error in errors)
 
 
+@pytest.mark.parametrize("tree", [None, "0" * 40])
+def test_receipt_verdict_rejects_missing_or_mismatched_source_tree(
+    tmp_path: Path, tree: str | None
+) -> None:
+    command = next(
+        command for command in PLAN.commands if command.id == "python.static.ty"
+    )
+    receipt = _receipt_for(command, tmp_path)
+    if tree is None:
+        del receipt["source_tree"]
+    else:
+        receipt["source_tree"] = tree
+    (tmp_path / "wrong-tree.json").write_text(json.dumps(receipt), encoding="utf-8")
+    errors = proof_plan.verify_receipts(PLAN, ["python_static"], tmp_path)
+    assert any("source tree identity" in error for error in errors)
+
+
 def test_receipt_verdict_rejects_dirty_source_tree_attestation(tmp_path: Path) -> None:
     command = next(
         command for command in PLAN.commands if command.id == "python.static.ty"
@@ -1889,9 +1971,9 @@ def test_executor_emits_measured_receipt(tmp_path: Path, monkeypatch) -> None:
     assert record["timeout_env"] == ["MOLT_INNER_TIMEOUT"]
     assert record["environment_overrides"] == {"MOLT_EXECUTOR_MARKER": "canonical"}
     assert receipt["toolchains"]
-    assert receipt["execution"]["schema"] == "molt.proof-plan-dag-executor.v1"
+    assert receipt["execution"]["schema"] == "molt.proof-plan-dag-executor.v2"
     assert receipt["execution"]["peak_active_commands"] == 1
-    assert receipt["execution"]["fail_fast_triggered"] is False
+    assert receipt["execution"]["global_stop_triggered"] is False
 
 
 def test_provisioned_lean_fingerprint_admits_formal_build_receipt(
@@ -2128,14 +2210,25 @@ def test_executor_schedules_dependencies_and_resources_with_deterministic_receip
     assert events.index("start:synthetic.after-a") > events.index("finish:synthetic.a")
 
 
-def test_executor_failure_cancels_live_siblings_and_skips_unscheduled_dependents(
-    tmp_path: Path, monkeypatch
+@pytest.mark.parametrize("status, returncode", [("failure", 7), ("timeout", 124)])
+def test_executor_partition_failure_preserves_independent_work_and_blocks_dependents(
+    tmp_path: Path,
+    monkeypatch,
+    status: str,
+    returncode: int,
 ) -> None:
     commands = (
         _synthetic_executor_command("synthetic.fail"),
         _synthetic_executor_command("synthetic.live", resource_class="resource-b"),
         _synthetic_executor_command(
             "synthetic.blocked", dependencies=["synthetic.fail"]
+        ),
+        _synthetic_executor_command(
+            "synthetic.blocked-child", dependencies=["synthetic.blocked"]
+        ),
+        _synthetic_executor_command("synthetic.independent"),
+        _synthetic_executor_command(
+            "synthetic.after-live", dependencies=["synthetic.live"]
         ),
     )
     plan = _synthetic_executor_plan(commands, limits={"resource-a": 1, "resource-b": 1})
@@ -2145,43 +2238,45 @@ def test_executor_failure_cancels_live_siblings_and_skips_unscheduled_dependents
         "toolchain_fingerprints",
         lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
     )
+    live_started = threading.Event()
 
-    def fake_run(
-        _plan: proof_plan.ProofPlan,
-        command: proof_plan.ProofCommand,
-        _metrics: Path,
-        cancel: threading.Event,
-    ) -> dict[str, object]:
+    def fake_run(_plan, command, _metrics, cancel):
         if command.id == "synthetic.fail":
-            time.sleep(0.02)
+            assert live_started.wait(timeout=1)
             return {
                 **_successful_synthetic_record(command),
-                "status": "failure",
-                "returncode": 7,
+                "status": status,
+                "returncode": returncode,
+                "failure_scope": "partition",
+                "failure_reason": "ordinary command failure",
             }
-        assert cancel.wait(timeout=1.0)
-        return {
-            **_successful_synthetic_record(command),
-            "status": "cancelled",
-            "returncode": 130,
-            "cancelled_by_fail_fast": True,
-        }
+        if command.id == "synthetic.live":
+            live_started.set()
+            assert not cancel.wait(timeout=0.05)
+        assert not command.id.startswith("synthetic.blocked")
+        return _successful_synthetic_record(command)
 
     monkeypatch.setattr(proof_plan, "_run_command", fake_run)
     receipt_path = tmp_path / "receipt.json"
-    assert proof_plan.execute_commands(plan, commands, receipt_path) == 7
+    assert proof_plan.execute_commands(plan, commands, receipt_path) == returncode
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["status"] == "failure"
     assert [record["id"] for record in receipt["commands"]] == [
         command.id for command in commands
     ]
     assert [record["status"] for record in receipt["commands"]] == [
-        "failure",
-        "cancelled",
+        status,
+        "success",
         "skipped",
+        "skipped",
+        "success",
+        "success",
     ]
-    assert receipt["execution"]["fail_fast_triggered"] is True
-    assert receipt["execution"]["cancelled_commands"] == 1
-    assert receipt["execution"]["skipped_commands"] == 1
+    assert receipt["commands"][2]["blocked_by"] == ["synthetic.fail"]
+    assert receipt["commands"][3]["blocked_by"] == ["synthetic.fail"]
+    assert receipt["execution"]["global_stop_triggered"] is False
+    assert receipt["execution"]["cancelled_commands"] == 0
+    assert receipt["execution"]["skipped_commands"] == 2
 
 
 def test_executor_does_not_convert_control_plane_interrupts_into_records(
@@ -2209,7 +2304,7 @@ def test_executor_does_not_convert_control_plane_interrupts_into_records(
         proof_plan.execute_commands(plan, (command,), tmp_path / "receipt.json")
 
 
-def test_executor_fail_fast_uses_guard_custody_to_reap_live_process_tree(
+def test_executor_global_stop_uses_guard_custody_to_reap_live_process_tree(
     tmp_path: Path, monkeypatch
 ) -> None:
     child_pid_path = tmp_path / "guarded-child.pid"
@@ -2222,7 +2317,7 @@ def test_executor_fail_fast_uses_guard_custody_to_reap_live_process_tree(
             "argv": [
                 sys.executable,
                 "-c",
-                "import time; time.sleep(0.75); raise SystemExit(9)",
+                "import time; time.sleep(0.75); raise SystemExit(130)",
             ],
         },
     )
@@ -2245,7 +2340,7 @@ def test_executor_fail_fast_uses_guard_custody_to_reap_live_process_tree(
 
     started = time.monotonic()
     receipt_path = tmp_path / "receipt.json"
-    assert proof_plan.execute_commands(plan, commands, receipt_path) == 9
+    assert proof_plan.execute_commands(plan, commands, receipt_path) == 130
     assert time.monotonic() - started < 20.0
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert [record["status"] for record in receipt["commands"]] == [
@@ -2339,7 +2434,7 @@ def test_executor_rejects_source_mutation_during_partition(
     assert proof_plan.execute_commands(PLAN, (command,), receipt_path) == 2
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert receipt["status"] == "failure"
-    assert receipt["commands"][0]["source_tree_state_after"] == "dirty"
+    assert receipt["commands"][0]["source_tree_state_after"] == "changed"
     assert receipt["executed_partitions"] == []
 
 
@@ -2569,3 +2664,314 @@ def test_cas_placement_models_remain_mandatory_on_unit_and_all_portability_cells
         assert command.data["timeout_seconds"] == (
             900 if cid == "python.unit.harness" else 600
         )
+
+
+@pytest.mark.parametrize(
+    "metrics, returncode, expected",
+    [
+        ({}, 7, "partition"),
+        (
+            {
+                "timed_out": True,
+                "termination_reports": [{"remaining_pids": [], "remaining_pgids": []}],
+            },
+            124,
+            "partition",
+        ),
+        (
+            {
+                "timed_out": True,
+                "windows_job_cleanup": {"completed": True, "remaining_processes": []},
+            },
+            124,
+            "partition",
+        ),
+        (
+            {
+                "timed_out": True,
+                "termination_reports": [{"remaining_pids": [], "remaining_pgids": []}],
+            },
+            0,
+            "global",
+        ),
+        ({}, 124, "global"),
+        ({"timed_out": True}, 124, "global"),
+        ({"timed_out": True, "termination_reports": [{}]}, 124, "global"),
+        (
+            {
+                "timed_out": True,
+                "termination_reports": [
+                    {"remaining_pids": [123], "remaining_pgids": []}
+                ],
+            },
+            124,
+            "global",
+        ),
+        ({"memory_violation": {"rss_kb": 123}}, 124, "global"),
+        ({"guard_signal": 15}, 143, "global"),
+        ({"infrastructure_failure": {"phase": "process_custody"}}, 2, "global"),
+        (
+            {
+                "cargo_incremental_quarantine": {
+                    "ownership_status": "deferred",
+                    "errors": [],
+                }
+            },
+            124,
+            "global",
+        ),
+        (
+            {"cargo_incremental_quarantine": {"ownership_status": "quarantined"}},
+            7,
+            "global",
+        ),
+        (
+            {
+                "cargo_incremental_quarantine": {
+                    "ownership_status": "partial",
+                    "errors": ["owned compiler still live"],
+                }
+            },
+            124,
+            "global",
+        ),
+        (
+            {
+                "timed_out": True,
+                "termination_reports": [{"remaining_pids": [], "remaining_pgids": []}],
+                "cargo_incremental_quarantine": {
+                    "ownership_status": "quarantined",
+                    "errors": [],
+                    "interruption_inventory_complete": True,
+                },
+            },
+            124,
+            "partition",
+        ),
+        (
+            {
+                "timed_out": True,
+                "termination_reports": [{"remaining_pids": [], "remaining_pgids": []}],
+                "cargo_incremental_quarantine": {
+                    "ownership_status": "quarantined",
+                    "errors": [],
+                    "interruption_inventory_complete": False,
+                },
+            },
+            124,
+            "global",
+        ),
+    ],
+)
+def test_executor_failure_scope_uses_guard_and_quarantine_authority(
+    metrics, returncode, expected
+) -> None:
+    scope, reason = proof_plan._guarded_failure_scope(
+        metrics, metrics_valid=True, returncode=returncode, cancelled=False
+    )
+    assert scope == expected
+    assert reason
+
+
+def _job_cleanup_with_survivor(image: Path) -> dict[str, object]:
+    return {
+        "windows_job_cleanup": {
+            "completed": True,
+            "remaining_processes": [{"pid": 720, "image": str(image)}],
+        }
+    }
+
+
+def test_job_closure_admits_only_declared_helpers_beside_their_linker(
+    tmp_path: Path,
+) -> None:
+    admitted = proof_plan._admitted_linker_helpers(PLAN)
+    assert admitted["vctip.exe"] == frozenset({"link.exe"})
+    msvc = tmp_path / "MSVC" / "bin"
+    msvc.mkdir(parents=True)
+    (msvc / "link.exe").write_bytes(b"")
+    (msvc / "vctip.exe").write_bytes(b"")
+    lone = tmp_path / "elsewhere"
+    lone.mkdir()
+    (lone / "vctip.exe").write_bytes(b"")
+    uncertain = ("global", "guard job closure is uncertain")
+
+    def scope(image: Path, helpers=admitted) -> tuple[str, str | None]:
+        return proof_plan._guarded_failure_scope(
+            _job_cleanup_with_survivor(image),
+            metrics_valid=True,
+            returncode=0,
+            cancelled=False,
+            admitted_linker_helpers=helpers,
+        )
+
+    # MSVC's linker leaves its telemetry helper running after it exits; the
+    # plan declares it, so terminating it through the Job is ordinary closure.
+    assert scope(msvc / "vctip.exe") != uncertain
+    assert scope(msvc / "VCTIP.EXE") != uncertain
+    # A helper name without its declared linker beside it, an undeclared
+    # survivor, or no plan policy at all remains uncertain closure.
+    assert scope(lone / "vctip.exe") == uncertain
+    assert scope(msvc / "link.exe") == uncertain
+    assert scope(msvc / "vctip.exe", helpers={}) == uncertain
+
+
+def test_executor_missing_guard_outcome_is_a_global_stop() -> None:
+    assert (
+        proof_plan._guarded_failure_scope(
+            {}, metrics_valid=False, returncode=7, cancelled=False
+        )[0]
+        == "global"
+    )
+
+
+def test_proof_source_commit_rejects_mismatched_ci_declaration(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_SHA", "b" * 40)
+    monkeypatch.setattr(proof_plan, "_run_git", lambda _args: "a" * 40)
+    with pytest.raises(ValueError, match="actual checkout HEAD"):
+        proof_plan._source_commit()
+
+
+def test_proof_source_identity_binds_commit_and_immutable_tree(monkeypatch) -> None:
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+
+    def git(args):
+        return "c" * 40 if args[-1] == ("a" * 40) + "^{tree}" else "a" * 40
+
+    monkeypatch.setattr(proof_plan, "_run_git", git)
+    assert proof_plan._source_identity() == {"commit": "a" * 40, "tree": "c" * 40}
+
+
+@pytest.mark.parametrize("field", ["commit", "tree"])
+def test_executor_stops_on_candidate_change_even_when_checkout_is_clean(
+    tmp_path, monkeypatch, field
+) -> None:
+    original = {"commit": "a" * 40, "tree": "b" * 40}
+    current = dict(original)
+    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(proof_plan, "_source_identity", lambda: dict(current))
+    monkeypatch.setattr(
+        proof_plan,
+        "toolchain_fingerprints",
+        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+    )
+    commands = (
+        _synthetic_executor_command("change"),
+        _synthetic_executor_command("after", dependencies=["change"]),
+    )
+    plan = _synthetic_executor_plan(commands, limits={"resource-a": 1})
+
+    def run(_plan, command, _metrics, _cancel):
+        current[field] = "c" * 40
+        return _successful_synthetic_record(command)
+
+    monkeypatch.setattr(proof_plan, "_run_command", run)
+    output = tmp_path / "receipt.json"
+    assert proof_plan.execute_commands(plan, commands, output) == 2
+    receipt = json.loads(output.read_text(encoding="utf-8"))
+    assert receipt["source_commit"] == original["commit"]
+    assert receipt["source_tree"] == original["tree"]
+    assert receipt["execution"]["global_stop_triggered"] is True
+    assert (
+        receipt["commands"][0]["failure_reason"]
+        == "candidate HEAD or tree identity changed"
+    )
+    assert receipt["commands"][1]["status"] == "skipped"
+
+
+def test_executor_control_plane_interrupt_cancels_siblings_before_join(
+    tmp_path, monkeypatch
+) -> None:
+    commands = (
+        _synthetic_executor_command("interrupt"),
+        _synthetic_executor_command("live", resource_class="resource-b"),
+    )
+    plan = _synthetic_executor_plan(commands, limits={"resource-a": 1, "resource-b": 1})
+    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(
+        proof_plan,
+        "toolchain_fingerprints",
+        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+    )
+    live_started = threading.Event()
+    closed = threading.Event()
+
+    def run(_plan, command, _metrics, cancel):
+        if command.id == "interrupt":
+            assert live_started.wait(1)
+            raise KeyboardInterrupt
+        live_started.set()
+        assert cancel.wait(1)
+        closed.set()
+        return {
+            **_successful_synthetic_record(command),
+            "status": "cancelled",
+            "returncode": 130,
+            "failure_scope": "global",
+        }
+
+    monkeypatch.setattr(proof_plan, "_run_command", run)
+    with pytest.raises(KeyboardInterrupt):
+        proof_plan.execute_commands(plan, commands, tmp_path / "receipt.json")
+    assert closed.is_set()
+    receipt = json.loads((tmp_path / "receipt.json").read_text(encoding="utf-8"))
+    assert receipt["status"] == "failure"
+    assert [record["status"] for record in receipt["commands"]] == [
+        "failure",
+        "cancelled",
+    ]
+    assert receipt["execution"]["completed_commands"] == 2
+    assert receipt["execution"]["cancelled_commands"] == 1
+
+
+def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "cargo-timeout"
+    project.mkdir()
+    (project / "Cargo.toml").write_text(
+        '[package]\nname = "molt-guard-timeout-proof"\nversion = "0.0.0"\n'
+        'edition = "2024"\n[workspace]\n[[test]]\nname = "hang"\npath = "hang.rs"\n',
+        encoding="utf-8",
+    )
+    (project / "hang.rs").write_text(
+        "#[test]\nfn hanging_test() {\n"
+        'std::fs::write(std::env::var("MOLT_TEST_STARTED").unwrap(), b"started").unwrap();\n'
+        "loop { std::thread::sleep(std::time::Duration::from_secs(1)); }\n}\n",
+        encoding="utf-8",
+    )
+    started = project / "test-started"
+    target = project / "target"
+    command = proof_plan.ProofCommand(
+        "synthetic.cargo-timeout",
+        {
+            **_synthetic_executor_command("synthetic.cargo-timeout").data,
+            "timeout_seconds": 12,
+            "toolchains": ["cargo", "python"],
+            "argv": [
+                "cargo",
+                "test",
+                "--offline",
+                "--manifest-path",
+                str(project / "Cargo.toml"),
+                "--test",
+                "hang",
+            ],
+            "env": {
+                "CARGO_TARGET_DIR": str(target),
+                "CARGO_INCREMENTAL": "1",
+                "MOLT_TEST_STARTED": str(started),
+            },
+        },
+    )
+    plan = _synthetic_executor_plan((command,), limits={"resource-a": 1})
+    record = proof_plan._run_command(plan, command, tmp_path / "metrics.json")
+    assert started.read_bytes() == b"started", record
+    assert record["status"] == "timeout"
+    assert record["returncode"] == 124
+    # Windows Job lifetime accounting fences unseen births through termination.
+    # Ordinary POSIX snapshots cannot establish that stronger negative fact.
+    assert record["failure_scope"] == (
+        "partition" if sys.platform == "win32" else "global"
+    ), record
+    assert (target / "debug" / "incremental").is_dir()

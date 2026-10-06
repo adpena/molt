@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass
 import json
+import hashlib
 import os
 from pathlib import Path
 import shlex
@@ -14,10 +15,11 @@ from typing import Any
 from molt.dx import cargo_target_dir_for_artifact_root, session_artifact_component
 from molt.build_state_layout import build_state_root
 
-IDENTITY_SCHEMA = "molt.backend_daemon.identity.v1"
+IDENTITY_SCHEMA = "molt.backend_daemon.identity.v2"
 
 HealthProbe = Callable[[Path, float | None], tuple[bool, Mapping[str, Any] | None]]
-ProcessCommandProbe = Callable[[int], str | None]
+ProcessCommand = str | tuple[str, ...]
+ProcessCommandProbe = Callable[[int], ProcessCommand | None]
 PidAliveProbe = Callable[[int], bool]
 
 
@@ -31,6 +33,9 @@ class BackendDaemonIdentity:
     backend_bin: Path
     created_at: float
     command: str | None = None
+    started_at_ns: int | None = None
+    backend_sha256: str | None = None
+    suite_lease: str | None = None
 
 
 @dataclass(frozen=True)
@@ -52,6 +57,9 @@ def backend_daemon_identity_payload(
         "backend_bin": os.fspath(identity.backend_bin),
         "created_at": identity.created_at,
         "command": identity.command,
+        "started_at_ns": identity.started_at_ns,
+        "backend_sha256": identity.backend_sha256,
+        "suite_lease": identity.suite_lease,
     }
 
 
@@ -67,14 +75,17 @@ def read_backend_daemon_identity(identity_path: Path) -> BackendDaemonIdentity |
         payload = json.loads(identity_path.read_text(encoding="utf-8"))
     except OSError:
         return None
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
         return None
     if not isinstance(payload, dict):
         return None
     if payload.get("schema") != IDENTITY_SCHEMA:
         return None
+    started_at_ns = payload.get("started_at_ns")
+    if type(started_at_ns) is not int or started_at_ns <= 0:
+        return None
     raw_pid = payload.get("pid")
-    if not isinstance(raw_pid, int) or raw_pid <= 0:
+    if type(raw_pid) is not int or raw_pid <= 0:
         return None
     socket_path = _json_path_field(payload, "socket_path")
     project_root = _json_path_field(payload, "project_root")
@@ -105,6 +116,13 @@ def read_backend_daemon_identity(identity_path: Path) -> BackendDaemonIdentity |
         backend_bin=backend_bin,
         created_at=created_at,
         command=command,
+        started_at_ns=started_at_ns,
+        backend_sha256=payload.get("backend_sha256")
+        if isinstance(payload.get("backend_sha256"), str)
+        else None,
+        suite_lease=payload.get("suite_lease")
+        if isinstance(payload.get("suite_lease"), str)
+        else None,
     )
 
 
@@ -217,24 +235,13 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _process_command(pid: int) -> str | None:
+def _process_command(pid: int) -> tuple[str, ...] | None:
+    # Human-readable ps output cannot prove argument boundaries.
     if pid <= 0 or os.name == "nt":
         return None
-    try:
-        result = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "command="],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=1.0,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
-        return None
-    command = result.stdout.strip()
-    return command or None
+    from tools.memory_guard_core.process_model import process_command_argv
+
+    return process_command_argv(pid)
 
 
 def _strip_matching_quotes(token: str) -> str:
@@ -249,7 +256,7 @@ def _split_windows_command_fallback(command: str) -> tuple[str, ...]:
             _strip_matching_quotes(token) for token in shlex.split(command, posix=False)
         )
     except ValueError:
-        return tuple(command.split())
+        return ()
 
 
 def _split_windows_command(command: str) -> tuple[str, ...]:
@@ -282,13 +289,19 @@ def _split_windows_command(command: str) -> tuple[str, ...]:
         return _split_windows_command_fallback(command)
 
 
-def _split_command(command: str) -> tuple[str, ...]:
+def _split_command(command: ProcessCommand) -> tuple[str, ...]:
+    if isinstance(command, tuple):
+        return (
+            command
+            if all(isinstance(arg, str) and "\0" not in arg for arg in command)
+            else ()
+        )
     if os.name == "nt":
         return _split_windows_command(command)
     try:
         return tuple(shlex.split(command))
     except ValueError:
-        return tuple(command.split())
+        return ()
 
 
 def _command_executable_matches_backend(
@@ -328,7 +341,7 @@ def _command_has_socket(
 
 
 def backend_daemon_command_matches_identity(
-    command: str,
+    command: ProcessCommand,
     *,
     backend_bin: Path | None,
     socket_path: Path | None,
@@ -339,6 +352,33 @@ def backend_daemon_command_matches_identity(
     if not _command_executable_matches_backend(tokens[0], backend_bin):
         return False
     return "--daemon" in tokens and _command_has_socket(tokens, socket_path)
+
+
+def backend_daemon_process_observations():
+    """Observe daemon argv from native birth-fenced samples, never ps text."""
+    if os.name != "posix":
+        return ()
+    guard = _load_memory_guard_module()
+    if guard is None:
+        return ()
+    try:
+        samples = guard.sample_processes()
+    except (OSError, subprocess.SubprocessError, guard.ProcessSnapshotError):
+        return ()
+    observations = []
+    for sample in samples.values():
+        argv = sample.argv
+        if argv is None or sample.started_at_ns is None:
+            continue
+        if not backend_daemon_command_matches_identity(
+            argv, backend_bin=None, socket_path=None
+        ):
+            continue
+        for index, arg in enumerate(argv[:-1]):
+            if arg == "--socket" and argv[index + 1]:
+                observations.append((sample, Path(argv[index + 1])))
+                break
+    return tuple(observations)
 
 
 def _backend_daemon_identity_process_matches(
@@ -372,6 +412,32 @@ def _backend_daemon_health_contradicts_identity(
     return isinstance(raw_pid, int) and raw_pid != identity.pid
 
 
+def process_started_at_ns(pid: int) -> int | None:
+    # POSIX admission must not scan the entire process table under its lock.
+    if os.name == "posix":
+        from tools.memory_guard_core.process_model import (
+            process_started_at_ns as native_birth,
+        )
+
+        return native_birth(pid)
+    memory_guard = _load_memory_guard_module()
+    if memory_guard is None:
+        return None
+    try:
+        sample = memory_guard.sample_processes().get(pid)
+    except (OSError, subprocess.SubprocessError, memory_guard.ProcessSnapshotError):
+        return None
+    return None if sample is None else sample.started_at_ns
+
+
+def backend_content_sha256(backend_bin: Path) -> str | None:
+    try:
+        with backend_bin.open("rb") as handle:
+            return hashlib.file_digest(handle, "sha256").hexdigest()
+    except OSError:
+        return None
+
+
 def backend_daemon_identity_is_verified(
     identity: BackendDaemonIdentity,
     *,
@@ -381,6 +447,11 @@ def backend_daemon_identity_is_verified(
     pid_alive: PidAliveProbe | None = None,
 ) -> bool:
     alive_probe = pid_alive or _pid_alive
+    if (
+        identity.started_at_ns is None
+        or process_started_at_ns(identity.pid) != identity.started_at_ns
+    ):
+        return False
     if identity.pid <= 0 or not alive_probe(identity.pid):
         return False
     if not _backend_daemon_identity_process_matches(
@@ -415,6 +486,12 @@ def backend_daemon_identity_matches_context(
     )
 
 
+def _command_display(command: ProcessCommand | None) -> str | None:
+    if command is None or isinstance(command, str):
+        return command
+    return subprocess.list2cmdline(command) if os.name == "nt" else shlex.join(command)
+
+
 def backend_daemon_identity_for_pid(
     pid: int,
     *,
@@ -424,8 +501,13 @@ def backend_daemon_identity_for_pid(
     config_digest: str | None,
     backend_bin: Path,
     process_command: ProcessCommandProbe | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> BackendDaemonIdentity:
     command_probe = process_command or _process_command
+    before = process_started_at_ns(pid)
+    command = command_probe(pid)
+    after = process_started_at_ns(pid)
+    born = before if before is not None and before == after else None
     return BackendDaemonIdentity(
         pid=pid,
         socket_path=socket_path,
@@ -434,7 +516,13 @@ def backend_daemon_identity_for_pid(
         config_digest=config_digest,
         backend_bin=backend_bin,
         created_at=time.time(),
-        command=command_probe(pid),
+        command=_command_display(command) if born is not None else None,
+        started_at_ns=born,
+        backend_sha256=backend_content_sha256(backend_bin),
+        suite_lease=(os.environ if environ is None else environ).get(
+            "MOLT_BACKEND_DAEMON_SUITE_LEASE"
+        )
+        or None,
     )
 
 
@@ -447,11 +535,12 @@ def backend_daemon_identity_from_health(
     config_digest: str | None,
     backend_bin: Path,
     process_command: ProcessCommandProbe | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> BackendDaemonIdentity | None:
     if health is None:
         return None
     raw_pid = health.get("pid")
-    if not isinstance(raw_pid, int) or raw_pid <= 0:
+    if type(raw_pid) is not int or raw_pid <= 0:
         return None
     if config_digest is not None:
         raw_spawn_digest = health.get("spawn_config_digest")
@@ -465,6 +554,7 @@ def backend_daemon_identity_from_health(
         config_digest=config_digest,
         backend_bin=backend_bin,
         process_command=process_command,
+        environ=environ,
     )
 
 
@@ -485,10 +575,12 @@ def _backend_daemon_snapshot_sample(
     sample = samples.get(identity.pid)
     if sample is None:
         return None
+    if identity.started_at_ns is None or sample.started_at_ns != identity.started_at_ns:
+        return None
     if memory_guard.is_host_control_plane_process(sample):
         return None
     if not backend_daemon_command_matches_identity(
-        sample.command,
+        sample.argv if sample.argv is not None else sample.command,
         backend_bin=identity.backend_bin,
         socket_path=identity.socket_path,
     ):

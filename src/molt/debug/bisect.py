@@ -6,7 +6,7 @@ import itertools
 import json
 from typing import Any, Callable, Mapping, Sequence
 
-from .reduce import oracle_matches
+from molt.debug.reduce import oracle_matches
 
 
 @dataclass(frozen=True)

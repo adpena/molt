@@ -9,7 +9,7 @@ use crate::representation_plan::ScalarRepresentationPlan;
 use crate::wasm::frame_locals::{WasmFrameLocals, WasmFrameSyntheticLocal};
 use crate::wasm::local_analysis::{LocalVariableAnalysis, analyze_local_variables};
 use debug::emit_seed_debug;
-use local_alloc::{FrameLocalAllocationPolicy, ensure_frame_local};
+use local_alloc::FrameLocalAllocator;
 use molt_tir::tir::simple_def_use::{
     simple_ir_out_result, visit_simple_ir_defined_names, visit_simple_ir_reads,
 };
@@ -24,6 +24,7 @@ impl WasmFunctionFramePlan {
             func_ir,
             &crate::tir::target_info::TargetInfo::wasm_release_fast(),
         );
+        let guard_facts = molt_tir::passes::RuntimeGuardFacts::for_function(func_ir);
         let mut requirements = FrameRuntimeRequirements::default();
         for op in &func_ir.ops {
             requirements.observe_op(&scalar_plan, op);
@@ -62,9 +63,8 @@ impl WasmFunctionFramePlan {
             read_vars,
             param_set,
             runtime_lookup_only_vars,
-            coalesced_map,
+            storage,
             defined_vars,
-            used_vars,
         } = analyze_local_variables(func_ir);
 
         let dead_sink_idx = locals.ensure_synthetic(
@@ -80,19 +80,15 @@ impl WasmFunctionFramePlan {
         );
 
         let mut seed_plan = FrameConstSeedPlan::default();
-        let allocation_policy = FrameLocalAllocationPolicy {
-            read_vars: &read_vars,
-            param_set: &param_set,
-            coalesced_map: &coalesced_map,
-            dead_sink_idx,
-        };
+        let occupancy = storage.occupancy();
+        let mut allocator =
+            FrameLocalAllocator::new(&read_vars, &param_set, &storage, dead_sink_idx);
         for (op_idx, op) in func_ir.ops.iter().enumerate() {
             visit_simple_ir_reads(op, |read| {
-                ensure_frame_local(
+                allocator.ensure(
                     &mut locals,
                     &mut local_types,
                     &mut local_count,
-                    allocation_policy,
                     read.name,
                     false,
                 );
@@ -101,24 +97,22 @@ impl WasmFunctionFramePlan {
             // checked results use `var`, unpack results use trailing `args`,
             // and bindings may define both a destination and a snapshot.
             visit_simple_ir_defined_names(op, |name| {
-                ensure_frame_local(
-                    &mut locals,
-                    &mut local_types,
-                    &mut local_count,
-                    allocation_policy,
-                    name,
-                    true,
-                );
+                allocator.ensure(&mut locals, &mut local_types, &mut local_count, name, true);
             });
             if let Some(out) = &op.out {
                 let out_local_idx = locals.result_or_sink_slot(simple_ir_out_result(op));
                 let is_dead = out_local_idx == dead_sink_idx;
+                // An entry seed is a write at function entry: only a value
+                // observable before any operation needs one, and only such
+                // values are kept out of every other local at that position.
+                let seed_at_entry = occupancy.is_none_or(|occupancy| occupancy.is_entry_live(out));
                 seed_plan.observe_const_output(
                     op_idx,
                     op,
                     out,
                     out_local_idx,
                     is_dead,
+                    seed_at_entry,
                     &mut locals,
                     &mut local_types,
                     &mut local_count,
@@ -127,12 +121,14 @@ impl WasmFunctionFramePlan {
         }
 
         seed_plan.seed_undefined_locals(
-            &used_vars,
+            &read_vars,
             &defined_vars,
             &param_set,
             &locals,
             dead_sink_idx,
+            occupancy,
         );
+        let value_occupancy = storage.into_occupancy();
 
         requirements.ensure_synthetic_locals(&mut locals, &mut local_types, &mut local_count);
 
@@ -140,9 +136,51 @@ impl WasmFunctionFramePlan {
             locals.ensure_synthetic(scratch, &mut local_types, &mut local_count);
         }
 
+        let guard_profile_local = guard_facts.has_profile_only().then(|| {
+            let local = local_count;
+            local_types.push(ValType::I64);
+            local_count += 1;
+            local
+        });
         let stateful = requirements.stateful();
         let jumpful = requirements.jumpful();
-        let tail_call_eligible = requirements.tail_call_eligible();
+        let owns_frame = func_ir.execution_context == crate::ir::ExecutionContextPolicy::Local;
+        // Python frames remain observable during callees, including finalizers.
+        let tail_call_eligible = requirements.tail_call_eligible() && !owns_frame;
+        let owned_frame_attempt = owns_frame.then(|| {
+            let slot = local_count;
+            local_types.push(ValType::I32);
+            local_count += 1;
+            slot
+        });
+        let frame_homes = func_ir
+            .ops
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op.kind.as_str(),
+                    "frame_home_store"
+                        | "frame_home_cell"
+                        | "frame_home_private_cell"
+                        | "frame_home_load"
+                        | "frame_home_take"
+                        | "frame_home_clear"
+                )
+            })
+            .filter_map(|op| op.value)
+            .max()
+            .map(|slot| {
+                let local = local_count;
+                local_types.push(ValType::I32);
+                local_types.push(ValType::I64);
+                local_count += 2;
+                super::WasmFrameHomes {
+                    local,
+                    displaced: local + 1,
+                    slots: slot + 1,
+                    at_entry: !func_ir.ops.iter().any(|op| op.kind == "trace_enter_slot"),
+                }
+            });
 
         let dispatch_locals =
             locals.allocate_dispatch_locals(stateful, jumpful, &mut local_types, &mut local_count);
@@ -165,10 +203,16 @@ impl WasmFunctionFramePlan {
             local_types,
             frame: WasmFunctionFrame {
                 locals,
+                value_occupancy,
                 runtime_lookup_only_vars,
                 scalar_plan,
+                guard_facts,
+                guard_profile_local,
                 control_mode,
-                tail_call_eligible,
+                tail_call_eligible: tail_call_eligible && const_anchors.is_empty(),
+                owned_frame_attempt,
+                frame_homes,
+                python_eh_boundary: false,
                 dispatch_locals,
                 const_cache,
                 const_seed_locals,
@@ -190,6 +234,7 @@ impl WasmFunctionFramePlan {
 mod tests {
     use super::*;
     use crate::OpIR;
+    use std::collections::BTreeSet;
 
     #[test]
     fn frame_slots_follow_reads_and_definitions_not_wire_field_spelling() {
@@ -272,5 +317,103 @@ mod tests {
                 "metadata allocated a value: {name}"
             );
         }
+    }
+
+    #[test]
+    fn renamed_values_share_physical_locals_by_exact_liveness() {
+        let prefixes = ["v", "_v", "_bb", "local_"];
+        let names: Vec<String> = (0..48)
+            .map(|index| format!("{}{index}", prefixes[index % prefixes.len()]))
+            .collect();
+        let mut ops = vec![OpIR {
+            kind: "const".into(),
+            out: Some(names[0].clone()),
+            value: Some(0),
+            ..OpIR::default()
+        }];
+        for pair in names.windows(2) {
+            ops.push(OpIR {
+                kind: "copy".into(),
+                args: Some(vec![pair[0].clone()]),
+                out: Some(pair[1].clone()),
+                ..OpIR::default()
+            });
+        }
+        ops.push(OpIR {
+            kind: "ret".into(),
+            args: Some(vec![names[names.len() - 1].clone()]),
+            ..OpIR::default()
+        });
+        let function = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: "renamed_chain".into(),
+            ops,
+            ..FunctionIR::default()
+        };
+        let plan = WasmFunctionFramePlan::for_function(&function);
+        let physical: BTreeSet<u32> = names
+            .iter()
+            .map(|name| plan.frame.locals[name.as_str()])
+            .collect();
+        // Each copy reads one value and defines the next. A result never
+        // reuses its own operand, so the chain alternates between two locals.
+        assert_eq!(physical.len(), 2, "{physical:?}");
+    }
+
+    #[test]
+    fn jumpful_frames_seed_only_values_observable_at_entry() {
+        let label = |id| OpIR {
+            kind: "label".into(),
+            value: Some(id),
+            ..OpIR::default()
+        };
+        let jump = |id| OpIR {
+            kind: "jump".into(),
+            value: Some(id),
+            ..OpIR::default()
+        };
+        let constant = |out: &str, value| OpIR {
+            kind: "const".into(),
+            out: Some(out.into()),
+            value: Some(value),
+            ..OpIR::default()
+        };
+        let read = |name: &str| OpIR {
+            kind: "ret".into(),
+            args: Some(vec![name.into()]),
+            ..OpIR::default()
+        };
+        let function = FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: "entry_seeds".into(),
+            ops: vec![
+                constant("early", 5),
+                jump(1),
+                label(3),
+                read("seeded"),
+                label(1),
+                OpIR {
+                    kind: "store_var".into(),
+                    args: Some(vec!["early".into()]),
+                    var: Some("bound".into()),
+                    ..OpIR::default()
+                },
+                jump(3),
+                // Never executes: `seeded` is observable only through its seed.
+                constant("seeded", 7),
+                read("bound"),
+            ],
+            ..FunctionIR::default()
+        };
+        let plan = WasmFunctionFramePlan::for_function(&function);
+        let locals = &plan.frame.locals;
+        let seeded: Vec<u32> = plan
+            .frame
+            .const_seed_locals
+            .iter()
+            .map(|&(local, _)| local)
+            .collect();
+        assert_eq!(seeded, vec![locals["seeded"]]);
+        assert_ne!(locals["seeded"], locals["early"]);
     }
 }

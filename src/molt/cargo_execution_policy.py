@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 import tomllib
 
-from molt.source_root import compiler_source_root
+from .source_root import compiler_source_root
 
 
 CI_CARGO_POLICY_SCHEMA = "molt.ci-resource-policy.v2"
@@ -27,6 +27,23 @@ NESTED_PROCESS_BUDGET_BY_ROLE = {
     "build": "cold",
     "execution": "warm",
 }
+
+
+def source_build_disabled_reason(artifact: str) -> str | None:
+    """Restrict source builds without changing artifact admission requirements.
+
+    Call after compatible artifact reuse/hydration, before invoking Cargo.
+    Provenance refresh through Cargo is also a source build, even if Cargo
+    could discover that none of its inputs changed.
+    """
+    if os.environ.get("MOLT_SKIP_RUNTIME_REBUILD") != "1":
+        return None
+    return (
+        f"{artifact} requires a source build or provenance refresh, but "
+        "MOLT_SKIP_RUNTIME_REBUILD=1 disables source builds. "
+        "Provide an admitted artifact for the selected inputs or unset "
+        "MOLT_SKIP_RUNTIME_REBUILD to allow building from source."
+    )
 
 
 def _wrapper_is_sccache(wrapper: str) -> bool:

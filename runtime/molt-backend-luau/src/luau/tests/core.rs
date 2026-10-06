@@ -2,6 +2,56 @@ use super::exceptions::luau_tir_roundtrip_function;
 use super::*;
 
 #[test]
+fn cold_module_chunk_identity_uses_semantic_provenance() {
+    let mut function = FunctionIR {
+        name: "comprehension_fail__molt_module_chunk_1".into(),
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        params: vec!["unknown".into()],
+        ops: vec![
+            OpIR {
+                kind: "const_none".into(),
+                out: Some("nothing".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "is".into(),
+                args: Some(vec!["unknown".into(), "nothing".into()]),
+                out: Some("result".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["result".into()]),
+                ..OpIR::default()
+            },
+        ],
+        ..FunctionIR::default()
+    };
+    let source = LuauBackend::new()
+        .compile_checked(&SimpleIR {
+            functions: vec![function.clone()],
+            profile: None,
+        })
+        .expect("None identity remains exact in a cold module chunk");
+    assert!(
+        source.contains("molt_rawequal(unknown, nothing)"),
+        "{source}"
+    );
+
+    function.ops[0].kind = "const".into();
+    function.ops[0].value = Some(1);
+    let mut backend = LuauBackend::new();
+    let error = backend
+        .compile_checked(&SimpleIR {
+            functions: vec![function],
+            profile: None,
+        })
+        .expect_err("a value scalar compared with unknown must remain rejected");
+    assert!(error.contains("identity needs alias/reference/singleton provenance"));
+    assert!(backend.output.is_empty());
+}
+
+#[test]
 fn compile_checked_rejects_canonical_void_and_value_externs_before_emission() {
     let declarations = [
         FunctionIR {
@@ -263,6 +313,7 @@ fn compiler_entrypoint_is_an_explicit_abi_symbol_kind() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "ret_void".to_string(),
@@ -284,6 +335,7 @@ fn compiler_entrypoint_is_an_explicit_abi_symbol_kind() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -298,6 +350,7 @@ fn compiler_entrypoint_is_an_explicit_abi_symbol_kind() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "ret_void".to_string(),
@@ -308,7 +361,7 @@ fn compiler_entrypoint_is_an_explicit_abi_symbol_kind() {
         profile: None,
     };
     let source = LuauBackend::new().compile_checked(&valid).unwrap();
-    assert!(source.contains("local molt_main"), "{source}");
+    assert!(source.contains("local molt_main\n"), "{source}");
     assert!(
         source.contains("local _m_user_5f5f6d61696e5f5f5f5f6d6f6c745f6d61696e"),
         "{source}"
@@ -387,6 +440,7 @@ fn deferred_annotation_functions_are_emitted_with_their_real_body() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -422,6 +476,7 @@ fn unpack_sequence_uses_exact_arity_runtime_authority() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -445,7 +500,7 @@ fn unpack_sequence_uses_exact_arity_runtime_authority() {
     };
     let source = LuauBackend::new().compile(&ir);
 
-    assert!(source.contains("local function molt_unpack_sequence"));
+    assert!(source.contains("function molt_unpack_sequence"));
     assert!(source.contains("if actual < expected then"));
     assert!(source.contains("if actual > expected then break end"));
     assert!(source.contains("molt_unpack_sequence(seq, 2, \"auto\")"));
@@ -471,6 +526,7 @@ fn unpack_sequence_preserves_none_holes_with_packed_sequence_authority() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -527,6 +583,7 @@ fn unpack_mapping_keeps_user_n_key_distinct_from_sequence_metadata() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -569,8 +626,8 @@ fn unpack_mapping_keeps_user_n_key_distinct_from_sequence_metadata() {
     assert!(source.contains("molt_dict_view_snapshot(molt_dict_keys(mapping))"));
     assert!(!source.contains("for key in pairs(mapping) do"));
     assert!(!source.contains("if key ~= \"n\""));
-    assert!(source.contains("local molt_sequence_length_key = {}"));
-    assert!(source.contains("local molt_dict_metadata = setmetatable({}, {__mode = \"k\"})"));
+    assert!(source.contains("molt_sequence_length_key = {}"));
+    assert!(source.contains("molt_dict_metadata = setmetatable({}, {__mode = \"k\"})"));
     assert!(!source.contains("rawget(obj, \"n\")"));
 }
 
@@ -677,6 +734,7 @@ fn ordered_dict_authority_is_complete_deterministic_and_collision_free() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops,
         }],
@@ -690,10 +748,10 @@ fn ordered_dict_authority_is_complete_deterministic_and_collision_free() {
         "identical IR must compile byte-for-byte deterministically"
     );
     for required in [
-        "local molt_dict_none_key = {}",
-        "local molt_dict_none_value = {}",
-        "local molt_dict_metadata = setmetatable({}, {__mode = \"k\"})",
-        "local function molt_hashed_index_new",
+        "molt_dict_none_key = {}",
+        "molt_dict_none_value = {}",
+        "molt_dict_metadata = setmetatable({}, {__mode = \"k\"})",
+        "function molt_hashed_index_new",
         "molt_dict_set(d, key, value)",
         "molt_dict_setdefault(d, other, value)",
         "molt_dict_pop(d, other, true, none)",
@@ -721,37 +779,231 @@ fn ordered_dict_authority_is_complete_deterministic_and_collision_free() {
 }
 
 #[test]
-fn dict_runtime_dependency_slices_do_not_ship_unreferenced_call_or_repr_authority() {
+fn dict_runtime_dependency_closure_keeps_view_equality_without_call_authority() {
+    let source = runtime_prelude::library()
+        .unwrap()
+        .emit("molt_dict_new()", false)
+        .unwrap()
+        .source;
+    assert!(source.contains("function molt_dict_new"));
+    assert!(!source.contains("function molt_callargs_new"));
+    // The dictionary fragment exports view containment, which uses equality.
+    assert!(source.contains("molt_equal = function"));
+    assert!(source.contains("function molt_repr_string"));
+    assert!(!source.contains("function molt_function_set_builtin"));
+    assert!(dict_runtime::DICT_CORE_RUNTIME.len() < source.len());
+}
+
+fn scoped_runtime_fixture() -> runtime_prelude::RuntimeLibrary {
+    runtime_prelude::RuntimeLibrary::new(vec![
+        (
+            "base",
+            "local molt_rawequal = rawequal\nlocal molt_order = {}\n".to_string(),
+        ),
+        (
+            "left",
+            r#"local private_state = {0}
+local private_odd: any
+local function private_even(n)
+    if n == 0 then return true end
+    return private_odd(n - 1)
+end
+private_odd = function(n)
+    if n == 0 then return false end
+    return private_even(n - 1)
+end
+local function molt_left(n)
+    if n == 0 then return private_even(10) end
+    return molt_right(n - 1)
+end
+local function molt_identity()
+    private_state[1] += 1
+    return private_odd, private_state[1]
+end
+local left_initialized = table.insert(molt_order, "left")
+"#
+            .to_string(),
+        ),
+        (
+            "right",
+            r#"local function molt_right(n)
+    if n == 0 then return true end
+    return molt_left(n - 1)
+end
+local right_initialized = table.insert(molt_order, "right")
+"#
+            .to_string(),
+        ),
+    ])
+    .unwrap()
+}
+
+const SCOPED_RUNTIME_ORACLE: &str = r#"
+;(function()
+    assert(molt_left(9) and molt_right(9))
+    local first, first_count = molt_identity()
+    local second, second_count = molt_identity()
+    assert(molt_rawequal(first, second) and first(9) and not first(10))
+    assert(first_count == 1 and second_count == 2)
+    assert(#molt_order == 2 and molt_order[1] == "left" and molt_order[2] == "right")
+    print("luau-provider-scopes-ok")
+end)()
+"#;
+
+#[test]
+fn runtime_provider_scopes_hoist_only_guest_and_cross_provider_exports() {
+    let prelude = scoped_runtime_fixture()
+        .emit(SCOPED_RUNTIME_ORACLE, false)
+        .unwrap();
+    assert_eq!(prelude.local_count, 5);
+    let (exports, providers) = prelude
+        .source
+        .split_once("do -- Runtime provider:")
+        .unwrap();
+    for name in [
+        "molt_rawequal",
+        "molt_order",
+        "molt_left",
+        "molt_right",
+        "molt_identity",
+    ] {
+        assert!(
+            exports.contains(&format!("local {name}: any\n")),
+            "{exports}"
+        );
+    }
+    for name in [
+        "private_state",
+        "private_even",
+        "private_odd",
+        "left_initialized",
+        "right_initialized",
+    ] {
+        assert!(!exports.contains(name), "{exports}");
+        assert!(
+            providers.contains(&format!("\tlocal {name}: any\n")),
+            "{providers}"
+        );
+    }
+    assert!(
+        providers.find("Runtime provider: left").unwrap()
+            < providers.find("Runtime provider: right").unwrap()
+    );
+    assert!(providers.contains("return private_odd(n - 1)"));
+    assert!(providers.contains("return molt_right(n - 1)"));
+    validate_luau_source(&format!("{}{SCOPED_RUNTIME_ORACLE}", prelude.source)).unwrap();
+}
+
+#[test]
+#[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
+fn runtime_provider_scopes_preserve_recursive_cells_and_initialization_order() {
+    let prelude = scoped_runtime_fixture()
+        .emit(SCOPED_RUNTIME_ORACLE, false)
+        .unwrap();
+    let source = format!("{}{SCOPED_RUNTIME_ORACLE}", prelude.source);
+    let output = execute_lune_oracle("provider_scopes", &source);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("luau-provider-scopes-ok"));
+}
+
+#[test]
+fn runtime_provider_budget_counts_concurrent_private_cells() {
+    let provider = |prefix: &str, private_count: usize| {
+        let mut source = String::new();
+        for index in 0..private_count {
+            source.push_str(&format!("local {prefix}_private_{index} = {index}\n"));
+        }
+        source.push_str(&format!(
+            "local function molt_{prefix}() return {prefix}_private_0 end\n"
+        ));
+        source
+    };
+    let library = |private_count| {
+        runtime_prelude::RuntimeLibrary::new(vec![
+            ("base", "local molt_rawequal = rawequal\n".to_string()),
+            ("left", provider("left", private_count)),
+            ("right", provider("right", private_count)),
+        ])
+        .unwrap()
+    };
+    let prelude = library(runtime_prelude::CHUNK_LOCAL_LIMIT - 3)
+        .emit("molt_left(); molt_right()", false)
+        .unwrap();
+    assert_eq!(prelude.local_count, 3);
+    let error = library(runtime_prelude::CHUNK_LOCAL_LIMIT - 2)
+        .emit("molt_left(); molt_right()", false)
+        .err()
+        .expect("one provider plus exports must still fit the concurrent limit");
+    assert!(
+        error.contains("199 simultaneously active locals"),
+        "{error}"
+    );
+}
+
+#[test]
+fn runtime_provider_definitions_cannot_create_implicit_globals() {
+    let library = runtime_prelude::RuntimeLibrary::new(vec![
+        ("base", "local molt_rawequal = rawequal\n".to_string()),
+        (
+            "assignment",
+            "molt_scalar = 42\nlocal function molt_read() return molt_scalar end\n".to_string(),
+        ),
+    ])
+    .unwrap();
+    let prelude = library.emit("molt_read()", false).unwrap();
+    assert!(prelude.source.contains("\tlocal molt_scalar: any\n"));
+    assert!(prelude.source.contains("\tmolt_scalar = 42\n"));
+    // A provider factory exports its returned closure through one explicit
+    // initializer. Its recursive implementation remains private to the factory.
+    let json = runtime_prelude::library()
+        .unwrap()
+        .emit("molt_json_dumps(molt_pack_list(1))", false)
+        .unwrap();
+    assert!(json.source.contains("\tmolt_json_dumps = (function()"));
+    assert!(
+        json.source
+            .contains("\t\treturn function(value: any): string")
+    );
+    assert!(!json.source.contains("molt_json_dumps = function(value"));
+    validate_luau_source(&json.source).unwrap();
+    for source in [
+        "function unknown() end\n",
+        "local function unknown.member() end\n",
+        "local first, second = 1, 2\n",
+        "first, second = 1, 2\n",
+        "unknown += 1\n",
+        "local first = 1\nlocal first = 2\n",
+        "local missing: any\nlocal function outer()\n    local missing = 1\nend\n",
+        "local hidden\n;(function()\n    hidden = function() end\nend)()\n",
+    ] {
+        assert!(
+            runtime_prelude::RuntimeLibrary::new(vec![("mutation", source.to_string())]).is_err(),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn compile_checked_rejects_guest_declarations_over_the_chunk_local_budget() {
     let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            return_abi: molt_ir::FunctionReturnAbi::Void,
-            name: "dict_only".to_string(),
-            params: vec![],
-            ops: vec![
-                OpIR {
-                    kind: "dict_new".to_string(),
-                    out: Some("mapping".to_string()),
-                    ..OpIR::default()
-                },
-                OpIR {
+        functions: (0..runtime_prelude::CHUNK_LOCAL_LIMIT)
+            .map(|index| FunctionIR {
+                name: format!("local_budget_probe_{index}"),
+                return_abi: molt_ir::FunctionReturnAbi::Void,
+                ops: vec![OpIR {
                     kind: "ret_void".to_string(),
                     ..OpIR::default()
-                },
-            ],
-            ..FunctionIR::default()
-        }],
+                }],
+                ..FunctionIR::default()
+            })
+            .collect(),
         profile: None,
     };
-    let source = LuauBackend::new().compile(&ir);
-    assert!(source.contains("local function molt_dict_new"));
-    assert!(!source.contains("local function molt_callargs_new"));
-    assert!(!source.contains("local function molt_equal"));
-    assert!(!source.contains("local function molt_repr_string"));
-    assert!(dict_runtime::DICT_CORE_RUNTIME.len() < source.len());
+    let error = LuauBackend::new().compile_checked(&ir).unwrap_err();
     assert!(
-        dict_runtime::CALLARGS_RUNTIME.len() + dict_runtime::EQUALITY_REPR_RUNTIME.len() > 4_000,
-        "dependency slicing must avoid a material amount of unreferenced source"
+        error.contains("runtime exports and guest function declarations"),
+        "{error}"
     );
+    assert!(error.contains("before the entry-point guard"), "{error}");
 }
 
 #[test]
@@ -849,16 +1101,14 @@ fn compile_checked_callargs_family_uses_one_builder_invocation_authority() {
     assert!(source.contains("local result = molt_callargs_invoke(func, indirect_builder)"));
     assert!(!source.contains("molt_call_checked(func, indirect_builder)"));
     assert!(source.contains("molt_call_checked = function"));
-    assert!(source.contains("local function molt_callargs_expand_kwstar"));
-    assert!(!source.contains("local function molt_function_init_metadata_packed"));
-    assert!(!source.contains("local function molt_equal"));
+    assert!(source.contains("function molt_callargs_expand_kwstar"));
+    // The IR's object/call semantics seed the default namespace, whose setattr
+    // adapter and repr adapter share these executable providers.
+    assert!(source.contains("function molt_function_init_metadata_packed"));
+    assert!(source.contains("molt_equal = function"));
     assert!(!source.contains("molt_function_params"));
-    assert!(source.contains(
-        "local molt_function_metadata: {[any]: any} = setmetatable({}, {__mode = \"k\"})"
-    ));
-    assert!(source.contains(
-        "local molt_func_attrs: {[any]: {[any]: any}} = setmetatable({}, {__mode = \"k\"})"
-    ));
+    assert!(source.contains("molt_function_metadata = setmetatable({}, {__mode = \"k\"})"));
+    assert!(source.contains("molt_func_attrs = setmetatable({}, {__mode = \"k\"})"));
     assert!(source.contains("if value == func then molt_func_self_attr else value"));
 }
 
@@ -896,8 +1146,8 @@ fn function_value_runtime_helper_selects_its_complete_helper_group() {
         .compile_checked(&ir)
         .expect("function-value helper dependencies must pass checked Luau admission");
     assert!(source.contains("local result = molt_call_checked(molt_ord, value)"));
-    assert!(source.contains("local function molt_ord(ch: any): number"));
-    assert!(source.contains("local function molt_str_codepoint_len(s: string): number"));
+    assert!(source.contains("function molt_ord(ch: any): number"));
+    assert!(source.contains("function molt_str_codepoint_len(s: string): number"));
 }
 
 #[test]
@@ -1246,9 +1496,7 @@ fn checked_callargs_execute_mixed_arguments_live_defaults_and_bound_closures() {
     assert!(compiled.contains("molt_call_checked(builtin, left, right)"));
     assert!(compiled.contains("molt_callargs_invoke(builtin, builder)"));
     assert_eq!(
-        compiled
-            .matches("local function molt_function_attr_set")
-            .count(),
+        compiled.matches("function molt_function_attr_set").count(),
         1,
         "metadata-aware function mutation must have one emitted authority"
     );
@@ -1317,7 +1565,7 @@ set_function_defaults(method, molt_pack_tuple(9))
 assert(direct_call(bound) == 39 and builder_call(bound) == 39)
 print("luau-callargs-checked-execution-ok")
 "#;
-    let source = format!("{compiled}\n{oracle}");
+    let source = format!("{compiled}\n;(function()\n{oracle}\nend)()\n");
     validate_luau_source(&source).expect("checked CallArgs execution source must validate");
     let output = execute_lune_oracle("checked_callargs", &source);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1493,7 +1741,7 @@ fn checked_frontend_callable_metadata_and_code_slots_are_reachable() {
     let source = LuauBackend::new()
         .compile_via_ir(&ir)
         .expect("frontend-shaped callable metadata must pass checked Luau admission");
-    assert!(source.contains("local function molt_function_init_metadata_packed"));
+    assert!(source.contains("function molt_function_init_metadata_packed"));
     assert!(
         source.contains(
             "molt_call_checked(molt_function_init_metadata_packed, function_value, metadata, code, bind_kind)"
@@ -1563,7 +1811,7 @@ fn canonical_set_codegen_has_one_deterministic_side_metadata_authority() {
     };
     let source = LuauBackend::new().compile(&ir);
     for required in [
-        "local molt_set_metadata = setmetatable({}, {__mode = \"k\"})",
+        "molt_set_metadata = setmetatable({}, {__mode = \"k\"})",
         "local set_value = molt_set_new(\"set\")",
         "local frozen = molt_set_new(\"frozenset\")",
         "molt_set_freeze(frozen)",
@@ -1964,6 +2212,465 @@ print(string.format("luau-execution-frame-ok calls=100000 abandoned=2000 complet
     );
 }
 
+fn public_builtin_lookup_ir() -> SimpleIR {
+    SimpleIR {
+        functions: vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: "public_builtin_lookup_probe".to_string(),
+            params: vec!["name".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "builtin_func".to_string(),
+                    s_value: Some("molt_len".to_string()),
+                    builtin_name: Some("len".to_string()),
+                    args: Some(vec!["name".to_string()]),
+                    out: Some("selected".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["selected".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        }],
+        profile: None,
+    }
+}
+
+#[test]
+fn public_builtin_acquisition_uses_operand_and_one_published_namespace() {
+    let source = LuauBackend::new()
+        .compile_checked(&public_builtin_lookup_ir())
+        .expect("supported public builtin acquisition must retain checked admission");
+    assert!(source.contains("molt_frame_builtin_get(name)"));
+    assert!(!source.contains("molt_function_set_builtin(selected)"));
+    assert_eq!(
+        source
+            .matches("molt_module_cache[\"builtins\"] = namespace")
+            .count(),
+        1
+    );
+    assert_eq!(
+        source.matches("function molt_frame_namespace_get(").count(),
+        1
+    );
+    for dependency in [
+        "local molt_class_lookup: any",
+        "local molt_bind_attr: any",
+        "local molt_call_checked: any",
+        "local molt_exception_match: any",
+    ] {
+        assert!(
+            source.find(dependency).expect(dependency)
+                < source.find("function molt_frame_namespace_get(").unwrap(),
+            "namespace callback dependency must be lexically bound: {dependency}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
+fn public_builtin_lookup_preserves_capture_identity_none_and_mapping_errors() {
+    let mut ir = public_builtin_lookup_ir();
+    // The appended oracle uses this frame protocol outside its provider scope.
+    // Root the real helpers through guest IR, just as compiled code would.
+    ir.functions.push(FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Void,
+        name: "namespace_frame_protocol_roots".to_string(),
+        params: [
+            "id", "code", "globals", "slot", "context", "depth", "identity", "owner",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+        ops: vec![
+            OpIR {
+                kind: "call_internal".into(),
+                s_value: Some("molt_frame_bind_code".into()),
+                args: Some(vec!["id".into(), "code".into(), "globals".into()]),
+                out: Some("bound".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "call_internal".into(),
+                s_value: Some("molt_frame_enter_slot".into()),
+                args: Some(vec!["slot".into()]),
+                out: Some("entered".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "call_internal".into(),
+                s_value: Some("molt_frame_exit".into()),
+                args: Some(vec![
+                    "context".into(),
+                    "depth".into(),
+                    "identity".into(),
+                    "owner".into(),
+                ]),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            },
+        ],
+        ..FunctionIR::default()
+    });
+    // Include the sibling emitted consumer, not a hand-written global probe.
+    ir.functions.push(FunctionIR {
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        name: "public_global_lookup_probe".to_string(),
+        params: vec!["module".to_string(), "name".to_string()],
+        ops: vec![
+            OpIR {
+                kind: "module_get_global".to_string(),
+                args: Some(vec!["module".to_string(), "name".to_string()]),
+                out: Some("selected".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".to_string(),
+                args: Some(vec!["selected".to_string()]),
+                ..OpIR::default()
+            },
+        ],
+        ..FunctionIR::default()
+    });
+    for (function_name, literal) in [
+        ("public_module_attr_probe", None),
+        ("public_module_len_probe", Some("len")),
+    ] {
+        ir.functions.push(FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: function_name.to_string(),
+            params: vec!["module".to_string(), "name".to_string()],
+            ops: vec![
+                OpIR {
+                    kind: "module_get_attr".to_string(),
+                    s_value: literal.map(str::to_string),
+                    args: Some(if literal.is_some() {
+                        vec!["module".to_string()]
+                    } else {
+                        vec!["module".to_string(), "name".to_string()]
+                    }),
+                    out: Some("selected".to_string()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "ret".to_string(),
+                    args: Some(vec!["selected".to_string()]),
+                    ..OpIR::default()
+                },
+            ],
+            ..FunctionIR::default()
+        });
+    }
+    let source = LuauBackend::new()
+        .compile_checked(&ir)
+        .expect("namespace IR");
+    let source = format!(
+        "{source}\n;(function()\nlocal acquire = {}\nlocal read_global = {}\nlocal read_attr = {}\nlocal read_len = {}\n",
+        emit_function_ident("public_builtin_lookup_probe"),
+        emit_function_ident("public_global_lookup_probe"),
+        emit_function_ident("public_module_attr_probe"),
+        emit_function_ident("public_module_len_probe"),
+    );
+    let oracle = r#"
+local published = molt_module_cache["builtins"]
+local initial_len = acquire("len")
+assert(type(initial_len) == "function" and acquire("len") == initial_len)
+assert(molt_dict_getitem(published, "len") == initial_len)
+assert(read_attr(published, "len") == initial_len and read_len(published, nil) == initial_len)
+assert(read_attr(published, "__dict__") == published)
+assert(molt_call_checked(initial_len, molt_pack_list(1, nil, 3)) == 3)
+local globals = molt_dict_new()
+local captured = molt_dict_new()
+local later = molt_dict_new()
+local replacement = function(value) return "replacement:" .. value end
+molt_function_register_signature(replacement, molt_pack_tuple("value"))
+molt_func_attr_set(replacement, "__name__", "replacement")
+local metadata = molt_function_metadata[replacement]
+molt_dict_set(captured, "len", replacement)
+molt_dict_set(later, "len", initial_len)
+molt_dict_set(globals, "__builtins__", captured)
+local code = {co_name="namespace_probe", co_filename="namespace.py", co_firstlineno=1}
+local slot = molt_frame_bind_code(313, code, globals)
+local context, depth, identity, owner = molt_frame_enter_slot(slot)
+molt_dict_set(globals, "__builtins__", later)
+molt_module_cache["builtins"] = later
+assert(acquire("len") == replacement and acquire("len") == replacement)
+assert(read_global(later, "len") == replacement)
+assert(molt_call_checked(acquire("len"), "ok") == "replacement:ok")
+assert(molt_function_metadata[replacement] == metadata and metadata.is_builtin == nil)
+assert(molt_func_attr_get(replacement, "__name__") == "replacement")
+-- Name transport is the live operand; metadata does not choose the lookup key.
+molt_dict_set(captured, "alias", false)
+assert(acquire("alias") == false and read_global(later, "alias") == false)
+molt_dict_set(captured, "alias", nil)
+assert(acquire("alias") == nil and read_global(later, "alias") == nil)
+assert(read_attr(captured, "alias") == nil)
+molt_dict_delete(captured, "len", false)
+for _, lookup in {function() return acquire("len") end, function() return read_global(later, "len") end} do
+	local ok, err = pcall(lookup)
+	assert(not ok and err.__type == "NameError")
+end
+assert(not molt_dict_contains(captured, "len"))
+local attr_ok, attr_error = pcall(function() return read_len(captured, nil) end)
+assert(not attr_ok and attr_error.__type == "AttributeError")
+-- Instance attributes cannot override the special method selected on the type.
+local calls = 0
+local failure = {__type="ValueError", __msg="mapping callback"}
+local answer = {}
+local mapping_class = {__molt_is_type=true}
+mapping_class.__index = mapping_class
+mapping_class.__getitem__ = function(self, name)
+	calls += 1
+	if name == "alias" then return nil end
+	if name == "missing" then error({__type="KeyError", __msg=name}, 0) end
+	if name == "failure" then error(failure, 0) end
+	if name == "handoff" then context.builtins[depth] = later end
+	return answer
+end
+local mapping = setmetatable({__getitem__=function() error("instance shadow ran") end}, mapping_class)
+context.builtins[depth] = mapping
+assert(acquire("len") == answer and calls == 1)
+assert(read_global(later, "len") == answer and calls == 2)
+assert(acquire("alias") == nil and calls == 3)
+local ok, err = pcall(function() return acquire("missing") end)
+assert(not ok and err.__type == "NameError" and calls == 4)
+ok, err = pcall(function() return acquire("failure") end)
+assert(not ok and err == failure and calls == 5)
+ok, err = pcall(function() return read_global(later, "failure") end)
+assert(not ok and err == failure and calls == 6)
+assert(acquire("handoff") == answer and calls == 7)
+assert(context.builtins[depth] == later and acquire("len") == initial_len)
+for _, invalid in {7, false, molt_pack_list()} do
+	context.builtins[depth] = invalid
+	for _, lookup in {function() return acquire("len") end, function() return read_global(later, "len") end} do
+		ok, err = pcall(lookup)
+		assert(not ok and err.__type == "TypeError")
+	end
+end
+context.builtins[depth] = nil
+ok, err = pcall(function() return acquire("len") end)
+assert(not ok and err.__type == "TypeError")
+molt_frame_exit(context, depth, identity, owner)
+-- Runtime-origin global reads honor the supplied module's __builtins__ too.
+molt_dict_set(captured, "len", answer)
+molt_dict_set(globals, "__builtins__", captured)
+assert(read_global(globals, "len") == answer)
+molt_module_cache["builtins"] = published
+molt_dict_delete(published, "len", false)
+ok, err = pcall(function() return acquire("len") end)
+assert(not ok and err.__type == "NameError" and not molt_dict_contains(published, "len"))
+assert(context.depth == 0 and #context.invocations == 0)
+print("luau-public-builtin-namespace-ok")
+"#;
+    let source = format!("{source}\n{oracle}\nend)()\n");
+    validate_luau_source(&source).expect("namespace oracle source");
+    let output = execute_lune_oracle("public_builtin_namespace", &source);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("luau-public-builtin-namespace-ok"));
+}
+
+fn isolated_builtin_module_ir() -> SimpleIR {
+    let mut functions = Vec::new();
+    for (name, kind, literal) in [
+        ("cached_builtins", None, None),
+        (
+            "cached_builtin_static",
+            Some("module_get_attr"),
+            Some("len"),
+        ),
+        ("cached_builtin_dynamic", Some("module_get_attr"), None),
+        ("cached_builtin_name", Some("module_get_name"), None),
+    ] {
+        let mut ops = vec![
+            OpIR {
+                kind: "const_str".to_string(),
+                s_value: Some("builtins".to_string()),
+                out: Some("module_name".to_string()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "module_cache_get".to_string(),
+                args: Some(vec!["module_name".to_string()]),
+                out: Some("namespace".to_string()),
+                ..OpIR::default()
+            },
+        ];
+        if let Some(kind) = kind {
+            ops.push(OpIR {
+                kind: kind.to_string(),
+                s_value: literal.map(str::to_string),
+                args: Some(if literal.is_some() {
+                    vec!["namespace".to_string()]
+                } else {
+                    vec!["namespace".to_string(), "name".to_string()]
+                }),
+                out: Some("selected".to_string()),
+                ..OpIR::default()
+            });
+        }
+        ops.push(OpIR {
+            kind: "ret".to_string(),
+            args: Some(vec![
+                if kind.is_some() {
+                    "selected"
+                } else {
+                    "namespace"
+                }
+                .to_string(),
+            ]),
+            ..OpIR::default()
+        });
+        functions.push(FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: name.to_string(),
+            params: vec!["name".to_string()],
+            ops,
+            ..FunctionIR::default()
+        });
+    }
+    SimpleIR {
+        functions,
+        profile: None,
+    }
+}
+
+#[test]
+fn isolated_module_cache_and_attribute_consumers_select_namespace_bootstrap() {
+    let ir = isolated_builtin_module_ir();
+    assert!(
+        ir.functions
+            .iter()
+            .flat_map(|function| &function.ops)
+            .all(|op| !matches!(op.kind.as_str(), "builtin_func" | "module_get_global"))
+    );
+    let source = LuauBackend::new().compile_checked(&ir).unwrap();
+    assert_eq!(
+        source
+            .matches("molt_module_cache[\"builtins\"] = namespace")
+            .count(),
+        1
+    );
+    assert!(source.contains("local namespace = molt_module_cache[module_name]"));
+    assert!(source.contains("molt_module_get_name(namespace, \"len\")"));
+    assert!(source.contains("molt_module_get_name(namespace, name)"));
+}
+
+#[test]
+#[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
+fn isolated_module_cache_and_attribute_consumers_execute_published_defaults() {
+    let compiled = LuauBackend::new()
+        .compile_checked(&isolated_builtin_module_ir())
+        .unwrap();
+    let oracle = format!(
+        r#"
+;(function()
+    local namespace = {}(nil)
+    local static = {}(nil)
+    local dynamic = {}("len")
+    local named = {}("len")
+    assert(type(namespace) == "table" and type(static) == "function")
+    assert(static == dynamic and dynamic == named)
+    assert(molt_call_checked(static, molt_pack_list(1, nil, 3)) == 3)
+    print("luau-isolated-builtin-cache-ok")
+end)()
+"#,
+        emit_function_ident("cached_builtins"),
+        emit_function_ident("cached_builtin_static"),
+        emit_function_ident("cached_builtin_dynamic"),
+        emit_function_ident("cached_builtin_name"),
+    );
+    let source = format!("{compiled}\n{oracle}\n");
+    validate_luau_source(&source).unwrap();
+    let output = execute_lune_oracle("isolated_builtin_cache", &source);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("luau-isolated-builtin-cache-ok"));
+}
+
+#[test]
+fn runtime_adapters_require_real_providers_but_public_names_remain_lookup() {
+    for (public, symbol, missing) in [
+        ("hash", "molt_hash_builtin", "molt_hash"),
+        ("id", "molt_id", "molt_id"),
+        ("iter", "molt_iter_checked", "molt_iter"),
+        ("next", "molt_next_builtin", "molt_next"),
+        ("divmod", "molt_divmod_builtin", "molt_divmod"),
+        ("hex", "molt_hex_builtin", "molt_hex"),
+        ("oct", "molt_oct_builtin", "molt_oct"),
+        ("bin", "molt_bin_builtin", "molt_bin"),
+        ("ascii", "molt_ascii_from_obj", "molt_ascii"),
+        ("format", "molt_format_builtin", "molt_format"),
+        ("dir", "molt_dir_builtin", "molt_dir"),
+        ("vars", "molt_vars_builtin", "molt_vars"),
+    ] {
+        let mut ir = public_builtin_lookup_ir();
+        ir.functions[0].ops[0].s_value = Some(symbol.to_string());
+        ir.functions[0].ops[0].builtin_name = Some(public.to_string());
+        // The namespace can contain an arbitrary replacement for this name.
+        runtime_prelude::validate_ir_adapters(&ir).unwrap();
+        let source = LuauBackend::new().compile_checked(&ir).unwrap();
+        assert!(source.contains("molt_frame_builtin_get(name)"));
+        assert!(!source.contains(&format!("return {missing}(")));
+        assert!(source.contains(&format!("Unavailable default builtin {public}:")));
+        ir.functions[0].ops[0].builtin_name = None;
+        // An explicit runtime constructor has no dynamic name operand.
+        ir.functions[0].ops[0].args = None;
+        let error = LuauBackend::new().compile_checked(&ir).unwrap_err();
+        assert!(error.contains("explicit runtime constructor"), "{error}");
+        assert!(error.contains(&format!("provider `{missing}`")), "{error}");
+    }
+}
+
+#[test]
+#[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
+fn public_any_all_execute_transitive_helpers_with_many_guest_functions() {
+    let mut ir = public_builtin_lookup_ir();
+    // This body has no bool operation or explicit bool helper reference. The
+    // only bool dependency comes from the any/all provider bodies themselves.
+    for index in 0..80 {
+        let mut function = ir.functions[0].clone();
+        function.name = format!("additional_builtin_probe_{index}");
+        ir.functions.push(function);
+    }
+    let source = LuauBackend::new().compile_checked(&ir).unwrap();
+    assert!(source.contains("function molt_bool("));
+    assert!(source.contains(&format!(
+        "local {}\n",
+        emit_function_ident("additional_builtin_probe_79")
+    )));
+    let source = format!(
+        r#"{source}
+;(function()
+    local acquire = {}
+    local zero = molt_pack_list(0)
+    local mixed = molt_pack_list(0, 1)
+    local empty = molt_pack_list()
+    assert(molt_call_checked(acquire("any"), zero) == false)
+    assert(molt_call_checked(acquire("all"), zero) == false)
+    assert(molt_call_checked(acquire("any"), mixed) == true)
+    assert(molt_call_checked(acquire("all"), mixed) == false)
+    assert(molt_call_checked(acquire("any"), empty) == false)
+    assert(molt_call_checked(acquire("all"), empty) == true)
+    assert({}("any") == acquire("any"))
+    local replacement = {{}}
+    molt_dict_set(molt_module_cache["builtins"], "hash", replacement)
+    assert(acquire("hash") == replacement)
+    print("luau-transitive-builtins-and-locals-ok")
+end)()
+"#,
+        emit_function_ident("public_builtin_lookup_probe"),
+        emit_function_ident("additional_builtin_probe_79"),
+    );
+    validate_luau_source(&source).unwrap();
+    let output = execute_lune_oracle("transitive_builtin_helpers", &source);
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("luau-transitive-builtins-and-locals-ok")
+    );
+}
+
 #[test]
 #[ignore = "requires the declared Lune runner; run rust.test.compiler-authorities"]
 fn callable_frames_keep_exact_definition_context_across_rebinding_and_call_shapes() {
@@ -2067,8 +2774,8 @@ assert(molt_dict_getitem(first_globals, "written") == 3)
 print("luau-callable-frame-context-ok")
 "#;
     let mut backend = LuauBackend::new();
-    backend.emit_prelude_conditional(oracle);
-    let source = format!("{}\n{oracle}", backend.output);
+    backend.emit_prelude_conditional(oracle, false);
+    let source = format!("{}\n;(function()\n{oracle}\nend)()\n", backend.output);
     validate_luau_source(&source).expect("callable-context oracle must pass source validation");
     let output = execute_lune_oracle("callable_frame_context", &source);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2569,18 +3276,16 @@ end
 run_authority_oracle()
 "#;
     let mut backend = LuauBackend::new();
-    backend.emit_prelude_conditional(oracle);
-    let source = format!("{}\n{oracle}", backend.output);
+    backend.emit_prelude_conditional(oracle, false);
+    let source = format!("{}\n;(function()\n{oracle}\nend)()\n", backend.output);
     assert_eq!(
-        source
-            .matches("local function molt_function_attr_set")
-            .count(),
+        source.matches("function molt_function_attr_set").count(),
         1,
         "metadata-aware function mutation must have one emitted authority"
     );
     assert!(
         source
-            .find("local function molt_function_attr_set")
+            .find("function molt_function_attr_set")
             .expect("metadata-aware function mutation helper")
             < source
                 .find("local function run_authority_oracle")
@@ -2625,6 +3330,7 @@ fn proven_scalar_equality_does_not_pay_container_runtime_cost() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -2656,7 +3362,7 @@ fn proven_scalar_equality_does_not_pay_container_runtime_cost() {
     };
     let source = LuauBackend::new().compile(&ir);
     assert!(source.contains("local equal: boolean = (left == right)"));
-    assert!(!source.contains("local molt_dict_metadata_key = {}"));
+    assert!(!source.contains("molt_dict_metadata_key"));
     assert!(!source.contains("molt_equal(left, right)"));
 }
 
@@ -2679,6 +3385,7 @@ fn scalar_identity_preserves_source_kind_and_covers_both_polarities() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -2743,6 +3450,7 @@ fn dynamic_numeric_identity_fails_closed_before_luau_erases_provenance() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -2801,6 +3509,7 @@ fn distinct_same_kind_value_scalars_never_lower_to_luau_value_equality() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![
                     make_const("left"),
@@ -2845,6 +3554,7 @@ fn singleton_reference_and_unknown_identity_classes_lower_only_exact_cases() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -2983,6 +3693,7 @@ fn identity_primitive_and_runtime_helpers_cannot_be_shadowed_by_user_symbols() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3008,21 +3719,22 @@ fn identity_primitive_and_runtime_helpers_cannot_be_shadowed_by_user_symbols() {
     };
 
     let source = LuauBackend::new().compile_checked(&ir).unwrap();
+    assert!(source.contains("molt_rawequal = rawequal"), "{source}");
+    let signature = source
+        .lines()
+        .find(|line| line.starts_with("local function shadow_helpers("))
+        .unwrap();
+    assert!(signature.contains("rawequal: any"), "{signature}");
     assert!(
-        source.contains("local molt_rawequal = rawequal"),
-        "{source}"
-    );
-    assert!(source.contains("rawequal: any"), "{source}");
-    assert!(
-        source.contains("_m_user_6d6f6c745f726177657175616c: any"),
-        "{source}"
+        signature.contains("_m_user_6d6f6c745f726177657175616c: any"),
+        "{signature}"
     );
     assert!(
-        source.contains("_m_user_6d6f6c745f657175616c: any"),
-        "{source}"
+        signature.contains("_m_user_6d6f6c745f657175616c: any"),
+        "{signature}"
     );
-    assert!(!source.contains("molt_rawequal: any"), "{source}");
-    assert!(!source.contains("molt_equal: any"), "{source}");
+    assert!(!signature.contains("molt_rawequal: any"), "{signature}");
+    assert!(!signature.contains("molt_equal: any"), "{signature}");
 }
 
 #[test]
@@ -3052,6 +3764,7 @@ fn compiler_temporary_namespace_cannot_be_shadowed_by_user_symbols() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3207,6 +3920,7 @@ fn value_scalar_plus_unknown_identity_is_rejected() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3246,6 +3960,7 @@ fn same_ssa_value_identity_is_constant_true_even_for_value_scalars() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3744,6 +4459,7 @@ fn test_compile_checked_lowers_call_function_alias_without_shadowing_globals() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3828,6 +4544,7 @@ fn test_simple_function() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3867,6 +4584,7 @@ fn test_int_from_str_of_obj_preserves_base_operand() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3905,6 +4623,7 @@ fn test_real_ir_ops() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -3968,6 +4687,7 @@ fn test_control_flow() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -4106,6 +4826,7 @@ fn test_compile_checked_accepts_sys_bootstrap_with_exact_integer_literals() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -4167,8 +4888,8 @@ fn test_compile_checked_accepts_sys_bootstrap_with_exact_integer_literals() {
         .expect("bounded sys version bootstrap does not require Python import dispatch");
     assert!(source.contains("local major: number = 3"));
     assert!(source.contains("local minor: number = 14"));
-    assert!(source.contains("local function molt_sys_set_version_info("));
-    assert!(source.contains("local function molt_sys_seed_module()"));
+    assert!(source.contains("function molt_sys_set_version_info("));
+    assert!(source.contains("function molt_sys_seed_module()"));
 }
 
 #[test]
@@ -4234,6 +4955,7 @@ fn compile_checked_materializes_all_exact_integer_literal_siblings_and_rejects_o
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -4275,6 +4997,7 @@ fn compile_checked_materializes_all_exact_integer_literal_siblings_and_rejects_o
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "const_bigint".to_string(),
@@ -4303,6 +5026,7 @@ fn test_compile_checked_rejects_undefined_label_targets() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -4344,6 +5068,7 @@ fn test_compile_checked_lowers_store_var_and_load_var() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -4549,6 +5274,7 @@ fn test_compile_checked_lowers_missing_singleton() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -4579,7 +5305,7 @@ fn test_compile_checked_lowers_missing_singleton() {
     let mut backend = LuauBackend::new();
     let source = backend.compile(&ir);
 
-    assert!(source.contains("local molt_missing_sentinel = {}"));
+    assert!(source.contains("molt_missing_sentinel = {}"));
     assert!(source.contains("local first = molt_missing_sentinel"));
     assert!(source.contains("local second = molt_missing_sentinel"));
     assert!(!source.contains("-- [missing]"));
@@ -4596,6 +5322,7 @@ fn test_compile_checked_rejects_python_frame_introspection_target_fact() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
                 kind: "getframe".to_string(),
@@ -4632,6 +5359,7 @@ fn compile_checked_rejects_every_python_frame_and_trace_intrinsic() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: ExecutionContextPolicy::None,
                 ops: vec![OpIR {
                     kind: "call_internal".to_string(),
@@ -4722,6 +5450,103 @@ fn execution_frame_siblings_have_real_luau_lowering() {
     assert!(source.contains("molt_frame_locals_set(__molt_frame_context, locals)"));
     assert!(!source.contains("molt_frame_set_line(molt_frame_context()"));
     assert!(!source.contains("molt_frame_locals_set(molt_frame_context()"));
+}
+
+#[test]
+fn execution_frame_cookie_survives_operation_capture_and_dispatch() {
+    for guarded in [false, true] {
+        let mut ops = vec![
+            OpIR {
+                kind: "code_slots_init".into(),
+                value: Some(8),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "dict_new".into(),
+                out: Some("globals".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "code_slot_set".into(),
+                args: Some(vec!["code".into(), "globals".into()]),
+                value: Some(7),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "trace_enter_slot".into(),
+                value: Some(7),
+                ..OpIR::default()
+            },
+        ];
+        if guarded {
+            ops.push(OpIR {
+                kind: "check_exception".into(),
+                value: Some(9),
+                ..OpIR::default()
+            });
+        }
+        ops.extend([
+            OpIR {
+                kind: "line".into(),
+                value: Some(8),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "trace_exit".into(),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret_void".into(),
+                ..OpIR::default()
+            },
+        ]);
+        if guarded {
+            ops.extend([
+                OpIR {
+                    kind: "label".into(),
+                    value: Some(9),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "exception_last_pending".into(),
+                    out: Some("entry_error".into()),
+                    ..OpIR::default()
+                },
+                OpIR {
+                    kind: "raise".into(),
+                    args: Some(vec!["entry_error".into()]),
+                    ..OpIR::default()
+                },
+            ]);
+        }
+        let mut source = LuauBackend::new()
+            .compile_checked(&SimpleIR {
+                functions: vec![FunctionIR {
+                    name: "frame_scope".into(),
+                    params: vec!["code".into()],
+                    return_abi: molt_ir::FunctionReturnAbi::Void,
+                    execution_context: ExecutionContextPolicy::Local,
+                    ops,
+                    ..FunctionIR::default()
+                }],
+                profile: None,
+            })
+            .expect("frame entry and exit must share one lexical cookie owner");
+        assert!(!source.contains("local __molt_frame_context, __molt_frame_depth"));
+        source.push_str(
+            r#"
+assert(molt_frame_context().depth == 0)
+frame_scope({co_name="frame_scope", co_filename="frame_scope.py", co_firstlineno=1})
+assert(molt_frame_context().depth == 0)
+print("frame cookie scope OK")
+"#,
+        );
+        let output = execute_lune_oracle("frame_cookie_scope", &source);
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "frame cookie scope OK"
+        );
+    }
 }
 
 #[test]
@@ -4822,6 +5647,7 @@ fn test_compile_checked_lowers_loop_exception_break_as_pending_observer() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -4886,6 +5712,7 @@ fn unchecked_luau_code_slot_metadata_cannot_restore_an_ambient_frame_fallback() 
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -4963,6 +5790,7 @@ fn compile_checked_accepts_terminal_drop_phase_markers_as_nonsemantic_artifacts(
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -4995,6 +5823,7 @@ fn checked_luau_rejects_real_rc_operations_but_dispatch_consumes_legacy_artifact
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -5050,6 +5879,7 @@ fn test_compile_checked_lowers_shared_guard_tag_fact() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -5081,7 +5911,7 @@ fn test_compile_checked_lowers_shared_guard_tag_fact() {
     };
     let mut backend = LuauBackend::new();
     let source = backend.compile(&ir);
-    assert!(source.contains("local function molt_guard_type"));
+    assert!(source.contains("function molt_guard_type"));
     assert!(source.contains("molt_guard_type(value, int_tag)"));
     assert!(!source.contains("[unsupported op: guard_tag]"));
 }
@@ -5097,6 +5927,7 @@ fn test_compile_checked_lowers_exception_stack_depth_to_value() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -5148,6 +5979,7 @@ fn test_compile_checked_lowers_iter_next_unboxed() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![
                 OpIR {
@@ -5193,6 +6025,7 @@ fn test_iter_next_unboxed_preserves_discarded_result_positions() {
                     source_file: None,
                     is_extern: false,
                     codegen_partition: false,
+                    parameter_custody: Vec::new(),
                     execution_context: ExecutionContextPolicy::None,
                     ops: vec![
                         OpIR {

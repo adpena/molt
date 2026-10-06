@@ -64,7 +64,9 @@ pub(crate) fn special_iteration_step(
                         (object_type_id(ptr) == TYPE_ID_EXCEPTION)
                             .then(|| {
                                 crate::builtins::exceptions::exception_typed_field_get(
-                                    py, ptr, "value",
+                                    py,
+                                    ptr,
+                                    molt_obj_model::ExceptionTypedField::StopIterationValue,
                                 )
                                 .and_then(Result::ok)
                             })
@@ -91,60 +93,46 @@ pub(crate) fn special_iteration_step(
 
 pub(crate) unsafe fn builtin_receiver(py: &PyToken<'_>, ptr: *mut u8) -> bool {
     let class = unsafe { object_class_bits(ptr) };
-    class == 0 || is_builtin_class_bits(py, class)
+    class == 0
+        || (is_builtin_class_bits(py, class)
+            && crate::obj_from_bits(class)
+                .as_ptr()
+                .is_some_and(|class| unsafe { crate::object::class_is_immutable(py, class) }))
 }
 
 pub(crate) struct OwnedIterator<'a, 'py> {
     py: &'a PyToken<'py>,
-    bits: u64,
+    owner: molt_runtime_core::OwnedRuntimeValue<'a>,
 }
 
 impl<'a, 'py> OwnedIterator<'a, 'py> {
     pub(crate) fn new(py: &'a PyToken<'py>, iterable: u64) -> Option<Self> {
         let bits = molt_iter(iterable);
         if exception_pending(py) {
-            dec_ref_bits(py, bits);
+            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, bits));
             return None;
         }
         if obj_from_bits(bits).is_none() {
             raise_not_iterable::<()>(py, iterable);
             return None;
         }
-        Some(Self { py, bits })
+        Some(Self {
+            py,
+            owner: unsafe {
+                molt_runtime_core::OwnedRuntimeValue::from_owned_bits(py.core_token(), bits)
+            },
+        })
     }
 
     pub(crate) fn bits(&self) -> u64 {
-        self.bits
+        self.owner.bits()
     }
 
     /// An item carries one owned reference; None means clean exhaustion only.
-    pub(crate) fn next(&mut self) -> Result<Option<u64>, ()> {
-        let mut item = MoltObject::none().bits();
-        let done = unsafe {
-            crate::object::ops_iter::molt_iter_next_unboxed(
-                self.bits,
-                (&raw mut item) as usize as u64,
-            )
-        };
-        if exception_pending(self.py) {
-            dec_ref_bits(self.py, item);
-            return Err(());
-        }
-        match obj_from_bits(done).as_bool() {
-            Some(false) => Ok(Some(item)),
-            Some(true) => Ok(None),
-            None => {
-                dec_ref_bits(self.py, item);
-                raise_exception::<()>(self.py, "SystemError", "invalid iterator completion result");
-                Err(())
-            }
-        }
-    }
-}
-
-impl Drop for OwnedIterator<'_, '_> {
-    fn drop(&mut self) {
-        dec_ref_bits(self.py, self.bits);
+    pub(crate) fn next(&mut self) -> Result<Option<u64>, molt_runtime_core::ErrorIndicatorSet> {
+        // Both in-tree consumers and satellites use the same owned transport.
+        molt_runtime_core::iter_next_owned(self.py.core_token(), &self.owner)
+            .map(|item| item.map(molt_runtime_core::OwnedRuntimeValue::into_bits))
     }
 }
 
@@ -175,6 +163,15 @@ pub(crate) fn length_hint(py: &PyToken<'_>, iterable: u64) -> Option<usize> {
 pub(crate) enum LengthHint {
     Consult,
     Skip,
+}
+
+/// tuple() stopped consulting length hints in CPython 3.14.
+pub(crate) fn tuple_length_hint_policy(py: &PyToken<'_>) -> LengthHint {
+    if crate::object::ops_sys::runtime_target_at_least(py, 3, 14) {
+        LengthHint::Skip
+    } else {
+        LengthHint::Consult
+    }
 }
 
 pub(crate) fn collect(py: &PyToken<'_>, iterable: u64, policy: LengthHint) -> Option<Vec<u64>> {
@@ -211,7 +208,7 @@ pub(crate) fn collect_from_owned_iterator(
                 values.push(item);
             }
             Ok(None) => return Some(values),
-            Err(()) => {
+            Err(molt_runtime_core::ErrorIndicatorSet) => {
                 for value in values {
                     dec_ref_bits(py, value);
                 }

@@ -59,25 +59,16 @@ def _select_out_dir(default: Path, root: Path) -> Path:
     use_external = os.environ.get("MOLT_WASM_TEST_USE_EXTERNAL", "").strip().lower()
     allow_external = use_external not in {"0", "false", "no", "off"}
     if allow_external and not _same_location(artifact_root, root):
-        try:
-            if default.is_relative_to(artifact_root):
-                return default
-        except AttributeError:
-            # Python <3.9 fallback; not expected but keep safe.
-            if str(default).startswith(str(artifact_root)):
-                return default
+        if default.is_relative_to(artifact_root):
+            return default
         base = artifact_root / "tmp"
         try:
             base.mkdir(parents=True, exist_ok=True)
             return Path(tempfile.mkdtemp(prefix="molt_wasm_", dir=base))
         except OSError:
             pass
-    try:
-        if default.is_relative_to(root):
-            return default
-    except AttributeError:
-        if str(default).startswith(str(root)):
-            return default
+    if default.is_relative_to(root):
+        return default
     base = root / "build" / "wasm"
     base.mkdir(parents=True, exist_ok=True)
     return Path(tempfile.mkdtemp(prefix="molt_wasm_", dir=base))

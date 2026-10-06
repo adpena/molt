@@ -8,7 +8,7 @@ import os
 import stat
 import time
 import unicodedata
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path, PurePath
 from typing import TypeVar, cast
 
@@ -120,6 +120,36 @@ def _stable_object_key(metadata: os.stat_result) -> tuple[int, int]:
     return (metadata.st_dev, metadata.st_ino)
 
 
+_Work = TypeVar("_Work")
+_Result = TypeVar("_Result")
+_CAPTURE_BATCH_SIZE = 32
+
+
+def _ordered_capture_work(
+    work: Sequence[_Work], operation: Callable[[_Work], _Result], *, workers: int
+) -> Iterator[_Result]:
+    """Bound workers and pending batches without one future per regular file."""
+    if workers == 1 or len(work) <= 1:
+        for item in work:
+            yield operation(item)
+        return
+
+    def run_batch(batch: Sequence[_Work]) -> list[_Result]:
+        return [operation(item) for item in batch]
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        window = workers * 4 * _CAPTURE_BATCH_SIZE
+        for offset in range(0, len(work), window):
+            batches = [
+                work[start : min(start + _CAPTURE_BATCH_SIZE, offset + window)]
+                for start in range(
+                    offset, min(offset + window, len(work)), _CAPTURE_BATCH_SIZE
+                )
+            ]
+            for results in executor.map(run_batch, batches):
+                yield from results
+
+
 class PythonFileCaptureContext:
     """One bounded capture lane, shared hashes, and exact nonsemantic file custody."""
 
@@ -128,6 +158,7 @@ class PythonFileCaptureContext:
             raise PythonEnvironmentIdentityError(
                 "hash_workers must be an integer in 1..32"
             )
+        self._closed = False
         self.hash_workers = hash_workers
         self._files: dict[Path, StableRegularFileIdentity] = {}
         self._objects: dict[tuple[int, int], StableRegularFileIdentity] = {}
@@ -141,6 +172,24 @@ class PythonFileCaptureContext:
         self._hash_seconds = 0.0
         self._verification_fences: list[Callable[[], None]] = []
 
+    def __enter__(self) -> PythonFileCaptureContext:
+        self._require_active()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close()
+
+    def _require_active(self) -> None:
+        if self._closed:
+            raise PythonEnvironmentIdentityError("Python capture context is revoked")
+
+    def close(self) -> None:
+        self._closed = True
+        self._files.clear()
+        self._objects.clear()
+        self._node_custody.clear()
+        self._verification_fences.clear()
+
     def _remember(self, identity: StableRegularFileIdentity) -> None:
         self._files[identity.path] = identity
         device, inode, _mode, _size, _mtime_ns, _ctime_ns = identity._stat_identity
@@ -149,93 +198,109 @@ class PythonFileCaptureContext:
         self._hashed_bytes += identity.size
         self._hashed_files += 1
 
-    def prepare(
+    def bind_many(
         self, rows: Sequence[tuple[Path, os.stat_result]], *, label: str
-    ) -> None:
-        work: list[Path] = []
-        seen: set[tuple[int, int] | Path] = set()
-        for path, metadata in rows:
-            key = _stable_object_key(metadata) if metadata.st_ino else path
-            if key in seen or path.absolute() in self._files or key in self._objects:
-                continue
-            seen.add(key)
-            work.append(path)
+    ) -> list[StableRegularFileIdentity]:
+        """Bind snapshot rows while hashing each new object through its handle.
+
+        Each physical object has one worker; every alias gets its own no-follow
+        path/handle verification. Workers return values and never mutate context
+        maps. Publication still requires the outer file and membership fences.
+        """
+        self._require_active()
+        groups: dict[
+            tuple[int, int] | Path,
+            list[tuple[int, Path, os.stat_result, StableRegularFileIdentity | None]],
+        ] = {}
+        for index, (path, expected) in enumerate(rows):
+            lexical = path.absolute()
+            if not stat.S_ISREG(expected.st_mode):
+                raise PythonEnvironmentIdentityError(
+                    f"{label} is not a regular file: {path}"
+                )
+            key = _stable_object_key(expected) if expected.st_ino else lexical
+            prior = self._files.get(lexical)
+            if prior is None and expected.st_ino:
+                prior = self._objects.get(_stable_object_key(expected))
+            groups.setdefault(key, []).append((index, lexical, expected, prior))
+
+        def capture_group(
+            group: list[
+                tuple[int, Path, os.stat_result, StableRegularFileIdentity | None]
+            ],
+        ) -> list[tuple[int, StableRegularFileIdentity, bool]]:
+            captured: StableRegularFileIdentity | None = None
+            results: list[tuple[int, StableRegularFileIdentity, bool]] = []
+            for index, lexical, expected, prior in group:
+                identity = prior if prior is not None else captured
+                hashed = identity is None
+                if identity is None:
+                    identity = stable_regular_file_identity(
+                        lexical, label=label, expected_path_stat=expected
+                    )
+                else:
+                    if identity.path != lexical:
+                        identity = replace(identity, path=lexical)
+                    verify_stable_regular_file_identity(
+                        identity, label=label, expected_path_stat=expected
+                    )
+                captured = identity
+                results.append((index, identity, hashed))
+            return results
+
         started = time.perf_counter()
-
-        def capture(path: Path) -> StableRegularFileIdentity:
-            return stable_regular_file_identity(path, label=label)
-
-        if self.hash_workers == 1:
-            for path in work:
-                self._remember(capture(path))
-        elif work:
-            # Bound pending futures as well as worker buffers on large environments.
-            with ThreadPoolExecutor(max_workers=self.hash_workers) as executor:
-                window = self.hash_workers * 4
-                for offset in range(0, len(work), window):
-                    for identity in executor.map(
-                        capture, work[offset : offset + window]
-                    ):
-                        self._remember(identity)
-        self._hash_seconds += time.perf_counter() - started
+        bound: dict[int, tuple[StableRegularFileIdentity, bool]] = {}
+        for results in _ordered_capture_work(
+            list(groups.values()), capture_group, workers=self.hash_workers
+        ):
+            for index, identity, hashed in results:
+                bound[index] = identity, hashed
+        if any(hashed for _identity, hashed in bound.values()):
+            self._hash_seconds += time.perf_counter() - started
+        identities = []
+        for index in range(len(rows)):
+            identity, hashed = bound[index]
+            if hashed:
+                self._remember(identity)
+            else:
+                self._files[identity.path] = identity
+            identities.append(identity)
+        return identities
 
     def bind(
         self, path: Path, expected: os.stat_result, *, label: str
     ) -> StableRegularFileIdentity:
-        lexical = path.absolute()
-        if not stat.S_ISREG(expected.st_mode):
-            raise PythonEnvironmentIdentityError(
-                f"{label} is not a regular file: {path}"
-            )
-        identity = self._files.get(lexical)
-        if identity is None and expected.st_ino:
-            prior = self._objects.get(_stable_object_key(expected))
-            if prior is not None:
-                identity = replace(prior, path=lexical)
-        if identity is None:
-            started = time.perf_counter()
-            identity = stable_regular_file_identity(lexical, label=label)
-            self._hash_seconds += time.perf_counter() - started
-            self._remember(identity)
-        verify_stable_regular_file_identity(identity, label=label)
-        if _path_stat_identity(expected) != _path_stat_identity(lexical.lstat()):
-            raise PythonEnvironmentIdentityError(
-                f"{label} changed since tree snapshot: {path}"
-            )
-        self._files[lexical] = identity
-        return identity
+        return self.bind_many([(path, expected)], label=label)[0]
 
     def verify(self) -> None:
-        identities = list(self._files.values())
+        self._require_active()
+        try:
+            identities = list(self._files.values())
 
-        def verify_identity(identity: StableRegularFileIdentity) -> None:
-            verify_stable_regular_file_identity(
-                identity, label="Python capture custody"
-            )
+            def verify_identity(identity: StableRegularFileIdentity) -> None:
+                verify_stable_regular_file_identity(
+                    identity, label="Python capture custody"
+                )
 
-        if self.hash_workers == 1:
-            for identity in identities:
-                verify_identity(identity)
-        elif identities:
-            with ThreadPoolExecutor(max_workers=self.hash_workers) as executor:
-                window = self.hash_workers * 4
-                for offset in range(0, len(identities), window):
-                    tuple(
-                        executor.map(
-                            verify_identity,
-                            identities[offset : offset + window],
-                        )
-                    )
-        for verify in self._verification_fences:
-            verify()
+            for _ in _ordered_capture_work(
+                identities, verify_identity, workers=self.hash_workers
+            ):
+                pass
+            for verify in self._verification_fences:
+                verify()
+        except BaseException:
+            self.close()
+            raise
 
     def register_verification_fence(self, verify: Callable[[], None]) -> None:
         """Retain a producer's non-file snapshot through outer publication."""
+        self._require_active()
         self._verification_fences.append(verify)
 
     def register_node(
         self, node: dict[str, object], identity: StableRegularFileIdentity
     ) -> None:
+        self._require_active()
         self._node_custody[id(node)] = (node, identity)
 
     def node_path(self, node: Mapping[str, object]) -> Path:
@@ -284,16 +349,24 @@ class _FileNodePool:
         self._nodes: list[dict[str, object]] = []
         self._identities: dict[str, StableRegularFileIdentity] = {}
 
-    def prepare(
+    def bind_many(
         self, rows: Sequence[tuple[Path, os.stat_result]], *, label: str
-    ) -> None:
-        self.capture_context.prepare(rows, label=label)
-
-    def bind(self, path: Path, expected: os.stat_result, *, label: str) -> str:
+    ) -> list[str]:
         try:
-            identity = self.capture_context.bind(path, expected, label=label)
+            identities = self.capture_context.bind_many(rows, label=label)
         except (OSError, ValueError) as exc:
             raise PythonEnvironmentIdentityError(f"cannot bind {label}: {exc}") from exc
+        return [
+            self._bind_node(identity, expected)
+            for (_path, expected), identity in zip(rows, identities, strict=True)
+        ]
+
+    def bind(self, path: Path, expected: os.stat_result, *, label: str) -> str:
+        return self.bind_many([(path, expected)], label=label)[0]
+
+    def _bind_node(
+        self, identity: StableRegularFileIdentity, expected: os.stat_result
+    ) -> str:
         key = _stable_object_key(expected) if expected.st_ino else identity.path
         existing = self._node_by_object.get(key)
         if existing is not None:
@@ -724,22 +797,16 @@ def _stable_tree_inventory(
     by_path = {relative: (path, metadata) for relative, path, metadata in before}
     regular_nodes: dict[str, str] = {}
     node_paths: dict[str, list[str]] = {}
-    pool.prepare(
-        [
-            (path, metadata)
-            for _relative, path, metadata in before
-            if stat.S_ISREG(metadata.st_mode)
-        ],
+    regular = [
+        (relative, path, metadata)
+        for relative, path, metadata in before
+        if stat.S_ISREG(metadata.st_mode)
+    ]
+    bound = pool.bind_many(
+        [(path, metadata) for _relative, path, metadata in regular],
         label=f"{label} file",
     )
-    for relative, path, metadata in before:
-        if not stat.S_ISREG(metadata.st_mode):
-            continue
-        node = pool.bind(
-            path,
-            metadata,
-            label=f"{label} file",
-        )
+    for (relative, _path, _metadata), node in zip(regular, bound, strict=True):
         regular_nodes[relative] = node
         node_paths.setdefault(node, []).append(relative)
     primary_paths = {
@@ -877,9 +944,9 @@ def _stable_tree_inventory(
                 f"({difference})"
             )
 
-    verify_membership()
     # Keep only compact metadata, not parser bytes or duplicate Path/stat rows.
-    # Each public capture checks this same fence after all later root inventories.
+    # The closing snapshot is taken once, by the mandatory final fence of each
+    # public capture, after all later root inventories.
     pool.capture_context.register_verification_fence(verify_membership)
     rows.sort(key=lambda row: (str(row["path"]).casefold(), str(row["path"])))
     node_ids = sorted(
@@ -897,18 +964,6 @@ def _stable_tree_inventory(
         files,
         {relative: metadata for relative, _path, metadata in before},
     )
-
-
-def _runtime_root_inventory(root: Path, *, root_id: str) -> dict[str, object]:
-    pool = _FileNodePool()
-    inventory, _files, _metadata = _stable_tree_inventory(
-        root,
-        root_id=root_id,
-        label="Python runtime",
-        pool=pool,
-        pruned_components=PYTHON_RUNTIME_PRUNED_COMPONENTS,
-    )
-    return inventory
 
 
 def _valid_access(value: object) -> bool:

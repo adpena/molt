@@ -2,6 +2,7 @@ use super::super::*;
 use crate::runtime_import_abi::{
     MOLT_CANCEL_TOKEN_GET_CURRENT, MOLT_TASK_NEW, MOLT_TASK_REGISTER_TOKEN_OWNED,
 };
+use crate::tir::simple_def_use::simple_ir_out_result;
 use molt_tir::trampolines::{TaskCompletion, TaskConstructorLayout};
 
 /// Single-source kind authority for [`handle_memory_op`], consulted by
@@ -57,6 +58,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
     representation_plan: &ScalarRepresentationPlan,
+    alias_roots: &BTreeMap<String, String>,
     last_use: &BTreeMap<String, usize>,
     field_store_modes: &BTreeMap<usize, FieldStoreMode>,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
@@ -68,10 +70,10 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
     entry_block: Block,
     local_profile_struct: Option<FuncRef>,
     profile_enabled_val: Option<Value>,
+    guard_profile_only: bool,
     local_inc_ref_obj: FuncRef,
     local_dec_ref_obj: FuncRef,
     rc_authority: NativeRcAuthority,
-    scalar_fast_paths_enabled: bool,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
     let var_get_boxed_overflow_safe = |module: &mut ObjectModule,
@@ -128,7 +130,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             let local_publish = module.declare_func_in_func(publish_callee, builder.func);
             let publish_call = builder.ins().call(local_publish, &[unpublished]);
             let res = builder.inst_results(publish_call)[0];
-            let Some(out_name) = op.out.as_ref() else {
+            let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
             def_var_named(&mut *builder, vars, out_name, res);
@@ -169,7 +171,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             let local_publish = module.declare_func_in_func(publish_callee, builder.func);
             let publish_call = builder.ins().call(local_publish, &[unpublished]);
             let res = builder.inst_results(publish_call)[0];
-            let Some(out_name) = op.out.as_ref() else {
+            let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
             def_var_named(&mut *builder, vars, out_name, res);
@@ -451,11 +453,9 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             for name in origin_ptr_cleanup {
                 cleanup_roots.release(builder, local_dec_ref_obj, &name);
             }
-            if let Some(out_name) = op.out.as_ref()
-                && out_name != "none"
-            {
+            if let Some(out_name) = simple_ir_out_result(op) {
                 let none_val = builder.ins().iconst(types::I64, box_none());
-                def_var_named(&mut *builder, vars, out_name.clone(), none_val);
+                def_var_named(&mut *builder, vars, out_name, none_val);
             }
         }
         "load" => {
@@ -482,7 +482,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 offset_val,
                 nbc,
             );
-            let Some(out_name) = op.out.as_ref() else {
+            let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
             def_var_named(&mut *builder, vars, out_name, res);
@@ -516,7 +516,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[obj_ptr, offset]);
             let res = builder.inst_results(call)[0];
-            let Some(out_name) = op.out.as_ref() else {
+            let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
             def_var_named(&mut *builder, vars, out_name, res);
@@ -560,7 +560,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
             let call = builder.ins().call(local_callee, &[obj_ptr, offset, *val]);
-            if let Some(out_name) = op.out.as_ref() {
+            if let Some(out_name) = simple_ir_out_result(op) {
                 let res = builder.inst_results(call)[0];
                 def_var_named(&mut *builder, vars, out_name, res);
             }
@@ -589,7 +589,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 offset,
                 nbc,
             );
-            let Some(out_name) = op.out.as_ref() else {
+            let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
             def_var_named(&mut *builder, vars, out_name, res);
@@ -675,7 +675,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 ],
             );
             let res = builder.inst_results(call)[0];
-            let Some(out_name) = op.out.as_ref() else {
+            let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
             def_var_named(&mut *builder, vars, out_name, res);
@@ -773,71 +773,135 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                     attr_len,
                 ],
             );
-            if let Some(out_name) = op.out.as_ref()
-                && out_name != "none"
-            {
+            if let Some(out_name) = simple_ir_out_result(op) {
                 let res = builder.inst_results(call)[0];
-                def_var_named(&mut *builder, vars, out_name.clone(), res);
+                def_var_named(&mut *builder, vars, out_name, res);
             }
         }
         "guard_type" | "guard_tag" => {
-            let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            // Static guard satisfaction for proven types: when the
-            // value is known to be a specific scalar type and the
-            // expected tag matches, the guard is statically satisfied.
-            if scalar_fast_paths_enabled {
-                let tag = op.s_value.as_deref().unwrap_or("");
-                let val_name = args.first().map(String::as_str).unwrap_or("");
-                if (tag == "int" && representation_plan.name_is_integer_scalar(val_name))
-                    || (tag == "float" && representation_plan.name_is_float_scalar(val_name))
-                    || (tag == "bool" && representation_plan.name_is_bool_scalar(val_name))
-                    || (tag == "str" && representation_plan.name_is_str_scalar(val_name))
-                {
-                    // Type already proven — skip runtime guard.
-                    return OpFlow::Continue;
+            let args = op
+                .args
+                .as_ref()
+                .expect("guard requires value and expected tag");
+            // The runtime flag is frozen for an activation's runtime epoch.
+            // Tag-valid guards only observe profiling; disabled profiling must
+            // not materialize wide raw integers just to return them unchanged.
+            let profile_join = if guard_profile_only {
+                let enabled = profile_enabled_val.expect("guard profile flag");
+                let origin = builder.current_block();
+                let check = builder.create_block();
+                let skip = builder.create_block();
+                let join = builder.create_block();
+                let enabled = builder.ins().icmp_imm(IntCC::NotEqual, enabled, 0);
+                builder.ins().brif(enabled, check, &[], skip, &[]);
+                switch_to_block_materialized(builder, skip);
+                seal_block_once(builder, sealed_blocks, skip);
+                if let Some(out) = simple_ir_out_result(op) {
+                    super::value_transfer::define_alias_result(
+                        op,
+                        &args[0],
+                        out,
+                        None,
+                        module,
+                        import_ids,
+                        builder,
+                        import_refs,
+                        sealed_blocks,
+                        vars,
+                        representation_plan,
+                        alias_roots,
+                        rc_authority,
+                        local_inc_ref_obj,
+                        nbc,
+                    );
                 }
-            }
-            // When both the value and expected tag are proven-int
-            // (raw-primary), the guard is statically satisfied:
-            // an int value always matches an int tag.  Skip the
-            // runtime call entirely.
-            if scalar_fast_paths_enabled
-                && representation_plan.is_raw_int_carrier_name(&args[0])
-                && representation_plan.is_raw_int_carrier_name(&args[1])
-            {
-                // Static guard: int matches int.  No-op.
+                jump_block(builder, join, &[]);
+                switch_to_block_materialized(builder, check);
+                seal_block_once(builder, sealed_blocks, check);
+                carry_internal_cfg_tracking(origin, check, block_tracked_obj, block_tracked_ptr);
+                Some(join)
             } else {
-                let val = var_get_boxed_overflow_safe(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
+                None
+            };
+            let mut transaction = NativeOperandTransaction::begin(
+                builder,
+                representation_plan,
+                args.iter().map(String::as_str),
+            );
+            let value = transaction.operand(
+                &args[0],
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                sealed_blocks,
+                vars,
+                representation_plan,
+                nbc,
+            );
+            let expected = transaction.operand(
+                &args[1],
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                sealed_blocks,
+                vars,
+                representation_plan,
+                nbc,
+            );
+            let guard = import_func_ref(
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                "molt_guard_type",
+                &[types::I64, types::I64],
+                &[types::I64],
+            );
+            builder.ins().call(guard, &[value, expected]);
+            if let Some(out) = simple_ir_out_result(op) {
+                super::value_transfer::define_alias_result(
+                    op,
                     &args[0],
-                    representation_plan,
-                )
-                .expect("Guard value not found");
-                let expected = var_get_boxed_overflow_safe(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
+                    out,
+                    Some(value),
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
+                    sealed_blocks,
                     vars,
-                    &args[1],
                     representation_plan,
-                )
-                .expect("Guard expected tag not found");
-                let callee = SimpleBackend::import_func_id_split(
-                    &mut *module,
-                    &mut *import_ids,
-                    "molt_guard_type",
-                    &[types::I64, types::I64],
-                    &[types::I64],
+                    alias_roots,
+                    rc_authority,
+                    local_inc_ref_obj,
+                    nbc,
                 );
-                let local_callee = module.declare_func_in_func(callee, builder.func);
-                builder.ins().call(local_callee, &[*val, *expected]);
+            }
+            transaction.finish_operation(
+                op,
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                sealed_blocks,
+                vars,
+                representation_plan,
+                nbc,
+                block_tracked_obj,
+                block_tracked_ptr,
+            );
+            if let Some(join) = profile_join {
+                carry_internal_cfg_tracking(
+                    builder.current_block(),
+                    join,
+                    block_tracked_obj,
+                    block_tracked_ptr,
+                );
+                jump_block(builder, join, &[]);
+                switch_to_block_materialized(builder, join);
+                seal_block_once(builder, sealed_blocks, join);
             }
         }
         "guard_layout" | "guard_dict_shape" => {
@@ -887,7 +951,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 .ins()
                 .call(local_callee, &[*obj, *class_bits, *expected_version]);
             let res = builder.inst_results(call)[0];
-            if let Some(out__) = op.out.as_ref() {
+            if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }

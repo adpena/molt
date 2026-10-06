@@ -1,4 +1,5 @@
-use crate::{MoltObject, PyToken};
+use crate::MoltObject;
+use crate::builtins::threading_helpers::{ThreadTimeoutPolicy, parse_thread_timeout};
 
 #[cfg(not(target_arch = "wasm32"))]
 use super::super::current_thread_id;
@@ -11,10 +12,8 @@ use std::time::{Duration, Instant};
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
-    GilReleaseGuard, attr_name_bits_from_bytes, call_callable0, call_callable1, dec_ref_bits,
-    exception_pending, inc_ref_bits, is_truthy, missing_bits, molt_getattr_builtin,
-    molt_is_callable, monotonic_now_secs, obj_from_bits, opaque_handle_bits, ptr_from_bits,
-    raise_exception, release_ptr, to_f64,
+    GilReleaseGuard, dec_ref_bits, inc_ref_bits, is_truthy, obj_from_bits, opaque_handle_bits,
+    ptr_from_bits, raise_exception, release_ptr,
 };
 
 mod queue;
@@ -696,87 +695,6 @@ fn local_from_bits(bits: u64) -> Option<Arc<MoltLocal>> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn parse_timeout(
-    _py: &PyToken<'_>,
-    timeout_bits: u64,
-    blocking: bool,
-) -> Result<Option<Duration>, u64> {
-    let timeout_obj = obj_from_bits(timeout_bits);
-    if timeout_obj.is_none() {
-        return Err(raise_exception::<_>(
-            _py,
-            "TypeError",
-            "'NoneType' object cannot be interpreted as an integer or float",
-        ));
-    }
-    let Some(timeout) = to_f64(timeout_obj) else {
-        return Err(raise_exception::<_>(
-            _py,
-            "TypeError",
-            "timeout value must be a float",
-        ));
-    };
-    if !timeout.is_finite() {
-        return Err(raise_exception::<_>(
-            _py,
-            "ValueError",
-            "timeout value must be a non-negative number",
-        ));
-    }
-    if !blocking {
-        if timeout != -1.0 {
-            return Err(raise_exception::<_>(
-                _py,
-                "ValueError",
-                "can't specify a timeout for a non-blocking call",
-            ));
-        }
-        return Ok(None);
-    }
-    if timeout < 0.0 && timeout != -1.0 {
-        return Err(raise_exception::<_>(
-            _py,
-            "ValueError",
-            "timeout value must be a non-negative number",
-        ));
-    }
-    if timeout < 0.0 {
-        return Ok(None);
-    }
-    Ok(Some(Duration::from_secs_f64(timeout)))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn parse_optional_timeout(_py: &PyToken<'_>, timeout_bits: u64) -> Result<Option<Duration>, u64> {
-    let timeout_obj = obj_from_bits(timeout_bits);
-    if timeout_obj.is_none() {
-        return Ok(None);
-    }
-    let Some(timeout) = to_f64(timeout_obj) else {
-        return Err(raise_exception::<_>(
-            _py,
-            "TypeError",
-            "timeout value must be a float",
-        ));
-    };
-    if !timeout.is_finite() {
-        return Err(raise_exception::<_>(
-            _py,
-            "ValueError",
-            "timeout value must be a non-negative number",
-        ));
-    }
-    if timeout < 0.0 {
-        return Err(raise_exception::<_>(
-            _py,
-            "ValueError",
-            "timeout value must be a non-negative number",
-        ));
-    }
-    Ok(Some(Duration::from_secs_f64(timeout)))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_lock_new() -> u64 {
     crate::with_gil_entry_nopanic!(_py, {
@@ -798,10 +716,11 @@ pub unsafe extern "C" fn molt_lock_acquire(
             return raise_exception::<_>(_py, "TypeError", "invalid lock handle");
         };
         let blocking = is_truthy(_py, obj_from_bits(blocking_bits));
-        let timeout = match parse_timeout(_py, timeout_bits, blocking) {
-            Ok(val) => val,
-            Err(bits) => return bits,
-        };
+        let timeout =
+            match parse_thread_timeout(_py, timeout_bits, ThreadTimeoutPolicy::Lock { blocking }) {
+                Ok(val) => val,
+                Err(bits) => return bits,
+            };
         let acquired = if !blocking || matches!(timeout, Some(t) if t == Duration::ZERO) {
             lock.try_acquire()
         } else if lock.try_acquire() {
@@ -877,10 +796,11 @@ pub unsafe extern "C" fn molt_rlock_acquire(
             return raise_exception::<_>(_py, "TypeError", "invalid rlock handle");
         };
         let blocking = is_truthy(_py, obj_from_bits(blocking_bits));
-        let timeout = match parse_timeout(_py, timeout_bits, blocking) {
-            Ok(val) => val,
-            Err(bits) => return bits,
-        };
+        let timeout =
+            match parse_thread_timeout(_py, timeout_bits, ThreadTimeoutPolicy::Lock { blocking }) {
+                Ok(val) => val,
+                Err(bits) => return bits,
+            };
         let acquired = if !blocking || matches!(timeout, Some(t) if t == Duration::ZERO) {
             lock.try_acquire()
         } else if lock.try_acquire() {
@@ -994,7 +914,8 @@ pub unsafe extern "C" fn molt_condition_wait(handle_bits: u64, timeout_bits: u64
         let Some(condition) = condition_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, "TypeError", "invalid condition handle");
         };
-        let timeout = match parse_optional_timeout(_py, timeout_bits) {
+        let timeout = match parse_thread_timeout(_py, timeout_bits, ThreadTimeoutPolicy::Condition)
+        {
             Ok(v) => v,
             Err(bits) => return bits,
         };
@@ -1004,102 +925,6 @@ pub unsafe extern "C" fn molt_condition_wait(handle_bits: u64, timeout_bits: u64
         };
         MoltObject::from_bool(ok).bits()
     })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn molt_condition_wait_for(
-    condition_bits: u64,
-    predicate_bits: u64,
-    timeout_bits: u64,
-) -> u64 {
-    unsafe {
-        crate::with_gil_entry_nopanic!(_py, {
-            if !is_truthy(_py, obj_from_bits(molt_is_callable(predicate_bits))) {
-                return raise_exception::<_>(_py, "TypeError", "predicate must be callable");
-            }
-            let timeout = if obj_from_bits(timeout_bits).is_none() {
-                None
-            } else {
-                let Some(value) = to_f64(obj_from_bits(timeout_bits)) else {
-                    return raise_exception::<_>(_py, "TypeError", "timeout must be float or None");
-                };
-                Some(value)
-            };
-            let Some(wait_name_bits) = attr_name_bits_from_bytes(_py, b"wait") else {
-                return MoltObject::none().bits();
-            };
-            let missing = missing_bits(_py);
-            let wait_bits = molt_getattr_builtin(condition_bits, wait_name_bits, missing);
-            dec_ref_bits(_py, wait_name_bits);
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            if wait_bits == missing {
-                return raise_exception::<_>(
-                    _py,
-                    "RuntimeError",
-                    "condition wait method is unavailable",
-                );
-            }
-            if !is_truthy(_py, obj_from_bits(molt_is_callable(wait_bits))) {
-                if obj_from_bits(wait_bits).as_ptr().is_some() {
-                    dec_ref_bits(_py, wait_bits);
-                }
-                return raise_exception::<_>(_py, "TypeError", "condition.wait must be callable");
-            }
-            let mut waittime = timeout;
-            let mut deadline: Option<f64> = None;
-            loop {
-                let predicate_out = call_callable0(_py, predicate_bits);
-                if exception_pending(_py) {
-                    if obj_from_bits(wait_bits).as_ptr().is_some() {
-                        dec_ref_bits(_py, wait_bits);
-                    }
-                    return MoltObject::none().bits();
-                }
-                let ok = is_truthy(_py, obj_from_bits(predicate_out));
-                if obj_from_bits(predicate_out).as_ptr().is_some() {
-                    dec_ref_bits(_py, predicate_out);
-                }
-                if ok {
-                    if obj_from_bits(wait_bits).as_ptr().is_some() {
-                        dec_ref_bits(_py, wait_bits);
-                    }
-                    return MoltObject::from_bool(true).bits();
-                }
-                if let Some(current_wait) = waittime {
-                    if let Some(endtime) = deadline {
-                        let remaining = endtime - monotonic_now_secs(_py);
-                        waittime = Some(remaining);
-                        if remaining <= 0.0 {
-                            if obj_from_bits(wait_bits).as_ptr().is_some() {
-                                dec_ref_bits(_py, wait_bits);
-                            }
-                            return MoltObject::from_bool(false).bits();
-                        }
-                    } else {
-                        deadline = Some(monotonic_now_secs(_py) + current_wait);
-                    }
-                }
-                let wait_arg = if let Some(current_wait) = waittime {
-                    MoltObject::from_float(current_wait).bits()
-                } else {
-                    MoltObject::none().bits()
-                };
-                let wait_out = call_callable1(_py, wait_bits, wait_arg);
-                if exception_pending(_py) {
-                    if obj_from_bits(wait_bits).as_ptr().is_some() {
-                        dec_ref_bits(_py, wait_bits);
-                    }
-                    return MoltObject::none().bits();
-                }
-                if obj_from_bits(wait_out).as_ptr().is_some() {
-                    dec_ref_bits(_py, wait_out);
-                }
-            }
-        })
-    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1188,7 +1013,11 @@ pub unsafe extern "C" fn molt_event_wait(handle_bits: u64, timeout_bits: u64) ->
         let Some(event) = event_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, "TypeError", "invalid event handle");
         };
-        let timeout = match parse_optional_timeout(_py, timeout_bits) {
+        if event.is_set() {
+            return MoltObject::from_bool(true).bits();
+        }
+        let timeout = match parse_thread_timeout(_py, timeout_bits, ThreadTimeoutPolicy::Condition)
+        {
             Ok(v) => v,
             Err(bits) => return bits,
         };
@@ -1249,7 +1078,21 @@ pub unsafe extern "C" fn molt_semaphore_acquire(
             return raise_exception::<_>(_py, "TypeError", "invalid semaphore handle");
         };
         let blocking = is_truthy(_py, obj_from_bits(blocking_bits));
-        let timeout = match parse_optional_timeout(_py, timeout_bits) {
+        if !blocking && !obj_from_bits(timeout_bits).is_none() {
+            return raise_exception::<_>(
+                _py,
+                "ValueError",
+                "can't specify timeout for non-blocking acquire",
+            );
+        }
+        if sem.acquire(false, None) {
+            return MoltObject::from_bool(true).bits();
+        }
+        if !blocking {
+            return MoltObject::from_bool(false).bits();
+        }
+        let timeout = match parse_thread_timeout(_py, timeout_bits, ThreadTimeoutPolicy::Condition)
+        {
             Ok(v) => v,
             Err(bits) => return bits,
         };
@@ -1311,7 +1154,8 @@ pub unsafe extern "C" fn molt_barrier_new(parties_bits: u64, timeout_bits: u64) 
                 "barrier parties must be greater than zero",
             );
         }
-        let timeout = match parse_optional_timeout(_py, timeout_bits) {
+        let timeout = match parse_thread_timeout(_py, timeout_bits, ThreadTimeoutPolicy::Condition)
+        {
             Ok(v) => v,
             Err(bits) => return bits,
         };
@@ -1328,7 +1172,8 @@ pub unsafe extern "C" fn molt_barrier_wait(handle_bits: u64, timeout_bits: u64) 
         let Some(barrier) = barrier_from_bits(handle_bits) else {
             return raise_exception::<_>(_py, "TypeError", "invalid barrier handle");
         };
-        let timeout = match parse_optional_timeout(_py, timeout_bits) {
+        let timeout = match parse_thread_timeout(_py, timeout_bits, ThreadTimeoutPolicy::Condition)
+        {
             Ok(v) => v,
             Err(bits) => return bits,
         };

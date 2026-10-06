@@ -373,13 +373,24 @@ def test_every_actual_shared_rejection_arm_has_honest_support_status():
                 if rejection == "only" or kind == "builtin_func":
                     assert mod._classify(kind, body).status != "implemented-exact", kind
     assert {
-        "const_ellipsis",
         "func_new_closure",
         "const_float",
         "builtin_func",
         "callargs_new",
         "box",
     } <= seen
+    ellipsis_arms = [
+        body
+        for match in mod._extract_emit_op_matches(source)
+        for kinds, body in mod._iter_arms(match)
+        if "const_ellipsis" in kinds
+    ]
+    assert len(ellipsis_arms) == 1
+    assert "molt_ellipsis" in ellipsis_arms[0]
+    assert mod._unsupported_emission_kind(ellipsis_arms[0]) is None
+    assert (
+        mod._classify("const_ellipsis", ellipsis_arms[0]).status == "implemented-exact"
+    )
 
 
 def test_luau_classifier_source_family_and_regressions_are_mandatory():

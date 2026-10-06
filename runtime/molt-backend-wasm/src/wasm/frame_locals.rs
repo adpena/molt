@@ -9,7 +9,7 @@ pub(in crate::wasm) use dispatch_locals::WasmDispatchFrameLocals;
 pub(in crate::wasm) use literal_scratch::WasmLiteralScratchLocals;
 pub(in crate::wasm) use synthetic_locals::WasmFrameSyntheticLocal;
 
-use crate::wasm_abi_generated::WasmConstLiteralPayload;
+use molt_tir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use std::ops::Index;
@@ -20,7 +20,7 @@ pub(in crate::wasm) struct WasmFrameLocals {
     slots: BTreeMap<String, u32>,
     name_kinds: BTreeMap<String, WasmFrameLocalKind>,
     anonymous_kinds: BTreeMap<u32, WasmFrameAnonymousLocal>,
-    literal_scratch_payloads: BTreeMap<String, WasmConstLiteralPayload>,
+    literal_scratch_payloads: BTreeMap<String, OwnedLiteralPayloadKind>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

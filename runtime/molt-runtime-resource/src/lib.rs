@@ -830,133 +830,110 @@ pub fn parse_human_size(raw: &str) -> Result<usize, SizeParseError> {
 }
 
 // ---------------------------------------------------------------------------
-// OS-level hard backstop (RLIMIT_AS) — native only
+// OS-level hard backstop (RLIMIT_DATA over the startup footprint) — Linux only
 // ---------------------------------------------------------------------------
 
-/// Install an OS-level address-space backstop for the current process.
-///
-/// This is **Layer 2** of the two-layer memory protection contract: a coarse
-/// `setrlimit(RLIMIT_AS, …)` (and `RLIMIT_DATA` where distinct) set ABOVE the
-/// precise in-VM [`LimitedTracker`] limit (Layer 1). It catches allocations the
-/// tracker cannot see — Rust-internal metadata, FFI, runtime structures — and
-/// converts a runaway into a clean allocation failure / SIGABRT instead of
-/// OOM-killer roulette on the host.
-///
-/// It is a **backstop only** and never the contract: the tracker is the
-/// deterministic, cross-target limit; this layer merely bounds the blast radius
-/// of anything that slips past it. To preserve that property we add headroom
-/// above the tracker limit so the precise tracker error fires first in normal
-/// operation.
-///
-/// `limit_bytes` is the Layer-1 (tracker) limit; the backstop is set to
-/// `limit_bytes` plus headroom, saturating at the platform maximum. Returns the
-/// effective backstop in bytes that was installed, or `None` when the platform
-/// or kernel rejected the request (e.g. wasm — where linear-memory `max` pages
-/// are the host-controlled backstop already — or macOS, whose `setrlimit` for
-/// `RLIMIT_AS` returns `EINVAL` for small finite caps, leaving the in-VM tracker
-/// as the sole enforcement). A `None` here never weakens Layer 1; it only means
-/// the OS-level net is unavailable on this target.
-#[cfg(all(unix, not(target_arch = "wasm32")))]
-pub fn install_address_space_backstop(limit_bytes: usize) -> Option<usize> {
-    // Headroom above the tracker limit: the larger of 64 MiB or 25% of the
-    // tracker limit. This keeps the precise Layer-1 error firing first for
-    // ordinary Python heap growth while still bounding total address space.
+/// Headroom the OS backstop keeps above the Layer-1 tracker limit: the larger of
+/// 64 MiB or 25% of the limit, so the precise tracker error fires first for
+/// ordinary Python heap growth.
+pub fn memory_backstop_headroom(limit_bytes: usize) -> usize {
     const MIN_HEADROOM: usize = 64 * 1024 * 1024;
-    let headroom = (limit_bytes / 4).max(MIN_HEADROOM);
-    let backstop = limit_bytes.saturating_add(headroom);
-    // Clamp to the rlimit value type so the cast below cannot truncate.
-    let rlim_value = backstop.min(libc::rlim_t::MAX as usize) as libc::rlim_t;
-
-    // RLIMIT_AS bounds the total virtual address space — the broadest backstop.
-    let installed = set_rlimit_as(rlim_value);
-    // RLIMIT_DATA bounds the data segment (brk/sbrk + on some platforms mmap).
-    // Best-effort layered guard; failure here does not invalidate RLIMIT_AS.
-    let _ = set_rlimit_data(rlim_value);
-
-    if installed {
-        Some(rlim_value as usize)
-    } else {
-        None
-    }
+    (limit_bytes / 4).max(MIN_HEADROOM)
 }
 
-/// Apply the raise-only soft-limit policy to a single `rlimit` resource.
+/// Committed-memory budget for a process that starts empty under a Layer-1
+/// tracker limit (a freshly exec'd child): the limit plus backstop headroom.
+pub fn memory_backstop_budget(limit_bytes: usize) -> usize {
+    limit_bytes.saturating_add(memory_backstop_headroom(limit_bytes))
+}
+
+/// Install an OS-level committed-memory backstop for the current process.
 ///
-/// Reads the current limits first so the soft limit is never raised beyond the
-/// inherited hard limit and a host-imposed tighter bound is never loosened.
-/// Returns whether the soft limit ends up at (or already below) the requested
-/// value. `resource` and the libc shims share the platform-correct id type
-/// (`__rlimit_resource_t` on Linux, `c_int` on macOS/BSD) by construction.
+/// This is **Layer 2** of the two-layer memory protection contract: a coarse
+/// `setrlimit(RLIMIT_DATA, …)` set ABOVE the precise in-VM [`LimitedTracker`]
+/// limit (Layer 1). It catches allocations the tracker cannot see —
+/// Rust-internal metadata, FFI, runtime structures — and converts a runaway
+/// into a clean allocation failure instead of OOM-killer roulette on the host.
+/// It is a **backstop only** and never the contract.
 ///
-/// # Safety
+/// Linux (>= 4.7) charges `RLIMIT_DATA` for every writable private mapping,
+/// anonymous `mmap` as well as `brk`, so it is the kernel's proxy for memory
+/// the process can commit. The budget is measured from the process's own
+/// footprint at install time (`VmData`, the kernel's `RLIMIT_DATA` account)
+/// plus the tracker limit plus headroom, so allocator arenas reserved before
+/// init never count against the program.
 ///
-/// `getrlimit`/`setrlimit` with a valid `RLIMIT_*` id and a properly
-/// initialized `rlimit` are sound.
-#[cfg(all(unix, not(target_arch = "wasm32")))]
-unsafe fn apply_rlimit_soft(
-    get: unsafe extern "C" fn(*mut libc::rlimit) -> bool,
-    set: unsafe extern "C" fn(*const libc::rlimit) -> bool,
-    requested: libc::rlim_t,
-) -> bool {
+/// `RLIMIT_AS` is deliberately not used: address space counts sparse
+/// reservations that are not memory — the mapped executable, allocator arenas,
+/// per-thread malloc arenas, guard regions, sanitizer shadow. Lowering it below
+/// the live reservation footprint makes the next mapping fail and turns
+/// main-stack growth into SIGSEGV for a healthy program.
+///
+/// Returns the installed soft limit in bytes, or `None` where no
+/// committed-memory rlimit exists (macOS's `RLIMIT_DATA` governs only `brk`;
+/// Windows has no rlimits; on wasm the host-controlled linear-memory `max`
+/// pages are the backstop) or the footprint cannot be measured. `None` never
+/// weakens Layer 1; it only means the OS-level net is unavailable here.
+#[cfg(target_os = "linux")]
+pub fn install_memory_backstop(limit_bytes: usize) -> Option<usize> {
+    let footprint = linux_data_footprint_bytes()?;
+    let backstop = footprint.saturating_add(memory_backstop_budget(limit_bytes));
+    // Clamp to the rlimit value type so the cast below cannot truncate.
+    let rlim_value = backstop.min(libc::rlim_t::MAX as usize) as libc::rlim_t;
+    tighten_rlimit_data_soft(rlim_value).map(|soft| soft as usize)
+}
+
+/// No committed-memory rlimit exists on this target; the in-VM tracker
+/// (Layer 1) is the sole enforcement. Returns `None`.
+#[cfg(not(target_os = "linux"))]
+pub fn install_memory_backstop(_limit_bytes: usize) -> Option<usize> {
+    None
+}
+
+/// The process's current `RLIMIT_DATA` account (`VmData` in
+/// `/proc/self/status`), in bytes.
+#[cfg(target_os = "linux")]
+pub fn linux_data_footprint_bytes() -> Option<usize> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kib = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmData:"))?
+        .trim()
+        .strip_suffix("kB")?
+        .trim()
+        .parse::<usize>()
+        .ok()?;
+    kib.checked_mul(1024)
+}
+
+/// Tighten the `RLIMIT_DATA` soft limit to `requested`, never loosening it.
+///
+/// The soft limit is clamped to the inherited hard limit, and a host-imposed
+/// tighter soft bound is left untouched. Returns the soft limit now in force.
+#[cfg(target_os = "linux")]
+fn tighten_rlimit_data_soft(requested: libc::rlim_t) -> Option<libc::rlim_t> {
     let mut current = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
     };
-    if !unsafe { get(&mut current) } {
-        return false;
+    // SAFETY: getrlimit/setrlimit with a valid resource id and an initialized
+    // rlimit are sound.
+    if unsafe { libc::getrlimit(libc::RLIMIT_DATA, &mut current) } != 0 {
+        return None;
     }
-
     let effective = if current.rlim_max == libc::RLIM_INFINITY {
         requested
     } else {
         requested.min(current.rlim_max)
     };
-
-    // Only tighten the soft limit; if it is already at or below `effective`,
-    // leave it untouched (do not loosen a host-imposed bound).
     if current.rlim_cur != libc::RLIM_INFINITY && current.rlim_cur <= effective {
-        return true;
+        return Some(current.rlim_cur);
     }
-
-    let new_limit = libc::rlimit {
+    let tightened = libc::rlimit {
         rlim_cur: effective,
         rlim_max: current.rlim_max,
     };
-    unsafe { set(&new_limit) }
-}
-
-/// Tighten `RLIMIT_AS` (virtual address space) to `requested`, raise-only.
-#[cfg(all(unix, not(target_arch = "wasm32")))]
-fn set_rlimit_as(requested: libc::rlim_t) -> bool {
-    unsafe extern "C" fn get(out: *mut libc::rlimit) -> bool {
-        unsafe { libc::getrlimit(libc::RLIMIT_AS, out) == 0 }
-    }
-    unsafe extern "C" fn set(value: *const libc::rlimit) -> bool {
-        unsafe { libc::setrlimit(libc::RLIMIT_AS, value) == 0 }
-    }
-    unsafe { apply_rlimit_soft(get, set, requested) }
-}
-
-/// Tighten `RLIMIT_DATA` (data segment) to `requested`, raise-only.
-#[cfg(all(unix, not(target_arch = "wasm32")))]
-fn set_rlimit_data(requested: libc::rlim_t) -> bool {
-    unsafe extern "C" fn get(out: *mut libc::rlimit) -> bool {
-        unsafe { libc::getrlimit(libc::RLIMIT_DATA, out) == 0 }
-    }
-    unsafe extern "C" fn set(value: *const libc::rlimit) -> bool {
-        unsafe { libc::setrlimit(libc::RLIMIT_DATA, value) == 0 }
-    }
-    unsafe { apply_rlimit_soft(get, set, requested) }
-}
-
-/// No-op address-space backstop on platforms without POSIX rlimits.
-///
-/// On wasm the host controls linear-memory `max` pages, which is the backstop;
-/// on other non-unix targets there is no portable equivalent, so the precise
-/// in-VM tracker (Layer 1) is the sole enforcement. Returns `None`.
-#[cfg(not(all(unix, not(target_arch = "wasm32"))))]
-pub fn install_address_space_backstop(_limit_bytes: usize) -> Option<usize> {
-    None
+    (unsafe { libc::setrlimit(libc::RLIMIT_DATA, &tightened) } == 0).then_some(effective)
 }
 
 // ---------------------------------------------------------------------------
@@ -1331,73 +1308,41 @@ mod tests {
         assert!(parse_human_size("-5M").is_err());
     }
 
-    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    #[cfg(target_os = "linux")]
     #[test]
-    fn address_space_backstop_installs_above_limit() {
-        // The backstop is set ABOVE the tracker limit (headroom) so the precise
-        // Layer-1 error fires first. We use a large value (1 TiB) that does NOT
-        // try to lower the process limit — both because lowering the test
-        // runner's own address space is unsafe and because Darwin rejects
-        // lowering RLIMIT_AS to a small finite cap (the Linux-only genuine-cap
-        // proof lives in tests/resource_enforcement.rs). Here we assert only
-        // that the helper wires setrlimit correctly and reports success.
-        let tracker_limit = 1usize << 40; // 1 TiB — comfortably above test RSS
-
-        // Under AddressSanitizer the process reserves tens of TiB of virtual
-        // address space for shadow memory, so the 1.25 TiB backstop is below the
-        // live footprint and the kernel rejects the `setrlimit` with EINVAL —
-        // exactly the "lowering RLIMIT_AS below current usage" case the helper is
-        // documented to refuse. That is an artifact of the sanitizer environment,
-        // not of the helper. Probe whether the environment permits the install
-        // and assert the helper's report is *consistent* with that ground truth
-        // (returns `Some` iff the underlying `setrlimit` is allowed), so the test
-        // proves the wiring on a normal runner and stays robust under ASan.
-        const MIN_HEADROOM: usize = 64 * 1024 * 1024;
-        let headroom = (tracker_limit / 4).max(MIN_HEADROOM);
-        let backstop = tracker_limit.saturating_add(headroom) as libc::rlim_t;
-        let env_permits_install = unsafe {
-            let mut current = libc::rlimit {
-                rlim_cur: 0,
-                rlim_max: 0,
-            };
-            assert_eq!(
-                libc::getrlimit(libc::RLIMIT_AS, &mut current),
-                0,
-                "getrlimit(RLIMIT_AS) must succeed on unix"
-            );
-            // Helper installs the soft limit raise-only, clamped to the hard cap.
-            let effective = if current.rlim_max == libc::RLIM_INFINITY {
-                backstop
-            } else {
-                backstop.min(current.rlim_max)
-            };
-            // Already at/below `effective`: helper leaves it untouched and reports
-            // success without calling setrlimit.
-            if current.rlim_cur != libc::RLIM_INFINITY && current.rlim_cur <= effective {
-                true
-            } else {
-                let probe = libc::rlimit {
-                    rlim_cur: effective,
-                    rlim_max: current.rlim_max,
-                };
-                let ok = libc::setrlimit(libc::RLIMIT_AS, &probe) == 0;
-                if ok {
-                    // Restore the original limit so the probe does not perturb the
-                    // helper call below (or the rest of the test process).
-                    let _ = libc::setrlimit(libc::RLIMIT_AS, &current);
-                }
-                ok
-            }
+    fn memory_backstop_installs_above_startup_footprint() {
+        // A 1 TiB tracker limit keeps the test runner's own budget effectively
+        // unbounded; the genuine small-cap proof runs in a forked child in
+        // tests/resource_enforcement.rs. The budget is measured from the live
+        // footprint, so sanitizer shadow or allocator arenas reserved before
+        // the call never make the install refuse.
+        // Sibling test threads allocate and free concurrently, so the
+        // footprint the helper measures is not reproducible here; the
+        // installed limit must still exceed the budget and be the one in force.
+        let tracker_limit = 1usize << 40;
+        assert!(linux_data_footprint_bytes().is_some_and(|bytes| bytes > 0));
+        let installed = install_memory_backstop(tracker_limit)
+            .expect("RLIMIT_DATA backstop installs above the live footprint");
+        assert!(installed > memory_backstop_budget(tracker_limit));
+        let mut now = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
         };
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_DATA, &mut now) }, 0);
+        assert_eq!(now.rlim_cur as usize, installed);
+    }
 
-        let installed = install_address_space_backstop(tracker_limit);
-        assert_eq!(
-            installed.is_some(),
-            env_permits_install,
-            "RLIMIT_AS backstop install result must match whether the environment \
-             permits the setrlimit (it does not under AddressSanitizer's large \
-             reserved address space, which is benign)"
-        );
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn memory_backstop_is_unavailable_off_linux() {
+        assert!(install_memory_backstop(1usize << 40).is_none());
+    }
+
+    #[test]
+    fn memory_backstop_budget_keeps_headroom_above_limit() {
+        assert_eq!(memory_backstop_budget(16 << 20), (16 << 20) + (64 << 20));
+        assert_eq!(memory_backstop_budget(1 << 30), (1 << 30) + (1 << 28));
+        assert_eq!(memory_backstop_budget(usize::MAX), usize::MAX);
     }
 
     #[test]

@@ -14,6 +14,7 @@ fn extern_function(name: &str, arity: usize, returns_value: bool) -> FunctionIR 
         source_file: None,
         is_extern: true,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     }
 }
@@ -260,7 +261,12 @@ fn extern_declarations_survive_relocatable_symbol_and_table_emission() {
         wasm_profile: WasmProfile::Auto,
         ..WasmCompileOptions::default()
     })
-    .emit_wasm_module(ir, BTreeMap::new(), analysis)
+    .emit_wasm_module(
+        &ir,
+        BTreeMap::new(),
+        analysis,
+        crate::wasm_plan::WasmStageAudit::from_environment(),
+    )
     .wasm;
 
     for symbol in ["stdlib_void", "stdlib_value"] {

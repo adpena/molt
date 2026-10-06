@@ -10,10 +10,14 @@
 #![allow(clippy::type_complexity)] // complex return types in TIR CFG helpers
 #![allow(clippy::should_implement_trait)] // generated op_kind enum parsers are deliberate tables
 
+pub mod backend_environment;
+pub mod call_argument_form;
+pub mod content_digest;
 pub mod debug_artifacts;
 pub mod ir;
 pub mod ir_schema;
 pub mod json_boundary;
+pub mod literal_payload;
 pub mod native_callable_abi;
 pub mod process_diagnostics;
 pub mod python_builtin_callables_generated;
@@ -25,10 +29,11 @@ pub mod simple_verify;
 pub mod stdlib_module_symbols;
 pub mod tir;
 
+pub use crate::call_argument_form::CallArgumentForm;
 pub use crate::ir::{
     BackendIrDocument, ExecutionContextPolicy, ExternFunctionSignature, FunctionIR,
-    FunctionReturnAbi, ModuleRegistryIR, OpIR, PgoProfileIR, SimpleIR, validate_extern_call_abis,
-    validate_simple_ir, write_function_ir_contract,
+    FunctionReturnAbi, ModuleRegistryIR, OpIR, ParameterCustody, PgoProfileIR, SimpleIR,
+    validate_extern_call_abis, validate_simple_ir, write_function_ir_contract,
 };
 pub use crate::repr::Repr;
 pub use crate::simple_verify::{SimpleIrDiagnostic, SimpleIrVerificationReport, verify_simple_ir};
@@ -36,3 +41,10 @@ pub use crate::simple_verify::{SimpleIrDiagnostic, SimpleIrVerificationReport, v
 /// The implicit FIRST parameter name the frontend prepends to every closure's
 /// parameter list to carry its captured environment.
 pub const MOLT_CLOSURE_PARAM_NAME: &str = "__molt_closure__";
+
+/// Lossless Python code-point carrier shared with standalone source backends.
+pub mod python_string;
+pub const PYTHON_STRING_SOURCE: &str = include_str!("python_string.rs");
+
+#[cfg(test)]
+mod python_string_tests;

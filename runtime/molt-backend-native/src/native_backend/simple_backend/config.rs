@@ -177,56 +177,10 @@ impl SimpleBackend {
                 },
             )
             .unwrap();
-        // MOLT_PORTABLE=1 forces baseline ISA (no host-specific features like AVX2).
-        // This ensures reproducible codegen across different machines at the cost of
-        // ~5-15% runtime performance on modern CPUs with advanced features.
-        let portable = env_setting("MOLT_PORTABLE")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let mut isa_builder = if let Some(triple) = target {
-            isa::lookup_by_name(triple).unwrap_or_else(|msg| {
-                panic!("target {} is not supported: {}", triple, msg);
-            })
-        } else if portable {
-            // Baseline ISA: no auto-detected host features. Produces portable
-            // binaries that run on any CPU supporting the base architecture.
-            native_isa_builder_with_options(false).unwrap_or_else(|msg| {
-                panic!("host machine is not supported: {}", msg);
-            })
-        } else {
-            // Auto-detect host CPU features (AVX2, SSE4.2, BMI2, POPCNT on x86;
-            // NEON, AES, CRC on aarch64). Allows Cranelift to emit feature-specific
-            // instructions like vpmovmskb, popcnt, tzcnt, etc.
-            native_isa_builder_with_options(true).unwrap_or_else(|msg| {
-                panic!("host machine is not supported: {}", msg);
-            })
-        };
-
-        // Ensure critical ISA-specific features are explicitly enabled when the
-        // CPU supports them. While native_isa_builder_with_options(true) probes
-        // CPUID/system registers, explicit enablement here serves as a safety net
-        // for edge cases (custom target triples, future Cranelift changes) and
-        // documents our performance-critical feature requirements.
-        //
-        // x86_64: BMI1/BMI2 (tzcnt, blsr for bit manipulation in hash probing),
-        //         POPCNT (popcount for set operations and hash table occupancy).
-        // aarch64: LSE (atomic CAS/SWP for lock-free refcount operations).
-        #[cfg(target_arch = "x86_64")]
-        if !portable && target.is_none() {
-            if std::arch::is_x86_feature_detected!("bmi1") {
-                let _ = isa_builder.enable("has_bmi1");
-            }
-            if std::arch::is_x86_feature_detected!("bmi2") {
-                let _ = isa_builder.enable("has_bmi2");
-            }
-            if std::arch::is_x86_feature_detected!("popcnt") {
-                let _ = isa_builder.enable("has_popcnt");
-            }
-        }
-        #[cfg(target_arch = "aarch64")]
-        if !portable && target.is_none() && std::arch::is_aarch64_feature_detected!("lse") {
-            let _ = isa_builder.enable("has_lse");
-        }
+        // The standalone target baseline is portable. Host specialization is
+        // explicit and participates in the codegen identity of every cache.
+        let portable = crate::native_codegen_portable();
+        let isa_builder = configured_native_isa_builder(target, portable);
 
         let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
@@ -261,6 +215,64 @@ impl SimpleBackend {
             declared_func_arities: BTreeMap::new(),
             defined_func_names: std::collections::BTreeSet::new(),
             deferred_defines: Vec::new(),
+            function_entry_custody: BTreeMap::new(),
+        }
+    }
+
+    /// Effective target inputs from the same ISA constructor used by codegen.
+    /// TIR and object generation consume the same selected ISA capabilities.
+    pub fn object_codegen_identity(target: Option<&str>) -> serde_json::Value {
+        let backend = Self::new_with_target(target);
+        let isa = backend.module.isa();
+        let flags: BTreeMap<String, String> = isa
+            .flags()
+            .iter()
+            .map(|value| (value.name.to_string(), value.value_string()))
+            .collect();
+        let isa_flags: BTreeMap<String, String> = isa
+            .isa_flags()
+            .into_iter()
+            .map(|value| (value.name.to_string(), value.value_string()))
+            .collect();
+        let simd = backend.target_simd_caps();
+        let identity = serde_json::json!({
+            "target": isa.triple().to_string(),
+            "shared_flags": flags,
+            "isa_flags": isa_flags,
+            "tir_simd": [simd.avx, simd.avx2, simd.avx512f],
+            "backend": env_setting("MOLT_BACKEND"),
+        });
+        #[cfg(feature = "llvm")]
+        let identity = {
+            let mut identity = identity;
+            // The LLVM target-machine owner projects its exact CPU policy;
+            // baseline mode must not inherit ambient host-only features.
+            use inkwell::targets::TargetMachine;
+            let (cpu, features) = crate::llvm_backend::native_cpu_features();
+            identity["llvm_host"] = serde_json::json!({
+                "triple": TargetMachine::get_default_triple().as_str().to_str().unwrap(),
+                "cpu": cpu,
+                "features": features,
+            });
+            identity
+        };
+        identity
+    }
+
+    pub(in crate::native_backend::simple_backend) fn target_simd_caps(
+        &self,
+    ) -> crate::tir::target_info::SimdCaps {
+        let enabled = |name: &str| {
+            self.module
+                .isa()
+                .isa_flags()
+                .into_iter()
+                .any(|value| value.name == name && value.value_string() == "true")
+        };
+        crate::tir::target_info::SimdCaps {
+            avx: enabled("has_avx"),
+            avx2: enabled("has_avx2"),
+            avx512f: enabled("has_avx512f"),
         }
     }
 
@@ -272,5 +284,80 @@ impl SimpleBackend {
         self.partition_sources
             .extend(context.partition_sources.clone());
         self.module_context = Some(context);
+    }
+}
+
+/// Target identity is independent of whether the caller spelled the host
+/// triple explicitly. Cranelift owns feature detection for every host target.
+#[cfg(feature = "native-backend")]
+fn configured_native_isa_builder(target: Option<&str>, portable: bool) -> isa::Builder {
+    let requested = match target {
+        Some(name) => name
+            .parse::<target_lexicon::Triple>()
+            .unwrap_or_else(|error| {
+                panic!("target {name} is not supported: {error}");
+            }),
+        None => target_lexicon::Triple::host(),
+    };
+    let host = target_lexicon::Triple::host();
+    let targets_host = requested.architecture == host.architecture
+        && requested.operating_system == host.operating_system
+        && requested.environment == host.environment
+        && requested.binary_format == host.binary_format;
+    let mut builder = isa::lookup(requested).unwrap_or_else(|error| {
+        panic!("target is not supported: {error}");
+    });
+    if targets_host && !portable {
+        cranelift_native::infer_native_flags(&mut builder).unwrap_or_else(|error| {
+            panic!("host machine is not supported: {error}");
+        });
+    }
+    builder
+}
+
+#[cfg(all(test, feature = "native-backend"))]
+mod host_target_identity_tests {
+    use super::*;
+
+    #[test]
+    fn portable_host_uses_only_the_target_baseline_flags() {
+        let host = target_lexicon::Triple::host();
+        let finish = |builder: isa::Builder| {
+            builder
+                .finish(settings::Flags::new(settings::builder()))
+                .unwrap()
+        };
+        let baseline = finish(isa::lookup(host.clone()).unwrap());
+        let portable = finish(configured_native_isa_builder(Some(&host.to_string()), true));
+        let flags = |target: &dyn isa::TargetIsa| {
+            target
+                .isa_flags()
+                .into_iter()
+                .map(|value| (value.name.to_string(), value.value_string()))
+                .collect::<BTreeMap<_, _>>()
+        };
+        assert_eq!(flags(baseline.as_ref()), flags(portable.as_ref()));
+    }
+
+    #[test]
+    fn explicit_host_and_implicit_host_have_identical_cpu_features() {
+        let host = target_lexicon::Triple::host().to_string();
+        for portable in [false, true] {
+            let finish = |target| {
+                configured_native_isa_builder(target, portable)
+                    .finish(settings::Flags::new(settings::builder()))
+                    .unwrap()
+            };
+            let implicit = finish(None);
+            let explicit = finish(Some(host.as_str()));
+            let flags = |isa: &dyn isa::TargetIsa| {
+                isa.isa_flags()
+                    .into_iter()
+                    .map(|value| (value.name.to_string(), value.value_string()))
+                    .collect::<BTreeMap<_, _>>()
+            };
+            assert_eq!(implicit.triple(), explicit.triple());
+            assert_eq!(flags(implicit.as_ref()), flags(explicit.as_ref()));
+        }
     }
 }

@@ -6,16 +6,17 @@ import base64
 import copy
 from contextlib import contextmanager
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import stat
 import shutil
-import subprocess
 import sys
 from types import SimpleNamespace
 
 import pytest
+from tools.command_execution import CommandExecutor
 
 from molt import python_capture as capture
 from molt import python_environment_custody as environment
@@ -25,6 +26,9 @@ from molt import python_file_node_custody as files
 from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import PythonEnvironmentIdentityError
 from tests.python_environment_test_support import runtime_identity_manifest
+
+
+_COMMANDS = CommandExecutor.for_file(__file__)
 
 
 _PORTABLE_PATH_ALIASES = [
@@ -136,7 +140,7 @@ def test_isolated_probe_never_writes_disposable_source_bytecode(tmp_path, monkey
         *identity.python_identity_probe_arguments(("--capture-runtime",), no_site=True),
     ]
     for _ in range(2):
-        completed = subprocess.run(
+        completed = _COMMANDS.run(
             command,
             cwd=disposable,
             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "0"},
@@ -158,6 +162,149 @@ def _tree(root: Path, context: files.PythonFileCaptureContext):
         root, root_id="fixture", label="fixture", pool=pool
     )
     return tree, pool
+
+
+@pytest.mark.parametrize("change", ["membership", "changed-size-restored-mtime"])
+def test_runtime_session_rechecks_live_context_and_revokes_after_failure(
+    tmp_path, monkeypatch, change
+):
+    monkeypatch.setattr(
+        identity, "current_python_runtime_selection", lambda: {"selection": "fixture"}
+    )
+    root = tmp_path / "lib"
+    root.mkdir()
+    member = root / "module.py"
+    member.write_bytes(b"before")
+    original = member.stat()
+    context = files.PythonFileCaptureContext()
+    _tree(root, context)
+    context.verify()
+    output = io.StringIO()
+    payload = {"runtime_closure_sha256": "a" * 64}
+
+    def requests():
+        yield "verify\n"
+        if change == "membership":
+            (root / "new.py").write_bytes(b"addition")
+        else:
+            member.write_bytes(b"after-with-changed-size")
+            os.utime(member, ns=(original.st_atime_ns, original.st_mtime_ns))
+        yield "verify\n"
+
+    with pytest.raises(ValueError):
+        identity._serve_runtime_session(
+            payload, context, requests=requests(), responses=output
+        )
+    assert output.getvalue().splitlines() == [
+        json.dumps(
+            {"runtime": payload, "startup_selection": {"selection": "fixture"}},
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        "a" * 64,
+    ]
+    with pytest.raises(ValueError, match="revoked"):
+        context.verify()
+
+
+def test_runtime_session_eof_closes_context_without_recapture(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        identity, "current_python_runtime_selection", lambda: {"selection": "fixture"}
+    )
+    context = files.PythonFileCaptureContext()
+    _tree(tmp_path, context)
+    payload = {"runtime_closure_sha256": "a" * 64}
+    output = io.StringIO()
+    identity._serve_runtime_session(
+        payload, context, requests=iter(["verify\n", "verify\n"]), responses=output
+    )
+    assert output.getvalue().splitlines()[1:] == ["a" * 64, "a" * 64]
+    with pytest.raises(ValueError, match="revoked"):
+        context.verify()
+
+
+@pytest.mark.parametrize(
+    "change", ["archive", "new-pyvenv", "new-pth", "pyvenv-rewrite"]
+)
+def test_runtime_capture_fences_import_and_startup_selection(
+    tmp_path, monkeypatch, change
+):
+    from molt import python_runtime_identity as runtime
+
+    library = tmp_path / "lib"
+    library.mkdir()
+    (library / "module.py").write_bytes(b"source")
+    executable = tmp_path / "python.exe"
+    executable.write_bytes(b"python")
+    pyvenv = tmp_path / "pyvenv.cfg"
+    if change == "pyvenv-rewrite":
+        pyvenv.write_bytes(b"home = original")
+        original_config = pyvenv.stat()
+    archive = tmp_path / f"python{sys.version_info.major}{sys.version_info.minor}.zip"
+    monkeypatch.setattr(
+        runtime,
+        "sys",
+        SimpleNamespace(
+            base_prefix=str(tmp_path),
+            prefix=str(tmp_path),
+            executable=str(executable),
+            version_info=sys.version_info,
+            path=[str(library), str(archive)],
+        ),
+    )
+    monkeypatch.setattr(runtime, "unicodedata", SimpleNamespace(__file__=None))
+    monkeypatch.setattr(
+        runtime,
+        "_platform_identity",
+        lambda: {"operating_system": "windows", "architecture": "x86_64"},
+    )
+    monkeypatch.setattr(runtime, "_base_runtime_paths", lambda: {"stdlib": library})
+    monkeypatch.setattr(runtime, "_runtime_library", lambda: None)
+    monkeypatch.setattr(runtime, "_runtime_linkage", lambda _library: "static")
+    monkeypatch.setattr(
+        runtime,
+        "_runtime_capabilities",
+        lambda *_args, **_kwargs: {
+            "required_root_roles": ["stdlib"],
+            "native_dependency_policy": "fixture",
+        },
+    )
+    monkeypatch.setattr(
+        runtime, "_native_dependency_closure", lambda *_args, **_kwargs: {}
+    )
+    from molt import python_native_locations as native_locations
+
+    monkeypatch.setattr(
+        native_locations,
+        "_loaded_native_module_snapshot",
+        lambda _os: SimpleNamespace(
+            executable=executable,
+            paths=(executable,),
+            aliases={},
+            contracts=(),
+            macho_identities={},
+        ),
+    )
+    context = files.PythonFileCaptureContext()
+    payload, _roots, _pool, _explicit = runtime._capture_runtime_with_context(
+        capture_context=context
+    )
+    assert payload["import_roots"][-1]["kind"] == "absent-archive"
+    context.verify()
+    if change == "archive":
+        changed = archive
+    elif change == "new-pth":
+        changed = executable.with_suffix("._pth")
+    else:
+        changed = pyvenv
+    changed.write_bytes(b"home = modified")
+    if change == "pyvenv-rewrite":
+        os.utime(changed, ns=(original_config.st_atime_ns, original_config.st_mtime_ns))
+    with pytest.raises(ValueError, match="changed"):
+        context.verify()
+    changed.unlink()
+    with pytest.raises(ValueError, match="revoked"):
+        context.verify()
 
 
 @pytest.mark.parametrize(
@@ -264,21 +411,22 @@ def test_outer_tree_fence_retains_pruning_policy(tmp_path):
 
 @pytest.mark.parametrize("workers", [1, 2, 4])
 def test_file_inventory_hashes_each_object_once_and_is_deterministic(tmp_path, workers):
-    for name, data in (("b.py", b"b"), ("a.py", b"a"), ("c.py", b"c")):
-        (tmp_path / name).write_bytes(data)
+    contents = [f"payload-{index:02}".encode() for index in range(70)]
+    for index in reversed(range(len(contents))):
+        (tmp_path / f"{index:02}.py").write_bytes(contents[index])
     context = files.PythonFileCaptureContext(hash_workers=workers)
     tree, pool = _tree(tmp_path, context)
     again, second_pool = _tree(tmp_path, context)
     assert tree == again
     assert pool.nodes == second_pool.nodes
     assert [row["sha256"] for row in pool.nodes] == [
-        hashlib.sha256(data).hexdigest() for data in (b"a", b"b", b"c")
+        hashlib.sha256(data).hexdigest() for data in contents
     ]
-    assert context.inventory_profile()["hashed_files"] == 3
-    assert context.inventory_profile()["hashed_bytes"] == 3
-    assert len(context.file_custody()) == 3
+    assert context.inventory_profile()["hashed_files"] == len(contents)
+    assert context.inventory_profile()["hashed_bytes"] == sum(map(len, contents))
+    assert len(context.file_custody()) == len(contents)
     assert not any(isinstance(value, bytes) for value in vars(pool).values())
-    assert pool.read_bound("file-node-0", label="fixture") == b"a"
+    assert pool.read_bound("file-node-0", label="fixture") == b"payload-00"
 
 
 def test_hardlink_alias_has_one_hash_and_every_absolute_path(tmp_path):
@@ -298,6 +446,31 @@ def test_hardlink_alias_has_one_hash_and_every_absolute_path(tmp_path):
     original.write_bytes(b"modified")
     with pytest.raises(ValueError, match="changed"):
         pool.read_bound("file-node-0", label="fixture")
+
+
+def test_batch_checks_each_hardlink_path_against_its_snapshot(tmp_path, monkeypatch):
+    original = tmp_path / "a.py"
+    original.write_bytes(b"contents")
+    alias = tmp_path / "b.py"
+    try:
+        os.link(original, alias)
+    except OSError as exc:
+        pytest.skip(f"hardlink creation unavailable: {exc}")
+    rows = [(path, path.lstat()) for path in (original, alias)]
+    capture_file = files.stable_regular_file_identity
+
+    def replace_alias_after_hash(path, **kwargs):
+        captured = capture_file(path, **kwargs)
+        replacement = tmp_path / "replacement"
+        replacement.write_bytes(b"contents")
+        os.utime(replacement, ns=(rows[1][1].st_atime_ns, rows[1][1].st_mtime_ns))
+        os.replace(replacement, alias)
+        return captured
+
+    monkeypatch.setattr(files, "stable_regular_file_identity", replace_alias_after_hash)
+    context = files.PythonFileCaptureContext()
+    with pytest.raises(ValueError, match="changed"):
+        context.bind_many(rows, label="hardlink fixture")
 
 
 def test_internal_directory_symlink_is_captured_as_one_owned_alias(tmp_path):
@@ -532,31 +705,133 @@ def test_directory_symlink_receipt_rejects_malformed_topology(tmp_path, fault):
         )
 
 
-def test_file_capture_rejects_same_size_mtime_restore(tmp_path):
+def test_file_capture_rejects_changed_size_with_restored_mtime(tmp_path):
     path = tmp_path / "a.py"
     path.write_bytes(b"before")
     context = files.PythonFileCaptureContext()
     before = path.stat()
     context.bind(path, before, label="fixture")
-    path.write_bytes(b"after!")
+    path.write_bytes(b"after-with-changed-size")
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
     with pytest.raises(ValueError, match="changed"):
         context.bind(path, path.stat(), label="fixture")
 
 
-def test_file_capture_rejects_same_size_mtime_restore_between_prepare_and_bind(
+def test_file_capture_rejects_changed_size_between_batches(
     tmp_path,
 ):
     path = tmp_path / "a.py"
     path.write_bytes(b"before")
     context = files.PythonFileCaptureContext()
     before = path.stat()
-    context.prepare([(path, before)], label="fixture")
-    path.write_bytes(b"after!")
+    context.bind_many([(path, before)], label="fixture")
+    path.write_bytes(b"after-with-changed-size")
     os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
 
     with pytest.raises(ValueError, match="changed"):
         context.bind(path, before, label="fixture")
+
+
+@pytest.mark.parametrize("change", ["rewrite", "replace"])
+def test_batch_final_fence_rejects_earlier_file_metadata_change(
+    tmp_path, monkeypatch, change
+):
+    path = tmp_path / "a.py"
+    path.write_bytes(b"before")
+    before = path.lstat()
+
+    def mutate():
+        if change == "rewrite":
+            path.write_bytes(b"after-with-changed-size")
+        else:
+            replacement = tmp_path / "replacement.py"
+            replacement.write_bytes(b"after!")
+            os.replace(replacement, path)
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    later = tmp_path / "b.py"
+    later.write_bytes(b"later")
+    context = files.PythonFileCaptureContext()
+    capture = files.stable_regular_file_identity
+
+    def capture_then_mutate(candidate, **kwargs):
+        captured = capture(candidate, **kwargs)
+        if candidate == later:
+            mutate()
+        return captured
+
+    monkeypatch.setattr(files, "stable_regular_file_identity", capture_then_mutate)
+    context.bind_many([(path, before), (later, later.lstat())], label="fixture")
+    with pytest.raises(ValueError, match="changed"):
+        context.verify()
+
+
+def test_batch_bind_uses_one_open_per_fresh_file_and_keeps_the_final_fence(
+    tmp_path, monkeypatch
+):
+    from molt import toolchain_identity
+
+    paths = [tmp_path / name for name in ("a.py", "b.py")]
+    for path in paths:
+        path.write_bytes(path.name.encode())
+    opened = []
+    open_stable = toolchain_identity.open_stable_regular_file
+
+    def counted(path, **kwargs):
+        opened.append(Path(path).name)
+        return open_stable(path, **kwargs)
+
+    monkeypatch.setattr(toolchain_identity, "open_stable_regular_file", counted)
+    context = files.PythonFileCaptureContext()
+    rows = [(path, path.lstat()) for path in paths]
+    context.bind_many(rows, label="fixture")
+    # Snapshot binding is part of each hashing open.
+    assert sorted(opened) == ["a.py", "b.py"]
+    # A subsequent bind independently verifies the stored generation.
+    context.bind(*rows[0], label="fixture")
+    assert sorted(opened) == ["a.py", "a.py", "b.py"]
+    context.verify()
+    assert sorted(opened) == ["a.py", "a.py", "a.py", "b.py", "b.py"]
+    paths[1].write_bytes(b"changed-size.py")
+    os.utime(paths[1], ns=(rows[1][1].st_atime_ns, rows[1][1].st_mtime_ns))
+    with pytest.raises(ValueError, match="changed"):
+        context.verify()
+
+
+def test_tree_membership_is_closed_once_by_the_final_fence(tmp_path, monkeypatch):
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "module.py").write_bytes(b"module")
+    root = tmp_path.resolve()
+    scanned = []
+    scandir = files.os.scandir
+
+    def scan(path):
+        scanned.append(Path(path))
+        return scandir(path)
+
+    monkeypatch.setattr(files.os, "scandir", scan)
+    context = files.PythonFileCaptureContext()
+    pool = files._FileNodePool(capture_context=context)
+    bind_many = pool.bind_many
+
+    def bind_then_add(rows, *, label):
+        result = bind_many(rows, label=label)
+        (package / "late.py").write_bytes(b"late import")
+        return result
+
+    monkeypatch.setattr(pool, "bind_many", bind_then_add)
+    tree, _paths, _metadata = files._stable_tree_inventory(
+        tmp_path, root_id="fixture", label="fixture", pool=pool
+    )
+    assert [row["path"] for row in tree["entries"]] == [
+        "package",
+        "package/module.py",
+    ]
+    assert scanned.count(root) == 1
+    with pytest.raises(ValueError, match="changed during inventory"):
+        context.verify()
+    assert scanned.count(root) == 2
 
 
 def test_zero_inode_objects_use_distinct_path_identity(tmp_path, monkeypatch):
@@ -567,11 +842,13 @@ def test_zero_inode_objects_use_distinct_path_identity(tmp_path, monkeypatch):
     pool = files._FileNodePool(capture_context=context)
     # Zero-inode filesystems must not unify unrelated equal-content files.
     zero = os.stat_result((stat.S_IFREG | 0o600, 0, 0, 1, 0, 0, 4, 0, 0, 0))
-    real_bind = context.bind
+    real_bind = context.bind_many
     monkeypatch.setattr(
         context,
-        "bind",
-        lambda path, _expected, *, label: real_bind(path, path.stat(), label=label),
+        "bind_many",
+        lambda rows, *, label: real_bind(
+            [(path, path.stat()) for path, _expected in rows], label=label
+        ),
     )
     assert pool.bind(paths[0], zero, label="zero inode") != pool.bind(
         paths[1], zero, label="zero inode"
@@ -580,8 +857,8 @@ def test_zero_inode_objects_use_distinct_path_identity(tmp_path, monkeypatch):
 
 
 def test_capture_parallel_pending_work_is_bounded(tmp_path, monkeypatch):
-    for index in range(40):
-        (tmp_path / f"{index:02}.py").write_bytes(b"x")
+    for index in range(273):
+        (tmp_path / f"{index:03}.py").write_bytes(b"x")
     windows = []
 
     class Executor:
@@ -596,13 +873,15 @@ def test_capture_parallel_pending_work_is_bounded(tmp_path, monkeypatch):
 
         def map(self, function, work):
             windows.append(len(work))
+            assert all(1 <= len(batch) <= 32 for batch in work)
             return map(function, work)
 
     monkeypatch.setattr(files, "ThreadPoolExecutor", Executor)
     context = files.PythonFileCaptureContext(hash_workers=2)
     _tree(tmp_path, context)
     context.verify()
-    assert windows == [8] * 10
+    # Capture and final verification each schedule nine bounded batches.
+    assert windows == [8, 1, 8, 1]
 
 
 def _envelope():
@@ -753,7 +1032,10 @@ def test_capture_envelope_rejects_windows_case_alias_on_every_host():
         capture.validate_python_capture(payload)
 
 
-def test_bare_runtime_capture_checks_earlier_files_before_return(tmp_path, monkeypatch):
+@pytest.mark.parametrize("with_custody", [False, True])
+def test_runtime_capture_checks_earlier_files_before_return(
+    tmp_path, monkeypatch, with_custody
+):
     from molt import python_runtime_identity as runtime
 
     path = tmp_path / "runtime.py"
@@ -768,7 +1050,43 @@ def test_bare_runtime_capture_checks_earlier_files_before_return(tmp_path, monke
 
     monkeypatch.setattr(runtime, "_capture_runtime_with_context", late_mutation)
     with pytest.raises(ValueError, match="changed"):
-        runtime.capture_current_python_runtime()
+        runtime.capture_current_python_runtime(with_custody=with_custody)
+
+
+def test_runtime_custody_capture_has_one_full_finalization_fence(tmp_path, monkeypatch):
+    from molt import python_runtime_identity as runtime
+
+    path = tmp_path / "runtime.py"
+    path.write_bytes(b"runtime")
+    context = files.PythonFileCaptureContext()
+    pool = files._FileNodePool(capture_context=context)
+    pool.bind(path, path.lstat(), label="runtime")
+    payload = runtime_identity_manifest()
+    payload["file_nodes"] = pool.nodes
+    payload["runtime_closure_sha256"] = canonical_json_sha256(
+        {
+            key: value
+            for key, value in payload.items()
+            if key != "runtime_closure_sha256"
+        }
+    )
+    fences = []
+    context.register_verification_fence(lambda: fences.append("full fence"))
+    monkeypatch.setattr(
+        runtime, "_capture_runtime_with_context", lambda **_kw: (payload, (), pool, {})
+    )
+    envelope = runtime.capture_current_python_runtime(
+        capture_context=context, with_custody=True
+    )
+    assert envelope["identity"] is payload
+    assert envelope["file_custody"] == [
+        {"path": str(path), "size": 7, "sha256": hashlib.sha256(b"runtime").hexdigest()}
+    ]
+    assert fences == ["full fence"]
+    path.write_bytes(b"changed")
+    # Finalization is never cached across a later publication request.
+    with pytest.raises(ValueError, match="changed"):
+        capture.python_capture_payload(payload, context)
 
 
 @pytest.mark.parametrize("change", ["content", "access", "symlink", "parent-link"])
@@ -1073,3 +1391,65 @@ def test_distribution_metadata_is_parsed_from_attested_file_nodes(tmp_path, muta
         ]
         assert "site/demo.py" in owned
         assert scripts == {}
+
+
+def test_runtime_startup_projection_preserves_actual_native_selection(
+    tmp_path, monkeypatch
+):
+    from molt import python_runtime_identity as runtime
+    from molt import python_native_locations as native_locations
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    executable = tmp_path / "python"
+    executable.write_bytes(b"python")
+    first_image = first / "libpython.so"
+    second_image = second / "libpython.so"
+    first_image.write_bytes(b"first")
+    second_image.write_bytes(b"other")
+    monkeypatch.setattr(
+        runtime, "_platform_identity", lambda: {"operating_system": "linux"}
+    )
+    monkeypatch.setattr(runtime, "_runtime_library", lambda: first_image)
+    monkeypatch.setattr(runtime, "_base_runtime_paths", lambda: {"stdlib": tmp_path})
+    monkeypatch.setattr(runtime, "_runtime_import_candidates", lambda _base: ([], []))
+    monkeypatch.setattr(
+        runtime,
+        "sys",
+        SimpleNamespace(
+            executable=str(executable),
+            prefix=str(tmp_path),
+            base_prefix=str(tmp_path),
+            path=[str(tmp_path)],
+        ),
+    )
+
+    def forbidden_inventory(*_args, **_kwargs):
+        raise AssertionError("selection must not inventory runtime content")
+
+    monkeypatch.setattr(runtime, "_stable_tree_inventory", forbidden_inventory)
+    observed = SimpleNamespace(
+        executable=executable,
+        paths=(executable, first_image),
+        aliases={"libpython.so": first_image},
+        contracts=("original-contract",),
+        macho_identities={first_image: (1, 2)},
+    )
+    monkeypatch.setattr(
+        native_locations, "_loaded_native_module_snapshot", lambda _os: observed
+    )
+    baseline = runtime.current_python_runtime_selection()
+    assert baseline["native"]["executable"] == str(executable)
+    observed.paths = (executable, second_image)
+    assert runtime.current_python_runtime_selection() != baseline
+    observed.paths = (executable, first_image)
+    observed.aliases = {"libpython.so": second_image}
+    assert runtime.current_python_runtime_selection() != baseline
+    observed.aliases = {"libpython.so": first_image}
+    observed.contracts = ("different-contract",)
+    assert runtime.current_python_runtime_selection() != baseline
+    observed.contracts = ("original-contract",)
+    observed.macho_identities = {first_image: (3, 4)}
+    assert runtime.current_python_runtime_selection() != baseline

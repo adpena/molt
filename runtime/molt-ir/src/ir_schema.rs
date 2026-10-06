@@ -1,11 +1,14 @@
-use crate::OpIR;
 use crate::native_callable_abi::{NATIVE_CALLABLE_ABI_CHOICES, parse_native_callable_abi};
 use crate::tir::op_kinds_generated::{
-    SimpleIrOpValueRule, SimpleIrReturnShape, SimpleIrRuntimeRequirements, SimpleIrVarFieldRole,
+    SimpleIrCallTargetRole, SimpleIrOpValueRule, SimpleIrReturnShape, SimpleIrRuntimeRequirements,
+    SimpleIrVarFieldRole, kind_consumed_operand_table, kind_source_call_callable_operand,
+    kind_source_call_first_adopted_operand, kind_to_opcode_table, simpleir_backend_service_kind,
+    simpleir_call_target_role, simpleir_kind_has_function_reference_s_value,
     simpleir_kind_may_carry_async_work_poll_marker,
     simpleir_kind_may_carry_runtime_requirement_bits, simpleir_kind_may_carry_runtime_symbol,
     simpleir_op_shape, simpleir_return_shape, simpleir_var_field_role_table,
 };
+use crate::{OpIR, ParameterCustody};
 
 const SCALAR_FAST_INT_KINDS: &[&str] = &[
     "abs",
@@ -108,6 +111,7 @@ const CONTAINER_TYPES: &[&str] = &[
 const BCE_SAFE_KINDS: &[&str] = &["index", "store_index"];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpShapeViolation {
+    ForbiddenVar,
     OperandCount {
         expected: usize,
         actual: Option<usize>,
@@ -134,6 +138,9 @@ impl std::fmt::Display for OpShapeDiagnostic {
         }
         write!(f, "[family={}] `{}` ", self.family, self.kind)?;
         match self.violation {
+            OpShapeViolation::ForbiddenVar => {
+                write!(f, "forbids `var`; `args` is the sole input carrier")
+            }
             OpShapeViolation::OperandCount { expected, actual } => {
                 write!(f, "requires `args` length {expected}, found ")?;
                 match actual {
@@ -223,7 +230,18 @@ pub fn validate_op_shape(
 }
 
 fn validate_simple_op_shape(op: &OpIR) -> Result<(), OpShapeDiagnostic> {
-    validate_op_shape(&op.kind, op.args.as_ref().map(Vec::len), op.value)
+    validate_op_shape(&op.kind, op.args.as_ref().map(Vec::len), op.value)?;
+    if let Some(shape) = simpleir_op_shape(&op.kind)
+        && simpleir_var_field_role_table(&op.kind) == SimpleIrVarFieldRole::Forbidden
+        && op.var.is_some()
+    {
+        return Err(OpShapeDiagnostic {
+            family: shape.family,
+            kind: shape.kind,
+            violation: OpShapeViolation::ForbiddenVar,
+        });
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -265,60 +283,135 @@ pub fn validate_simple_ir_op_shapes(ir: &crate::SimpleIR) -> Result<(), Function
     Ok(())
 }
 
-#[cfg(test)]
-mod op_shape_tests {
-    use super::*;
-    use crate::tir::op_kinds_generated::SIMPLEIR_OP_SHAPES;
-
-    #[test]
-    fn generated_shapes_reject_incomplete_and_excess_payloads_without_defaults() {
-        for shape in SIMPLEIR_OP_SHAPES {
-            let value = (shape.value_rule == SimpleIrOpValueRule::NonNegative).then_some(0);
-            assert!(validate_op_shape(shape.kind, Some(shape.operands), value).is_ok());
-            assert!(matches!(
-                validate_op_shape(shape.kind, Some(shape.operands + 1), value),
-                Err(OpShapeDiagnostic {
-                    violation: OpShapeViolation::OperandCount { .. },
-                    ..
-                })
-            ));
-            if shape.operands > 0 {
-                for actual in [None, Some(shape.operands - 1)] {
-                    assert!(matches!(
-                        validate_op_shape(shape.kind, actual, value),
-                        Err(OpShapeDiagnostic {
-                            violation: OpShapeViolation::OperandCount { .. },
-                            ..
-                        })
-                    ));
-                }
-            } else {
-                assert!(validate_op_shape(shape.kind, None, value).is_ok());
-            }
-            if shape.value_rule == SimpleIrOpValueRule::NonNegative {
-                for value in [None, Some(-1), Some(i64::MIN)] {
-                    assert!(matches!(
-                        validate_op_shape(shape.kind, Some(shape.operands), value),
-                        Err(OpShapeDiagnostic {
-                            violation: OpShapeViolation::NonNegativeValue { .. },
-                            ..
-                        })
-                    ));
-                }
-                assert!(
-                    validate_op_shape(shape.kind, Some(shape.operands), Some(i64::MAX)).is_ok()
-                );
+/// Validate the control-label transport of the typed StateDispatch terminator.
+/// Source IR without a map is lifted before terminal activation lowering.
+/// Explicit maps must cover the saved state of each executable suspension;
+/// an omitted state is invalid, never permission to infer another dispatch map.
+pub fn validate_state_dispatch(ops: &[OpIR]) -> Result<(), String> {
+    use std::collections::BTreeSet;
+    let mut labels = BTreeSet::new();
+    let mut duplicate_labels = BTreeSet::new();
+    for op in ops {
+        if matches!(op.kind.as_str(), "label" | "state_label")
+            && let Some(label) = op.value
+            && !labels.insert(label)
+        {
+            duplicate_labels.insert(label);
+        }
+    }
+    let mut switches = 0;
+    for (index, op) in ops.iter().enumerate() {
+        if op.kind == "state_switch" {
+            switches += 1;
+            if switches > 1 {
+                return Err(format!("op#{index}: multiple state_switch dispatch sites"));
             }
         }
-        // Source lines are not code-slot identities and retain their distinct policy.
-        assert!(validate_op_shape("line", None, None).is_ok());
-        assert!(validate_op_shape("code_new", Some(9), None).is_ok());
+        let Some(targets) = &op.state_targets else {
+            continue;
+        };
+        if op.kind != "state_switch" {
+            return Err(format!(
+                "op#{index}: state_targets requires state_switch, found `{}`",
+                op.kind
+            ));
+        }
+        let mut states = BTreeSet::new();
+        for &(state, label) in targets {
+            if !states.insert(state) {
+                return Err(format!("op#{index}: duplicate saved state {state}"));
+            }
+            if !labels.contains(&label) || duplicate_labels.contains(&label) {
+                return Err(format!(
+                    "op#{index}: saved state {state} requires one control label {label}"
+                ));
+            }
+        }
     }
+    crate::simple_verify::validate_explicit_state_resume_coverage(ops)
 }
 
 pub(crate) fn validate_required_fields(op: &OpIR) -> Result<(), String> {
+    if op.kind == "callargs_new" {
+        op.call_argument_form()?;
+    }
+    // Interpret symbol metadata only on executable/callable carriers, never
+    // arbitrary string literals. The service-to-kind relation has one owner.
+    let direct_symbol = (simpleir_call_target_role(&op.kind).is_some()
+        || simpleir_kind_has_function_reference_s_value(&op.kind)
+        || op.kind == "builtin_func"
+        || kind_to_opcode_table(&op.kind) == Some(crate::tir::ops::OpCode::CallBuiltin))
+    .then_some(op.s_value.as_deref())
+    .flatten();
+    for symbol in [
+        direct_symbol,
+        op.runtime_symbol.as_deref(),
+        op.builtin_name.as_deref(),
+        op.native_callable_symbol.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Some(kind) = simpleir_backend_service_kind(symbol) {
+            return Err(format!(
+                "backend service `{symbol}` cannot use generic `{}` transport; use `{kind}` operation",
+                op.kind
+            ));
+        }
+    }
     validate_simple_op_shape(op).map_err(|error| error.to_string())?;
+    crate::literal_payload::validate_simple_literal(op)?;
+    validate_value_transport(op)?;
     validate_representation_fields(op)
+}
+
+/// Canonical field roles and alias facts govern value transport before any
+/// backend sees it. A malformed transport is never a backend support decision.
+fn validate_value_transport(op: &OpIR) -> Result<(), String> {
+    use crate::tir::op_kinds_generated::{
+        copy_kind_is_explicit_no_heap_move_table, copy_kind_mints_owned_alias_ref_table,
+        opcode_fixed_result_count_table, simpleir_kind_is_structural,
+    };
+    use crate::tir::simple_def_use::{
+        simple_ir_binding, visit_simple_ir_reads, visit_simple_ir_result_names,
+    };
+
+    let binding = simpleir_var_field_role_table(&op.kind) == SimpleIrVarFieldRole::Definition;
+    if binding {
+        let destination = simple_ir_binding(op).map(|binding| binding.destination);
+        if destination.is_none_or(|name| name.is_empty() || name == "none") {
+            return Err(format!(
+                "{} requires a non-empty, non-reserved binding destination",
+                op.kind
+            ));
+        }
+    }
+    if copy_kind_is_explicit_no_heap_move_table(&op.kind)
+        || copy_kind_mints_owned_alias_ref_table(&op.kind)
+    {
+        // Ownership transparency identifies the result's alias, not the number
+        // of reads. Runtime guards also read their expected tag. Their exact
+        // generated shape owns that arity; ordinary copy transports are unary.
+        let expected = simpleir_op_shape(&op.kind).map_or(1, |shape| shape.operands);
+        let mut actual = 0;
+        visit_simple_ir_reads(op, |_| actual += 1);
+        if actual != expected {
+            return Err(format!(
+                "{} requires exactly {expected} semantic source operand(s), found {actual}",
+                op.kind
+            ));
+        }
+    }
+    if simpleir_kind_is_structural(&op.kind)
+        || kind_to_opcode_table(&op.kind).and_then(opcode_fixed_result_count_table) == Some(0)
+    {
+        let mut result = false;
+        visit_simple_ir_result_names(op, |_| result = true);
+        if result {
+            return Err(format!("{} cannot declare a value result", op.kind));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_function_param_types(
@@ -491,6 +584,7 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     if op.async_work_poll && !simpleir_kind_may_carry_async_work_poll_marker(op.kind.as_str()) {
         return Err(format!("op `{}` cannot carry async_work_poll", op.kind));
     }
+    validate_argument_custody(op)?;
     validate_native_callable_fields(op)?;
     Ok(())
 }
@@ -566,6 +660,78 @@ fn validate_native_callable_fields(op: &OpIR) -> Result<(), String> {
     Ok(())
 }
 
+/// Custody vectors have one encoding: absent (every position borrowed), or one
+/// entry per position naming at least one transfer.
+pub(crate) fn validate_custody_projection(
+    custody: &[ParameterCustody],
+    positions: usize,
+    what: &str,
+) -> Result<(), String> {
+    if custody.len() != positions {
+        return Err(format!(
+            "{what} names {} entries for {positions} positions",
+            custody.len()
+        ));
+    }
+    if !custody.contains(&ParameterCustody::Transferred) {
+        return Err(format!(
+            "{what} transfers nothing; all-borrowed custody is absent"
+        ));
+    }
+    Ok(())
+}
+
+/// Typed `argument_custody` marks a source Python call instruction, on a
+/// spelling with a generated `[[source_call_kind]]` row. A raw direct call
+/// carries its target's parameter custody, which the whole-document check
+/// compares. A dynamic source call adopts every argument, as CPython's CALL
+/// does, but never an operand before the row's first adopted one (a `super()`
+/// class). Its callable goes with its call form: a builder call's form is its
+/// builder's, checked against the builder's `callargs_new`, and every other
+/// callable belongs to an ordinary call, which adopts it.
+fn validate_argument_custody(op: &OpIR) -> Result<(), String> {
+    let Some(custody) = op.argument_custody.as_deref() else {
+        return Ok(());
+    };
+    let Some(first_adopted) = kind_source_call_first_adopted_operand(&op.kind) else {
+        return Err(format!("op `{}` cannot carry argument_custody", op.kind));
+    };
+    validate_custody_projection(
+        custody,
+        op.args.as_ref().map_or(0, Vec::len),
+        &format!("op `{}` argument_custody", op.kind),
+    )?;
+    if matches!(
+        simpleir_call_target_role(&op.kind),
+        Some(SimpleIrCallTargetRole::InternalRequired | SimpleIrCallTargetRole::ExternalOrRuntime)
+    ) {
+        return Ok(());
+    }
+    let callable = kind_source_call_callable_operand(&op.kind);
+    let builder_call = kind_consumed_operand_table(&op.kind, custody.len()).is_some();
+    for (position, &actual) in custody.iter().enumerate() {
+        let expected = if position < first_adopted {
+            ParameterCustody::Borrowed
+        } else if builder_call && Some(position) == callable {
+            continue;
+        } else {
+            ParameterCustody::Transferred
+        };
+        if actual != expected {
+            return Err(format!(
+                "op `{}` operand {position} custody {actual:?} disagrees with its source call, which {} it",
+                op.kind,
+                if expected == ParameterCustody::Transferred {
+                    "adopts"
+                } else {
+                    "borrows"
+                },
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_clean_symbol(value: &str, label: &str) -> Result<(), String> {
     if value.trim().is_empty() {
         return Err(format!("{label} must be nonempty"));
@@ -574,4 +740,55 @@ fn validate_clean_symbol(value: &str, label: &str) -> Result<(), String> {
         return Err(format!("{label} must not contain control characters"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod op_shape_tests {
+    use super::*;
+    use crate::tir::op_kinds_generated::SIMPLEIR_OP_SHAPES;
+
+    #[test]
+    fn generated_shapes_reject_incomplete_and_excess_payloads_without_defaults() {
+        for shape in SIMPLEIR_OP_SHAPES {
+            let value = (shape.value_rule == SimpleIrOpValueRule::NonNegative).then_some(0);
+            assert!(validate_op_shape(shape.kind, Some(shape.operands), value).is_ok());
+            assert!(matches!(
+                validate_op_shape(shape.kind, Some(shape.operands + 1), value),
+                Err(OpShapeDiagnostic {
+                    violation: OpShapeViolation::OperandCount { .. },
+                    ..
+                })
+            ));
+            if shape.operands > 0 {
+                for actual in [None, Some(shape.operands - 1)] {
+                    assert!(matches!(
+                        validate_op_shape(shape.kind, actual, value),
+                        Err(OpShapeDiagnostic {
+                            violation: OpShapeViolation::OperandCount { .. },
+                            ..
+                        })
+                    ));
+                }
+            } else {
+                assert!(validate_op_shape(shape.kind, None, value).is_ok());
+            }
+            if shape.value_rule == SimpleIrOpValueRule::NonNegative {
+                for value in [None, Some(-1), Some(i64::MIN)] {
+                    assert!(matches!(
+                        validate_op_shape(shape.kind, Some(shape.operands), value),
+                        Err(OpShapeDiagnostic {
+                            violation: OpShapeViolation::NonNegativeValue { .. },
+                            ..
+                        })
+                    ));
+                }
+                assert!(
+                    validate_op_shape(shape.kind, Some(shape.operands), Some(i64::MAX)).is_ok()
+                );
+            }
+        }
+        // Source lines are not code-slot identities and retain their distinct policy.
+        assert!(validate_op_shape("line", None, None).is_ok());
+        assert!(validate_op_shape("code_new", Some(9), None).is_ok());
+    }
 }

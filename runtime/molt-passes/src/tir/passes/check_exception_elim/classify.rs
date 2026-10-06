@@ -24,7 +24,12 @@ pub(crate) fn const_int_values(func: &crate::tir::function::TirFunction) -> Hash
                     Some(AttrValue::Int(value)) => Some(i64::from(*value != 0)),
                     _ => None,
                 },
-                None => None,
+                Some(
+                    LiteralPayloadKind::Float
+                    | LiteralPayloadKind::None
+                    | LiteralPayloadKind::Owned(_),
+                )
+                | None => None,
             };
             if let Some(value) = value {
                 for result in &op.results {

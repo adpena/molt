@@ -25,14 +25,15 @@ from molt.llvm_linker_roles import (
     is_llvm_linker_role,
 )
 from molt.cli.native_link_deps import _collect_cargo_native_link_deps
-from molt.cli.runtime_build_identity import RuntimeBuildIdentity
+from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
+from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.native_link_plan import (
     LinkDialect,
     NativeArtifactKind,
     NativeLinkPlan,
     NativeLinkSidecar,
     NativeObjectFormat,
-    _host_target_triple,
+    NativeTargetSpec,
     native_link_capabilities,
     native_artifact_link_arguments,
     native_link_policy_flags,
@@ -130,21 +131,16 @@ def _resolve_dev_linker(
 def _resolve_native_linker_hint(
     *,
     profile: str,
-    target_triple: str | None,
+    target: NativeTargetSpec,
     driver_command: Sequence[str] = (),
     host_platform: str | None = None,
 ) -> str | None:
     host_platform = sys.platform if host_platform is None else host_platform
-    target = resolve_native_target_spec(
-        target_triple,
-        host_platform=host_platform,
-        host_arch=platform.machine(),
-    )
     linker_role = target.link_dialect.llvm_linker_role
     if profile == "dev":
         raw = os.environ.get("MOLT_DEV_LINKER", "auto").strip().lower()
-        is_host_linux = target_triple is None and host_platform.startswith("linux")
-        is_host_windows = target_triple is None and host_platform == "win32"
+        is_host_linux = target.is_host and host_platform.startswith("linux")
+        is_host_windows = target.is_host and host_platform == "win32"
         if raw == "auto" and not (is_host_linux or is_host_windows):
             return None
         selected = _resolve_dev_linker(
@@ -155,7 +151,7 @@ def _resolve_native_linker_hint(
         if selected == "mold" and target.os != "linux":
             raise RuntimeError("mold is supported only for Linux ELF link targets.")
         return selected
-    is_host_fast_linker = target_triple is None and (
+    is_host_fast_linker = target.is_host and (
         host_platform.startswith("linux") or host_platform == "win32"
     )
     if is_host_fast_linker:
@@ -170,7 +166,7 @@ def _resolve_native_linker_hint(
 def _build_native_link_driver_command(
     *,
     output_obj: Path | None,
-    target_triple: str | None,
+    target: NativeTargetSpec,
     sysroot_path: Path | None,
     profile: str,
     host_platform: str | None = None,
@@ -188,34 +184,32 @@ def _build_native_link_driver_command(
                 "Native link requires Clang in the managed LLVM toolchain or PATH."
             )
         link_cmd = [str(candidates[0])]
-    normalized_target: str | None = target_triple
-    if target_triple:
+    normalized_target: str | None = None if target.is_host else target.triple
+    if not target.is_host:
         cross_cc = os.environ.get("MOLT_CROSS_CC")
-        target_arg = target_triple
+        target_arg = target.triple
         if cross_cc:
             link_cmd = list(
                 resolve_explicit_tool_command(cross_cc, label="MOLT_CROSS_CC")
             )
         elif zig := llvm_named_tool_candidates("zig"):
             link_cmd = [str(zig[0]), "cc"]
-            target_arg = _zig_target_query(target_triple)
+            target_arg = _zig_target_query(target.triple)
             normalized_target = target_arg
         else:
             raise RuntimeError(
-                f"Cross-target build requires zig or MOLT_CROSS_CC (missing for {target_triple})."
+                f"Cross-target build requires zig or MOLT_CROSS_CC (missing for {target.triple})."
             )
         link_cmd.extend(["-target", target_arg])
     if sysroot_path is not None:
         sysroot_flag = "--sysroot"
-        if (
-            target_triple and ("apple" in target_triple or "darwin" in target_triple)
-        ) or (not target_triple and host_platform == "darwin"):
+        if target.os == "macos":
             sysroot_flag = "-isysroot"
         link_cmd.extend([sysroot_flag, str(sysroot_path)])
     cflags = os.environ.get("CFLAGS", "")
     if cflags:
         link_cmd.extend(shlex.split(cflags))
-    if host_platform == "darwin" and not target_triple:
+    if target.is_host and target.os == "macos":
         arch = (
             os.environ.get("MOLT_ARCH")
             or (None if output_obj is None else _detect_macos_arch(output_obj))
@@ -230,17 +224,14 @@ def _build_native_link_driver_command(
             link_cmd,
             compiler_target_triple(
                 link_cmd,
-                target_triple
-                or _host_target_triple(
-                    host_platform=host_platform, host_arch=host_arch
-                ),
+                target.triple,
             ),
         )
     except ValueError as exc:
         raise RuntimeError(f"Native link compiler target custody: {exc}") from exc
     linker_hint = _resolve_native_linker_hint(
         profile=profile,
-        target_triple=target_triple,
+        target=target,
         driver_command=link_cmd,
         host_platform=host_platform,
     )
@@ -255,10 +246,11 @@ def _build_native_link_plan(
     stub_path: Path,
     runtime_lib: Path,
     output_binary: Path,
-    target_triple: str | None,
+    target: NativeTargetSpec,
     sysroot_path: Path | None,
     profile: str,
     runtime_build_identity: RuntimeBuildIdentity,
+    runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
     output_kind: NativeArtifactKind = NativeArtifactKind.ARCHIVE,
     stdlib_kind: NativeArtifactKind = NativeArtifactKind.ARCHIVE,
     stdlib_obj_path: Path | None = None,
@@ -271,14 +263,9 @@ def _build_native_link_plan(
     host_arch = platform.machine() if host_arch is None else host_arch
     link_cmd, linker_hint, normalized_target = _build_native_link_driver_command(
         output_obj=output_obj,
-        target_triple=target_triple,
+        target=target,
         sysroot_path=sysroot_path,
         profile=profile,
-        host_platform=host_platform,
-        host_arch=host_arch,
-    )
-    target = resolve_native_target_spec(
-        target_triple,
         host_platform=host_platform,
         host_arch=host_arch,
     )
@@ -296,12 +283,9 @@ def _build_native_link_plan(
                 stdlib_obj_path, kind=stdlib_kind, target=target
             )
         )
-    effective_target_triple = target.triple or _host_target_triple(
-        host_platform=host_platform, host_arch=host_arch
-    )
     try:
         external_inputs = merge_source_extension_link_requirements(
-            external_link_requirements, target_triple=effective_target_triple
+            external_link_requirements, target_triple=target.triple
         )
         validate_source_extension_link_input_files(external_inputs)
     except (OSError, ValueError) as exc:
@@ -461,14 +445,15 @@ def _build_native_link_plan(
             dead_strip=policy.dead_strip,
         )
     )
-    _append_darwin_runtime_frameworks(link_cmd, target_triple=target_triple)
-    cargo_native_link_flags = _collect_cargo_native_link_deps(
+    _append_darwin_runtime_frameworks(link_cmd, target=target)
+    runtime_inputs = _collect_cargo_native_link_deps(
         runtime_lib,
-        target_triple=target_triple,
+        target_triple=target.cargo_target,
         object_format=target.object_format.value,
         runtime_build_identity=runtime_build_identity,
+        runtime_codegen_binding=runtime_codegen_binding,
     )
-    link_cmd.extend(cargo_native_link_flags)
+    link_cmd.extend(runtime_inputs.flags)
     return NativeLinkPlan(
         target=target,
         capabilities=capabilities,
@@ -478,4 +463,5 @@ def _build_native_link_plan(
         normalized_target=normalized_target,
         sidecars=tuple(sidecars),
         selection_requirements=external_inputs if external_inputs.items else None,
+        runtime_inputs=runtime_inputs,
     )

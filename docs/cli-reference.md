@@ -74,9 +74,12 @@ from project configuration: `[tool.molt.build] entry-file = "app.py"` or
 | `--snapshot` | Generate a non-restorable `molt.snapshot.json` metadata template; live runtime state and pause/resume are not supported. |
 | `--portable` | Use baseline ISA (no host-specific CPU features). |
 | `--deterministic / --no-deterministic` | Require deterministic inputs (lockfiles). |
-| `--build-profile {dev,release}` | Build profile for backend/runtime. |
+| `--build-profile {dev,release}` | Profile for the generated program and its runtime. The host compiler has an independent profile selected by `MOLT_BACKEND_PROFILE`. |
 | `--stdlib-profile {auto,micro,edge,standard,server,full}` | Runtime stdlib intent. `auto` is the default and selects the smallest concrete tier whose Cargo feature ceiling covers the reached intrinsic set; named tiers are explicit ceilings. |
 | `--wasm-profile {auto,full,pure}` | WASM import profile (`auto` plans imports from observed IR). |
+| `--progress {auto,plain,off}` | Show terminal status, plain phase lines, or no status; also supported by `molt run`. |
+| `--headless` | Use plain status lines without terminal control codes; also supported by `molt run`. |
+| `--quiet` | Hide build status and success messages while retaining errors and guest output; also supported by `molt run`. |
 | `--cache / --no-cache` | Enable/disable build cache. |
 | `--cache-dir DIR` | Override build cache directory. |
 | `--trusted / --no-trusted` | Select the finite generated maximum built-in capability tier. |
@@ -564,7 +567,7 @@ falls back to the host process version when a target is selected.
 | `MOLT_MODULE_ROOTS` | Colon-separated additional module search roots. |
 | `MOLT_EXTERNAL_STATIC_PACKAGES` | Comma/space-separated external package names admitted from external roots. Pure-Python packages may admit source closure; source-recompiled NumPy/SciPy roots require package-local native/static artifact candidates before graph discovery, WASM static-link artifact manifests must declare `python_exports` or `callable_exports`, required package-root imports such as `numpy` must be covered by matching `python_exports`, and package initializer sources do not seed broad source closure. Direct entry imports from external roots remain bounded when unset. |
 | `MOLT_STATIC_IMPORT_MODULES` | Comma/space-separated Python module names to admit as explicit static roots in the binary image closure. |
-| `MOLT_PORTABLE` | Set to `1` for baseline ISA codegen. |
+| `MOLT_PORTABLE` | Target baseline by default (`1`); set `0` to explicitly specialize for the host CPU. Host specialization participates in native cache identity. |
 | `MOLT_SPLIT_RUNTIME` | Set to `1` to enable split-runtime WASM by default. |
 | `MOLT_DEAD_MODULE_ELIMINATION` | Set to `1` to narrow the import plan's compile module set to modules reachable from the entry and required support roots. This is part of wrapper-cache semantic identity. |
 | `MOLT_BUILD_STATE_DIR` | Override the build state directory. |
@@ -628,6 +631,42 @@ falls back to the host process version when a target is selected.
 | `MOLT_BUILD_DIAGNOSTICS_FILE` | Path for diagnostics JSON output. |
 | `MOLT_BUILD_DIAGNOSTICS_VERBOSITY` | Diagnostics detail level. |
 | `MOLT_BUILD_ALLOCATIONS` | Enable allocation tracking. |
+
+Build diagnostics use timing_scope = "build_preamble_to_terminal_result".
+The monotonic interval starts in the build preamble and ends after the selected
+artifact's link checks, finalization, validation and publication, plus requested
+artifact analysis. Native object publication and an optional WASM snapshot header
+are included. A reused native link still has a link phase for planning and receipt
+checks; measured finalization appears as seal.
+
+The same terminal payload is embedded in build-result JSON and written to the
+diagnostics file. Link and finalization failures retain their original messages
+and return codes. Earlier failures that already emitted an error flush available
+diagnostics separately, without emitting another JSON error. Failures before the
+diagnostics context exists have no timing receipt.
+
+Diagnostic generation and publication are attempted once. If they fail after a
+build failure, the primary error and return code are preserved; the reporting
+failure appears as `data.diagnostics_error`, or on stderr when the original JSON
+error was already emitted. If artifact production succeeded but requested
+diagnostics fail, the command emits one error result and returns nonzero while
+retaining the published artifact. Success JSON is emitted only after diagnostic
+publication succeeds. No retry or second snapshot is performed.
+
+The interval excludes interpreter startup/imports, command parsing before the
+preamble, compiler-identity enrichment and diagnostic serialization/output after
+the cutoff, and cleanup after reporting. Use the outer process wall time for
+end-to-end command latency. phase_sec is a sequential partition;
+phase_attribution includes overlapping aggregates, aliases and nested WASM
+timings, so its shares must not be added. Diagnostics disabled skips both
+artifact analysis and compiler-identity probes used only for reporting.
+
+For linked WASM, `wasm_reloc_preflight` measures the relocatable runtime's
+metadata admission before the pipeline timer begins. Its operation count is
+`wasm_reloc_preflight_invocations`; an admitted relocatable input is checked
+once per link operation. This time is outside `wasm_link_total` and is retained
+when admission fails. `wasm_link_core` remains a residual pipeline bucket,
+including work other than the linker process itself.
 
 ### Timeouts
 

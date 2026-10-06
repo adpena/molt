@@ -2,8 +2,9 @@
 
 Every evidence row is projected from real producer envelopes: Pact acceptance
 receipts written by tools/pact_witness_acceptance.py, an E2 board emitted
-through tools/perf_scoreboard.py's verdict law and writer, and E3/E4 receipts
-built by tools/release_criterion_receipt.py. tools/release_exit_gate.py
+through tools/perf_scoreboard.py's verdict law and writer with profile facts
+from the CLI publication observer over synthetic artifact bytes, and E3/E4
+receipts built by tools/release_criterion_receipt.py. tools/release_exit_gate.py
 assembles them, and its storage/source/statistical verifier checks every byte
 against a hermetic source tree holding exact copies of bound files. Actual
 compiler/runtime admission is unavailable, so this fixture isolates that
@@ -41,6 +42,7 @@ from molt.exact_json import (
 from molt.verified_subset import load_verified_subset_policy
 from tests.tools.verified_subset_fixtures import synthetic_validation
 from tests.tools.receipt_engine_fixtures import install_observed_runtime
+from tests.tools.perf_scoreboard_fixtures import write_synthetic_build_observation
 from tests.wasm_execution_manifest import write_wasm_execution_manifest
 from tools import legacy_inventory as li
 from tools import pact_witness_acceptance as acceptance
@@ -170,7 +172,8 @@ def _fixture_release_scoreboard_problems(payload, **kwargs):
     Bundle storage and source tests require an admitted input precondition.
     No used-byte receipt producer exists yet. This narrowly scoped assumption
     ends before phase projection or direct toolchain-negative assertions run;
-    no fabricated observation or admission flag is written to any receipt.
+    compiler/runtime observations stay unknown and no used-byte admission is
+    fabricated. Selected-profile observations remain subject to real validation.
     """
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(pa, "scoreboard_observed_toolchain_problems", lambda _doc: [])
@@ -502,6 +505,14 @@ def _board(
                 target="native",
                 backend=backend,
                 profile=pa.CANONICAL_PERF_PROFILE,
+            )
+            cell.build_observation = write_synthetic_build_observation(
+                path.parent
+                / "build-observations"
+                / backend
+                / f"{Path(benchmark).stem}.fixture",
+                target=cell.target,
+                profile=cell.profile,
             )
             cell.build_ok = cell.molt_ok = cell.cpython_ok = cell.stable = True
             cell.binary_size_kib, cell.compile_time_s = 512.0, 0.4
@@ -1280,7 +1291,28 @@ def test_green_perf_statistics_cannot_admit_unknown_used_toolchain(
     payload = _load(producer_inputs["board"])
     cells = pa.perf_schema.flatten_cells(payload)
     assert cells and all(not pa.release_cell_problems(cell) for cell in cells)
-    assert pa.scoreboard_observed_toolchain_problems(payload)
+    assert pa.canonical_scoreboard_shape_problems(payload) == []
+    for cell in cells:
+        observation = cell["build_observation"]
+        assert observation["kind"] == "molt-build-observation-v1"
+        assert observation["selected_profiles"] == {
+            "guest_profile": "release",
+            "compiler_profile": "release",
+            "runtime_profile": "release-fast",
+            "target": "native",
+        }
+        assert observation["compiled_with_verified"] is False
+        assert observation["compiler"] is None
+        assert observation["runtime"] is None
+        artifact = Path(observation["artifact"]["path"])
+        assert (
+            observation["artifact"]["identity"]["sha256"]
+            == hashlib.sha256(artifact.read_bytes()).hexdigest()
+        )
+    assert any(
+        "used-byte admission receipt is unavailable" in problem
+        for problem in pa.scoreboard_observed_toolchain_problems(payload)
+    )
     facts = pem._receipt_facts("e2_scoreboard", payload)
     assert facts.status == pem.STATUS_FAIL
     assert facts.toolchain_digest is None
@@ -1294,7 +1326,9 @@ def test_fixture_release_admission_is_scoped_away_from_phase_toolchain_checks(
     validator = pa.scoreboard_observed_toolchain_problems
     before = validator(payload)
     assert before
-    assert any("observation is missing" in problem for problem in before)
+    assert any(
+        "used-byte admission receipt is unavailable" in problem for problem in before
+    )
     _bundle, synthetic_report = _release_bundle(
         workspace, workspace["board"], tmp_path / "isolated-structural-fixture"
     )
@@ -1303,8 +1337,36 @@ def test_fixture_release_admission_is_scoped_away_from_phase_toolchain_checks(
     assert validator(payload) == before
     assert pem._receipt_facts("e2_scoreboard", payload).status == pem.STATUS_FAIL
     assert any(
-        "observation is missing" in problem
+        "used-byte admission receipt is unavailable" in problem
         for problem in _REAL_RELEASE_SCOREBOARD_PROBLEMS(
             payload, expected_source_sha=SOURCE_SHA
         )
     )
+
+
+@pytest.mark.parametrize("backend", ["native", "llvm"])
+@pytest.mark.parametrize(
+    "field", [None, "guest_profile", "compiler_profile", "runtime_profile", "target"]
+)
+def test_fixture_release_admission_still_rejects_unbound_profiles(
+    workspace: dict[str, Any], tmp_path: Path, backend: str, field: str | None
+) -> None:
+    payload = _load(workspace["board"])
+    assert pa.canonical_scoreboard_shape_problems(payload) == []
+    cell = next(
+        cell
+        for cell in pa.perf_schema.flatten_cells(payload)
+        if cell["backend"] == backend
+    )
+    observation = cell["build_observation"]
+    if field is None:
+        observation.pop("selected_profiles")
+        diagnostic = "missing selected-profile observation"
+    else:
+        observation["selected_profiles"][field] = "unselected-coordinate"
+        diagnostic = f"selected {field}:"
+    board = tmp_path / "unbound-scoreboard.json"
+    write_exact(board, payload, exclusive=True)
+    with pytest.raises(ValueError, match="invalid E2 scoreboard") as rejected:
+        _release_bundle(workspace, board, tmp_path / "unbound-dist")
+    assert diagnostic in str(rejected.value)

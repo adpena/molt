@@ -38,11 +38,16 @@ pub(crate) mod buffer2d;
 pub(crate) mod buffer_exports;
 pub(crate) mod builders;
 pub(crate) mod cells;
+pub(crate) mod class_layout;
+#[cfg(test)]
+mod class_shape_tests;
 pub(crate) mod class_storage;
+pub(crate) mod code_layout;
 pub(crate) mod field_storage;
 #[cfg(test)]
 mod finalizer_declaration_tests;
 pub(crate) mod foreign;
+pub(crate) mod function_metadata;
 pub(crate) mod gc;
 #[allow(dead_code)]
 pub(crate) mod heap_kinds_generated;
@@ -52,9 +57,12 @@ mod immortal_owner_tests;
 pub(crate) mod iterable;
 pub(crate) mod layout;
 pub(crate) mod list_mutation;
+#[cfg(test)]
+mod list_representation_tests;
 pub(crate) mod mapping_merge;
 pub(crate) mod memoryview;
 pub(crate) mod native_handle;
+pub(crate) mod native_instance;
 pub(crate) mod ops;
 pub(crate) mod ops_arith;
 pub(crate) mod ops_builtins;
@@ -74,10 +82,13 @@ pub(crate) mod ops_slice;
 pub(crate) mod ops_string;
 pub(crate) mod ops_sys;
 pub(crate) mod ops_vec;
+pub(crate) mod payload_refs;
 pub(crate) mod refcount_opt;
 pub(crate) mod seq_access;
+pub(crate) mod sequence_index;
 #[allow(dead_code)]
 pub mod string_intern;
+pub(crate) mod tuple_storage;
 #[allow(dead_code)]
 pub(crate) mod type_ids;
 pub(crate) mod utf8_cache;
@@ -104,24 +115,22 @@ use crate::{
     TYPE_ID_ASYNC_GENERATOR, TYPE_ID_BIGINT, TYPE_ID_BYTEARRAY, TYPE_ID_CODE, TYPE_ID_DICT,
     TYPE_ID_EXCEPTION, TYPE_ID_FILE_HANDLE, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_ITER,
     TYPE_ID_LIST_BUILDER, TYPE_ID_OBJECT, TYPE_ID_STRING, TYPE_ID_TUPLE, asyncgen_call_finalizer,
-    asyncgen_registry_remove, asyncio_fd_watcher_poll_fn_addr, asyncio_gather_poll_fn_addr,
-    asyncio_ready_runner_poll_fn_addr, asyncio_server_accept_loop_poll_fn_addr,
+    asyncio_fd_watcher_poll_fn_addr, asyncio_server_accept_loop_poll_fn_addr,
     asyncio_sock_accept_poll_fn_addr, asyncio_sock_connect_poll_fn_addr,
     asyncio_sock_recv_into_poll_fn_addr, asyncio_sock_recv_poll_fn_addr,
     asyncio_sock_recvfrom_into_poll_fn_addr, asyncio_sock_recvfrom_poll_fn_addr,
     asyncio_sock_sendall_poll_fn_addr, asyncio_sock_sendto_poll_fn_addr,
     asyncio_socket_reader_read_poll_fn_addr, asyncio_socket_reader_readline_poll_fn_addr,
     asyncio_stream_reader_read_poll_fn_addr, asyncio_stream_reader_readline_poll_fn_addr,
-    asyncio_stream_send_all_poll_fn_addr, asyncio_timer_handle_poll_fn_addr,
-    asyncio_wait_for_poll_fn_addr, asyncio_wait_poll_fn_addr, builtin_classes_if_initialized,
-    bytearray_data, bytearray_len, bytearray_vec_ptr, code_filename_bits, code_name_bits,
-    code_names_bits, code_varnames_bits, contextlib_async_exitstack_enter_context_poll_fn_addr,
+    asyncio_stream_send_all_poll_fn_addr, builtin_classes_if_initialized, bytearray_data,
+    bytearray_len, bytearray_vec_ptr, code_filename_bits, code_name_bits, code_names_bits,
+    code_varnames_bits, contextlib_async_exitstack_enter_context_poll_fn_addr,
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
     contextlib_asyncgen_exit_poll_fn_addr, dict_hashes_ptr, dict_order_ptr, dict_table_ptr,
     io_wait_detach_resource, io_wait_poll_fn_addr, map_iters_ptr, process_poll_fn_addr,
-    profile_hit, profile_hit_bytes, runtime_state, seq_vec_ptr, set_hashes_ptr, set_order_ptr,
-    set_table_ptr, thread_poll_fn_addr, utf8_cache_remove, weakref_clear_for_ptr,
-    ws_wait_detach_resource, zip_iters_ptr,
+    profile_hit, profile_hit_bytes, seq_vec_ptr, set_hashes_ptr, set_order_ptr, set_table_ptr,
+    thread_poll_fn_addr, utf8_cache_remove, weakref_clear_for_ptr, ws_wait_detach_resource,
+    zip_iters_ptr,
 };
 fn debug_alloc_list_builder() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -230,6 +239,22 @@ fn trace_decref_zero_function_all() -> bool {
                 .as_deref(),
             Some("1")
         )
+    })
+}
+
+/// Whether any per-transition refcount knob above is set. Derived once from
+/// those canonical knobs so each inlined `inc_ref_ptr`/`dec_ref_ptr` edge pays
+/// one cached branch; the outlined tracers still apply every knob's own filter.
+#[inline]
+fn rc_transition_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        trace_exception_rc()
+            || trace_rc_type_filter().is_some()
+            || debug_bigint_rc()
+            || debug_object_rc()
+            || debug_file_rc()
+            || debug_rc_object()
     })
 }
 
@@ -401,6 +426,13 @@ impl MoltHeader {
         if flags & HEADER_FLAG_HAS_ABI_VIEW == 0 {
             return self.retain_owned(count, label);
         }
+        self.retain_owned_abi_view(bits, count, label)
+    }
+
+    /// Mirrored retain of an object with a canonical C view. Views are rare, so
+    /// the bridge transaction stays out of every inlined `inc_ref_ptr` edge.
+    #[inline(never)]
+    fn retain_owned_abi_view(&self, bits: u64, count: usize, label: &str) -> u32 {
         // Collector pins own physical lifetime just like ordinary references.
         // Only GC reachability accounting subtracts them; subtracting a pin
         // here would decouple the bridge bias from the live header owners.
@@ -436,10 +468,7 @@ impl MoltHeader {
     pub(crate) fn release_owned(&self, label: &str) -> RefCountRelease {
         match self.ref_count.release_owned() {
             Ok(transition) => transition,
-            Err(previous) => {
-                eprintln!("molt fatal: invalid refcount release in {label} (previous={previous})");
-                std::process::abort();
-            }
+            Err(previous) => fatal_invalid_release(label, previous),
         }
     }
 
@@ -547,6 +576,13 @@ fn fatal_refcount_overflow(label: &str, current: u32, count: usize) -> ! {
     std::process::abort()
 }
 
+#[cold]
+#[inline(never)]
+fn fatal_invalid_release(label: &str, previous: u32) -> ! {
+    eprintln!("molt fatal: invalid refcount release in {label} (previous={previous})");
+    std::process::abort()
+}
+
 /// Flags in this class directly coordinate cross-thread state or object
 /// lifetime. Every other flag is metadata whose payload visibility is already
 /// established by `GC_UNPUBLISHED` publication, the GIL, or its owning lock.
@@ -563,6 +599,7 @@ const HEADER_FLAG_SYNCHRONIZED_STATE_MASK: u32 = HEADER_FLAG_GEN_RUNNING
     | HEADER_FLAG_HAS_WEAKREF
     | HEADER_FLAG_GC_COLLECTING
     | HEADER_FLAG_HAS_ABI_VIEW
+    | HEADER_FLAG_GC_ACCOUNTED
     | HEADER_FLAG_GC_PINNED
     | HEADER_FLAG_DEALLOCATING
     | HEADER_FLAG_IS_WEAKREF;
@@ -854,15 +891,22 @@ pub(crate) struct PtrSlot(pub(crate) *mut u8);
 unsafe impl Send for PtrSlot {}
 unsafe impl Sync for PtrSlot {}
 
+/// Per-instance projection of sealed class storage onto a dataclass vector.
+/// Logical dataclass fields remain first; hidden declared rows follow them.
+#[derive(Clone, Copy)]
+pub(crate) struct DataclassField {
+    pub(crate) name: u64,
+    pub(crate) kind: class_layout::ClassFieldKind,
+    pub(crate) slot_offset: Option<usize>,
+}
+
 pub(crate) struct DataclassDesc {
     pub(crate) name: String,
     pub(crate) field_names: Vec<String>,
     // Immutable physical-layout projection, prepared before class publication.
-    pub(crate) field_keys: Vec<u64>,
-    pub(crate) declared_slots: Vec<bool>,
+    pub(crate) field_layout: Vec<DataclassField>,
     pub(crate) field_name_to_index: HashMap<String, usize>,
     pub(crate) frozen: bool,
-    pub(crate) eq: bool,
     pub(crate) repr: bool,
     pub(crate) slots: bool,
     pub(crate) allows_dict: bool,
@@ -888,11 +932,13 @@ pub(crate) struct MemoryView {
     pub(crate) readonly: u8,
     pub(crate) ndim: u8,
     pub(crate) released: u8,
-    pub(crate) _pad: [u8; 5],
+    pub(crate) restricted: u8,
+    pub(crate) _pad: [u8; 4],
     pub(crate) format_bits: u64,
     pub(crate) shape_ptr: *mut Vec<isize>,
     pub(crate) strides_ptr: *mut Vec<isize>,
     pub(crate) exports: buffer_exports::BufferExports,
+    pub(crate) native_lease: Option<molt_cpython_abi::api::memory::MemoryViewLease>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -933,6 +979,8 @@ pub(crate) struct MoltFileState {
 }
 
 pub(crate) struct MoltFileHandle {
+    // One Python dictionary owner shared by every native IO handle family.
+    pub(crate) dict_bits: u64,
     pub(crate) state: Arc<MoltFileState>,
     pub(crate) readable: bool,
     pub(crate) writable: bool,
@@ -987,6 +1035,10 @@ pub(crate) const HEADER_FLAG_TASK_WAKE_PENDING: u32 = 1 << 9;
 pub(crate) const HEADER_FLAG_TASK_DONE: u32 = 1 << 10;
 pub(crate) const HEADER_FLAG_TRACEBACK_SUPPRESSED: u32 = 1 << 11;
 pub(crate) const HEADER_FLAG_COROUTINE: u32 = 1 << 12;
+/// This allocation contributes to generation-0 allocation accounting. Membership
+/// may change and payload/class edges may be cleared while this lifetime claim
+/// remains set; terminal retirement consumes it exactly once.
+pub(crate) const HEADER_FLAG_GC_ACCOUNTED: u32 = 1 << 14;
 // CPython-like "immortal" objects: refcount ops are skipped and the object is never freed.
 // Use this only for runtime singletons/cached builtin callables.
 pub(crate) const HEADER_FLAG_IMMORTAL: u32 = molt_codegen_abi::HEADER_FLAG_IMMORTAL;
@@ -1056,7 +1108,7 @@ pub(crate) const HEADER_FLAG_IS_WEAKREF: u32 = 1 << 31;
 // Keep every persistent and transient lifetime bit in this single registry and
 // fail compilation on any future collision. Cold type policy intentionally
 // lives in the type payload rather than consuming hot RC/GC header capacity.
-const HEADER_FLAG_REGISTRY: [u32; 30] = [
+const HEADER_FLAG_REGISTRY: [u32; 31] = [
     HEADER_FLAG_HAS_PTRS,
     HEADER_FLAG_REVIVAL_WINDOW,
     HEADER_FLAG_GEN_RUNNING,
@@ -1070,6 +1122,7 @@ const HEADER_FLAG_REGISTRY: [u32; 30] = [
     HEADER_FLAG_TASK_DONE,
     HEADER_FLAG_TRACEBACK_SUPPRESSED,
     HEADER_FLAG_COROUTINE,
+    HEADER_FLAG_GC_ACCOUNTED,
     HEADER_FLAG_IMMORTAL,
     HEADER_FLAG_FINALIZER_RAN,
     HEADER_FLAG_INTERNED,
@@ -1337,17 +1390,28 @@ pub(crate) unsafe fn class_instance_type_id(class_ptr: *mut u8) -> u32 {
     }
 }
 
-/// Whether this heap kind uses the shared Python class/slot/dict instance
-/// layout. Attribute and lifetime consumers must query this generated policy
-/// instead of re-listing individual physical type IDs.
+/// Whether this heap kind permits the shared Python class/slot/dict layout.
+/// Allocation uses this generated policy. Live-object consumers must additionally
+/// admit the immutable payload shape through `object_has_class_shape`.
 #[inline]
 pub(crate) fn heap_kind_has_class_shape(type_id: u32) -> bool {
     heap_shape_policy(type_id) == Some(HeapShapePolicy::Class)
 }
 
+/// A logical class edge does not change a task's physical capture payload.
+/// Its typed lifecycle owns every capture word, including the last word; none
+/// belongs to managed class fields or the shared instance-dictionary tail.
+#[inline]
+pub(crate) unsafe fn object_has_class_shape(ptr: *mut u8) -> bool {
+    unsafe {
+        heap_kind_has_class_shape(object_type_id(ptr))
+            && !object_shape_is_task(object_shape_id(ptr))
+    }
+}
+
 pub(crate) unsafe fn class_set_instance_type_id(class_ptr: *mut u8, type_id: u32) -> bool {
-    if heap_layout_policy(type_id) != Some(HeapLayoutPolicy::Object)
-        || heap_shape_policy(type_id) != Some(HeapShapePolicy::Class)
+    if !heap_kind_has_class_shape(type_id)
+        && native_instance::NativePayload::from_type_id(type_id).is_none()
     {
         return false;
     }
@@ -1370,8 +1434,8 @@ pub(crate) unsafe fn class_inherit_instance_type_id(
     class_ptr: *mut u8,
     inherited_type_id: u32,
 ) -> bool {
-    if heap_layout_policy(inherited_type_id) != Some(HeapLayoutPolicy::Object)
-        || heap_shape_policy(inherited_type_id) != Some(HeapShapePolicy::Class)
+    if !heap_kind_has_class_shape(inherited_type_id)
+        && native_instance::NativePayload::from_type_id(inherited_type_id).is_none()
     {
         return false;
     }
@@ -1795,7 +1859,7 @@ pub(crate) unsafe fn object_init_shape_unpublished(
 /// Resolve a task constructor's code pointer to its immutable lifecycle shape.
 /// This conversion runs once while the object is unpublished; lifecycle paths
 /// dispatch only on the resulting compact ID.
-pub(crate) fn object_shape_for_poll_fn(poll_fn: u64) -> ObjectShapeId {
+pub(crate) fn task_shape_for_poll_fn(poll_fn: u64) -> ObjectShapeId {
     if poll_fn == crate::promise_poll_fn_addr() {
         ObjectShapeId::Promise
     } else if poll_fn == crate::async_sleep_poll_fn_addr() {
@@ -1804,20 +1868,10 @@ pub(crate) fn object_shape_for_poll_fn(poll_fn: u64) -> ObjectShapeId {
         ObjectShapeId::AsyncGeneratorFuture
     } else if poll_fn == crate::anext_default_poll_fn_addr() {
         ObjectShapeId::AnextDefault
-    } else if poll_fn == asyncio_wait_poll_fn_addr() {
-        ObjectShapeId::AsyncioWait
-    } else if poll_fn == asyncio_gather_poll_fn_addr() {
-        ObjectShapeId::AsyncioGather
-    } else if poll_fn == asyncio_wait_for_poll_fn_addr() {
-        ObjectShapeId::AsyncioWaitFor
-    } else if poll_fn == asyncio_timer_handle_poll_fn_addr() {
-        ObjectShapeId::AsyncioTimerHandle
     } else if poll_fn == asyncio_fd_watcher_poll_fn_addr() {
         ObjectShapeId::AsyncioFdWatcher
     } else if poll_fn == asyncio_server_accept_loop_poll_fn_addr() {
         ObjectShapeId::AsyncioServerAcceptLoop
-    } else if poll_fn == asyncio_ready_runner_poll_fn_addr() {
-        ObjectShapeId::AsyncioReadyRunner
     } else if poll_fn == contextlib_asyncgen_enter_poll_fn_addr() {
         ObjectShapeId::ContextlibAsyncgenEnter
     } else if poll_fn == contextlib_asyncgen_exit_poll_fn_addr() {
@@ -1860,10 +1914,10 @@ pub(crate) fn object_shape_for_poll_fn(poll_fn: u64) -> ObjectShapeId {
         ObjectShapeId::IoWait
     } else if poll_fn == ws_wait_poll_fn_addr() {
         ObjectShapeId::WebsocketWait
-    } else if poll_fn != 0 {
-        ObjectShapeId::GenericTaskPayload
     } else {
-        ObjectShapeId::Plain
+        // Task construction owns capture storage even when no callable address
+        // has been installed. Zero cannot turn that payload into class fields.
+        ObjectShapeId::GenericTaskPayload
     }
 }
 
@@ -2120,21 +2174,7 @@ pub(crate) fn init_atomic_bits(
     slot: &AtomicU64,
     init: impl FnOnce() -> u64,
 ) -> u64 {
-    let existing = slot.load(AtomicOrdering::Acquire);
-    if existing != 0 {
-        return existing;
-    }
-    let new_bits = init();
-    if new_bits == 0 {
-        return 0;
-    }
-    match slot.compare_exchange(0, new_bits, AtomicOrdering::AcqRel, AtomicOrdering::Acquire) {
-        Ok(_) => new_bits,
-        Err(prev) => {
-            dec_ref_bits(py, new_bits);
-            prev
-        }
-    }
+    molt_runtime_core::cached_handle::get_or_init(slot, init, |bits| dec_ref_bits(py, bits))
 }
 
 pub(crate) fn pending_bits_i64() -> i64 {
@@ -2346,14 +2386,35 @@ pub(crate) unsafe fn object_payload_size(ptr: *mut u8) -> usize {
 
 pub(crate) unsafe fn instance_dict_bits_ptr(ptr: *mut u8) -> *mut u64 {
     unsafe {
-        if object_type_id(ptr) == TYPE_ID_DATACLASS {
-            return dataclass_dict_bits_ptr(ptr);
+        match object_type_id(ptr) {
+            TYPE_ID_TYPE => return class_storage::class_generic_dict_bits_ptr(ptr),
+            TYPE_ID_FUNCTION => return layout::function_dict_bits_ptr(ptr),
+            TYPE_ID_DATACLASS => return dataclass_dict_bits_ptr(ptr),
+            TYPE_ID_EXCEPTION => return crate::builtins::exceptions::exception_dict_bits_ptr(ptr),
+            TYPE_ID_FILE_HANDLE => {
+                let handle = file_handle_ptr(ptr);
+                return if handle.is_null() {
+                    std::ptr::null_mut()
+                } else {
+                    &raw mut (*handle).dict_bits
+                };
+            }
+            _ => {}
         }
-        // Every generated class-shaped heap kind reserves the trailing managed
-        // `__dict__` word in its instance payload. Physical heap IDs must not
-        // reclassify that shared shape: doing so strands subtype dictionaries
-        // outside attribute lookup, GC traversal, and cycle clearing.
-        if !heap_kind_has_class_shape(object_type_id(ptr)) || object_class_bits(ptr) == 0 {
+        if native_instance::has_fields(ptr) {
+            let size = native_instance::field_payload_size(ptr);
+            return if size < std::mem::size_of::<u64>() {
+                std::ptr::null_mut()
+            } else {
+                native_instance::field_base(ptr)
+                    .add(size - std::mem::size_of::<u64>())
+                    .cast()
+            };
+        }
+        // The physical kind admits class layout only when its immutable
+        // subshape does too. Classed poll adapters retain a capture in their
+        // final word; their logical class must never reinterpret it as __dict__.
+        if !object_has_class_shape(ptr) || object_class_bits(ptr) == 0 {
             return std::ptr::null_mut();
         }
         let payload = object_payload_size(ptr);
@@ -2370,17 +2431,29 @@ pub(crate) unsafe fn instance_dict_bits(ptr: *mut u8) -> u64 {
         if slot.is_null() {
             return 0;
         }
-        *slot
+        let bits = *slot;
+        if obj_from_bits(bits).is_none() {
+            0
+        } else {
+            bits
+        }
     }
 }
 
+/// Store an already-owned dictionary edge without retaining or releasing it.
+///
+/// # Safety
+/// The instance must have an admitted dictionary slot. Class-shaped allocations
+/// require their class edge even while unpublished; raw payloads have no slot.
+/// The caller owns incoming custody and retirement of the previous edge.
 pub(crate) unsafe fn instance_set_dict_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
     unsafe {
         crate::gil_assert();
         let slot = instance_dict_bits_ptr(ptr);
-        if slot.is_null() {
-            return;
-        }
+        assert!(
+            !slot.is_null(),
+            "dictionary store requires an admitted instance slot"
+        );
         *slot = bits;
         // A dictionary owns inferred attributes after materialization. This
         // sticky flag excludes all direct field fast paths; runtime accessors
@@ -2655,8 +2728,7 @@ unsafe fn class_has_stable_nonfinalizing_mro(_py: &PyToken<'_>, class_ptr: *mut 
             && mro.iter().copied().all(|bits| {
                 obj_from_bits(bits).as_ptr().is_some_and(|member| {
                     object_type_id(member) == TYPE_ID_TYPE
-                        && (crate::is_builtin_class_bits(_py, bits)
-                            || class_is_immutable(_py, member))
+                        && class_is_immutable(_py, member)
                         && !class_header_declares_finalizer(member)
                 })
             })
@@ -2667,8 +2739,11 @@ unsafe fn class_has_stable_nonfinalizing_mro(_py: &PyToken<'_>, class_ptr: *mut 
 /// not a cached inherited bit. A mutable base can add or remove __del__ after
 /// descendants were sealed; no descendant invalidation registry is required.
 /// This scan pins the already published MRO and never allocates or runs Python.
-pub(crate) unsafe fn object_class_has_finalizer(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
+pub(crate) unsafe fn object_has_finalizer(_py: &PyToken<'_>, ptr: *mut u8) -> bool {
     unsafe {
+        if object_type_id(ptr) == TYPE_ID_ASYNC_GENERATOR {
+            return crate::async_rt::generators::asyncgen_needs_finalizer(ptr);
+        }
         let Some(class_ptr) = obj_from_bits(object_class_bits(ptr)).as_ptr() else {
             return false;
         };
@@ -2752,9 +2827,8 @@ pub(crate) unsafe fn class_refresh_declared_finalizer_flag(_py: &PyToken<'_>, cl
 /// Bytes at the end of every instance payload that are owned by runtime
 /// backing, never by user-visible physical fields.
 pub(crate) unsafe fn class_reserved_layout_tail(_py: &PyToken<'_>, class_ptr: *mut u8) -> usize {
-    let class_bits = MoltObject::from_ptr(class_ptr).bits();
-    if crate::issubclass_bits(class_bits, crate::builtin_classes(_py).dict) {
-        2 * std::mem::size_of::<u64>()
+    if unsafe { class_instance_shape_id(class_ptr) } == ObjectShapeId::DictSubclass {
+        layout::DICT_SUBCLASS_RESERVED_TAIL
     } else {
         std::mem::size_of::<u64>()
     }
@@ -2764,10 +2838,10 @@ pub(crate) unsafe fn class_reserved_layout_tail(_py: &PyToken<'_>, class_ptr: *m
 /// representation. Declared fields begin at or after this boundary.
 #[inline]
 pub(crate) unsafe fn class_reserved_layout_prefix(class_ptr: *mut u8) -> usize {
-    layout::wrapper_prefix_size_for_type_id(unsafe { class_instance_type_id(class_ptr) })
+    layout::class_native_prefix_size_for_type_id(unsafe { class_instance_type_id(class_ptr) })
 }
 
-unsafe fn validate_class_field_offsets(
+pub(crate) unsafe fn validate_class_field_offsets(
     _py: &PyToken<'_>,
     offsets_ptr: *mut u8,
     field_start: usize,
@@ -2775,7 +2849,7 @@ unsafe fn validate_class_field_offsets(
 ) -> Result<(), ()> {
     unsafe {
         let entries = crate::dict_order(offsets_ptr);
-        if entries.len() % 2 != 0 {
+        if !entries.len().is_multiple_of(2) {
             crate::raise_exception::<()>(
                 _py,
                 "SystemError",
@@ -2784,9 +2858,12 @@ unsafe fn validate_class_field_offsets(
             return Err(());
         }
         for (index, pair) in entries.chunks_exact(2).enumerate() {
-            let key_is_exact_string = obj_from_bits(pair[0])
-                .as_ptr()
-                .is_some_and(|key| object_type_id(key) == TYPE_ID_STRING);
+            let key_is_exact_string = obj_from_bits(pair[0]).as_ptr().is_some_and(|key| {
+                object_type_id(key) == TYPE_ID_STRING
+                    && (object_class_bits(key) == 0
+                        || crate::builtin_classes_if_initialized(_py)
+                            .is_some_and(|classes| object_class_bits(key) == classes.str))
+            });
             if !key_is_exact_string {
                 crate::raise_exception::<()>(
                     _py,
@@ -2861,7 +2938,6 @@ unsafe fn validate_class_field_offsets(
 /// mutation point. Bulk class construction can bypass those setters with raw
 /// namespace copies, so every creation path routes through this single seal
 /// before instances may be allocated from the class.
-#[must_use]
 pub(crate) unsafe fn class_finish_definition(
     _py: &PyToken<'_>,
     class_ptr: *mut u8,
@@ -2876,9 +2952,9 @@ pub(crate) unsafe fn class_finish_definition(
                 "finished class requires validated cached layout"
             );
             assert_ne!(
-                layout::class_field_offsets_bits(class_ptr),
+                layout::class_field_layout_bits(class_ptr),
                 0,
-                "finished class requires captured field-offset provenance"
+                "finished class requires concrete physical storage"
             );
             return Ok(());
         }
@@ -2888,7 +2964,7 @@ pub(crate) unsafe fn class_finish_definition(
         }
         let finish_guard = ClassDefinitionFinishGuard::begin(class_policy_word(class_ptr));
         // A finished class may be consumed by callback-free GC traversal, so
-        // every physical-layout ancestor must already own its private map. Seal
+        // every physical-layout ancestor must already own its concrete record. Seal
         // bases in root-to-leaf order before reading them during this class's
         // construction transaction.
         let ancestors = crate::class_mro_view(_py, class_ptr);
@@ -2905,97 +2981,26 @@ pub(crate) unsafe fn class_finish_definition(
                 return Err(());
             }
         }
-        if !crate::builtins::attr::apply_class_slots_layout(_py, class_ptr)
+        if !crate::builtins::attr::capture_class_slot_declaration_for_seal(_py, class_ptr)
             || crate::exception_pending(_py)
         {
             return Err(());
         }
-        assert!(
-            !matches!(
-                layout::class_slot_declaration(class_ptr),
-                layout::ClassSlotDeclaration::Uninitialized
-            ),
-            "finished class requires captured slot provenance"
-        );
         class_refresh_declared_finalizer_flag(_py, class_ptr);
-        if crate::exception_pending(_py) {
-            return Err(());
-        }
-
-        // All allocating/validating work precedes the seal. Unfinished classes
-        // never publish a size cache, so failure leaves the metadata retryable.
-        let Some(size) = crate::call::class_init::class_layout_size_cached(_py, class_ptr) else {
-            if !crate::exception_pending(_py) {
-                crate::raise_exception::<()>(
-                    _py,
-                    "OverflowError",
-                    "class instance layout is too large",
-                );
-            }
-            return Err(());
-        };
-        let fields_name = crate::intern_static_name(
-            _py,
-            &runtime_state(_py).interned.field_offsets_name,
-            b"__molt_field_offsets__",
-        );
-        if crate::exception_pending(_py) {
-            return Err(());
-        }
-        let Some(dict_ptr) = obj_from_bits(crate::class_dict_bits(class_ptr)).as_ptr() else {
-            crate::raise_exception::<()>(
-                _py,
-                "SystemError",
-                "class namespace is absent during sealing",
-            );
-            return Err(());
-        };
-        let offsets = crate::dict_get_in_place(_py, dict_ptr, fields_name);
-        if crate::exception_pending(_py) {
-            return Err(());
-        }
-        let (offsets_bits, offsets_ptr) = match offsets {
-            None => (MoltObject::none().bits(), None),
-            Some(bits) if obj_from_bits(bits).is_none() => (MoltObject::none().bits(), None),
-            Some(bits) => match obj_from_bits(bits).as_ptr() {
-                Some(ptr) if object_type_id(ptr) == TYPE_ID_DICT => (bits, Some(ptr)),
-                _ => {
-                    crate::raise_exception::<()>(
-                        _py,
-                        "TypeError",
-                        "__molt_field_offsets__ must be dict",
-                    );
-                    return Err(());
-                }
-            },
-        };
-        let prefix = class_reserved_layout_prefix(class_ptr);
-        let Some(field_extent) = size.checked_sub(class_reserved_layout_tail(_py, class_ptr))
-        else {
-            crate::raise_exception::<()>(
-                _py,
-                "ValueError",
-                "class layout is smaller than reserved storage",
-            );
-            return Err(());
-        };
-        if let Some(offsets_ptr) = offsets_ptr
-            && validate_class_field_offsets(_py, offsets_ptr, prefix, field_extent).is_err()
+        if crate::exception_pending(_py)
+            || !class_storage::class_capture_creation_doc(_py, class_ptr)
         {
             return Err(());
         }
-
-        // Acquire the private TYPE payload edge while every failure path is
-        // still open. The class and its namespace then own the same exact map.
-        inc_ref_bits(_py, offsets_bits);
-        // No callbacks or fallible work after this point. Publish the frozen
-        // input, validated size and finished policy as one GIL-held transition.
-        if let Some(offsets_ptr) = offsets_ptr {
-            (*header_from_obj_ptr(offsets_ptr)).fetch_or_flags(HEADER_FLAG_FROZEN_LAYOUT_MAP);
-        }
-        layout::class_set_field_offsets_owned(class_ptr, offsets_bits);
-        layout::class_set_cached_layout_size(class_ptr, size);
+        // All allocation and validation precedes this GIL-held publication.
+        // The record is the sole physical authority; its map and size are
+        // projections validated together before the finished flag is visible.
+        let mut prepared = class_layout::prepare(_py, class_ptr)?;
+        prepared.publish(_py, class_ptr);
         finish_guard.complete();
+        // Old namespace/map contents may release callback-capable values only
+        // after every descriptor, row, size and finished policy is coherent.
+        drop(prepared);
         Ok(())
     }
 }
@@ -3009,12 +3014,12 @@ pub(crate) unsafe fn object_mark_has_ptrs(_py: &PyToken<'_>, ptr: *mut u8) {
 
 #[inline(always)]
 pub(crate) unsafe fn string_len(ptr: *mut u8) -> usize {
-    unsafe { *(ptr as *const usize) }
+    unsafe { layout::InlineBytesStorage::len(ptr) }
 }
 
 #[inline(always)]
 pub(crate) unsafe fn string_bytes(ptr: *mut u8) -> *const u8 {
-    unsafe { ptr.add(std::mem::size_of::<usize>()) }
+    unsafe { layout::InlineBytesStorage::data(ptr) }
 }
 
 #[inline(always)]
@@ -3025,18 +3030,6 @@ pub(crate) unsafe fn bytes_len(ptr: *mut u8) -> usize {
         }
         string_len(ptr)
     }
-}
-
-pub(crate) unsafe fn intarray_len(ptr: *mut u8) -> usize {
-    unsafe { *(ptr as *const usize) }
-}
-
-pub(crate) unsafe fn intarray_data(ptr: *mut u8) -> *const i64 {
-    unsafe { ptr.add(std::mem::size_of::<usize>()) as *const i64 }
-}
-
-pub(crate) unsafe fn intarray_slice(ptr: *mut u8) -> &'static [i64] {
-    unsafe { std::slice::from_raw_parts(intarray_data(ptr), intarray_len(ptr)) }
 }
 
 pub(crate) unsafe fn bytes_data(ptr: *mut u8) -> *const u8 {
@@ -3202,6 +3195,8 @@ pub unsafe extern "C" fn molt_dec_ref(ptr: *mut u8) {
     }
 }
 
+/// The retain edge every runtime `inc_ref_*` call site inlines. Rejected
+/// headers, C-view bridge retains and diagnostics are outlined.
 #[inline(always)]
 pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
@@ -3220,21 +3215,55 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
         // (`is_valid_heap_type_id`), never a stripped `debug_assert!` with a
         // duplicate looser range that drifts from the authority.
         if !is_valid_heap_type_id(type_id) {
-            eprintln!(
-                "molt fatal: invalid object header in inc_ref ptr=0x{:x} type_id={} \
-                 (use-after-free or corrupted header)",
-                ptr as usize, type_id
-            );
-            std::process::abort();
+            fatal_invalid_inc_ref_header(ptr, type_id);
         }
         let header_flags = (*header_ptr).load_synchronized_flags();
         if header_flags & HEADER_FLAG_IMMORTAL != 0 {
             return;
         }
         if header_flags & HEADER_FLAG_DEALLOCATING != 0 {
-            eprintln!("molt fatal: owned INCREF attempted after terminal death");
-            std::process::abort();
+            fatal_inc_ref_after_terminal_death();
         }
+        let trace = rc_transition_trace_enabled();
+        if trace {
+            trace_inc_ref_before(header_ptr, ptr, type_id);
+        }
+        let previous = (*header_ptr).retain_owned_mirrored(
+            MoltObject::from_ptr(ptr).bits(),
+            1,
+            "inc_ref_ptr",
+            header_flags,
+        );
+        if trace {
+            trace_inc_ref_after(header_ptr, ptr, previous);
+        }
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn fatal_invalid_inc_ref_header(ptr: *mut u8, type_id: u32) -> ! {
+    eprintln!(
+        "molt fatal: invalid object header in inc_ref ptr=0x{:x} type_id={} \
+         (use-after-free or corrupted header)",
+        ptr as usize, type_id
+    );
+    std::process::abort()
+}
+
+#[cold]
+#[inline(never)]
+fn fatal_inc_ref_after_terminal_death() -> ! {
+    eprintln!("molt fatal: owned INCREF attempted after terminal death");
+    std::process::abort()
+}
+
+/// Pre-retain `inc_ref_ptr` diagnostics, reached only when
+/// `rc_transition_trace_enabled()`; every knob still applies its own filter.
+#[cold]
+#[inline(never)]
+unsafe fn trace_inc_ref_before(header_ptr: *mut MoltHeader, ptr: *mut u8, type_id: u32) {
+    unsafe {
         // Debug: trace bigint refcount increments
         if type_id == TYPE_ID_BIGINT && debug_bigint_rc() {
             let old = (*header_ptr).owned_ref_count_snapshot();
@@ -3259,12 +3288,14 @@ pub(crate) unsafe fn inc_ref_ptr(_py: &PyToken<'_>, ptr: *mut u8) {
                 old + 1
             );
         }
-        let previous = (*header_ptr).retain_owned_mirrored(
-            MoltObject::from_ptr(ptr).bits(),
-            1,
-            "inc_ref_ptr",
-            header_flags,
-        );
+    }
+}
+
+/// Post-retain `inc_ref_ptr` diagnostics; `previous` is the pre-retain count.
+#[cold]
+#[inline(never)]
+unsafe fn trace_inc_ref_after(header_ptr: *mut MoltHeader, ptr: *mut u8, previous: u32) {
+    unsafe {
         let new_count = previous + 1;
         if debug_rc_object() {
             let header = &*header_ptr;
@@ -3389,13 +3420,20 @@ fn run_finalizer_resource_test_hook(
 /// already ran) return immediately without side effects; the caller's window
 /// still covers the subsequent `weakref_clear_for_ptr`, so a weakref callback
 /// can resurrect through the SAME window even for a `__del__`-free object.
-unsafe fn run_object_del_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
+unsafe fn run_object_finalizer_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
     let header_ptr = unsafe { header_from_obj_ptr(ptr) };
     let obj_bits = MoltObject::from_ptr(ptr).bits();
-    if !unsafe { object_class_has_finalizer(py, ptr) } {
+    if !unsafe { object_has_finalizer(py, ptr) } {
         return;
     }
     if (unsafe { (*header_ptr).load_synchronized_flags() } & HEADER_FLAG_FINALIZER_RAN) != 0 {
+        return;
+    }
+    if unsafe { object_type_id(ptr) } == TYPE_ID_ASYNC_GENERATOR {
+        unsafe {
+            (*header_ptr).fetch_or_flags(HEADER_FLAG_FINALIZER_RAN);
+            asyncgen_call_finalizer(py, ptr);
+        }
         return;
     }
     #[cfg(test)]
@@ -3562,7 +3600,7 @@ unsafe fn run_object_del_in_revival_window(py: &PyToken<'_>, ptr: *mut u8) {
 /// # Safety
 /// `ptr` is a live unreachable object and the GIL is held.
 pub(crate) unsafe fn maybe_run_object_finalizer_for_cycle(py: &PyToken<'_>, ptr: *mut u8) {
-    unsafe { run_object_del_in_revival_window(py, ptr) };
+    unsafe { run_object_finalizer_in_revival_window(py, ptr) };
 }
 
 unsafe fn drop_detached_tracked_vec<T>(vec_ptr: *mut Vec<T>) {
@@ -3636,17 +3674,8 @@ pub(crate) unsafe fn object_shape_visit_owned_edges(
                 }
             }
             ObjectShapeLifecycleFamily::DictSubclass => {
-                if let Some(&bits) = runtime_state(py)
-                    .dict_subclass_storage
-                    .lock()
-                    .unwrap()
-                    .get(&PtrSlot(ptr))
-                {
-                    visit(bits);
-                }
-                let payload = object_payload_size(ptr);
-                if payload >= 2 * std::mem::size_of::<u64>() {
-                    visit(*(ptr.add(payload - 2 * std::mem::size_of::<u64>()) as *const u64));
+                if let Some(slot) = layout::dict_subclass_storage_slot(ptr) {
+                    visit(*slot);
                 }
             }
             ObjectShapeLifecycleFamily::Operator => {
@@ -3718,21 +3747,8 @@ pub(crate) unsafe fn object_shape_clear_cycle_edges(
                 }
             }
             ObjectShapeLifecycleFamily::DictSubclass => {
-                let side = runtime_state(py)
-                    .dict_subclass_storage
-                    .lock()
-                    .unwrap()
-                    .remove(&PtrSlot(ptr));
-                let payload = object_payload_size(ptr);
-                let tail = (payload >= 2 * std::mem::size_of::<u64>()).then(|| {
-                    (ptr.add(payload - 2 * std::mem::size_of::<u64>()) as *mut u64)
-                        .replace(MoltObject::none().bits())
-                });
-                if let Some(bits) = side {
-                    detached_sink.detach_if_heap(bits);
-                }
-                if let Some(bits) = tail {
-                    detached_sink.detach_if_heap(bits);
+                if let Some(slot) = layout::dict_subclass_storage_slot(ptr) {
+                    detached_sink.detach_if_heap(slot.replace(0));
                 }
             }
             ObjectShapeLifecycleFamily::Operator => {
@@ -3807,6 +3823,9 @@ pub(crate) unsafe fn dec_ref_ptr_validated(py: &PyToken<'_>, ptr: *mut u8, type_
     unsafe { dec_ref_ptr_with_validated_type_id(py, ptr, Some(type_id)) }
 }
 
+/// The release edge every runtime `dec_ref_*` call site inlines. Rejected
+/// headers, C-view bridge releases, diagnostics and the rc->0 transaction are
+/// outlined, so each call site carries only the ordinary owner release.
 #[inline(always)]
 unsafe fn dec_ref_ptr_with_validated_type_id(
     py: &PyToken<'_>,
@@ -3829,18 +3848,7 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
         // already guards the bits-based entry; this closes the ptr-based hot path
         // it short-circuits past, so both DecRef entry points share one authority.
         if validated_type_id.is_none() && !is_valid_heap_type_id(type_id) {
-            eprintln!(
-                "molt fatal: invalid object header in dec_ref ptr=0x{:x} type_id={} \
-                 (use-after-free or corrupted header)",
-                ptr as usize, type_id
-            );
-            if std::env::var("MOLT_TRACE_INVALID_DECREF").as_deref() == Ok("1") {
-                eprintln!(
-                    "molt invalid dec_ref backtrace:\n{}",
-                    std::backtrace::Backtrace::force_capture()
-                );
-            }
-            std::process::abort();
+            fatal_invalid_dec_ref_header(ptr, type_id);
         }
         let header_flags = (*header_ptr).load_synchronized_flags();
         let header_size_class = (*header_ptr).size_class;
@@ -3853,25 +3861,56 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
         // alias allocator metadata or a different object, so continuing would
         // corrupt unrelated runtime state.
         let (prev, should_finalize) = if header_flags & HEADER_FLAG_HAS_ABI_VIEW != 0 {
-            let bits = MoltObject::from_ptr(ptr).bits();
-            // A collector pin prevents terminal destruction. It is discounted
-            // only by effective_gc_refcount, never by physical owner release.
-            let transition = molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                .transition_runtime_owner_release(
-                    bits,
-                    0,
-                    || (*header_ptr).release_owned("dec_ref_ptr").previous(),
-                    || (*header_ptr).restore_stable_view_hold(),
-                )
-                .unwrap_or_else(|| {
-                    eprintln!("molt fatal: canonical ABI view disappeared during owner release");
-                    std::process::abort();
-                });
-            (transition.previous(), transition.should_finalize())
+            release_abi_view_owner(ptr, header_ptr)
         } else {
             let release = (*header_ptr).release_owned("dec_ref_ptr");
             (release.previous(), release.reached_zero())
         };
+        if rc_transition_trace_enabled() {
+            trace_dec_ref_transition(ptr, type_id, prev);
+        }
+        if should_finalize {
+            dec_ref_ptr_terminal(
+                py,
+                ptr,
+                type_id,
+                header_flags,
+                header_size_class,
+                header_aux,
+            );
+        }
+    }
+}
+
+/// Canonical C-view owner release for `dec_ref_ptr`. Views are rare, so the
+/// bridge transaction stays out of every inlined release edge.
+#[inline(never)]
+unsafe fn release_abi_view_owner(ptr: *mut u8, header_ptr: *mut MoltHeader) -> (u32, bool) {
+    unsafe {
+        let bits = MoltObject::from_ptr(ptr).bits();
+        // A collector pin prevents terminal destruction. It is discounted
+        // only by effective_gc_refcount, never by physical owner release.
+        let transition = molt_cpython_abi::bridge::GLOBAL_BRIDGE
+            .transition_runtime_owner_release(
+                bits,
+                0,
+                || (*header_ptr).release_owned("dec_ref_ptr").previous(),
+                || (*header_ptr).restore_stable_view_hold(),
+            )
+            .unwrap_or_else(|| {
+                eprintln!("molt fatal: canonical ABI view disappeared during owner release");
+                std::process::abort();
+            });
+        (transition.previous(), transition.should_finalize())
+    }
+}
+
+/// `dec_ref_ptr` per-transition diagnostics, reached only when
+/// `rc_transition_trace_enabled()`; every knob still applies its own filter.
+#[cold]
+#[inline(never)]
+unsafe fn trace_dec_ref_transition(ptr: *mut u8, type_id: u32, prev: u32) {
+    unsafe {
         if type_id == TYPE_ID_EXCEPTION && trace_exception_rc() {
             eprintln!("EXC_RC_DEC ptr=0x{:x} {}→{}", ptr as usize, prev, prev - 1);
         }
@@ -3922,427 +3961,464 @@ unsafe fn dec_ref_ptr_with_validated_type_id(
                 prev.saturating_sub(1)
             );
         }
-        if should_finalize {
-            if type_id == TYPE_ID_EXCEPTION && trace_exception_rc() {
-                eprintln!("EXC_RC_FREE ptr=0x{:x} (rc hit 0, freeing)", ptr as usize);
-            }
-            // RC drop-insertion substrate (design 20): the rc=1→0 transition,
-            // past the immortal and ABI-view early returns above. This is NOT yet a
-            // confirmed deallocation: the finalize + weakref-clear revival window
-            // below may run a `__del__` OR a weakref callback that RESURRECTS the
-            // object (re-incrementing its refcount), in which case `dec_ref_ptr`
-            // returns WITHOUT freeing. Counting the dealloc here would over-count
-            // destructions and make `live = alloc - dealloc` UNDER-count live
-            // objects — an unsound leak gauge under resurrection (phantom "no
-            // leak"). So the dealloc counters are bumped only AFTER the revival
-            // window's single resurrection check passes (see below); the byte
-            // total is the one value that must be read from the header BEFORE the
-            // window runs. Aux kind/address are immutable after publication and
-            // oversized exact size is immutable inside the sidecar.
-            let object_bytes =
-                total_size_from_header_fields(header_size_class, header_aux.kind, header_aux.word);
-            let dealloc_bytes =
-                object_bytes.saturating_add(header_aux_storage_bytes(header_aux.kind)) as u64;
-            if debug_dec_ref_zero() {
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn fatal_invalid_dec_ref_header(ptr: *mut u8, type_id: u32) -> ! {
+    eprintln!(
+        "molt fatal: invalid object header in dec_ref ptr=0x{:x} type_id={} \
+         (use-after-free or corrupted header)",
+        ptr as usize, type_id
+    );
+    if std::env::var("MOLT_TRACE_INVALID_DECREF").as_deref() == Ok("1") {
+        eprintln!(
+            "molt invalid dec_ref backtrace:\n{}",
+            std::backtrace::Backtrace::force_capture()
+        );
+    }
+    std::process::abort()
+}
+
+/// The rc->0 transaction of `dec_ref_ptr`: the finalizer and weakref revival
+/// window, terminal edge detach, typed resource teardown and physical free. It
+/// stays out of line so the release edge inlined at every runtime `dec_ref_*`
+/// call site does not carry a private copy of this lifecycle. The `header_*`
+/// arguments are the caller's pre-release header snapshot.
+#[inline(never)]
+unsafe fn dec_ref_ptr_terminal(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    type_id: u32,
+    header_flags: u32,
+    header_size_class: u16,
+    header_aux: ObjectAuxSnapshot,
+) {
+    unsafe {
+        let header_ptr = ptr.sub(std::mem::size_of::<MoltHeader>()) as *mut MoltHeader;
+        if type_id == TYPE_ID_EXCEPTION && trace_exception_rc() {
+            eprintln!("EXC_RC_FREE ptr=0x{:x} (rc hit 0, freeing)", ptr as usize);
+        }
+        // RC drop-insertion substrate (design 20): the rc=1→0 transition,
+        // past the caller's immortal and ABI-view early returns. This is NOT yet a
+        // confirmed deallocation: the finalize + weakref-clear revival window
+        // below may run a `__del__` OR a weakref callback that RESURRECTS the
+        // object (re-incrementing its refcount), in which case `dec_ref_ptr`
+        // returns WITHOUT freeing. Counting the dealloc here would over-count
+        // destructions and make `live = alloc - dealloc` UNDER-count live
+        // objects — an unsound leak gauge under resurrection (phantom "no
+        // leak"). So the dealloc counters are bumped only AFTER the revival
+        // window's single resurrection check passes (see below); the byte
+        // total is the one value that must be read from the header BEFORE the
+        // window runs. Aux kind/address are immutable after publication and
+        // oversized exact size is immutable inside the sidecar.
+        let object_bytes =
+            total_size_from_header_fields(header_size_class, header_aux.kind, header_aux.word);
+        let dealloc_bytes =
+            object_bytes.saturating_add(header_aux_storage_bytes(header_aux.kind)) as u64;
+        if debug_dec_ref_zero() {
+            eprintln!(
+                "molt dec_ref_zero ptr=0x{:x} type_id={}",
+                ptr as usize, type_id
+            );
+            if type_id == TYPE_ID_CODE {
+                let filename_bits = code_filename_bits(ptr);
+                let name_bits = code_name_bits(ptr);
+                let varnames_bits = code_varnames_bits(ptr);
+                let names_bits = code_names_bits(ptr);
+                let filename = crate::string_obj_to_owned(obj_from_bits(filename_bits))
+                    .unwrap_or_else(|| "<non-str>".to_string());
+                let name = crate::string_obj_to_owned(obj_from_bits(name_bits))
+                    .unwrap_or_else(|| "<non-str>".to_string());
+                let varnames_ptr = obj_from_bits(varnames_bits)
+                    .as_ptr()
+                    .map(|p| p as usize)
+                    .unwrap_or(0);
+                let names_ptr = obj_from_bits(names_bits)
+                    .as_ptr()
+                    .map(|p| p as usize)
+                    .unwrap_or(0);
                 eprintln!(
-                    "molt dec_ref_zero ptr=0x{:x} type_id={}",
-                    ptr as usize, type_id
+                    "molt dec_ref_zero code name={} file={} varnames=0x{:x} names=0x{:x}",
+                    name, filename, varnames_ptr, names_ptr
                 );
-                if type_id == TYPE_ID_CODE {
-                    let filename_bits = code_filename_bits(ptr);
-                    let name_bits = code_name_bits(ptr);
-                    let varnames_bits = code_varnames_bits(ptr);
-                    let names_bits = code_names_bits(ptr);
-                    let filename = crate::string_obj_to_owned(obj_from_bits(filename_bits))
-                        .unwrap_or_else(|| "<non-str>".to_string());
-                    let name = crate::string_obj_to_owned(obj_from_bits(name_bits))
-                        .unwrap_or_else(|| "<non-str>".to_string());
-                    let varnames_ptr = obj_from_bits(varnames_bits)
-                        .as_ptr()
-                        .map(|p| p as usize)
-                        .unwrap_or(0);
-                    let names_ptr = obj_from_bits(names_bits)
-                        .as_ptr()
-                        .map(|p| p as usize)
-                        .unwrap_or(0);
-                    eprintln!(
-                        "molt dec_ref_zero code name={} file={} varnames=0x{:x} names=0x{:x}",
-                        name, filename, varnames_ptr, names_ptr
-                    );
-                } else if type_id == TYPE_ID_TUPLE {
-                    let vec_ptr = crate::object::seq_access::backing_identity(ptr);
-                    eprintln!(
-                        "molt dec_ref_zero tuple ptr=0x{:x} vec=0x{:x}",
-                        ptr as usize, vec_ptr
-                    );
-                }
+            } else if type_id == TYPE_ID_TUPLE {
+                let vec_ptr = crate::object::seq_access::backing_identity(ptr);
+                eprintln!(
+                    "molt dec_ref_zero tuple ptr=0x{:x} vec=0x{:x}",
+                    ptr as usize, vec_ptr
+                );
             }
-            if type_id == TYPE_ID_FUNCTION && {
-                static TRACE: OnceLock<bool> = OnceLock::new();
-                *TRACE.get_or_init(|| {
-                    std::env::var("MOLT_TRACE_DECREF_ZERO_FUNCTION").as_deref() == Ok("1")
-                })
-            } {
-                // Debug-only: cached builtin function objects must not be freed while still cached.
-                // When they do hit zero, capture a backtrace to identify the incorrect owner.
-                let freed_fn_ptr = crate::function_fn_ptr(ptr);
-                let obj_init_subclass_ptr =
-                    crate::molt_object_init_subclass as *const () as usize as u64;
-                let type_init_ptr = crate::molt_type_init as *const () as usize as u64;
-                if freed_fn_ptr == obj_init_subclass_ptr || freed_fn_ptr == type_init_ptr {
-                    let bt = std::backtrace::Backtrace::force_capture();
-                    eprintln!(
-                        "molt dec_ref_zero function ptr=0x{:x} obj_init_subclass=0x{:x} type_init=0x{:x}\n{bt}",
-                        freed_fn_ptr, obj_init_subclass_ptr, type_init_ptr,
-                    );
-                }
-            }
-            if type_id == TYPE_ID_FUNCTION && trace_decref_zero_function_all() {
-                // Debug-only: when chasing refcount bugs, print which function is being freed.
-                let freed_fn_ptr = crate::function_fn_ptr(ptr);
-                let name_bits = crate::function_name_bits(py, ptr);
-                let name = crate::string_obj_to_owned(crate::obj_from_bits(name_bits))
-                    .unwrap_or_else(|| "<function>".to_string());
+        }
+        if type_id == TYPE_ID_FUNCTION && {
+            static TRACE: OnceLock<bool> = OnceLock::new();
+            *TRACE.get_or_init(|| {
+                std::env::var("MOLT_TRACE_DECREF_ZERO_FUNCTION").as_deref() == Ok("1")
+            })
+        } {
+            // Debug-only: cached builtin function objects must not be freed while still cached.
+            // When they do hit zero, capture a backtrace to identify the incorrect owner.
+            let freed_fn_ptr = crate::function_fn_ptr(ptr);
+            let obj_init_subclass_ptr =
+                crate::molt_object_init_subclass as *const () as usize as u64;
+            let type_init_ptr = crate::molt_type_init as *const () as usize as u64;
+            if freed_fn_ptr == obj_init_subclass_ptr || freed_fn_ptr == type_init_ptr {
                 let bt = std::backtrace::Backtrace::force_capture();
                 eprintln!(
-                    "molt dec_ref_zero function name={} fn_ptr=0x{:x} obj_ptr=0x{:x}\n{bt}",
-                    name, freed_fn_ptr, ptr as usize,
+                    "molt dec_ref_zero function ptr=0x{:x} obj_init_subclass=0x{:x} type_init=0x{:x}\n{bt}",
+                    freed_fn_ptr, obj_init_subclass_ptr, type_init_ptr,
                 );
             }
-            // FINALIZE + WEAKREF-CLEAR REVIVAL WINDOW (council #1 P0 fix).
-            //
-            // CPython's `_Py_Dealloc` runs `tp_finalize` (`__del__`) FIRST and,
-            // only if the object was NOT resurrected by it, then runs
-            // `PyObject_ClearWeakRefs` (the weakref callbacks) and `tp_dealloc`.
-            // Crucially, BOTH the finalizer and the weakref callbacks execute with
-            // the object's storage LIVE: CPython resurrects the object across each
-            // Python-visible step. molt previously dropped the finalizer's
-            // temporary revival ref BEFORE clearing weakrefs, so the callbacks ran
-            // at rc=0 — a callback that re-touched the dying object's storage was a
-            // use-after-free. The fix makes the revival window a first-class step
-            // here in `dec_ref_ptr` (the Python lifetime boundary): ONE revival
-            // ref is held across `__del__` AND, separately, across the weakref
-            // clear, with a resurrection check after EACH Python-visible step. No
-            // Python code ever runs while the object is at rc=0.
-            //
-            // The window is opened ONLY when the object actually participates — it
-            // currently derives a `__del__` finalizer from its class or has ever
-            // exposed a weakref (`HAS_WEAKREF`). Objects with neither (the hot
-            // path: ints, strings, tuples, plain instances) skip the revival
-            // inc/dec AND the global weakref lock entirely and fall straight
-            // through to the free tail with zero added cost.
-            let needs_revival_window = (header_flags & HEADER_FLAG_HAS_WEAKREF) != 0
-                || object_class_has_finalizer(py, ptr);
-            if needs_revival_window {
-                let mut has_abi_view = (header_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0;
-                let view_bits = MoltObject::from_ptr(ptr).bits();
+        }
+        if type_id == TYPE_ID_FUNCTION && trace_decref_zero_function_all() {
+            // Debug-only: when chasing refcount bugs, print which function is being freed.
+            let freed_fn_ptr = crate::function_fn_ptr(ptr);
+            let name_bits = crate::function_name_bits(py, ptr);
+            let name = crate::string_obj_to_owned(crate::obj_from_bits(name_bits))
+                .unwrap_or_else(|| "<function>".to_string());
+            let bt = std::backtrace::Backtrace::force_capture();
+            eprintln!(
+                "molt dec_ref_zero function name={} fn_ptr=0x{:x} obj_ptr=0x{:x}\n{bt}",
+                name, freed_fn_ptr, ptr as usize,
+            );
+        }
+        // FINALIZE + WEAKREF-CLEAR REVIVAL WINDOW (council #1 P0 fix).
+        //
+        // CPython's `_Py_Dealloc` runs `tp_finalize` (`__del__`) FIRST and,
+        // only if the object was NOT resurrected by it, then runs
+        // `PyObject_ClearWeakRefs` (the weakref callbacks) and `tp_dealloc`.
+        // Crucially, BOTH the finalizer and the weakref callbacks execute with
+        // the object's storage LIVE: CPython resurrects the object across each
+        // Python-visible step. molt previously dropped the finalizer's
+        // temporary revival ref BEFORE clearing weakrefs, so the callbacks ran
+        // at rc=0 — a callback that re-touched the dying object's storage was a
+        // use-after-free. The fix makes the revival window a first-class step
+        // here in `dec_ref_ptr` (the Python lifetime boundary): ONE revival
+        // ref is held across `__del__` AND, separately, across the weakref
+        // clear, with a resurrection check after EACH Python-visible step. No
+        // Python code ever runs while the object is at rc=0.
+        //
+        // The window is opened ONLY when the object actually participates — it
+        // currently derives a `__del__` finalizer from its class or has ever
+        // exposed a weakref (`HAS_WEAKREF`). Objects with neither (the hot
+        // path: ints, strings, tuples, plain instances) skip the revival
+        // inc/dec AND the global weakref lock entirely and fall straight
+        // through to the free tail with zero added cost.
+        let needs_revival_window =
+            (header_flags & HEADER_FLAG_HAS_WEAKREF) != 0 || object_has_finalizer(py, ptr);
+        if needs_revival_window {
+            let mut has_abi_view = (header_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0;
+            let view_bits = MoltObject::from_ptr(ptr).bits();
+            if has_abi_view {
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.begin_finalization(view_bits);
+            }
+            // Open the revival window: the object is now live at rc≥1 so no
+            // Python code below can observe (or free) it at rc=0. Use the raw
+            // header increment (not `inc_ref_ptr`, which short-circuits on
+            // IMMORTAL — already excluded above — and carries debug tracing);
+            // the matching closes below are the authoritative resurrection
+            // checks.
+            let mut revival_window = (*header_ptr).open_revival_window(has_abi_view);
+            let mut window_baseline = revival_window.baseline();
+            // `__del__` runs INLINE at this rc→0 point, exactly as CPython
+            // finalizes at Py_DECREF→0 (prompt timing: `del x; print()` runs
+            // `__del__` before `print`), under a synthetic exception-handler
+            // frame so an uncaught raise inside it is swallowed (written
+            // unraisable) rather than killing the process — see
+            // `run_object_finalizer_in_revival_window` for the #65 root cause and the
+            // run-once (`FINALIZER_RAN`) semantics. Non-finalizer objects that
+            // only reach here for the weakref clear return immediately from it.
+            run_object_finalizer_in_revival_window(py, ptr);
+            // Arbitrary finalizer code may be the first path to publish a
+            // canonical C view. That publication adds the stable runtime
+            // view hold and starts in RuntimeOwned bridge state. Reconcile
+            // it into this already-open finalization transaction before
+            // comparing against the revival baseline, otherwise the view
+            // hold itself is mistaken for Python resurrection and leaks the
+            // object in RuntimeOwned state.
+            if !has_abi_view && (*header_ptr).has_flag(HEADER_FLAG_HAS_ABI_VIEW) {
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.begin_finalization_for_new_view(view_bits);
+                has_abi_view = true;
+                window_baseline = revival_window.record_stable_view_hold().unwrap_or_else(
+                    |baseline| {
+                        eprintln!(
+                            "molt fatal: invalid finalizer ABI-view baseline promotion ({baseline})"
+                        );
+                        std::process::abort();
+                    },
+                );
+            }
+            // After `__del__`, the only live reference should be this window's.
+            // If `__del__` RESURRECTED the object (stashed `self`), the count
+            // is now > 1: CPython aborts dealloc here WITHOUT clearing weakrefs
+            // (a resurrected object keeps its weakrefs, and their callbacks do
+            // NOT fire — `resurrect_with_weakref`/`resurrect_then_final_drop`).
+            // Drop the window ref and return; the object stays alive at rc≥1
+            // and a later final drop re-enters (FINALIZER_RAN already set, so
+            // `__del__` never re-runs; the weakrefs are cleared on that real
+            // death). The mid-window dec/check runs NO Python code, so the
+            // object is never observable at rc=0.
+            if (*header_ptr).ref_count_snapshot() > window_baseline {
+                (*header_ptr).close_revival_window(revival_window);
                 if has_abi_view {
-                    molt_cpython_abi::bridge::GLOBAL_BRIDGE.begin_finalization(view_bits);
+                    molt_cpython_abi::bridge::GLOBAL_BRIDGE.finish_finalization(view_bits, true);
                 }
-                // Open the revival window: the object is now live at rc≥1 so no
-                // Python code below can observe (or free) it at rc=0. Use the raw
-                // header increment (not `inc_ref_ptr`, which short-circuits on
-                // IMMORTAL — already excluded above — and carries debug tracing);
-                // the matching closes below are the authoritative resurrection
-                // checks.
-                let mut revival_window = (*header_ptr).open_revival_window(has_abi_view);
-                let mut window_baseline = revival_window.baseline();
-                // `__del__` runs INLINE at this rc→0 point, exactly as CPython
-                // finalizes at Py_DECREF→0 (prompt timing: `del x; print()` runs
-                // `__del__` before `print`), under a synthetic exception-handler
-                // frame so an uncaught raise inside it is swallowed (written
-                // unraisable) rather than killing the process — see
-                // `run_object_del_in_revival_window` for the #65 root cause and the
-                // run-once (`FINALIZER_RAN`) semantics. Non-finalizer objects that
-                // only reach here for the weakref clear return immediately from it.
-                run_object_del_in_revival_window(py, ptr);
-                // Arbitrary finalizer code may be the first path to publish a
-                // canonical C view. That publication adds the stable runtime
-                // view hold and starts in RuntimeOwned bridge state. Reconcile
-                // it into this already-open finalization transaction before
-                // comparing against the revival baseline, otherwise the view
-                // hold itself is mistaken for Python resurrection and leaks the
-                // object in RuntimeOwned state.
-                if !has_abi_view && (*header_ptr).has_flag(HEADER_FLAG_HAS_ABI_VIEW) {
-                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                        .begin_finalization_for_new_view(view_bits);
-                    has_abi_view = true;
-                    window_baseline = revival_window.record_stable_view_hold().unwrap_or_else(
-                        |baseline| {
-                            eprintln!(
-                                "molt fatal: invalid finalizer ABI-view baseline promotion ({baseline})"
-                            );
-                            std::process::abort();
-                        },
-                    );
-                }
-                // After `__del__`, the only live reference should be this window's.
-                // If `__del__` RESURRECTED the object (stashed `self`), the count
-                // is now > 1: CPython aborts dealloc here WITHOUT clearing weakrefs
-                // (a resurrected object keeps its weakrefs, and their callbacks do
-                // NOT fire — `resurrect_with_weakref`/`resurrect_then_final_drop`).
-                // Drop the window ref and return; the object stays alive at rc≥1
-                // and a later final drop re-enters (FINALIZER_RAN already set, so
-                // `__del__` never re-runs; the weakrefs are cleared on that real
-                // death). The mid-window dec/check runs NO Python code, so the
-                // object is never observable at rc=0.
-                if (*header_ptr).ref_count_snapshot() > window_baseline {
-                    (*header_ptr).close_revival_window(revival_window);
-                    if has_abi_view {
-                        molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                            .finish_finalization(view_bits, true);
-                    }
-                    return;
-                }
-                if has_abi_view
-                    && molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_direct_c_refs(view_bits)
+                return;
+            }
+            if has_abi_view && molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_direct_c_refs(view_bits)
+            {
+                (*header_ptr).close_revival_window(revival_window);
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.finish_finalization(view_bits, false);
+                return;
+            }
+            // `__del__` did not resurrect: death is now committed. Publish
+            // DEALLOCATING before weakref clearing so callbacks cannot create
+            // fresh weakrefs or synthesize a runtime owner from stale bits.
+            (*header_ptr).fetch_or_flags(HEADER_FLAG_DEALLOCATING);
+            gc::gc_untrack(py, ptr, type_id, gc::GcUntrackReason::Deallocation);
+            // Detach weakrefs and invoke callbacks after the death verdict.
+            // The referent remains allocated only as an internal pin; checked
+            // retain/view publication rejects every attempt to reopen it.
+            weakref_clear_for_ptr(py, ptr);
+            if has_abi_view {
+                if (*header_ptr).ref_count_snapshot() != window_baseline
+                    || molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_direct_c_refs(view_bits)
                 {
-                    (*header_ptr).close_revival_window(revival_window);
-                    molt_cpython_abi::bridge::GLOBAL_BRIDGE.finish_finalization(view_bits, false);
-                    return;
+                    eprintln!("molt fatal: weakref callback reopened committed-dead object");
+                    std::process::abort();
                 }
-                // `__del__` did not resurrect: death is now committed. Publish
-                // DEALLOCATING before weakref clearing so callbacks cannot create
-                // fresh weakrefs or synthesize a runtime owner from stale bits.
-                (*header_ptr).fetch_or_flags(HEADER_FLAG_DEALLOCATING);
-                gc::gc_untrack(py, ptr, type_id, gc::GcUntrackReason::Deallocation);
-                // Detach weakrefs and invoke callbacks after the death verdict.
-                // The referent remains allocated only as an internal pin; checked
-                // retain/view publication rejects every attempt to reopen it.
-                weakref_clear_for_ptr(py, ptr);
-                if has_abi_view {
-                    if (*header_ptr).ref_count_snapshot() != window_baseline
-                        || molt_cpython_abi::bridge::GLOBAL_BRIDGE.has_direct_c_refs(view_bits)
-                    {
-                        eprintln!("molt fatal: weakref callback reopened committed-dead object");
-                        std::process::abort();
-                    }
-                    (*header_ptr).close_revival_window(revival_window);
-                    molt_cpython_abi::bridge::GLOBAL_BRIDGE.finish_finalization(view_bits, false);
-                } else {
-                    let prev_window = (*header_ptr).close_revival_window(revival_window);
-                    if prev_window != 1 {
-                        eprintln!("molt fatal: weakref callback reopened committed-dead object");
-                        std::process::abort();
-                    }
-                }
-                // DEFENSE-IN-DEPTH (P2): the revival window above ran arbitrary
-                // Python (`__del__` and/or weakref callbacks) against this object's
-                // LIVE storage. The dealloc switch below is keyed on `type_id`,
-                // which was cached at function entry BEFORE that window; it selects
-                // type-specific inner-pointer offsets and the backing-memory free.
-                // In molt's subset nothing can legitimately retag a live object's
-                // `type_id` (no ctypes header writes, no `__class__` reassignment
-                // that changes the runtime type tag), so this MUST still hold. If a
-                // finalizer/callback corrupted the header, re-reading proves it here
-                // and aborts BEFORE we free with a mismatched layout (a silent
-                // wrong-layout free is memory corruption, not a recoverable error).
-                let type_id_after_window = (*header_ptr).type_id;
-                if type_id_after_window != type_id {
-                    eprintln!(
-                        "molt fatal: object type_id changed across finalize/weakref \
-                         window ptr=0x{:x} before={} after={} (header corrupted by a \
-                         finalizer or weakref callback)",
-                        ptr as usize, type_id, type_id_after_window
-                    );
+                (*header_ptr).close_revival_window(revival_window);
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE.finish_finalization(view_bits, false);
+            } else {
+                let prev_window = (*header_ptr).close_revival_window(revival_window);
+                if prev_window != 1 {
+                    eprintln!("molt fatal: weakref callback reopened committed-dead object");
                     std::process::abort();
                 }
             }
-            // Arbitrary finalizer/weakref code may have published side state
-            // after the entry snapshot. Reload only after the resurrection
-            // verdict, then close every terminal sidecar from this authority.
-            let terminal_flags = (*header_ptr).load_synchronized_flags();
-            if (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
-                // Consume the stable view hold only after every resurrection
-                // opportunity has closed.
-                (*header_ptr).retire_stable_view_hold();
+            // DEFENSE-IN-DEPTH (P2): the revival window above ran arbitrary
+            // Python (`__del__` and/or weakref callbacks) against this object's
+            // LIVE storage. The dealloc switch below is keyed on `type_id`,
+            // which was cached at function entry BEFORE that window; it selects
+            // type-specific inner-pointer offsets and the backing-memory free.
+            // In molt's subset nothing can legitimately retag a live object's
+            // `type_id` (no ctypes header writes, no `__class__` reassignment
+            // that changes the runtime type tag), so this MUST still hold. If a
+            // finalizer/callback corrupted the header, re-reading proves it here
+            // and aborts BEFORE we free with a mismatched layout (a silent
+            // wrong-layout free is memory corruption, not a recoverable error).
+            let type_id_after_window = (*header_ptr).type_id;
+            if type_id_after_window != type_id {
+                eprintln!(
+                    "molt fatal: object type_id changed across finalize/weakref \
+                     window ptr=0x{:x} before={} after={} (header corrupted by a \
+                     finalizer or weakref callback)",
+                    ptr as usize, type_id, type_id_after_window
+                );
+                std::process::abort();
             }
-            // Past the resurrection check: the object is now actually being
-            // destroyed. Commit the leak-gauge counters so DEALLOC_COUNT means
-            // "objects truly freed", keeping `live = alloc - dealloc` exact
-            // (resurrected objects are correctly NOT counted as dealloc'd until
-            // their real final drop). `type_id` is the cached entry value; the
-            // byte total was snapshotted before the window ran.
-            if (terminal_flags & HEADER_FLAG_DEALLOCATING) == 0 {
-                (*header_ptr).fetch_or_flags(HEADER_FLAG_DEALLOCATING);
-                gc::gc_untrack(py, ptr, type_id, gc::GcUntrackReason::Deallocation);
-            }
-            // Remove tuple identity before child retirement, but keep its
-            // packed projection and projection-owned C references alive until
-            // every inline runtime item edge has been released in the tuple
-            // type arm. This is the tuple analogue of exception field detach:
-            // no reentrant lookup sees a terminal tuple and no child view loses
-            // both ownership domains out of order.
-            if type_id == TYPE_ID_ASYNC_GENERATOR {
-                // Async-generator finalization is the last callback-bearing
-                // phase. Count only after it returns because it may mutate the
-                // generator's owned slots.
-                asyncgen_call_finalizer(py, ptr);
-            }
-            // Remove every canonical bridge identity before detaching any
-            // runtime source. The returned guard owns all projection C edges
-            // and is released only after the complete source-empty barrier.
-            let retired_runtime_view = if (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
-                Some(
-                    molt_cpython_abi::bridge::GLOBAL_BRIDGE
-                        .retire_runtime_object_deferred(MoltObject::from_ptr(ptr).bits())
-                        .unwrap_or_else(|| std::process::abort()),
-                )
-            } else {
-                None
-            };
-            let (terminal_edge_count, terminal_resource_count) =
-                heap_lifecycle::terminal_detach_capacity(py, ptr);
-            let terminal_resource_count = terminal_resource_count
-                .checked_add(usize::from(
-                    (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0,
-                ))
-                .unwrap_or_else(|| std::process::abort());
-            let mut terminal_edges = heap_lifecycle::DetachedEdgeSink::terminal_with_capacities(
-                terminal_edge_count,
-                terminal_resource_count,
-            );
-            heap_lifecycle::detach_terminal_owned_edges(py, ptr, &mut terminal_edges);
-            if type_id == TYPE_ID_ASYNC_GENERATOR {
-                asyncgen_registry_remove(py, ptr);
-            }
-            if let Some(view) = retired_runtime_view {
-                terminal_edges.detach_resource(heap_lifecycle::DetachedResource::RuntimeView(view));
-            }
-            terminal_edges.release_all(py);
-            let total_size =
-                total_size_from_header_fields(header_size_class, header_aux.kind, header_aux.word);
-            terminal_resource_drop_no_unwind(|| {
-                match heap_drop_policy(type_id) {
-                    Some(HeapDropPolicy::String) => utf8_cache_remove(py, ptr as usize),
-                    Some(HeapDropPolicy::Type) => {
-                        bump_type_version();
+        }
+        // Module m_free is a terminal callback, after the resurrection verdict
+        // and before the canonical C identity/state disappear. Checked retains
+        // reject reopening the committed-dead object, as for weakref callbacks;
+        // metadata reads borrow the still-live internal view instead.
+        let module_registry_edge = if type_id == TYPE_ID_MODULE {
+            (*header_ptr).fetch_or_flags(HEADER_FLAG_DEALLOCATING);
+            gc::gc_untrack(py, ptr, type_id, gc::GcUntrackReason::Deallocation);
+            crate::c_api::c_api_module_prepare_terminal(py, ptr)
+        } else {
+            None
+        };
+        // Arbitrary finalizer/weakref code may have published side state
+        // after the entry snapshot. Reload only after the resurrection
+        // verdict, then close every terminal sidecar from this authority.
+        let terminal_flags = (*header_ptr).load_synchronized_flags();
+        if (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
+            // Consume the stable view hold only after every resurrection
+            // opportunity has closed.
+            (*header_ptr).retire_stable_view_hold();
+        }
+        // Past the resurrection check: the object is now actually being
+        // destroyed. Commit the leak-gauge counters so DEALLOC_COUNT means
+        // "objects truly freed", keeping `live = alloc - dealloc` exact
+        // (resurrected objects are correctly NOT counted as dealloc'd until
+        // their real final drop). `type_id` is the cached entry value; the
+        // byte total was snapshotted before the window ran.
+        if (terminal_flags & HEADER_FLAG_DEALLOCATING) == 0 {
+            (*header_ptr).fetch_or_flags(HEADER_FLAG_DEALLOCATING);
+            gc::gc_untrack(py, ptr, type_id, gc::GcUntrackReason::Deallocation);
+        }
+        // Remove tuple identity before child retirement, but keep its
+        // packed projection and projection-owned C references alive until
+        // every inline runtime item edge has been released in the tuple
+        // type arm. This is the tuple analogue of exception field detach:
+        // no reentrant lookup sees a terminal tuple and no child view loses
+        // both ownership domains out of order.
+        // Remove every canonical bridge identity before detaching any
+        // runtime source. The returned guard owns all projection C edges
+        // and is released only after the complete source-empty barrier.
+        let retired_runtime_view = if (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0 {
+            Some(
+                molt_cpython_abi::bridge::GLOBAL_BRIDGE
+                    .retire_runtime_object_deferred(MoltObject::from_ptr(ptr).bits())
+                    .unwrap_or_else(|| std::process::abort()),
+            )
+        } else {
+            None
+        };
+        let (terminal_edge_count, terminal_resource_count) =
+            heap_lifecycle::terminal_detach_capacity(py, ptr);
+        let terminal_resource_count = terminal_resource_count
+            .checked_add(usize::from(
+                (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0,
+            ))
+            .unwrap_or_else(|| std::process::abort());
+        let terminal_edge_count = terminal_edge_count
+            .checked_add(usize::from(module_registry_edge.is_some()))
+            .unwrap_or_else(|| std::process::abort());
+        let mut terminal_edges = heap_lifecycle::DetachedEdgeSink::terminal_with_capacities(
+            terminal_edge_count,
+            terminal_resource_count,
+        );
+        heap_lifecycle::detach_terminal_owned_edges(py, ptr, &mut terminal_edges);
+        if let Some(bits) = module_registry_edge {
+            terminal_edges.detach_if_heap(bits);
+        }
+        if let Some(view) = retired_runtime_view {
+            terminal_edges.detach_resource(heap_lifecycle::DetachedResource::RuntimeView(view));
+        }
+        terminal_edges.release_all(py);
+        let total_size =
+            total_size_from_header_fields(header_size_class, header_aux.kind, header_aux.word);
+        terminal_resource_drop_no_unwind(|| {
+            match heap_drop_policy(type_id) {
+                Some(HeapDropPolicy::String) => utf8_cache_remove(py, ptr as usize),
+                Some(HeapDropPolicy::Type) => {
+                    bump_type_version();
+                }
+                Some(HeapDropPolicy::ListInt) => {
+                    let storage = layout::list_int_storage_ptr(ptr);
+                    if !storage.is_null() {
+                        drop((*Box::from_raw(storage)).into_vec());
                     }
-                    Some(HeapDropPolicy::ListInt) => {
-                        let storage = layout::list_int_storage_ptr(ptr);
-                        if !storage.is_null() {
-                            drop((*Box::from_raw(storage)).into_vec());
-                        }
+                }
+                Some(HeapDropPolicy::ListBool) => {
+                    let storage = layout::list_bool_storage_ptr(ptr);
+                    if !storage.is_null() {
+                        drop((*Box::from_raw(storage)).into_vec());
                     }
-                    Some(HeapDropPolicy::ListBool) => {
-                        let storage = layout::list_bool_storage_ptr(ptr);
-                        if !storage.is_null() {
-                            drop((*Box::from_raw(storage)).into_vec());
-                        }
+                }
+                Some(HeapDropPolicy::List) => drop_detached_tracked_vec(seq_vec_ptr(ptr)),
+                Some(HeapDropPolicy::Dict) => {
+                    drop_detached_tracked_vec(dict_order_ptr(ptr));
+                    drop_detached_tracked_vec(dict_table_ptr(ptr));
+                    drop_detached_tracked_vec(dict_hashes_ptr(ptr));
+                }
+                Some(HeapDropPolicy::ListBuilder) => {
+                    drop_detached_linear_builder_vec(ptr);
+                }
+                Some(HeapDropPolicy::Bytearray) => {
+                    drop_detached_tracked_vec(bytearray_vec_ptr(ptr))
+                }
+                Some(HeapDropPolicy::Set | HeapDropPolicy::Frozenset) => {
+                    drop_detached_tracked_vec(set_order_ptr(ptr));
+                    drop_detached_tracked_vec(set_table_ptr(ptr));
+                    drop_detached_tracked_vec(set_hashes_ptr(ptr));
+                }
+                Some(HeapDropPolicy::Memoryview) => {
+                    drop_detached_tracked_vec(memoryview_shape_ptr(ptr));
+                    drop_detached_tracked_vec(memoryview_strides_ptr(ptr));
+                }
+                Some(HeapDropPolicy::Dataclass) => {
+                    drop_detached_tracked_vec(dataclass_fields_ptr(ptr));
+                    let desc = dataclass_desc_ptr(ptr);
+                    if !desc.is_null() {
+                        drop(Box::from_raw(desc));
                     }
-                    Some(HeapDropPolicy::List) => drop_detached_tracked_vec(seq_vec_ptr(ptr)),
-                    Some(HeapDropPolicy::Dict) => {
-                        drop_detached_tracked_vec(dict_order_ptr(ptr));
-                        drop_detached_tracked_vec(dict_table_ptr(ptr));
-                        drop_detached_tracked_vec(dict_hashes_ptr(ptr));
-                    }
-                    Some(HeapDropPolicy::ListBuilder) => {
-                        drop_detached_linear_builder_vec(ptr);
-                    }
-                    Some(HeapDropPolicy::Bytearray) => {
-                        drop_detached_tracked_vec(bytearray_vec_ptr(ptr))
-                    }
-                    Some(HeapDropPolicy::Set | HeapDropPolicy::Frozenset) => {
-                        drop_detached_tracked_vec(set_order_ptr(ptr));
-                        drop_detached_tracked_vec(set_table_ptr(ptr));
-                        drop_detached_tracked_vec(set_hashes_ptr(ptr));
-                    }
-                    Some(HeapDropPolicy::Memoryview) => {
-                        drop_detached_tracked_vec(memoryview_shape_ptr(ptr));
-                        drop_detached_tracked_vec(memoryview_strides_ptr(ptr));
-                    }
-                    Some(HeapDropPolicy::Dataclass) => {
-                        drop_detached_tracked_vec(dataclass_fields_ptr(ptr));
-                        let desc = dataclass_desc_ptr(ptr);
-                        if !desc.is_null() {
-                            drop(Box::from_raw(desc));
-                        }
-                    }
-                    Some(HeapDropPolicy::Map) => drop_detached_tracked_vec(map_iters_ptr(ptr)),
-                    Some(HeapDropPolicy::WeakContainer) => {
-                        weak_container::weakcontainer_drop_detached_state(ptr)
-                    }
-                    Some(HeapDropPolicy::Zip) => drop_detached_tracked_vec(zip_iters_ptr(ptr)),
-                    Some(HeapDropPolicy::Buffer2d) => {
-                        let buffer = buffer2d_ptr(ptr);
-                        if !buffer.is_null() {
-                            match &mut (*buffer).data {
-                                buffer2d::Buffer2DStorage::I64(data) => {
-                                    drop(backing::tracked_vec_box_from_raw(*data));
-                                }
-                                buffer2d::Buffer2DStorage::Boxed(data) => {
-                                    drop(backing::tracked_vec_box_from_raw(*data));
-                                }
+                }
+                Some(HeapDropPolicy::Map) => drop_detached_tracked_vec(map_iters_ptr(ptr)),
+                Some(HeapDropPolicy::WeakContainer) => {
+                    weak_container::weakcontainer_drop_detached_state(ptr)
+                }
+                Some(HeapDropPolicy::Zip) => drop_detached_tracked_vec(zip_iters_ptr(ptr)),
+                Some(HeapDropPolicy::Buffer2d) => {
+                    let buffer = buffer2d_ptr(ptr);
+                    if !buffer.is_null() {
+                        match &mut (*buffer).data {
+                            buffer2d::Buffer2DStorage::I64(data) => {
+                                drop(backing::tracked_vec_box_from_raw(*data));
                             }
-                            std::ptr::drop_in_place(buffer);
+                            buffer2d::Buffer2DStorage::Boxed(data) => {
+                                drop(backing::tracked_vec_box_from_raw(*data));
+                            }
                         }
-                    }
-                    Some(HeapDropPolicy::GlobIter) => {
-                        let state = glob_iter_state_ptr(ptr);
-                        if !state.is_null() {
-                            drop(Box::from_raw(state));
-                        }
-                    }
-                    Some(HeapDropPolicy::Bigint) => std::ptr::drop_in_place(ptr as *mut BigInt),
-                    Some(
-                        HeapDropPolicy::None
-                        | HeapDropPolicy::NativeHandle
-                        | HeapDropPolicy::Foreign
-                        | HeapDropPolicy::FileHandle
-                        | HeapDropPolicy::ObjectShape
-                        | HeapDropPolicy::Callargs
-                        | HeapDropPolicy::Tuple
-                        | HeapDropPolicy::Range
-                        | HeapDropPolicy::Slice
-                        | HeapDropPolicy::Code
-                        | HeapDropPolicy::Cell
-                        | HeapDropPolicy::Function
-                        | HeapDropPolicy::Module
-                        | HeapDropPolicy::BoundMethod
-                        | HeapDropPolicy::Property
-                        | HeapDropPolicy::Super
-                        | HeapDropPolicy::Classmethod
-                        | HeapDropPolicy::Staticmethod
-                        | HeapDropPolicy::NativeDescriptor
-                        | HeapDropPolicy::GenericAlias
-                        | HeapDropPolicy::Union
-                        | HeapDropPolicy::DictView
-                        | HeapDropPolicy::TracebackPayload
-                        | HeapDropPolicy::Exception
-                        | HeapDropPolicy::ContextManager
-                        | HeapDropPolicy::Enumerate
-                        | HeapDropPolicy::Filter
-                        | HeapDropPolicy::Iter
-                        | HeapDropPolicy::Reversed
-                        | HeapDropPolicy::Generator
-                        | HeapDropPolicy::AsyncGenerator
-                        | HeapDropPolicy::CallIter,
-                    ) => {}
-                    None => {
-                        eprintln!(
-                            "molt fatal: unknown heap type id {type_id} reached deallocation"
-                        );
-                        std::process::abort();
+                        std::ptr::drop_in_place(buffer);
                     }
                 }
-                release_ptr(ptr);
-                // Arena chunks account their own bytes; frame storage is not a
-                // heap allocation. Both still retire all typed owned edges.
-                if (header_flags & HEADER_FLAG_SCOPED) == 0 {
-                    let _ = crate::resource::try_with_tracker(|t| t.on_free(total_size));
+                Some(HeapDropPolicy::GlobIter) => {
+                    let state = glob_iter_state_ptr(ptr);
+                    if !state.is_null() {
+                        drop(Box::from_raw(state));
+                    }
                 }
-                if header_aux.kind == HEADER_AUX_KIND_SIDECAR {
-                    free_aux_sidecar(header_aux.word);
+                Some(HeapDropPolicy::Bigint) => std::ptr::drop_in_place(ptr as *mut BigInt),
+                Some(
+                    HeapDropPolicy::None
+                    | HeapDropPolicy::NativeHandle
+                    | HeapDropPolicy::Foreign
+                    | HeapDropPolicy::FileHandle
+                    | HeapDropPolicy::ObjectShape
+                    | HeapDropPolicy::Callargs
+                    | HeapDropPolicy::Tuple
+                    | HeapDropPolicy::Range
+                    | HeapDropPolicy::Slice
+                    | HeapDropPolicy::Code
+                    | HeapDropPolicy::Cell
+                    | HeapDropPolicy::Function
+                    | HeapDropPolicy::Module
+                    | HeapDropPolicy::BoundMethod
+                    | HeapDropPolicy::Property
+                    | HeapDropPolicy::Super
+                    | HeapDropPolicy::Classmethod
+                    | HeapDropPolicy::Staticmethod
+                    | HeapDropPolicy::NativeDescriptor
+                    | HeapDropPolicy::GenericAlias
+                    | HeapDropPolicy::Union
+                    | HeapDropPolicy::DictView
+                    | HeapDropPolicy::TracebackPayload
+                    | HeapDropPolicy::Exception
+                    | HeapDropPolicy::ContextManager
+                    | HeapDropPolicy::Enumerate
+                    | HeapDropPolicy::Filter
+                    | HeapDropPolicy::Iter
+                    | HeapDropPolicy::Reversed
+                    | HeapDropPolicy::Generator
+                    | HeapDropPolicy::AsyncGenerator
+                    | HeapDropPolicy::CallIter,
+                ) => {}
+                None => {
+                    eprintln!("molt fatal: unknown heap type id {type_id} reached deallocation");
+                    std::process::abort();
                 }
-                if total_size != 0 && (header_flags & HEADER_FLAG_SCOPED) == 0 {
-                    let layout = std::alloc::Layout::from_size_align(total_size, 8)
-                        .unwrap_or_else(|_| std::process::abort());
-                    std::alloc::dealloc(header_ptr as *mut u8, layout);
-                }
-            });
-            if (header_flags & HEADER_FLAG_SCOPED) == 0 {
-                record_terminal_deallocation(py, type_id, dealloc_bytes);
             }
+            release_ptr(ptr);
+            // Arena chunks account their own bytes; frame storage is not a
+            // heap allocation. Both still retire all typed owned edges.
+            if (header_flags & HEADER_FLAG_SCOPED) == 0 {
+                let _ = crate::resource::try_with_tracker(|t| t.on_free(total_size));
+            }
+            if header_aux.kind == HEADER_AUX_KIND_SIDECAR {
+                free_aux_sidecar(header_aux.word);
+            }
+            if total_size != 0 && (header_flags & HEADER_FLAG_SCOPED) == 0 {
+                let layout = std::alloc::Layout::from_size_align(total_size, 8)
+                    .unwrap_or_else(|_| std::process::abort());
+                std::alloc::dealloc(header_ptr as *mut u8, layout);
+            }
+        });
+        if (header_flags & HEADER_FLAG_SCOPED) == 0 {
+            record_terminal_deallocation(py, type_id, dealloc_bytes);
         }
     }
 }
@@ -4355,7 +4431,7 @@ mod tests {
         ClassEdgeOwnership, HEADER_AUX_KIND_CLASS_INLINE, HEADER_AUX_KIND_SIDECAR,
         HEADER_AUX_KIND_STATE_INLINE, ObjectAuxPreselection, TYPE_ID_GENERATOR, TYPE_ID_OBJECT,
         TYPE_ID_STRING, alloc_object, alloc_object_with_aux, dec_ref_bits, object_class_bits,
-        object_class_has_finalizer, object_has_class_edge, object_init_class_edge_unpublished,
+        object_has_class_edge, object_has_finalizer, object_init_class_edge_unpublished,
         object_init_poll_fn_unpublished, object_init_sidecar_unpublished,
         object_init_state_unpublished, object_poll_fn, object_replace_class_edge, object_set_state,
         object_state, total_size_from_header,
@@ -4873,11 +4949,12 @@ mod tests {
 
             let ptr = alloc_object_with_aux(
                 _py,
-                std::mem::size_of::<super::MoltHeader>(),
+                super::layout::InlineBytesStorage::object_size(0).unwrap(),
                 TYPE_ID_STRING,
                 ObjectAuxPreselection::Sidecar,
             );
             assert!(!ptr.is_null());
+            unsafe { super::layout::InlineBytesStorage::set_len(ptr, 0) };
             assert!(unsafe {
                 object_init_class_edge_unpublished(
                     _py,
@@ -4886,7 +4963,7 @@ mod tests {
                     ClassEdgeOwnership::Borrowed,
                 )
             });
-            assert!(unsafe { object_class_has_finalizer(_py, ptr) });
+            assert!(unsafe { object_has_finalizer(_py, ptr) });
 
             unsafe {
                 (*class_header).store_flags(old_flags);

@@ -7,6 +7,7 @@ import pytest
 
 from molt.cli.runtime_cargo_plan import (
     CargoResourceCustody,
+    CargoResourceRoot,
     _CargoEnvironment,
     _resolve_c_build_resources,
     _c_tool_environment_names,
@@ -16,6 +17,64 @@ from tests.runtime_build_identity_helper import RuntimeFixtureRoot, runtime_carg
 
 
 TARGET = "wasm32-wasip1"
+
+
+def test_llvm_install_directory_backedge_preserves_resource_custody(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "llvm-22"
+    (root / "build").mkdir(parents=True)
+    (root / "lib").mkdir()
+    library = root / "lib" / "libLLVM.so.22.1"
+    library.write_bytes(b"llvm resource")
+    alias = root / "build" / "Debug+Asserts"
+    alias.symlink_to("..", target_is_directory=True)
+    resource = CargoResourceRoot("llvm/install", root)
+    assert resource.files() == (("llvm/install/lib/libLLVM.so.22.1", library),)
+    custody = CargoResourceCustody.capture((resource,))
+    assert custody.content_identity()["file_count"] == 1
+    custody.verify()
+    library.write_bytes(b"changed resource")
+    with pytest.raises(ValueError):
+        custody.verify()
+
+
+def test_directory_backedges_do_not_hide_sibling_aliases_or_new_resources(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "install"
+    include = root / "include"
+    include.mkdir(parents=True)
+    header = include / "api.h"
+    header.write_bytes(b"header")
+    (include / "install").symlink_to("..", target_is_directory=True)
+    (root / "alias").symlink_to("include", target_is_directory=True)
+    resource = CargoResourceRoot("toolchain", root)
+    assert resource.files() == (
+        ("toolchain/alias/api.h", root / "alias" / "api.h"),
+        ("toolchain/include/api.h", header),
+    )
+    custody = CargoResourceCustody.capture((resource,))
+    custody.verify()
+    (include / "new.h").write_bytes(b"new resource")
+    with pytest.raises(ValueError, match="resource selection changed"):
+        custody.verify()
+
+
+def test_resource_directory_backedge_retargeting_is_fenced(tmp_path: Path) -> None:
+    root = tmp_path / "install"
+    (root / "build").mkdir(parents=True)
+    (root / "input.h").write_bytes(b"header")
+    alias = root / "build" / "Debug+Asserts"
+    alias.symlink_to("..", target_is_directory=True)
+    custody = CargoResourceCustody.capture((CargoResourceRoot("toolchain", root),))
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "input.h").write_bytes(b"other header")
+    alias.unlink()
+    alias.symlink_to(other, target_is_directory=True)
+    with pytest.raises(ValueError, match="resource selection changed"):
+        custody.verify()
 
 
 def test_c_flag_names_cover_cc_rs_target_and_host_layers() -> None:

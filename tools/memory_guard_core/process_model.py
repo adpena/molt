@@ -18,6 +18,7 @@ from typing import Any, cast
 from tools.memory_guard_core.windows_snapshot import (
     ProcessSnapshotError,
     _windows_process_snapshot_rows_hard_timeout,
+    windows_current_process_started_at_ns,
 )
 
 
@@ -166,12 +167,39 @@ def process_identity_has_creation_marker(identity: ProcessIdentity) -> bool:
     return identity.started_at_ns is not None
 
 
+def process_births_are_ordered(
+    parent_started_at_ns: object, child_started_at_ns: object
+) -> bool:
+    """Admit an ancestry edge only between positive exact births in time order.
+
+    Windows retains a dead parent's PID in its children. A live PID match is
+    insufficient if that number now identifies a process younger than the child.
+    Equal births are valid because native creation clocks have finite precision.
+    """
+    return (
+        type(parent_started_at_ns) is int
+        and type(child_started_at_ns) is int
+        and 0 < parent_started_at_ns <= child_started_at_ns
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessAncestry:
+    identity: ProcessIdentity
+    admitted_at_ns: int
+    ancestors: tuple[tuple[int, ProcessIdentity], ...]
+
+
 @dataclass(slots=True)
 class ProcessTreeTracker:
     root_pid: int
     known_pids: set[int] | None = None
     known_pgids: set[int] | None = None
     known_identities: dict[int, ProcessIdentity] | None = None
+    released_identities: dict[int, ProcessIdentity] | None = None
+    # Live admission evidence, frozen with the admitted process birth. It is
+    # descriptive custody only, never an additional termination authority.
+    known_ancestry: dict[int, ProcessAncestry] | None = None
 
     def __post_init__(self) -> None:
         if self.known_pids is None:
@@ -184,18 +212,39 @@ class ProcessTreeTracker:
             self.known_pgids.add(self.root_pid)
         if self.known_identities is None:
             self.known_identities = {}
+        if self.released_identities is None:
+            self.released_identities = {}
+        if self.known_ancestry is None:
+            self.known_ancestry = {}
 
-    def update(self, samples: Mapping[int, ProcessSample]) -> set[int]:
+    def update(
+        self,
+        samples: Mapping[int, ProcessSample],
+        *,
+        observed_at_ns: int | None = None,
+    ) -> set[int]:
         """Return currently observed members of this process tree."""
 
         assert self.known_pids is not None
         assert self.known_pgids is not None
         assert self.known_identities is not None
+        assert self.released_identities is not None
+        assert self.known_ancestry is not None
+        admitted_at_ns = (
+            time.monotonic_ns() if observed_at_ns is None else observed_at_ns
+        )
         for pid in list(self.known_pids):
             sample = samples.get(pid)
             if sample is None:
                 continue
             identity = process_identity(sample)
+            ancestry = self.known_ancestry.get(pid)
+            if (
+                ancestry is not None
+                and process_identity_has_creation_marker(identity)
+                and ancestry.identity != identity
+            ):
+                self.known_ancestry.pop(pid)
             known_identity = self.known_identities.get(pid)
             if known_identity is None:
                 if process_identity_has_creation_marker(identity):
@@ -209,6 +258,7 @@ class ProcessTreeTracker:
             elif known_identity != identity:
                 self.known_pids.remove(pid)
                 self.known_identities.pop(pid, None)
+                self.known_ancestry.pop(pid, None)
         changed = True
         live_known_pids = {
             pid
@@ -222,11 +272,27 @@ class ProcessTreeTracker:
             changed = False
             for sample in samples.values():
                 sample_pgid = sample_pgid_or_pid(sample)
+                released = self.released_identities.get(sample.pid)
+                current = process_identity(sample)
+                if released is not None and (
+                    not process_identity_has_creation_marker(current)
+                    or released == current
+                ):
+                    continue  # Exact receiver-owned instances cannot be re-adopted.
                 # Historical PIDs remain known so a live reparented descendant
                 # stays under custody.  An absent historical PID must not admit
                 # new children: Windows can reuse that stale number, otherwise
                 # unrelated processes contaminate RSS and termination scope.
-                if sample.pid in self.known_pids or sample.ppid in live_known_pids:
+                parent = samples.get(sample.ppid)
+                parent_admitted = (
+                    sample.ppid in live_known_pids
+                    and sample.ppid != sample.pid
+                    and parent is not None
+                    and process_births_are_ordered(
+                        parent.started_at_ns, sample.started_at_ns
+                    )
+                )
+                if sample.pid in self.known_pids or parent_admitted:
                     if sample.pid not in self.known_pids:
                         self.known_pids.add(sample.pid)
                         identity = process_identity(sample)
@@ -236,11 +302,75 @@ class ProcessTreeTracker:
                             live_known_pids.add(sample.pid)
                         changed = True
                     if (
+                        sample.pid != self.root_pid
+                        and sample.pid not in self.known_ancestry
+                        and sample.pid in live_known_pids
+                        and parent_admitted
+                    ):
+                        parent_chain = self.known_ancestry.get(sample.ppid)
+                        # Wait for an in-tree parent to acquire its chain first.
+                        # This keeps row ordering from truncating live lineage.
+                        if sample.ppid == self.root_pid or parent_chain is not None:
+                            self.known_ancestry[sample.pid] = ProcessAncestry(
+                                current,
+                                admitted_at_ns,
+                                ((sample.ppid, self.known_identities[sample.ppid]),)
+                                + (
+                                    ()
+                                    if parent_chain is None
+                                    else parent_chain.ancestors
+                                ),
+                            )
+                            changed = True
+                    if (
                         sample.pid != self.root_pid or sample_pgid == self.root_pid
                     ) and sample_pgid not in self.known_pgids:
                         self.known_pgids.add(sample_pgid)
                         changed = True
         return {pid for pid in self.known_pids if pid in samples}
+
+    def transfer_process_group(
+        self,
+        pgid: int,
+        *,
+        samples: Mapping[int, ProcessSample],
+        identities: Mapping[int, ProcessIdentity],
+    ) -> bool:
+        """Release exactly one explicitly adopted, birth-verified child group.
+
+        The receiving suite must acknowledge ownership before this is called.
+        A transfer never grants an exemption to this guard's own root group.
+        """
+        watched = self.update(samples)
+        members = {
+            pid for pid, sample in samples.items() if sample_pgid_or_pid(sample) == pgid
+        }
+        if (
+            pgid == self.root_pid
+            or self.root_pid in identities
+            or not members
+            or not members <= set(identities)
+            or not set(identities) <= watched
+        ):
+            return False
+        if any(
+            not process_identity_has_creation_marker(identities[pid])
+            or process_identity(samples[pid]) != identities[pid]
+            or self.custody_identities(identities).get(pid) != identities[pid]
+            for pid in identities
+        ):
+            return False
+        assert self.released_identities is not None
+        self.released_identities.update(identities)
+        assert self.known_pids is not None and self.known_identities is not None
+        assert self.known_pgids is not None
+        self.known_pids.difference_update(identities)
+        assert self.known_ancestry is not None
+        for pid in identities:
+            self.known_identities.pop(pid, None)
+            self.known_ancestry.pop(pid, None)
+        self.known_pgids.discard(pgid)
+        return True
 
     def custody_identities(
         self,
@@ -260,6 +390,67 @@ class ProcessTreeTracker:
             for pid in pids
             if (identity := self.known_identities.get(pid)) is not None
         }
+
+    def cut_ancestry_at(
+        self, identities: Mapping[int, ProcessIdentity], *, observed_at_ns: int
+    ) -> None:
+        """Retire earlier ancestry when exact births transfer to another owner.
+
+        Membership/termination custody is unchanged. A receiving suite must not
+        attribute its adopted daemon, or that daemon's children, to a former
+        request owner even after the daemon disappears from a later snapshot.
+        """
+        assert self.known_ancestry is not None
+        for pid, identity in self.custody_identities(identities).items():
+            if identities[pid] == identity:
+                previous = self.known_ancestry.get(pid)
+                self.known_ancestry[pid] = ProcessAncestry(
+                    identity,
+                    observed_at_ns if previous is None else previous.admitted_at_ns,
+                    (),
+                )
+        for pid, chain in tuple(self.known_ancestry.items()):
+            for index, (ancestor, birth) in enumerate(chain.ancestors):
+                if identities.get(ancestor) == birth:
+                    self.known_ancestry[pid] = ProcessAncestry(
+                        chain.identity,
+                        chain.admitted_at_ns,
+                        chain.ancestors[: index + 1],
+                    )
+                    break
+
+    def custody_ancestry_payload(
+        self,
+        samples: Mapping[int, ProcessSample],
+        *,
+        excluded_roots: Collection[int] = (),
+    ) -> list[dict[str, object]]:
+        """Serialize only birth-bound chains admitted by this live tree tracker."""
+        assert self.known_ancestry is not None
+        records = []
+        for pid, identity in self.custody_identities(samples).items():
+            chain = self.known_ancestry.get(pid)
+            if (
+                chain is None
+                or not chain.ancestors
+                or chain.identity != identity
+                or process_identity(samples[pid]) != identity
+                or pid in excluded_roots
+                or any(parent in excluded_roots for parent, _birth in chain.ancestors)
+            ):
+                continue
+            records.append(
+                {
+                    "pid": pid,
+                    "started_at_ns": identity.started_at_ns,
+                    "admitted_at_ns": chain.admitted_at_ns,
+                    "ancestors": [
+                        {"pid": ancestor, "started_at_ns": born.started_at_ns}
+                        for ancestor, born in chain.ancestors
+                    ],
+                }
+            )
+        return records
 
 
 @dataclass(frozen=True, slots=True)
@@ -788,8 +979,10 @@ def _darwin_proc_command(pid: int) -> str | None:
 def process_started_at_ns(pid: int) -> int | None:
     """Read one process creation marker without authorizing a whole snapshot."""
 
-    if pid <= 0 or os.name == "nt":
+    if type(pid) is not int or pid <= 0:
         return None
+    if os.name == "nt":
+        return windows_current_process_started_at_ns() if pid == os.getpid() else None
     if sys.platform.startswith("linux"):
         return _linux_proc_started_at_ns(pid)
     if sys.platform == "darwin":
@@ -1085,7 +1278,13 @@ def has_external_host_control_plane_lineage(
         return True
     if current_pid is None or current_pid <= 0:
         return True
-    if pid not in descendant_pids(samples, current_pid):
+    current = samples.get(current_pid)
+    if current is None or type(current.started_at_ns) is not int:
+        return True
+    descendants, _unresolved = birth_fenced_descendants(
+        samples, {current_pid: current.started_at_ns}
+    )
+    if pid not in descendants:
         return True
     executable = (
         sample.argv[0].replace("\\", "/").rsplit("/", 1)[-1].casefold()
@@ -1161,6 +1360,7 @@ def ancestor_pids(
 
 
 def descendant_pids(samples: Mapping[int, ProcessSample], root_pid: int) -> set[int]:
+    """Find possible descendants for diagnostics, never positive custody admission."""
     descendants = {root_pid}
     changed = True
     while changed:
@@ -1185,7 +1385,15 @@ def protected_process_group_ids(
     if self_pgid is not None and self_pgid > 0:
         protected.add(self_pgid)
     ancestor_ids = ancestor_pids(samples, self_pid)
-    self_descendant_ids = descendant_pids(samples, self_pid) if self_pid else set()
+    self_descendant_ids: set[int] = set()
+    current = samples.get(self_pid) if self_pid is not None else None
+    if current is not None and type(current.started_at_ns) is int:
+        descendants, _unresolved = birth_fenced_descendants(
+            samples, {current.pid: current.started_at_ns}
+        )
+        self_descendant_ids.update(descendants)
+    # Possible host ancestry remains conservative. Exempting a current child
+    # from that protection, however, requires positive birth-fenced ancestry.
     explicitly_owned = set(owned_pids) | self_descendant_ids
     host_control_plane_pids = {
         sample.pid
@@ -1275,14 +1483,17 @@ def watched_pids(
     tracker: ProcessTreeTracker | None = None,
     protected_pgids: set[int] | None = None,
 ) -> set[int]:
-    observed = (
-        tracker.update(samples)
-        if tracker is not None
-        else descendant_pids(
-            samples,
-            root_pid,
-        )
-    )
+    if tracker is not None:
+        observed = tracker.update(samples)
+    else:
+        # The caller supplies the root; PPID alone cannot supply its children.
+        observed = {root_pid}
+        root = samples.get(root_pid)
+        if root is not None and type(root.started_at_ns) is int:
+            descendants, _unresolved = birth_fenced_descendants(
+                samples, {root_pid: root.started_at_ns}
+            )
+            observed.update(descendants)
     return filter_protected_watched_pids(
         samples,
         observed,
@@ -1387,3 +1598,56 @@ def find_rss_violation(
         rss_kb=worst.rss_kb,
         command=worst.command,
     )
+
+
+def birth_fenced_descendants(
+    samples: Mapping[int, ProcessSample], observed: Mapping[int, int]
+) -> tuple[dict[int, ProcessSample], set[int]]:
+    """Extend observed process instances through live birth-verified parents.
+
+    A historical PID without a current matching birth grants no ancestry.
+    Unknown or inconsistent child births remain unresolved, never signalable.
+    PGID changes do not sever independently verified ancestry.
+    """
+    owned = {
+        pid: samples[pid]
+        for pid, born in observed.items()
+        if type(born) is int
+        and born > 0
+        and pid in samples
+        and type(samples[pid].started_at_ns) is int
+        and samples[pid].started_at_ns == born
+    }
+    unresolved: set[int] = set()
+    changed = True
+    while changed:
+        changed = False
+        for pid, child in samples.items():
+            if pid in owned or child.ppid not in owned:
+                continue
+            parent_born = owned[child.ppid].started_at_ns
+            child_born = child.started_at_ns
+            if not process_births_are_ordered(parent_born, child_born):
+                unresolved.add(pid)
+                continue
+            owned[pid] = child
+            unresolved.discard(pid)
+            changed = True
+    return owned, unresolved
+
+
+def process_command_argv(pid: int) -> tuple[str, ...] | None:
+    """Read authoritative argv within one native process-birth fence."""
+    if pid <= 0:
+        return None
+    if sys.platform.startswith("linux"):
+        before = _linux_proc_stat_identity(pid)
+        argv = _linux_proc_argv(pid)
+        after = _linux_proc_stat_identity(pid)
+    elif sys.platform == "darwin":
+        before = _darwin_proc_metadata(pid)
+        argv = _darwin_proc_argv(pid)
+        after = _darwin_proc_metadata(pid)
+    else:
+        return None
+    return argv if before is not None and before == after else None

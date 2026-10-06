@@ -563,6 +563,10 @@ fn feature_present(features: &str, feature: &str) -> bool {
     })
 }
 
+/// Compiler arena placement requires an owner-lifetime proof, not a boolean hint.
+pub const COMPILER_ARENA_PLACEMENT_UNSUPPORTED: &str =
+    "compiler arena placement has no proved owner lifetime";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -740,7 +744,3 @@ mod tests {
         assert!(w.branch_mispredict_cost > 0);
     }
 }
-
-/// Compiler arena placement requires an owner-lifetime proof, not a boolean hint.
-pub const COMPILER_ARENA_PLACEMENT_UNSUPPORTED: &str =
-    "compiler arena placement has no proved owner lifetime";

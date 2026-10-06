@@ -17,6 +17,7 @@ def test_optimizer_policy_covers_every_binaryen_level(level: str) -> None:
     assert link.level == level
     assert len(link.pipeline) == len(set(link.pipeline))
     assert set(WASM_OPT_FEATURE_FLAGS) <= set(link.pipeline)
+    assert "--enable-exception-handling" in link.pipeline
 
 
 def test_dev_link_policy_runs_one_nonconverging_o1_level() -> None:

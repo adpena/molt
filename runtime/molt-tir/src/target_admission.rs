@@ -14,6 +14,37 @@ pub use runtime::{
 use crate::representation_plan::ScalarRepresentationPlan;
 use crate::tir::target_info::TargetInfo;
 use crate::{FunctionIR, SimpleIR};
+use std::collections::BTreeMap;
+
+/// Immutable evidence that the complete input passed the shared target contract.
+/// Source backends borrow the same program and plans; callers cannot construct
+/// or replace the admitted input after validation.
+pub struct AdmittedTargetProgram<'a> {
+    ir: &'a SimpleIR,
+    plans: BTreeMap<String, ScalarRepresentationPlan>,
+}
+
+impl<'a> AdmittedTargetProgram<'a> {
+    pub fn ir(&self) -> &'a SimpleIR {
+        self.ir
+    }
+
+    pub fn representation_plans(&self) -> &BTreeMap<String, ScalarRepresentationPlan> {
+        &self.plans
+    }
+}
+
+pub fn admit_target_program<'a>(
+    ir: &'a SimpleIR,
+    target_info: &TargetInfo,
+) -> Result<AdmittedTargetProgram<'a>, String> {
+    let mut plans = BTreeMap::new();
+    validate_target_contract_with_representation_plan(ir, target_info, |function, plan| {
+        plans.insert(function.name.clone(), plan.clone());
+        Ok(())
+    })?;
+    Ok(AdmittedTargetProgram { ir, plans })
+}
 
 /// Validate transport shape, the shared control-flow graph, and every generated
 /// semantic-role family before any target source buffer is touched.

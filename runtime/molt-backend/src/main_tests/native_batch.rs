@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn daemon_native_path_written_output_skips_oversized_memory_cache() {
-    let _env_guard = TestEnvGuard::clear(DAEMON_REQUEST_ENV_KEYS);
+    let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     unsafe {
         std::env::set_var("MOLT_BACKEND_BATCH_SIZE", "1");
         std::env::remove_var("MOLT_STDLIB_OBJ");
@@ -10,6 +10,7 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
         std::env::remove_var("MOLT_STDLIB_CACHE_MANIFEST");
         std::env::remove_var("MOLT_STDLIB_MODULE_SYMBOLS");
         std::env::remove_var("MOLT_RUNTIME_CALLABLE_SYMBOLS");
+        std::env::remove_var("MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256");
         std::env::remove_var("MOLT_ENTRY_MODULE");
     }
 
@@ -62,6 +63,7 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
                         source_file: None,
                         is_extern: false,
                         codegen_partition: false,
+                        parameter_custody: Vec::new(),
                         execution_context: Default::default(),
                     },
                     FunctionIR {
@@ -76,6 +78,7 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
                         source_file: None,
                         is_extern: false,
                         codegen_partition: false,
+                        parameter_custody: Vec::new(),
                         execution_context: Default::default(),
                     },
                 ],
@@ -129,7 +132,7 @@ fn native_batch_temp_cleanup_reports_non_directory_path() {
 
 #[cfg(feature = "native-backend")]
 #[test]
-fn native_batch_failure_artifact_rewrites_context_path_for_replay() {
+fn native_batch_failure_artifact_retains_closed_context_for_replay() {
     let _env_guard = TestEnvGuard::capture(&["MOLT_DEBUG_ARTIFACT_DIR"]);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -144,14 +147,6 @@ fn native_batch_failure_artifact_rewrites_context_path_for_replay() {
     std::fs::create_dir_all(&source_dir).expect("create source batch dir");
     unsafe { std::env::set_var("MOLT_DEBUG_ARTIFACT_DIR", &debug_dir) };
 
-    let module_context_path = source_dir.join("module_context.json");
-    write_json_artifact(
-        &module_context_path,
-        &NativeBatchModuleMetadata {
-            module_context: molt_backend::NativeBackendModuleContext::default(),
-        },
-    )
-    .expect("write source module context");
     let job_path = source_dir.join("batch_7.json");
     write_json_artifact(
         &job_path,
@@ -160,7 +155,9 @@ fn native_batch_failure_artifact_rewrites_context_path_for_replay() {
                 functions: vec![],
                 profile: None,
             },
-            module_context_path: module_context_path.clone(),
+            module_context: molt_backend::NativeBackendModuleContext::default(),
+            codegen_environment: molt_ir::backend_environment::NativeCodegenEnvironment::capture()
+                .unwrap(),
             target_triple: None,
             emit_app_callable_resolver: false,
             app_callable_manifest: None,
@@ -184,13 +181,10 @@ fn native_batch_failure_artifact_rewrites_context_path_for_replay() {
         read_json_artifact(&copied_job_path, "copied native batch job")
             .expect("read copied native batch job");
     assert_eq!(
-        copied_job.module_context_path,
-        artifact_dir.join("module_context.json")
+        serde_json::to_value(&copied_job.module_context).unwrap(),
+        serde_json::to_value(molt_backend::NativeBackendModuleContext::default()).unwrap()
     );
-    assert!(
-        copied_job.module_context_path.exists(),
-        "copied module context must survive source cleanup"
-    );
+    assert!(!artifact_dir.join("module_context.json").exists());
     assert!(
         artifact_dir.join("manifest.json").exists(),
         "artifact manifest must describe replay command"
@@ -203,7 +197,7 @@ fn native_batch_failure_artifact_rewrites_context_path_for_replay() {
 fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
     use object::{BinaryFormat, Object, ObjectSymbol, SymbolKind};
 
-    let _env_guard = TestEnvGuard::clear(DAEMON_REQUEST_ENV_KEYS);
+    let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     let tmp_dir = std::env::temp_dir().join(format!(
         "molt-daemon-batch-chunk-{}-{}",
         std::process::id(),
@@ -239,6 +233,7 @@ fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
             "MOLT_STDLIB_CACHE_KEY": "daemon-stdlib-key",
             "MOLT_STDLIB_MODULE_SYMBOLS": "[\"sys\"]",
             "MOLT_RUNTIME_CALLABLE_SYMBOLS": runtime_symbols.to_string_lossy(),
+            "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256": "0aa03a78eef109ee7a11441b8078048f3ae517cd57748508e637a73f7b4c7bdf",
             "MOLT_BACKEND_BATCH_SIZE": "1",
         },
         "jobs": [{

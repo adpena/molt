@@ -299,8 +299,12 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::StateSwitch => "state_switch",
         OpCode::StateTransition => "state_transition",
         OpCode::StateYield => "state_yield",
+        OpCode::StateSet | OpCode::IsPending | OpCode::TaskWait => {
+            super::op_kinds_generated::opcode_canonical_kind_table(*op)
+        }
         OpCode::ClosureLoad => "closure_load",
         OpCode::ClosureStore => "closure_store",
+        OpCode::FrameContextSet => "frame_context_set",
         OpCode::Yield => "yield",
         OpCode::YieldFrom => "yield_from",
         OpCode::Raise => "raise",
@@ -423,7 +427,7 @@ mod tests {
             opcode: OpCode::ConstInt,
             operands: vec![],
             results: vec![ValueId(0)],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(10))]),
             source_span: None,
         });
         assert!(validate_mlir_compat(&f).is_err());
@@ -466,7 +470,10 @@ mod tests {
                     opcode: OpCode::ConstInt,
                     operands: vec![],
                     results: vec![v1],
-                    attrs: AttrDict::new(),
+                    attrs: AttrDict::from([(
+                        "value".into(),
+                        molt_ir::tir::ops::AttrValue::Int(11),
+                    )]),
                     source_span: None,
                 }],
             },
@@ -482,7 +489,10 @@ mod tests {
                     opcode: OpCode::ConstInt,
                     operands: vec![],
                     results: vec![v2],
-                    attrs: AttrDict::new(),
+                    attrs: AttrDict::from([(
+                        "value".into(),
+                        molt_ir::tir::ops::AttrValue::Int(12),
+                    )]),
                     source_span: None,
                 }],
             },
@@ -491,5 +501,41 @@ mod tests {
         assert!(text.contains("cond_br"));
         assert!(text.contains("^bb1"));
         assert!(text.contains("^bb2"));
+    }
+
+    #[test]
+    fn activation_exit_ops_project_their_canonical_names() {
+        let mut f = TirFunction::new(
+            "activation".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let waiting = f.fresh_value();
+        let entry = f.blocks.get_mut(&f.entry_block).unwrap();
+        for (opcode, operands, results) in [
+            (OpCode::StateSet, vec![], vec![]),
+            (OpCode::IsPending, vec![ValueId(1)], vec![waiting]),
+            (OpCode::TaskWait, vec![ValueId(0)], vec![]),
+        ] {
+            entry.ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode,
+                operands,
+                results,
+                attrs: AttrDict::new(),
+                source_span: None,
+            });
+        }
+        entry.terminator = Terminator::Return {
+            values: vec![ValueId(1)],
+        };
+        let text = to_mlir_text(&f);
+        assert!(text.contains("\"molt.state_set\"() : () -> ()"), "{text}");
+        assert!(
+            text.contains(&format!("%{} = \"molt.is_pending\"(%1)", waiting.0)),
+            "{text}"
+        );
+        assert!(text.contains("\"molt.task_wait\"(%0) : () -> ()"), "{text}");
     }
 }

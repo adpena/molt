@@ -59,3 +59,19 @@ def i():
 
 
 i()
+
+
+def j():
+    # A call in the element leaves no source proof for the target's later
+    # read; that read is still the iteration value, never the enclosing
+    # function's same-named binding or its storage.
+    x = "outer"
+
+    def positive(value):
+        return value > 0
+
+    print(any(positive(x) and x == 2 for x in [1, 2]), x)
+    print(all(positive(x) and x != "outer" for x in [1, 2]), x)
+
+
+j()

@@ -74,20 +74,58 @@ WASM link commands must:
 
 ### WASM link-facts authority
 
-`runtime/molt-wasm-facts` owns the one validated, single-pass scan of final
-WebAssembly functions, operators, references, tables, elements, mutations, and
-callable-table attestations. Schema 4 projects the classifications consumed by
-the linker directly: reachable function indices, referenced function indices,
-and the direct callees of `molt_init___main__`. The exhaustive call graph and
-intermediate root sets remain scanner-internal; Python link and optimization
-code must not rebuild liveness from a serialized graph.
+`runtime/molt-wasm-facts` owns the one validated, single-pass scan of
+WebAssembly artifact bytes. Its schema-v7 result covers functions, operators, references,
+tables, elements, mutations, callable-table attestations, custom sections,
+linking symbols (including original symbol ordinals), function names, GOT binding
+evidence, and canonical import/export types. The Rust model and scanner
+in `runtime/molt-wasm-facts/src/{model,scan}.rs` are the schema and parsing
+authorities; schema changes must update the Rust producer and its exact consumer
+contract together.
+
+`tools/wasm_link_fact_provider.py` owns the only Python boundary. It validates
+the exact schema-v7 JSON field set, freezes the decoded data, and projects
+linker-facing `WasmImportFact`, `WasmExportFact`, and `WasmLinkFacts` values.
+Python may perform typed lookups and decode compact tuple rows from that result,
+but it must not parse the whole WebAssembly artifact or reconstruct import,
+export, liveness, linking-symbol, or GOT facts. The former Python full-module
+parser lane is deleted. The exhaustive call graph and intermediate root sets
+remain scanner-internal.
+
+The complete generated runtime function registry is checked against all runtime
+function exports before essential roots are subtracted for tree shaking.
+CPython-ABI data edges use the generated symbol kind and require an immutable,
+nonshared i32 address global. GOT facts record optional initial addresses,
+binding flags, and definedness for every relocation; exact binding and global
+shape are required only when the bridge selects a CPython-ABI data symbol.
+Unrelated weak, local, or undefined PIC symbols do not fail a scan. Malformed
+relocation extents and out-of-range symbol/global indices still fail closed.
+
+Link-time `linking` and `reloc.*` sections are consumed before stable app identity
+markers are published, then removed before any optimizer or index-changing
+transform. Function import removal also drops the stale `name` section; other
+debug sections follow the selected debug policy. Python decoders retained for
+section rewriting are codecs only; import/export/linking decisions consume the
+same Rust facts provider used for validation and publication.
 
 The scan is `O(module bytes + operators + reference edges + functions)`. Its
 memory is `O(functions + reference edges + active elements + table facts)`;
-Python consumers allocate only the projected index sets they use. The phase
-timing artifact records scanner hash time, child scan time, calls, content-cache
-hits, input bytes, and response characters, so a scanner/schema/toolchain change
-cannot silently tax final-link wall clock.
+Python consumers allocate only the typed projections they use. One
+content-addressed provider is bound to a hash-sealed scanner snapshot for each
+link invocation and reuses facts for identical bytes. The phase timing artifact
+records scanner hash time, child scan time, calls, content-cache hits, input
+bytes, and response characters. Section-walk and reserialization counters cover
+the remaining Python byte-rewrite utilities; retired Python full-parser counters
+are not part of the current performance contract.
+
+Static archives use `molt.cli.static_archive_identity` for GNU/BSD framing,
+ordered member identity, and reads through one stable source handle. The WASM
+projection adds object bounds and target-format checks; it owns no archive
+parser. Before linking, raw objects and whole archives create required provider
+and data-address obligations. Lazy archives contribute candidates only. Exact
+linker extraction evidence admits both the monolithic and split-app roles before
+publication; dormant member names cannot force runtime exports or missing
+provider/address failures.
 
 ### Linker Source and Loader Closure
 
@@ -98,6 +136,18 @@ syntax, package initializers, namespace portions, and statically provable
 `molt.cli.python_import_resolution`; `molt.cli.python_source_closure` owns the
 transitive walk and an atomic performance cache. A non-literal dynamic edge is
 either declared in its checked manifest or fails closed.
+
+Import discovery requests the binding fixpoint only when the canonical binding
+authority finds a possible importer identity origin. This is an absence proof,
+not spelling-based callee specialization: positive sources retain full alias,
+mutation and deferred-body analysis, and relative statements retain module
+context analysis. Live module resolution and exact source-byte identities remain
+mandatory on cache hits; no whole-graph freshness assumption replaces them.
+
+Private-name mangling is owned by `molt.python_private_names`, shared by
+custody, discovery, binding analysis and lowering. Importing this primitive
+does not initialize compiler analysis. Capture-source and proof-authority
+closures bind the shared module directly; no relocated-module shim remains.
 
 Browser and Node loader assets are a separate generated graph rooted in
 `src/molt/browser_asset_graph.toml`. Every JavaScript asset has an explicit
@@ -122,6 +172,15 @@ artifact may enable Binaryen GC only when the target contract proves runner,
 browser, and deployment-host support, and only with the same export-contract,
 size, cold-start, allocation-count, host-call-count, and throughput evidence as
 the non-GC artifact it replaces.
+
+The optimizer publication sidecar uses the exact
+`molt.wasm-optimizer-attestation.v4` schema. It binds the executable digest,
+verified Binaryen version, optimization level and flags, debug preservation,
+canonical pipeline digest, optimizer input/output hashes, and final published
+output hash. Both cached and fresh generations admit that sidecar against the
+requested tool and debug policy. Timing, host paths, and cache-hit telemetry
+remain outside the reproducible publication identity. The sidecar is published
+with the linked/split output family and its source-bound final link receipt.
 
 ### Disallowed Shortcuts
 
@@ -150,3 +209,15 @@ the non-GC artifact it replaces.
 5. Add a `wasm-gc` feature-profile probe lane that validates Binaryen GC flags,
    runner/browser support, export preservation, and measured deltas against the
    matching `wasm-mvp` artifact before any WasmGC lowering lands.
+
+
+### Optimizer evidence by publication role
+
+A split link carries two independent optimizer attestations. The `optimizer`
+output role binds the linked companion's own execution to its final bytes;
+`app_optimizer` binds the split app's execution to the final app bytes. The size
+attestation embeds the app attestation. Each sidecar is published atomically with
+its artifact and is removed when optimization is disabled. A sidecar for one
+artifact must never attest a different artifact's digest or optimizer execution.
+The scanner executable is captured once per invocation and its expected SHA-256
+is checked before snapshot creation or child execution.

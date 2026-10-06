@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Mapping, Sequence
 
 from molt import process_guard as _process_guard
@@ -12,6 +13,18 @@ from molt.source_root import compiler_source_root
 _CLI_MEMORY_GUARD_PREFIX = _process_guard.CLI_MEMORY_GUARD_PREFIX
 _CROSS_MEMORY_GUARD_PREFIX = "MOLT_CROSS"
 _DIFF_MEMORY_GUARD_PREFIX = "MOLT_DIFF"
+
+
+def _finish_build_input_custody(
+    finalize_inputs: Callable[[], None] | None,
+) -> str | None:
+    """Close admitted inputs before any successful terminal result is emitted."""
+    if finalize_inputs is not None:
+        try:
+            finalize_inputs()
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            return f"Build input custody failed to close: {exc}"
+    return None
 
 
 def _load_cli_harness_memory_guard(cwd: Path | None) -> Any:
@@ -49,6 +62,7 @@ def _run_completed_command(
     timeout: float | None = None,
     encoding: str = "utf-8",
     errors: str = "replace",
+    progress_label: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     guard_env = (
         None
@@ -67,18 +81,20 @@ def _run_completed_command(
             encoding=encoding,
             errors=errors,
         )
-    return _process_guard.run_completed_command(
-        cmd,
-        env=guard_env,
-        cwd=cwd,
-        capture_output=capture_output,
-        memory_guard_prefix=memory_guard_prefix,
-        input=input,
-        timeout=timeout,
-        encoding=encoding,
-        errors=errors,
-        guard_loader=_load_cli_harness_memory_guard,
-    )
+    with _progress.subprocess_status(progress_label) as keepalive_label:
+        return _process_guard.run_completed_command(
+            cmd,
+            env=guard_env,
+            cwd=cwd,
+            capture_output=capture_output,
+            memory_guard_prefix=memory_guard_prefix,
+            input=input,
+            timeout=timeout,
+            encoding=encoding,
+            errors=errors,
+            progress_label=keepalive_label,
+            guard_loader=_load_cli_harness_memory_guard,
+        )
 
 
 def _run_subprocess_captured_to_tempfiles(

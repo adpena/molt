@@ -17,6 +17,8 @@ from molt.cli.backend_cache import (
     _backend_cache_artifact_path,
     _encode_stdlib_module_symbols,
     _native_stdlib_object_split_enabled,
+    _SHARED_STDLIB_CACHE_SCHEMA_VERSION,
+    _SHARED_STDLIB_MANIFEST_SCHEMA_VERSION,
     _shared_stdlib_compiler_fingerprint,
     _shared_stdlib_cache_key,
     _shared_stdlib_cache_validation_token,
@@ -27,11 +29,12 @@ from molt.cli.backend_cache import (
 )
 from molt.cli.backend_execution import (
     _backend_binary_identity,
+    _backend_native_codegen_identity,
     _backend_codegen_env_digest,
     _backend_features_for_build_target,
 )
 from molt.cli.build_output_layout import _resolve_cache_root
-from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
+from molt.cli.backend_artifact_contract import BackendArtifactContract
 from molt.cli.cache_keys import (
     _BACKEND_IR_PAYLOAD_TOOLING_FINGERPRINT,
     _cache_ir_payload_ir,
@@ -51,8 +54,12 @@ from molt.cli.models import (
 )
 from molt.cli.runtime_paths import _build_state_root, _normalize_runtime_stdlib_profile
 from molt.target_python import TargetPythonVersion
+from molt.cli.runtime_native_codegen import (
+    NativeRuntimeCodegenBinding,
+    native_runtime_codegen_environment,
+)
 
-_BACKEND_CACHE_STDLIB_KEY_MATERIAL_SCHEMA_VERSION = 2
+_BACKEND_CACHE_STDLIB_KEY_MATERIAL_SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -89,6 +96,8 @@ def _stdlib_cache_key_material_authority_hash(
 ) -> str:
     payload = {
         "schema_version": _BACKEND_CACHE_STDLIB_KEY_MATERIAL_SCHEMA_VERSION,
+        "cache_schema": _SHARED_STDLIB_CACHE_SCHEMA_VERSION,
+        "manifest_schema": _SHARED_STDLIB_MANIFEST_SCHEMA_VERSION,
         "module_cache_payload_digest": module_cache_payload_digest,
         "entry_module": entry_module,
         "stdlib_module_symbols_json": stdlib_module_symbols_json,
@@ -109,36 +118,6 @@ def _stdlib_cache_key_material_path(project_root: Path, authority_hash: str) -> 
         / authority_hash[:2]
         / f"{authority_hash}.json"
     )
-
-
-def _compute_stdlib_cache_key_material(
-    *,
-    ir: Mapping[str, Any],
-    entry_module: str,
-    stdlib_module_symbols: frozenset[str],
-    target_triple: str | None,
-    cache_variant: str,
-    stdlib_compiler_fingerprint: str,
-    cache_compiler_fingerprint: str,
-    cache_tooling_fingerprint: str,
-) -> tuple[str, str | None]:
-    cache_key = _shared_stdlib_cache_key(
-        ir,
-        entry_module=entry_module,
-        stdlib_module_symbols=stdlib_module_symbols,
-        target_triple=target_triple,
-        cache_variant=cache_variant,
-        compiler_fingerprint=stdlib_compiler_fingerprint,
-        cache_compiler_fingerprint=cache_compiler_fingerprint,
-        cache_tooling_fingerprint=cache_tooling_fingerprint,
-    )
-    manifest = _shared_stdlib_manifest(
-        cache_key=cache_key,
-        cache_variant=cache_variant,
-        target_triple=target_triple,
-        compiler_fingerprint=stdlib_compiler_fingerprint,
-    )
-    return cache_key, manifest
 
 
 def _cached_stdlib_cache_key_material(
@@ -167,49 +146,52 @@ def _cached_stdlib_cache_key_material(
     )
     cache_path = _stdlib_cache_key_material_path(project_root, authority_hash)
     cached = _read_cached_json_object(cache_path)
+    cache_key = None
     if (
         cached is not None
         and cached.get("schema_version")
         == _BACKEND_CACHE_STDLIB_KEY_MATERIAL_SCHEMA_VERSION
         and cached.get("authority_hash") == authority_hash
     ):
-        cache_key = cached.get("cache_key")
-        manifest = cached.get("manifest")
-        if isinstance(cache_key, str) and (
-            manifest is None or isinstance(manifest, str)
-        ):
-            return _StdlibCacheKeyMaterial(
-                cache_key=cache_key,
-                manifest=manifest,
-                cache_hit=True,
-                cache_path=cache_path,
-            )
-    cache_key, manifest = _compute_stdlib_cache_key_material(
-        ir=ir,
-        entry_module=entry_module,
-        stdlib_module_symbols=stdlib_module_symbols,
-        target_triple=target_triple,
-        cache_variant=cache_variant,
-        stdlib_compiler_fingerprint=stdlib_compiler_fingerprint,
-        cache_compiler_fingerprint=cache_compiler_fingerprint,
-        cache_tooling_fingerprint=cache_tooling_fingerprint,
-    )
-    try:
-        _write_cached_json_object(
-            cache_path,
-            {
-                "schema_version": _BACKEND_CACHE_STDLIB_KEY_MATERIAL_SCHEMA_VERSION,
-                "authority_hash": authority_hash,
-                "cache_key": cache_key,
-                "manifest": manifest,
-            },
+        stored_key = cached.get("cache_key")
+        if isinstance(stored_key, str) and stored_key:
+            cache_key = stored_key
+    cache_hit = cache_key is not None
+    if cache_key is None:
+        cache_key = _shared_stdlib_cache_key(
+            ir,
+            entry_module=entry_module,
+            stdlib_module_symbols=stdlib_module_symbols,
+            target_triple=target_triple,
+            cache_variant=cache_variant,
+            compiler_fingerprint=stdlib_compiler_fingerprint,
+            cache_compiler_fingerprint=cache_compiler_fingerprint,
+            cache_tooling_fingerprint=cache_tooling_fingerprint,
         )
-    except OSError:
-        pass
+        try:
+            _write_cached_json_object(
+                cache_path,
+                {
+                    "schema_version": _BACKEND_CACHE_STDLIB_KEY_MATERIAL_SCHEMA_VERSION,
+                    "authority_hash": authority_hash,
+                    "cache_key": cache_key,
+                },
+            )
+        except OSError:
+            # This optional key memo is not the archive admission authority.
+            pass
+    # Small declarative metadata is projected from the live authority every
+    # time; only the expensive complete-IR key computation is memoized.
+    manifest = _shared_stdlib_manifest(
+        cache_key=cache_key,
+        cache_variant=cache_variant,
+        target_triple=target_triple,
+        compiler_fingerprint=stdlib_compiler_fingerprint,
+    )
     return _StdlibCacheKeyMaterial(
         cache_key=cache_key,
         manifest=manifest,
-        cache_hit=False,
+        cache_hit=cache_hit,
         cache_path=cache_path,
     )
 
@@ -227,6 +209,7 @@ def _build_cache_variant(
     stdlib_profile: str | None = DEFAULT_RUNTIME_STDLIB_PROFILE,
     partition_mode: bool = False,
     backend_binary_identity: str = "",
+    native_codegen_identity: str = "",
     external_static_packages_digest: str = "",
     runtime_callable_symbols_digest: str = "",
     runtime_wasm_codegen_digest: str = "",
@@ -265,6 +248,8 @@ def _build_cache_variant(
 
     ``runtime_wasm_codegen_digest`` binds every WASM cache tier to the physical
     runtime pair whose memory and table addresses code generation consumed.
+    It hashes both admitted members by role, not their publication receipt.
+    Byte-identical republication can reuse app code only after fresh admission.
     Runtime source exclusion from the compiler fingerprint is not permission
     to reuse app bytes against another runtime generation.
     """
@@ -284,6 +269,8 @@ def _build_cache_variant(
         parts.append("partitioned=v1")
     if backend_binary_identity:
         parts.append(f"backend_bin={backend_binary_identity}")
+    if native_codegen_identity:
+        parts.append(f"native_codegen={native_codegen_identity}")
     if external_static_packages_digest:
         parts.append(f"external_static_packages={external_static_packages_digest}")
     if runtime_callable_symbols_digest:
@@ -301,7 +288,7 @@ def _prepare_backend_cache_setup(
     cache_enabled: bool,
     ir: Mapping[str, Any],
     target: str,
-    target_triple: str | None,
+    artifact_contract: BackendArtifactContract,
     profile: str,
     runtime_cargo_profile: str,
     backend_cargo_profile: str,
@@ -319,15 +306,15 @@ def _prepare_backend_cache_setup(
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
-    runtime_callable_symbols_digest: str = "",
+    native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
     runtime_wasm_codegen_digest: str = "",
     resolved_capability_policy: ResolvedRuntimePolicy | None = None,
     backend_compiler_fingerprint: str | None = None,
     stage_timings_ms: dict[str, float] | None = None,
 ) -> _BackendCacheSetup:
-    artifact_contract = resolve_backend_artifact_contract(
-        target=target, emit_mode=emit_mode, target_triple=target_triple
-    )
+    # Cache identities and archive manifests must use the same admitted target
+    # as daemon and direct code generation, including implicit host requests.
+    target_triple = artifact_contract.target_triple
     stage_start = time.perf_counter()
     split_stdlib_object = _native_stdlib_object_split_enabled(
         target=target,
@@ -390,6 +377,7 @@ def _prepare_backend_cache_setup(
                     # Runtime implementation source is guarded by the runtime artifact
                     # fingerprint; backend object code keys on IR + runtime ABI surface.
                     include_runtime_sources=False,
+                    cargo_profile=backend_cargo_profile,
                 )
             tooling_fingerprint = _BACKEND_IR_PAYLOAD_TOOLING_FINGERPRINT
             stdlib_compiler_fingerprint = _shared_stdlib_compiler_fingerprint(
@@ -415,13 +403,34 @@ def _prepare_backend_cache_setup(
         backend_cargo=backend_cargo_profile,
         emit=emit_mode,
         stdlib_split=split_stdlib_object,
-        codegen_env=_backend_codegen_env_digest(is_wasm=is_wasm),
+        codegen_env=_backend_codegen_env_digest(
+            is_wasm=is_wasm,
+            env=native_runtime_codegen_environment(
+                os.environ, native_runtime_codegen_binding
+            ),
+        ),
         linked=linked,
         target_python=target_python,
         stdlib_profile=stdlib_profile,
         backend_binary_identity=backend_binary_identity,
+        native_codegen_identity=(
+            _backend_native_codegen_identity(
+                backend_bin,
+                backend_identity=backend_binary_identity,
+                target_triple=artifact_contract.native_target.triple,
+                env=native_runtime_codegen_environment(
+                    os.environ, native_runtime_codegen_binding
+                ),
+            )
+            if artifact_contract.native_target is not None
+            else ""
+        ),
         external_static_packages_digest=native_artifact_plan.digest(),
-        runtime_callable_symbols_digest=runtime_callable_symbols_digest,
+        runtime_callable_symbols_digest=(
+            native_runtime_codegen_binding.semantic_digest
+            if native_runtime_codegen_binding is not None
+            else ""
+        ),
         runtime_wasm_codegen_digest=runtime_wasm_codegen_digest,
         capability_config_digest=capability_config_digest,
     )

@@ -28,6 +28,7 @@ fn compile_ops(ops: Vec<OpIR>, params: &[&str]) -> Vec<u8> {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
         profile: None,
@@ -229,6 +230,7 @@ fn wasm_lowers_call_guarded_with_known_target() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
             FunctionIR {
@@ -240,6 +242,7 @@ fn wasm_lowers_call_guarded_with_known_target() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
         ],

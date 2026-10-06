@@ -24,9 +24,11 @@ def _parse_arguments():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group(required=True)
     modes.add_argument("--capture-runtime", action="store_true")
+    modes.add_argument("--runtime-selection", action="store_true")
     modes.add_argument("--locate-active-environment", action="store_true")
     modes.add_argument("--capture-environment", type=Path, metavar="ROOT")
     modes.add_argument("--capture-active-environment", action="store_true")
+    parser.add_argument("--runtime-session", action="store_true")
     parser.add_argument("--with-custody", action="store_true")
     parser.add_argument("--hash-workers", type=int, default=1)
     parser.add_argument("--admit-virtualenv-bootstrap", action="store_true")
@@ -42,8 +44,14 @@ def _parse_arguments():
         args.with_custody or args.hash_workers != 1 or admissions
     ):
         parser.error("location accepts no capture or environment admission options")
+    if args.runtime_selection and (
+        args.with_custody or args.hash_workers != 1 or admissions
+    ):
+        parser.error("runtime selection accepts no capture or admission options")
     if args.capture_runtime and admissions:
         parser.error("runtime capture accepts no environment admission options")
+    if args.runtime_session and (not args.capture_runtime or args.with_custody):
+        parser.error("runtime session requires runtime capture without an envelope")
     return args
 
 
@@ -78,6 +86,7 @@ else:
         PYTHON_RUNTIME_CAPABILITY_SCHEMA as PYTHON_RUNTIME_CAPABILITY_SCHEMA,
         PYTHON_RUNTIME_IDENTITY_SCHEMA as PYTHON_RUNTIME_IDENTITY_SCHEMA,
         capture_current_python_runtime as capture_current_python_runtime,
+        current_python_runtime_selection as current_python_runtime_selection,
         validate_python_runtime_identity as validate_python_runtime_identity,
     )
     from molt.python_uv_lock_identity import (  # noqa: E402
@@ -144,6 +153,7 @@ def python_capture_authority_paths(
         "python_environment_location",
         "python_environment_custody",
         "python_external_custody",
+        "python_private_names",
         "python_runtime_identity",
         "python_file_node_custody",
         "python_native_dependency_custody",
@@ -174,34 +184,67 @@ def python_capture_authority_paths(
     )
 
 
+def _serve_runtime_session(payload, context, *, requests, responses) -> None:
+    """Verify through the producer's retained context; EOF revokes the session."""
+    try:
+        responses.write(
+            json.dumps(
+                {
+                    "runtime": payload,
+                    "startup_selection": current_python_runtime_selection(),
+                },
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        responses.flush()
+        for request in requests:
+            if request != "verify\n":
+                raise PythonEnvironmentIdentityError("invalid runtime session request")
+            context.verify()
+            responses.write(str(payload["runtime_closure_sha256"]) + "\n")
+            responses.flush()
+    finally:
+        context.close()
+
+
 def _main() -> None:
     args = _arguments
     assert args is not None
     if args.locate_active_environment:
         payload = locate_current_python_environment()
+    elif args.runtime_selection:
+        payload = current_python_runtime_selection()
     else:
         from molt.python_file_node_custody import PythonFileCaptureContext
-        from molt.python_capture import python_capture_payload
 
-        context = PythonFileCaptureContext(hash_workers=args.hash_workers)
-        if args.capture_runtime:
-            payload = capture_current_python_runtime(capture_context=context)
-        else:
-            from molt.python_environment_location import _active_environment_prefix
+        with PythonFileCaptureContext(hash_workers=args.hash_workers) as context:
+            if args.capture_runtime:
+                payload = capture_current_python_runtime(
+                    capture_context=context, with_custody=args.with_custody
+                )
+            else:
+                from molt.python_environment_location import _active_environment_prefix
 
-            root = args.capture_environment or _active_environment_prefix()
-            bootstrap = list(args.admit_site_bootstrap)
-            if args.admit_virtualenv_bootstrap:
-                bootstrap.extend(virtualenv_site_bootstrap_relative_paths(root))
-            payload = capture_current_python_environment(
-                root,
-                excluded_relative_paths=("molt-source-build-environment.json",),
-                admitted_site_bootstrap_paths=bootstrap,
-                admitted_external_roots=args.admit_external_root,
-                capture_context=context,
-            )
-        if args.with_custody:
-            payload = python_capture_payload(payload, context)
+                root = args.capture_environment or _active_environment_prefix()
+                bootstrap = list(args.admit_site_bootstrap)
+                if args.admit_virtualenv_bootstrap:
+                    bootstrap.extend(virtualenv_site_bootstrap_relative_paths(root))
+                payload = capture_current_python_environment(
+                    root,
+                    excluded_relative_paths=("molt-source-build-environment.json",),
+                    admitted_site_bootstrap_paths=bootstrap,
+                    admitted_external_roots=args.admit_external_root,
+                    capture_context=context,
+                    with_custody=args.with_custody,
+                )
+            if args.runtime_session:
+                _serve_runtime_session(
+                    payload, context, requests=sys.stdin, responses=sys.stdout
+                )
+                return
     print(json.dumps(payload, allow_nan=False, separators=(",", ":"), sort_keys=True))
 
 

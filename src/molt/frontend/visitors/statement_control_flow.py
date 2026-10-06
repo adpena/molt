@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ast
 from functools import wraps
-from typing import Any, Callable
+from typing import Any, Callable, Concatenate, ParamSpec
 
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.compiler_analysis.static_truth import static_expression_result
@@ -26,14 +26,19 @@ from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 
 
+_VisitorArgs = ParamSpec("_VisitorArgs")
+
+
 def _with_module_provenance_loop_flow(
-    visitor: Callable[[Any, Any], None],
-) -> Callable[[Any, Any], None]:
+    visitor: Callable[Concatenate[Any, _VisitorArgs], None],
+) -> Callable[Concatenate[Any, _VisitorArgs], None]:
     @wraps(visitor)
-    def wrapped(self: Any, node: Any) -> None:
+    def wrapped(
+        self: Any, *args: _VisitorArgs.args, **kwargs: _VisitorArgs.kwargs
+    ) -> None:
         flow = self._begin_module_provenance_flow(record_exception_prefixes=True)
         try:
-            return visitor(self, node)
+            return visitor(self, *args, **kwargs)
         finally:
             self._finish_module_provenance_flow(flow)
 
@@ -194,14 +199,14 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         self._emit_context_body(node, enter_val, action)
         return None
 
-    @_with_module_provenance_loop_flow
     def visit_For(self, node: ast.For) -> None:
+        return self._visit_for(node)
+
+    @_with_module_provenance_loop_flow
+    def _visit_for(self, node: ast.For, *, iterator: MoltValue | None = None) -> None:
         self._prepare_exact_class_loop_entry(node.body)
         exact_assigned = self._collect_assigned_names(node.body + node.orelse)
         exact_assigned.update(self._collect_target_names(node.target))
-        if self._emit_split_dict_increment_for_loop(node):
-            self._clear_exact_bindings(exact_assigned)
-            return None
         break_name: ScratchCell | None = None
         if node.orelse:
             break_init = MoltValue(self.next_var(), type_hint="bool")
@@ -218,333 +223,55 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         assigned = self._collect_assigned_names(node.body)
         assigned.update(target_names)
         self._prepare_mutable_control_flow_bindings(assigned)
-        reduction = None
-        # The vector/reduction fast paths (VEC_SUM/VEC_PROD/VEC_MIN/VEC_MAX)
-        # collapse an accumulator loop into a single op and elide the
-        # per-iteration loop-target binding — sound only when that target's
-        # final value is dead after the loop.  Inside a class body the loop
-        # target is ALWAYS observable (it is bound into the class namespace, and
-        # may be read, ``del``'d, or end up as a class attribute), so these
-        # rewrites would drop a required binding.  Disable them for class-body
-        # loops; the ordinary loop lowering (which binds the target into the
-        # namespace each iteration) is used instead.  (P0 #50.)
-        if (
+        if iterator is not None:
+            # A generator expression acquired its outer iterator in the
+            # enclosing frame. Consume that value, never re-evaluate or apply
+            # source-expression optimizations to the original iterable here.
+            self._emit_iter_loop(node, iterator, loop_break_flag=break_name)
+            if break_name is not None:
+                self._emit_loop_orelse(break_name, node.orelse)
+            self._clear_exact_bindings(exact_assigned)
+            return None
+        # A fused loop (the VEC_* reductions, the split/count kernel) runs
+        # items in a runtime operation, which admits them only when they
+        # provably run no Python code, and then binds the loop target once, to
+        # the last item's value. That single store stands in for one store per
+        # item only in a function body: a class body's namespace may be any
+        # mapping whose __setitem__ observes every store (P0 #50), and a
+        # module's loop target is a module global, which the reductions do not
+        # read. A fused path consumes the loop's own, single evaluation of its
+        # iterable.
+        fuse = (
             not self.is_async()
-            and isinstance(node.target, ast.Name)
             and not self._class_ns_stack
+            and self.current_func_name != "molt_main"
+        )
+        if fuse and self._emit_split_dict_increment_for_loop(
+            node, loop_break_flag=break_name
         ):
-            reduction = self._match_indexed_vector_reduction_loop(node)
-            if reduction is None:
-                reduction = self._match_indexed_vector_minmax_loop(node)
-            if reduction is None:
-                reduction = self._match_iter_vector_reduction_loop(node)
-            if reduction is None:
-                reduction = self._match_iter_vector_minmax_loop(node)
-        if reduction is not None:
-            acc_name, seq_name, kind, start_expr = reduction
-            if seq_name in assigned:
-                reduction = None
-            else:
-                seq_val = self.locals.get(seq_name) or self.globals.get(seq_name)
-                if seq_val and seq_val.type_hint in {"list", "tuple", "range"}:
-                    acc_val = self._load_local_value(acc_name)
-                    if acc_val is not None:
-                        seq_arg = seq_val
-                        args = [seq_arg, acc_val]
-                        vec_kind: str | None = None
-                        elem_hint = self._container_elem_hint(seq_val)
-                        acc_num_hint = self._reduction_acc_numeric_hint(
-                            acc_name, acc_val
-                        )
-                        if seq_val.type_hint == "range":
-                            if kind == "sum" and start_expr is None:
-                                if acc_num_hint == "float":
-                                    vec_kind = "VEC_SUM_FLOAT_RANGE_ITER"
-                                else:
-                                    vec_kind = "VEC_SUM_INT_RANGE_ITER"
-                                if self.type_hint_policy == "trust":
-                                    vec_kind = f"{vec_kind}_TRUSTED"
-                        else:
-                            if kind == "sum" and acc_num_hint == "float":
-                                if elem_hint in {None, "int", "float"}:
-                                    vec_kind = "VEC_SUM_FLOAT"
-                                    if start_expr is not None:
-                                        vec_kind = "VEC_SUM_FLOAT_RANGE"
-                                    if self.type_hint_policy == "trust":
-                                        vec_kind = f"{vec_kind}_TRUSTED"
-                            else:
-                                vec_kind = {
-                                    "sum": "VEC_SUM_INT",
-                                    "prod": "VEC_PROD_INT",
-                                    "min": "VEC_MIN_INT",
-                                    "max": "VEC_MAX_INT",
-                                }.get(kind, "VEC_SUM_INT")
-                            if (
-                                kind == "prod"
-                                and elem_hint == "int"
-                                and not self._is_flat_list_int_container(seq_val)
-                            ):
-                                seq_arg = self._emit_intarray_from_seq(seq_val)
-                                args[0] = seq_arg
-                            if (
-                                start_expr is not None
-                                and vec_kind is not None
-                                and vec_kind.startswith("VEC_")
-                                and "FLOAT" not in vec_kind
-                            ):
-                                vec_kind = f"{vec_kind}_RANGE"
-                            if (
-                                self.type_hint_policy == "trust"
-                                and elem_hint == "int"
-                                and vec_kind is not None
-                                and "FLOAT" not in vec_kind
-                            ):
-                                vec_kind = f"{vec_kind}_TRUSTED"
-                        if vec_kind is None:
-                            pass
-                        else:
-                            zero = MoltValue(self.next_var(), type_hint="int")
-                            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-                            one = MoltValue(self.next_var(), type_hint="int")
-                            self.emit(MoltOp(kind="CONST", args=[1], result=one))
-                            pair = MoltValue(self.next_var(), type_hint="tuple")
-                            if start_expr is not None:
-                                start_val = self.visit(start_expr)
-                                if start_val is None:
-                                    raise FrontendRejection(
-                                        Diagnostic.OPERAND_VALUE,
-                                        "Unsupported range start for vector reduction",
-                                    )
-                                args.append(start_val)
-                            self.emit(MoltOp(kind=vec_kind, args=args, result=pair))
-                            sum_hint = (
-                                "float"
-                                if vec_kind is not None and "FLOAT" in vec_kind
-                                else "int"
-                            )
-                            sum_val = MoltValue(self.next_var(), type_hint=sum_hint)
-                            self.emit(
-                                MoltOp(kind="INDEX", args=[pair, zero], result=sum_val)
-                            )
-                            ok_val = MoltValue(self.next_var(), type_hint="bool")
-                            self.emit(
-                                MoltOp(kind="INDEX", args=[pair, one], result=ok_val)
-                            )
-                            self.emit(
-                                MoltOp(
-                                    kind="IF", args=[ok_val], result=MoltValue("none")
-                                )
-                            )
-                            self._store_local_value(acc_name, sum_val)
-                            self.emit(
-                                MoltOp(kind="ELSE", args=[], result=MoltValue("none"))
-                            )
-                            range_args = self._parse_range_call(node.iter)
-                            if range_args is not None:
-                                start, stop, step, lowerable = range_args
-                                if lowerable:
-                                    self._emit_range_loop(
-                                        node,
-                                        start,
-                                        stop,
-                                        step,
-                                        loop_break_flag=break_name,
-                                    )
-                                else:
-                                    iterable = self._emit_range_obj_from_args(
-                                        start, stop, step
-                                    )
-                                    self._emit_for_loop(
-                                        node, iterable, loop_break_flag=break_name
-                                    )
-                            else:
-                                iterable = self._load_local_value(seq_name) or seq_val
-                                self._emit_for_loop(
-                                    node, iterable, loop_break_flag=break_name
-                                )
-                            self.emit(
-                                MoltOp(kind="END_IF", args=[], result=MoltValue("none"))
-                            )
-                            if break_name is not None:
-                                self._emit_loop_orelse(break_name, node.orelse)
-                            self._clear_exact_bindings(exact_assigned)
-                            return None
+            if break_name is not None:
+                self._emit_loop_orelse(break_name, node.orelse)
+            self._clear_exact_bindings(exact_assigned)
+            return None
+        iterable: MoltValue | None = None
         range_args = self._parse_range_call(node.iter)
-        if range_args is not None:
-            start, stop, step, lowerable = range_args
-            if lowerable:
-                # Vector reductions elide the per-iteration loop-target binding;
-                # in a class body that target must persist into the namespace.
-                # (P0 #50.)
-                _skip_vec = self.is_async() or bool(self._class_ns_stack)
-                vector_info = (
-                    None if _skip_vec else self._match_vector_reduction_loop(node)
-                )
-                minmax_info = (
-                    None if _skip_vec else self._match_vector_minmax_loop(node)
-                )
-                if vector_info is None:
-                    vector_info = minmax_info
-                if vector_info:
-                    acc_name, item_name, kind = vector_info
-                    target_id = (
-                        node.target.id if isinstance(node.target, ast.Name) else None
-                    )
-                    if (
-                        kind == "sum"
-                        and target_id is not None
-                        and item_name == target_id
-                    ):
-                        acc_val = self._load_local_value(acc_name)
-                        if acc_val is not None:
-                            seq_arg = self._emit_range_obj_from_args(start, stop, step)
-                            acc_num_hint = self._reduction_acc_numeric_hint(
-                                acc_name, acc_val
-                            )
-                            vec_kind = "VEC_SUM_INT_RANGE_ITER"
-                            if acc_num_hint == "float":
-                                vec_kind = "VEC_SUM_FLOAT_RANGE_ITER"
-                            if self.type_hint_policy == "trust":
-                                vec_kind = f"{vec_kind}_TRUSTED"
-                            zero = MoltValue(self.next_var(), type_hint="int")
-                            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-                            one = MoltValue(self.next_var(), type_hint="int")
-                            self.emit(MoltOp(kind="CONST", args=[1], result=one))
-                            pair = MoltValue(self.next_var(), type_hint="tuple")
-                            self.emit(
-                                MoltOp(
-                                    kind=vec_kind,
-                                    args=[seq_arg, acc_val],
-                                    result=pair,
-                                )
-                            )
-                            sum_hint = "float" if "FLOAT" in vec_kind else "int"
-                            sum_val = MoltValue(self.next_var(), type_hint=sum_hint)
-                            self.emit(
-                                MoltOp(kind="INDEX", args=[pair, zero], result=sum_val)
-                            )
-                            ok_val = MoltValue(self.next_var(), type_hint="bool")
-                            self.emit(
-                                MoltOp(kind="INDEX", args=[pair, one], result=ok_val)
-                            )
-                            self.emit(
-                                MoltOp(
-                                    kind="IF", args=[ok_val], result=MoltValue("none")
-                                )
-                            )
-                            self._store_local_value(acc_name, sum_val)
-                            self.emit(
-                                MoltOp(kind="ELSE", args=[], result=MoltValue("none"))
-                            )
-                            self._emit_range_loop(
-                                node,
-                                start,
-                                stop,
-                                step,
-                                loop_break_flag=break_name,
-                            )
-                            self.emit(
-                                MoltOp(kind="END_IF", args=[], result=MoltValue("none"))
-                            )
-                            if break_name is not None:
-                                self._emit_loop_orelse(break_name, node.orelse)
-                            self._clear_exact_bindings(exact_assigned)
-                            return None
-                self._emit_range_loop(
-                    node, start, stop, step, loop_break_flag=break_name
-                )
-                if break_name is not None:
-                    self._emit_loop_orelse(break_name, node.orelse)
-                self._clear_exact_bindings(exact_assigned)
-                return None
-            iterable = self._emit_range_obj_from_args(start, stop, step)
-        else:
-            iterable = None
-        if iterable is None:
+        if range_args is None:
             iterable = self.visit(node.iter)
-        if iterable is None:
-            raise FrontendRejection(
-                Diagnostic.OPERAND_VALUE, "Unsupported iterable in for loop"
+            if iterable is None:
+                raise FrontendRejection(
+                    Diagnostic.OPERAND_VALUE, "Unsupported iterable in for loop"
+                )
+        else:
+            # The bounds are range()'s exact ints: the loop counts over them.
+            start, stop, step = range_args
+            self._emit_range_loop(node, start, stop, step, loop_break_flag=break_name)
+        if iterable is not None and not (
+            fuse
+            and self._emit_iterable_vector_reduction(
+                node, iterable, loop_break_flag=break_name
             )
-        # Vector reductions elide the per-iteration loop-target binding; in a
-        # class body that target must persist into the namespace.  (P0 #50.)
-        _skip_vec = self.is_async() or bool(self._class_ns_stack)
-        vector_info = None if _skip_vec else self._match_vector_reduction_loop(node)
-        minmax_info = None if _skip_vec else self._match_vector_minmax_loop(node)
-        if vector_info is None:
-            vector_info = minmax_info
-        if (
-            vector_info
-            and iterable.type_hint in {"list", "tuple", "range"}
-            and self._iterable_is_indexable(iterable)
         ):
-            acc_name, _, kind = vector_info
-            acc_val = self._load_local_value(acc_name)
-            if acc_val is not None:
-                seq_arg = iterable
-                vec_kind: str | None = None
-                acc_num_hint = self._reduction_acc_numeric_hint(acc_name, acc_val)
-                if iterable.type_hint == "range":
-                    if kind == "sum":
-                        if acc_num_hint == "float":
-                            vec_kind = "VEC_SUM_FLOAT_RANGE_ITER"
-                        else:
-                            vec_kind = "VEC_SUM_INT_RANGE_ITER"
-                        if self.type_hint_policy == "trust":
-                            vec_kind = f"{vec_kind}_TRUSTED"
-                else:
-                    elem_hint = self._container_elem_hint(iterable)
-                    if kind == "sum" and acc_num_hint == "float":
-                        if elem_hint in {None, "int", "float"}:
-                            vec_kind = "VEC_SUM_FLOAT"
-                            if self.type_hint_policy == "trust":
-                                vec_kind = f"{vec_kind}_TRUSTED"
-                    else:
-                        vec_kind = {
-                            "sum": "VEC_SUM_INT",
-                            "prod": "VEC_PROD_INT",
-                            "min": "VEC_MIN_INT",
-                            "max": "VEC_MAX_INT",
-                        }.get(kind, "VEC_SUM_INT")
-                        if (
-                            kind == "prod"
-                            and elem_hint == "int"
-                            and not self._is_flat_list_int_container(iterable)
-                        ):
-                            seq_arg = self._emit_intarray_from_seq(iterable)
-                        if self.type_hint_policy == "trust" and elem_hint == "int":
-                            vec_kind = f"{vec_kind}_TRUSTED"
-                if vec_kind is not None:
-                    zero = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-                    one = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="CONST", args=[1], result=one))
-                    pair = MoltValue(self.next_var(), type_hint="tuple")
-                    self.emit(
-                        MoltOp(kind=vec_kind, args=[seq_arg, acc_val], result=pair)
-                    )
-                    sum_hint = (
-                        "float"
-                        if vec_kind is not None and "FLOAT" in vec_kind
-                        else "int"
-                    )
-                    sum_val = MoltValue(self.next_var(), type_hint=sum_hint)
-                    self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=sum_val))
-                    ok_val = MoltValue(self.next_var(), type_hint="bool")
-                    self.emit(MoltOp(kind="INDEX", args=[pair, one], result=ok_val))
-                    self.emit(
-                        MoltOp(kind="IF", args=[ok_val], result=MoltValue("none"))
-                    )
-                    self._store_local_value(acc_name, sum_val)
-                    self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-                    self._emit_for_loop(node, iterable, loop_break_flag=break_name)
-                    self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-                    if break_name is not None:
-                        self._emit_loop_orelse(break_name, node.orelse)
-                    self._clear_exact_bindings(exact_assigned)
-                    return None
-
-        self._emit_for_loop(node, iterable, loop_break_flag=break_name)
+            self._emit_for_loop(node, iterable, loop_break_flag=break_name)
         if break_name is not None:
             self._emit_loop_orelse(break_name, node.orelse)
         self._clear_exact_bindings(exact_assigned)
@@ -567,108 +294,62 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             # In a class body the loop index name must persist into the class
             # namespace; the counted-while fold elides it.  (P0 #50.)
             or self._class_ns_stack
+            or self.is_async()
             else self._match_counted_while(node)
         )
-        if counted is not None and not self.is_async():
-            index_name, bound, body = counted
+        if counted is not None:
+            index, bound, body = counted
+            assigned = self._collect_assigned_names(node.body)
+            assigned |= set(self._collect_namedexpr_names(node.test))
+            self._prepare_mutable_control_flow_bindings(assigned)
             bytearray_fill = self._match_bytearray_fill_counted_while(
-                index_name, bound, body
+                index, bound, body
             )
             if bytearray_fill is not None:
-                container_name, start, stop, fill = bytearray_fill
-                container = self._load_local_value(container_name)
-                if container is None:
-                    raise FrontendRejection(
-                        Diagnostic.INTERNAL_INVARIANT,
-                        "bytearray fill target not initialized",
-                    )
-                start_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[start], result=start_val))
-                stop_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[stop], result=stop_val))
-                fill_val = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[fill], result=fill_val))
-                self.emit(
-                    MoltOp(
-                        kind="BYTEARRAY_FILL_RANGE",
-                        args=[container, start_val, stop_val, fill_val],
-                        result=MoltValue("none"),
-                    )
+                container_read, fill = bytearray_fill
+                self._emit_bytearray_fill_while(
+                    index,
+                    bound,
+                    container_read,
+                    fill,
+                    lambda: self._emit_while_loop(node, None, assigned),
                 )
-                idx_res = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[stop], result=idx_res))
-                self._store_local_value(index_name, idx_res)
                 self._clear_exact_bindings(exact_assigned)
                 return None
-            acc_name = self._match_counted_while_sum(index_name, body)
-            if acc_name is not None:
-                start_val = self._load_local_value(index_name)
-                if start_val is None:
-                    start_const = 0
-                else:
-                    start_const = self.const_ints.get(start_val.name)
-                acc_val = self._load_local_value(acc_name)
-                acc_const = None
-                if acc_val is not None:
-                    acc_const = self.const_ints.get(acc_val.name)
-                if start_const is not None and acc_const is not None:
-                    # Guard the empty-loop case: when start_const >= bound the
-                    # loop runs zero times, so the accumulator is unchanged. The
-                    # arithmetic-series closed form below assumes >=1 iteration;
-                    # without this guard span goes negative and the fold emits a
-                    # silently-wrong sum (e.g. start=10,bound=5 -> -35 instead of
-                    # 0). Mirrors the already-correct const_inc fast path and the
-                    # final_index guard just below.
-                    if start_const < bound:
-                        span = bound - start_const
-                        sum_val = span * (start_const + bound - 1) // 2
-                    else:
-                        sum_val = 0
-                    final_val = acc_const + sum_val
-                    acc_res = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="CONST", args=[final_val], result=acc_res))
-                    self._store_local_value(acc_name, acc_res)
-                    final_index = bound if start_const < bound else start_const
-                    idx_res = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="CONST", args=[final_index], result=idx_res))
-                    self._store_local_value(index_name, idx_res)
-                    self._clear_exact_bindings(exact_assigned)
-                    return None
-            const_inc = self._match_counted_while_const_increment(body)
-            if const_inc is not None:
-                acc_name, delta = const_inc
-                start_val = self._load_local_value(index_name)
-                if start_val is None:
-                    start_const = 0
-                else:
-                    start_const = self.const_ints.get(start_val.name)
-                acc_val = self._load_local_value(acc_name)
-                acc_const = None
-                if acc_val is not None:
-                    acc_const = self.const_ints.get(acc_val.name)
-                if start_const is not None and acc_const is not None:
-                    if start_const < bound:
-                        span = bound - start_const
-                    else:
-                        span = 0
-                    final_val = acc_const + span * delta
-                    acc_res = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="CONST", args=[final_val], result=acc_res))
-                    self._store_local_value(acc_name, acc_res)
-                    final_index = bound if start_const < bound else start_const
-                    idx_res = MoltValue(self.next_var(), type_hint="int")
-                    self.emit(MoltOp(kind="CONST", args=[final_index], result=idx_res))
-                    self._store_local_value(index_name, idx_res)
-                    self._clear_exact_bindings(exact_assigned)
-                    return None
-            assigned = self._collect_assigned_names(node.body)
-            self._prepare_mutable_control_flow_bindings(assigned)
-            self._emit_counted_while(index_name, bound, body)
-            self._clear_exact_bindings(exact_assigned)
-            return None
+            # The test's read of the index is the loop's first read of it.
+            index_value = self._load_local_value(
+                index.id,
+                binding_invalidated=self._expression_has_invalidated_binding(index),
+            )
+            if index_value is not None:
+                # LOOP_INDEX_START tells the representation plan its operand is
+                # an int, so only an exact int start may count; any other start
+                # runs the ordinary loop, which re-reads the index itself.
+                exact_start = self._emit_is_exact_builtin(index_value, "int")
+                self.emit(
+                    MoltOp(kind="IF", args=[exact_start], result=MoltValue("none"))
+                )
+                self._emit_counted_while(index.id, index_value, bound, body)
+                self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+                self._emit_while_loop(node, None, assigned)
+                self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+                self._clear_exact_bindings(exact_assigned)
+                return None
         assigned = self._collect_assigned_names(node.body)
         assigned |= set(self._collect_namedexpr_names(node.test))
         self._prepare_mutable_control_flow_bindings(assigned)
+        self._emit_while_loop(node, break_name, assigned)
+        self._clear_exact_bindings(exact_assigned)
+        return None
+
+    def _emit_while_loop(
+        self,
+        node: ast.While,
+        break_name: ScratchCell | None,
+        assigned: set[str],
+    ) -> None:
+        """The ordinary ``while`` loop, its ``else`` clause included, after the
+        caller prepared the loop's mutable bindings."""
         guard_map = self._emit_hoisted_loop_guards(node.body)
 
         def emit_loop_body() -> None:
@@ -706,17 +387,8 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             emit_loop_body()
             self._pop_loop_guard_assumptions()
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            # Re-evict module-backed mutation names (same fix as below)
-            if self.current_func_name == "molt_main":
-                for name in assigned:
-                    if name in self.module_global_mutations:
-                        self.locals.pop(name, None)
-            if break_name is not None:
-                self._emit_loop_orelse(break_name, node.orelse)
-            self._clear_exact_bindings(exact_assigned)
-            return None
-
-        emit_loop_body()
+        else:
+            emit_loop_body()
         # Re-evict module-backed mutation names from self.locals.
         # The loop body may have re-added them via _store_local_value,
         # but post-loop code must read them via module_get_global to see
@@ -728,8 +400,6 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                     self.locals.pop(name, None)
         if break_name is not None:
             self._emit_loop_orelse(break_name, node.orelse)
-        self._clear_exact_bindings(exact_assigned)
-        return None
 
     def visit_Try(self, node: ast.Try) -> None:
         if not node.handlers and not node.finalbody:
@@ -880,6 +550,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             if handler.name:
                 if self.current_func_name == "molt_main":
                     self.module_global_mutations.add(handler.name)
+                self._clear_import_binding_origin(handler.name)
                 self._store_local_value(handler.name, exc_val)
             exc_entry = ActiveException(
                 value=exc_val,
@@ -1325,6 +996,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                 if handler.name:
                     if self.current_func_name == "molt_main":
                         self.module_global_mutations.add(handler.name)
+                    self._clear_import_binding_origin(handler.name)
                     self._store_local_value(handler.name, match_val)
                 exc_entry = ActiveException(
                     value=match_val,
@@ -1692,6 +1364,14 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             should_exit = len(self.try_end_labels) > self.try_suppress_depth
 
         def emit_raise_or_defer(exc: MoltValue) -> None:
+            if node.exc is not None:
+                self.emit(
+                    MoltOp(
+                        kind="CALL",
+                        args=["molt_exception_trace_prepend", exc],
+                        result=MoltValue(self.next_var(), type_hint="None"),
+                    )
+                )
             if should_exit:
                 self.emit(MoltOp(kind="RAISE", args=[exc], result=MoltValue("none")))
             else:
@@ -1756,6 +1436,25 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         exc_val = emit_exception_value(node.exc, allow_none=False, context="raise")
         if exc_val is None:
             return None
+        # Python evaluates both expressions before constructing either class.
+        # MISSING distinguishes absence of `from` from explicit `from None`.
+        if node.cause is not None:
+            cause_val = emit_exception_value(
+                node.cause, allow_none=True, context="raise cause"
+            )
+            if cause_val is None:
+                return None
+        else:
+            cause_val = self._emit_missing_value()
+        prepared = MoltValue(self.next_var(), type_hint="exception")
+        self.emit(
+            MoltOp(
+                kind="CALL",
+                args=["molt_exception_prepare_raise", exc_val, cause_val],
+                result=prepared,
+            )
+        )
+        exc_val = prepared
         if clear_handlers:
             self.emit(
                 MoltOp(
@@ -1773,19 +1472,6 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                 MoltOp(
                     kind="SETATTR_GENERIC_OBJ",
                     args=[exc_val, "__context__", context_val],
-                    result=MoltValue("none"),
-                )
-            )
-        if node.cause is not None:
-            cause_val = emit_exception_value(
-                node.cause, allow_none=True, context="raise cause"
-            )
-            if cause_val is None:
-                return None
-            self.emit(
-                MoltOp(
-                    kind="EXCEPTION_SET_CAUSE",
-                    args=[exc_val, cause_val],
                     result=MoltValue("none"),
                 )
             )

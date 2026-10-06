@@ -33,6 +33,7 @@ impl LuauBackend {
             source_file: func.source_file.clone(),
             is_extern: func.is_extern,
             codegen_partition: func.codegen_partition,
+            parameter_custody: func.parameter_custody.clone(),
             execution_context: func.execution_context,
         };
         self.scalar_plan = ScalarRepresentationPlan::for_function_ir_for_target(
@@ -85,8 +86,14 @@ impl LuauBackend {
         // Reset per-function state.
         self.hoisted_vars.clear();
         self.tuple_vars.clear();
-        self.has_local_frame_context =
-            inherits_frame_context || ops.iter().any(|op| op.kind == "trace_enter_slot");
+        let owns_frame_context = ops.iter().any(|op| op.kind == "trace_enter_slot");
+        self.has_local_frame_context = inherits_frame_context || owns_frame_context;
+        if owns_frame_context {
+            if !inherits_frame_context {
+                self.emit_line("local __molt_frame_context");
+            }
+            self.emit_line("local __molt_frame_depth, __molt_frame_code, __molt_frame_owner");
+        }
         self.nonneg_consts.clear();
         self.scope_local_count = 0;
         self.func_body_indent = self.indent as u32;
@@ -133,6 +140,39 @@ impl LuauBackend {
             for var in &closure_slots {
                 self.emit_line(&format!("local {var}"));
             }
+        }
+
+        // A synchronous Python frame's binding homes: one table per call, code
+        // slot `n` at index `n + 1`, each unbound (the missing sentinel) until
+        // a store binds it.
+        if let Some(last_slot) = ops
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op.kind.as_str(),
+                    "frame_home_store"
+                        | "frame_home_cell"
+                        | "frame_home_private_cell"
+                        | "frame_home_load"
+                        | "frame_home_take"
+                        | "frame_home_clear"
+                )
+            })
+            .filter_map(|op| op.value)
+            .max()
+        {
+            self.emit_line(&format!(
+                "local __molt_homes = table.create({}, molt_missing_sentinel)",
+                last_slot + 1
+            ));
+        }
+        // Before PEP 667 an activation's `locals()` is one dict, created by
+        // its first call.
+        if ops
+            .iter()
+            .any(|op| op.kind == "frame_locals" && op.value == Some(1))
+        {
+            self.emit_line("local __molt_locals_dict: {[any]: any}? = nil");
         }
 
         // Pre-scan: collect variables defined by const/const_int with non-negative values.

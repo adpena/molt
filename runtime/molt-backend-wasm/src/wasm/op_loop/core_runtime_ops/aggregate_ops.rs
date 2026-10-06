@@ -31,6 +31,7 @@ impl AggregateRuntimeContext<'_> {
             import_ids: self.import_ids,
             locals: self.locals,
             reloc_enabled: self.reloc_enabled,
+            guard_profile_local: None,
         }
     }
 }

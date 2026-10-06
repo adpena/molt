@@ -38,13 +38,13 @@ def test_guard_loader_rejects_foreign_dependency(monkeypatch, tmp_path, dependen
 def test_guard_loader_reports_installed_package_without_source_tools(
     monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(
-        process_guard,
-        "__file__",
-        str(tmp_path / "site-packages" / "molt" / "process_guard.py"),
-    )
-    with pytest.raises(RuntimeError, match="repository guard tools are unavailable"):
+    # Explicit compiler-source selection owns admission; a guest's cwd and
+    # the loader's code path cannot silently select a different source tree.
+    selected = tmp_path / "installed-source"
+    monkeypatch.setenv("MOLT_SOURCE_ROOT", str(selected))
+    with pytest.raises(RuntimeError, match="guard tools are unavailable"):
         process_guard.load_harness_memory_guard(tmp_path)
+    assert process_guard.compiler_source_root() == selected
 
 
 @pytest.mark.parametrize("nested", [True, False])
@@ -263,3 +263,27 @@ def test_guarded_check_failure_preserves_terminal_telemetry() -> None:
 
     assert raised.value.returncode == 125
     assert getattr(raised.value, "guarded_result") is guarded_result
+
+
+def test_captured_command_retains_progress_and_terminal_result():
+    calls = []
+    terminal = subprocess.CompletedProcess(["compiler"], 7, "output", "error")
+
+    class Context:
+        @classmethod
+        def from_env(cls, *_args, **_kwargs):
+            return cls()
+
+        def run(self, command, **kwargs):
+            calls.append(kwargs)
+            return terminal
+
+    result = process_guard.run_completed_command(
+        ["compiler"],
+        capture_output=True,
+        progress_label="Compiler build (release)",
+        guard_loader=lambda _cwd: SimpleNamespace(HarnessExecutionContext=Context),
+    )
+    assert result is terminal
+    assert calls[0]["progress_label"] == "Compiler build (release)"
+    assert (result.returncode, result.stdout, result.stderr) == (7, "output", "error")

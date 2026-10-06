@@ -1,4 +1,5 @@
 use super::*;
+use crate::builtins::functions::native_callable::NativeCallableKind;
 
 struct AttrValue {
     bits: u64,
@@ -34,7 +35,7 @@ fn dynamic_class_attr_set(_py: &PyToken<'_>, obj_bits: u64, name: &str, value_bi
     let Some(name_bits) = attr_name_bits_from_bytes(_py, name.as_bytes()) else {
         return false;
     };
-    let _ = molt_object_setattr(obj_bits, name_bits, value_bits);
+    let _ = molt_set_attr_name(obj_bits, name_bits, value_bits);
     dec_ref_bits(_py, name_bits);
     !exception_pending(_py)
 }
@@ -628,45 +629,45 @@ pub(crate) fn dynamic_class_attribute_class(_py: &PyToken<'_>) -> u64 {
     let methods = [
         RuntimeClassMethodSpec::with_signature(
             "__init__",
-            &state.dynamic_class_attribute_init_fn,
+            NativeCallableKind::WrapperDescriptor,
             molt_types_dynamic_class_attr_init as *const () as usize as u64,
             3,
             signature,
         ),
         RuntimeClassMethodSpec::with_signature(
             "__get__",
-            &state.dynamic_class_attribute_get_fn,
+            NativeCallableKind::WrapperDescriptor,
             molt_types_dynamic_class_attr_get as *const () as usize as u64,
             3,
             signature,
         ),
         RuntimeClassMethodSpec::fixed(
             "__set__",
-            &state.dynamic_class_attribute_set_fn,
+            NativeCallableKind::WrapperDescriptor,
             molt_types_dynamic_class_attr_set as *const () as usize as u64,
             3,
         ),
         RuntimeClassMethodSpec::fixed(
             "__delete__",
-            &state.dynamic_class_attribute_delete_fn,
+            NativeCallableKind::WrapperDescriptor,
             molt_types_dynamic_class_attr_delete as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             "getter",
-            &state.dynamic_class_attribute_getter_fn,
+            NativeCallableKind::MethodDescriptor,
             molt_types_dynamic_class_attr_getter as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             "setter",
-            &state.dynamic_class_attribute_setter_fn,
+            NativeCallableKind::MethodDescriptor,
             molt_types_dynamic_class_attr_setter as *const () as usize as u64,
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             "deleter",
-            &state.dynamic_class_attribute_deleter_fn,
+            NativeCallableKind::MethodDescriptor,
             molt_types_dynamic_class_attr_deleter as *const () as usize as u64,
             2,
         ),
@@ -675,8 +676,12 @@ pub(crate) fn dynamic_class_attribute_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &state.dynamic_class_attribute_class,
         "DynamicClassAttribute",
-        8,
-        None,
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::heap(false, true),
+            layout_size: 8,
+            instance_shape: None,
+            native_slots: None,
+        },
         &methods,
     )
 }

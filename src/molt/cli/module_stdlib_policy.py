@@ -2,18 +2,19 @@ from __future__ import annotations
 
 import functools
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 
-from molt.cli.compiler_metadata import _compiler_root
 from molt.cli.config_resolution import (
     AUTO_STDLIB_PROFILE,
     DEFAULT_STDLIB_PROFILE,
     MOLT_STDLIB_PROFILE_ENV,
 )
 from molt.cli import module_resolution as _module_resolution
+from molt.cli import module_graph_cache as _module_graph_cache
+from molt.cli.cache_fingerprints import _source_tree_fingerprint_transaction
 from molt.cli.output import fail as _fail
-from molt.source_root import compiler_source_root_override
+from molt.source_root import compiler_source_root
 from molt.target_python import TargetPythonVersion
 from molt import stdlib_intrinsic_policy as _stdlib_intrinsic_policy
 
@@ -26,9 +27,6 @@ _classify_stdlib_module_statuses = (
 _is_fail_closed_import_policy_gate = (
     _stdlib_intrinsic_policy.is_fail_closed_import_policy_gate
 )
-_same_package_intrinsic_import_closure = (
-    _stdlib_intrinsic_policy.same_package_intrinsic_import_closure
-)
 _stdlib_module_intrinsic_status = (
     _stdlib_intrinsic_policy.stdlib_module_intrinsic_status
 )
@@ -36,15 +34,9 @@ _stdlib_module_static_imports = _stdlib_intrinsic_policy.stdlib_module_static_im
 
 
 @functools.lru_cache(maxsize=8)
-def _stdlib_allowlist_cached(source_root_text: str | None) -> frozenset[str]:
+def _stdlib_allowlist_cached(source_text: str) -> frozenset[str]:
     allowlist: set[str] = set()
-    source_root = Path(source_root_text) if source_root_text else _compiler_root()
-    spec_path = (
-        source_root / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
-    )
-    if not spec_path.exists():
-        return frozenset(allowlist)
-    for line in spec_path.read_text().splitlines():
+    for line in source_text.splitlines():
         if not line.startswith("|"):
             continue
         if line.startswith("| ---"):
@@ -63,18 +55,26 @@ def _stdlib_allowlist_cached(source_root_text: str | None) -> frozenset[str]:
 
 
 def _stdlib_allowlist() -> set[str]:
-    source_root = compiler_source_root_override()
-    return set(
-        _stdlib_allowlist_cached(os.fspath(source_root) if source_root else None)
+    spec_path = (
+        compiler_source_root()
+        / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
     )
+    if not spec_path.exists():
+        return set()
+    # Only parsing is cached. Root selection and policy bytes stay live,
+    # including same-size edits with restored modification timestamps.
+    return set(_stdlib_allowlist_cached(spec_path.read_text()))
 
 
+@_source_tree_fingerprint_transaction()
 def _enforce_intrinsic_stdlib(
     module_graph: dict[str, Path],
     stdlib_root: Path,
     json_output: bool,
     *,
     target_python: TargetPythonVersion,
+    project_root: Path | None = None,
+    operation_counts: MutableMapping[str, int] | None = None,
 ) -> int | None:
     missing: list[str] = []
     probe_only: list[str] = []
@@ -91,6 +91,16 @@ def _enforce_intrinsic_stdlib(
     classification = _classify_stdlib_module_statuses(
         stdlib_modules,
         target_python=target_python,
+        facts_provider=(
+            functools.partial(
+                _module_graph_cache._stdlib_intrinsic_source_facts,
+                project_root,
+                target_python=target_python,
+                operation_counts=operation_counts,
+            )
+            if project_root is not None
+            else None
+        ),
     )
     for name, status in classification.statuses.items():
         if status == "python-only":
@@ -142,10 +152,21 @@ _CORE_STDLIB_MODULES_MICRO = (
 def _core_stdlib_module_names_for_profile(
     stdlib_profile: str | None,
 ) -> tuple[str, ...]:
+    from molt.frontend._types import BUILTIN_FUNC_SPECS
+
     profile = stdlib_profile or DEFAULT_STDLIB_PROFILE
     if profile in {AUTO_STDLIB_PROFILE, "micro", "edge", "standard", "server"}:
-        return _CORE_STDLIB_MODULES_MICRO
-    return _CORE_STDLIB_MODULES_FULL
+        core = _CORE_STDLIB_MODULES_MICRO
+    else:
+        core = _CORE_STDLIB_MODULES_FULL
+    # Native public callables retain their real provider module. Include those
+    # initializers in the module inventory without emitting an eager import.
+    # Runtime publication initializes a provider only when the target resolver
+    # admits its callable; e.g. a Pure WASM guest must not initialize file I/O.
+    providers = sorted(
+        {spec.module for spec in BUILTIN_FUNC_SPECS.values()} - set(core)
+    )
+    return (*core, *providers)
 
 
 def _ensure_core_stdlib_modules(

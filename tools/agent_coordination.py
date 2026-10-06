@@ -28,9 +28,12 @@ if str(SRC_ROOT) not in sys.path:
 
 from molt import process_guard  # noqa: E402
 from molt.dx import DX_ENV_KEYS, RunContext, render_env  # noqa: E402
+from molt.portable_paths import portable_path_component, portable_relative_path  # noqa: E402
 from tools import check_instruction_hierarchy, claims_status  # noqa: E402
 
 LOG_ROOT = Path("logs/agents")
+COORDINATION_RECORD_GLOB = "*/coordination.json"
+COORDINATION_RECORD_SOURCE = f"{LOG_ROOT.as_posix()}/{COORDINATION_RECORD_GLOB}"
 CODEX_STALL_ROOT = LOG_ROOT / "codex_stall"
 CODEX_CRASH_ROOT = LOG_ROOT / "codex_crash"
 CANONICAL_ARTIFACT_ROOTS = (
@@ -56,6 +59,9 @@ AGENT_CONTEXT_DOCUMENTS = (
 CODEX_WINDOWS_CONTROL_C_EXIT = 3221225786
 CODEX_DEFAULT_PROMPT_LIMIT = 3
 ACTIVE_STATUSES = frozenset({"running", "paused", "blocked"})
+OWNERSHIP_REQUEST_STATUSES = frozenset(
+    {"pending", "acknowledged", "declined", "withdrawn"}
+)
 BROAD_ROLE = "broad-sweep coordinator"
 VALID_ROLES = (
     "implementer",
@@ -898,38 +904,52 @@ def _git_agent_context(
     }
 
 
-def _coordination_record_context(
-    repo_root: Path,
-    errors: list[dict[str, Any]],
+def _coordination_record_summary(
+    record: CoordinationRecord, repo_root: Path
 ) -> dict[str, Any]:
-    try:
-        records = load_records(repo_root)
-    except OSError as exc:
-        errors.append(_context_error("coordination.records", "read_error", exc))
-        return {
-            "source": "logs/agents/**/coordination.json",
-            "record_count": None,
-            "active_count": None,
-            "invalid_count": None,
-            "collision_count": None,
-            "active": [],
-            "invalid": [],
-            "collisions": [],
-        }
-    collisions = broad_lane_collisions(records, repo_root)
-    active = [
-        {
-            "task": record.task,
-            "status": record.status,
-            "proof_role": record.proof_role or "unknown",
-            "planned_proof_lane": record.planned_proof_lane or None,
-            "shared_target_root": record.shared_target_root or None,
-            "path": repo_relative(record.path, repo_root),
-        }
+    return {
+        "task": record.task,
+        "agent": record.payload.get("agent") or None,
+        "status": record.status,
+        "proof_role": record.proof_role or "unknown",
+        "planned_proof_lane": record.planned_proof_lane or None,
+        "shared_target_root": record.shared_target_root or None,
+        "owned_paths": record.payload.get("owned_paths", []),
+        "ownership_request": record.payload.get("ownership_request"),
+        "created_at_utc": record.payload.get("created_at_utc"),
+        "updated_at_utc": record.payload.get("updated_at_utc"),
+        "path": repo_relative(record.path, repo_root),
+    }
+
+
+def _pending_ownership_requests(
+    records: Sequence[CoordinationRecord], repo_root: Path
+) -> list[dict[str, Any]]:
+    # A blocked task is not itself an ownership request. Preserve historical
+    # records without manufacturing an action from their status or prose.
+    requests = [
+        _coordination_record_summary(record, repo_root)
         for record in records
         if record.active
+        and isinstance(request := record.payload.get("ownership_request"), dict)
+        and request.get("status") == "pending"
     ]
-    invalid = [
+    return sorted(
+        requests,
+        key=lambda item: (
+            datetime.fromisoformat(
+                item["ownership_request"]["requested_at_utc"].replace("Z", "+00:00")
+            ),
+            item["task"],
+        ),
+        reverse=True,
+    )
+
+
+def _invalid_coordination_records(
+    records: Sequence[CoordinationRecord], repo_root: Path
+) -> list[dict[str, Any]]:
+    return [
         {
             "task": record.task,
             "path": repo_relative(record.path, repo_root),
@@ -940,6 +960,51 @@ def _coordination_record_context(
         for record in records
         if record.status == "invalid"
     ]
+
+
+def _print_pending_ownership_requests(requests: Sequence[dict[str, Any]]) -> None:
+    print(f"pending ownership requests: {len(requests)}")
+    for record in requests:
+        request = record["ownership_request"]
+        print(
+            f"- task={record['task']} agent={record['agent'] or 'unknown'} "
+            f"status={record['status']} owner={request['owner']} "
+            f"request={request['status']} requested_at={request['requested_at_utc']} "
+            f"updated_at={record['updated_at_utc'] or 'unknown'}"
+        )
+        print(f"  requested: {', '.join(request['requested_paths'])}")
+        print(f"  owned: {', '.join(record['owned_paths']) or '(none)'}")
+        print(f"  record: {record['path']}")
+
+
+def _coordination_record_context(
+    repo_root: Path,
+    errors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    try:
+        records = load_records(repo_root)
+    except OSError as exc:
+        errors.append(_context_error("coordination.records", "read_error", exc))
+        return {
+            "source": COORDINATION_RECORD_SOURCE,
+            "record_count": None,
+            "active_count": None,
+            "invalid_count": None,
+            "collision_count": None,
+            "pending_ownership_request_count": None,
+            "pending_ownership_requests": [],
+            "active": [],
+            "invalid": [],
+            "collisions": [],
+        }
+    collisions = broad_lane_collisions(records, repo_root)
+    active = [
+        _coordination_record_summary(record, repo_root)
+        for record in records
+        if record.active
+    ]
+    requests = _pending_ownership_requests(records, repo_root)
+    invalid = _invalid_coordination_records(records, repo_root)
     for record in invalid:
         errors.append(
             _context_error(
@@ -957,11 +1022,13 @@ def _coordination_record_context(
             )
         )
     return {
-        "source": "logs/agents/**/coordination.json",
+        "source": COORDINATION_RECORD_SOURCE,
         "record_count": len(records),
         "active_count": len(active),
         "invalid_count": len(invalid),
         "collision_count": len(collisions),
+        "pending_ownership_request_count": len(requests),
+        "pending_ownership_requests": requests,
         "active": active,
         "invalid": invalid,
         "collisions": collisions,
@@ -1243,6 +1310,10 @@ def print_text_agent_context(payload: dict[str, Any]) -> None:
         "coordination records: total={record_count} active={active_count} "
         "invalid={invalid_count} collisions={collision_count}".format(**coordination)
     )
+    if coordination["pending_ownership_request_count"] is None:
+        print("pending ownership requests: unavailable")
+    else:
+        _print_pending_ownership_requests(coordination["pending_ownership_requests"])
     claims = payload["file_records"]["claims"]
     counts = claims.get("counts") or {"live": "?", "stale": "?", "retired": "?"}
     print(
@@ -1388,17 +1459,52 @@ def print_text_proof_plan(payload: dict[str, Any]) -> None:
 
 
 def validate_task_name(task: str) -> str:
-    normalized = task.strip().replace("\\", "/").strip("/")
-    if not normalized or normalized in {".", ".."}:
-        raise ValueError("task name must not be empty")
-    parts = normalized.split("/")
-    if any(part in {"", ".", ".."} for part in parts):
-        raise ValueError(f"task name must stay under logs/agents: {task!r}")
-    return normalized
+    try:
+        portable_path_component(task)
+        if task != task.strip():
+            raise ValueError("task name has surrounding whitespace")
+    except ValueError as exc:
+        raise ValueError(
+            f"task name must be one directory directly under logs/agents: {task!r}"
+        ) from exc
+    return task
 
 
 def task_dir(repo_root: Path, task: str) -> Path:
     return repo_root / LOG_ROOT / validate_task_name(task)
+
+
+def _validate_ownership_request(value: object) -> None:
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        raise ValueError("ownership_request must be an object")
+    owner = value.get("owner")
+    if not isinstance(owner, str) or validate_task_name(owner) != owner:
+        raise ValueError("ownership_request owner must be a coordination task name")
+    status = value.get("status")
+    if not isinstance(status, str) or status not in OWNERSHIP_REQUEST_STATUSES:
+        raise ValueError("ownership_request status is invalid")
+    paths = value.get("requested_paths")
+    if not isinstance(paths, list) or not paths:
+        raise ValueError("ownership_request requested_paths must be a nonempty list")
+    for path in paths:
+        try:
+            # One trailing slash denotes a requested directory, not an alias.
+            portable_relative_path(path.removesuffix("/"))
+        except (AttributeError, ValueError) as exc:
+            raise ValueError(
+                "ownership_request paths must be portable repository-relative paths"
+            ) from exc
+    if len(set(paths)) != len(paths):
+        raise ValueError("ownership_request paths must be unique")
+    stamp = value.get("requested_at_utc")
+    try:
+        instant = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("ownership_request requested_at_utc is invalid") from exc
+    if instant.utcoffset() != UTC.utcoffset(None):
+        raise ValueError("ownership_request requested_at_utc must include UTC")
 
 
 def build_record(
@@ -1414,9 +1520,24 @@ def build_record(
     agent: str | None,
     session: str | None,
     created_at: str,
+    request_owner: str | None = None,
+    requested_paths: Sequence[str] = (),
 ) -> dict[str, Any]:
     if role not in VALID_ROLES:
         raise ValueError(f"unknown proof role: {role}")
+    request = None
+    if request_owner is not None or requested_paths:
+        request = {
+            "owner": request_owner,
+            "requested_paths": [
+                normalize_repo_path(path, repo_root) for path in requested_paths
+            ],
+            "status": "pending",
+            "requested_at_utc": created_at,
+        }
+        _validate_ownership_request(request)
+        if status not in ACTIVE_STATUSES:
+            raise ValueError("pending ownership request requires an active task status")
     branch, commit = read_git_identity(repo_root)
     session_id = (
         session or os.environ.get("MOLT_SESSION_ID") or f"agent-{task}-{os.getpid()}"
@@ -1438,6 +1559,7 @@ def build_record(
         "planned_proof_lane": lane,
         "shared_target_root": target_root,
         "owned_paths": list(owned_paths),
+        "ownership_request": request,
         "artifact_roots": ["target/", "tmp/", "logs/", "bench/results/"],
         "environment": environment_snapshot(repo_root),
         "env_sh": str(base / "env.sh"),
@@ -1449,8 +1571,18 @@ def build_record(
 
 
 def render_report(record: dict[str, Any]) -> str:
-    owned_paths = record["owned_paths"] or ["TBD"]
+    owned_paths = record["owned_paths"] or ["(none)"]
     owned_lines = "\n".join(f"  - {path}" for path in owned_paths)
+    request = record.get("ownership_request")
+    request_lines = "- Ownership request: none"
+    if request is not None:
+        request_lines = (
+            f"- Ownership request: {request['status']}\n"
+            f"- Requested owner: {request['owner']}\n"
+            f"- Requested at: {request['requested_at_utc']}\n"
+            "- Requested paths (not granted ownership):\n"
+            + "\n".join(f"  - {path}" for path in request["requested_paths"])
+        )
     artifact_lines = "\n".join(
         f"  - {path}" for path in record.get("artifact_roots", ())
     )
@@ -1474,6 +1606,7 @@ def render_report(record: dict[str, Any]) -> str:
 - Broad lane ownership checked: TBD
 - Owned files/directories:
 {owned_lines}
+{request_lines}
 - Canonical artifact roots:
 {artifact_lines}
 - Env: {record["env_sh"]}
@@ -2219,8 +2352,6 @@ def init_task(args: argparse.Namespace) -> dict[str, Any]:
     task = validate_task_name(args.task)
     base = task_dir(repo_root, task)
     artifacts = base / "artifacts"
-    artifacts.mkdir(parents=True, exist_ok=True)
-    (base / "progress.log").touch()
 
     created_at = utc_now()
     stamp = created_at.replace("-", "").replace(":", "").removesuffix("Z")
@@ -2237,7 +2368,11 @@ def init_task(args: argparse.Namespace) -> dict[str, Any]:
         agent=args.agent,
         session=args.session,
         created_at=created_at,
+        request_owner=args.request_owner,
+        requested_paths=args.requested,
     )
+    artifacts.mkdir(parents=True, exist_ok=True)
+    (base / "progress.log").touch()
     dx_env = RunContext(
         repo_root,
         session_prefix=f"agent-{task}",
@@ -2287,19 +2422,35 @@ def load_records(repo_root: Path) -> list[CoordinationRecord]:
     if not root.is_dir():
         return []
     records: list[CoordinationRecord] = []
-    for path in sorted(root.glob("**/coordination.json")):
+    # init and task_dir own exactly one directory per task. Nested copies are
+    # evidence, never registrations, regardless of their names or claimed state.
+    for path in sorted(root.glob(COORDINATION_RECORD_GLOB)):
+        task = path.parent.name
         try:
             payload = json.loads(_decode_record_bytes(path.read_bytes()))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            if not isinstance(payload, dict):
+                raise ValueError("coordination record must be an object")
+            if validate_task_name(task) != task or payload.get("task") != task:
+                raise ValueError(
+                    f"coordination task {payload.get('task')!r} does not match "
+                    f"canonical task directory {task!r}"
+                )
+            owned_paths = payload.get("owned_paths", [])
+            if not isinstance(owned_paths, list) or not all(
+                isinstance(path, str) for path in owned_paths
+            ):
+                raise ValueError("owned_paths must be a list of paths")
+            _validate_ownership_request(payload.get("ownership_request"))
+        except (OSError, ValueError) as exc:
             payload = {
                 "schema_version": SCHEMA_VERSION,
-                "task": path.parent.name,
+                "task": task,
                 "status": "invalid",
                 "error": str(exc),
             }
         records.append(
             CoordinationRecord(
-                task=str(payload.get("task") or path.parent.name),
+                task=task,
                 path=path,
                 payload=payload,
             )
@@ -2336,9 +2487,16 @@ def broad_lane_collisions(
 
 def summary_payload(repo_root: Path) -> dict[str, Any]:
     records = load_records(repo_root)
+    requests = _pending_ownership_requests(records, repo_root)
+    invalid = _invalid_coordination_records(records, repo_root)
     return {
         "schema_version": SCHEMA_VERSION,
+        "generated_at_utc": utc_now(),
         "repo_root": str(repo_root),
+        "pending_ownership_request_count": len(requests),
+        "pending_ownership_requests": requests,
+        "invalid_count": len(invalid),
+        "invalid": invalid,
         "records": [
             record.payload | {"coordination_path": str(record.path)}
             for record in records
@@ -2351,14 +2509,20 @@ def print_text_summary(payload: dict[str, Any]) -> None:
     records = payload["records"]
     collisions = payload["collisions"]
     print(f"agent coordination: {len(records)} task record(s)")
+    _print_pending_ownership_requests(payload["pending_ownership_requests"])
+    for record in payload["invalid"]:
+        print(f"invalid record: {record['path']}: {record['error']}")
     for record in records:
         print(
-            "- {task}: status={status} role={role} lane={lane} target={target}".format(
+            "- {task}: agent={agent} status={status} role={role} lane={lane} "
+            "target={target} updated_at={updated}".format(
                 task=record.get("task", "unknown"),
+                agent=record.get("agent") or "unknown",
                 status=record.get("status", "unknown"),
                 role=record.get("proof_role", "unknown"),
                 lane=record.get("planned_proof_lane") or "TBD",
                 target=record.get("shared_target_root") or "TBD",
+                updated=record.get("updated_at_utc") or "unknown",
             )
         )
     if collisions:
@@ -2405,12 +2569,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     init.add_argument("--status", default="running")
     init.add_argument("--target-root", default="target")
     init.add_argument("--owned", action="append", default=[])
+    init.add_argument(
+        "--request-owner", help="coordination task that must assign scope"
+    )
+    init.add_argument(
+        "--requested", action="append", default=[], help="requested repo-relative path"
+    )
     init.add_argument("--json", action="store_true")
 
-    scan = sub.add_parser("scan", help="list active coordination records")
+    scan = sub.add_parser(
+        "scan", help="list pending ownership requests and task records"
+    )
     scan.add_argument("--json", action="store_true")
 
-    check = sub.add_parser("check", help="fail on broad-lane coordination collisions")
+    check = sub.add_parser(
+        "check", help="fail on invalid records or broad-lane coordination collisions"
+    )
     check.add_argument("--json", action="store_true")
 
     context = sub.add_parser(
@@ -2589,7 +2763,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print_text_summary(payload)
-    if args.command == "check" and payload["collisions"]:
+    if args.command == "check" and (payload["invalid"] or payload["collisions"]):
         return 2
     return 0
 

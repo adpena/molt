@@ -10,8 +10,62 @@ use molt_cpython_abi::abi_types::{
 };
 use std::ptr;
 
+use molt_cpython_abi::hooks::PendingExceptionClass;
+thread_local! { static EMERGENCY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+thread_local! { static UNADMITTED_TEXT_ALLOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 fn init() {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+    unsafe extern "C" fn text_without_class_authority(_: *const u8, _: usize) -> u64 {
+        UNADMITTED_TEXT_ALLOCATIONS.with(|calls| calls.set(calls.get() + 1));
+        0
+    }
+    unsafe extern "C" fn pending() -> std::ffi::c_int {
+        EMERGENCY.with(|state| i32::from(state.get()))
+    }
+    unsafe extern "C" fn pending_class() -> PendingExceptionClass {
+        if EMERGENCY.with(std::cell::Cell::get) {
+            PendingExceptionClass::EmergencyMemoryError
+        } else {
+            PendingExceptionClass::None
+        }
+    }
+    unsafe extern "C" fn clear() {
+        EMERGENCY.with(|state| state.set(false));
+    }
+    unsafe extern "C" fn preserve(
+        callback: unsafe extern "C" fn(*mut std::ffi::c_void),
+        context: *mut std::ffi::c_void,
+    ) {
+        let saved = EMERGENCY.with(|state| state.replace(false));
+        unsafe { callback(context) };
+        EMERGENCY.with(|state| state.set(saved));
+    }
+    let mut hooks = support::stub_runtime_hooks();
+    hooks.exception_pending = pending;
+    hooks.pending_exception_class = pending_class;
+    hooks.clear_pending_exception = clear;
+    hooks.with_preserved_pending_exception = preserve;
+    hooks.alloc_str = text_without_class_authority;
+    support::prepare_abi_test_thread(hooks);
+}
+
+#[test]
+fn diagnostic_text_requires_class_custody_before_allocation() {
+    use molt_cpython_abi::api::{errors, refcount};
+    init();
+    unsafe {
+        errors::PyErr_SetString((&raw mut PyExc_ValueError).cast(), c"bootstrap".as_ptr());
+        assert_eq!(UNADMITTED_TEXT_ALLOCATIONS.with(std::cell::Cell::get), 0);
+        assert_eq!(errors::PyErr_Occurred(), (&raw mut PyExc_ValueError).cast());
+        let raised = errors::PyErr_GetRaisedException();
+        assert!(
+            !raised.is_null(),
+            "native construction remains available without managed text"
+        );
+        assert_eq!((*raised).ob_type, &raw mut PyExc_ValueError);
+        refcount::Py_DECREF(raised);
+        assert!(errors::PyErr_Occurred().is_null());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -25,6 +79,33 @@ fn test_no_exception_initially() {
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let occurred = unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() };
     assert!(occurred.is_null());
+}
+
+#[test]
+fn pending_emergency_type_query_needs_no_runtime_class_bootstrap() {
+    use molt_cpython_abi::abi_types::{PyExc_Exception, PyExc_MemoryError};
+    use molt_cpython_abi::api::errors;
+    init();
+    EMERGENCY.with(|state| state.set(true));
+    unsafe {
+        assert_eq!(
+            errors::PyErr_Occurred(),
+            (&raw mut PyExc_MemoryError).cast()
+        );
+        assert_eq!(
+            errors::PyErr_ExceptionMatches((&raw mut PyExc_Exception).cast()),
+            1
+        );
+        assert!(errors::PyErr_GetRaisedException().is_null());
+        assert_eq!(
+            errors::PyErr_Occurred(),
+            (&raw mut PyExc_MemoryError).cast()
+        );
+        assert!(errors::take_current_error().is_none());
+        errors::PyErr_Clear();
+        assert!(errors::PyErr_Occurred().is_null());
+    }
+    assert!(!EMERGENCY.with(std::cell::Cell::get));
 }
 
 #[test]

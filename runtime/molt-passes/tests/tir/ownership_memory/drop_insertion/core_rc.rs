@@ -85,7 +85,7 @@ fn fresh_and_raw_returns_do_not_gain_publication_retains() {
         .get_mut(&fresh_entry)
         .unwrap()
         .ops
-        .push(op(OpCode::Call, vec![], vec![fresh]));
+        .push(named_call("fixture_external_call", vec![], vec![fresh]));
     fresh_func.blocks.get_mut(&fresh_entry).unwrap().terminator = Terminator::Return {
         values: vec![fresh],
     };
@@ -306,6 +306,7 @@ fn loop_slot_accumulator_no_double_drop() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -364,7 +365,7 @@ fn loop_slot_accumulator_no_double_drop() {
 /// Regression for the `while True: break` shape: `v` is computed in `entry`,
 /// passed as a branch arg to `join`, and received as `join`'s block param `p`.
 /// `v`'s ownership transfers to `p` across the edge — the edge-dying rule must
-/// recognize the per-edge transfer (`incoming_arg_roots` via `terminator_arcs`)
+/// recognize the per-edge transfer (custody reports the moved root unowned)
 /// and NOT also drop `v` at `join`'s entry. Doing so double-frees the object the param now
 /// owns (the observed `invalid object header before dec_ref` UAF). `p` is then
 /// returned (transferred to the caller), so the function inserts ZERO drops.
@@ -549,6 +550,8 @@ fn mutually_exclusive_loop_iterators_drop_on_their_own_exit_edges() {
         molt_ir::FunctionReturnAbi::Void,
     );
     let choose_left = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let choose_left_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     func.value_types.insert(choose_left, TirType::Bool);
 
     let left_preheader = func.fresh_block();
@@ -577,7 +580,7 @@ fn mutually_exclusive_loop_iterators_drop_on_their_own_exit_edges() {
         let block = func.blocks.get_mut(&entry).unwrap();
         block
             .ops
-            .push(op(OpCode::ConstBool, vec![], vec![choose_left]));
+            .push(op(OpCode::Copy, vec![choose_left_input], vec![choose_left]));
         block.terminator = Terminator::CondBranch {
             cond: choose_left,
             then_block: left_preheader,
@@ -750,8 +753,10 @@ fn straight_line_temp_dropped_once() {
     {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(const_str(a));
-        b.ops.push(op(OpCode::Call, vec![a], vec![v1]));
-        b.ops.push(op(OpCode::Call, vec![v1], vec![v2]));
+        b.ops
+            .push(named_call("fixture_external_call", vec![a], vec![v1]));
+        b.ops
+            .push(named_call("fixture_external_call", vec![v1], vec![v2]));
         b.terminator = Terminator::Return { values: vec![v2] };
     }
     let mut am = AnalysisManager::new();
@@ -862,7 +867,8 @@ fn dataclass_new_values_result_is_dropped_after_last_metadata_use() {
         b.ops.push(const_str(name));
         b.ops.push(const_str(fields));
         b.ops.push(op(OpCode::ConstNone, vec![], vec![flags]));
-        b.ops.push(op(OpCode::Call, vec![], vec![child]));
+        b.ops
+            .push(named_call("fixture_external_call", vec![], vec![child]));
         let mut ctor_attrs = AttrDict::new();
         ctor_attrs.insert(
             "_original_kind".into(),
@@ -876,7 +882,8 @@ fn dataclass_new_values_result_is_dropped_after_last_metadata_use() {
             attrs: ctor_attrs,
             source_span: None,
         });
-        b.ops.push(op(OpCode::Call, vec![], vec![class_obj]));
+        b.ops
+            .push(named_call("fixture_external_call", vec![], vec![class_obj]));
         let mut set_class_attrs = AttrDict::new();
         set_class_attrs.insert(
             "_original_kind".into(),
@@ -940,7 +947,8 @@ fn call_bind_callargs_operand_not_dropped() {
     {
         let b = func.blocks.get_mut(&entry).unwrap();
         // callee = <fresh owned value> (model as a Call so it is owned).
-        b.ops.push(op(OpCode::Call, vec![], vec![callee]));
+        b.ops
+            .push(named_call("fixture_external_call", vec![], vec![callee]));
         // builder = callargs_new (opaque Copy carrying _original_kind).
         let mut ca = AttrDict::new();
         ca.insert(
@@ -956,16 +964,7 @@ fn call_bind_callargs_operand_not_dropped() {
             source_span: None,
         });
         // result = call_bind(callee, builder) — Call carrying _original_kind.
-        let mut cb = AttrDict::new();
-        cb.insert("_original_kind".into(), AttrValue::Str("call_bind".into()));
-        b.ops.push(TirOp {
-            dialect: Dialect::Molt,
-            opcode: OpCode::Call,
-            operands: vec![callee, builder],
-            results: vec![result],
-            attrs: cb,
-            source_span: None,
-        });
+        b.ops.push(call_bind(callee, builder, vec![result]));
         b.terminator = Terminator::Return {
             values: vec![result],
         };
@@ -990,131 +989,85 @@ fn call_bind_callargs_operand_not_dropped() {
     assert!(!decrefs.contains(&result));
 }
 
-/// Interior-borrow keepalive (round-6 BLOCKER-1). A heap object's LAST DIRECT
-/// operand use is a `LoadAttr` that extracts a value the object's backing store
-/// owns (the `Counter._handle` raw-int registry-handle shape: the wrapper's
-/// finalizer destroys the registry entry the handle indexes). The extracted
-/// value `h` is then consumed by a later `Call`. The source object `obj` MUST be
-/// dropped AFTER `h`'s last use (the Call), NEVER right after the `LoadAttr` —
-/// dropping it earlier runs the finalizer and invalidates `h` (the observed UAF:
-/// `len(Counter(...))` returned 0). Mirrors the de-sugared fast-path lowering
-/// `h = get_attr(counts, "_handle"); molt_counter_len(h)`.
+/// Attribute and item reads borrow the receiver only for the read. Their
+/// independently owned result must not delay the receiver's finalizer, including
+/// when a transparent alias supplied the receiver or a phi carries the result.
 #[test]
-fn loadattr_source_kept_alive_through_borrow_result_use() {
-    let mut func = TirFunction::new(
-        "borrow".into(),
-        vec![],
-        TirType::DynBox,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let obj = func.fresh_value(); // the wrapper (fresh owned)
-    let h = func.fresh_value(); // LoadAttr(obj) — borrows into obj's store
-    let len_fn = func.fresh_value(); // the `molt_counter_len` builtin
-    let res = func.fresh_value(); // Call(len_fn, h) result
-    for v in [obj, h, len_fn, res] {
-        func.value_types.insert(v, TirType::Str);
+fn owned_getter_result_does_not_extend_receiver_lifetime() {
+    for getter in [OpCode::LoadAttr, OpCode::Index] {
+        for alias_receiver in [false, true] {
+            for carry_result in [false, true] {
+                let mut func = TirFunction::new(
+                    "owned_getter".into(),
+                    vec![],
+                    TirType::None,
+                    molt_ir::FunctionReturnAbi::Void,
+                );
+                let source = func.fresh_value();
+                let alias = func.fresh_value();
+                let result = func.fresh_value();
+                let carried = func.fresh_value();
+                let key = func.fresh_value();
+                for value in [source, alias, result, carried] {
+                    func.value_types.insert(value, TirType::DynBox);
+                }
+                func.value_types.insert(key, TirType::I64);
+                let consumer = func.fresh_block();
+                let mut ops = vec![named_call("fixture_external_call", vec![], vec![source])];
+                let receiver = if alias_receiver {
+                    ops.push(original_copy_with_operands(
+                        "load_var",
+                        vec![source],
+                        vec![alias],
+                    ));
+                    alias
+                } else {
+                    source
+                };
+                let mut operands = vec![receiver];
+                if getter == OpCode::Index {
+                    ops.push(TirOp {
+                        attrs: AttrDict::from([(
+                            "value".into(),
+                            molt_ir::tir::ops::AttrValue::Int(37),
+                        )]),
+                        ..op(OpCode::ConstInt, vec![], vec![key])
+                    });
+                    operands.push(key);
+                }
+                ops.push(op(getter, operands, vec![result]));
+                let block = func.blocks.get_mut(&func.entry_block).unwrap();
+                block.ops = ops;
+                if carry_result {
+                    block.terminator = Terminator::Branch {
+                        target: consumer,
+                        args: vec![result],
+                    };
+                    func.blocks.insert(
+                        consumer,
+                        TirBlock {
+                            id: consumer,
+                            args: vec![TirValue {
+                                id: carried,
+                                ty: TirType::DynBox,
+                            }],
+                            ops: vec![op(OpCode::WarnStderr, vec![carried], vec![])],
+                            terminator: Terminator::Return { values: vec![] },
+                        },
+                    );
+                } else {
+                    block.ops.push(op(OpCode::WarnStderr, vec![result], vec![]));
+                    block.terminator = Terminator::Return { values: vec![] };
+                }
+                insert(&mut func);
+                assert_eq!(
+                    trace(&func, 0, &[]),
+                    vec![Event::Freed(0), Event::Marker, Event::Freed(1)],
+                    "getter={getter:?} alias={alias_receiver} carry={carry_result}"
+                );
+            }
+        }
     }
-    let entry = func.entry_block;
-    {
-        let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops.push(const_str(obj)); // op 0: obj = fresh owned
-        b.ops.push(op(OpCode::LoadAttr, vec![obj], vec![h])); // op 1: h = obj._handle (last DIRECT use of obj)
-        b.ops.push(const_str(len_fn)); // op 2: the builtin
-        b.ops.push(op(OpCode::Call, vec![len_fn, h], vec![res])); // op 3: len(h) — needs obj alive
-        b.terminator = Terminator::Return { values: vec![res] };
-    }
-    let mut am = AnalysisManager::new();
-    run(&mut func, &mut am);
-    let ops = &func.blocks[&entry].ops;
-    // Find the Call (the consumer of the borrow result) and the DecRef(obj).
-    let call_idx = ops
-        .iter()
-        .position(|o| o.opcode == OpCode::Call)
-        .expect("call present");
-    let decref_obj_idx = ops
-        .iter()
-        .position(|o| o.opcode == OpCode::DecRef && o.operands == vec![obj]);
-    assert!(
-        decref_obj_idx.is_some(),
-        "source object must still be dropped (no leak); ops={ops:?}"
-    );
-    assert!(
-        decref_obj_idx.unwrap() > call_idx,
-        "source object must be dropped AFTER the borrow result's consuming Call \
-             (interior-borrow keepalive), not at its last direct operand use; \
-             decref@{:?} call@{call_idx} ops={ops:?}",
-        decref_obj_idx.unwrap(),
-    );
-}
-
-/// Interior-borrow keepalive across a transparent `Copy` of the source (the
-/// `load_var` shape): `obj` is loaded via a `Copy` (alias root = obj), the alias
-/// feeds a `LoadAttr`, and the LoadAttr result is consumed later. The drop of
-/// the underlying object (alias root) must still be deferred past the consumer.
-#[test]
-fn loadattr_keepalive_through_copy_aliased_source() {
-    let mut func = TirFunction::new(
-        "borrow_alias".into(),
-        vec![],
-        TirType::DynBox,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let obj = func.fresh_value();
-    let obj_alias = func.fresh_value(); // Copy(obj) — load_var alias
-    let h = func.fresh_value(); // LoadAttr(obj_alias)
-    let consumer = func.fresh_value(); // Call(h) result
-    for v in [obj, obj_alias, h, consumer] {
-        func.value_types.insert(v, TirType::Str);
-    }
-    let entry = func.entry_block;
-    {
-        let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops.push(const_str(obj));
-        b.ops.push({
-            let mut o = op(OpCode::Copy, vec![obj], vec![obj_alias]);
-            o.attrs
-                .insert("_original_kind".into(), AttrValue::Str("load_var".into()));
-            o
-        });
-        b.ops.push(op(OpCode::LoadAttr, vec![obj_alias], vec![h]));
-        b.ops.push(op(OpCode::Call, vec![h], vec![consumer]));
-        b.terminator = Terminator::Return {
-            values: vec![consumer],
-        };
-    }
-    let mut am = AnalysisManager::new();
-    run(&mut func, &mut am);
-    let ops = &func.blocks[&entry].ops;
-    let call_idx = ops
-        .iter()
-        .position(|o| o.opcode == OpCode::Call)
-        .expect("call present");
-    // The underlying object is released through some alias of its root, exactly
-    // once, AFTER the consumer. Find any DecRef whose operand aliases obj's root.
-    let aliases = molt_passes::tir::passes::alias_analysis::build_alias_union_find(&func);
-    let obj_root = aliases.root(obj);
-    let decref_positions: Vec<usize> = ops
-        .iter()
-        .enumerate()
-        .filter(|(_, o)| {
-            o.opcode == OpCode::DecRef
-                && o.operands
-                    .first()
-                    .is_some_and(|&v| aliases.root(v) == obj_root)
-        })
-        .map(|(i, _)| i)
-        .collect();
-    assert_eq!(
-        decref_positions.len(),
-        1,
-        "the source object's group must be released exactly once; ops={ops:?}"
-    );
-    assert!(
-        decref_positions[0] > call_idx,
-        "source object drop must follow the borrow result's consumer; \
-             decref@{} call@{call_idx} ops={ops:?}",
-        decref_positions[0],
-    );
 }
 
 /// Raw i64 values get ZERO drops (perf contract / design R3).
@@ -1229,34 +1182,26 @@ fn class_allocation_keeps_final_drop() {
     );
 }
 
-/// A lowered coroutine `_poll` STATE MACHINE (a `StateSwitch` dispatch) must
-/// get ZERO drops — the pass bails (`has_state_machine`). Regression for the
-/// LLVM verifier failure where a drop placed in a state-resume block
-/// referenced a value defined only on the non-taken first-entry path
-/// (`dec_ref %v` before `%v = ...`; a use-before-def that also double-frees on
-/// native). A generator can carry `StateSwitch` WITHOUT `StateBlock*`
-/// delimiters, so the handler bail alone misses it.
+/// Invocation-local temporaries obey the same ownership rules in poll bodies.
 #[test]
-fn state_machine_function_gets_no_drops() {
+fn state_machine_function_releases_invocation_local_temporary() {
     let mut func = TirFunction::new(
         "poll".into(),
         vec![],
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let st = func.fresh_value();
     let v = func.fresh_value();
-    func.value_types.insert(st, TirType::I64);
     func.value_types.insert(v, TirType::Str);
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
         // A state-machine dispatch op marks this as a lowered `_poll` body.
-        b.ops.push(op(OpCode::StateSwitch, vec![st], vec![]));
-        // A heap temp whose naive last-use drop would be unsound over the
-        // re-entrant state CFG.
+        b.ops.push(op(OpCode::StateSwitch, vec![], vec![]));
+        // This heap temporary is created in, and confined to, this invocation.
         b.ops.push(const_str(v));
-        b.ops.push(op(OpCode::Call, vec![v], vec![]));
+        b.ops
+            .push(named_call("fixture_external_call", vec![v], vec![]));
         b.terminator = Terminator::Return { values: vec![] };
     }
     assert!(
@@ -1267,8 +1212,8 @@ fn state_machine_function_gets_no_drops() {
     run(&mut func, &mut am);
     assert_eq!(
         count_decrefs(&func),
-        0,
-        "state-machine `_poll` body must get zero drops (pass bails)",
+        1,
+        "state-machine invocation must release its owned temporary: {func:#?}",
     );
     assert_eq!(count_increfs(&func), 0);
 }
@@ -1298,9 +1243,11 @@ fn generator_construction_does_not_disable_later_owned_temporary_drops() {
         block
             .ops
             .push(op(OpCode::LoadAttr, vec![object], vec![attr]));
-        block
-            .ops
-            .push(op(OpCode::Call, vec![attr], vec![call_result]));
+        block.ops.push(named_call(
+            "fixture_external_call",
+            vec![attr],
+            vec![call_result],
+        ));
         block.ops.push(op(OpCode::ConstNone, vec![], vec![none]));
         block
             .ops
@@ -1353,6 +1300,8 @@ fn loop_carried_phi_dropped_on_backedge() {
     let s_alias = func.fresh_value();
     let lit = func.fresh_value();
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let s_new = func.fresh_value();
     let r = func.fresh_value();
     func.value_types.insert(s0, TirType::Str);
@@ -1407,7 +1356,7 @@ fn loop_carried_phi_dropped_on_backedge() {
             // both successors; plus the loop condition.
             ops: vec![
                 op(OpCode::Copy, vec![s_phi], vec![s_alias]),
-                op(OpCode::ConstBool, vec![], vec![cond]),
+                op(OpCode::Copy, vec![cond_input], vec![cond]),
             ],
             terminator: Terminator::CondBranch {
                 cond,
@@ -1454,7 +1403,7 @@ fn loop_carried_phi_dropped_on_backedge() {
         TirBlock {
             id: exit,
             args: vec![],
-            ops: vec![op(OpCode::Call, vec![s_alias], vec![r])],
+            ops: vec![named_call("fixture_external_call", vec![s_alias], vec![r])],
             terminator: Terminator::Return { values: vec![r] },
         },
     );
@@ -1495,14 +1444,9 @@ fn loop_carried_phi_dropped_on_backedge() {
     }
 }
 
-/// Parameters are borrowed — never dropped.
-/// `IterNextUnboxed` writes its value result only on the not-done edge. A
-/// following `store_var` makes that result look like a Python local-store
-/// root, but the done edge reaches loop exit with the value slot
-/// uninitialized. The local lifetime rail must therefore not schedule an
-/// unconditional return-boundary `DecRef(value)` in the exit block.
-#[test]
-fn loop_reassign_phi_dropped_on_backedge() {
+/// A reassignment loop whose header phi nothing reads: the preheader and the
+/// back edge each move a fresh list into it, and the exit returns a raw value.
+fn dead_loop_phi_function() -> (TirFunction, BlockId, ValueId) {
     let mut func = TirFunction::new(
         "reassign".into(),
         vec![],
@@ -1513,6 +1457,8 @@ fn loop_reassign_phi_dropped_on_backedge() {
     let d0 = func.fresh_value();
     let d_phi = func.fresh_value();
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let item = func.fresh_value();
     let d_new = func.fresh_value();
     let used = func.fresh_value();
@@ -1557,7 +1503,7 @@ fn loop_reassign_phi_dropped_on_backedge() {
         TirBlock {
             id: cond_block,
             args: vec![],
-            ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+            ops: vec![op(OpCode::Copy, vec![cond_input], vec![cond])],
             terminator: Terminator::CondBranch {
                 cond,
                 then_block: body,
@@ -1575,7 +1521,7 @@ fn loop_reassign_phi_dropped_on_backedge() {
             ops: vec![
                 const_str(item),
                 op(OpCode::BuildList, vec![item], vec![d_new]),
-                op(OpCode::Call, vec![d_new], vec![used]),
+                named_call("fixture_external_call", vec![d_new], vec![used]),
             ],
             terminator: Terminator::Branch {
                 target: header,
@@ -1588,157 +1534,72 @@ fn loop_reassign_phi_dropped_on_backedge() {
         TirBlock {
             id: exit,
             args: vec![],
-            ops: vec![op(OpCode::ConstInt, vec![], vec![r])],
+            ops: vec![TirOp {
+                attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(38))]),
+                ..op(OpCode::ConstInt, vec![], vec![r])
+            }],
             terminator: Terminator::Return { values: vec![r] },
         },
     );
     func.loop_roles.insert(header, LoopRole::LoopHeader);
+    (func, header, d_phi)
+}
 
-    let mut am = AnalysisManager::new();
-    run(&mut func, &mut am);
+/// A loop phi that nothing reads is dead as soon as its header is entered.
+/// Every arc into the header moves an owned list into it, so the header
+/// releases it on entry, once per entry. That includes the value the loop
+/// exits with, which a back-edge-only release leaked.
+#[test]
+fn dead_loop_phi_is_released_on_header_entry() {
+    let (mut func, header, d_phi) = dead_loop_phi_function();
+    insert(&mut func);
 
-    let body_drops: Vec<ValueId> = func.blocks[&body]
+    let header_entry: Vec<ValueId> = func.blocks[&header]
         .ops
         .iter()
-        .filter(|op| op.opcode == OpCode::DecRef)
+        .take_while(|op| op.opcode == OpCode::DecRef)
         .map(|op| op.operands[0])
         .collect();
-    assert!(
-        body_drops.contains(&d_phi),
-        "pure-reassignment loop-carried phi must be dropped on the back-edge; body drops={body_drops:?}",
+    assert_eq!(
+        header_entry,
+        vec![d_phi],
+        "the dead phi is released as the header is entered"
     );
-
-    let aliases = molt_passes::tir::passes::alias_analysis::build_alias_union_find(&func);
-    for block in func.blocks.values() {
-        let mut roots: HashSet<ValueId> = HashSet::new();
-        for op in &block.ops {
-            if op.opcode == OpCode::DecRef {
-                assert!(
-                    roots.insert(aliases.root(op.operands[0])),
-                    "double-drop in one block: {:?}",
-                    block.ops,
-                );
-            }
-        }
+    let paths: [&[bool]; 3] = [&[], &[true], &[true, true]];
+    for path in paths {
+        trace(&func, 0, path);
     }
 }
 
 #[test]
-fn loop_reassign_backedge_decref_survives_refcount_elim_post() {
-    let mut func = TirFunction::new(
-        "reassign_elim".into(),
-        vec![],
-        TirType::I64,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let item0 = func.fresh_value();
-    let d0 = func.fresh_value();
-    let d_phi = func.fresh_value();
-    let cond = func.fresh_value();
-    let item = func.fresh_value();
-    let d_new = func.fresh_value();
-    let used = func.fresh_value();
-    let r = func.fresh_value();
-    for value in [item0, d0, d_phi, item, d_new, used] {
-        func.value_types.insert(value, TirType::DynBox);
-    }
-    func.value_types.insert(cond, TirType::Bool);
-    func.value_types.insert(r, TirType::I64);
-
-    let header = func.fresh_block();
-    let cond_block = func.fresh_block();
-    let body = func.fresh_block();
-    let exit = func.fresh_block();
-    let entry = func.entry_block;
-    {
-        let block = func.blocks.get_mut(&entry).unwrap();
-        block.ops.push(const_str(item0));
-        block.ops.push(op(OpCode::BuildList, vec![item0], vec![d0]));
-        block.terminator = Terminator::Branch {
-            target: header,
-            args: vec![d0],
-        };
-    }
-    func.blocks.insert(
-        header,
-        TirBlock {
-            id: header,
-            args: vec![TirValue {
-                id: d_phi,
-                ty: TirType::DynBox,
-            }],
-            ops: vec![],
-            terminator: Terminator::Branch {
-                target: cond_block,
-                args: vec![],
-            },
-        },
-    );
-    func.blocks.insert(
-        cond_block,
-        TirBlock {
-            id: cond_block,
-            args: vec![],
-            ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
-            terminator: Terminator::CondBranch {
-                cond,
-                then_block: body,
-                then_args: vec![],
-                else_block: exit,
-                else_args: vec![],
-            },
-        },
-    );
-    func.blocks.insert(
-        body,
-        TirBlock {
-            id: body,
-            args: vec![],
-            ops: vec![
-                const_str(item),
-                op(OpCode::BuildList, vec![item], vec![d_new]),
-                op(OpCode::Call, vec![d_new], vec![used]),
-            ],
-            terminator: Terminator::Branch {
-                target: header,
-                args: vec![d_new],
-            },
-        },
-    );
-    func.blocks.insert(
-        exit,
-        TirBlock {
-            id: exit,
-            args: vec![],
-            ops: vec![op(OpCode::ConstInt, vec![], vec![r])],
-            terminator: Terminator::Return { values: vec![r] },
-        },
-    );
-    func.loop_roles.insert(header, LoopRole::LoopHeader);
-
-    let mut am = AnalysisManager::new();
-    run(&mut func, &mut am);
-
+fn dead_loop_phi_header_release_survives_refcount_elim_post() {
+    let (mut func, header, d_phi) = dead_loop_phi_function();
+    run(&mut func, &mut AnalysisManager::new());
     assert!(
-        func.blocks[&body]
+        func.blocks[&header]
             .ops
             .iter()
             .any(|op| op.opcode == OpCode::DecRef && op.operands[0] == d_phi),
-        "precondition: drop_insertion must emit the back-edge DecRef(d_phi)",
+        "precondition: drop_insertion must release the dead phi on header entry",
     );
 
-    let mut am2 = AnalysisManager::new();
-    molt_passes::tir::passes::refcount_elim::run_post_drop(&mut func, &mut am2);
+    let mut am = AnalysisManager::new();
+    molt_passes::tir::passes::refcount_elim::run_post_drop(&mut func, &mut am);
 
     assert!(
         func.blocks
             .values()
             .flat_map(|block| block.ops.iter())
             .any(|op| op.opcode == OpCode::DecRef && op.operands[0] == d_phi),
-        "the back-edge DecRef(d_phi) must survive refcount_elim::run_post_drop",
+        "the header-entry DecRef(d_phi) must survive refcount_elim::run_post_drop",
     );
 }
 
+/// `IterNextUnboxed` writes its value result only on the not-done edge. A
+/// following `store_var` makes that result look like a Python local-store
+/// root, but the done edge reaches loop exit with the value slot
+/// uninitialized. The local lifetime rail must therefore not schedule an
+/// unconditional return-boundary `DecRef(value)` in the exit block.
 #[test]
 fn iter_next_unboxed_del_boundary_not_dropped_on_done_return_boundary() {
     let mut func = TirFunction::new(
@@ -1808,10 +1669,7 @@ fn iter_next_unboxed_del_boundary_not_dropped_on_done_return_boundary() {
         TirBlock {
             id: exit,
             args: vec![],
-            ops: vec![
-                op(OpCode::WarnStderr, vec![], vec![]),
-                op(OpCode::DelBoundary, vec![value], vec![]),
-            ],
+            ops: vec![marker(), op(OpCode::DelBoundary, vec![value], vec![])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -1839,6 +1697,7 @@ fn iter_next_unboxed_del_boundary_not_dropped_on_done_return_boundary() {
     );
 }
 
+/// Parameters are borrowed — never dropped.
 #[test]
 fn params_not_dropped() {
     let mut func = TirFunction::new(
@@ -1853,7 +1712,8 @@ fn params_not_dropped() {
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops.push(op(OpCode::Call, vec![p0], vec![r]));
+        b.ops
+            .push(named_call("fixture_external_call", vec![p0], vec![r]));
         b.terminator = Terminator::Return { values: vec![r] };
     }
     let mut am = AnalysisManager::new();
@@ -1887,8 +1747,10 @@ fn borrow_into_call_dropped_after() {
     {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(const_str(x));
-        b.ops.push(op(OpCode::Call, vec![x], vec![res]));
-        b.ops.push(op(OpCode::Call, vec![res], vec![out]));
+        b.ops
+            .push(named_call("fixture_external_call", vec![x], vec![res]));
+        b.ops
+            .push(named_call("fixture_external_call", vec![res], vec![out]));
         b.terminator = Terminator::Return { values: vec![out] };
     }
     let mut am = AnalysisManager::new();
@@ -1907,56 +1769,36 @@ fn borrow_into_call_dropped_after() {
     assert!(decref_x_idx.unwrap() > call_x_idx, "drop AFTER the call");
 }
 
-/// Generator yield: a value live across the yield gets an IncRef before it.
+/// Terminal ownership must never invent persistent storage for high-level yields.
 #[test]
-fn yield_increfs_live_across() {
-    let mut func = TirFunction::new(
-        "g".into(),
-        vec![],
-        TirType::DynBox,
-        molt_ir::FunctionReturnAbi::Value,
-    );
-    let header = func.entry_block;
-    let resume = func.fresh_block();
-    let x = func.fresh_value();
-    let yval = func.fresh_value();
-    let used = func.fresh_value();
-    for v in [x, yval, used] {
-        func.value_types.insert(v, TirType::Str);
+fn high_level_suspension_requires_explicit_frame_lowering() {
+    for opcode in [OpCode::Yield, OpCode::YieldFrom] {
+        let mut func = TirFunction::new(
+            "unlowered_yield".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let frame = func.blocks[&func.entry_block].args[0].id;
+        func.blocks
+            .get_mut(&func.entry_block)
+            .unwrap()
+            .ops
+            .push(op(opcode, vec![frame], vec![]));
+        let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run(&mut func, &mut AnalysisManager::new());
+        }))
+        .expect_err("an unlowered suspension must fail at the ownership boundary");
+        let message = error
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| error.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            message.contains("high-level suspension must be lowered"),
+            "{message}"
+        );
     }
-    {
-        let b = func.blocks.get_mut(&header).unwrap();
-        b.ops.push(const_str(x));
-        b.ops.push(const_str(yval));
-        // Yield: x is live across (used in resume), yval is the yielded value.
-        b.ops.push(op(OpCode::Yield, vec![yval], vec![]));
-        b.terminator = Terminator::Branch {
-            target: resume,
-            args: vec![],
-        };
-    }
-    func.blocks.insert(
-        resume,
-        TirBlock {
-            id: resume,
-            args: vec![],
-            ops: vec![op(OpCode::Call, vec![x], vec![used])],
-            terminator: Terminator::Return { values: vec![used] },
-        },
-    );
-    let mut am = AnalysisManager::new();
-    run(&mut func, &mut am);
-    // x must be IncRef'd before the Yield (it survives into the frame).
-    let header_ops = &func.blocks[&header].ops;
-    let yield_idx = header_ops
-        .iter()
-        .position(|o| o.opcode == OpCode::Yield)
-        .unwrap();
-    let incref_x_before = header_ops[..yield_idx]
-        .iter()
-        .any(|o| o.opcode == OpCode::IncRef && o.operands == vec![x]);
-    assert!(incref_x_before, "live-across-yield value must be IncRef'd");
-    assert!(count_increfs(&func) >= 1);
 }
 
 /// Loop accumulator: a heap accumulator threaded through a header block arg
@@ -1976,6 +1818,8 @@ fn loop_accumulator_dropped() {
     let acc0 = func.fresh_value();
     let acc_phi = func.fresh_value();
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let acc_next = func.fresh_value();
     for v in [acc0, acc_phi, acc_next] {
         func.value_types.insert(v, TirType::Str);
@@ -1998,7 +1842,7 @@ fn loop_accumulator_dropped() {
                 id: acc_phi,
                 ty: TirType::Str,
             }],
-            ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+            ops: vec![op(OpCode::Copy, vec![cond_input], vec![cond])],
             terminator: Terminator::CondBranch {
                 cond,
                 then_block: body,
@@ -2014,7 +1858,11 @@ fn loop_accumulator_dropped() {
             id: body,
             args: vec![],
             // acc_next = Call(acc_phi): consumes the phi, produces a new owned acc.
-            ops: vec![op(OpCode::Call, vec![acc_phi], vec![acc_next])],
+            ops: vec![named_call(
+                "fixture_external_call",
+                vec![acc_phi],
+                vec![acc_next],
+            )],
             terminator: Terminator::Branch {
                 target: header,
                 args: vec![acc_next],
@@ -2063,6 +1911,8 @@ fn explicit_del_boundary_root_not_edge_dropped_at_loop_exit() {
     let current_seed = func.fresh_value();
     let current_phi = func.fresh_value();
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let next_value = func.fresh_value();
     let next_slot = func.fresh_value();
     for v in [
@@ -2093,7 +1943,7 @@ fn explicit_del_boundary_root_not_edge_dropped_at_loop_exit() {
                 id: current_phi,
                 ty: TirType::Str,
             }],
-            ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+            ops: vec![op(OpCode::Copy, vec![cond_input], vec![cond])],
             terminator: Terminator::CondBranch {
                 cond,
                 then_block: body,
@@ -2177,6 +2027,8 @@ fn explicit_del_boundary_splits_shared_return_keep_path_release() {
     let owner = func.fresh_value();
     let stored = func.fresh_value();
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     for v in [owner, stored] {
         func.value_types.insert(v, TirType::DynBox);
     }
@@ -2184,13 +2036,13 @@ fn explicit_del_boundary_splits_shared_return_keep_path_release() {
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops.push(finalizer_call_bind(owner));
+        b.ops.push(finalizer_call(owner));
         b.ops.push(original_copy_with_operands(
             "store_var",
             vec![owner],
             vec![stored],
         ));
-        b.ops.push(op(OpCode::ConstBool, vec![], vec![cond]));
+        b.ops.push(op(OpCode::Copy, vec![cond_input], vec![cond]));
         b.terminator = Terminator::CondBranch {
             cond,
             then_block: del_path,
@@ -2293,6 +2145,8 @@ fn explicit_del_boundary_join_before_return_splits_keep_edge() {
     let owner = func.fresh_value();
     let stored = func.fresh_value();
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     for v in [owner, stored] {
         func.value_types.insert(v, TirType::DynBox);
     }
@@ -2301,13 +2155,13 @@ fn explicit_del_boundary_join_before_return_splits_keep_edge() {
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops.push(finalizer_call_bind(owner));
+        b.ops.push(finalizer_call(owner));
         b.ops.push(original_copy_with_operands(
             "store_var",
             vec![owner],
             vec![stored],
         ));
-        b.ops.push(op(OpCode::ConstBool, vec![], vec![cond]));
+        b.ops.push(op(OpCode::Copy, vec![cond_input], vec![cond]));
         b.terminator = Terminator::CondBranch {
             cond,
             then_block: del_path,
@@ -2435,6 +2289,8 @@ fn mixed_phi_borrowed_param_retained_on_entry_edge() {
     let acc_phi = func.fresh_value();
     let load_x = func.fresh_value(); // Copy(acc_phi) in body
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let acc_next = func.fresh_value(); // fresh owned (Call result)
     for v in [x0, acc_phi, load_x, acc_next] {
         func.value_types.insert(v, TirType::Str);
@@ -2474,7 +2330,7 @@ fn mixed_phi_borrowed_param_retained_on_entry_edge() {
                 id: acc_phi,
                 ty: TirType::Str,
             }],
-            ops: vec![op(OpCode::ConstBool, vec![], vec![cond])],
+            ops: vec![op(OpCode::Copy, vec![cond_input], vec![cond])],
             terminator: Terminator::CondBranch {
                 cond,
                 then_block: body,
@@ -2497,7 +2353,7 @@ fn mixed_phi_borrowed_param_retained_on_entry_edge() {
                     o
                 },
                 // acc_next = Call(load_x, base): fresh owned, reads base each iter.
-                op(OpCode::Call, vec![load_x, base], vec![acc_next]),
+                named_call("fixture_external_call", vec![load_x, base], vec![acc_next]),
             ],
             terminator: Terminator::Branch {
                 target: header,
@@ -2607,7 +2463,7 @@ fn forwarded_owned_value_not_edge_dropped_at_join() {
                 id: phi,
                 ty: TirType::Str,
             }],
-            ops: vec![op(OpCode::Call, vec![phi], vec![used])],
+            ops: vec![named_call("fixture_external_call", vec![phi], vec![used])],
             terminator: Terminator::Return { values: vec![used] },
         },
     );
@@ -2666,7 +2522,8 @@ fn phi_edge_clean_transfer_ignores_release_on_other_branch() {
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
-        b.ops.push(op(OpCode::Call, vec![], vec![source]));
+        b.ops
+            .push(named_call("fixture_external_call", vec![], vec![source]));
         b.terminator = Terminator::CondBranch {
             cond: source,
             then_block,
@@ -2715,7 +2572,7 @@ fn phi_edge_clean_transfer_ignores_release_on_other_branch() {
                 id: phi,
                 ty: TirType::Str,
             }],
-            ops: vec![op(OpCode::Call, vec![phi], vec![])],
+            ops: vec![named_call("fixture_external_call", vec![phi], vec![])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -2787,7 +2644,10 @@ fn mixed_phi_critical_edge_split_inserts_fresh_incref_block() {
             o
         });
         b.ops.push(const_str(fresh_owned));
-        b.ops.push(op(OpCode::ConstInt, vec![], vec![sel]));
+        b.ops.push(TirOp {
+            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(39))]),
+            ..op(OpCode::ConstInt, vec![], vec![sel])
+        });
         // Switch: case 0 → join(case0_alias); default → join(fresh_owned).
         // TWO arcs to `join` with DIFFERENT args ⇒ a critical edge.
         b.terminator = Terminator::Switch {
@@ -2807,7 +2667,7 @@ fn mixed_phi_critical_edge_split_inserts_fresh_incref_block() {
             }],
             // Consume the phi (drops it at its last use) and return nothing so the
             // phi dies in `join` — the case-0 borrowed edge therefore needs a +1.
-            ops: vec![op(OpCode::Call, vec![phi], vec![used])],
+            ops: vec![named_call("fixture_external_call", vec![phi], vec![used])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -2912,7 +2772,7 @@ fn mixed_phi_critical_edge_split_inserts_fresh_incref_block() {
 /// forwards `r` straight into the join's phi (a transfer). `p2` forwards `r`
 /// into the join's phi too (through a transparent alias `r_alias`, the
 /// load-var shape) — so `r`'s root is forwarded by MORE THAN ONE predecessor
-/// and is a member of `incoming_arg_roots`. The join consumes the phi (a
+/// and moves into the phi on both incoming arcs. The join consumes the phi (a
 /// `Call`) and returns nothing. There is exactly ONE underlying owned object;
 /// the assertion is that the pass emits AT MOST ONE `DecRef` naming any member
 /// of `r`'s group across the whole function.
@@ -2929,6 +2789,8 @@ fn forwarded_into_phi_on_every_edge_releases_exactly_once() {
     let join = func.fresh_block();
     let r = func.fresh_value(); // fresh owned (ConstStr) defined in entry
     let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let r_alias = func.fresh_value(); // Copy(r) in p2 — transparent alias of r
     let phi = func.fresh_value(); // join's owned obj-lane phi
     let used = func.fresh_value(); // Call(phi) result
@@ -2940,7 +2802,7 @@ fn forwarded_into_phi_on_every_edge_releases_exactly_once() {
     {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(const_str(r));
-        b.ops.push(op(OpCode::ConstBool, vec![], vec![cond]));
+        b.ops.push(op(OpCode::Copy, vec![cond_input], vec![cond]));
         b.terminator = Terminator::CondBranch {
             cond,
             then_block: p1,
@@ -2989,7 +2851,7 @@ fn forwarded_into_phi_on_every_edge_releases_exactly_once() {
                 id: phi,
                 ty: TirType::Str,
             }],
-            ops: vec![op(OpCode::Call, vec![phi], vec![used])],
+            ops: vec![named_call("fixture_external_call", vec![phi], vec![used])],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -3035,7 +2897,11 @@ fn forwarded_into_phi_on_one_edge_drops_on_the_asymmetric_sibling_arc() {
     let r = func.fresh_value();
     let q = func.fresh_value();
     let choose_p1 = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let choose_p1_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let choose_join = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let choose_join_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
     let phi = func.fresh_value();
     let join_used = func.fresh_value();
     let keep_used = func.fresh_value();
@@ -3052,7 +2918,7 @@ fn forwarded_into_phi_on_one_edge_drops_on_the_asymmetric_sibling_arc() {
         block.ops.push(const_str(r));
         block
             .ops
-            .push(op(OpCode::ConstBool, vec![], vec![choose_p1]));
+            .push(op(OpCode::Copy, vec![choose_p1_input], vec![choose_p1]));
         block.terminator = Terminator::CondBranch {
             cond: choose_p1,
             then_block: p1,
@@ -3080,7 +2946,7 @@ fn forwarded_into_phi_on_one_edge_drops_on_the_asymmetric_sibling_arc() {
             args: vec![],
             ops: vec![
                 const_str(q),
-                op(OpCode::ConstBool, vec![], vec![choose_join]),
+                op(OpCode::Copy, vec![choose_join_input], vec![choose_join]),
             ],
             terminator: Terminator::CondBranch {
                 cond: choose_join,
@@ -3096,7 +2962,11 @@ fn forwarded_into_phi_on_one_edge_drops_on_the_asymmetric_sibling_arc() {
         TirBlock {
             id: keep,
             args: vec![],
-            ops: vec![op(OpCode::Call, vec![r], vec![keep_used])],
+            ops: vec![named_call(
+                "fixture_external_call",
+                vec![r],
+                vec![keep_used],
+            )],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -3108,7 +2978,11 @@ fn forwarded_into_phi_on_one_edge_drops_on_the_asymmetric_sibling_arc() {
                 id: phi,
                 ty: TirType::Str,
             }],
-            ops: vec![op(OpCode::Call, vec![phi], vec![join_used])],
+            ops: vec![named_call(
+                "fixture_external_call",
+                vec![phi],
+                vec![join_used],
+            )],
             terminator: Terminator::Return { values: vec![] },
         },
     );
@@ -3151,4 +3025,298 @@ fn forwarded_into_phi_on_one_edge_drops_on_the_asymmetric_sibling_arc() {
     );
     molt_passes::tir::verify::verify_function(&func)
         .expect("asymmetric ownership edge splitting must preserve valid SSA");
+}
+
+/// A getter result forwarded to a block argument owns its own reference.
+#[test]
+fn owned_getter_result_through_single_arc_block_argument() {
+    let mut func = TirFunction::new(
+        "borrow_through_argument".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let consumer = func.fresh_block();
+    let source = func.fresh_value();
+    let borrowed = func.fresh_value();
+    let carried = func.fresh_value();
+    for value in [source, borrowed, carried] {
+        func.value_types.insert(value, TirType::DynBox);
+    }
+    let entry = func.entry_block;
+    {
+        let block = func.blocks.get_mut(&entry).unwrap();
+        block.ops = vec![
+            named_call("fixture_external_call", vec![], vec![source]),
+            op(OpCode::LoadAttr, vec![source], vec![borrowed]),
+        ];
+        block.terminator = Terminator::Branch {
+            target: consumer,
+            args: vec![borrowed],
+        };
+    }
+    func.blocks.insert(
+        consumer,
+        TirBlock {
+            id: consumer,
+            args: vec![TirValue {
+                id: carried,
+                ty: TirType::DynBox,
+            }],
+            ops: vec![named_call("fixture_external_call", vec![carried], vec![])],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+
+    insert(&mut func);
+    trace(&func, 0, &[]);
+}
+
+/// A getter result and an independently produced handler argument merge at
+/// a block reached by normal and exceptional transfers. Each reference retires
+/// exactly once on its own path.
+#[test]
+fn owned_getter_result_joins_independent_exception_payload() {
+    let mut func = TirFunction::new(
+        "keepalive_handler_join".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let forward = func.fresh_block();
+    let observed = func.fresh_block();
+    let handler = func.fresh_block();
+    func.label_id_map.insert(handler.0, 61);
+    let source = func.fresh_value();
+    let borrowed = func.fresh_value();
+    let cond = func.fresh_value();
+    // Keep both CFG paths executable; this fixture condition is not a literal.
+    let cond_input = crate::fixture_support::append_parameter(&mut func, TirType::Bool);
+    let fresh = func.fresh_value();
+    let bound = func.fresh_value();
+    for value in [source, borrowed, fresh, bound] {
+        func.value_types.insert(value, TirType::DynBox);
+    }
+    func.value_types.insert(cond, TirType::Bool);
+    let entry = func.entry_block;
+    {
+        let block = func.blocks.get_mut(&entry).unwrap();
+        block.ops = vec![
+            named_call("fixture_external_call", vec![], vec![source]),
+            op(OpCode::LoadAttr, vec![source], vec![borrowed]),
+            op(OpCode::Copy, vec![cond_input], vec![cond]),
+        ];
+        block.terminator = Terminator::CondBranch {
+            cond,
+            then_block: forward,
+            then_args: vec![],
+            else_block: observed,
+            else_args: vec![],
+        };
+    }
+    func.blocks.insert(
+        forward,
+        TirBlock {
+            id: forward,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: handler,
+                args: vec![borrowed],
+            },
+        },
+    );
+    let mut check = op(OpCode::CheckException, vec![fresh], vec![]);
+    check.attrs.insert("value".into(), AttrValue::Int(61));
+    func.blocks.insert(
+        observed,
+        TirBlock {
+            id: observed,
+            args: vec![],
+            ops: vec![
+                named_call("fixture_external_call", vec![], vec![fresh]),
+                check,
+            ],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+    func.blocks.insert(
+        handler,
+        TirBlock {
+            id: handler,
+            args: vec![TirValue {
+                id: bound,
+                ty: TirType::DynBox,
+            }],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+
+    insert(&mut func);
+    let paths: [&[bool]; 3] = [&[true], &[false], &[false, true]];
+    for path in paths {
+        trace(&func, 0, path);
+    }
+}
+
+#[test]
+fn builtin_reference_result_releases_or_transfers_its_independent_owner() {
+    for name in [None, Some("len"), Some("molt_len")] {
+        for returned in [false, true] {
+            let mut function = TirFunction::new(
+                "builtin_reference_owner".into(),
+                vec![TirType::Str],
+                if returned {
+                    TirType::DynBox
+                } else {
+                    TirType::None
+                },
+                if returned {
+                    molt_ir::FunctionReturnAbi::Value
+                } else {
+                    molt_ir::FunctionReturnAbi::Void
+                },
+            );
+            let entry = function.entry_block;
+            let name_value = function.blocks[&entry].args[0].id;
+            let result = function.fresh_value();
+            function.value_types.insert(result, TirType::DynBox);
+            let mut lookup = original_copy("builtin_func", vec![result]);
+            lookup
+                .attrs
+                .insert("s_value".into(), AttrValue::Str("molt_len".into()));
+            lookup.attrs.insert("value".into(), AttrValue::Int(1));
+            if let Some(name) = name {
+                lookup.operands.push(name_value);
+                lookup
+                    .attrs
+                    .insert("builtin_name".into(), AttrValue::Str(name.into()));
+            }
+            function.blocks.get_mut(&entry).unwrap().ops.push(lookup);
+            function.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+                values: if returned { vec![result] } else { vec![] },
+            };
+            run(&mut function, &mut AnalysisManager::new());
+            let ops = &function.blocks[&entry].ops;
+            assert_eq!(
+                ops.iter()
+                    .filter(|op| op.opcode == OpCode::DecRef && op.operands == vec![result])
+                    .count(),
+                usize::from(!returned),
+                "{name:?}, returned={returned}"
+            );
+            assert!(
+                !ops.iter()
+                    .any(|op| op.opcode == OpCode::IncRef && op.operands == vec![result]),
+                "an acquired owner must not be published twice"
+            );
+            assert!(
+                !ops.iter()
+                    .any(|op| op.opcode == OpCode::DecRef && op.operands == vec![name_value]),
+                "the borrowed name is not the lookup result's owner"
+            );
+        }
+    }
+}
+
+#[test]
+fn runtime_copy_results_release_or_transfer_only_their_own_reference() {
+    // Published acquisitions, constructors, custom-symbol calls, and a boxed
+    // immediate-returning mutation all obey the same custody protocol.
+    for (kind, arity) in [
+        ("dict_get", 3),
+        ("list_copy", 1),
+        ("list_int_new", 2),
+        ("class_new", 1),
+        ("module_new", 1),
+        ("exception_current", 0),
+        ("gen_send", 2),
+        ("json_parse", 1),
+        ("call_async", 1),
+        ("list_append", 2),
+    ] {
+        for returned in [false, true] {
+            let mut function = TirFunction::new(
+                format!("{kind}_owner"),
+                vec![TirType::DynBox],
+                if returned {
+                    TirType::DynBox
+                } else {
+                    TirType::None
+                },
+                if returned {
+                    molt_ir::FunctionReturnAbi::Value
+                } else {
+                    molt_ir::FunctionReturnAbi::Void
+                },
+            );
+            let entry = function.entry_block;
+            let operand = function.blocks[&entry].args[0].id;
+            let result = function.fresh_value();
+            function.value_types.insert(result, TirType::DynBox);
+            let mut operation = original_copy(kind, vec![result]);
+            operation.operands = vec![operand; arity];
+            if kind == "call_async" {
+                operation
+                    .attrs
+                    .insert("s_value".into(), AttrValue::Str("poll_body".into()));
+            }
+            function.blocks.get_mut(&entry).unwrap().ops.push(operation);
+            function.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+                values: if returned { vec![result] } else { vec![] },
+            };
+            run(&mut function, &mut AnalysisManager::new());
+            let ops = &function.blocks[&entry].ops;
+            assert_eq!(
+                ops.iter()
+                    .filter(|op| op.opcode == OpCode::DecRef && op.operands == vec![result])
+                    .count(),
+                usize::from(!returned),
+                "{kind}, returned={returned}",
+            );
+            assert!(
+                !ops.iter()
+                    .any(|op| op.opcode == OpCode::IncRef && op.operands == vec![result]),
+                "{kind} already owns its result"
+            );
+            assert!(
+                !ops.iter()
+                    .any(|op| op.opcode == OpCode::DecRef && op.operands == vec![operand]),
+                "{kind} borrows its operand"
+            );
+        }
+    }
+}
+
+#[test]
+fn runtime_nonowning_copy_results_do_not_release_borrowed_storage() {
+    for (kind, arity) in [
+        ("dict_set", 3),
+        ("dict_update_missing", 3),
+        ("function_closure_bits", 1),
+    ] {
+        let mut function = TirFunction::new(
+            format!("{kind}_borrow"),
+            vec![TirType::DynBox],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
+        let entry = function.entry_block;
+        let operand = function.blocks[&entry].args[0].id;
+        let result = function.fresh_value();
+        function.value_types.insert(result, TirType::DynBox);
+        let mut operation = original_copy(kind, vec![result]);
+        operation.operands = vec![operand; arity];
+        function.blocks.get_mut(&entry).unwrap().ops.push(operation);
+        function.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
+        run(&mut function, &mut AnalysisManager::new());
+        assert!(
+            !function.blocks[&entry]
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::DecRef),
+            "{kind} has no result owner to release"
+        );
+    }
 }

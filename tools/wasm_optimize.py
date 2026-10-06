@@ -15,9 +15,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -34,134 +32,25 @@ if str(SRC_ROOT) not in sys.path:
 from tools import harness_memory_guard  # noqa: E402
 from molt import artifact_publication  # noqa: E402
 from tools.wasm_metrics import wasm_metrics  # noqa: E402
+from molt.wasm_artifact import parse_wasm_exports  # noqa: E402
 from molt.wasm_optimization import (  # noqa: E402
     WASM_OPT_LEVELS,
     wasm_opt_pipeline,
 )
-
-try:
-    from tools.command_execution import CommandExecutor
-except ModuleNotFoundError:  # pragma: no cover - direct tools/ execution
-    from command_execution import CommandExecutor  # type: ignore
-
-_COMMANDS = CommandExecutor.for_file(__file__)
+from molt.wasm_optimizer_identity import (  # noqa: E402
+    WasmOptimizerExecutableIdentity,
+    WasmOptimizerIdentityError,
+    find_wasm_opt,
+    wasm_optimizer_executable_identity,
+)
 
 VALID_LEVELS = frozenset(WASM_OPT_LEVELS)
 
 
-def _stable_executable_sha256(
-    path: Path,
-) -> tuple[tuple[int, int, int, int], str] | None:
-    try:
-        before = path.stat()
-        identity = (
-            int(before.st_dev),
-            int(before.st_ino),
-            int(before.st_size),
-            int(before.st_mtime_ns),
-        )
-        hasher = hashlib.sha256()
-        with path.open("rb") as stream:
-            while chunk := stream.read(1024 * 1024):
-                hasher.update(chunk)
-        after = path.stat()
-    except OSError:
-        return None
-    after_identity = (
-        int(after.st_dev),
-        int(after.st_ino),
-        int(after.st_size),
-        int(after.st_mtime_ns),
-    )
-    if after_identity != identity:
-        return None
-    return identity, hasher.hexdigest()
+def _export_names(path: Path) -> frozenset[str]:
+    """Read one exact export contract through the shared WASM parser."""
 
-
-def find_wasm_opt() -> str | None:
-    """Return the ``wasm-opt`` binary through the toolchain discovery order.
-
-    Resolution order (one authority for every wasm-opt consumer):
-    1. ``MOLT_WASM_OPT`` — explicit pin to a binary path.
-    2. ``$PATH``.
-    3. ``MOLT_TARGET_ROOT/toolchains/binaryen-*/bin`` — the same managed
-       toolchain root that provides the WASI sysroot, so a repo-provisioned
-       Binaryen works without PATH mutation.
-    """
-    pinned = os.environ.get("MOLT_WASM_OPT", "").strip()
-    if pinned:
-        pinned_path = Path(pinned).expanduser()
-        if pinned_path.is_file():
-            return str(pinned_path)
-    on_path = shutil.which("wasm-opt")
-    if on_path is not None:
-        return on_path
-    target_root = os.environ.get("MOLT_TARGET_ROOT", "").strip()
-    if target_root:
-        toolchains = Path(target_root).expanduser() / "toolchains"
-        exe_name = "wasm-opt.exe" if os.name == "nt" else "wasm-opt"
-        candidates = sorted(
-            toolchains.glob(f"binaryen-*/bin/{exe_name}"),
-            reverse=True,
-        )
-        for candidate in candidates:
-            if candidate.is_file():
-                return str(candidate)
-    return None
-
-
-def _read_varuint(data: bytes, offset: int) -> tuple[int, int]:
-    result = 0
-    shift = 0
-    while True:
-        if offset >= len(data):
-            raise ValueError("unexpected EOF while reading varuint")
-        byte = data[offset]
-        offset += 1
-        result |= (byte & 0x7F) << shift
-        if byte & 0x80 == 0:
-            return result, offset
-        shift += 7
-        if shift > 63:
-            raise ValueError("varuint too large")
-
-
-def _read_string(data: bytes, offset: int) -> tuple[str, int]:
-    size, offset = _read_varuint(data, offset)
-    end = offset + size
-    if end > len(data):
-        raise ValueError("unexpected EOF while reading string")
-    return data[offset:end].decode("utf-8"), end
-
-
-def _collect_exports(path: Path) -> set[str]:
-    data = path.read_bytes()
-    if len(data) < 8 or data[:4] != b"\0asm" or data[4:8] != b"\x01\0\0\0":
-        raise ValueError(f"not a canonical WebAssembly module: {path}")
-    offset = 8
-    exports: set[str] = set()
-    while offset < len(data):
-        section_id = data[offset]
-        offset += 1
-        section_size, offset = _read_varuint(data, offset)
-        end = offset + section_size
-        if end > len(data):
-            raise ValueError("unexpected EOF while reading section")
-        payload = data[offset:end]
-        offset = end
-        if section_id != 7:
-            continue
-        cursor = 0
-        count, cursor = _read_varuint(payload, cursor)
-        for _ in range(count):
-            name, cursor = _read_string(payload, cursor)
-            if cursor >= len(payload):
-                raise ValueError("unexpected EOF while reading export kind")
-            cursor += 1
-            _, cursor = _read_varuint(payload, cursor)
-            exports.add(name)
-        break
-    return exports
+    return frozenset(export.name for export in parse_wasm_exports(path.read_bytes()))
 
 
 def _optimizer_failure(
@@ -209,6 +98,7 @@ def optimize(
     apply_level: bool = True,
     preserve_debug: bool = False,
     timeout: float | None = None,
+    optimizer_identity: WasmOptimizerExecutableIdentity | None = None,
 ) -> dict[str, object]:
     """Run ``wasm-opt`` on *input_path*.
 
@@ -236,42 +126,38 @@ def optimize(
             error=f"Invalid optimization level: {level!r} (valid: {VALID_LEVELS})",
         )
 
-    wasm_opt = find_wasm_opt()
-    if wasm_opt is None:
+    selected = (
+        str(optimizer_identity.path)
+        if optimizer_identity is not None
+        else find_wasm_opt()
+    )
+    if selected is None:
         return _optimizer_failure(
             status="unavailable",
             input_bytes=input_path.stat().st_size if input_path.exists() else 0,
             error="wasm-opt not found (install or provision Binaryen)",
         )
     try:
-        wasm_opt_path = Path(wasm_opt).expanduser().resolve(strict=True)
-    except OSError:
-        wasm_opt_path = Path(wasm_opt).expanduser()
-    executable_identity = _stable_executable_sha256(wasm_opt_path)
-    if executable_identity is None:
+        selected_path = Path(selected).expanduser().resolve(strict=True)
+        if optimizer_identity is None:
+            executable_identity = wasm_optimizer_executable_identity(selected_path)
+        else:
+            if not optimizer_identity.matches_path(selected_path):
+                raise WasmOptimizerIdentityError(
+                    "wasm-opt no longer matches the invocation-scoped identity"
+                )
+            executable_identity = optimizer_identity
+    except (OSError, WasmOptimizerIdentityError) as exc:
         return _optimizer_failure(
             status="identity-error",
             input_bytes=input_path.stat().st_size if input_path.exists() else 0,
-            wasm_opt_path=wasm_opt_path,
-            error=f"wasm-opt identity is unstable or unreadable: {wasm_opt_path}",
+            wasm_opt_path=Path(selected).expanduser(),
+            error=str(exc),
         )
-    executable_stat_identity, executable_sha256 = executable_identity
+    wasm_opt_path = executable_identity.path
+    executable_sha256 = executable_identity.sha256
+    binaryen_version = executable_identity.binaryen_version
     wasm_opt = str(wasm_opt_path)
-    try:
-        version_result = _COMMANDS.run(
-            [wasm_opt, "--version"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            timeout=10,
-        )
-        binaryen_version = (
-            version_result.stdout or version_result.stderr or "unknown"
-        ).strip()
-    except (OSError, subprocess.SubprocessError):
-        binaryen_version = "unknown"
 
     if output_path is None:
         output_path = input_path.with_suffix(".opt.wasm")
@@ -287,6 +173,42 @@ def optimize(
             wasm_opt_path=wasm_opt_path,
             wasm_opt_sha256=executable_sha256,
             error=f"failed to profile optimizer input: {exc}",
+        )
+    try:
+        input_exports = _export_names(input_path)
+    except (OSError, UnicodeError, ValueError) as exc:
+        return _optimizer_failure(
+            status="invalid-input",
+            input_bytes=input_bytes,
+            output_path=output_path,
+            wasm_opt_path=wasm_opt_path,
+            wasm_opt_sha256=executable_sha256,
+            error=f"failed to read optimizer input export contract: {exc}",
+        )
+    export_contract = (
+        input_exports if required_exports is None else frozenset(required_exports)
+    )
+    if any(not isinstance(name, str) or not name for name in export_contract):
+        return _optimizer_failure(
+            status="invalid-contract",
+            input_bytes=input_bytes,
+            output_path=output_path,
+            wasm_opt_path=wasm_opt_path,
+            wasm_opt_sha256=executable_sha256,
+            error="required wasm exports must be exact non-empty strings",
+        )
+    absent_input_exports = sorted(export_contract - input_exports)
+    if absent_input_exports:
+        return _optimizer_failure(
+            status="invalid-contract",
+            input_bytes=input_bytes,
+            output_path=output_path,
+            wasm_opt_path=wasm_opt_path,
+            wasm_opt_sha256=executable_sha256,
+            error=(
+                "required wasm exports are absent before optimization: "
+                + ", ".join(absent_input_exports)
+            ),
         )
 
     pipeline = wasm_opt_pipeline(
@@ -385,12 +307,7 @@ def optimize(
             error=(proc.stderr or proc.stdout)[:500],
         )
 
-    final_executable_identity = _stable_executable_sha256(wasm_opt_path)
-    if (
-        final_executable_identity is None
-        or final_executable_identity[0] != executable_stat_identity
-        or final_executable_identity[1] != executable_sha256
-    ):
+    if not executable_identity.matches_path(wasm_opt_path):
         staged_output.unlink(missing_ok=True)
         return _optimizer_failure(
             status="identity-error",
@@ -406,7 +323,7 @@ def optimize(
         )
 
     try:
-        exports = _collect_exports(staged_output)
+        exports = _export_names(staged_output)
     except (OSError, ValueError) as exc:
         staged_bytes = staged_output.stat().st_size if staged_output.exists() else 0
         staged_output.unlink(missing_ok=True)
@@ -423,24 +340,23 @@ def optimize(
             wasm_opt_sha256=executable_sha256,
             error=f"failed to verify optimized output: {exc}",
         )
-    if required_exports:
-        missing = sorted(set(required_exports) - exports)
-        if missing:
-            staged_bytes = staged_output.stat().st_size if staged_output.exists() else 0
-            staged_output.unlink(missing_ok=True)
-            return _optimizer_failure(
-                status="invalid-output",
-                input_bytes=input_bytes,
-                output_path=output_path,
-                output_bytes=staged_bytes,
-                elapsed_s=elapsed,
-                pipeline=pipeline,
-                peak_rss_kb=peak_rss_kb,
-                peak_total_rss_kb=peak_total_rss_kb,
-                wasm_opt_path=wasm_opt_path,
-                wasm_opt_sha256=executable_sha256,
-                error="optimized wasm missing required exports: " + ", ".join(missing),
-            )
+    missing = sorted(export_contract - exports)
+    if missing:
+        staged_bytes = staged_output.stat().st_size if staged_output.exists() else 0
+        staged_output.unlink(missing_ok=True)
+        return _optimizer_failure(
+            status="invalid-output",
+            input_bytes=input_bytes,
+            output_path=output_path,
+            output_bytes=staged_bytes,
+            elapsed_s=elapsed,
+            pipeline=pipeline,
+            peak_rss_kb=peak_rss_kb,
+            peak_total_rss_kb=peak_total_rss_kb,
+            wasm_opt_path=wasm_opt_path,
+            wasm_opt_sha256=executable_sha256,
+            error="optimized wasm missing required exports: " + ", ".join(missing),
+        )
 
     output_bytes = staged_output.stat().st_size
     reduction = input_bytes - output_bytes
@@ -561,12 +477,18 @@ def main() -> None:
     if not args.wasm.is_file():
         print(f"ERROR: {args.wasm} not found", file=sys.stderr)
         sys.exit(1)
+    try:
+        required_exports = _export_names(args.wasm)
+    except (OSError, UnicodeError, ValueError) as exc:
+        print(f"ERROR: invalid WebAssembly input: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     result = optimize(
         args.wasm,
         output_path=args.output,
         level=args.level,
         extra_passes=args.extra_passes,
+        required_exports=required_exports,
     )
 
     if args.json_output:

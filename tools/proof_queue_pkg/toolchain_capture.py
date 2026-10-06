@@ -38,6 +38,15 @@ from tools.proof_queue_pkg.process_image_capture import (
 
 CAPTURE_SCHEMA = "molt.proof-toolchain-capture.v1"
 VERIFICATION_SCHEMA = "molt.proof-toolchain-verification.v1"
+# std::process::Command's Debug form, which rustc uses to print link commands:
+# an optional `cd "dir" && `, then `env -i ` (cleared) or `env -u NAME ...`
+# (removed variables; rustc strips Apple deployment targets this way), then
+# `NAME="value"` assignments, an optional `["program"] ` when the executable
+# differs from argv[0], and the quoted argv.
+_COMMAND_CWD_PREFIX = re.compile(r'cd (?=")')
+_COMMAND_ENVIRONMENT_EDIT = re.compile(r'env(?: -i| -u [^\s"]+)+ ')
+_COMMAND_ENVIRONMENT_ASSIGNMENT = re.compile(r'[A-Za-z_][A-Za-z0-9_]*=(?=")')
+_COMMAND_PROGRAM_OVERRIDE = re.compile(r'\[(?=")')
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 
@@ -319,18 +328,46 @@ def _command_tokens(line: str) -> list[str]:
     tokens: list[str] = []
     decoder = json.JSONDecoder()
     index = 0
+    if cwd := _COMMAND_CWD_PREFIX.match(line):
+        _directory, end = decoder.raw_decode(line, cwd.end())
+        if not line.startswith(" && ", end):
+            raise ValueError("rust linker command has a malformed working directory")
+        index = end + len(" && ")
+    if edit := _COMMAND_ENVIRONMENT_EDIT.match(line, index):
+        index = edit.end()
+    while assignment := _COMMAND_ENVIRONMENT_ASSIGNMENT.match(line, index):
+        value, end = decoder.raw_decode(line, assignment.end())
+        if not isinstance(value, str) or end >= len(line) or not line[end].isspace():
+            raise ValueError(
+                "rust linker command contains a malformed environment assignment"
+            )
+        index = end
+        while index < len(line) and line[index].isspace():
+            index += 1
+    program: str | None = None
+    if override := _COMMAND_PROGRAM_OVERRIDE.match(line, index):
+        program, end = decoder.raw_decode(line, override.end())
+        if not isinstance(program, str) or not line.startswith("] ", end):
+            raise ValueError("rust linker command has a malformed program override")
+        index = end + len("] ")
+    if index and (index >= len(line) or line[index] != '"'):
+        raise ValueError("rust linker environment assignments have no quoted command")
+    command_start = index
     while index < len(line):
         while index < len(line) and line[index].isspace():
             index += 1
         if index >= len(line):
             break
         if line[index] != '"':
-            return shlex.split(line, posix=os.name != "nt")
+            return shlex.split(line[command_start:], posix=os.name != "nt")
         value, end = decoder.raw_decode(line, index)
         if not isinstance(value, str):
             raise ValueError("rust linker command contains a non-string argument")
         tokens.append(value)
         index = end
+    if program is not None and tokens:
+        # argv[0] is display-only once the executable is named separately.
+        tokens[0] = program
     return tokens
 
 
@@ -338,11 +375,82 @@ def _selected_command_lines(output: str) -> list[list[str]]:
     commands: list[list[str]] = []
     for line in output.splitlines():
         stripped = line.strip()
-        if not stripped.startswith('"'):
+        if not stripped.startswith('"') and not any(
+            prefix.match(stripped)
+            for prefix in (
+                _COMMAND_CWD_PREFIX,
+                _COMMAND_ENVIRONMENT_EDIT,
+                _COMMAND_ENVIRONMENT_ASSIGNMENT,
+                _COMMAND_PROGRAM_OVERRIDE,
+            )
+        ):
             continue
         try:
             tokens = _command_tokens(stripped)
         except (ValueError, json.JSONDecodeError):
+            continue
+        if tokens:
+            commands.append(tokens)
+    return commands
+
+
+def _driver_command_tokens(line: str) -> list[str]:
+    """Decode one `-###` command line as gcc and clang print it.
+
+    Both drivers print every argument after a space. gcc quotes an argument
+    unless it is plainly safe, clang always quotes, and inside quotes only a
+    double quote, a backslash or a dollar sign is backslash-escaped.
+    """
+    tokens: list[str] = []
+    index = 0
+    while index < len(line):
+        if line[index] == " ":
+            index += 1
+            continue
+        if line[index] != '"':
+            end = line.find(" ", index)
+            end = len(line) if end < 0 else end
+            if '"' in line[index:end] or "\\" in line[index:end]:
+                raise ValueError("driver command has a malformed bare argument")
+            tokens.append(line[index:end])
+            index = end
+            continue
+        value: list[str] = []
+        index += 1
+        while True:
+            if index >= len(line):
+                raise ValueError("driver command has an unterminated quote")
+            character = line[index]
+            if character == "\\":
+                if index + 1 >= len(line) or line[index + 1] not in '"\\$':
+                    raise ValueError("driver command has an unknown escape")
+                value.append(line[index + 1])
+                index += 2
+            elif character == '"':
+                index += 1
+                break
+            else:
+                value.append(character)
+                index += 1
+        if index < len(line) and line[index] != " ":
+            raise ValueError("driver command argument runs into the next one")
+        tokens.append("".join(value))
+    return tokens
+
+
+def _driver_command_lines(output: str) -> list[list[str]]:
+    """Select the helper commands a compiler driver reports under `-###`.
+
+    Command lines are indented by exactly one space; banner lines (`Target:`,
+    `COLLECT_GCC_OPTIONS=`, ...) start at column zero.
+    """
+    commands: list[list[str]] = []
+    for line in output.splitlines():
+        if not line.startswith(" ") or line.startswith("  "):
+            continue
+        try:
+            tokens = _driver_command_tokens(line.rstrip("\r"))
+        except ValueError:
             continue
         if tokens:
             commands.append(tokens)
@@ -855,7 +963,10 @@ def _capture_rust_link_unit(
         # disjoint for Cargo and direct rustc. Cargo fingerprints extra_args_for
         # the unit, so the changed print request is not a freshness retry.
         metadata_command = [*command, "--print", "sysroot"]
-        command = [*command, "--print", "link-args"]
+        # The driver dry run below re-reads this command's inputs; save-temps
+        # keeps rustc's temporaries (symbols.o, codegen units) inside the
+        # synthetic root, since clang rejects missing inputs even under -###.
+        command = [*command, "-C", "save-temps", "--print", "link-args"]
         metadata = _run_rust_link_probe(
             metadata_command,
             phase="selected-sysroot",
@@ -925,7 +1036,7 @@ def _capture_rust_link_unit(
                 timeout=30.0,
                 probes=probes,
             )
-            nested_commands = _selected_command_lines(
+            nested_commands = _driver_command_lines(
                 dry_run.stdout + "\n" + dry_run.stderr
             )
             if dry_run.returncode != 0 or not nested_commands:

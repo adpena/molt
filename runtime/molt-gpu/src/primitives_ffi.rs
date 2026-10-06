@@ -1717,7 +1717,7 @@ mod metal_realize_tests {
         if MetalDevice::new().is_err() {
             return;
         }
-        let data = vec![1.0f32, 2.0, 3.0, 4.0];
+        let data = [1.0f32, 2.0, 3.0, 4.0];
         let shape_in = [4usize];
 
         // SAFETY: pointer and shape slices are valid for the duration of the call.

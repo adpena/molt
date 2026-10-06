@@ -6,7 +6,7 @@ from typing import Any, Mapping, cast
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
-from molt.cli.source_build_environment import source_build_environment_problems
+from molt.cli.source_build_environment_schema import source_build_environment_problems
 from molt.cli.source_extension_set_validation_schema import (
     RecordedSourceExtensionSet,
     SourceExtensionSetValidationError,

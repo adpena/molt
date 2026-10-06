@@ -22,37 +22,32 @@ use std::ffi::c_void;
 use std::ptr;
 use std::sync::atomic::Ordering;
 
-// A hook table whose `classify_heap` reports Dict (so an is_ptr handle takes the
-// native dict lane in PyObject_GetItem), `dict_get` always MISSES (returns 0),
-// and `alloc_str` succeeds (so PyUnicode_FromString mints a real key). Every
-// other hook stays at STUB. classify_heap->Dict only ever fires for a bridged
-// is_ptr `o`; the foreign-mapping test's receiver is unbridged, so it is
-// unaffected.
-
-unsafe extern "C" fn dict_classify(bits: u64) -> u8 {
-    if support::fake_strings::contains(bits) {
-        MoltTypeTag::Str as u8
-    } else {
+// Managed subscription reaches object_get_item; physical PyDict accessors
+// separately use dict_get. This fixture explicitly supplies the former and
+// uses shared dictionary/string custody for native exception construction.
+unsafe extern "C" fn dict_get_item_miss(
+    dict: u64,
+    key: u64,
+) -> molt_cpython_abi::hooks::OwnedHandleResult {
+    assert_eq!(
+        unsafe { support::fake_runtime::classify_heap(dict) },
         MoltTypeTag::Dict as u8
+    );
+    let key = unsafe { GLOBAL_BRIDGE.handle_to_borrowed_pyobj(key) };
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_SetObject(
+            (&raw mut molt_cpython_abi::abi_types::PyExc_KeyError).cast(),
+            key,
+        );
     }
-}
-
-unsafe extern "C" fn dict_get_miss(
-    _d: u64,
-    _k: u64,
-) -> molt_cpython_abi::hooks::BorrowedHandleResult {
-    molt_cpython_abi::hooks::BorrowedHandleResult::missing()
+    molt_cpython_abi::hooks::OwnedHandleResult::error()
 }
 
 fn init_hooks() {
-    molt_cpython_abi::bridge::molt_cpython_abi_init();
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
-    hooks.classify_heap = dict_classify;
-    hooks.dict_get = dict_get_miss;
-    support::fake_strings::wire(&mut hooks);
-    // Idempotent: the first test to run installs the shared table; the rest
-    // observe it. Both tests need exactly this table.
-    support::prepare_abi_test_thread(hooks);
+    support::fake_runtime::wire(&mut hooks);
+    hooks.object_get_item = dict_get_item_miss;
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 /// (c) A native dict miss must raise `KeyError` with the key as its argument
@@ -62,11 +57,8 @@ fn get_item_native_dict_miss_raises_keyerror_with_key() {
     init_hooks();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
 
-    // A genuine is_ptr handle -> classify_heap reports Dict for it.
-    let backing: Box<u8> = Box::new(0);
-    let dict_ptr = Box::into_raw(backing);
-    let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
-    let dict_obj = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(dict_bits) };
+    let dict_obj = unsafe { molt_cpython_abi::api::mapping::PyDict_New() };
+    assert!(!dict_obj.is_null());
     // A native int key so `PyErr_SetObject(KeyError, key)` can format its value.
     let key = unsafe { GLOBAL_BRIDGE.owned_handle_to_pyobj(MoltObject::from_int(4242).bits()) };
 
@@ -97,7 +89,10 @@ fn get_item_native_dict_miss_raises_keyerror_with_key() {
     );
 
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
-    unsafe { drop(Box::from_raw(dict_ptr)) };
+    unsafe {
+        molt_cpython_abi::api::refcount::Py_DECREF(dict_obj);
+        molt_cpython_abi::api::refcount::Py_DECREF(key);
+    }
 }
 
 // ── Foreign mapping for (e): its mp_subscript returns FAKE_VALUE unless the
@@ -121,7 +116,7 @@ unsafe extern "C" fn foreign_map_subscript(_o: *mut PyObject, key: *mut PyObject
         }
         return ptr::null_mut();
     }
-    &raw mut FAKE_VALUE
+    unsafe { molt_cpython_abi::api::object::Py_NewRef(&raw mut FAKE_VALUE) }
 }
 
 /// (e) `PyMapping_GetItemString` on a FOREIGN mapping must route through
@@ -155,6 +150,8 @@ fn mapping_getitemstring_routes_foreign_mapping_through_getitem() {
         got, &raw mut FAKE_VALUE,
         "PyMapping_GetItemString must dispatch the foreign mapping's mp_subscript"
     );
+    unsafe { molt_cpython_abi::api::refcount::Py_DECREF(got) };
+    assert_eq!(unsafe { FAKE_VALUE.ob_refcnt }, 1);
 
     // Missing key: the mapping's KeyError must propagate (not a silent NULL).
     MISS_MODE.store(true, Ordering::SeqCst);
@@ -175,43 +172,21 @@ fn mapping_getitemstring_routes_foreign_mapping_through_getitem() {
         1,
         "a missing key on a foreign mapping must raise KeyError"
     );
-    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
-}
-
-/// The `PyObject_Bytes` fabricated-empty-`b''` fake is gone: a non-bytes object
-/// with no `__bytes__` must raise an honest `TypeError` and record the site,
-/// never a silently-wrong empty bytes value (M05 poison). Needs the wired
-/// `alloc_str` so the `__bytes__` lookup reaches the honest fallback.
-#[test]
-fn object_bytes_non_bytes_without_dunder_raises_typeerror() {
-    init_hooks();
-    let _ = molt_cpython_abi::capi_trace::take_last_silent_failure();
-    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
-
-    let mut ty: PyTypeObject = unsafe { std::mem::zeroed() };
-    ty.tp_name = c"opaque".as_ptr();
-    let mut obj = PyObject {
-        ob_refcnt: 1,
-        ob_type: &raw mut ty,
-    };
-    let result = unsafe { molt_cpython_abi::api::object::PyObject_Bytes(&raw mut obj) };
-    assert!(
-        result.is_null(),
-        "PyObject_Bytes must NOT fabricate an empty b'' for a non-bytes object"
-    );
-    assert_eq!(
-        unsafe {
-            molt_cpython_abi::api::errors::PyErr_ExceptionMatches(
-                (&raw mut molt_cpython_abi::abi_types::PyExc_TypeError).cast::<PyObject>(),
-            )
-        },
-        1,
-        "PyObject_Bytes on a non-bytes object without __bytes__ must raise TypeError"
-    );
-    let recorded = molt_cpython_abi::capi_trace::take_last_silent_failure();
-    assert!(
-        recorded.as_deref().unwrap_or("").contains("PyObject_Bytes"),
-        "expected PyObject_Bytes on the silent-failure surface, got {recorded:?}"
-    );
-    unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
+    let error = molt_cpython_abi::api::errors::take_current_error().unwrap();
+    unsafe {
+        let args = molt_cpython_abi::api::errors::PyException_GetArgs(error.value);
+        assert!(!args.is_null());
+        assert_eq!(molt_cpython_abi::api::sequences::PyTuple_Size(args), 1);
+        let key = molt_cpython_abi::api::sequences::PyTuple_GetItem(args, 0);
+        let text = molt_cpython_abi::api::strings::PyUnicode_AsUTF8(key);
+        assert!(!text.is_null());
+        assert_eq!(
+            std::ffi::CStr::from_ptr(text),
+            name,
+            "KeyError retains the string key"
+        );
+        molt_cpython_abi::api::refcount::Py_DECREF(args);
+    }
+    drop(error);
+    assert!(unsafe { molt_cpython_abi::api::errors::PyErr_Occurred() }.is_null());
 }

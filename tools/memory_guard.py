@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable, Mapping, Sequence
 import contextlib
+from dataclasses import replace
 import json
 import os
 import platform
@@ -73,6 +74,11 @@ SRC_ROOT = ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 from tools.memory_guard_core.common import utc_timestamp as _utc_timestamp  # noqa: E402
+from tools.memory_guard_core.active_custody import (  # noqa: E402
+    ACTIVE_GUARD_MARKER_SCHEMA_VERSION,
+    update_active_guard_marker,
+    write_active_guard_marker,
+)
 from tools.memory_guard_core.memory_limits import (  # noqa: E402
     DEFAULT_GLOBAL_FRACTION_OF_USABLE as DEFAULT_GLOBAL_FRACTION_OF_USABLE,
     DEFAULT_HARD_MAX_CHILD_RLIMIT_GB as DEFAULT_HARD_MAX_CHILD_RLIMIT_GB,
@@ -108,6 +114,7 @@ from tools.memory_guard_core.memory_limits import (  # noqa: E402
 from tools.memory_guard_core.payloads import (  # noqa: E402
     _rss_record_payload as _rss_record_payload,
     guarded_child_process_payload as guarded_child_process_payload,
+    process_identities_payload as process_identities_payload,
     memory_limits_payload as memory_limits_payload,
     termination_action_payload as termination_action_payload,
     termination_report_payload as termination_report_payload,
@@ -129,6 +136,9 @@ from tools.memory_guard_core.cargo_quarantine import (  # noqa: E402
     CargoIncrementalQuarantine as CargoIncrementalQuarantine,
     CargoIncrementalObservation as CargoIncrementalObservation,
     observe_owned_incremental_state as observe_owned_incremental_state,
+    CargoInterruptionInventory,
+    CARGO_COMPILER_EXECUTABLES,
+    observe_cargo_interruption_inventory,
     CargoIncrementalQuarantineMove as CargoIncrementalQuarantineMove,
     _cargo_incremental_dirs as _cargo_incremental_dirs,
     _cargo_incremental_quarantine_message as _cargo_incremental_quarantine_message,
@@ -247,6 +257,7 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
     signal_payload as signal_payload,
     term_signal_payload as term_signal_payload,
     terminate_verified_pid as terminate_verified_pid,
+    termination_report_dispositions as termination_report_dispositions,
     total_rss as total_rss,
     watched_pids as watched_pids,
 )
@@ -263,6 +274,8 @@ ACTIVE_GUARD_MARKER_ENV = "MOLT_MEMORY_GUARD_MARKER"
 _INTERNAL_ENV_KEYS = (
     INTERNAL_COMMAND_ENV,
     INTERNAL_WORKER_ENV,
+    _cli_contract.INTERNAL_LAUNCH_ID_ENV,
+    _cli_contract.INTERNAL_STARTUP_PATH_ENV,
 )
 HOST_CONTROL_PLANE_TOKENS = _process_model.HOST_CONTROL_PLANE_TOKENS
 HOST_CONTROL_PLANE_EXECUTABLE_NAMES = _process_model.HOST_CONTROL_PLANE_EXECUTABLE_NAMES
@@ -357,10 +370,12 @@ def _temporary_artifact_descendant_closure(
             "target_id": action.target_id,
             "result": action.result,
         }
-        for report in termination_reports
-        for action in report.actions
-        if action.result in {"failed", "still_live"}
-        or action.result.startswith("skipped_")
+        for report, disposition in zip(
+            termination_reports,
+            termination_report_dispositions(termination_reports),
+            strict=True,
+        )
+        for action in disposition.incomplete_actions
     ]
     sampling_complete = bool(
         sampling_telemetry is not None
@@ -457,7 +472,7 @@ def _write_active_guard_marker(
     cwd: str | Path | None,
     environ: Mapping[str, str],
 ) -> tuple[str, Path]:
-    if pid <= 0:
+    if type(pid) is not int or pid <= 0:
         raise ValueError("active guard marker requires a live pid")
     token = os.urandom(16).hex()
     marker_dir = active_guard_marker_dir(ROOT, environ)
@@ -465,9 +480,15 @@ def _write_active_guard_marker(
     marker_path = marker_dir / f"guard-{pid}-{token}.json"
     cwd_path = Path.cwd() if cwd is None else Path(cwd).expanduser()
     payload = {
-        "schema_version": 1,
+        "schema_version": ACTIVE_GUARD_MARKER_SCHEMA_VERSION,
         "pid": pid,
         "token": token,
+        "guard_process": {
+            "pid": pid,
+            "started_at_ns": _process_model.process_started_at_ns(pid),
+        },
+        "child_process": None,
+        "child_launch_state": "not_started",
         "path": str(Path(__file__).resolve()),
         "command": list(command),
         "cwd": str(cwd_path.resolve(strict=False)),
@@ -475,7 +496,7 @@ def _write_active_guard_marker(
         "created_at": _utc_timestamp(),
         "updated_at": _utc_timestamp(),
     }
-    _write_json_atomic(marker_path, payload)
+    write_active_guard_marker(marker_path, payload)
     # These are custody records, not a bounded artifact cache. Removing an old
     # marker can erase unresolved ownership or a parent's nested-child closure.
     # New launches must not discard another execution's evidence.
@@ -488,18 +509,11 @@ def _update_active_guard_marker(
     *,
     status: str,
     **fields: object,
-) -> None:
+) -> bool:
     try:
-        payload = json.loads(marker_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return
-    if payload.get("token") != token:
-        return
-    payload.update(fields)
-    payload["status"] = status
-    payload["updated_at"] = _utc_timestamp()
-    with contextlib.suppress(OSError):
-        _write_json_atomic(marker_path, payload)
+        return update_active_guard_marker(marker_path, token, status=status, **fields)
+    except (OSError, ValueError, RuntimeError):
+        return False
 
 
 def _apply_child_resource_limit(limit_kb: int) -> None:
@@ -750,6 +764,7 @@ def run_guarded(
     running_summary_environ: Mapping[str, str] | None = None,
     running_summary_max_global_rss_kb: int | None = None,
     on_spawn: Callable[[int], None] | None = None,
+    cancellation_requested: Callable[[], bool] | None = None,
 ) -> GuardResult:
     if not command:
         raise ValueError("command is required")
@@ -799,6 +814,7 @@ def run_guarded(
     observer_cpu_start = time.process_time()
     baseline_pgids: frozenset[int] = frozenset()
     guard_signal: int | None = None
+    cancelled = False
 
     def _handle_guard_signal(signum: int, _frame: object) -> None:
         nonlocal guard_signal
@@ -963,6 +979,12 @@ def run_guarded(
             "text": text,
             **_guarded_popen_process_isolation_kwargs(),
         }
+        if text:
+            # The stdin pipe is the only text stream Popen opens here; it must
+            # use the same codec as the captured output, never the Windows
+            # locale code page (cp1252 corrupted non-ASCII generator input).
+            popen_kwargs["encoding"] = encoding
+            popen_kwargs["errors"] = errors
         if capture_output:
             popen_kwargs["stdout"] = stdout_capture.fileno()
             popen_kwargs["stderr"] = stderr_capture.fileno()
@@ -987,6 +1009,15 @@ def run_guarded(
                 int(popen_kwargs.get("creationflags", 0) or 0)
                 | _win_job.suspended_creationflag()
             )
+        # Persist the launch boundary before a child can exist. If publication
+        # fails, do not leave an apparently pre-launch record over a live child.
+        if not _update_active_guard_marker(
+            guard_marker,
+            guard_token,
+            status="spawn_pending",
+            child_launch_state="pending",
+        ):
+            raise RuntimeError("cannot publish active guard child launch boundary")
         child_launch_started = time.perf_counter()
         try:
             proc = subprocess.Popen(launch.command, **popen_kwargs)
@@ -1011,6 +1042,19 @@ def run_guarded(
             if stderr_capture is not None:
                 stderr_capture.close()
             raise
+        _close_fds(launch.close_fds)
+        # Freeze the owned launch identity while Popen still reserves this PID.
+        # ChildExecutionClock starts the sole reaper immediately; a fast child
+        # can be gone (or its PID reused) before that constructor returns.
+        # Closure must use the original group/session, never a post-reap query.
+        child_process = GuardedChildProcess(
+            pid=proc.pid,
+            pgid=_safe_getpgid(proc.pid),
+            sid=_safe_getsid(proc.pid),
+            command=tuple(launch.command),
+            started_at=_utc_timestamp(),
+        )
+        tracker = ProcessTreeTracker(proc.pid)
         child_clock = None
         if type(proc).__module__ == "subprocess":
             from tools.memory_guard_core.process_custody import ChildExecutionClock
@@ -1024,15 +1068,6 @@ def run_guarded(
                 if resumed_at is None:
                     raise RuntimeError("Windows child resume clock is unavailable")
                 child_clock.started = resumed_at
-        _close_fds(launch.close_fds)
-        child_process = GuardedChildProcess(
-            pid=proc.pid,
-            pgid=_safe_getpgid(proc.pid),
-            sid=_safe_getsid(proc.pid),
-            command=tuple(launch.command),
-            started_at=_utc_timestamp(),
-        )
-        tracker = ProcessTreeTracker(proc.pid)
         sampling_source = (
             "windows_full_process_table"
             if _is_windows_process_model()
@@ -1051,9 +1086,17 @@ def run_guarded(
             job_member_commands: dict[tuple[int, int | None], str] = {}
             job_member_contexts: dict[tuple[int, int | None], tuple[int, str]] = {}
             previous_job_members: frozenset[tuple[int, int | None]] = frozenset()
+            latest_job_process_generation: int | None = None
 
             def _sample_owned_job() -> Mapping[int, ProcessSample]:
                 nonlocal job_member_commands, job_member_contexts, previous_job_members
+                nonlocal latest_job_process_generation
+                # Lifetime accounting fences births, including instances that
+                # start and exit between process snapshots. Capture it before
+                # inventory reads and compare after atomic Job termination.
+                latest_job_process_generation = _win_job.job_accounting(
+                    guard_job
+                ).total_processes
                 members = _win_job.process_memory(guard_job)
                 member_ids = frozenset(
                     (member.pid, member.started_at_ns) for member in members
@@ -1086,9 +1129,9 @@ def run_guarded(
                     for member in members:
                         image_role = Path(member.image_name or "").stem.casefold()
                         if (
-                            image_role in {"cargo", "rustc"}
-                            and member.started_at_ns is not None
-                        ):
+                            image_role == "cargo"
+                            or image_role in CARGO_COMPILER_EXECUTABLES
+                        ) and member.started_at_ns is not None:
                             context = windows_job_command_context(
                                 member.pid, member.started_at_ns
                             )
@@ -1128,6 +1171,13 @@ def run_guarded(
                         pgid=child_process.pgid,
                         started_at_ns=member.started_at_ns,
                         argv=native_argv,
+                        command_kind=(
+                            "full"
+                            if context is not None
+                            else "image"
+                            if (member.pid, member.started_at_ns) in job_member_commands
+                            else "unavailable"
+                        ),
                     )
                     # Job membership grants custody independently of parentage.
                     # Never invent Cargo ancestry to prime the resource tracker.
@@ -1150,6 +1200,7 @@ def run_guarded(
         if root_started_at_ns is not None:
             assert tracker.known_identities is not None
             tracker.known_identities[proc.pid] = ProcessIdentity(root_started_at_ns)
+        child_process = replace(child_process, started_at_ns=root_started_at_ns)
         if running_summary_json is not None:
             try:
                 _write_running_summary_json(
@@ -1179,6 +1230,7 @@ def run_guarded(
             guard_marker,
             guard_token,
             status="child_running",
+            child_launch_state="recorded",
             child_process=guarded_child_process_payload(child_process),
         )
 
@@ -1189,6 +1241,26 @@ def run_guarded(
             watched: set[int] | None = None,
             grace: float,
         ) -> None:
+            nonlocal interruption_inventory
+            if (
+                interruption_inventory is None
+                and samples is not None
+                and watched is not None
+            ):
+                interrupted_cargo_observations.update(latest_cargo_observations)
+                if reason == "timeout":
+                    interruption_inventory = observe_cargo_interruption_inventory(
+                        samples,
+                        watched,
+                        tracker.custody_identities(watched),
+                        latest_cargo_observations,
+                    )
+                else:
+                    # Resource pressure and control-plane failure already stop
+                    # globally. Never delay their kill for negative cache facts.
+                    interruption_inventory = CargoInterruptionInventory(
+                        f"interruption inventory unavailable after {reason}"
+                    )
             if guard_job is not None:
                 # The Job is the exact Windows ownership boundary established
                 # before the child was resumed.  Do not duplicate that authority
@@ -1196,7 +1268,20 @@ def run_guarded(
                 # exit and wrapper descendants.
                 _win_job.terminate_job(guard_job)
                 _win_job.wait_until_empty(guard_job, timeout=termination_wait_s)
+                after = _win_job.job_accounting(guard_job)
+                if interruption_inventory is not None:
+                    interruption_inventory = (
+                        interruption_inventory.fence_process_births(
+                            latest_job_process_generation,
+                            after.total_processes,
+                            closed=after.active_processes == 0,
+                        )
+                    )
                 return
+            if interruption_inventory is not None and interruption_inventory.complete:
+                interruption_inventory = CargoInterruptionInventory(
+                    "native interruption inventory lacks a process-birth fence"
+                )
             termination_reports.append(
                 _validated_termination_report(
                     terminate_watched_processes(
@@ -1261,6 +1346,7 @@ def run_guarded(
         cargo_incremental_observations: set[CargoIncrementalObservation] = set()
         latest_cargo_observations: set[CargoIncrementalObservation] = set()
         interrupted_cargo_observations: set[CargoIncrementalObservation] = set()
+        interruption_inventory: CargoInterruptionInventory | None = None
         next_keepalive = (
             start + keepalive_interval
             if progress_label is not None and keepalive_interval is not None
@@ -1448,6 +1534,10 @@ def run_guarded(
             )
 
         def terminate_after_sampling_failure(*, reason: str) -> None:
+            nonlocal interruption_inventory
+            interruption_inventory = CargoInterruptionInventory(
+                "interruption snapshot unavailable after sampling failure"
+            )
             if remembered_samples is not None and remembered_watched is not None:
                 terminate_owned_tree(
                     reason=reason,
@@ -1505,6 +1595,45 @@ def run_guarded(
                 raise
 
         last_sample_cost_s = 0.0
+        suite_custody_transfers = []
+
+        def transfer_receipted_daemon_instances(fresh) -> None:
+            # Windows Job closure owns every assigned instance; never advertise
+            # a lease export which Job completion would immediately terminate.
+            if (
+                not cleanup_orphans
+                or _is_windows_process_model()
+                or not child_env.get("MOLT_BACKEND_DAEMON_SUITE_LEASE")
+            ):
+                return
+            from molt import backend_daemon_suite_custody as suite_custody
+
+            for lease, identity, members in suite_custody.transferable_groups(
+                child_env, project_root=ROOT, samples=fresh, acknowledge=False
+            ):
+                expected = {
+                    pid: process_identity(sample) for pid, sample in members.items()
+                }
+                if tracker.transfer_process_group(
+                    identity.pid, samples=fresh, identities=expected
+                ):
+                    suite_custody_transfers.append(
+                        {
+                            "pgid": identity.pid,
+                            "daemon_started_at_ns": identity.started_at_ns,
+                            "config_digest": identity.config_digest,
+                            "backend_sha256": identity.backend_sha256,
+                            "suite_lease": identity.suite_lease,
+                            "owner_pid": lease["owner_pid"],
+                            "owner_started_at_ns": lease["owner_started_at_ns"],
+                            "guardian_pid": lease["guardian_pid"],
+                            "guardian_started_at_ns": lease["guardian_started_at_ns"],
+                            "members": {
+                                str(pid): value.started_at_ns
+                                for pid, value in expected.items()
+                            },
+                        }
+                    )
 
         def sample_tracked_tree(
             *,
@@ -1572,6 +1701,8 @@ def run_guarded(
             )
             cargo_incremental_observations.update(latest_cargo_observations)
             record_sampling_cost(len(samples))
+            transfer_receipted_daemon_instances(samples)
+            watched = tracker.update(samples)
             remembered_samples = samples
             remembered_watched = set(watched)
             return samples, watched
@@ -1593,7 +1724,8 @@ def run_guarded(
             elif proc.poll() is not None:
                 break
             now = time.perf_counter()
-            if guard_signal is not None:
+            cancelled = cancellation_requested is not None and cancellation_requested()
+            if guard_signal is not None or cancelled:
                 signal_snapshot = sample_tracked_tree()
                 assert signal_snapshot is not None
                 samples, watched = signal_snapshot
@@ -1602,7 +1734,10 @@ def run_guarded(
                 _update_active_guard_marker(
                     guard_marker,
                     guard_token,
-                    status="guard_signal_terminating",
+                    status="cancellation_terminating"
+                    if cancelled
+                    else "guard_signal_terminating",
+                    cancelled=cancelled,
                     child_process=guarded_child_process_payload(child_process),
                     guard_signal=guard_signal,
                     elapsed_s=now - start,
@@ -1611,9 +1746,8 @@ def run_guarded(
                     saw_cargo_build_state
                     or _samples_include_cargo_build_state(samples, watched)
                 )
-                interrupted_cargo_observations.update(latest_cargo_observations)
                 terminate_owned_tree(
-                    reason="guard_signal",
+                    reason="owner_cancellation" if cancelled else "guard_signal",
                     samples=samples,
                     watched=watched,
                     grace=0.0,
@@ -1642,7 +1776,6 @@ def run_guarded(
                     saw_cargo_build_state
                     or _samples_include_cargo_build_state(samples, watched)
                 )
-                interrupted_cargo_observations.update(latest_cargo_observations)
                 terminate_owned_tree(
                     reason="timeout",
                     samples=samples,
@@ -1751,7 +1884,6 @@ def run_guarded(
                     limit_at_violation=memory_limits_payload(current_limits),
                     elapsed_s=now - start,
                 )
-                interrupted_cargo_observations.update(latest_cargo_observations)
                 terminate_owned_tree(
                     reason="rss_limit",
                     samples=samples,
@@ -1857,6 +1989,13 @@ def run_guarded(
                         terminate_direct_child_handle(
                             reason=("post_loop_unreaped_child_direct_child_handle")
                         )
+            if (
+                cleanup_orphans
+                and not guard_interrupted
+                and not _is_windows_process_model()
+                and child_env.get("MOLT_BACKEND_DAEMON_SUITE_LEASE")
+            ):
+                transfer_receipted_daemon_instances(sampler())
             if cleanup_orphans and not guard_interrupted:
                 try:
                     tracked_orphans = cleanup_tracked_orphans(
@@ -1982,6 +2121,13 @@ def run_guarded(
                 f"{signal_label}; terminated tracked process tree before exiting\n",
                 text=text,
             )
+        if cancelled:
+            returncode = GUARD_RETURN_CODE
+            stderr = _append_guard_message(
+                stderr,
+                "memory_guard: owner requested cancellation; see terminal child custody\n",
+                text=text,
+            )
         if guard_interrupted:
             returncode = GUARD_RETURN_CODE
             stderr = _append_guard_message(
@@ -2033,6 +2179,32 @@ def run_guarded(
                 probe_grace=termination_wait_s,
             )
         )
+        if suite_custody_transfers:
+            scratch_closure_evidence["suite_custody_transfers"] = (
+                suite_custody_transfers
+            )
+            # A lost receiver cannot authorize scratch retirement. Its EOF
+            # guardian owns the bounded drain; preserve evidence until closure.
+            from molt import backend_daemon_suite_custody as suite_custody
+
+            fresh = sampler()
+            for transfer in suite_custody_transfers:
+                receiver_path = transfer["suite_lease"]
+                live_members = [
+                    sample
+                    for sample in fresh.values()
+                    if sample.pgid == transfer["pgid"]
+                ]
+                if live_members and (
+                    not isinstance(receiver_path, str)
+                    or suite_custody.live_lease(
+                        Path(receiver_path), project_root=ROOT, samples=fresh
+                    )
+                    is None
+                ):
+                    descendants_closed = False
+                    scratch_closure_evidence["closed"] = False
+                    scratch_closure_evidence["transfer_receiver_lost"] = True
         final_returncode = GUARD_RETURN_CODE if returncode is None else returncode
         cargo_incremental_quarantine: CargoIncrementalQuarantine | None = None
         cargo_interruption_reason = _cargo_interruption_reason(
@@ -2051,6 +2223,15 @@ def run_guarded(
                 cwd=effective_cwd,
                 descendants_closed=descendants_closed,
                 eligible_observations=frozenset(interrupted_cargo_observations),
+                interruption_inventory_complete=(
+                    interruption_inventory is not None
+                    and interruption_inventory.complete
+                ),
+                interruption_inventory_error=(
+                    interruption_inventory.error
+                    if interruption_inventory is not None
+                    else "interruption snapshot unavailable"
+                ),
                 profile_lock_settle_s=min(termination_wait_s, 1.0),
                 observations=tuple(
                     sorted(
@@ -2093,6 +2274,7 @@ def run_guarded(
             and violation is None
             and not timed_out
             and guard_signal is None
+            and not cancelled
             and not termination_wait_expired
             and not orphaned_process_groups
             and not termination_reports
@@ -2167,6 +2349,8 @@ def run_guarded(
             stdout=stdout,
             stderr=stderr,
             timed_out=timed_out,
+            cancelled=cancelled,
+            descendants_closed=descendants_closed,
             elapsed_s=elapsed_s,
             child_elapsed_s=child_elapsed_s,
             cleanup_elapsed_s=(
@@ -2179,6 +2363,9 @@ def run_guarded(
             cargo_incremental_quarantine=cargo_incremental_quarantine,
             guard_signal=guard_signal,
             child_process=child_process,
+            owned_process_identities=tuple(
+                sorted(tracker.custody_identities(tracker.known_pids or ()).items())
+            ),
             termination_reports=tuple(termination_reports),
             sampling_telemetry=final_sampling_telemetry,
             peak_job_commit_bytes=peak_job_commit_bytes,
@@ -2191,6 +2378,9 @@ def run_guarded(
             guard_marker,
             guard_token,
             status="completed",
+            owned_process_identities=process_identities_payload(
+                result.owned_process_identities
+            ),
             returncode=result.returncode,
             child_returncode=result.child_returncode,
             infrastructure_failure=infrastructure_failure_payload(
@@ -2629,12 +2819,20 @@ def _child_env_without_internal_keys(environ: Mapping[str, str]) -> dict[str, st
     )
 
 
-def _worker_env(environ: Mapping[str, str], command: Sequence[str]) -> dict[str, str]:
+def _worker_env(
+    environ: Mapping[str, str],
+    command: Sequence[str],
+    *,
+    launch_id: str | None = None,
+    startup_json: str | None = None,
+) -> dict[str, str]:
     return _cli_contract.worker_env(
         environ,
         command,
         worker_env_name=INTERNAL_WORKER_ENV,
         command_env_name=INTERNAL_COMMAND_ENV,
+        launch_id=launch_id,
+        startup_json=startup_json,
     )
 
 
@@ -2788,6 +2986,9 @@ def main(
         running_summary_json=args.summary_json,
         running_summary_environ=current_env,
         running_summary_max_global_rss_kb=max_global_rss_kb,
+        cancellation_requested=(
+            None if args.cancel_file is None else Path(args.cancel_file).exists
+        ),
     )
     incident = _incident_payload(result)
     repro_payload: dict[str, object] | None = None

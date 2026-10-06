@@ -11,6 +11,7 @@ use std::collections::{BTreeSet, HashSet};
 use wasm_encoder::Function;
 
 mod code_metadata;
+pub(in crate::wasm::op_loop) mod custody;
 mod direct;
 mod dynamic;
 mod function_object;
@@ -43,12 +44,13 @@ pub(super) struct CallOpContext<'a, 'ctx, 'm> {
     pub(super) tail_call_eligible: bool,
     pub(super) tail_call_count: &'a Cell<usize>,
     pub(super) ops: &'a [OpIR],
-    pub(super) call_liveness: &'m CallRetentionLiveness,
+    pub(super) call_liveness: &'m CallRetentionLiveness<'m>,
     pub(super) rc_skip_inc: &'m HashSet<usize>,
     pub(super) rc_skip_dec: &'m HashSet<String>,
     pub(super) call_live_idx: usize,
     pub(super) op_idx: usize,
     pub(super) try_stack_is_empty: bool,
+    pub(super) return_depth: u32,
 }
 
 pub(super) fn emit_call_op(

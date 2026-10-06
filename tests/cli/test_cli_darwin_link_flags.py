@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt.cli.native_link_plan import resolve_native_target_spec
+
 import json
 from pathlib import Path
 
@@ -38,7 +40,7 @@ def test_append_darwin_runtime_frameworks_for_host_darwin(
     monkeypatch.setattr(cli.sys, "platform", "darwin")
     monkeypatch.delenv("MOLT_RUNTIME_GPU_METAL", raising=False)
     args = ["clang", "-lc++"]
-    cli._append_darwin_runtime_frameworks(args, target_triple=None)
+    cli._append_darwin_runtime_frameworks(args, target=resolve_native_target_spec(None))
     assert args[-4:] == ["-framework", "Security", "-framework", "CoreFoundation"]
 
 
@@ -47,7 +49,9 @@ def test_append_darwin_runtime_frameworks_for_cross_target() -> None:
 
     os.environ.pop("MOLT_RUNTIME_GPU_METAL", None)
     args = ["zig", "cc", "-target", "aarch64-macos"]
-    cli._append_darwin_runtime_frameworks(args, target_triple="aarch64-apple-darwin")
+    cli._append_darwin_runtime_frameworks(
+        args, target=resolve_native_target_spec("aarch64-apple-darwin")
+    )
     assert args[-4:] == ["-framework", "Security", "-framework", "CoreFoundation"]
 
 
@@ -56,7 +60,9 @@ def test_append_darwin_runtime_frameworks_adds_metal_when_enabled(
 ) -> None:
     monkeypatch.setenv("MOLT_RUNTIME_GPU_METAL", "1")
     args = ["clang", "-lc++"]
-    cli._append_darwin_runtime_frameworks(args, target_triple="aarch64-apple-darwin")
+    cli._append_darwin_runtime_frameworks(
+        args, target=resolve_native_target_spec("aarch64-apple-darwin")
+    )
     assert args[-7:] == [
         "-framework",
         "Security",
@@ -75,7 +81,7 @@ def test_append_darwin_runtime_frameworks_adds_webgpu_when_enabled(
     monkeypatch.setenv("MOLT_RUNTIME_GPU_WEBGPU", "1")
     monkeypatch.delenv("MOLT_RUNTIME_GPU_METAL", raising=False)
     args = ["clang", "-lc++"]
-    cli._append_darwin_runtime_frameworks(args, target_triple=None)
+    cli._append_darwin_runtime_frameworks(args, target=resolve_native_target_spec(None))
     assert args[-13:] == [
         "-framework",
         "Security",
@@ -130,11 +136,13 @@ def test_collect_cargo_native_link_deps_preserves_framework_link_kinds(
         runtime_build_identity=build_identity,
     )
 
-    link_flags = cli._collect_cargo_native_link_deps(
-        runtime_lib,
-        target_triple=target_triple,
-        object_format="macho",
-        runtime_build_identity=build_identity,
+    link_flags = list(
+        cli._collect_cargo_native_link_deps(
+            runtime_lib,
+            target_triple=target_triple,
+            object_format="macho",
+            runtime_build_identity=build_identity,
+        ).flags
     )
 
     assert link_flags == [
@@ -199,11 +207,13 @@ def test_collect_cargo_native_link_deps_ignores_stale_inactive_build_outputs(
         runtime_build_identity=build_identity,
     )
 
-    link_flags = cli._collect_cargo_native_link_deps(
-        runtime_lib,
-        target_triple=target_triple,
-        object_format="macho",
-        runtime_build_identity=build_identity,
+    link_flags = list(
+        cli._collect_cargo_native_link_deps(
+            runtime_lib,
+            target_triple=target_triple,
+            object_format="macho",
+            runtime_build_identity=build_identity,
+        ).flags
     )
 
     assert link_flags == ["-framework", "Security"]
@@ -242,7 +252,7 @@ def test_build_native_link_plan_includes_metal_frameworks_when_runtime_gpu_metal
         stub_path=stub_path,
         runtime_lib=runtime_lib,
         output_binary=output_binary,
-        target_triple=target_triple,
+        target=resolve_native_target_spec(target_triple),
         sysroot_path=None,
         profile="dev",
         runtime_build_identity=build_identity,
@@ -257,7 +267,7 @@ def test_build_native_link_plan_includes_metal_frameworks_when_runtime_gpu_metal
 def test_append_darwin_runtime_frameworks_skips_non_darwin_target() -> None:
     args = ["zig", "cc", "-target", "x86_64-unknown-linux-gnu"]
     cli._append_darwin_runtime_frameworks(
-        args, target_triple="x86_64-unknown-linux-gnu"
+        args, target=resolve_native_target_spec("x86_64-unknown-linux-gnu")
     )
     assert "-framework" not in args
 

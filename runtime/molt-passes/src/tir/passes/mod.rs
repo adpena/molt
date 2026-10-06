@@ -17,6 +17,7 @@ pub mod deforestation;
 pub mod drop_insertion;
 pub mod effects;
 pub mod escape_analysis;
+mod exception_observation;
 pub mod fast_math;
 pub mod generator_fusion;
 pub mod gvn;

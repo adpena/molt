@@ -889,10 +889,9 @@ def capture_source_content(
         hardlinks[key] = count + 1, links
     if any(count != links for count, links in hardlinks.values()):
         raise ValueError("source input has aliases outside admitted source content")
-    capture.prepare(regular, label="proof source input")
     files: list[dict[str, object]] = []
-    for path, metadata in regular:
-        identity = capture.bind(path, metadata, label="proof source input")
+    identities = capture.bind_many(regular, label="proof source input")
+    for (path, metadata), identity in zip(regular, identities, strict=True):
         files.append(
             {
                 "path": path.relative_to(root).as_posix(),

@@ -58,27 +58,27 @@ const SCRIPT_METADATA_PENDING: u8 =
 
 thread_local! {
     static EXECUTION_STACK: RefCell<Vec<ExecutionContext>> = const { RefCell::new(Vec::new()) };
-    static CACHE_SYNC_SUPPRESSIONS: RefCell<Vec<(usize, String, PythonSysModulesSync)>> = const { RefCell::new(Vec::new()) };
+    static IMPORT_PUBLICATION_SCOPES: RefCell<Vec<(usize, String, PythonImportPublication)>> = const { RefCell::new(Vec::new()) };
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum PythonSysModulesSync {
+pub(super) enum PythonImportPublication {
     Normal,
     Suppress,
 }
 
 /// The compiled initializer must publish into Molt's internal import cache so
-/// the normal dispatcher can run, but runpy and Loader.exec_module do not add
-/// the initializer's canonical name to Python-visible `sys.modules`.  Keep
-/// that distinction active through cleanup and exact cache restoration.
-struct CacheSyncSuppression {
+/// the normal dispatcher can run, but runpy and Loader.exec_module own neither
+/// canonical sys.modules insertion nor parent-attribute publication. Keep both
+/// effects under this scope through cleanup and exact cache restoration.
+struct ImportPublicationScope {
     runtime_id: usize,
     name: String,
 }
 
-impl CacheSyncSuppression {
-    fn enter(runtime_id: usize, name: &str, policy: PythonSysModulesSync) -> Self {
-        CACHE_SYNC_SUPPRESSIONS.with(|stack| {
+impl ImportPublicationScope {
+    fn enter(runtime_id: usize, name: &str, policy: PythonImportPublication) -> Self {
+        IMPORT_PUBLICATION_SCOPES.with(|stack| {
             stack
                 .borrow_mut()
                 .push((runtime_id, name.to_string(), policy));
@@ -90,9 +90,9 @@ impl CacheSyncSuppression {
     }
 }
 
-impl Drop for CacheSyncSuppression {
+impl Drop for ImportPublicationScope {
     fn drop(&mut self) {
-        CACHE_SYNC_SUPPRESSIONS.with(|stack| {
+        IMPORT_PUBLICATION_SCOPES.with(|stack| {
             let popped = stack.borrow_mut().pop();
             debug_assert_eq!(popped.as_ref().map(|(id, _, _)| *id), Some(self.runtime_id));
             debug_assert_eq!(popped.as_ref().map(|(_, name, _)| name), Some(&self.name));
@@ -100,12 +100,12 @@ impl Drop for CacheSyncSuppression {
     }
 }
 
-pub(super) fn python_sys_modules_sync_policy(
+pub(super) fn python_import_publication_policy(
     _py: &PyToken<'_>,
     name: &str,
-) -> PythonSysModulesSync {
+) -> PythonImportPublication {
     let runtime_id = runtime_state(_py) as *const _ as usize;
-    CACHE_SYNC_SUPPRESSIONS.with(|stack| {
+    IMPORT_PUBLICATION_SCOPES.with(|stack| {
         stack
             .borrow()
             .iter()
@@ -113,7 +113,7 @@ pub(super) fn python_sys_modules_sync_policy(
             .find_map(|(id, suppressed, policy)| {
                 (*id == runtime_id && suppressed == name).then_some(*policy)
             })
-            .unwrap_or(PythonSysModulesSync::Normal)
+            .unwrap_or(PythonImportPublication::Normal)
     })
 }
 
@@ -135,7 +135,8 @@ struct SysPathSwap {
 
 unsafe fn sys_list_attr_bits(_py: &PyToken<'_>, attr: &[u8]) -> Result<Option<u64>, u64> {
     unsafe {
-        let Some(sys_bits) = cached_module_owned_bits(_py, "sys") else {
+        let Some(sys_bits) = interpreter_sys_module(_py).inspect(|bits| inc_ref_bits(_py, *bits))
+        else {
             return Ok(None);
         };
         let Some(sys_ptr) = obj_from_bits(sys_bits).as_ptr() else {
@@ -152,7 +153,7 @@ unsafe fn sys_list_attr_bits(_py: &PyToken<'_>, attr: &[u8]) -> Result<Option<u6
             return Err(raise_exception::<_>(_py, "MemoryError", "out of memory"));
         }
         let attr_bits = MoltObject::from_ptr(attr_ptr).bits();
-        let value_bits = module_attr_lookup(_py, sys_ptr, attr_bits);
+        let value_bits = crate::builtins::attributes::attr_lookup_ptr(_py, sys_ptr, attr_bits);
         dec_ref_bits(_py, attr_bits);
         dec_ref_bits(_py, sys_bits);
         let Some(value_bits) = value_bits else {
@@ -456,7 +457,8 @@ fn begin_sys_modules_swap(
     run_name: &str,
     module_bits: u64,
 ) -> Result<Option<SysModulesSwap>, u64> {
-    let Some(sys_bits) = cached_module_owned_bits(_py, "sys") else {
+    let Some(sys_bits) = interpreter_sys_module(_py).inspect(|bits| inc_ref_bits(_py, *bits))
+    else {
         return Ok(None);
     };
     let modules_bits = sys_modules_dict_bits(_py, sys_bits);
@@ -789,7 +791,7 @@ pub(super) unsafe fn after_module_metadata_set(
             }
             let name_bits = MoltObject::from_ptr(name_ptr).bits();
             let value_bits = MoltObject::from_ptr(value_ptr).bits();
-            let result = crate::molt_setattr_builtin(effective_val_bits, name_bits, value_bits);
+            let result = crate::molt_set_attr_name(effective_val_bits, name_bits, value_bits);
             dec_ref_bits(_py, name_bits);
             dec_ref_bits(_py, value_bits);
             if !obj_from_bits(result).is_none() {
@@ -844,11 +846,8 @@ fn pending_exception_is(_py: &PyToken<'_>, expected: &str) -> bool {
         return false;
     }
     let exc_bits = molt_exception_last_pending();
-    let kind_bits = molt_exception_kind(exc_bits);
-    let matches = string_obj_to_owned(obj_from_bits(kind_bits)).as_deref() == Some(expected);
-    if !obj_from_bits(kind_bits).is_none() {
-        dec_ref_bits(_py, kind_bits);
-    }
+    let matches =
+        crate::builtins::exceptions::exception_matches_builtin_name(_py, exc_bits, expected);
     if !obj_from_bits(exc_bits).is_none() {
         dec_ref_bits(_py, exc_bits);
     }
@@ -977,9 +976,8 @@ pub(crate) fn execute_compiled_module(
     };
     let execution_name = crate::builtins::module_table::module_execution_target_name(import_name)
         .unwrap_or(import_name);
-    let sync_policy = PythonSysModulesSync::Suppress;
-    let _cache_sync_suppression =
-        CacheSyncSuppression::enter(runtime_id, execution_name, sync_policy);
+    let sync_policy = PythonImportPublication::Suppress;
+    let _publication_scope = ImportPublicationScope::enter(runtime_id, execution_name, sync_policy);
 
     let previous_bits = cached_module_owned_bits(_py, execution_name);
     let table_snapshot =

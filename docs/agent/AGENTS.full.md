@@ -1481,7 +1481,7 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
 - `python3 tools/bench_diff.py <old.json> <new.json> --top 10 --json-out <path>`: diff two benchmark JSON artifacts and emit a summary report.
 - `python3 tools/bench_friends.py --manifest bench/friends/manifest.toml --suite <id>`: run friend benchmark suites with the pinned manifest (use `--json-out`/`--summary-out` to capture results).
 - `python3 tools/diff_memory_report.py --input <artifact-root>/rss_metrics.jsonl --top 10`: summarize top RSS offenders from diff RSS metrics.
-- `python3 tools/check_type_coverage_todos.py`: ensure type/stdlib TODOs are mirrored in [ROADMAP.md](ROADMAP.md).
+- `python3 tools/check_type_coverage_todos.py`: validate complete type/stdlib gap records in the canonical matrices, require both explicit matrix links from [the root roadmap](../../ROADMAP.md), and reject stale roadmap duplicates without requiring duplicate gap lists.
 - `uv run --python 3.12 python tools/compile_progress.py --clean-state`: capture standardized compile-progress metrics.
 - `python3 tools/profile.py`: repeatable CPU/alloc profiling runs.
 - `python3 tools/runtime_safety.py clippy|miri|fuzz --target string_ops --runs 10000`: runtime safety gates.

@@ -1,3 +1,6 @@
+mod module_retirement;
+use module_retirement::ModuleRetirement;
+
 use crate::PyToken;
 #[cfg(any(molt_has_net_io, target_arch = "wasm32"))]
 use crate::async_rt::sockets::socket_runtime_state_clear;
@@ -11,11 +14,14 @@ use crate::builtins::exceptions::{
     canonical_exception_class_roots, drain_dynamic_exception_type_cache,
     exceptions_release_runtime_class_anchor, take_thread_exception_for_teardown,
 };
-use crate::builtins::functions::python_builtin_functions_clear_runtime_state;
-use crate::builtins::functools::functools_clear_runtime_state;
+use crate::builtins::functools::{
+    functools_clear_runtime_callbacks, functools_clear_runtime_state, functools_runtime_class_roots,
+};
 use crate::builtins::io::io_clear_runtime_state;
 use crate::builtins::modules::modules_clear_runtime_state;
-use crate::builtins::operator::operator_clear_runtime_state;
+use crate::builtins::operator::{
+    operator_clear_runtime_callbacks, operator_clear_runtime_state, operator_runtime_class_roots,
+};
 use crate::builtins::platform::platform_clear_runtime_state;
 use crate::builtins::signal_ext::signal_clear_state;
 use crate::builtins::sys_ext::sys_ext_clear_state;
@@ -34,13 +40,13 @@ use crate::object::utf8_cache::{
 };
 use crate::{
     ACTIVE_EXCEPTION_FALLBACK, ACTIVE_EXCEPTION_STACK, BLOCK_ON_TASK, CONTEXT_STACK,
-    CURRENT_EXCEPTION_PENDING, CURRENT_TASK, CURRENT_TOKEN, DEFAULT_RECURSION_LIMIT,
-    EXCEPTION_STACK, FRAME_STACK, GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GilGuard,
-    GilReleaseGuard, MoltObject, PARSE_ARENA, RECURSION_DEPTH, RECURSION_LIMIT, TASK_RAISE_ACTIVE,
-    TRACE_FRAME_PUSH_STACK, TYPE_ID_DICT, TYPE_ID_FILE_HANDLE, TYPE_ID_MODULE, alloc_string,
-    builtin_classes_retire_identities, builtin_classes_shutdown, call_callable0, clear_exception,
-    clear_exception_type_cache, clear_thread_exception_for_teardown, dec_ref_bits,
-    default_cancel_tokens, dict_clear_in_place_shutdown, dict_get_in_place, exception_pending,
+    CURRENT_EXCEPTION_PENDING, CURRENT_TASK, CURRENT_TOKEN, EXCEPTION_STACK, FRAME_STACK,
+    GENERATOR_EXCEPTION_STACKS, GENERATOR_RAISE, GilGuard, GilReleaseGuard, MoltObject,
+    PARSE_ARENA, TASK_RAISE_ACTIVE, TRACE_FRAME_PUSH_STACK, TYPE_ID_DICT, TYPE_ID_FILE_HANDLE,
+    TYPE_ID_MODULE, alloc_string, builtin_classes_retire_identities, builtin_classes_shutdown,
+    call_callable0, clear_exception, clear_exception_type_cache,
+    clear_thread_exception_for_teardown, dec_ref_bits, default_cancel_tokens,
+    dict_clear_in_place_shutdown, dict_get_in_place, exception_pending,
     exceptions_clear_runtime_state, inc_ref_bits, intern_static_name, module_dict_bits,
     molt_file_flush, molt_get_attr_name, obj_from_bits, object_type_id, reset_ptr_registry,
     runtime_state,
@@ -124,6 +130,11 @@ pub(crate) fn touch_tls_guard() {
     crate::object::heap_lifecycle::touch_terminal_sink_tls_lifetime();
     let _ = PARSE_ARENA.try_with(|_| {});
     let _ = crate::REPR_SET.try_with(|_| {});
+    // The guard's teardown exits every frame the thread still has, which
+    // releases the bindings their homes own: the frame stack and the home
+    // arena must outlive it.
+    let _ = FRAME_STACK.try_with(|_| {});
+    crate::builtins::frames::touch_frame_home_tls_lifetime();
     let _ = TLS_GUARD.try_with(|_| {});
     // This sentinel is deliberately initialized last. Rust destroys TLS in
     // reverse initialization order, so it drains the CPython thread-state
@@ -208,18 +219,12 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
         crate::object::ops::profile_dump_with_gil(_py);
         // Pre-teardown peak-live canary, not the post-teardown true-leak gauge.
         crate::object::ops::assert_no_leak_at_exit(_py);
-        // Collect before module teardown, with custody for finalizer reentry.
-        unsafe {
-            let outcome = crate::object::gc::collect_cycles(_py);
-            match outcome.status {
-                crate::object::gc::GcCollectStatus::Completed
-                | crate::object::gc::GcCollectStatus::ReentrantNoop => {}
-                failure => {
-                    eprintln!("molt gc: process-exit collection failed closed: {failure:?}")
-                }
-            }
-        }
     }
+    // All finalization modes retire ordinary cycles through the shared mixed
+    // collector. Preserve the first collection before pending-call callbacks.
+    // A failed/no-op collector cannot supply progress to the owner fixed point.
+    let mut cycle_collection_available = true;
+    collect_cycles_for_teardown(_py, &mut cycle_collection_available);
     // Pending-call admission and its ring are process-static. An isolate owns
     // its native thread state, not the primary runtime's pending callbacks.
     if crate::state::runtime_state::owns_process_cpython_state(state) {
@@ -248,30 +253,47 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
     flush_stdio_handles(_py, state);
     trace_shutdown("clear_utf8_caches");
     clear_utf8_caches(state);
-    trace_shutdown("clear_asyncgen_registry");
-    clear_asyncgen_registry(state);
     trace_shutdown("drain_runtime_class_callbacks");
     // C roots can run extension deallocators. Close their readiness while all
     // runtime lookup/class authority is still present, then use the same root
     // owner drain before and throughout canonical class retirement.
     state.cpython.retire_static_roots();
-    clear_runtime_callback_roots(_py, state);
+    let mut modules = ModuleRetirement::new(_py);
+    clear_runtime_callback_roots(_py, state, &mut modules);
     let mut retirement = RuntimeClassRetirement::new();
-    let mut drain = || {
-        let mut changed = retirement.include(_py, runtime_class_roots(_py, state));
-        changed |= clear_runtime_callback_roots(_py, state);
-        changed |= retirement.clear_contents(_py);
-        changed |= clear_thread_local_state(_py);
-        changed |= clear_interned_names(_py, state);
-        changed |= clear_runtime_static_names(_py, state);
-        changed
-    };
-    // Every runtime owner must close both current-thread domains: either
-    // domain's callbacks can repopulate the other. This includes native
-    // isolates and WASM instances; no absent C record is fabricated by draining.
     trace_shutdown("drain_shutdown_owner_thread_state");
     molt_cpython_abi::api::object::detach_runtime_execution_thread();
-    molt_cpython_abi::api::object::clear_current_thread_state_for_runtime_shutdown(&mut drain);
+    loop {
+        let mut drain = || {
+            // Collect cycles released by the preceding runtime/C TLS pass.
+            // Drain owners AFTER collection: even a zero-collected finalizer
+            // can resurrect into a module, cache, or either thread-state domain.
+            let mut changed = collect_cycles_for_teardown(_py, &mut cycle_collection_available);
+            changed |= retirement.include(_py, runtime_class_roots(_py, state));
+            changed |= clear_runtime_callback_roots(_py, state, &mut modules);
+            changed |= retirement.clear_contents(_py);
+            changed |= clear_thread_local_state(_py);
+            changed |= clear_interned_names(_py, state);
+            changed |= clear_runtime_static_names(_py, state);
+            changed
+        };
+        // Every runtime owner must close both current-thread domains: either
+        // domain's callbacks can repopulate the other. This includes native
+        // isolates and WASM instances; no absent C record is fabricated by draining.
+        molt_cpython_abi::api::object::clear_current_thread_state_for_runtime_shutdown(&mut drain);
+        // Forced C-view retirement must not run inside the TLS cleanup callback:
+        // the C error/context/dict owners are still live there, and error
+        // preservation temporarily moves those owners off the visible record.
+        // The completed drain has dropped the record and emptied runtime TLS.
+        // Projection release can publish fresh owners, so repeat both domains
+        // before advancing module retirement or destroying class metadata.
+        if retirement.retire_projections() {
+            continue;
+        }
+        if !modules.advance() {
+            break;
+        }
+    }
     if mode == RuntimeTeardownMode::Embedding {
         assert_eq!(
             molt_cpython_abi::api::object::runtime_retained_thread_state_count(),
@@ -283,8 +305,10 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
     builtin_classes_retire_identities(_py, state, &retirement);
     trace_shutdown("clear_exception_type_cache");
     clear_exception_type_cache(_py, state);
-    trace_shutdown("release_types_runtime_class_anchors");
+    trace_shutdown("release_cached_runtime_class_anchors");
     types_clear_runtime_state(_py, state);
+    functools_clear_runtime_state(_py, state);
+    operator_clear_runtime_state(_py, state);
     exceptions_release_runtime_class_anchor(_py, state);
     trace_shutdown("retire_cpython_static_bindings");
     state.cpython.retire_static_bindings(_py);
@@ -321,10 +345,51 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
     trace_shutdown("done");
 }
 
+/// Keep shutdown collection inside the callback-capable owner transaction.
+/// Only completed reclamation is progress; failure/no-op outcomes are reported
+/// once and disable further attempts in this teardown. The normal retirement
+/// assertions still reject live native allocations before registry reset.
+fn collect_cycles_for_teardown(py: &PyToken<'_>, available: &mut bool) -> bool {
+    if !*available {
+        return false;
+    }
+    trace_shutdown("collect_cycles");
+    let outcome = unsafe { crate::object::gc::collect_cycles(py) };
+    use crate::object::gc::GcCollectStatus;
+    match outcome.status {
+        GcCollectStatus::Completed => outcome.retired != 0,
+        GcCollectStatus::ReentrantNoop => {
+            *available = false;
+            eprintln!(
+                "molt gc: shutdown collection skipped while another collection is active; no retry during teardown"
+            );
+            false
+        }
+        GcCollectStatus::UnsupportedConcurrency => {
+            *available = false;
+            eprintln!(
+                "molt gc: shutdown collection unsupported without a free-threaded stop-the-world epoch"
+            );
+            false
+        }
+        failure @ (GcCollectStatus::ResourceError(_) | GcCollectStatus::CallbackError(_)) => {
+            *available = false;
+            eprintln!(
+                "molt gc: shutdown collection failed closed: {failure:?}; no retry during teardown"
+            );
+            false
+        }
+    }
+}
+
 /// One ordered owner family, shared by initial root retirement and every
 /// callback fixed-point pass. Never short-circuit: a later owner can repopulate
 /// an earlier one. Each cleanup detaches its complete cohort before release.
-fn clear_runtime_callback_roots(py: &PyToken<'_>, state: &RuntimeState) -> bool {
+fn clear_runtime_callback_roots(
+    py: &PyToken<'_>,
+    state: &RuntimeState,
+    modules: &mut ModuleRetirement<'_, '_>,
+) -> bool {
     let mut changed = concurrent_clear_runtime_state(py, state);
     changed |= clear_task_state(py, state);
     changed |= signal_clear_state(py, state);
@@ -333,7 +398,7 @@ fn clear_runtime_callback_roots(py: &PyToken<'_>, state: &RuntimeState) -> bool 
     changed |= sys_ext_clear_state(py, state);
     changed |= c_api_module_clear_state(py, state);
     changed |= runtime_extension_states_clear_and_drop(state);
-    changed |= clear_module_cache(py, state);
+    changed |= modules.drain(state);
     changed |= modules_clear_runtime_state(py, state);
     changed |= crate::object::gc::gc_clear_api_roots(py);
     changed |= platform_clear_runtime_state(py, state);
@@ -342,17 +407,14 @@ fn clear_runtime_callback_roots(py: &PyToken<'_>, state: &RuntimeState) -> bool 
     changed |= exceptions_clear_runtime_state(py, state);
     changed |= drain_dynamic_exception_type_cache(py, state);
     changed |= types_clear_runtime_callbacks(py, state);
-    changed |= clear_gen_locals(py, state);
-    changed |= clear_dict_subclass_storage(py, state);
+    changed |= clear_stateful_locals(py, state);
     changed |= clear_method_cache(py, state);
-    changed |= python_builtin_functions_clear_runtime_state(py, state);
     changed |= attributes_clear_runtime_state(py, state);
     changed |= clear_special_cache(py, state);
     changed |= clear_code_slots(py, state);
     changed |= clear_asyncgen_hooks(py, state);
-    changed |= clear_asyncgen_locals(py, state);
-    changed |= functools_clear_runtime_state(py, state);
-    changed |= operator_clear_runtime_state(py, state);
+    changed |= functools_clear_runtime_callbacks(py, state);
+    changed |= operator_clear_runtime_callbacks(py, state);
     changed |= crate::builtins::atexit::atexit_clear_runtime_roots(py);
     changed
 }
@@ -365,6 +427,8 @@ fn runtime_class_roots(py: &PyToken<'_>, state: &RuntimeState) -> Vec<u64> {
     }
     roots.extend(canonical_exception_class_roots(state));
     roots.extend(types_runtime_class_roots(py, state));
+    roots.extend(functools_runtime_class_roots(py, state));
+    roots.extend(operator_runtime_class_roots(py, state));
     roots.extend(state.cpython.static_class_roots());
     roots
 }
@@ -393,69 +457,43 @@ pub(crate) fn runtime_reset_for_init(_py: &PyToken<'_>, state: &RuntimeState) {
         .store(false, AtomicOrdering::Release);
 }
 
-fn clear_asyncgen_registry(state: &RuntimeState) {
-    let mut guard = state.asyncgen_registry.lock().unwrap();
-    guard.clear();
-}
-
-fn clear_asyncgen_hooks(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
-    crate::gil_assert();
-    let roots = {
-        let mut guard = state.asyncgen_hooks.lock().unwrap();
-        [
-            std::mem::replace(&mut guard.firstiter, MoltObject::none().bits()),
-            std::mem::replace(&mut guard.finalizer, MoltObject::none().bits()),
-        ]
-    };
+fn release_asyncgen_hooks(
+    py: &PyToken<'_>,
+    hooks: impl IntoIterator<Item = crate::state::runtime_state::AsyncGenHooks>,
+) -> bool {
     let mut changed = false;
-    for bits in roots {
-        if bits != 0 && !obj_from_bits(bits).is_none() {
-            changed = true;
-            dec_ref_bits(_py, bits);
-        }
-    }
-    changed
-}
-
-fn clear_asyncgen_locals(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
-    crate::gil_assert();
-    let locals = std::mem::take(&mut *state.asyncgen_locals.lock().unwrap());
-    let changed = !locals.is_empty();
-    for entry in locals.into_values() {
-        for bits in entry.names {
-            if bits != 0 {
-                dec_ref_bits(_py, bits);
+    for hook in hooks {
+        for bits in [hook.firstiter, hook.finalizer] {
+            if bits != 0 && !obj_from_bits(bits).is_none() {
+                changed = true;
+                dec_ref_bits(py, bits);
             }
         }
     }
     changed
 }
 
-fn clear_gen_locals(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
+fn clear_asyncgen_hooks(py: &PyToken<'_>, state: &RuntimeState) -> bool {
     crate::gil_assert();
-    let locals = std::mem::take(&mut *state.gen_locals.lock().unwrap());
-    let changed = !locals.is_empty();
-    for entry in locals.into_values() {
-        for bits in entry.names {
-            if bits != 0 {
-                dec_ref_bits(_py, bits);
-            }
-        }
-    }
-    changed
+    let hooks = std::mem::take(&mut *state.asyncgen_hooks.lock().unwrap());
+    release_asyncgen_hooks(py, hooks.into_values())
 }
 
-fn clear_dict_subclass_storage(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
+fn clear_thread_asyncgen_hooks(py: &PyToken<'_>) -> bool {
+    let hook = runtime_state(py)
+        .asyncgen_hooks
+        .lock()
+        .unwrap()
+        .remove(&std::thread::current().id());
+    release_asyncgen_hooks(py, hook)
+}
+
+fn clear_stateful_locals(py: &PyToken<'_>, state: &RuntimeState) -> bool {
     crate::gil_assert();
-    let drained: Vec<u64> = {
-        let mut guard = state.dict_subclass_storage.lock().unwrap();
-        guard.drain().map(|(_, bits)| bits).collect()
-    };
-    let changed = !drained.is_empty();
-    for bits in drained {
-        if bits != 0 && !obj_from_bits(bits).is_none() {
-            dec_ref_bits(_py, bits);
-        }
+    let layouts = std::mem::take(&mut *state.stateful_locals.lock().unwrap());
+    let changed = !layouts.is_empty();
+    for layout in layouts.into_values() {
+        crate::state::runtime_state::release_stateful_locals_layout(py, layout);
     }
     changed
 }
@@ -481,7 +519,7 @@ fn clear_thread_local_state(_py: &PyToken<'_>) -> bool {
 fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     crate::gil_assert();
     let exception = take_thread_exception_for_teardown(_py);
-    let mut changed = exception.is_some();
+    let mut changed = exception.is_some() | clear_thread_asyncgen_hooks(_py);
     let _ = CURRENT_EXCEPTION_PENDING.try_with(|pending| pending.set(false));
     let contexts = CONTEXT_STACK
         .try_with(|stack| std::mem::take(&mut *stack.borrow_mut()))
@@ -507,8 +545,7 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
         let mut stack = stack.borrow_mut();
         let _ = std::mem::take(&mut *stack);
     });
-    let _ = RECURSION_DEPTH.try_with(|depth| depth.set(0));
-    let _ = RECURSION_LIMIT.try_with(|limit| limit.set(DEFAULT_RECURSION_LIMIT));
+    super::recursion::assert_thread_recursion_idle();
     let _ = GENERATOR_RAISE.try_with(|flag| flag.set(false));
     let _ = TASK_RAISE_ACTIVE.try_with(|flag| flag.set(false));
     let _ = BLOCK_ON_TASK.try_with(|cell| cell.set(std::ptr::null_mut()));
@@ -529,8 +566,12 @@ fn clear_thread_local_state_without_ref_owning_ic(_py: &PyToken<'_>) -> bool {
     for bits in contexts.into_iter().chain(active) {
         dec_ref_bits(_py, bits);
     }
-    for frame in frames {
-        frame.release(_py);
+    // Every abandoned entry exits as a return would, innermost first: a frame
+    // object that shares its bindings takes them over, otherwise they are
+    // released in the target's order, and its homes go back only after those
+    // releases finish. The stack is already unlinked above.
+    for frame in frames.into_iter().rev() {
+        frame.exit(_py);
     }
     for bits in pending_namespaces {
         dec_ref_bits(_py, bits);
@@ -814,43 +855,9 @@ fn clear_task_state(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     changed
 }
 
-fn clear_module_cache(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
-    crate::gil_assert();
-    let modules = {
-        let mut guard = state.module_cache.lock().unwrap();
-        let old = std::mem::take(&mut *guard);
-        old.into_values().collect::<Vec<_>>()
-    };
-    let changed = !modules.is_empty();
-    for bits in &modules {
-        let Some(module_ptr) = obj_from_bits(*bits).as_ptr() else {
-            continue;
-        };
-        unsafe {
-            if object_type_id(module_ptr) != TYPE_ID_MODULE {
-                continue;
-            }
-            let dict_bits = module_dict_bits(module_ptr);
-            let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-                continue;
-            };
-            if object_type_id(dict_ptr) == TYPE_ID_DICT {
-                dict_clear_in_place_shutdown(_py, dict_ptr);
-            }
-        }
-    }
-    for bits in modules {
-        dec_ref_bits(_py, bits);
-    }
-    changed
-}
-
 fn flush_stdio_handles(_py: &PyToken<'_>, state: &RuntimeState) {
     crate::gil_assert();
-    let sys_bits = {
-        let guard = state.module_cache.lock().unwrap();
-        guard.get("sys").copied()
-    };
+    let sys_bits = state.interpreter_sys.module(_py);
     let Some(sys_bits) = sys_bits else {
         return;
     };
@@ -966,7 +973,6 @@ fn clear_interned_names(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
 fn clear_special_cache(_py: &PyToken<'_>, state: &RuntimeState) -> bool {
     crate::gil_assert();
     let slots = vec![
-        &state.special_cache.open_default_mode,
         &state.special_cache.awaitable_await,
         &state.special_cache.function_code_descriptor,
         &state.special_cache.function_globals_descriptor,
@@ -1105,10 +1111,11 @@ mod tests {
                 publish_context_default(py, class);
                 let state = runtime_state(py);
                 let mut passes = 0;
+                let mut modules = super::ModuleRetirement::new(py);
                 loop {
                     passes += 1;
                     assert!(passes <= 8, "finite finalizer fixture did not quiesce");
-                    let mut changed = super::clear_runtime_callback_roots(py, state);
+                    let mut changed = super::clear_runtime_callback_roots(py, state, &mut modules);
                     changed |= super::clear_thread_local_state(py);
                     if !changed {
                         break;

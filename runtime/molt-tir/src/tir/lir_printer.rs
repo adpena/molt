@@ -254,6 +254,7 @@ mod tests {
             },
         };
         let func = LirFunction {
+            container_storage: std::collections::HashMap::new(),
             name: "id_i64".to_string(),
             param_names: vec!["x".to_string()],
             param_types: vec![TirType::I64],

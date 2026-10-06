@@ -783,8 +783,9 @@ def audit_closed_domains(root: Path, manifest: Manifest, sa) -> list[Violation]:
     # Single file-read pass: scan each .rs source file once for every domain whose
     # `Enum::` marker it contains (the Comprehensive Analysis Spine — one pass, not
     # one pass per domain).
+    test_paths = sa._rust_test_source_paths(root)
     for path in sa._iter_source_files(root, (".rs",)):
-        if sa._is_generated(path):
+        if sa._is_generated(path) or path.resolve() in test_paths:
             continue
         text = path.read_text(errors="replace")
         rel = None

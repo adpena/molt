@@ -29,6 +29,7 @@ fn slot_exclusion_marks_call_arg_as_unsafe() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -62,6 +63,7 @@ fn slot_exclusion_marks_returned_var_as_unsafe() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -99,6 +101,7 @@ fn slot_exclusion_marks_store_attr_value_as_unsafe() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -136,6 +139,7 @@ fn slot_exclusion_marks_refcount_ops_as_unsafe() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -177,6 +181,7 @@ fn slot_exclusion_marks_refcount_var_field_as_unsafe() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -215,6 +220,7 @@ fn slot_exclusion_marks_release_var_field_as_unsafe() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -290,6 +296,7 @@ fn slot_exclusion_safe_for_pure_arithmetic_loop() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -347,6 +354,7 @@ fn slot_exclusion_marks_store_index_on_generic_list() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 
@@ -365,7 +373,9 @@ fn slot_exclusion_allows_store_index_on_list_int() {
         name: "list_int_store_safe".to_string(),
         params: vec![],
         ops: vec![
-            list_int_new("lst"),
+            storage_const("storage_count", 4),
+            storage_const("storage_fill", 0),
+            list_int_new("lst", "storage_count", "storage_fill"),
             OpIR {
                 kind: "const".to_string(),
                 out: Some("idx".to_string()),
@@ -396,6 +406,7 @@ fn slot_exclusion_allows_store_index_on_list_int() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
 

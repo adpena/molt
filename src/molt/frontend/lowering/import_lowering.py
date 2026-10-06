@@ -72,23 +72,27 @@ class ImportLoweringMixin(GeneratorMixinBase):
             return False
         return module_name in self.known_modules
 
-    def _is_linkable_module_function_symbol(self, module_name: str | None) -> bool:
+    def _is_linkable_module_function_symbol(
+        self, module_name: str | None, func_id: str
+    ) -> bool:
         """Return whether a direct ``module__function`` symbol can be emitted.
 
-        ``known_modules`` is import visibility.  It is not link authority.
-        Cross-module Python direct calls are legal only to modules in
-        ``direct_call_modules``; native packages admitted as visible imports
-        must route through explicit callable export ABI metadata or remain
-        dynamic/bound calls.
+        A compiled module and a source-declared function are both required.
+        Import visibility, public API spellings and runtime-published callables
+        do not establish a Python code symbol. The live callable remains the
+        binding/dispatch authority even when its code address is known.
         """
         if not module_name:
             return False
         normalized = self._normalize_allowlist_module(module_name) or module_name
-        if normalized == self.module_name:
-            return True
-        if not self.known_modules and not self.direct_call_modules:
-            return True
-        return normalized in self.direct_call_modules
+        if self._is_native_python_export(normalized, func_id):
+            return False
+        return (
+            normalized == self.module_name or normalized in self.direct_call_modules
+        ) and (
+            self._lookup_func_kind(normalized, func_id) is not None
+            or self._lookup_func_defaults(normalized, func_id) is not None
+        )
 
     def _imported_module_binding_target(self, binding_name: str) -> str | None:
         if self._local_name_shadows_import_binding(binding_name):
@@ -127,6 +131,18 @@ class ImportLoweringMixin(GeneratorMixinBase):
     def _clear_imported_module_binding(self, binding_name: str) -> None:
         self._set_imported_module_binding(binding_name, None)
 
+    def _clear_import_binding_origin(self, name: str) -> None:
+        """Rebinding clears the current frame, never a deferred outer frame."""
+        self.imported_names.pop(name, None)
+        self.imported_attr_names.pop(name, None)
+        self.local_imported_names.discard(name)
+        self._clear_imported_module_binding(name)
+        if self.current_func_name == "molt_main":
+            self.global_imported_names.pop(name, None)
+            self.global_imported_attr_names.pop(name, None)
+            self.global_imported_modules.pop(name, None)
+            self.global_imported_module_provenance.pop(name, None)
+
     def _record_import_binding_origin(
         self, name: str, module_name: str, *, attr_name: str | None = None
     ) -> None:
@@ -143,7 +159,7 @@ class ImportLoweringMixin(GeneratorMixinBase):
             self._clear_imported_module_binding(name)
             if not module_owned:
                 self.local_imported_names.add(name)
-        if not module_owned:
+        if not module_owned or self.current_func_name != "molt_main":
             return
         self.global_imported_modules.pop(name, None)
         self.global_imported_module_provenance.pop(name, None)
@@ -453,7 +469,7 @@ class ImportLoweringMixin(GeneratorMixinBase):
         return bound_val
 
     def _emit_module_load(self, module_name: str) -> MoltValue:
-        # NOTE: Earlier versions cached loaded_val in _module_cache_values to
+        # NOTE: Earlier versions cached loaded_val per function to
         # avoid redundant MODULE_CACHE_GET + conditional-init sequences.  However,
         # the WASM state-machine backend (used for module init functions with
         # jumps/labels) can split the code into states where the cached local's

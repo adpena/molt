@@ -11,15 +11,16 @@ use crate::object::{
 use crate::{
     BUILTIN_TAG_BASE_EXCEPTION, BUILTIN_TAG_CLASSMETHOD, BUILTIN_TAG_EXCEPTION, BUILTIN_TAG_OBJECT,
     BUILTIN_TAG_PROPERTY, BUILTIN_TAG_STATICMETHOD, BUILTIN_TAG_SUPER, BUILTIN_TAG_TYPE,
-    RuntimeState, TYPE_ID_CLASSMETHOD, TYPE_ID_DICT, TYPE_ID_PROPERTY, TYPE_ID_STATICMETHOD,
-    TYPE_ID_TYPE, TYPE_ID_WEAKREF, TYPE_TAG_BOOL, TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES,
-    TYPE_TAG_COMPLEX, TYPE_TAG_DICT, TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT,
-    TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW, TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET,
-    TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE, alloc_class_obj, alloc_dict_with_pairs,
-    alloc_string, alloc_tuple, attr_name_bits_from_bytes, class_bump_layout_version,
-    class_dict_bits, class_name_bits, dec_ref_bits, dict_set_in_place, inc_ref_bits,
-    intern_static_name, molt_class_set_base, obj_from_bits, object_type_id, raise_exception,
-    runtime_state, runtime_state_for_gil, string_obj_to_owned,
+    RuntimeState, TYPE_ID_BYTEARRAY, TYPE_ID_BYTES, TYPE_ID_CLASSMETHOD, TYPE_ID_COMPLEX,
+    TYPE_ID_DICT, TYPE_ID_FROZENSET, TYPE_ID_LIST, TYPE_ID_MODULE, TYPE_ID_PROPERTY, TYPE_ID_SET,
+    TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TUPLE, TYPE_ID_TYPE, TYPE_ID_WEAKREF,
+    TYPE_TAG_BOOL, TYPE_TAG_BYTEARRAY, TYPE_TAG_BYTES, TYPE_TAG_COMPLEX, TYPE_TAG_DICT,
+    TYPE_TAG_FLOAT, TYPE_TAG_FROZENSET, TYPE_TAG_INT, TYPE_TAG_LIST, TYPE_TAG_MEMORYVIEW,
+    TYPE_TAG_NONE, TYPE_TAG_RANGE, TYPE_TAG_SET, TYPE_TAG_SLICE, TYPE_TAG_STR, TYPE_TAG_TUPLE,
+    alloc_class_obj, alloc_string, alloc_tuple, attr_name_bits_from_bytes,
+    class_bump_layout_version, class_dict_bits, class_name_bits, dec_ref_bits, dict_set_in_place,
+    inc_ref_bits, intern_static_name, molt_class_set_base, obj_from_bits, object_type_id,
+    raise_exception, runtime_state, runtime_state_for_gil, string_obj_to_owned,
 };
 
 static BUILTIN_CLASSES_INIT_LOCK: Mutex<()> = Mutex::new(());
@@ -107,6 +108,7 @@ pub(crate) struct BuiltinClasses {
     pub(crate) string_io: u64,
     pub(crate) function: u64,
     pub(crate) coroutine: u64,
+    pub(crate) coroutine_wrapper: u64,
     pub(crate) generator: u64,
     pub(crate) async_generator: u64,
     pub(crate) iterator: u64,
@@ -134,6 +136,10 @@ pub(crate) struct BuiltinClasses {
     pub(crate) filter: u64,
     pub(crate) builtin_function_or_method: u64,
     pub(crate) builtin_method: u64,
+    pub(crate) method_descriptor: u64,
+    pub(crate) wrapper_descriptor: u64,
+    pub(crate) classmethod_descriptor: u64,
+    pub(crate) method_wrapper: u64,
     pub(crate) code: u64,
     pub(crate) frame: u64,
     pub(crate) traceback: u64,
@@ -154,7 +160,15 @@ impl BuiltinClasses {
         class_bits == self.builtin_function_or_method || class_bits == self.builtin_method
     }
 
-    pub(crate) fn anchors(&self) -> [u64; 79] {
+    pub(crate) fn is_native_callable_class(&self, class_bits: u64) -> bool {
+        self.is_builtin_callable_class(class_bits)
+            || class_bits == self.method_descriptor
+            || class_bits == self.wrapper_descriptor
+            || class_bits == self.classmethod_descriptor
+            || class_bits == self.method_wrapper
+    }
+
+    pub(crate) fn anchors(&self) -> [u64; 84] {
         [
             self.object,
             self.type_obj,
@@ -197,6 +211,7 @@ impl BuiltinClasses {
             self.string_io,
             self.function,
             self.coroutine,
+            self.coroutine_wrapper,
             self.generator,
             self.async_generator,
             self.iterator,
@@ -224,6 +239,10 @@ impl BuiltinClasses {
             self.filter,
             self.builtin_function_or_method,
             self.builtin_method,
+            self.method_descriptor,
+            self.wrapper_descriptor,
+            self.classmethod_descriptor,
+            self.method_wrapper,
             self.code,
             self.frame,
             self.traceback,
@@ -364,17 +383,30 @@ fn set_class_attr_none(_py: &PyToken<'_>, class_bits: u64, name: &[u8]) {
     dec_ref_bits(_py, name_bits);
 }
 
-fn init_scalar_subclass_layout(_py: &PyToken<'_>, class_bits: u64, slot_name: &[u8]) {
-    let Some(class_ptr) = obj_from_bits(class_bits).as_ptr() else {
+fn init_scalar_subclass_layout(
+    class_bits: u64,
+    declaration: crate::object::class_storage::ClassDeclaration,
+) {
+    let class = obj_from_bits(class_bits)
+        .as_ptr()
+        .expect("validated scalar class");
+    unsafe {
+        crate::object::class_storage::class_declare(class, declaration);
+    }
+}
+
+/// A frame object keeps its binding source in a typed payload word ahead of
+/// its managed `__dict__` (`builtins/frames/locals_proxy.rs`).
+fn init_frame_layout(_py: &PyToken<'_>, frame_bits: u64) {
+    let Some(frame_ptr) = obj_from_bits(frame_bits).as_ptr() else {
         return;
     };
     unsafe {
-        if object_type_id(class_ptr) != TYPE_ID_TYPE {
+        if object_type_id(frame_ptr) != TYPE_ID_TYPE {
             return;
         }
     }
-    let dict_bits = unsafe { class_dict_bits(class_ptr) };
-    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
+    let Some(dict_ptr) = obj_from_bits(unsafe { class_dict_bits(frame_ptr) }).as_ptr() else {
         return;
     };
     unsafe {
@@ -382,72 +414,24 @@ fn init_scalar_subclass_layout(_py: &PyToken<'_>, class_bits: u64, slot_name: &[
             return;
         }
     }
-    let offsets_name_bits = intern_static_name(
-        _py,
-        &runtime_state(_py).interned.field_offsets_name,
-        b"__molt_field_offsets__",
-    );
     let layout_name_bits = intern_static_name(
         _py,
         &runtime_state(_py).interned.molt_layout_size,
         b"__molt_layout_size__",
     );
-    let Some(slot_name_bits) = attr_name_bits_from_bytes(_py, slot_name) else {
-        return;
-    };
-    let offset_bits = MoltObject::from_int(0).bits();
-    let offsets_ptr = alloc_dict_with_pairs(_py, &[slot_name_bits, offset_bits]);
-    if offsets_ptr.is_null() {
-        return;
-    }
-    let offsets_bits = MoltObject::from_ptr(offsets_ptr).bits();
     unsafe {
-        dict_set_in_place(_py, dict_ptr, offsets_name_bits, offsets_bits);
-    }
-    let layout_bits = MoltObject::from_int(16).bits();
-    unsafe {
-        dict_set_in_place(_py, dict_ptr, layout_name_bits, layout_bits);
-        class_bump_layout_version(class_ptr);
-    }
-    dec_ref_bits(_py, offsets_bits);
-    dec_ref_bits(_py, slot_name_bits);
-}
-
-fn init_int_subclass_layout(_py: &PyToken<'_>, int_bits: u64) {
-    init_scalar_subclass_layout(_py, int_bits, b"__molt_int_value__");
-}
-
-fn init_float_subclass_layout(_py: &PyToken<'_>, float_bits: u64) {
-    init_scalar_subclass_layout(_py, float_bits, b"__molt_float_value__");
-}
-
-fn init_dict_subclass_layout(_py: &PyToken<'_>, dict_bits: u64) {
-    let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-        return;
-    };
-    unsafe {
-        if object_type_id(dict_ptr) != TYPE_ID_TYPE {
-            return;
-        }
-    }
-    let dict_bits = unsafe { class_dict_bits(dict_ptr) };
-    let Some(dict_dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
-        return;
-    };
-    unsafe {
-        if object_type_id(dict_dict_ptr) != TYPE_ID_DICT {
-            return;
-        }
-    }
-    let layout_name_bits = intern_static_name(
-        _py,
-        &runtime_state(_py).interned.molt_layout_size,
-        b"__molt_layout_size__",
-    );
-    let layout_bits = MoltObject::from_int(16).bits();
-    unsafe {
-        dict_set_in_place(_py, dict_dict_ptr, layout_name_bits, layout_bits);
-        class_bump_layout_version(dict_ptr);
+        dict_set_in_place(
+            _py,
+            dict_ptr,
+            layout_name_bits,
+            MoltObject::from_int(16).bits(),
+        );
+        class_bump_layout_version(frame_ptr);
+        let shaped = crate::object::class_set_instance_shape_id(
+            frame_ptr,
+            crate::object::ObjectShapeId::TypesFrame,
+        );
+        assert!(shaped, "frame class shape selected twice");
     }
 }
 
@@ -506,10 +490,10 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     let range = make_builtin_class(_py, "range");
     let slice = make_builtin_class(_py, "slice");
     let memoryview = make_builtin_class(_py, "memoryview");
-    let io_base = make_builtin_class(_py, "IOBase");
-    let raw_io_base = make_builtin_class(_py, "RawIOBase");
-    let buffered_io_base = make_builtin_class(_py, "BufferedIOBase");
-    let text_io_base = make_builtin_class(_py, "TextIOBase");
+    let io_base = make_builtin_class(_py, "_IOBase");
+    let raw_io_base = make_builtin_class(_py, "_RawIOBase");
+    let buffered_io_base = make_builtin_class(_py, "_BufferedIOBase");
+    let text_io_base = make_builtin_class(_py, "_TextIOBase");
     let file = make_builtin_class(_py, "file");
     let file_io = make_builtin_class(_py, "FileIO");
     let buffered_reader = make_builtin_class(_py, "BufferedReader");
@@ -520,6 +504,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     let string_io = make_builtin_class(_py, "StringIO");
     let function = make_builtin_class(_py, "function");
     let coroutine = make_builtin_class(_py, "coroutine");
+    let coroutine_wrapper = make_builtin_class(_py, "coroutine_wrapper");
     let generator = make_builtin_class(_py, "generator");
     let async_generator = make_builtin_class(_py, "async_generator");
     let iterator = make_builtin_class(_py, "iterator");
@@ -547,6 +532,10 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     let filter = make_builtin_class(_py, "filter");
     let builtin_function_or_method = make_builtin_class(_py, "builtin_function_or_method");
     let builtin_method = make_builtin_class(_py, "builtin_method");
+    let method_descriptor = make_builtin_class(_py, "method_descriptor");
+    let wrapper_descriptor = make_builtin_class(_py, "wrapper_descriptor");
+    let classmethod_descriptor = make_builtin_class(_py, "classmethod_descriptor");
+    let method_wrapper = make_builtin_class(_py, "method-wrapper");
     let code = make_builtin_class(_py, "code");
     let frame = make_builtin_class(_py, "frame");
     let traceback = make_builtin_class(_py, "traceback");
@@ -601,6 +590,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         string_io,
         function,
         coroutine,
+        coroutine_wrapper,
         generator,
         async_generator,
         iterator,
@@ -628,6 +618,10 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         filter,
         builtin_function_or_method,
         builtin_method,
+        method_descriptor,
+        wrapper_descriptor,
+        classmethod_descriptor,
+        method_wrapper,
         code,
         frame,
         traceback,
@@ -669,6 +663,228 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         assert!(rooted, "exception group class layout selected twice");
     }
 
+    // CPython native baseline facts are attached to these construction handles.
+    // They never come from __name__, mutable namespaces, or a hot-path registry.
+    // Sources: v3.12.13 PyType_Type, BaseException, native type initializers and
+    // the datamodel variable-size rule (int, bytes, tuple).
+    unsafe {
+        use crate::object::class_storage::{ClassDeclaration, class_declare};
+        for &bits in &all_classes {
+            class_declare(
+                obj_from_bits(bits).as_ptr().unwrap(),
+                ClassDeclaration::NativeSlotLayout,
+            );
+        }
+        // CPython's native type initializers distinguish all sequence and
+        // mapping slots even when they publish the same Python method name.
+        // Declare on construction handles, never names or payload shapes.
+        use molt_cpython_abi::hooks::NativeProtocolSlot as P;
+        for (kinds, protocols) in [
+            (
+                &[str, bytes, tuple][..],
+                &[
+                    P::SequenceLength,
+                    P::SequenceConcat,
+                    P::SequenceRepeat,
+                    P::SequenceItem,
+                    P::SequenceContains,
+                    P::MappingLength,
+                    P::MappingSubscript,
+                ][..],
+            ),
+            (
+                &[bytearray, list][..],
+                &[
+                    P::SequenceLength,
+                    P::SequenceConcat,
+                    P::SequenceRepeat,
+                    P::SequenceItem,
+                    P::SequenceAssignItem,
+                    P::SequenceContains,
+                    P::SequenceInPlaceConcat,
+                    P::SequenceInPlaceRepeat,
+                    P::MappingLength,
+                    P::MappingSubscript,
+                    P::MappingAssignSubscript,
+                ][..],
+            ),
+            (
+                &[range][..],
+                &[
+                    P::SequenceLength,
+                    P::SequenceItem,
+                    P::SequenceContains,
+                    P::MappingLength,
+                    P::MappingSubscript,
+                ][..],
+            ),
+            (
+                &[memoryview][..],
+                &[
+                    P::SequenceLength,
+                    P::SequenceItem,
+                    P::MappingLength,
+                    P::MappingSubscript,
+                    P::MappingAssignSubscript,
+                ][..],
+            ),
+            (
+                &[dict][..],
+                &[
+                    P::SequenceContains,
+                    P::MappingLength,
+                    P::MappingSubscript,
+                    P::MappingAssignSubscript,
+                ][..],
+            ),
+            (
+                &[set, frozenset, dict_keys, dict_items][..],
+                &[P::SequenceLength, P::SequenceContains][..],
+            ),
+            (&[dict_values][..], &[P::SequenceLength][..]),
+        ] {
+            for &bits in kinds {
+                crate::object::class_storage::class_declare_native_protocols(
+                    obj_from_bits(bits).as_ptr().unwrap(),
+                    protocols,
+                );
+            }
+        }
+        for bits in [
+            type_obj,
+            int,
+            bytes,
+            tuple,
+            code,
+            memoryview,
+            generator,
+            coroutine,
+            async_generator,
+        ] {
+            class_declare(
+                obj_from_bits(bits).as_ptr().unwrap(),
+                ClassDeclaration::VariableSizedInstance,
+            );
+        }
+        for bits in [
+            type_obj,
+            base_exception,
+            module,
+            function,
+            classmethod,
+            staticmethod,
+            io_base,
+        ] {
+            class_declare(
+                obj_from_bits(bits).as_ptr().unwrap(),
+                ClassDeclaration::InstanceDictionary,
+            );
+        }
+        // Each exact native kind consumes the generated heap weakref baseline
+        // once, at construction. Registration never reclassifies by heap kind.
+        for (bits, kind) in [
+            (type_obj, crate::TYPE_ID_TYPE),
+            (module, crate::TYPE_ID_MODULE),
+            (function, crate::TYPE_ID_FUNCTION),
+            (builtin_function_or_method, crate::TYPE_ID_FUNCTION),
+            (generator, crate::TYPE_ID_GENERATOR),
+            (coroutine, crate::TYPE_ID_GENERATOR),
+            (async_generator, crate::TYPE_ID_ASYNC_GENERATOR),
+            (code, crate::TYPE_ID_CODE),
+            (set, crate::TYPE_ID_SET),
+            (frozenset, crate::TYPE_ID_FROZENSET),
+            (memoryview, crate::TYPE_ID_MEMORYVIEW),
+            (generic_alias, crate::TYPE_ID_GENERIC_ALIAS),
+        ] {
+            crate::object::class_storage::class_declare_native_slots(
+                obj_from_bits(bits).as_ptr().unwrap(),
+                crate::object::class_storage::ClassSlotPolicy::native(kind),
+            );
+        }
+        // IOBase has a native weak-list member; its portable generic object
+        // shape does not itself introduce weakref support.
+        class_declare(
+            obj_from_bits(io_base).as_ptr().unwrap(),
+            ClassDeclaration::InstanceWeakrefs,
+        );
+    }
+
+    // These constructors own payload not represented by the native-kind,
+    // object-shape or exception-root discriminator. Neutral hierarchy nodes
+    // (notably Exception and IO protocol bases) inherit their owner's layout.
+    for bits in [
+        type_obj,
+        base_exception,
+        complex,
+        str,
+        bytes,
+        bytearray,
+        tuple,
+        set,
+        frozenset,
+        range,
+        slice,
+        memoryview,
+        file,
+        file_io,
+        buffered_reader,
+        buffered_writer,
+        buffered_random,
+        text_io_wrapper,
+        bytes_io,
+        string_io,
+        function,
+        coroutine,
+        generator,
+        async_generator,
+        iterator,
+        callable_iterator,
+        bytes_iterator,
+        bytearray_iterator,
+        dict_keyiterator,
+        dict_valueiterator,
+        dict_itemiterator,
+        dict_reversekeyiterator,
+        dict_reversevalueiterator,
+        dict_reverseitemiterator,
+        list_iterator,
+        list_reverseiterator,
+        range_iterator,
+        longrange_iterator,
+        set_iterator,
+        str_iterator,
+        str_ascii_iterator,
+        tuple_iterator,
+        enumerate,
+        reversed,
+        zip,
+        map,
+        filter,
+        builtin_function_or_method,
+        method_descriptor,
+        wrapper_descriptor,
+        classmethod_descriptor,
+        method_wrapper,
+        code,
+        traceback,
+        super_type,
+        generic_alias,
+        union_type,
+        dict_keys,
+        dict_items,
+        dict_values,
+    ] {
+        let class = obj_from_bits(bits)
+            .as_ptr()
+            .expect("validated intrinsic class");
+        unsafe {
+            crate::object::class_storage::class_declare(
+                class,
+                crate::object::class_storage::ClassDeclaration::IntrinsicLayout,
+            );
+        }
+    }
+
     let _ = molt_class_set_base(object, MoltObject::none().bits());
     let _ = molt_class_set_base(type_obj, object);
     let _ = molt_class_set_base(none_type, object);
@@ -687,15 +903,20 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     let _ = molt_class_set_base(float, object);
     let _ = molt_class_set_base(complex, object);
     let _ = molt_class_set_base(bool, int);
-    init_int_subclass_layout(_py, int);
-    init_float_subclass_layout(_py, float);
+    init_scalar_subclass_layout(
+        int,
+        crate::object::class_storage::ClassDeclaration::IntValue,
+    );
+    init_scalar_subclass_layout(
+        float,
+        crate::object::class_storage::ClassDeclaration::FloatValue,
+    );
     let _ = molt_class_set_base(str, object);
     let _ = molt_class_set_base(bytes, object);
     let _ = molt_class_set_base(bytearray, object);
     let _ = molt_class_set_base(list, object);
     let _ = molt_class_set_base(tuple, object);
     let _ = molt_class_set_base(dict, object);
-    init_dict_subclass_layout(_py, dict);
     if let Some(dict_class_ptr) = obj_from_bits(dict).as_ptr() {
         let shaped = unsafe {
             crate::object::class_set_instance_shape_id(
@@ -727,6 +948,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     let _ = molt_class_set_base(string_io, text_io_base);
     let _ = molt_class_set_base(function, object);
     let _ = molt_class_set_base(coroutine, object);
+    let _ = molt_class_set_base(coroutine_wrapper, object);
     let _ = molt_class_set_base(generator, object);
     let _ = molt_class_set_base(async_generator, object);
     let _ = molt_class_set_base(iterator, object);
@@ -754,8 +976,13 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     let _ = molt_class_set_base(filter, object);
     let _ = molt_class_set_base(builtin_function_or_method, object);
     let _ = molt_class_set_base(builtin_method, builtin_function_or_method);
+    let _ = molt_class_set_base(method_descriptor, object);
+    let _ = molt_class_set_base(wrapper_descriptor, object);
+    let _ = molt_class_set_base(classmethod_descriptor, object);
+    let _ = molt_class_set_base(method_wrapper, object);
     let _ = molt_class_set_base(code, object);
     let _ = molt_class_set_base(frame, object);
+    init_frame_layout(_py, frame);
     let _ = molt_class_set_base(traceback, object);
     let _ = molt_class_set_base(module, object);
     let _ = molt_class_set_base(super_type, object);
@@ -766,6 +993,15 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     let _ = molt_class_set_base(union_type, object);
     let _ = molt_class_set_base(reference_type, object);
     for (class_bits, type_id) in [
+        (list, TYPE_ID_LIST),
+        (tuple, TYPE_ID_TUPLE),
+        (str, TYPE_ID_STRING),
+        (bytes, TYPE_ID_BYTES),
+        (bytearray, TYPE_ID_BYTEARRAY),
+        (set, TYPE_ID_SET),
+        (frozenset, TYPE_ID_FROZENSET),
+        (complex, TYPE_ID_COMPLEX),
+        (module, TYPE_ID_MODULE),
         (classmethod, TYPE_ID_CLASSMETHOD),
         (staticmethod, TYPE_ID_STATICMETHOD),
         (property, TYPE_ID_PROPERTY),
@@ -822,6 +1058,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         string_io,
         function,
         coroutine,
+        coroutine_wrapper,
         generator,
         async_generator,
         iterator,
@@ -833,6 +1070,10 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         filter,
         builtin_function_or_method,
         builtin_method,
+        method_descriptor,
+        wrapper_descriptor,
+        classmethod_descriptor,
+        method_wrapper,
         code,
         frame,
         traceback,
@@ -866,6 +1107,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
     set_class_attr_string(_py, complex, b"__text_signature__", "(real=0, imag=0)");
     set_class_attr_string(_py, float, b"__text_signature__", "(x=0, /)");
     set_class_attr_string(_py, list, b"__text_signature__", "(iterable=(), /)");
+    set_class_attr_none(_py, list, b"__hash__");
     set_class_attr_string(_py, tuple, b"__text_signature__", "(iterable=(), /)");
     set_class_attr_string(_py, reference_type, b"__module__", "_weakref");
     set_class_attr_string(
@@ -874,6 +1116,108 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         b"__text_signature__",
         "(object, callback=None, /)",
     );
+
+    // CPython v3.12.0/v3.13.0/v3.14.0 native initializers and heap specs.
+    // Cache/bank membership is custody, never semantic static/immutable policy.
+    // Public io ABCs live in the lowered io module. The physical _io bases
+    // and concrete classes are immutable heap classes with native storage.
+    let immutable_heap = [
+        io_base,
+        raw_io_base,
+        buffered_io_base,
+        text_io_base,
+        file,
+        file_io,
+        buffered_reader,
+        buffered_writer,
+        buffered_random,
+        text_io_wrapper,
+        bytes_io,
+        string_io,
+    ];
+    for bits in immutable_heap {
+        set_class_attr_string(_py, bits, b"__module__", "_io");
+    }
+    let exception_policies = [
+        (base_exception, "BaseException"),
+        (exception, "Exception"),
+        (base_exception_group, "BaseExceptionGroup"),
+        (exception_group, "ExceptionGroup"),
+    ]
+    .map(|(bits, name)| {
+        unsafe {
+            crate::object::class_storage::class_declare(
+                obj_from_bits(bits).as_ptr().unwrap(),
+                crate::object::class_storage::ClassDeclaration::BuiltinException,
+            );
+        }
+        let spec =
+            molt_obj_model::builtin_exception_spec(name).expect("canonical exception schema");
+        (
+            bits,
+            crate::object::class_storage::ClassSemanticPolicy::for_builtin_exception(spec),
+        )
+    });
+    let basetypes = [
+        object,
+        type_obj,
+        base_exception,
+        exception,
+        base_exception_group,
+        exception_group,
+        int,
+        float,
+        complex,
+        str,
+        bytes,
+        bytearray,
+        list,
+        tuple,
+        dict,
+        set,
+        frozenset,
+        io_base,
+        raw_io_base,
+        buffered_io_base,
+        text_io_base,
+        file,
+        file_io,
+        buffered_reader,
+        buffered_writer,
+        buffered_random,
+        text_io_wrapper,
+        bytes_io,
+        string_io,
+        enumerate,
+        reversed,
+        zip,
+        map,
+        filter,
+        module,
+        super_type,
+        classmethod,
+        staticmethod,
+        property,
+        generic_alias,
+        reference_type,
+    ];
+    for &bits in &all_classes {
+        use crate::object::class_storage::ClassSemanticPolicy;
+        let basetype = basetypes.contains(&bits);
+        let semantics = if let Some((_, policy)) =
+            exception_policies.iter().find(|(class, _)| *class == bits)
+        {
+            *policy
+        } else if immutable_heap.contains(&bits) {
+            ClassSemanticPolicy::heap(true, basetype)
+        } else {
+            ClassSemanticPolicy::static_type(basetype)
+        };
+        if !unsafe { semantics.apply(_py, obj_from_bits(bits).as_ptr().unwrap()) } {
+            release_failed_builtin_classes(_py, &all_classes);
+            return None;
+        }
+    }
 
     let builtins = BuiltinClasses {
         anchor_lifecycle: BuiltinClassAnchorLifecycle::published(),
@@ -918,6 +1262,7 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         string_io,
         function,
         coroutine,
+        coroutine_wrapper,
         generator,
         async_generator,
         iterator,
@@ -945,6 +1290,10 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         filter,
         builtin_function_or_method,
         builtin_method,
+        method_descriptor,
+        wrapper_descriptor,
+        classmethod_descriptor,
+        method_wrapper,
         code,
         frame,
         traceback,
@@ -1035,6 +1384,10 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
         );
     }
     assert!(
+        crate::builtins::io::io_publish_members(&py),
+        "builtin IO member descriptor publication failed"
+    );
+    assert!(
         crate::builtins::attributes::wrapper_publish_members(&py),
         "builtin wrapper member descriptor publication failed"
     );
@@ -1042,6 +1395,25 @@ fn init_builtin_classes() -> &'static BuiltinClasses {
         crate::builtins::attr::install_weakref_callback_descriptor(&py),
         "builtin ReferenceType.__callback__ descriptor publication failed"
     );
+    assert!(
+        unsafe { crate::builtins::attributes::type_metadata::publish(&py) },
+        "builtin object/type metadata publication failed"
+    );
+    assert!(
+        unsafe { crate::builtins::attributes::callable_metadata::publish(&py) },
+        "builtin callable metadata publication failed"
+    );
+    for class in [
+        published.base_exception,
+        published.exception,
+        published.base_exception_group,
+        published.exception_group,
+    ] {
+        assert!(
+            crate::builtins::methods::publish_builtin_class_methods(&py, class),
+            "builtin exception namespace publication failed"
+        );
+    }
     unsafe { &*ptr }
 }
 
@@ -1236,6 +1608,11 @@ pub extern "C" fn molt_builtin_class_lookup(name_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "TypeError", "builtin class name must be str");
         };
         if let Some(bits) = builtin_class_bits_from_name(_py, &name) {
+            return bits;
+        }
+        if let Some(bits) =
+            crate::builtins::exceptions::builtin_exception_type_bits_from_name(_py, &name)
+        {
             return bits;
         }
         let msg = format!("builtin class unavailable: {name}");

@@ -466,6 +466,12 @@ pub unsafe extern "C" fn molt_process_poll(obj_bits: u64) -> i64 {
             state.cancel_wait();
             return raise_cancelled_with_message::<i64>(_py, obj_ptr);
         }
+        // Some hosts deliver process/stdio completion only while this import
+        // drains their queues. No runtime registry lock is held across it;
+        // the host may re-enter molt_process_host_notify.
+        if state.process.is_pending() {
+            let _ = unsafe { crate::molt_process_host_poll() };
+        }
         let code = state.process.exit_code();
         if code != PROCESS_EXIT_PENDING {
             return MoltObject::from_int(code as i64).bits() as i64;
@@ -473,10 +479,18 @@ pub unsafe extern "C" fn molt_process_poll(obj_bits: u64) -> i64 {
         let mut out_code: i32 = 0;
         let rc = unsafe { crate::molt_process_wait_host(state.process.handle, 0, &mut out_code) };
         if rc == 0 {
-            let _ = state.process.publish_exit(out_code);
+            if let Some(publication) = state.process.publish_exit(out_code)
+                && let Some(future) = publication.wait_future
+            {
+                let _ = wake_await_waiters(_py, future.0);
+            }
             return MoltObject::from_int(state.process.exit_code() as i64).bits() as i64;
         }
         if rc == -libc::EWOULDBLOCK || rc == -libc::EAGAIN {
+            // Directly spawned process futures own this retry themselves;
+            // inline futures register their scheduled awaiter at the shared
+            // sleep_register_impl boundary after returning Pending.
+            crate::async_rt::io_poller::register_host_progress_retry(_py, obj_ptr);
             return pending_bits_i64();
         }
         raise_exception::<i64>(_py, "RuntimeError", "process wait failed")

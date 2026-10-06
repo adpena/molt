@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 static CALLBACK_SLOT: AtomicU64 = AtomicU64::new(0);
 static CALLBACK_OBSERVED: AtomicU64 = AtomicU64::new(0);

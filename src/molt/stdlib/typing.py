@@ -1257,11 +1257,10 @@ class ForwardRef(_TypingBase):
 
 class _TypedDictMeta(type):
     def __new__(mcls, name, bases, namespace, total=True, **kwargs):
-        annotations = dict(namespace.get("__annotations__", {}))
+        cls = super().__new__(mcls, name, bases, namespace)
+        annotations = dict(getattr(cls, "__annotations__", {}))
         required = set(annotations.keys()) if total else set()
         optional = set() if total else set(annotations.keys())
-        namespace["__annotations__"] = annotations
-        cls = super().__new__(mcls, name, bases, namespace)
         cls.__required_keys__ = frozenset(required)
         cls.__optional_keys__ = frozenset(optional)
         cls.__total__ = bool(total)

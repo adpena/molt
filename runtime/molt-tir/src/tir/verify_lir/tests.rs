@@ -84,6 +84,7 @@ fn ref64_provenance_func(entry: LirBlock) -> LirFunction {
     let mut blocks = HashMap::new();
     blocks.insert(BlockId(0), entry);
     LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "ref64_provenance".to_string(),
         param_names: vec![],
         param_types: vec![],
@@ -162,6 +163,7 @@ fn non_entry_ref64_block_arg_requires_explicit_phi_provenance() {
     blocks.insert(entry_id, entry);
     blocks.insert(target_id, target);
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "ref64_phi".to_string(),
         param_names: vec!["object".into()],
         param_types: vec![TirType::UserClass("Point".into())],
@@ -192,6 +194,7 @@ fn repr_for_bool_return_must_match_bool1() {
     let mut blocks = HashMap::new();
     blocks.insert(BlockId(0), entry);
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "bool_return".to_string(),
         param_names: vec!["flag".to_string()],
         param_types: vec![TirType::Bool],
@@ -225,6 +228,7 @@ fn truthiness_marker_requires_the_real_bool_operation() {
             },
         };
         let func = LirFunction {
+            container_storage: std::collections::HashMap::new(),
             name: "truthy".into(),
             param_names: vec!["x".into()],
             param_types: vec![TirType::DynBox],
@@ -264,6 +268,7 @@ fn dynbox_return_accepts_ref64_class_handle() {
     let mut blocks = HashMap::new();
     blocks.insert(BlockId(0), entry);
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "dynbox_ref64_return".to_string(),
         param_names: vec!["obj".to_string()],
         param_types: vec![TirType::UserClass("Point".to_string())],
@@ -288,6 +293,7 @@ fn dynbox_return_rejects_ref64_non_reference_value() {
     let mut blocks = HashMap::new();
     blocks.insert(BlockId(0), entry);
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "dynbox_bad_ref64_return".to_string(),
         param_names: vec!["bits".to_string()],
         param_types: vec![TirType::I64],
@@ -322,6 +328,7 @@ fn user_class_return_requires_matching_class_identity_for_ref64() {
     let mut blocks = HashMap::new();
     blocks.insert(BlockId(0), entry);
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "wrong_class_ref64_return".to_string(),
         param_names: vec!["obj".to_string()],
         param_types: vec![TirType::UserClass("Point".to_string())],
@@ -352,6 +359,7 @@ fn user_class_return_accepts_dynbox_when_class_proof_is_unavailable() {
     let mut blocks = HashMap::new();
     blocks.insert(BlockId(0), entry);
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "boxed_frozenset_return".to_string(),
         param_names: vec!["value".to_string()],
         param_types: vec![TirType::DynBox],
@@ -376,6 +384,7 @@ fn union_return_accepts_concrete_member_type() {
     let mut blocks = HashMap::new();
     blocks.insert(BlockId(0), entry);
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "union_none_return".to_string(),
         param_names: vec!["obj".to_string()],
         param_types: vec![TirType::None],
@@ -401,6 +410,7 @@ fn union_return_accepts_identical_union_type() {
     let mut blocks = HashMap::new();
     blocks.insert(BlockId(0), entry);
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "union_identity_return".to_string(),
         param_names: vec!["value".to_string()],
         param_types: vec![union_ty.clone()],
@@ -443,6 +453,7 @@ fn branch_args_enforce_user_class_identity_when_boxed() {
     blocks.insert(entry_id, entry);
     blocks.insert(target_id, target);
     let func = LirFunction {
+        container_storage: std::collections::HashMap::new(),
         name: "boxed_class_branch_mismatch".to_string(),
         param_names: vec!["obj".to_string()],
         param_types: vec![TirType::UserClass("Other".to_string())],

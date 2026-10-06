@@ -1,4 +1,5 @@
 use super::super::generators_async::asyncio_clear_pending_exception;
+use crate::object::ops_compare::{CompareBoolOutcome, compare_object_eq_bool};
 use crate::*;
 #[cfg(not(target_arch = "wasm32"))]
 use std::process::{Command, Stdio};
@@ -343,24 +344,22 @@ pub extern "C" fn molt_asyncio_subprocess_stdio_normalize(
             return MoltObject::from_int(inherit_mode).bits();
         }
         let allow_stdout = is_truthy(_py, obj_from_bits(allow_stdout_bits));
-
-        if obj_eq(_py, value_obj, obj_from_bits(pipe_const_bits)) {
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
-            }
-            return MoltObject::from_int(pipe_mode).bits();
+        if exception_pending(_py) {
+            return MoltObject::none().bits();
         }
-        if obj_eq(_py, value_obj, obj_from_bits(devnull_const_bits)) {
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
+        for (constant, mode, enabled) in [
+            (pipe_const_bits, pipe_mode, true),
+            (devnull_const_bits, devnull_mode, true),
+            (stdout_const_bits, stdout_mode, allow_stdout),
+        ] {
+            if !enabled {
+                continue;
             }
-            return MoltObject::from_int(devnull_mode).bits();
-        }
-        if allow_stdout && obj_eq(_py, value_obj, obj_from_bits(stdout_const_bits)) {
-            if exception_pending(_py) {
-                return MoltObject::none().bits();
+            match compare_object_eq_bool(_py, value_obj, obj_from_bits(constant)) {
+                CompareBoolOutcome::True => return MoltObject::from_int(mode).bits(),
+                CompareBoolOutcome::Error => return MoltObject::none().bits(),
+                CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => {}
             }
-            return MoltObject::from_int(stdout_mode).bits();
         }
 
         let mut fd = to_i64(value_obj);

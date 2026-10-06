@@ -46,6 +46,7 @@ def test_process_groups_include_full_matched_group() -> None:
             pgid=10,
             rss_kb=100,
             command="/bin/zsh -c cd /repo/molt && cargo build -p molt-backend",
+            started_at_ns=1000,
         ),
         11: module.memory_guard.ProcessSample(
             pid=11,
@@ -53,6 +54,7 @@ def test_process_groups_include_full_matched_group() -> None:
             pgid=10,
             rss_kb=200,
             command="/rustc --crate-name molt_backend runtime/molt-backend/src/lib.rs",
+            started_at_ns=2000,
         ),
         20: module.memory_guard.ProcessSample(
             pid=20,
@@ -60,6 +62,7 @@ def test_process_groups_include_full_matched_group() -> None:
             pgid=20,
             rss_kb=999,
             command="cargo build unrelated",
+            started_at_ns=1000,
         ),
     }
 
@@ -471,6 +474,7 @@ def test_process_groups_propagate_to_nested_child_sessions() -> None:
             pgid=10,
             rss_kb=100,
             command="/usr/bin/python /repo/molt/tests/molt_diff.py",
+            started_at_ns=1000,
         ),
         11: module.memory_guard.ProcessSample(
             pid=11,
@@ -478,6 +482,7 @@ def test_process_groups_propagate_to_nested_child_sessions() -> None:
             pgid=11,
             rss_kb=200,
             command="python child.py",
+            started_at_ns=2000,
         ),
         12: module.memory_guard.ProcessSample(
             pid=12,
@@ -485,6 +490,7 @@ def test_process_groups_propagate_to_nested_child_sessions() -> None:
             pgid=12,
             rss_kb=300,
             command="node worker.js",
+            started_at_ns=3000,
         ),
     }
 
@@ -618,6 +624,7 @@ def test_process_groups_explicit_custody_requires_molt_cleanup_identity() -> Non
             pgid=100,
             rss_kb=100,
             command="/Applications/Codex.app/Contents/MacOS/Codex",
+            started_at_ns=1000,
         ),
         999: module.memory_guard.ProcessSample(
             pid=999,
@@ -625,6 +632,7 @@ def test_process_groups_explicit_custody_requires_molt_cleanup_identity() -> Non
             pgid=999,
             rss_kb=100,
             command="/repo/molt/tools/process_sentinel.py --once --kill-all",
+            started_at_ns=2000,
         ),
         200: module.memory_guard.ProcessSample(
             pid=200,
@@ -632,6 +640,7 @@ def test_process_groups_explicit_custody_requires_molt_cleanup_identity() -> Non
             pgid=200,
             rss_kb=100,
             command="git -C /repo/molt status --short",
+            started_at_ns=3000,
         ),
         300: module.memory_guard.ProcessSample(
             pid=300,
@@ -639,6 +648,7 @@ def test_process_groups_explicit_custody_requires_molt_cleanup_identity() -> Non
             pgid=300,
             rss_kb=100,
             command="/repo/molt/target/dev-fast/molt-backend --owned",
+            started_at_ns=3000,
         ),
     }
 
@@ -958,6 +968,7 @@ def test_process_groups_exclude_external_codex_descendant_but_keep_owned_child()
             pgid=100,
             rss_kb=500_000,
             command="/Applications/Codex.app/Contents/MacOS/Codex",
+            started_at_ns=1000,
         ),
         101: module.memory_guard.ProcessSample(
             pid=101,
@@ -965,6 +976,7 @@ def test_process_groups_exclude_external_codex_descendant_but_keep_owned_child()
             pgid=101,
             rss_kb=10_000,
             command="/bin/zsh -l",
+            started_at_ns=2000,
         ),
         777: module.memory_guard.ProcessSample(
             pid=777,
@@ -972,6 +984,7 @@ def test_process_groups_exclude_external_codex_descendant_but_keep_owned_child()
             pgid=777,
             rss_kb=250_000,
             command="/repo/molt/target/dev-fast/molt-backend --daemon",
+            started_at_ns=3000,
         ),
         999: module.memory_guard.ProcessSample(
             pid=999,
@@ -979,6 +992,7 @@ def test_process_groups_exclude_external_codex_descendant_but_keep_owned_child()
             pgid=999,
             rss_kb=30_000,
             command="/repo/molt/tools/process_sentinel.py --once --kill-all",
+            started_at_ns=2000,
         ),
         200: module.memory_guard.ProcessSample(
             pid=200,
@@ -986,6 +1000,7 @@ def test_process_groups_exclude_external_codex_descendant_but_keep_owned_child()
             pgid=200,
             rss_kb=250_000,
             command="/repo/molt/target/dev-fast/molt-backend --owned",
+            started_at_ns=3000,
         ),
     }
 
@@ -1020,6 +1035,7 @@ def test_process_groups_exclude_external_codex_cli_descendant_but_keep_owned_chi
             pgid=100,
             rss_kb=500_000,
             command="/usr/local/bin/node /opt/homebrew/bin/codex",
+            started_at_ns=1000,
         ),
         101: module.memory_guard.ProcessSample(
             pid=101,
@@ -1027,6 +1043,7 @@ def test_process_groups_exclude_external_codex_cli_descendant_but_keep_owned_chi
             pgid=101,
             rss_kb=10_000,
             command="/bin/bash -lc pytest",
+            started_at_ns=2000,
         ),
         777: module.memory_guard.ProcessSample(
             pid=777,
@@ -1034,6 +1051,7 @@ def test_process_groups_exclude_external_codex_cli_descendant_but_keep_owned_chi
             pgid=777,
             rss_kb=250_000,
             command="/repo/molt/target/dev-fast/molt-backend --daemon",
+            started_at_ns=3000,
         ),
         999: module.memory_guard.ProcessSample(
             pid=999,
@@ -1041,6 +1059,7 @@ def test_process_groups_exclude_external_codex_cli_descendant_but_keep_owned_chi
             pgid=999,
             rss_kb=30_000,
             command="/repo/molt/tools/process_sentinel.py --once --kill-all",
+            started_at_ns=2000,
         ),
         200: module.memory_guard.ProcessSample(
             pid=200,
@@ -1048,6 +1067,7 @@ def test_process_groups_exclude_external_codex_cli_descendant_but_keep_owned_chi
             pgid=200,
             rss_kb=250_000,
             command="/repo/molt/target/dev-fast/molt-backend --owned",
+            started_at_ns=3000,
         ),
     }
 
@@ -1085,6 +1105,7 @@ def test_process_groups_exclude_windows_external_codex_descendant_but_keep_owned
                 r"C:\Program Files\WindowsApps\OpenAI.Codex_26.609.4994.0_x64__2p2nqsd0c76g0"
                 r"\app\resources\codex.exe"
             ),
+            started_at_ns=1000,
         ),
         101: module.memory_guard.ProcessSample(
             pid=101,
@@ -1092,6 +1113,7 @@ def test_process_groups_exclude_windows_external_codex_descendant_but_keep_owned
             pgid=None,
             rss_kb=10_000,
             command="powershell.exe",
+            started_at_ns=2000,
         ),
         777: module.memory_guard.ProcessSample(
             pid=777,
@@ -1102,6 +1124,7 @@ def test_process_groups_exclude_windows_external_codex_descendant_but_keep_owned
                 r"C:\Users\adpen\OneDrive\Documents\molt"
                 r"\target\dev-fast\molt-backend.exe --daemon"
             ),
+            started_at_ns=3000,
         ),
         999: module.memory_guard.ProcessSample(
             pid=999,
@@ -1112,6 +1135,7 @@ def test_process_groups_exclude_windows_external_codex_descendant_but_keep_owned
                 r"C:\Users\adpen\OneDrive\Documents\molt"
                 r"\tools\process_sentinel.py --once --kill-all"
             ),
+            started_at_ns=1000,
         ),
         200: module.memory_guard.ProcessSample(
             pid=200,
@@ -1122,6 +1146,7 @@ def test_process_groups_exclude_windows_external_codex_descendant_but_keep_owned
                 r"C:\Users\adpen\OneDrive\Documents\molt"
                 r"\target\dev-fast\molt-backend.exe --owned"
             ),
+            started_at_ns=2000,
         ),
     }
 
@@ -1216,6 +1241,7 @@ def test_process_groups_exclude_external_claude_descendant_but_keep_owned_child(
             pgid=100,
             rss_kb=500_000,
             command="claude --dangerously-skip-permissions",
+            started_at_ns=1000,
         ),
         101: module.memory_guard.ProcessSample(
             pid=101,
@@ -1223,6 +1249,7 @@ def test_process_groups_exclude_external_claude_descendant_but_keep_owned_child(
             pgid=101,
             rss_kb=10_000,
             command="/bin/zsh -c source /Users/adpena/.claude/shell-snapshots/snapshot-zsh",
+            started_at_ns=2000,
         ),
         777: module.memory_guard.ProcessSample(
             pid=777,
@@ -1230,6 +1257,7 @@ def test_process_groups_exclude_external_claude_descendant_but_keep_owned_child(
             pgid=777,
             rss_kb=250_000,
             command="/repo/molt/target/dev-fast/molt-backend --daemon",
+            started_at_ns=3000,
         ),
         999: module.memory_guard.ProcessSample(
             pid=999,
@@ -1237,6 +1265,7 @@ def test_process_groups_exclude_external_claude_descendant_but_keep_owned_child(
             pgid=999,
             rss_kb=30_000,
             command="/repo/molt/tools/process_sentinel.py --once --kill-all",
+            started_at_ns=1000,
         ),
         200: module.memory_guard.ProcessSample(
             pid=200,
@@ -1244,6 +1273,7 @@ def test_process_groups_exclude_external_claude_descendant_but_keep_owned_child(
             pgid=200,
             rss_kb=250_000,
             command="/repo/molt/target/dev-fast/molt-backend --owned",
+            started_at_ns=2000,
         ),
     }
 
@@ -1634,7 +1664,7 @@ def test_terminate_group_windows_keeps_current_sentinel_child_killable(
             ppid=100,
             pgid=None,
             rss_kb=30_000,
-            started_at_ns=999,
+            started_at_ns=100,
             command=(
                 r"C:\Users\adpen\OneDrive\Documents\molt"
                 r"\tools\process_sentinel.py --once --kill-all"
@@ -1766,6 +1796,7 @@ def test_find_violations_can_kill_all_or_threshold() -> None:
                 pgid=10,
                 rss_kb=100,
                 command="root",
+                started_at_ns=100,
             ),
             module.memory_guard.ProcessSample(
                 pid=11,
@@ -1809,6 +1840,7 @@ def test_find_violations_can_kill_all_or_threshold() -> None:
             "pgid": 10,
             "rss_kb": 100,
             "elapsed_sec": None,
+            "started_at_ns": 100,
             "command": "root",
         },
         {
@@ -1817,6 +1849,7 @@ def test_find_violations_can_kill_all_or_threshold() -> None:
             "pgid": 10,
             "rss_kb": 900,
             "elapsed_sec": None,
+            "started_at_ns": None,
             "command": "child",
         },
     ]
@@ -2481,3 +2514,104 @@ def test_is_molt_process_cache_keys_on_token_authorities(monkeypatch) -> None:
         )
         assert module.is_molt_process(sample, root=WINDOWS_ROOT, self_pid=9999)
     assert not module.is_molt_process(sample, root=WINDOWS_ROOT, self_pid=9999)
+
+
+def test_sentinel_ownership_fences_all_seed_families_and_allowed_paths() -> None:
+    module = _load_process_sentinel()
+    sample = module.memory_guard.ProcessSample
+    root = Path("/repo/molt")
+    rows = [
+        sample(
+            100, 1, 10, "/repo/molt/target/dev-fast/molt-backend", started_at_ns=100
+        ),
+        sample(200, 100, 20, "worker", started_at_ns=200),
+        sample(201, 200, 30, "same clock tick", started_at_ns=200),
+        sample(300, 200, 40, "stale parent pid", started_at_ns=150),
+        sample(301, 300, 50, "behind stale edge", started_at_ns=400),
+        sample(400, 200, 60, "unknown birth"),
+        sample(401, 400, 70, "behind unknown edge", started_at_ns=500),
+        sample(500, 1, 80, "separately admitted", started_at_ns=50),
+        sample(501, 500, 90, "admitted child", started_at_ns=60),
+    ]
+    for ordered_rows in (rows, list(reversed(rows))):
+        samples = {row.pid: row for row in ordered_rows}
+        known = {500: module.memory_guard.process_identity(samples[500])}
+        expected = {100, 200, 201, 500, 501}
+        assert (
+            module._explicitly_owned_process_ids(
+                samples, known_process_identities=known, caller_owned_pids={100}
+            )
+            == expected
+        )
+        assert (
+            module._owned_process_ids(
+                samples, root=root, self_pid=999, known_process_identities=known
+            )
+            == expected
+        )
+        assert (
+            module._explicitly_owned_molt_process_ids(
+                samples,
+                root=root,
+                self_pid=999,
+                owned_pids=set(samples),
+                known_process_identities=known,
+            )
+            == expected
+        )
+        # A forbidden intermediate cannot bridge two otherwise allowed members.
+        assert module._explicitly_owned_molt_process_ids(
+            samples,
+            root=root,
+            self_pid=999,
+            owned_pids={100, 201},
+            known_process_identities=None,
+        ) == {100}
+        assert {
+            pid
+            for group in module.process_groups(
+                samples,
+                root=root,
+                self_pid=999,
+                known_process_identities=known,
+                owned_pids=set(samples),
+            )
+            for pid in group.pids
+        } == expected
+
+
+def test_sentinel_keeps_explicit_roots_without_inventing_birth_edges() -> None:
+    module = _load_process_sentinel()
+    sample = module.memory_guard.ProcessSample
+    for parent_birth, child_birth in (
+        (None, 200),
+        (0, 200),
+        (-1, 200),
+        (True, 200),
+        (100.0, 200),
+        ("100", 200),
+        (100, None),
+        (100, 0),
+        (100, -1),
+        (100, True),
+        (100, 200.0),
+        (100, "200"),
+    ):
+        samples = {
+            100: sample(100, 1, 1, "root", started_at_ns=parent_birth),
+            200: sample(200, 100, 1, "child", started_at_ns=child_birth),
+        }
+        assert module._explicitly_owned_process_ids(
+            samples, known_process_identities=None, caller_owned_pids={100}
+        ) == {100}
+        assert module._explicitly_owned_process_ids(
+            samples, known_process_identities=None, caller_owned_pids={100, 200}
+        ) == {100, 200}
+    assert (
+        module._explicitly_owned_process_ids(
+            {200: sample(200, 100, 1, "missing parent", started_at_ns=200)},
+            known_process_identities=None,
+            caller_owned_pids={100},
+        )
+        == set()
+    )

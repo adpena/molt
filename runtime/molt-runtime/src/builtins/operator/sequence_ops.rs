@@ -44,7 +44,7 @@ pub extern "C" fn molt_operator_countof(container_bits: u64, value_bits: u64) ->
             let item = match iter.next() {
                 Ok(Some(item)) => item,
                 Ok(None) => return crate::int_bits_from_i64(_py, count),
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             let result = crate::object::ops_compare::compare_object_eq_bool(
                 _py,

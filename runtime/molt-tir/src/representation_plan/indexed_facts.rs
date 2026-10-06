@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::ir::{FunctionIR, OpIR};
-use crate::repr::{ContainerStorageFact, ContainerStorageKind, ScalarKind};
+use crate::repr::{ContainerStorageFact, ContainerStorageKind};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, TirOp};
 use crate::tir::simple_def_use::{simple_ir_binding, visit_simple_ir_reads};
@@ -126,10 +126,6 @@ impl<'a> FunctionNameIndex<'a> {
         self.names.push(name);
         self.ids_by_name.insert(name, id);
         id
-    }
-
-    pub(super) fn get(&self, name: &str) -> Option<NameId> {
-        self.ids_by_name.get(name).copied()
     }
 
     pub(super) fn len(&self) -> usize {
@@ -728,10 +724,6 @@ impl IndexedContainerFacts {
         self.get(id).is_some()
     }
 
-    pub(super) fn kind(&self, id: NameId) -> Option<ContainerStorageKind> {
-        self.get(id).map(|fact| fact.kind)
-    }
-
     pub(super) fn conflict(&mut self, id: NameId) -> bool {
         if self.conflicted[id.0] {
             return false;
@@ -869,58 +861,14 @@ impl ScalarRepresentationPlan {
 
     pub(super) fn propagate_container_storage(
         &mut self,
-        fact_index: &FunctionFactIndex<'_>,
+        _fact_index: &FunctionFactIndex<'_>,
         index: &IndexedFunctionFactIndex<'_>,
     ) {
         let mut facts = IndexedContainerFacts::from_plan(self, index);
-        propagate_indexed_fact_graph(index, &mut facts, |facts| {
-            self.propagate_indexed_container_storage_store_index_ops(fact_index, index, facts)
-        });
+        // The canonical value-keyed proof already closed mutations and escape.
+        // This is only a projection through the existing SimpleIR name graph.
+        propagate_indexed_fact_graph(index, &mut facts, |_| false);
         facts.sync_to_plan(self, index);
-    }
-
-    fn propagate_indexed_container_storage_store_index_ops(
-        &self,
-        fact_index: &FunctionFactIndex<'_>,
-        index: &IndexedFunctionFactIndex<'_>,
-        facts: &mut IndexedContainerFacts,
-    ) -> bool {
-        let mut changed = false;
-        for op in &fact_index.store_index_ops {
-            let Some(args) = op.args.as_ref() else {
-                continue;
-            };
-            let Some(container) = args.first() else {
-                continue;
-            };
-            let Some(container_id) = index.names.get(container) else {
-                continue;
-            };
-            if facts.kind(container_id) != Some(ContainerStorageKind::FlatListInt) {
-                continue;
-            }
-            let value_preserves_flat_int = args.get(2).is_some_and(|value| {
-                self.name_scalar_kind(value) == Some(ScalarKind::Int)
-                    || self.name_is_integer_family(value)
-            });
-            if value_preserves_flat_int {
-                if let Some(out) = op.out.as_ref()
-                    && let Some(out_id) = index.names.get(out)
-                    && let Some(fact) = facts.get(container_id).cloned()
-                    && facts.insert(out_id, fact)
-                {
-                    changed = true;
-                }
-            } else {
-                changed |= facts.conflict(container_id);
-                if let Some(out) = op.out.as_ref()
-                    && let Some(out_id) = index.names.get(out)
-                {
-                    changed |= facts.conflict(out_id);
-                }
-            }
-        }
-        changed
     }
 }
 
@@ -1118,6 +1066,114 @@ pub(super) fn store_var_targets_all_sources_where(
         .collect()
 }
 
+/// Identity edges are independent of semantic type and of the storage promise
+/// a consumer eventually asks for.
+fn tir_container_identity(op: &TirOp) -> bool {
+    if crate::tir::passes::value_identity::no_heap_alias_source(op).is_some() {
+        return true;
+    }
+    // A retained binding has the same heap identity, but a separate owner.
+    // It never gains the no-heap-move permission used by drop placement.
+    op.opcode == crate::tir::ops::OpCode::Copy
+        && op.operands.len() == 1
+        && op.results.len() == 1
+        && matches!(op.attrs.get("_original_kind"), Some(AttrValue::Str(kind))
+            if crate::tir::op_kinds_generated::copy_kind_mints_owned_alias_ref_table(kind))
+}
+
+fn tir_container_alias_inputs(func: &TirFunction) -> HashMap<ValueId, Vec<ValueId>> {
+    let mut inputs: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            if (tir_container_identity(op) || op.opcode == crate::tir::ops::OpCode::StoreIndex)
+                && let Some(&source) = op.operands.first()
+            {
+                for &result in &op.results {
+                    inputs.entry(result).or_default().push(source);
+                }
+            }
+        }
+        block.terminator.for_each_edge(|target, arguments| {
+            if let Some(destination) = func.blocks.get(&target) {
+                for (&source, parameter) in arguments.iter().zip(&destination.args) {
+                    inputs.entry(parameter.id).or_default().push(source);
+                }
+            }
+        });
+    }
+    inputs
+}
+
+fn rooted_container_aliases(
+    roots: &HashSet<ValueId>,
+    inputs: &HashMap<ValueId, Vec<ValueId>>,
+) -> (HashMap<ValueId, HashSet<ValueId>>, HashSet<ValueId>) {
+    // Possible aliases carry invalidation even through a phi which also names
+    // an unknown object. Separately track such foreign inputs so that the phi
+    // itself never acquires a trusted physical layout.
+    let mut aliases: HashMap<ValueId, HashSet<ValueId>> = roots
+        .iter()
+        .map(|&value| (value, HashSet::from([value])))
+        .collect();
+    let mut foreign = HashSet::new();
+    for sources in inputs.values() {
+        for &source in sources {
+            if !roots.contains(&source) && !inputs.contains_key(&source) {
+                foreign.insert(source);
+            }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for (&target, sources) in inputs {
+            let inherited: HashSet<_> = sources
+                .iter()
+                .filter_map(|source| aliases.get(source))
+                .flat_map(|roots| roots.iter().copied())
+                .collect();
+            let target_roots = aliases.entry(target).or_default();
+            let before = target_roots.len();
+            target_roots.extend(inherited);
+            changed |= target_roots.len() != before;
+            if sources.iter().any(|source| foreign.contains(source)) {
+                changed |= foreign.insert(target);
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    (aliases, foreign)
+}
+
+/// An exact Python list class comes from a successful list allocator, never
+/// from List[T], an element range, or a physical layout observation. Identity
+/// aliases and all-known SSA joins retain it even when contents can mutate.
+pub(super) fn tir_exact_builtin_list_values(func: &TirFunction) -> HashSet<ValueId> {
+    let roots: HashSet<ValueId> = func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter(|op| {
+            op.opcode == crate::tir::ops::OpCode::BuildList
+                || matches!(
+                    tir_op_original_kind(op)
+                        .and_then(crate::tir::op_semantics::container_constructor_result_type),
+                    Some(TirType::List(_))
+                )
+        })
+        .flat_map(|op| op.results.iter().copied())
+        .collect();
+    let inputs = tir_container_alias_inputs(func);
+    let (aliases, foreign) = rooted_container_aliases(&roots, &inputs);
+    aliases
+        .into_iter()
+        .filter_map(|(value, owners)| {
+            (!owners.is_empty() && !foreign.contains(&value)).then_some(value)
+        })
+        .collect()
+}
+
 fn flat_list_int_storage_fact() -> ContainerStorageFact {
     ContainerStorageFact {
         kind: ContainerStorageKind::FlatListInt,
@@ -1125,51 +1181,153 @@ fn flat_list_int_storage_fact() -> ContainerStorageFact {
     }
 }
 
-pub(super) fn tir_container_storage_facts(
-    tir_func: &TirFunction,
+/// A function-wide physical promise requires both admitted construction and
+/// closure of every alias over storage-preserving uses. Semantic int/list types
+/// cannot establish either fact. LIR receives this map, never reseeds by opcode.
+pub(crate) fn tir_container_storage_facts(
+    func: &TirFunction,
+    repr: &HashMap<ValueId, crate::repr::Repr>,
 ) -> HashMap<ValueId, ContainerStorageFact> {
-    let mut facts = HashMap::new();
-    let mut changed = true;
-    while changed {
-        changed = false;
-        let mut block_ids: Vec<_> = tir_func.blocks.keys().copied().collect();
-        block_ids.sort_by_key(|block_id| block_id.0);
-        for block_id in block_ids {
-            let block = &tir_func.blocks[&block_id];
-            for op in &block.ops {
-                if tir_op_original_kind(op) == Some("list_int_new") {
-                    for result in &op.results {
-                        changed |= insert_value_storage_fact(
-                            &mut facts,
-                            *result,
-                            flat_list_int_storage_fact(),
-                        );
-                    }
-                    continue;
-                }
-                if op.is_plain_value_copy()
-                    && let Some(source) = op.operands.first()
-                    && let Some(result) = op.results.first()
-                    && let Some(fact) = facts.get(source).cloned()
-                {
-                    changed |= insert_value_storage_fact(&mut facts, *result, fact);
+    use crate::repr::Repr;
+    use crate::tir::op_kinds_generated::opcode_has_local_only_operands_table;
+    use crate::tir::ops::OpCode;
+
+    let inline = |value: &ValueId| repr.get(value) == Some(&Repr::RawI64Safe);
+    let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
+    let index = |value: &ValueId| {
+        matches!(
+            exact.get(value),
+            Some(TirType::I64 | TirType::BigInt | TirType::Bool)
+        )
+    };
+    let exact_count = |value: &ValueId| {
+        matches!(
+            repr.get(value),
+            Some(Repr::RawI64Safe | Repr::RawI64FullDeopt | Repr::Bool)
+        )
+    };
+    let transparent = tir_container_identity;
+    let definitions: HashMap<ValueId, &TirOp> = func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .flat_map(|op| op.results.iter().map(move |&value| (value, op)))
+        .collect();
+    let singleton_inline_list = |mut value: ValueId| -> Option<ValueId> {
+        let mut visited = HashSet::new();
+        while visited.insert(value) {
+            let op = definitions.get(&value)?;
+            if transparent(op) {
+                value = op.operands[0];
+                continue;
+            }
+            return ((op.opcode == OpCode::BuildList
+                || tir_op_original_kind(op) == Some("list_new"))
+                && op.operands.len() == 1
+                && inline(&op.operands[0]))
+            .then_some(value);
+        }
+        None
+    };
+
+    let mut roots = HashSet::new();
+    let mut flat_roots = HashSet::new();
+    let mut repeat_sources = HashMap::new();
+    let inputs = tir_container_alias_inputs(func);
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            let admitted_fill = tir_op_original_kind(op) == Some("list_int_new")
+                && op.operands.get(1).is_some_and(inline);
+            // Canonical source multiplication retains normal evaluation and
+            // reflected-method ordering. Only exact producers authorize its
+            // successful result's physical storage.
+            let repeat_source = if op.opcode == OpCode::Mul && op.operands.len() == 2 {
+                [
+                    (op.operands[0], op.operands[1]),
+                    (op.operands[1], op.operands[0]),
+                ]
+                .into_iter()
+                .find_map(|(source, count)| {
+                    exact_count(&count)
+                        .then(|| singleton_inline_list(source))
+                        .flatten()
+                })
+            } else {
+                None
+            };
+            if admitted_fill || repeat_source.is_some() {
+                roots.extend(op.results.iter().copied());
+                flat_roots.extend(op.results.iter().copied());
+            }
+            if let Some(source) = repeat_source {
+                // The singleton's shape and inline contents must survive the
+                // same lifetime/alias proof as the flat result itself.
+                roots.insert(source);
+                for &result in &op.results {
+                    repeat_sources.insert(result, source);
                 }
             }
         }
     }
-    facts
-}
-
-fn insert_value_storage_fact(
-    facts: &mut HashMap<ValueId, ContainerStorageFact>,
-    value: ValueId,
-    fact: ContainerStorageFact,
-) -> bool {
-    if facts.get(&value) == Some(&fact) {
-        return false;
+    if roots.is_empty() {
+        return HashMap::new();
     }
-    facts.insert(value, fact);
-    true
+
+    let (aliases, foreign) = rooted_container_aliases(&roots, &inputs);
+
+    let mut invalid = HashSet::new();
+    let mut invalidate = |value: ValueId| {
+        if let Some(owners) = aliases.get(&value) {
+            invalid.extend(owners.iter().copied());
+        }
+    };
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            let local_only =
+                op.opcode != OpCode::Copy && opcode_has_local_only_operands_table(op.opcode);
+            if transparent(op) || local_only {
+                continue;
+            }
+            let safe_read = op.opcode == OpCode::Index && op.operands.get(1).is_some_and(index);
+            let safe_store = op.opcode == OpCode::StoreIndex
+                && op.operands.get(1).is_some_and(index)
+                && op.operands.get(2).is_some_and(inline);
+            let safe_len = op.opcode == OpCode::Bool || tir_op_original_kind(op) == Some("len");
+            for (position, &value) in op.operands.iter().enumerate() {
+                if position == 0 && (safe_read || safe_store || safe_len) {
+                    continue;
+                }
+                // Exact integer counts cannot call into Python. Repetition
+                // preserves the source's length, inline values and ownership.
+                if op.opcode == OpCode::Mul
+                    && op.operands.len() == 2
+                    && exact_count(&op.operands[1 - position])
+                {
+                    continue;
+                }
+                invalidate(value);
+            }
+        }
+        // Returning, capturing or passing an alias outside this function ends
+        // a function-wide promise. No guessed callee purity implies noncapture.
+        block.terminator.for_each_direct_value(&mut invalidate);
+    }
+    for (&result, source) in &repeat_sources {
+        if invalid.contains(source) {
+            invalid.insert(result);
+        }
+    }
+    aliases
+        .into_iter()
+        .filter_map(|(value, owners)| {
+            (!owners.is_empty()
+                && !foreign.contains(&value)
+                && owners
+                    .iter()
+                    .all(|owner| flat_roots.contains(owner) && !invalid.contains(owner)))
+            .then(|| (value, flat_list_int_storage_fact()))
+        })
+        .collect()
 }
 
 fn tir_op_original_kind(op: &TirOp) -> Option<&str> {
@@ -1213,7 +1371,6 @@ pub(super) fn simple_op_produces_non_scalar_value(kind: &str) -> bool {
             | "list_int_new"
             | "list_new"
             | "lock_new"
-            | "memoryview_new"
             | "missing"
             | "module_new"
             | "object_new"
@@ -1243,40 +1400,6 @@ pub(super) fn alias_source_name(op: &OpIR) -> Option<&str> {
             });
             source
         }
-        _ => None,
-    }
-}
-
-/// The container [`TirType`] produced by a SimpleIR container-constructor op
-/// kind, or `None` for any non-constructor kind.
-///
-/// These are the frontend/native container constructors that
-/// [`ssa::kind_to_opcode`](crate::tir::ssa) lifts to the `OpCode::Copy`
-/// passthrough (no dedicated opcode); see [`ScalarRepresentationPlan::
-/// seed_container_constructor_facts`] for why the plan must override the
-/// resulting element-aliased type with the true container kind. Element/key
-/// types are intentionally `DynBox` and tuples are unknown-arity: the plan's
-/// container facts drive lane/dispatch selection, which needs only the kind.
-pub(super) fn container_constructor_result_ty(kind: &str) -> Option<TirType> {
-    let dynbox = || Box::new(TirType::DynBox);
-    match kind {
-        // List builders (variadic elements, typed-int list, runtime fill, range
-        // materialization, `.copy()`) — all produce `list`; the element type is
-        // not tracked here. NOTE: `list_index_range` is deliberately absent — it
-        // is `list.index(value, start, end)`, which returns the int index, not a
-        // list (frontend `type_hint="int"`).
-        "list_new" | "list_int_new" | "list_fill_new" | "list_from_range" | "list_copy" => {
-            Some(TirType::List(dynbox()))
-        }
-        // Dict builders. Keys/values not tracked here.
-        "dict_new" | "dict_from_obj" => Some(TirType::Dict(dynbox(), dynbox())),
-        // Set / frozenset builders. molt has no distinct frozenset container
-        // kind; both probe through the shared set hash layout, so both type
-        // `Set` for dispatch (`molt_set_contains` handles set + frozenset).
-        "set_new" | "frozenset_new" => Some(TirType::Set(dynbox())),
-        // Tuple builders. The element types/arity are not needed for container
-        // dispatch, so an unknown-arity tuple is the canonical "is a tuple" fact.
-        "tuple_new" | "tuple_from_list" => Some(TirType::Tuple(Vec::new())),
         _ => None,
     }
 }

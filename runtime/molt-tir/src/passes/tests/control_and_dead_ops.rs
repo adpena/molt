@@ -168,6 +168,7 @@ fn direct_raise_edge_canonicalization_removes_duplicate_handler_edges() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        parameter_custody: Vec::new(),
         execution_context: Default::default(),
         ops: vec![
             OpIR {
@@ -235,6 +236,7 @@ fn dead_op_elim_keeps_copy_var_when_output_is_consumed() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
             ops: vec![
                 OpIR {
@@ -276,6 +278,7 @@ fn dead_op_elim_counts_copy_var_source_as_consumed_input() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
             ops: vec![
                 make_const_int("_v0", 40),
@@ -318,6 +321,7 @@ fn dead_op_elim_ignores_args_based_copy_var_metadata_var() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
             ops: vec![
                 make_const_int("_source", 40),
@@ -365,6 +369,7 @@ fn dead_op_elim_keeps_unused_potentially_throwing_index() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
             ops: vec![
                 OpIR {
@@ -399,6 +404,7 @@ fn dead_op_elim_preserves_observable_module_lookup_chain() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
             ops: vec![
                 OpIR {
@@ -455,6 +461,7 @@ fn dead_op_elim_keeps_unused_untyped_arithmetic() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
             ops: vec![
                 make_arith("add", &["left", "right"], "_unused"),
@@ -486,6 +493,7 @@ fn dead_op_elim_keeps_transport_hinted_unknown_arithmetic() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
             ops: vec![add, make_op("ret_void")],
         }],
@@ -512,6 +520,7 @@ fn dead_op_elim_removes_unused_typed_param_arithmetic_without_transport_hints() 
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
             ops: vec![
                 make_arith("add", &["left", "right"], "_unused"),
@@ -544,6 +553,7 @@ fn dead_op_elim_removes_unused_typed_const_arithmetic_chain() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            parameter_custody: Vec::new(),
             execution_context: Default::default(),
             ops: vec![
                 make_const_int("_v0", 40),
@@ -567,3 +577,48 @@ fn dead_op_elim_removes_unused_typed_const_arithmetic_chain() {
 }
 
 // --- RC coalescing tests ---
+
+#[test]
+fn runtime_guards_keep_profile_events_and_elide_only_nonthrowing_observation() {
+    for kind in ["guard_tag", "guard_type"] {
+        let check = || OpIR {
+            kind: "check_exception".into(),
+            value: Some(100),
+            ..OpIR::default()
+        };
+        let mut ir = SimpleIR {
+            functions: vec![manifest_func(vec![
+                check(),
+                make_const_int("source", 7),
+                make_const_int("tag", 5),
+                OpIR {
+                    kind: kind.into(),
+                    args: Some(vec!["source".into(), "tag".into()]),
+                    out: Some("unused".into()),
+                    ..OpIR::default()
+                },
+                check(),
+                make_op("ret_void"),
+                OpIR {
+                    kind: "label".into(),
+                    value: Some(100),
+                    ..OpIR::default()
+                },
+                make_op("ret_void"),
+            ])],
+            profile: None,
+        };
+        eliminate_dead_ops(&mut ir);
+        elide_safe_exception_checks(&mut ir.functions[0]);
+        let ops = &ir.functions[0].ops;
+        assert!(
+            ops.iter().any(|op| op.kind == kind),
+            "unused result still validates: {kind}"
+        );
+        assert_eq!(
+            ops.iter().filter(|op| op.kind == "check_exception").count(),
+            1,
+            "a valid inline tag and source cannot raise on mismatch: {kind}"
+        );
+    }
+}

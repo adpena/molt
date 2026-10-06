@@ -1,25 +1,11 @@
-# 90-Day Roadmap
+# Near-Term Roadmap
 
-This document is the rolling execution slice derived from
-[ROADMAP.md](../ROADMAP.md). It is not a competing current-state document; for
-current support, use [spec/STATUS.md](spec/STATUS.md).
+[ROADMAP.md: Current Priorities](../ROADMAP.md#current-priorities) owns near-term
+sequencing toward v1.0. Work follows complete user outcomes, dependencies, and
+measured correctness and performance blockers; this page does not assign
+calendar deadlines or maintain a second backlog.
 
-## 0-30 Days
-
-- Land the documentation architecture rewrite and docs enforcement gates.
-- Tighten the validation loop around generated compatibility and benchmark
-  summaries.
-- Close high-value correctness and parity regressions affecting native and WASM.
-
-## 30-60 Days
-
-- Push more stdlib behavior into Rust intrinsics and remove remaining Python-only
-  semantic duplication.
-- Harden daemon, CLI, and harness workflows for multi-agent development.
-- Improve benchmark coverage and reduce the distance to the performance target.
-
-## 60-90 Days
-
-- Expand compatibility coverage where current contracts are already stable.
-- Improve same-contract proof between native and WASM.
-- Tighten release-facing proof bundles for standalone binaries and `libmolt`.
+For implemented behavior and the limits of support claims, use
+[STATUS.md](spec/STATUS.md) and its generated compatibility indexes. The
+[release authority](../packaging/PACKAGING.md) and
+[performance authority](../tools/PERF_AUTHORITY.md) define acceptance.

@@ -485,7 +485,7 @@ pub fn index_bigint_from_obj(
 unsafe extern "C" {
     fn __molt_math_call_callable0(call_bits: u64) -> u64;
     fn __molt_math_call_callable2(call_bits: u64, arg0: u64, arg1: u64) -> u64;
-    fn __molt_math_attr_lookup_ptr_allow_missing(ptr: *mut u8, name_bits: u64) -> u64;
+    fn __molt_math_lookup_special_method(ptr: *mut u8, name_bits: u64, out: *mut u64) -> i32;
     fn __molt_math_intern_static_name(key_ptr: *const u8, key_len: usize) -> u64;
     fn __molt_math_class_name_for_error(
         type_bits: u64,
@@ -511,13 +511,10 @@ pub fn call_callable2(_py: &PyToken, call_bits: u64, arg0: u64, arg1: u64) -> u6
 ///
 /// `ptr` must refer to a live pointer-backed Molt object for the duration of
 /// this call.
-pub unsafe fn attr_lookup_ptr_allow_missing(
-    _py: &PyToken,
-    ptr: *mut u8,
-    name_bits: u64,
-) -> Option<u64> {
-    let result = unsafe { __molt_math_attr_lookup_ptr_allow_missing(ptr, name_bits) };
-    if result == 0 { None } else { Some(result) }
+pub unsafe fn lookup_special_method(_py: &PyToken, ptr: *mut u8, name_bits: u64) -> Option<u64> {
+    let mut result = 0;
+    let present = unsafe { __molt_math_lookup_special_method(ptr, name_bits, &mut result) };
+    (present != 0).then_some(result)
 }
 
 pub fn intern_static_name(_py: &PyToken, key: &[u8]) -> u64 {

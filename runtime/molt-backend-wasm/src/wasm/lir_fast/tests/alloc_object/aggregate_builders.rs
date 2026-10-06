@@ -8,9 +8,11 @@ fn aggregate_builders_stay_lir_fast_runtime_calls() {
             OpCode::BuildList,
             3,
             vec![
-                ("list_builder_new", 1),
-                ("list_builder_append", 3),
-                ("list_builder_finish", 1),
+                ("scratch_alloc", 1),
+                ("list_from_values", 1),
+                ("scratch_free", 1),
+                ("list_builder_new", 0),
+                ("list_builder_append", 0),
             ],
         ),
         (
@@ -18,9 +20,21 @@ fn aggregate_builders_stay_lir_fast_runtime_calls() {
             OpCode::BuildTuple,
             2,
             vec![
-                ("list_builder_new", 1),
-                ("list_builder_append", 2),
-                ("tuple_builder_finish", 1),
+                ("scratch_alloc", 1),
+                ("tuple_from_values", 1),
+                ("scratch_free", 1),
+                ("list_builder_new", 0),
+                ("list_builder_append", 0),
+            ],
+        ),
+        (
+            "build_empty_tuple",
+            OpCode::BuildTuple,
+            0,
+            vec![
+                ("tuple_from_values", 1),
+                ("scratch_alloc", 0),
+                ("scratch_free", 0),
             ],
         ),
         (

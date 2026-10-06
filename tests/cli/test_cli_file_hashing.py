@@ -41,23 +41,19 @@ def test_source_fingerprint_files_are_deterministic_and_filtered(
     assert metadata[1] == 2
 
 
-def test_content_change_time_observes_same_size_timestamp_restored_mutation(
+def test_content_change_time_path_and_descriptor_agree_for_one_generation(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "content.bin"
     path.write_bytes(b"before")
-    before_stat = path.stat()
-    before = file_hashing.content_change_time_ns(path, before_stat)
-
-    with path.open("r+b", buffering=0) as handle:
-        handle.write(b"after!")
-        os.fsync(handle.fileno())
-    os.utime(path, ns=(before_stat.st_atime_ns, before_stat.st_mtime_ns))
-    after = file_hashing.content_change_time_ns(path, path.stat())
-
-    assert before is not None
-    assert after is not None
-    assert after != before
+    metadata = path.stat()
+    with path.open("rb") as handle:
+        path_change = file_hashing.content_change_time_ns(path, metadata)
+        handle_change = file_hashing.content_change_time_ns_from_fd(
+            handle.fileno(), os.fstat(handle.fileno())
+        )
+    assert path_change is not None
+    assert handle_change == path_change
 
 
 def test_content_change_time_has_one_cross_module_authority() -> None:
@@ -70,6 +66,6 @@ def test_windows_change_time_fails_closed_when_api_is_unavailable(
 ) -> None:
     path = tmp_path / "content.bin"
     path.write_bytes(b"content")
-    monkeypatch.setattr(file_hashing, "_windows_change_time_api", lambda: None)
+    monkeypatch.setattr(file_hashing, "_windows_file_api", lambda: None)
 
     assert file_hashing._windows_change_time_ns(path) is None

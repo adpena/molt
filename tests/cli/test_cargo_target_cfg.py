@@ -11,6 +11,44 @@ from molt.cli.cargo_target_cfg import (
     parse_rustc_target_metadata,
     select_cargo_target_flags,
 )
+from tests.rustc_test_support import rustc_target_metadata_output
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        (
+            "x86_64-unknown-linux-gnu",
+            ("___", "lib___.rlib", "lib___.so", "lib___.so", "lib___.a", "lib___.so"),
+        ),
+        (
+            "aarch64-apple-darwin",
+            (
+                "___",
+                "lib___.rlib",
+                "lib___.dylib",
+                "lib___.dylib",
+                "lib___.a",
+                "lib___.dylib",
+            ),
+        ),
+        (
+            "x86_64-pc-windows-msvc",
+            ("___.exe", "lib___.rlib", "___.dll", "___.dll", "___.lib", "___.dll"),
+        ),
+        (
+            "wasm32-wasip1",
+            ("___.wasm", "lib___.rlib", None, "___.wasm", "lib___.a", None),
+        ),
+    ],
+)
+def test_target_metadata_retains_platform_filenames_and_unsupported_kinds(
+    tmp_path, target, expected
+):
+    stdout, stderr = rustc_target_metadata_output(tmp_path, target=target)
+    metadata = parse_rustc_target_metadata(stdout, stderr)
+    assert tuple(name for _kind, name in metadata.crate_filenames) == expected
+    assert metadata.sysroot == tmp_path
 
 
 @pytest.mark.parametrize("target", [None, "wasm32-wasip1"])

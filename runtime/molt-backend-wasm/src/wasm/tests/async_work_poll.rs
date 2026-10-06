@@ -39,7 +39,12 @@ fn compile_ir(ir: SimpleIR, native_eh_enabled: bool) -> Vec<u8> {
         wasm_profile: WasmProfile::Auto,
         ..WasmCompileOptions::default()
     })
-    .emit_wasm_module(ir, BTreeMap::new(), trampoline_analysis)
+    .emit_wasm_module(
+        &ir,
+        BTreeMap::new(),
+        trampoline_analysis,
+        crate::wasm_plan::WasmStageAudit::from_environment(),
+    )
     .wasm
 }
 
