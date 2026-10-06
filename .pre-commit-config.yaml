@@ -8,7 +8,7 @@ repos:
         files: '^(?:logs/|tmp/|\.claude/settings\.local\.json$|bench/(?:results|scoreboard)/.*\.log$|bench/results/.*/memory_guard/)'
       - id: proof-plan-freshness
         name: generated proof-plan freshness
-        entry: uv run python tools/gen_proof_plan.py --check
+        entry: uv run python tools/gen_proof_plan.py --check --from-index
         language: system
         pass_filenames: false
         always_run: true

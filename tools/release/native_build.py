@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from molt.temporary_artifacts import OwnedTemporaryDirectory
+
 import argparse
 from collections.abc import Mapping, Sequence
 import os
@@ -589,10 +591,10 @@ def produce_native_build(
     snapshot = source_snapshot(repo_root, source_sha)
     scratch = select_build_root(build_root, os.environ)
     with (
-        tempfile.TemporaryDirectory(
+        OwnedTemporaryDirectory(
             prefix="molt-release-native-", dir=scratch
         ) as temporary,
-        tempfile.TemporaryDirectory(
+        OwnedTemporaryDirectory(
             prefix=".native-publish-", dir=output.parent
         ) as publication,
     ):

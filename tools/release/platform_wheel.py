@@ -14,12 +14,13 @@ explicit ``MOLT_SOURCE_ROOT`` source checkout.
 
 from __future__ import annotations
 
+from molt.temporary_artifacts import OwnedTemporaryDirectory
+
 import base64
 import csv
 import io
 from pathlib import Path, PurePosixPath
 import shutil
-import tempfile
 from typing import Callable
 import zipfile
 
@@ -65,7 +66,7 @@ def write_platform_wheel(
     dist_info = f"{distribution}.dist-info"
     data = PurePosixPath(f"{distribution}.data", "data", *PACKAGED_DISTRIBUTION_PATH)
     filename = f"{distribution}-py3-none-{platform_tag}.whl"
-    with tempfile.TemporaryDirectory(prefix="molt-platform-wheel-") as temporary:
+    with OwnedTemporaryDirectory(prefix="molt-platform-wheel-") as temporary:
         stage = Path(temporary) / "wheel"
         stage.mkdir()
         with zipfile.ZipFile(pure_wheel) as source:

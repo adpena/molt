@@ -33,7 +33,11 @@ import time
 
 import pytest
 
-from tools.generator_io import generated_file_matches, write_generated_text
+from tools.generator_io import (
+    generated_file_matches,
+    write_generated_text,
+    write_generated_texts,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOL = ROOT / "tools" / "check_generator_manifest.py"
@@ -94,6 +98,51 @@ def test_generated_io_is_checkout_newline_invariant(tmp_path: Path) -> None:
 
     write_generated_text(output, "first\r\nsecond\r\n")
     assert output.read_bytes() == b"first\nsecond\n"
+
+
+def test_generated_io_rejects_indirect_destinations(tmp_path: Path) -> None:
+    sentinel = tmp_path / "operator-file"
+    sentinel.write_bytes(b"preserve")
+    indirect = tmp_path / "generated.py"
+    try:
+        indirect.symlink_to(sentinel)
+    except OSError as exc:
+        pytest.skip(f"host cannot create the required symlink oracle: {exc}")
+    for publish in (
+        lambda: write_generated_text(indirect, "replacement"),
+        lambda: write_generated_texts(
+            {tmp_path / "first": "first", indirect: "replacement"}
+        ),
+    ):
+        with pytest.raises(ValueError, match="link|indirect"):
+            publish()
+        assert sentinel.read_bytes() == b"preserve"
+        assert not (tmp_path / "first").exists()
+
+
+def test_generated_family_rolls_back_a_partial_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import artifact_publication
+
+    first, second = tmp_path / "a" / "one", tmp_path / "b" / "two"
+    for path in (first, second):
+        path.parent.mkdir()
+        path.write_bytes(b"old")
+    original = artifact_publication._durable_replace
+
+    def fail_second(staged: Path, final: Path) -> None:
+        if final == second:
+            assert first.read_bytes() == b"new-one\n"
+            raise OSError("injected second-output publication failure")
+        original(staged, final)
+
+    monkeypatch.setattr(artifact_publication, "_durable_replace", fail_second)
+    with pytest.raises(OSError, match="second-output"):
+        write_generated_texts({first: "new-one\r\n", second: "new-two\r\n"})
+    assert first.read_bytes() == second.read_bytes() == b"old"
+    assert not list(tmp_path.rglob("*.tmp"))
+    assert not list(tmp_path.rglob(".molt-artifact-publication-*.json"))
 
 
 def test_manifest_text_generators_share_canonical_output_io() -> None:

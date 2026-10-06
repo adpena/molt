@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from molt.temporary_artifacts import OwnedTemporaryDirectory
+
 import argparse
 import gzip
 import json
@@ -11,7 +13,6 @@ from pathlib import Path
 import shutil
 import tarfile
 from pathlib import PurePosixPath
-import tempfile
 from typing import Any, Callable
 
 from .archive import ArchivePolicy, write_reproducible_zip
@@ -265,7 +266,7 @@ def build_bundle(
     if platform not in {"macos", "linux", "windows"}:
         raise ValueError(f"unsupported release platform: {platform}")
 
-    with tempfile.TemporaryDirectory() as temporary:
+    with OwnedTemporaryDirectory() as temporary:
         root_dir = Path(temporary) / f"{kind}-{version}"
         root_dir.mkdir(parents=True)
         if kind == "molt":

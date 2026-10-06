@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from molt.temporary_artifacts import OwnedTemporaryDirectory
+
 import argparse
 import hashlib
 import json
@@ -10,7 +12,6 @@ import os
 from pathlib import Path
 import shutil
 import tarfile
-import tempfile
 import time
 from typing import Any
 
@@ -758,7 +759,7 @@ def verify(candidate_dir: Path, receipt: Path) -> dict[str, object]:
         raise ValueError("candidate must contain exactly one Molt bundle")
     bundle = candidate_dir / str(molt_records[0]["filename"])
 
-    with tempfile.TemporaryDirectory(prefix="molt release consumer ") as temporary:
+    with OwnedTemporaryDirectory(prefix="molt release consumer ") as temporary:
         root = Path(temporary).resolve()
         extracted = root / "bundle"
         _extract(bundle, extracted)

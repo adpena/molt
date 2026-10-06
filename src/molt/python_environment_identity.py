@@ -151,6 +151,7 @@ def python_capture_authority_paths(
         "dx",
         "environment_registry",
         "_environment_registry",
+        "tool_releases",
         "path_custody",
         "python_environment_identity",
         "python_environment_location",

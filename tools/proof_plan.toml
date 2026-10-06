@@ -203,6 +203,9 @@ authority_inputs = [
   "tools/proof_plan.toml",
   "tools/gen_proof_plan.py",
   "tools/generator_io.py",
+  "tools/release/git_source_snapshot.py",
+  "src/molt/compiler_distribution.py",
+  "src/molt/verified_subset.py",
   "tools/toolchain_probe.py",
   "tools/proof_queue_pkg/command_admission.py",
   "tools/proof_queue_pkg/cli.py",
@@ -2653,7 +2656,7 @@ resource_class = "network-audit"
 timeout_seconds = 900
 cache_domain = "uv"
 dependencies = []
-argv = ["uv", "run", "pip-audit", "--ignore-vuln", "CVE-2025-69872"]
+argv = ["uv", "run", "pip-audit"]
 toolchains = ["python", "uv"]
 
 # Owner rule: every pin tracks its upstream's newest stable release. The

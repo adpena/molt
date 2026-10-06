@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from molt.temporary_artifacts import OwnedTemporaryDirectory
+
 import argparse
 import hashlib
 import json
@@ -10,7 +12,6 @@ import math
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
-import tempfile
 import tomllib
 from typing import Any
 
@@ -256,7 +257,7 @@ def plan_release(
 ) -> dict[str, str]:
     source = resolve_source(requested_version, source_sha)
     identity = file_record(release_exit_archive, kind="release-exit-evidence")
-    with tempfile.TemporaryDirectory(prefix=".release-plan-") as temporary:
+    with OwnedTemporaryDirectory(prefix=".release-plan-") as temporary:
         manifest = release_evidence.extract_release_exit(
             archive=release_exit_archive,
             source_sha=source["source_sha"],
@@ -390,7 +391,7 @@ def assemble_candidate(
         )
     output.mkdir(parents=True, exist_ok=False)
     artifacts: list[dict[str, object]] = []
-    with tempfile.TemporaryDirectory() as temporary:
+    with OwnedTemporaryDirectory() as temporary:
         repeat_root = Path(temporary)
         for kind in ("molt", "molt-worker"):
             filename = target.artifact_filename(kind, version)
@@ -1168,7 +1169,7 @@ def assemble_index(
     if int(source["source_date_epoch"]) != source_date_epoch:
         raise ValueError("release epoch differs from tagged source")
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
+    with OwnedTemporaryDirectory(
         prefix=".release-index-", dir=output.parent
     ) as temporary:
         stage = Path(temporary) / "publish"
@@ -1268,7 +1269,7 @@ def _stage_release_evidence(
             _copy_verified_release_file(path, output / path.name, record)
             phase_record[key] = record
     # Admission uses the exact archived/staged bytes, including H0 when required.
-    with tempfile.TemporaryDirectory(
+    with OwnedTemporaryDirectory(
         prefix=".release-admission-", dir=output.parent
     ) as temporary:
         release_evidence.extract_release_exit(

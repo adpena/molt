@@ -1,21 +1,27 @@
-"""Commit-authoritative Git source snapshots for release build consumers."""
+"""Exact immutable Git source snapshots for release and staged consumers."""
 
 from __future__ import annotations
 
+from molt.temporary_artifacts import OwnedTemporaryDirectory
+
 from dataclasses import dataclass
+from contextlib import contextmanager
 import hashlib
+import os
 from pathlib import Path, PurePosixPath
 import subprocess
 import tempfile
-from typing import Callable, Mapping, Sequence, TypeVar
+from typing import Callable, Iterator, Mapping, Sequence, TypeVar
 
 from molt.file_publication import (
     durable_publish_directory_exclusive,
     durable_remove_path,
+    canonical_file_leaf,
     resolve_owned_path,
 )
 from molt.portable_paths import portable_path_identity, portable_relative_path
 from molt.compiler_distribution import verify_source_inventory
+from molt.toolchain_identity import capture_stable_regular_file
 from tools.git_identity import require_git_object_id
 from tools.command_execution import CommandExecutor
 
@@ -106,6 +112,37 @@ class GitSourceSnapshot:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class GitIndexSourceSnapshot:
+    """Git's semantic staged tree, without inventing a source commit."""
+
+    tree_sha: str
+    object_format: str
+    index_path: Path
+    files: tuple[GitSourceFile, ...]
+
+    def verify(self, root: Path, *, verify_modes: bool | None = None) -> Path:
+        return verify_source_inventory(
+            root,
+            tuple(item.as_record() for item in self.files),
+            verify_modes=verify_modes,
+        )
+
+    def verify_index(
+        self, *, repo_root: Path, git: Path, environment: Mapping[str, str]
+    ) -> None:
+        if (
+            _captured_index_tree(
+                repo_root,
+                git=git,
+                environment=environment,
+                expected_index=self.index_path,
+            )
+            != self.tree_sha
+        ):
+            raise ValueError("Git staged source changed during projection")
+
+
 def _run_git_text(
     git: Path,
     repo_root: Path,
@@ -119,14 +156,17 @@ def _run_git_text(
             env=immutable_git_environment(environment),
             check=True,
             capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="strict",
             timeout=_CAPTURE_TIMEOUT_SECONDS,
         )
     except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
         raise ValueError(f"Git source snapshot query failed: {arguments!r}") from exc
-    return completed.stdout.strip()
+    # Git terminates these queries with exactly one LF. Filesystem paths may
+    # themselves end in whitespace or contain CR/LF; text mode and strip() would
+    # silently select a different index or repository.
+    output = completed.stdout
+    if not output.endswith(b"\n"):
+        raise ValueError("Git source snapshot query has invalid framing")
+    return output[:-1].decode("utf-8", errors="strict")
 
 
 def _map_git_blobs(
@@ -139,7 +179,7 @@ def _map_git_blobs(
     # Spool the batch once: bounded subprocess lifetime, no pipe deadlock, and
     # no whole-source bytes retained in memory while constructing the inventory.
     request = "".join(f"{row[2]}\n" for row in rows).encode("ascii")
-    with tempfile.TemporaryDirectory(prefix="molt-git-blobs-") as temporary:
+    with OwnedTemporaryDirectory(prefix="molt-git-blobs-") as temporary:
         spool = Path(temporary) / "blobs"
         _COMMANDS.run(
             [str(git), "cat-file", "--batch"],
@@ -169,6 +209,18 @@ def _map_git_blobs(
                 if len(data) != declared_size or output.read(1) != b"\n":
                     raise ValueError(
                         f"Git source snapshot blob framing is invalid: {relative}"
+                    )
+                algorithm = {40: "sha1", 64: "sha256"}.get(len(blob_oid))
+                if algorithm is None:
+                    raise ValueError(
+                        f"Git source snapshot blob ID is invalid: {relative}"
+                    )
+                object_hash = hashlib.new(algorithm)
+                object_hash.update(f"blob {declared_size}\0".encode("ascii"))
+                object_hash.update(data)
+                if object_hash.hexdigest() != blob_oid:
+                    raise ValueError(
+                        f"Git source snapshot blob content does not match its object ID: {relative}"
                     )
                 results.append(
                     consume(
@@ -202,7 +254,7 @@ def _hash_git_blobs(
 
 
 def read_git_source_file(
-    snapshot: GitSourceSnapshot,
+    snapshot: GitSourceSnapshot | GitIndexSourceSnapshot,
     relative: str,
     *,
     repo_root: Path,
@@ -288,6 +340,42 @@ def capture_git_source_snapshot(
         ),
         label="Git source snapshot tree",
     )
+    normalized_pathspecs = tuple(
+        portable_relative_path(path).as_posix() for path in pathspecs
+    )
+    files = _capture_git_tree_files(
+        resolved_repo,
+        tree_sha,
+        object_format=object_format,
+        git=git,
+        environment=environment,
+        pathspecs=normalized_pathspecs,
+        required_markers=required_markers,
+        max_files=max_files,
+        max_bytes=max_bytes,
+    )
+    return GitSourceSnapshot(
+        source_sha=source_sha,
+        tree_sha=tree_sha,
+        object_format=object_format,
+        pathspecs=normalized_pathspecs,
+        files=files,
+    )
+
+
+def _capture_git_tree_files(
+    repo_root: Path,
+    tree_sha: str,
+    *,
+    object_format: str,
+    git: Path,
+    environment: Mapping[str, str],
+    pathspecs: tuple[str, ...],
+    required_markers: frozenset[str],
+    max_files: int,
+    max_bytes: int,
+) -> tuple[GitSourceFile, ...]:
+    expected_length = _OBJECT_FORMAT_LENGTHS[object_format]
     command = [
         str(git),
         "ls-tree",
@@ -295,17 +383,14 @@ def capture_git_source_snapshot(
         "-z",
         "-l",
         "--full-tree",
-        source_sha,
+        tree_sha,
     ]
-    normalized_pathspecs = tuple(
-        portable_relative_path(path).as_posix() for path in pathspecs
-    )
-    if normalized_pathspecs:
-        command.extend(("--", *normalized_pathspecs))
+    if pathspecs:
+        command.extend(("--", *pathspecs))
     try:
         listing = _COMMANDS.run(
             command,
-            cwd=resolved_repo,
+            cwd=repo_root,
             env=immutable_git_environment(environment),
             check=True,
             capture_output=True,
@@ -361,18 +446,164 @@ def capture_git_source_snapshot(
             "Git source snapshot is missing required markers: "
             + ", ".join(sorted(missing))
         )
-    files = _hash_git_blobs(git, resolved_repo, environment, rows)
-    return GitSourceSnapshot(
-        source_sha=source_sha,
+    return _hash_git_blobs(git, repo_root, environment, rows)
+
+
+def _selected_index_path(
+    repo_root: Path, *, git: Path, environment: Mapping[str, str]
+) -> Path:
+    resolved_repo = repo_root.resolve(strict=True)
+    actual_root = Path(
+        _run_git_text(git, resolved_repo, environment, "rev-parse", "--show-toplevel")
+    )
+    if actual_root.resolve(strict=True) != resolved_repo:
+        raise ValueError("Git staged source requires the repository root")
+    index_path = Path(
+        _run_git_text(
+            git, resolved_repo, environment, "rev-parse", "--git-path", "index"
+        )
+    )
+    if not index_path.is_absolute():
+        index_path = resolved_repo / index_path
+    return canonical_file_leaf(index_path, create_parent=False, role="Git staged index")
+
+
+@contextmanager
+def fenced_git_index(
+    snapshot: GitIndexSourceSnapshot,
+    *,
+    repo_root: Path,
+    git: Path,
+    environment: Mapping[str, str],
+) -> Iterator[None]:
+    """Hold Git's selected index lock during validated projection publication.
+
+    Cooperative Git writers cannot change the staged generation during this
+    scope. The caller's index and any pre-existing lock remain untouched.
+    """
+    index = _selected_index_path(repo_root, git=git, environment=environment)
+    if index != snapshot.index_path:
+        raise ValueError("Git staged index selection changed during projection")
+    lock = index.with_name(index.name + ".lock")
+    descriptor = os.open(
+        lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600
+    )
+    held = os.fstat(descriptor)
+    primary: BaseException | None = None
+    try:
+        snapshot.verify_index(repo_root=repo_root, git=git, environment=environment)
+        yield
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        try:
+            named = lock.lstat()
+            if (named.st_dev, named.st_ino) != (held.st_dev, held.st_ino):
+                raise ValueError(f"Git staged index lock changed ownership: {lock}")
+            lock.unlink()
+        except BaseException as cleanup:
+            if primary is None:
+                raise
+            BaseException.add_note(primary, f"Git index lock cleanup failed: {cleanup}")
+        finally:
+            # Keep the opened inode alive through the ownership check/removal;
+            # closing first permits inode reuse before the named-leaf fence.
+            os.close(descriptor)
+
+
+def _captured_index_tree(
+    repo_root: Path,
+    *,
+    git: Path,
+    environment: Mapping[str, str],
+    expected_index: Path | None = None,
+) -> str:
+    """Let Git interpret a private exact copy of its selected index.
+
+    Git owns intent-to-add, split/sparse index and conflict semantics. Writing
+    a tree from the copied index can create immutable objects and update the
+    private cache-tree extension. Private plumbing admits no repository hooks
+    or filesystem-monitor commands and does not change the caller's index/refs.
+    """
+    resolved_repo = repo_root.resolve(strict=True)
+    index_path = _selected_index_path(resolved_repo, git=git, environment=environment)
+    if expected_index is not None and index_path != expected_index:
+        raise ValueError("Git staged index selection changed during projection")
+    _identity, index_bytes = capture_stable_regular_file(
+        index_path,
+        label="Git staged index",
+        max_bytes=64 * 1024 * 1024,
+    )
+    with OwnedTemporaryDirectory(prefix="molt-index-") as temporary:
+        copied_index = Path(temporary) / "index"
+        with copied_index.open("xb") as output:
+            output.write(index_bytes)
+        empty_hooks = Path(temporary) / "hooks"
+        empty_hooks.mkdir()
+        selected_environment = {
+            **{
+                key: value
+                for key, value in environment.items()
+                if key.upper() != "GIT_INDEX_FILE"
+            },
+            "GIT_INDEX_FILE": str(copied_index),
+        }
+        return require_git_object_id(
+            _run_git_text(
+                git,
+                resolved_repo,
+                selected_environment,
+                "-c",
+                f"core.hooksPath={empty_hooks}",
+                "-c",
+                "core.fsmonitor=",
+                "write-tree",
+            ),
+            label="Git staged source tree",
+        )
+
+
+def capture_git_index_source_snapshot(
+    repo_root: Path,
+    *,
+    git: Path,
+    environment: Mapping[str, str],
+    required_markers: frozenset[str] = frozenset(),
+    max_files: int,
+    max_bytes: int,
+) -> GitIndexSourceSnapshot:
+    index_path = _selected_index_path(repo_root, git=git, environment=environment)
+    tree_sha = _captured_index_tree(
+        repo_root, git=git, environment=environment, expected_index=index_path
+    )
+    object_format = _run_git_text(
+        git, repo_root, environment, "rev-parse", "--show-object-format"
+    )
+    expected_length = _OBJECT_FORMAT_LENGTHS.get(object_format)
+    if expected_length is None or len(tree_sha) != expected_length:
+        raise ValueError("Git staged source tree does not match object format")
+    files = _capture_git_tree_files(
+        repo_root.resolve(strict=True),
+        tree_sha,
+        object_format=object_format,
+        git=git,
+        environment=environment,
+        pathspecs=(),
+        required_markers=required_markers,
+        max_files=max_files,
+        max_bytes=max_bytes,
+    )
+    return GitIndexSourceSnapshot(
         tree_sha=tree_sha,
         object_format=object_format,
-        pathspecs=normalized_pathspecs,
+        index_path=index_path,
         files=files,
     )
 
 
 def materialize_git_source_snapshot(
-    snapshot: GitSourceSnapshot,
+    snapshot: GitSourceSnapshot | GitIndexSourceSnapshot,
     destination: Path,
     *,
     repo_root: Path,

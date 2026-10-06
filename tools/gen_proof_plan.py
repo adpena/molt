@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 
 from proof_plan import DEFAULT_MANIFEST, ProofPlan, _authority_sha256
-from generator_io import generated_file_matches, write_generated_text
+from generator_io import generated_file_matches, write_generated_texts
 from molt.cargo_execution_policy import (
     PROOF_COMMAND_TIMEOUT_ENV,
     load_ci_cargo_policy,
@@ -19,6 +21,156 @@ from molt.cargo_execution_policy import (
 ROOT = Path(__file__).resolve().parents[1]
 JSON_OUTPUT = ROOT / ".github" / "proof-plan.generated.json"
 DOC_OUTPUT = ROOT / "docs" / "agent" / "PROOF_PLAN.generated.md"
+
+# The staged interpreter has no site imports or ambient import roots. Project
+# modules compile only their captured source, even if a staged cache or native
+# extension could otherwise take precedence over the matching .py file.
+_STAGED_SOURCE_BOOTSTRAP = """
+import importlib.machinery
+from pathlib import Path
+import sys
+_staged_root = Path(sys.argv[1]).resolve(strict=True)
+class _StagedSourceLoader(importlib.machinery.SourceFileLoader):
+    def get_code(self, fullname):
+        filename = self.get_filename(fullname)
+        return self.source_to_code(self.get_data(filename), filename)
+def _staged_source_hook(path):
+    try:
+        Path(path).resolve(strict=True).relative_to(_staged_root)
+    except (OSError, ValueError):
+        raise ImportError
+    return importlib.machinery.FileFinder(
+        path, (_StagedSourceLoader, importlib.machinery.SOURCE_SUFFIXES)
+    )
+sys.path_hooks.insert(0, _staged_source_hook)
+sys.path[:0] = [str(_staged_root / 'tools'), str(_staged_root / 'src'), str(_staged_root)]
+_staged_script = _staged_root / 'tools' / 'gen_proof_plan.py'
+sys.argv = [str(_staged_script), *sys.argv[2:]]
+__file__ = str(_staged_script)
+__spec__ = None
+exec(compile(_staged_script.read_bytes(), __file__, 'exec', dont_inherit=True), globals())
+"""
+
+
+def _index_projection(*, manifest: Path, check: bool) -> int:
+    from molt.compiler_distribution import (
+        MAX_SOURCE_BYTES,
+        MAX_SOURCE_FILES,
+        verify_source_inventory,
+    )
+    from molt.artifact_publication import is_publication_lock_file
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+    from molt.toolchain_identity import capture_stable_regular_file, resolve_executable
+    from tools.command_execution import CommandExecutor
+    from tools.release.git_source_snapshot import (
+        capture_git_index_source_snapshot,
+        fenced_git_index,
+        materialize_git_source_snapshot,
+    )
+
+    environment = dict(os.environ)
+    git = resolve_executable("git", environment=environment, label="staged source Git")
+    try:
+        relative_manifest = manifest.absolute().relative_to(ROOT)
+    except ValueError as exc:
+        raise ValueError(
+            "staged proof-plan manifest must be inside its repository"
+        ) from exc
+    snapshot = capture_git_index_source_snapshot(
+        ROOT,
+        git=git,
+        environment=environment,
+        required_markers=frozenset(
+            {"tools/gen_proof_plan.py", relative_manifest.as_posix()}
+        ),
+        max_files=MAX_SOURCE_FILES,
+        max_bytes=MAX_SOURCE_BYTES,
+    )
+    output_paths = (JSON_OUTPUT.relative_to(ROOT), DOC_OUTPUT.relative_to(ROOT))
+    commands = CommandExecutor.for_file(__file__)
+    with OwnedTemporaryDirectory(prefix="molt-staged-proof-") as temporary:
+        output_root = Path(temporary) / "projections"
+        staged_root = materialize_git_source_snapshot(
+            snapshot,
+            Path(temporary) / "source",
+            repo_root=ROOT,
+            git=git,
+            environment=environment,
+        )
+        argv = [
+            sys.executable,
+            "-I",
+            "-S",
+            "-B",
+            "-c",
+            _STAGED_SOURCE_BOOTSTRAP,
+            str(staged_root),
+            "--manifest",
+            str(staged_root / relative_manifest),
+        ]
+        if check:
+            argv.append("--check")
+        else:
+            argv.extend(("--output-root", str(output_root)))
+        completed = commands.run(
+            argv,
+            cwd=staged_root,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+        if completed.stdout:
+            print(completed.stdout, end="")
+        if completed.stderr:
+            print(completed.stderr, file=sys.stderr, end="")
+        if completed.returncode:
+            return completed.returncode
+        snapshot.verify(staged_root)
+        if check:
+            snapshot.verify_index(repo_root=ROOT, git=git, environment=environment)
+            return 0
+        # Output is separate from the captured source. Admit exactly the two
+        # projections and verified persistent metadata from their publication
+        # authority; every other file or source mutation rejects publication.
+        outputs = {}
+        records = []
+        for relative in output_paths:
+            identity, data = capture_stable_regular_file(
+                output_root / relative,
+                label="staged proof-plan output",
+                max_bytes=16 * 1024 * 1024,
+            )
+            outputs[relative] = data.decode("utf-8")
+            records.append(
+                {
+                    "path": relative.as_posix(),
+                    "mode": 0o100644,
+                    "size": identity.size,
+                    "sha256": identity.sha256,
+                }
+            )
+        for parent in {relative.parent for relative in output_paths}:
+            for path in (output_root / parent).iterdir():
+                if is_publication_lock_file(path):
+                    records.append(
+                        {
+                            "path": path.relative_to(output_root).as_posix(),
+                            "mode": 0o100644,
+                            "size": 0,
+                            "sha256": hashlib.sha256(b"").hexdigest(),
+                        }
+                    )
+        verify_source_inventory(output_root, tuple(records))
+        with fenced_git_index(
+            snapshot, repo_root=ROOT, git=git, environment=environment
+        ):
+            write_generated_texts(
+                {ROOT / relative: content for relative, content in outputs.items()}
+            )
+    return 0
 
 
 def _envelope_record(
@@ -170,6 +322,24 @@ def _markdown_projection(plan: ProofPlan) -> str:
         "",
         "> Generated by `tools/gen_proof_plan.py` from "
         "`tools/proof_plan.toml`; do not edit.",
+        "",
+        "## Generation and partial commits",
+        "",
+        "`uv run python tools/gen_proof_plan.py` projects the working source. "
+        "For a partial commit, stage the complete changed authority family, run "
+        "`uv run python tools/gen_proof_plan.py --from-index`, then stage both "
+        "generated outputs. The pre-commit freshness hook uses "
+        "`--check --from-index`.",
+        "",
+        "Index mode executes the captured staged generator with its staged "
+        "manifest, policy and source imports. It preserves unstaged work and "
+        "the caller's index; private Git plumbing disables repository hooks "
+        "and filesystem monitors. Generated outputs publish as one recoverable "
+        "family after the captured source is verified and the selected Git "
+        "index is revalidated under its exclusive lock. A competing index "
+        "writer, indirect output, source mutation or undeclared output rejects "
+        "publication. The lock excludes cooperative Git writers; it does not "
+        "establish kernel-level byte-use or process execution identity.",
         "",
         "## Authority compression",
         "",
@@ -392,31 +562,52 @@ def _markdown_projection(plan: ProofPlan) -> str:
     return "\n".join(lines)
 
 
-def _check_or_write(path: Path, content: str, *, check: bool) -> bool:
-    if check:
+def _check_projections(outputs: dict[Path, str], *, root: Path) -> bool:
+    ok = True
+    for path, content in outputs.items():
         if not generated_file_matches(path, content):
             print(
-                f"proof-plan projection stale: {path.relative_to(ROOT)}",
+                f"proof-plan projection stale: {path.relative_to(root)}",
                 file=sys.stderr,
             )
-            return False
-        return True
-    write_generated_text(path, content)
-    return True
+            ok = False
+    return ok
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
-    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
-    args = parser.parse_args(argv)
-    plan = ProofPlan.load(args.manifest)
-    ok = all(
-        (
-            _check_or_write(JSON_OUTPUT, _json_projection(plan), check=args.check),
-            _check_or_write(DOC_OUTPUT, _markdown_projection(plan), check=args.check),
-        )
+    parser.add_argument(
+        "--from-index",
+        action="store_true",
+        help="use the staged generator and its complete staged source inputs",
     )
+    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=ROOT,
+        help="publish the generated family separately from its source tree",
+    )
+    args = parser.parse_args(argv)
+    if args.from_index:
+        if args.output_root != ROOT:
+            parser.error("--from-index owns publication into its repository")
+        try:
+            return _index_projection(manifest=args.manifest, check=args.check)
+        except (OSError, UnicodeError, ValueError) as exc:
+            print(f"proof-plan staged projection rejected: {exc}", file=sys.stderr)
+            return 2
+    plan = ProofPlan.load(args.manifest)
+    outputs = {
+        args.output_root / JSON_OUTPUT.relative_to(ROOT): _json_projection(plan),
+        args.output_root / DOC_OUTPUT.relative_to(ROOT): _markdown_projection(plan),
+    }
+    if args.check:
+        ok = _check_projections(outputs, root=args.output_root)
+    else:
+        write_generated_texts(outputs)
+        ok = True
     if ok:
         mode = "verified" if args.check else "generated"
         print(

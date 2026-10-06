@@ -19,6 +19,8 @@ snapshot's Git identity, which the bundle must match.
 
 from __future__ import annotations
 
+from molt.temporary_artifacts import OwnedTemporaryDirectory
+
 import argparse
 from collections.abc import Iterator
 import contextlib
@@ -28,7 +30,6 @@ import os
 from pathlib import Path
 import shutil
 import sys
-import tempfile
 from typing import Any, Mapping, Sequence, get_args
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -174,7 +175,7 @@ def _publish_cell(
 
     # This tree remains private until the complete inventory is admitted.
     # Never remove a fixed scratch name that another producer might own.
-    with tempfile.TemporaryDirectory(prefix=".cell-", dir=output) as temporary:
+    with OwnedTemporaryDirectory(prefix=".cell-", dir=output) as temporary:
         staging = Path(temporary) / "members"
         staging.mkdir()
         files = sorted(
@@ -397,7 +398,7 @@ def produce_runtime_cells(
     if output.exists():
         raise FileExistsError(f"runtime cell destination already exists: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
+    with OwnedTemporaryDirectory(
         prefix=".runtime-cells-", dir=output.parent
     ) as temporary:
         stage = Path(temporary) / "publish"
@@ -438,7 +439,7 @@ def _populate_runtime_cells(
 
     snapshot = source_snapshot(repo_root, source_sha)
     output.mkdir(parents=True, exist_ok=False)
-    with tempfile.TemporaryDirectory(prefix="molt-runtime-cells-") as temporary:
+    with OwnedTemporaryDirectory(prefix="molt-runtime-cells-") as temporary:
         work = Path(temporary)
         env = source_environment()
         source_root = materialize_git_source_snapshot(
