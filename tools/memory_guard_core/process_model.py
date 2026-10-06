@@ -774,6 +774,24 @@ def sample_processes_linux_proc(
     return samples
 
 
+# ``kern.proc`` ``p_stat`` of a process that exited and awaits its parent's
+# ``wait()``. XNU keeps it listed under ``proc_listallpids`` with its birth,
+# parent and group intact, while every ``proc_pidinfo`` flavor answers ESRCH.
+_DARWIN_SZOMB = 5
+_DARWIN_KINFO_PROC_SIZE = 648
+
+
+@dataclass(frozen=True, slots=True)
+class _DarwinKernelProcRow:
+    """One ``kern.proc.pid`` row: the kernel's own state and instance identity."""
+
+    status: int
+    ppid: int
+    pgid: int
+    started_at_ns: int
+    command: str
+
+
 @dataclass(frozen=True, slots=True)
 class _DarwinProcessAuthority:
     """Process-wide Darwin FFI bindings shared by every sampler pass."""
@@ -783,12 +801,48 @@ class _DarwinProcessAuthority:
     libsystem: Any
     proc_bsd_info_type: type[Any]
     proc_task_info_type: type[Any]
+    kinfo_proc_type: type[Any]
     proc_pidinfo: Callable[..., int]
     proc_listallpids: Callable[..., int]
     sysctl: Callable[..., int]
 
+    def kernel_row(self, pid: int) -> _DarwinKernelProcRow | None:
+        """Read one ``kern.proc.pid`` row; None once the pid has been reaped.
+
+        This is the table ``ps`` reads. Unlike ``proc_pidinfo`` it still
+        answers for a process that exited and awaits ``wait()``, and its
+        ``p_starttime`` is the same birth clock as ``pbi_start_tvsec``, so an
+        identity bound here equals one bound through libproc.
+        """
+        info = self.kinfo_proc_type()
+        expected = self.ctypes.sizeof(info)
+        size = self.ctypes.c_size_t(expected)
+        # CTL_KERN, KERN_PROC, KERN_PROC_PID
+        mib = (self.ctypes.c_int * 4)(1, 14, 1, pid)
+        if (
+            self.sysctl(
+                mib, 4, self.ctypes.byref(info), self.ctypes.byref(size), None, 0
+            )
+            != 0
+            or size.value != expected
+            or int(info.kp_proc.p_pid) != pid
+        ):
+            return None
+        start = info.kp_proc.p_starttime
+        started_at_ns = int(start.tv_sec) * 1_000_000_000 + int(start.tv_usec) * 1_000
+        if started_at_ns <= 0:
+            return None
+        raw_name = bytes(info.kp_proc.p_comm).split(b"\0", 1)[0]
+        return _DarwinKernelProcRow(
+            status=int(info.kp_proc.p_stat),
+            ppid=int(info.kp_eproc.e_ppid),
+            pgid=int(info.kp_eproc.e_pgid),
+            started_at_ns=started_at_ns,
+            command=raw_name.decode(errors="replace") or f"pid:{pid}",
+        )
+
     def pids(self) -> list[int]:
-        """Enumerate every live pid in one libproc call."""
+        """Enumerate every pid the kernel lists, exited-unreaped ones included."""
         count = self.proc_listallpids(None, 0)
         if count <= 0:
             raise OSError("proc_listallpids reported no processes")
@@ -925,6 +979,120 @@ def _load_darwin_process_authority() -> _DarwinProcessAuthority:
             ("pti_priority", ctypes.c_int32),
         ]
 
+    # <sys/sysctl.h> struct kinfo_proc, the row ``kern.proc`` returns, laid
+    # out for the 64-bit ABI. Only p_starttime, p_stat, p_pid, p_comm, e_ppid
+    # and e_pgid are read; every other field exists to keep those offsets
+    # exact, and the total size is checked against the kernel's.
+    class Timeval(ctypes.Structure):
+        _fields_ = [("tv_sec", ctypes.c_int64), ("tv_usec", ctypes.c_int32)]
+
+    class Itimerval(ctypes.Structure):
+        _fields_ = [("it_interval", Timeval), ("it_value", Timeval)]
+
+    class ExternProc(ctypes.Structure):
+        _fields_ = [
+            ("p_starttime", Timeval),
+            ("p_vmspace", ctypes.c_void_p),
+            ("p_sigacts", ctypes.c_void_p),
+            ("p_flag", ctypes.c_int32),
+            ("p_stat", ctypes.c_int8),
+            ("p_pid", ctypes.c_int32),
+            ("p_oppid", ctypes.c_int32),
+            ("p_dupfd", ctypes.c_int32),
+            ("user_stack", ctypes.c_void_p),
+            ("exit_thread", ctypes.c_void_p),
+            ("p_debugger", ctypes.c_int32),
+            ("sigwait", ctypes.c_int32),
+            ("p_estcpu", ctypes.c_uint32),
+            ("p_cpticks", ctypes.c_int32),
+            ("p_pctcpu", ctypes.c_uint32),
+            ("p_wchan", ctypes.c_void_p),
+            ("p_wmesg", ctypes.c_void_p),
+            ("p_swtime", ctypes.c_uint32),
+            ("p_slptime", ctypes.c_uint32),
+            ("p_realtimer", Itimerval),
+            ("p_rtime", Timeval),
+            ("p_uticks", ctypes.c_uint64),
+            ("p_sticks", ctypes.c_uint64),
+            ("p_iticks", ctypes.c_uint64),
+            ("p_traceflag", ctypes.c_int32),
+            ("p_tracep", ctypes.c_void_p),
+            ("p_siglist", ctypes.c_int32),
+            ("p_textvp", ctypes.c_void_p),
+            ("p_holdcnt", ctypes.c_int32),
+            ("p_sigmask", ctypes.c_uint32),
+            ("p_sigignore", ctypes.c_uint32),
+            ("p_sigcatch", ctypes.c_uint32),
+            ("p_priority", ctypes.c_uint8),
+            ("p_usrpri", ctypes.c_uint8),
+            ("p_nice", ctypes.c_int8),
+            ("p_comm", ctypes.c_char * 17),
+            ("p_pgrp", ctypes.c_void_p),
+            ("p_addr", ctypes.c_void_p),
+            ("p_xstat", ctypes.c_uint16),
+            ("p_acflag", ctypes.c_uint16),
+            ("p_ru", ctypes.c_void_p),
+        ]
+
+    class Pcred(ctypes.Structure):
+        _fields_ = [
+            ("pc_lock", ctypes.c_char * 72),
+            ("pc_ucred", ctypes.c_void_p),
+            ("p_ruid", ctypes.c_uint32),
+            ("p_svuid", ctypes.c_uint32),
+            ("p_rgid", ctypes.c_uint32),
+            ("p_svgid", ctypes.c_uint32),
+            ("p_refcnt", ctypes.c_int32),
+        ]
+
+    class Ucred(ctypes.Structure):
+        _fields_ = [
+            ("cr_ref", ctypes.c_int32),
+            ("cr_uid", ctypes.c_uint32),
+            ("cr_ngroups", ctypes.c_int16),
+            ("cr_groups", ctypes.c_uint32 * 16),
+        ]
+
+    class Vmspace(ctypes.Structure):
+        _fields_ = [
+            ("dummy", ctypes.c_int32),
+            ("dummy2", ctypes.c_void_p),
+            ("dummy3", ctypes.c_int32 * 5),
+            ("dummy4", ctypes.c_void_p * 3),
+        ]
+
+    class Eproc(ctypes.Structure):
+        _fields_ = [
+            ("e_paddr", ctypes.c_void_p),
+            ("e_sess", ctypes.c_void_p),
+            ("e_pcred", Pcred),
+            ("e_ucred", Ucred),
+            ("e_vm", Vmspace),
+            ("e_ppid", ctypes.c_int32),
+            ("e_pgid", ctypes.c_int32),
+            ("e_jobc", ctypes.c_int16),
+            ("e_tdev", ctypes.c_int32),
+            ("e_tpgid", ctypes.c_int32),
+            ("e_tsess", ctypes.c_void_p),
+            ("e_wmesg", ctypes.c_char * 8),
+            ("e_xsize", ctypes.c_int32),
+            ("e_xrssize", ctypes.c_int16),
+            ("e_xccount", ctypes.c_int16),
+            ("e_xswrss", ctypes.c_int16),
+            ("e_flag", ctypes.c_int32),
+            ("e_login", ctypes.c_char * 12),
+            ("e_spare", ctypes.c_int32 * 4),
+        ]
+
+    class KinfoProc(ctypes.Structure):
+        _fields_ = [("kp_proc", ExternProc), ("kp_eproc", Eproc)]
+
+    if ctypes.sizeof(KinfoProc) != _DARWIN_KINFO_PROC_SIZE:
+        raise OSError(
+            f"kinfo_proc layout is {ctypes.sizeof(KinfoProc)} bytes, "
+            f"kernel ABI needs {_DARWIN_KINFO_PROC_SIZE}"
+        )
+
     libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
     proc_pidinfo = libproc.proc_pidinfo
     proc_pidinfo.argtypes = [
@@ -956,6 +1124,7 @@ def _load_darwin_process_authority() -> _DarwinProcessAuthority:
         libsystem=libsystem,
         proc_bsd_info_type=ProcBsdInfo,
         proc_task_info_type=ProcTaskInfo,
+        kinfo_proc_type=KinfoProc,
         proc_pidinfo=proc_pidinfo,
         proc_listallpids=proc_listallpids,
         sysctl=sysctl,
@@ -1155,27 +1324,98 @@ def sample_processes_posix() -> dict[int, ProcessSample]:
     return samples
 
 
+def _darwin_proc_kernel_row(pid: int) -> _DarwinKernelProcRow | None:
+    """Return the kernel's own row for a pid libproc no longer answers for."""
+
+    if sys.platform != "darwin" or pid <= 0:
+        return None
+    authority = _darwin_process_authority()
+    if authority is None:
+        return None
+    try:
+        return authority.kernel_row(pid)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _darwin_sample_from_kernel_row(
+    pid: int, rss_kb: int, *, now_ns: int
+) -> ProcessSample | None:
+    """Sample a pid libproc will not describe, from ``kern.proc.pid``.
+
+    A pid with no row was reaped between two reads. A ``SZOMB`` row has
+    exited: it holds no memory, no signal reaches it, and only its parent's
+    ``wait()`` remains, so it is no live member of any tree. Any other row is
+    a process libproc withholds (a system daemon such as launchd) or one
+    still leaving; it binds the exact birth the kernel kept when its argv is
+    readable, and otherwise stays unbound like any libproc row without argv.
+    """
+
+    before = _darwin_proc_kernel_row(pid)
+    if before is None or before.status == _DARWIN_SZOMB:
+        return None
+    argv = _darwin_proc_argv(pid)
+    after = _darwin_proc_kernel_row(pid)
+    if after is None or after.status == _DARWIN_SZOMB:
+        return None
+    if before != after or argv is None:
+        return ProcessSample(
+            pid=pid,
+            ppid=0,
+            rss_kb=rss_kb,
+            command=before.command,
+            pgid=before.pgid,
+            elapsed_sec=None,
+            started_at_ns=None,
+            argv=(),
+        )
+    return ProcessSample(
+        pid=pid,
+        ppid=max(0, before.ppid),
+        rss_kb=rss_kb,
+        command=shlex.join(argv),
+        pgid=before.pgid,
+        elapsed_sec=max(0, (now_ns - before.started_at_ns) // 1_000_000_000),
+        started_at_ns=before.started_at_ns,
+        argv=argv,
+    )
+
+
 def _sample_processes_darwin() -> dict[int, ProcessSample]:
     """Instance-bound Darwin samples without a `ps` subprocess.
 
-    Each row reads its BSD metadata before and after argv so a pid recycled
-    mid-read cannot bind a stale instance; such rows keep their resident kB
-    but carry no ancestry or creation marker, exactly as before.
+    ``proc_listallpids`` also lists processes that exited and await their
+    parent's ``wait()``, and ``proc_pidinfo`` answers ESRCH for them. Such a
+    pid is read from ``kern.proc.pid`` instead, which leaves exited processes
+    out and binds a still-leaving one exactly. Each live row reads its BSD
+    metadata before and after argv so a pid recycled mid-read cannot bind a
+    stale instance; such a row, like one whose argv is unreadable, keeps its
+    resident kB but carries no ancestry or creation marker.
     """
 
     now_ns = time.time_ns()
     samples: dict[int, ProcessSample] = {}
     for pid, rss_kb in _darwin_proc_table().items():
         before = _darwin_proc_metadata(pid)
+        if before is None:
+            sample = _darwin_sample_from_kernel_row(pid, rss_kb, now_ns=now_ns)
+            if sample is not None:
+                samples[pid] = sample
+            continue
         argv = _darwin_proc_argv(pid)
         after = _darwin_proc_metadata(pid)
-        if before is None or before != after or argv is None:
+        if after is None:
+            sample = _darwin_sample_from_kernel_row(pid, rss_kb, now_ns=now_ns)
+            if sample is not None:
+                samples[pid] = sample
+            continue
+        if before != after or argv is None:
             samples[pid] = ProcessSample(
                 pid=pid,
                 ppid=0,
                 rss_kb=rss_kb,
-                command=f"pid:{pid}" if before is None else before[3],
-                pgid=None if before is None else before[1],
+                command=before[3],
+                pgid=before[1],
                 elapsed_sec=None,
                 started_at_ns=None,
                 argv=(),

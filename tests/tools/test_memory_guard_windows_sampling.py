@@ -165,6 +165,14 @@ def test_darwin_sampler_sizes_every_listed_pid_and_withholds_foreign_rss(
         def metadata(self, pid: int) -> tuple[int, int, int, str] | None:
             return (100, pid, 1_000, "node") if pid == 200 else None
 
+        def kernel_row(self, pid: int) -> process_model._DarwinKernelProcRow | None:
+            # A system daemon: libproc withholds it, the kernel table lists it.
+            if pid != 300:
+                raise AssertionError("libproc-described pids never read kern.proc")
+            return process_model._DarwinKernelProcRow(
+                status=2, ppid=1, pgid=300, started_at_ns=5_000, command="mds"
+            )
+
         def argv(self, pid: int) -> tuple[str, ...] | None:
             return ("node", "worker.js") if pid == 200 else None
 
@@ -183,7 +191,8 @@ def test_darwin_sampler_sizes_every_listed_pid_and_withholds_foreign_rss(
     assert samples[200].command == "node worker.js"
     assert samples[300].rss_kb == 0
     assert samples[300].ppid == 0
-    assert samples[300].command == "pid:300"
+    assert samples[300].pgid == 300
+    assert samples[300].command == "mds"
     assert samples[300].started_at_ns is None
 
 
