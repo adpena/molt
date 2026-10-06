@@ -741,6 +741,11 @@ pub(crate) fn ensure_persistent_runtime_execution() {
     });
 }
 
+#[cfg(test)]
+pub(crate) fn inject_shutdown_drain_drop_panic() {
+    RUNTIME_EXECUTION_SHUTDOWN_DROP_TEST_PANIC.with(|pending| pending.set(true));
+}
+
 pub(crate) fn release_persistent_runtime_execution() -> bool {
     let Some(execution) = PERSISTENT_RUNTIME_EXECUTION.with(|slot| slot.replace(None)) else {
         return false;
