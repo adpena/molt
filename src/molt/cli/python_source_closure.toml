@@ -1,4 +1,6 @@
 schema_version = 1
+search_roots = ["src", "tools", "."]
+source_roots = ["src", "tools"]
 
 # The only dynamic ``molt.cli`` imports are the finite `_LAZY_REEXPORTS` registry
 # and `_LazyPostLoweringModule` instances. Derive their module targets from those

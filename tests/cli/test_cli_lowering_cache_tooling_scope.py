@@ -251,9 +251,9 @@ def test_reachability_follows_driver_imports_but_not_backend() -> None:
     ``backend_*`` helper that no in-scope file imports must stay excluded. This
     exercises the import-following mechanism the denylist never had.
     """
-    import tempfile
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with OwnedTemporaryDirectory() as tmp:
         root = Path(tmp)
         molt = root / "src" / "molt"
         cli = molt / "cli"

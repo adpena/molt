@@ -11,7 +11,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import sys
-import tempfile
+from molt.temporary_artifacts import OwnedTemporaryDirectory
 import time
 from typing import Literal
 
@@ -199,7 +199,7 @@ class _LinkCommandInputs:
     output_data: bytes
     split_runtime: bool
     deploy_runtime_path: Path | None
-    temp_dir: tempfile.TemporaryDirectory[str]
+    temp_dir: OwnedTemporaryDirectory
 
 
 @dataclass(frozen=True, slots=True)
@@ -652,7 +652,7 @@ def _load_link_contract_stage(
     wasm_facts_scanner: Path,
     wasm_facts_scanner_sha256: str | None,
     facts_provider: _facts.WasmFactsProvider | None,
-    temp_dir: tempfile.TemporaryDirectory[str],
+    temp_dir: OwnedTemporaryDirectory,
     facts_metrics: dict[str, float],
     split_runtime: bool,
     deploy_runtime_override: Path | None,
@@ -789,7 +789,7 @@ def _prepare_link_inputs_stage(
     native_link_requirements: SourceExtensionLinkRequirements,
     split_runtime: bool,
     allowlist_override: Path | None,
-    temp_dir: tempfile.TemporaryDirectory[str],
+    temp_dir: OwnedTemporaryDirectory,
     facts_provider: WasmFactsProvider,
 ) -> _PreparedLinkInputs | None:
     """Rewrite and attest all linker inputs before command construction."""
@@ -1792,7 +1792,7 @@ def run_wasm_ld_with_custodied_inputs(
             file=sys.stderr,
         )
         return 1
-    temp_dir = tempfile.TemporaryDirectory(prefix="molt-wasm-link-")
+    temp_dir = OwnedTemporaryDirectory(prefix="molt-wasm-link-")
     staged_outputs: list[Path] = []
     whole_artifact_counts = contextlib.ExitStack()
     try:

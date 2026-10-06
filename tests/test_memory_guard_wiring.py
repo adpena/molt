@@ -882,6 +882,31 @@ def test_windows_pytest_tempdir_patch_keeps_numbered_dirs_readable(
     assert not pytest_memory_guard_bootstrap.install_windows_pytest_tempdir_mode_patch()
 
 
+def test_windows_pytest_tempdir_patch_keeps_xdist_given_basetemp_readable(
+    monkeypatch, tmp_path
+) -> None:
+    import _pytest.tmpdir as pytest_tmpdir
+
+    monkeypatch.setattr(
+        pytest_memory_guard_bootstrap, "_is_windows_process_model", lambda: True
+    )
+    monkeypatch.setattr(pytest_tmpdir, "Path", Path)
+    pytest_memory_guard_bootstrap.install_windows_pytest_tempdir_mode_patch()
+    factory = pytest_tmpdir.TempPathFactory(
+        given_basetemp=tmp_path / "popen-gw0",
+        retention_count=0,
+        retention_policy="all",
+        trace=lambda *args: None,
+        _ispytest=True,
+    )
+    root = factory.getbasetemp()
+    child = root / "test-fixture"
+    child.mkdir(mode=0o700)
+    (child / "receipt.txt").write_text("readable", encoding="utf-8")
+    assert list(root.iterdir()) == [child]
+    assert (child / "receipt.txt").read_text(encoding="utf-8") == "readable"
+
+
 def test_windows_pytest_cache_dir_arg_uses_canonical_tmp_cache(
     monkeypatch, tmp_path
 ) -> None:

@@ -7,7 +7,7 @@ import hashlib
 from pathlib import Path
 import os
 import sys
-import tempfile
+from molt.temporary_artifacts import OwnedTemporaryDirectory
 import time
 
 from molt._wasm_runtime_exports import wasm_split_runtime_export_name_for_import
@@ -535,7 +535,7 @@ def _optimize_split_app_module(
             optimizer_policy = wasm_link_policy(
                 optimize_level, preserve_debug=preserve_debug
             )
-            with tempfile.TemporaryDirectory(prefix="molt-split-app-opt-") as tmp:
+            with OwnedTemporaryDirectory(prefix="molt-split-app-opt-") as tmp:
                 app_path = Path(tmp) / "app_split_preopt.wasm"
                 app_path.write_bytes(optimized)
                 active_attestation.update(
