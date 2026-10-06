@@ -206,6 +206,15 @@ def _verified_supervisor_event_artifact(
     return event_path, list(unique_images)
 
 
+class SupervisorCapabilityUnavailable(ValueError):
+    def __init__(self, capability: dict[str, object]) -> None:
+        self.capability = dict(capability)
+        super().__init__(
+            "native supervisor launch capability unavailable: "
+            + str(capability["reason"])
+        )
+
+
 def decode_supervisor_capability(capability: object, *, mode: str) -> dict[str, str]:
     """Validate one native capability and return its launch requirements."""
     if (
@@ -242,10 +251,7 @@ def decode_supervisor_capability(capability: object, *, mode: str) -> dict[str, 
     ):
         raise ValueError("native supervisor launch capability schema or mode mismatch")
     if capability.get("available") is not True:
-        raise ValueError(
-            "native supervisor launch capability unavailable: "
-            + str(capability.get("reason", "no supported backend"))
-        )
+        raise SupervisorCapabilityUnavailable(capability)
     if (
         capability["pre_entry_exec_authority"] is not True
         or mode == "leaf"

@@ -354,7 +354,7 @@ on both success and failure. Process cleanup lives in
 `memory_guard_core.process_custody`; guard entrypoints must not rebind that
 module's callbacks. Tests inject samplers or patch the owning module directly.
 
-Native supervisor capability v2 owns the required launch environment. The queue
+Native supervisor capability v3 owns the required launch environment. The queue
 reads it from the captured supervisor binary before toolchain, process-image,
 and source capture; both inventory and proof policies seal the effective values.
 Native policy admission rejects missing or conflicting requirements. Windows
@@ -363,6 +363,15 @@ heap debug checks or disable the low-fragmentation heap. `DEBUG_PROCESS`, job
 containment, pre-entry image admission, and descendant accounting remain active.
 Other platforms advertise their own requirements rather than inheriting a
 Windows setting. Do not replace this contract with a host environment tweak.
+
+Unavailable native launch capabilities are terminal prelaunch refusals. The
+failed execution record retains the supervisor's validated capability report
+and exact reason; no command return code, transcript, supervisor policy/receipt,
+or attested execution context is published. Queue terminal metadata remains
+explicitly non-evidence. Real queue tests use the shared capability-aware adapter
+in `tests/proof_queue_custody_test_support.py`: available capabilities retain all
+execution assertions, while unavailable capabilities must prove this refusal
+contract. Neither host-name checks nor skips/xfails replace execution coverage.
 
 Executable and derived-root identities use canonical native paths at live
 filesystem boundaries. Safe Windows prefix simplification must preserve device

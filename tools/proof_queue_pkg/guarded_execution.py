@@ -1429,6 +1429,8 @@ def execute_guarded_request(request_path: Path) -> int:
                     + str(result["rust_link_capture_failure"]["publication_error"]),
                     file=sys.stderr,
                 )
+        if isinstance(exc, supervisor.SupervisorCapabilityUnavailable):
+            result["supervisor_capability"] = exc.capability
         if isinstance(exc, disk_capacity.DiskCapacityError):
             result["disk_capacity_admission"] = dict(exc.diagnostic)
         if isinstance(exc, cargo_cache_custody.CargoInputClosureUnproven):
