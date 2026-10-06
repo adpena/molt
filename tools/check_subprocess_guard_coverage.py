@@ -120,6 +120,13 @@ class SubprocessGuardAudit:
 
 ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     AllowedRawSubprocessUse(
+        "tools/venv_exec.py",
+        "main",
+        "run",
+        "Windows has no exec; the wrapper waits for its single child so the "
+        "wrapped gate's exit status is reported instead of a spawn-time 0",
+    ),
+    AllowedRawSubprocessUse(
         "tools/memory_guard_core/cargo_quarantine.py",
         "_observed_pid_is_definitely_closed",
         "os.kill",

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
 
+from tests.process_guard_common import run_guarded_test_process
 from tools import venv_exec
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_resolve_venv_prefers_explicit_path(tmp_path: Path) -> None:
@@ -75,3 +79,21 @@ def test_resolve_command_leaves_non_python_command_intact(tmp_path: Path) -> Non
     command = ["cargo", "test"]
 
     assert venv_exec.resolve_command(command, venv=tmp_path / ".venv") == command
+
+
+@pytest.mark.parametrize("status", [0, 7])
+def test_wrapped_command_exit_status_propagates(status: int) -> None:
+    # On Windows os.exec* exits the caller with 0 at once; the wrapper must
+    # still report the wrapped gate's own status on every platform.
+    result = run_guarded_test_process(
+        [
+            sys.executable,
+            str(ROOT / "tools" / "venv_exec.py"),
+            "python",
+            "-c",
+            f"raise SystemExit({status})",
+        ],
+        cwd=ROOT,
+        timeout=120,
+    )
+    assert result.returncode == status, result.stderr
