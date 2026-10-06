@@ -2,7 +2,7 @@
 
 Status: current source contract; consolidation changes require source-bound
 native/WASM execution before release acceptance. This replaces the historical
-heap-versus-stack split from #86 (`ac73ab954`), not its single-owner invariant.
+heap-versus-stack split from #86 (`3f67507ef`), not its single-owner invariant.
 
 ## One field owner, independent of allocation placement
 

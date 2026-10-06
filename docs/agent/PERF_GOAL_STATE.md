@@ -8,7 +8,7 @@ Standing objective: grind the witness-iteration waste ladder from
 
 | Rank | Rung | Status | Evidence | Next action |
 |---:|---|---|---|---|
-| 1 | Frontend graph + analysis + lowering | ATTESTED-IMPROVED | `tools/perf_witness_iteration_attestation.json`; commit `5636182fca` | Done. |
+| 1 | Frontend graph + analysis + lowering | ATTESTED-IMPROVED | `tools/perf_witness_iteration_attestation.json`; commit `caffa0588d` | Done. |
 | 2 | Backend prepare/codegen | DOCUMENTED-BLOCKED | `tools/perf_goal_r2_backend_blocker.json` | Re-establish a current-main, same-SHA baseline with at least two runs and isolated backend phase/counter breakdown before changing code. |
 | 3 | Runtime-compile shared-cache effective hit rate | ATTESTED-IMPROVED | `tools/perf_goal_r3_runtime_cache_attestation.json`; indexed compatibility hydrate is 7.33x faster at 116 entries with 7/7 effective hits before and after | Done. |
 | 4 | Seal/validation isolated instrumentation | ATTESTED-IMPROVED | `tools/perf_goal_r4_seal_validation_attestation.json`; NumPy 2.5.1 validation is 1.657x faster across five before/after fresh-process runs | Done. |

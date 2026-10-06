@@ -6,7 +6,7 @@ extension init, and every dispatch/callable/poll table projection of the module
 graph, across native / WASM / split-runtime targets.
 **Date:** 2026-07-02.
 **Verification basis:** live tree at `C:\Users\adpen\OneDrive\Documents\molt`
-(main @ 360045166), CPython 3.12 docs/source, Go spec/runtime, GraalVM
+(main @ 781a18202), CPython 3.12 docs/source, Go spec/runtime, GraalVM
 native-image docs, MicroPython source, Codon docs. Citations inline.
 
 ---
@@ -100,7 +100,7 @@ acquittal.
 
 - Each generated static-native init function carries its own cache-probe
   preamble (`module_cache_get` → `is None` → `if`) — added by commit
-  360045166 after an alias init bypassed the guard and re-ran a static
+  781a18202 after an alias init bypassed the guard and re-ran a static
   extension `PyInit`, tripping "cannot load module more than once per process"
   (`src/molt/cli/backend_ir.py:686-840`). [Incident 2]
 - The eager path (`molt_main` module ops), the lazy path (isolate dispatcher),
@@ -1006,7 +1006,7 @@ the `OxidizedFinder` meta-path finder.
 `env.__memory_base` / `__table_base`; shared
 `env.__indirect_function_table` across modules.
 
-**Repo evidence (live tree, main @ 360045166):**
+**Repo evidence (live tree, main @ 781a18202):**
 `runtime/molt-runtime/src/builtins/modules.rs` (import inner loop 830–1035;
 sys.modules vivification 1879–1915; cache_set/first-init-wins/replay
 1954–2117; import_from 2510–2584; get_global 2586–2740);
@@ -1021,5 +1021,5 @@ home); `runtime/molt-runtime/src/builtins/sys_ext.rs:1162` (empty-dict
 `runtime/molt-backend-wasm/src/wasm/module_abi/poll_table.rs:75`;
 `wasm/loader_bridge.js:302–320` (table-base drift check);
 `docs/spec/areas/compat/contracts/import_system_contract.md` (0213);
-commits `b675ab9bc`, `d1014e24c` (import-custody rework), `360045166`
+commits `c6216a2d0`, `7f4d32934` (import-custody rework), `781a18202`
 (init-exactly-once preamble).

@@ -4,7 +4,7 @@
 
 ## 1. Precise Problem Statement
 
-The TIR inliner (`tir/passes/inliner.rs`) is complete and sound through phase c (phases a/b `f14b196ce`, hardening `951938075`, phase-c `6d9962a98`). It is called by `run_module_pipeline` (`tir/module_phase.rs:110-126`). But that function is called in exactly two places: its own unit tests, and `compute_leaf_functions_via_call_graph` (`native_backend/simple_backend.rs:349-360`) — which builds the call graph for the leaf set and **drops the inlined `TirModule`** without using the inlined bodies.
+The TIR inliner (`tir/passes/inliner.rs`) is complete and sound through phase c (phases a/b `e9af31a03`, hardening `fef48ecb0`, phase-c `e0646373d`). It is called by `run_module_pipeline` (`tir/module_phase.rs:110-126`). But that function is called in exactly two places: its own unit tests, and `compute_leaf_functions_via_call_graph` (`native_backend/simple_backend.rs:349-360`) — which builds the call graph for the leaf set and **drops the inlined `TirModule`** without using the inlined bodies.
 
 All three backends compile un-inlined code today:
 
@@ -137,7 +137,7 @@ The patch correctly handles:
 - Reassembling `tir_funcs` from externs + post-inline non-externs.
 - Building `function_repr_facts` by name-keyed lookup (not positional zip) so inlined callers whose `ValueId` space grew still get a correctly-seeded `LlvmReprFacts`.
 
-**Pre-existing LLVM e2e link failure** (`molt_app_resolve_intrinsic` undefined symbol): this is a pre-existing gap in the LLVM lane — the LLVM path never emits the per-app intrinsic resolver that `ddc4ff73b` added for the native path. This arc does NOT fix that gap (it is a separate, pre-existing issue). The LLVM inliner activation lands correctly despite it; the link failure only affects e2e binary linking, not correctness of the inlining itself.
+**Pre-existing LLVM e2e link failure** (`molt_app_resolve_intrinsic` undefined symbol): this is a pre-existing gap in the LLVM lane — the LLVM path never emits the per-app intrinsic resolver that `68357c0b2` added for the native path. This arc does NOT fix that gap (it is a separate, pre-existing issue). The LLVM inliner activation lands correctly despite it; the link failure only affects e2e binary linking, not correctness of the inlining itself.
 
 ### 4.5 `/Users/adpena/Projects/molt/runtime/molt-backend/src/passes.rs`
 
@@ -298,7 +298,7 @@ main()  # 100
 ```
 After inlining `inc` into `main`, the SCCP pass should fold the loop-accumulated value through the inlined `+1` body. Verify the output is correct on all backends.
 
-**Adversarial: name collision in label ids (regression for 951938075 hardening):**
+**Adversarial: name collision in label ids (regression for fef48ecb0 hardening):**
 ```python
 def f(x):
     try:
@@ -375,11 +375,11 @@ The module phase is O(n × budget × call-graph-depth) where n = number of funct
 
 ### 9.1 Dependencies (must land before this arc)
 
-- Phase c (`6d9962a98`) — LANDED. Observation-only callees inline correctly.
-- S2 `TargetInfo` (`9ff5d2e00`) — LANDED. The `tti.inline_budget()` call is the cost-model gate.
-- S4 `ModuleAnalysis` / `run_module_pipeline` (`7915b29a0`) — LANDED. The module phase is the shell this arc activates.
-- S5 alias analysis (`fb574b289`) — LANDED. Not a hard dependency for inliner correctness, but the inliner's re-optimization of merged callers benefits from it.
-- Repr promotion / `fits_inline_int47` (`64c2c53b8`) — LANDED. `repr_by_value_for` uses `ValueRangeResult::fits_inline_int47`.
+- Phase c (`e0646373d`) — LANDED. Observation-only callees inline correctly.
+- S2 `TargetInfo` (`6dc287a3f`) — LANDED. The `tti.inline_budget()` call is the cost-model gate.
+- S4 `ModuleAnalysis` / `run_module_pipeline` (`cd5acdb7d`) — LANDED. The module phase is the shell this arc activates.
+- S5 alias analysis (`5895238b5`) — LANDED. Not a hard dependency for inliner correctness, but the inliner's re-optimization of merged callers benefits from it.
+- Repr promotion / `fits_inline_int47` (`ce6a34b91`) — LANDED. `repr_by_value_for` uses `ValueRangeResult::fits_inline_int47`.
 
 ### 9.2 What this arc unblocks
 

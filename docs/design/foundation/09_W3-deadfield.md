@@ -6,7 +6,7 @@
 
 ### Why it is load-bearing
 
-The binary size target is <2 MB (native) and cold-start target is <50 ms. The flagship intrinsic resolver landed (`ddc4ff73b`, 4.31 MB empty.py). The remaining attribution breakdown (from `project_binary_size_regrounding_20260602.md`):
+The binary size target is <2 MB (native) and cold-start target is <50 ms. The flagship intrinsic resolver landed (`68357c0b2`, 4.31 MB empty.py). The remaining attribution breakdown (from `project_binary_size_regrounding_20260602.md`):
 
 - Rust core: 1.83 MB (fixed)
 - `builtins.py` bodies: ~282 KB
@@ -423,7 +423,7 @@ Expected: `os.path.join` retained. `os.path.exists`, `os.path.abspath`, etc. (if
 ### Measurements
 
 **Metric 1: binary size (primary)**
-Baseline: `empty.py` → 4.31 MB (post-`ddc4ff73b`).
+Baseline: `empty.py` → 4.31 MB (post-`68357c0b2`).
 Target: ≤ 2.5 MB (first cut, conservative; ≤ 2 MB requires also factoring Rust core which is orthogonal).
 Measurement: `python3 -m molt build --target native --output /tmp/test_out examples/empty.py && ls -la /tmp/test_out`.
 

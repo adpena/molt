@@ -61,7 +61,7 @@ main and then masked all downstream checks.
 
 Run 29616350435 demonstrates the masking directly. Once the earlier ty failures
 were repaired, Docs Gates advanced to the next sequential step and found that
-COVERAGE_INDEX still named deleted runpy_basic.py. Commit 3a44101e4 had replaced
+COVERAGE_INDEX still named deleted runpy_basic.py. Commit 132f66367 had replaced
 that legacy case with the stronger runpy_run_path_basic.py family but did not
 move the coverage row or regenerate the lane manifest. The gate was correct; its
 signal had simply been hidden behind the earlier fail-fast boundary. The source

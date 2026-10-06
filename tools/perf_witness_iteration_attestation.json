@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "claim": "PERF-WITNESS-ITERATION",
-  "git_base": "89c89a3a4c",
+  "git_base": "efd37bdd30",
   "scenario": "pact-witness-acceptance unique run output directory, same machine, C:\\Molt\\target\\perf, failure frontier import_strip after build hot path",
   "big_o_before": "O(M) frontend relowering per run because the unique build output path entered known_modules",
   "big_o_after": "O(changed modules); output-directory churn contributes zero lowering-context invalidations",

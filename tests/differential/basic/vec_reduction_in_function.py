@@ -1,13 +1,13 @@
 """Purpose: differential guard for IN-FUNCTION vectorized reductions (vec_* ops).
 
-Regression anchor: commit 8b5773878 ("Extract arithmetic codegen handler")
+Regression anchor: commit 334c4466d ("Extract arithmetic codegen handler")
 dropped the 24 `vec_*` reduction kinds from the native backend's dispatch arm
 (they are handled inside `fc::arith::handle_arith_op` via delegation to
 `fc::vec_reductions`). The dropped kinds fell through the silent `_ => {}`
 catch-all: no codegen emitted, the result SSA value left undefined (resolved to
 the None sentinel), and every in-function accumulator loop silently miscompiled
 (`TypeError: 'NoneType' object is not subscriptable` downstream). Fixed in
-0323ad28c; the dispatch<->handler mirror is now derived from a single source of
+85de1bbb2; the dispatch<->handler mirror is now derived from a single source of
 truth (`fc::op_family`), but this test pins the behavior so any future drop of a
 vec_* family fails the differential suite loudly rather than miscompiling.
 

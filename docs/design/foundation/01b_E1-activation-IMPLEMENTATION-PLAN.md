@@ -2,7 +2,7 @@
 
 # E1 inliner activation — verified, line-precise implementation plan (native phase e-1)
 
-Recon (3 code-explorer agents, verified against live code post-`f9afd99d3`) + analysis.
+Recon (3 code-explorer agents, verified against live code post-`9a86a5841`) + analysis.
 This corrects three things `01_E1-activation.md` got wrong or missed. Full recon artifacts:
 `tmp/e1_recon/{nativePath,contracts,testSurface}.md` (regenerate from the swarm if pruned).
 

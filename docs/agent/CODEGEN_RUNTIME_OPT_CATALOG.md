@@ -26,11 +26,11 @@ re-verified against the tree before relying on it (M05 — a tag is a hypothesis
 
 | Lever | Agner ref | molt status | Determinism | Measure |
 |---|---|---|---|---|
-| Loop-carried FP accumulator split (N accumulators, 3–4 optimal) | §11 p113–114 | **LANDED** regular int/float for/while raw-lane green (M46, dcc00a506) | BIT-UNSAFE (reduction reorder) — raw-lane only, gated | `molt_diff.py --jobs 1`; perf_scoreboard |
+| Loop-carried FP accumulator split (N accumulators, 3–4 optimal) | §11 p113–114 | **LANDED** regular int/float for/while raw-lane green (M46, 9d7bc876e) | BIT-UNSAFE (reduction reorder) — raw-lane only, gated | `molt_diff.py --jobs 1`; perf_scoreboard |
 | **Do NOT unroll when no loop-carried dep** — OOO + register renaming overlap iterations for free | §11 p114 | **doctrine** — validates M46 "don't re-chase regular loops" | n/a | — |
 | Integer mul by constant → shifts/LEA (×2ⁿ, ×3/5/9) | §14.4 p149 | Cranelift lowers; **OPEN (verify)** the nan-box-tagged int `*` path emits it | BIT-SAFE | disasm probe; `probe_int` |
 | Integer div/mod by constant → magic multiply-shift; ÷2ⁿ→shift; unsigned faster | §14.5 p150–151 | **OPEN (verify)** Python `//` and `%` by const lower to magic (esp. tagged-int lane) | BIT-SAFE (exact) | disasm; microbench div-heavy loop |
-| Int-mul CheckedMul peel / `smulhi` overflow-into-bignum | §14.4 | **LANDED** M47 (261efc7b2), 1.65× CPython | BIT-SAFE | done |
+| Int-mul CheckedMul peel / `smulhi` overflow-into-bignum | §14.4 | **LANDED** M47 (346e3563b), 1.65× CPython | BIT-SAFE | done |
 | FP div by constant → reciprocal multiply; common-denominator; div-elimination | §14.6 p152 | **OPEN** — only when divisor exactly representable, else gated | BIT-UNSAFE (reciprocal rounds) | ulp-diff before landing |
 | Induction-variable strength reduction; LICM; CSE; devirtualization | §8.1 p73–76 | mostly Cranelift/aegraph; **OPEN (verify)** molt TIR hoists loop-invariant Repr moves | BIT-SAFE | `molt-check` TIR validator (M50) |
 

@@ -2,7 +2,7 @@
 """CPython floor-scoreboard — the release-blocking performance gate.
 
 Operationalizes the molt **Performance Constitution** (CLAUDE.md, commit
-538f4386e): CPython is the absolute floor. Any benchmark whose molt SPEEDUP
+6a65b2d07): CPython is the absolute floor. Any benchmark whose molt SPEEDUP
 (``cpython_time / molt_time``) is below ``1.00`` is **RED** — a contract
 violation, not "later optimization work."
 

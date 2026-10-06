@@ -1,7 +1,7 @@
 # CPython Floor-Scoreboard — the release-blocking performance gate
 
 `tools/perf_scoreboard.py` operationalizes the **Performance Constitution**
-(`CLAUDE.md`, commit `538f4386e`) and the **council two-dimensional gating
+(`CLAUDE.md`, commit `6a65b2d07`) and the **council two-dimensional gating
 ruling** (`project_council_decisions_20260608`, section A). It is the
 machine-readable artifact the constitution mandates: a single scoreboard keyed
 **benchmark × target × backend × profile** reporting the molt-vs-CPython speedup
@@ -669,13 +669,13 @@ artifact, **not** a speedup board, and never feeds the release gate.
 
 | board | what it is | warm-verdict status |
 |-------|-----------|---------------------|
-| `bench/scoreboard/cpython_b54dd9b896…json` | the prior 112-cell board (56 native + 56 llvm, compiler tree `2c10e20a5…`) | **NON-AUTHORITATIVE for warm verdicts** — measured under **multi-agent load** (a parallel build was active). Its 30 `FAIL_ENGINE` cells are reclassified below as `RED_NOISY` (no repeat-CI + contaminated) / `TIE` (`warm==1.00`); the TRUE warm-red set comes from the QUIET board. Its *build-fact* columns (binary size, compile-time, build-ok, the #47 healed/not-healed analysis) and the *cold/WARN_COLD_FLOOR* axis remain usable. |
+| `bench/scoreboard/cpython_b54dd9b896…json` | the prior 112-cell board (56 native + 56 llvm, compiler tree `6f5f717e0…`) | **NON-AUTHORITATIVE for warm verdicts** — measured under **multi-agent load** (a parallel build was active). Its 30 `FAIL_ENGINE` cells are reclassified below as `RED_NOISY` (no repeat-CI + contaminated) / `TIE` (`warm==1.00`); the TRUE warm-red set comes from the QUIET board. Its *build-fact* columns (binary size, compile-time, build-ok, the #47 healed/not-healed analysis) and the *cold/WARN_COLD_FLOOR* axis remain usable. |
 | `bench/scoreboard/cpython_79903045…json` | the older "stale" board | superseded; build-failure baseline for the #47 healed-comparison only. |
 
 ## Authoritative QUIET board (origin/main compiler, native / release-fast)
 
 > **First authoritative quiet board (#69).** Native measured on the fresh
-> origin/main worktree (`origin_sha 1fa7448a2706`) with `--require-quiescent
+> origin/main worktree (`origin_sha f7f7a5992f62`) with `--require-quiescent
 > --repeat 5 --classify --emit-cycle-profile` on a QUIESCENT machine
 > (`load 4.75 < threshold 9.0`, ncpu 18, runnable 3, **zero competing builds**;
 > the quiescence guard certified `quiescent=true`). LLVM measured with `--repeat
@@ -949,7 +949,7 @@ far higher.
 
 ### LLVM #47 status — PARTIALLY healed on origin (not fully gone)
 
-Comparing the stale board (`79903045…`) to origin/main, of the **8 LLVM
+Comparing the stale board (`cfc6dd47…`) to origin/main, of the **8 LLVM
 build-failures** the council expected gone:
 
 | benchmark [llvm] | stale | origin/main | healed? |

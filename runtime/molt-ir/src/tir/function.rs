@@ -211,7 +211,7 @@ impl TirFunction {
     /// observation ops. A `CheckException` in a function with no handler merely
     /// propagates a pending exception to the function's exception EXIT (a
     /// return-with-pending); it is not a handler. After the frontend's universal
-    /// exception-observation change (`430e09793`) virtually every real function
+    /// exception-observation change (`ab323ec10`) virtually every real function
     /// carries `CheckException`, so `has_exception_handling` is almost always
     /// true — too coarse for passes whose only hazard is a true handler region.
     ///

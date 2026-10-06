@@ -6,21 +6,21 @@ Preserve all meaningful repository signal from local and `Primary`, make GitHub 
 
 ## Inputs Reviewed
 
-- Local `main`: `7f9bf751` (`origin/main`)
-- `Primary` pre-sync `main`: `691aa24a`
+- Local `main`: `fd7fe62b` (`origin/main`)
+- `Primary` pre-sync `main`: `96064774`
 - Local unmerged branch heads:
-  - `backup-broken-main` -> `f6a98c3b`
-  - `fix-stdlib-intrinsics` -> `8c5f3827`
-  - `fix/compilation-errors` -> `5783d268`
-  - `parity-fixes` -> `81ca61dc`
-  - `refactor/split-platform-importlib` -> `fecf5ee9`
-  - `split-functions` -> `f6a98c3b`
-  - `split-functions-rs` -> `b475aa71`
-  - `split-ops-file` -> `b475aa71`
+  - `backup-broken-main` -> `b1718924`
+  - `fix-stdlib-intrinsics` -> `8813eed3`
+  - `fix/compilation-errors` -> `1e0decce`
+  - `parity-fixes` -> `ea0f3c42`
+  - `refactor/split-platform-importlib` -> `6b49c1d3`
+  - `split-functions` -> `b1718924`
+  - `split-functions-rs` -> `0335a510`
+  - `split-ops-file` -> `0335a510`
 - Local merged branch head:
-  - `fix/molt-runtime-compile` -> `d737aeaf` (already ancestor of `main`)
+  - `fix/molt-runtime-compile` -> `af3bc656` (already ancestor of `main`)
 - Detached/prunable local worktree:
-  - `/private/tmp/molt-parity-clean` pointed at `d737aeaf`, which is already merged into `main`
+  - `/private/tmp/molt-parity-clean` pointed at `af3bc656`, which is already merged into `main`
 
 ## Canonical Decision
 

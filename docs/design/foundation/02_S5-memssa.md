@@ -594,8 +594,8 @@ Every benchmark is run on all 3 backends (native Cranelift, WASM, LLVM) in relea
 
 ### Blocked by
 
-- S5 phase 1 (`AliasAnalysis`) — **LANDED** at `fb574b289`. The `MemRegion`, `LoadPurity`, `AliasUnionFind`, `AliasAnalysisResult`, and all barrier queries are in place.
-- S1 (`AnalysisManager`, dominance analyses) — **LANDED** at `ef284d182`. `ImmediateDoms`, `DomChildren`, `PredMap` are all available via `am.get::<...>()`.
+- S5 phase 1 (`AliasAnalysis`) — **LANDED** at `5895238b5`. The `MemRegion`, `LoadPurity`, `AliasUnionFind`, `AliasAnalysisResult`, and all barrier queries are in place.
+- S1 (`AnalysisManager`, dominance analyses) — **LANDED** at `4dbdfcdd9`. `ImmediateDoms`, `DomChildren`, `PredMap` are all available via `am.get::<...>()`.
 
 ### Unblocks
 

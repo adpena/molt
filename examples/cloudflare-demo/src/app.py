@@ -1,5 +1,5 @@
 # Route handler functions defined after GPT weights to avoid WASM data segment corruption.
-# See commit 6a231c72 for details: the Molt compiler's data segment layout displaces
+# See commit 0fa13139 for details: the Molt compiler's data segment layout displaces
 # function metadata pointers when a very large string constant precedes them.
 
 # --- microGPT: Pure Python GPT inference ---

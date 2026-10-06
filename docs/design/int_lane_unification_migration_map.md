@@ -77,7 +77,7 @@ so the change can be reviewed as one coherent diff.
 ## Per-file action set
 
 Counts are `git grep -c int_primary_vars` occurrences (declarations + reads +
-forwarded args) as of HEAD `dd1ae4ee3`. Total = **1353 occurrences across 44
+forwarded args) as of HEAD `1f387e967`. Total = **1353 occurrences across 44
 files**. Two STEP-4 actions:
 - **DROP** — file already threads `representation_plan`; migration removes the
   `int_primary_vars` param + rewrites `.contains(name)` reads to the plan

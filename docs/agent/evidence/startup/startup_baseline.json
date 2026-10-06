@@ -12,7 +12,7 @@
     "variant_ii": "required only for a claimed before/after startup improvement"
   },
   "claim": "STARTUP-BASELINE",
-  "git_commit": "d36658a1ced5ce10e82d6a2e6ec20e51fec11168",
+  "git_commit": "a3c3344a14924e3efa69f4cbaf8529e319aebc06",
   "machine": {
     "machine": "AMD64",
     "node": "C:\\Program Files\\nodejs\\node.EXE",

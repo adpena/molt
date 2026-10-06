@@ -292,7 +292,7 @@ Caught by the new anti-dangle gate
 ### G. Miri limitation — counting global allocator (bench), excluded under Miri
 
 `buffer_export_bench.rs`'s `CountingAlloc` (`#[global_allocator]`, test-binary
-only; landed with the Phase-1 profile `e7d2f82332`) made **lib under Miri red
+only; landed with the Phase-1 profile `4d79afe055`) made **lib under Miri red
 on main**: with a custom global allocator Miri interprets the REAL Windows
 `System` code, whose dealloc of an over-aligned allocation reads the alignment
 header stored *before* the payload — outside the payload-ranged Unique tag a

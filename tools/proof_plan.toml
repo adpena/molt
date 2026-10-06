@@ -2287,7 +2287,7 @@ cell = "linux-x86_64-rust-native-release-output"
 tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
 # Windows x86_64 MSVC cold release-output compilation measured 2097 seconds
-# on source c809781ec; 6300 seconds preserves threefold compile headroom.
+# on source eb625e8d0; 6300 seconds preserves threefold compile headroom.
 # Metadata, discovery and all eight mandatory child guards fit this separate
 # 9000-second command envelope. Linux cold timing remains unmeasured.
 timeout_budget = "shipping"

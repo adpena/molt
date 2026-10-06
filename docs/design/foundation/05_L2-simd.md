@@ -420,11 +420,11 @@ Gate condition: bench_sum_list and bench_prod_list show ≥ CPython speed on nat
 
 ### Hard Dependencies (already landed)
 
-- **S1 AnalysisManager** (`ef284d182`) — `vectorize_lower` uses `am.get::<LoopForest>()` for loop body collection, and optionally `am.get::<AliasAnalysis>()` for the `FlatListInt` proof
-- **S2 TargetInfo** (`9ff5d2e00`) — `tti.vector_width()` drives the SIMD width selection
-- **S3 effects.rs** (`8b6b88286`) — must register the new `VecLoad`/`VecStore` effects; `VecIAdd`/etc. are pure
-- **S5 alias_analysis** (`fb574b289`) — `is_rc_barrier` / `may_observe_slot` must classify SIMD ops correctly
-- **S6 SCEV + ValueRange** (`cd66f365e`) — the `FlatListInt` + `RawI64Safe` repr gate already depends on these; `vectorize_lower` queries the same facts
+- **S1 AnalysisManager** (`4dbdfcdd9`) — `vectorize_lower` uses `am.get::<LoopForest>()` for loop body collection, and optionally `am.get::<AliasAnalysis>()` for the `FlatListInt` proof
+- **S2 TargetInfo** (`6dc287a3f`) — `tti.vector_width()` drives the SIMD width selection
+- **S3 effects.rs** (`9a6eeffac`) — must register the new `VecLoad`/`VecStore` effects; `VecIAdd`/etc. are pure
+- **S5 alias_analysis** (`5895238b5`) — `is_rc_barrier` / `may_observe_slot` must classify SIMD ops correctly
+- **S6 SCEV + ValueRange** (`3ffb5b686`) — the `FlatListInt` + `RawI64Safe` repr gate already depends on these; `vectorize_lower` queries the same facts
 - **Repr promotion / E1 inliner** — orthogonal; `vectorize_lower` reads the existing repr facts
 
 ### Risks

@@ -396,7 +396,7 @@ Already fully documented in doc 26 §1.4. Every `yield v` allocates a 40-byte `(
 
 **File:line:** `/Users/adpena/Projects/molt/runtime/molt-runtime/src/async_rt/generators.rs` (line 384 area, per doc 26 §1.3 and the seed claim)
 
-Already documented in doc 26 §1.3 and in the MEMORY note for doc 28. The context swap unconditionally saves/restores `ACTIVE_EXCEPTION_STACK` and `EXCEPTION_STACK` (two `Vec<u64>` via `std::mem::take`) plus the exception depth counter. For generators with no try/except blocks, this overhead is pure waste. The C2 fix (`430e09793`) ensures correctness; the performance optimization (gate the swap on `has_exception_handlers()`) is the doc 26 residual. **Point to doc 26; do not duplicate.**
+Already documented in doc 26 §1.3 and in the MEMORY note for doc 28. The context swap unconditionally saves/restores `ACTIVE_EXCEPTION_STACK` and `EXCEPTION_STACK` (two `Vec<u64>` via `std::mem::take`) plus the exception depth counter. For generators with no try/except blocks, this overhead is pure waste. The C2 fix (`ab323ec10`) ensures correctness; the performance optimization (gate the swap on `has_exception_handlers()`) is the doc 26 residual. **Point to doc 26; do not duplicate.**
 
 ---
 

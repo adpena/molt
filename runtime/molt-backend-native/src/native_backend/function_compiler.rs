@@ -1144,7 +1144,7 @@ impl SimpleBackend {
             // Single routing decision for this op, derived from each handler's
             // `HANDLED_KINDS` authority (see `fc::op_family`). The family arms
             // below guard on this instead of re-listing kinds, so the dispatch
-            // can never drop a kind a handler owns — the 8b5773878 drift class is
+            // can never drop a kind a handler owns — the 334c4466d drift class is
             // unexpressible. `None` means an inline arm (below) or no native
             // codegen (handled by the loud catch-all).
             let op_family = fc::native_op_family(op.kind.as_str());
@@ -1193,7 +1193,7 @@ impl SimpleBackend {
                 // is `fc::arith::HANDLED_KINDS`, the reduction authority is
                 // `fc::vec_reductions::HANDLED_KINDS`, and the dispatch table maps
                 // both to `NativeOpFamily::Arith`. Dropping the dispatch's copy of
-                // the `vec_*` list was the 8b5773878 regression (fixed 0323ad28c);
+                // the `vec_*` list was the 334c4466d regression (fixed 85de1bbb2);
                 // there is no longer a copy here to drop.
                 _ if op_family == Some(fc::NativeOpFamily::Arith) => {
                     let __flow = fc::arith::handle_arith_op(
@@ -1759,7 +1759,7 @@ impl SimpleBackend {
                 // silent `_ => {}` arm below, which emits no codegen and leaves
                 // the result SSA value undefined (resolving to the None
                 // sentinel) — the same silent-miscompile class as the vec_*
-                // dispatch drop fixed in 0323ad28c. `copy` shares the
+                // dispatch drop fixed in 85de1bbb2. `copy` shares the
                 // args-based alias lowering, whose generated ownership facts
                 // distinguish transparent aliases from the owned
                 // `binding_alias` lane. Keep in sync with
@@ -2111,11 +2111,11 @@ impl SimpleBackend {
                 // Loud single-source-of-truth backstop for the dispatch<->handler
                 // mirror. Routing above is derived from each handler's
                 // `HANDLED_KINDS` via `op_family`, so a handler's kind can never be
-                // silently dropped from the dispatch (the 8b5773878 regression).
+                // silently dropped from the dispatch (the 334c4466d regression).
                 // This arm catches the residual case: a result-producing kind that
                 // NO inline arm and NO family claims. Leaving it unhandled would
                 // leave its result SSA value undefined (resolving to the None
-                // sentinel) -> the exact silent miscompile fixed in 0323ad28c. Fail
+                // sentinel) -> the exact silent miscompile fixed in 85de1bbb2. Fail
                 // loud here, just as every fc::* handler's own `_ => unreachable!`.
                 _ => {
                     if let Some(binding) = simple_ir_binding(&op) {
@@ -2131,7 +2131,7 @@ impl SimpleBackend {
                             "native backend: no codegen for result-producing op kind `{}` \
                              (out={:?}) in function `{}`. It is claimed by no inline dispatch \
                              arm and no fc::* family (HANDLED_KINDS) — the dispatch<->handler \
-                             mirror drift class regressed by 8b5773878 / fixed 0323ad28c. Add \
+                             mirror drift class regressed by 334c4466d / fixed 85de1bbb2. Add \
                              the kind to the owning handler's HANDLED_KINDS, or to \
                              op_family::NATIVE_NO_CODEGEN_RESULT_KINDS if it legitimately needs \
                              no native codegen.",

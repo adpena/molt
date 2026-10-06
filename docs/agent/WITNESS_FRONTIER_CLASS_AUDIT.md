@@ -12,7 +12,7 @@ source at the anchor below (M05: a PASS is a hypothesis until reproduced — her
 until read in the tree). Where a numpy contract is cited it is verified against the
 vendored numpy source, not memory (M06).
 
-**Anchor.** `origin/main` @ `5be9dad3e1` (worktree off it).
+**Anchor.** `origin/main` @ `f0c77b5293` (worktree off it).
 
 **Version correction (load-bearing).** The witness builds **numpy 2.5.1** + **scipy
 1.18.0**, NOT 1.26.4. numpy 2.x lives in `numpy/_core/` (not `numpy/core/`) and its
@@ -348,7 +348,7 @@ model constructors + `molt_cpython_abi_cext_call_trampoline` +
 
 - **`molt_type_new` is present (index 1)** — the M58 "molt_type_new reserved-callable
   frontier" (d) is **CLOSED**.
-- **CLOSED (`e1baed8d8e`):** `[witness_frontier].reserved_runtime_callables` in
+- **CLOSED (`4f4e24ed59`):** `[witness_frontier].reserved_runtime_callables` in
   the manifest names the numpy/scipy reachable fixed-arity surface, and manifest
   validation rejects any member absent from the reserved/shared callable-table
   authority. The mask-proof test removes `molt_type_new` and requires a hard

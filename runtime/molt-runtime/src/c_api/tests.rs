@@ -1359,7 +1359,7 @@ fn repeated_weakref_callbacks_transfer_registration_custody_without_leak() {
 // keep the target live
 // (rc >= 1) across that re-entrant collection — a freed-out-from-under-the-callback
 // target would be a use-after-free. This is the pure-`gc.collect()`-in-callback
-// path the resurrection P0 fix (0e3b062fd) must hold against.
+// path the resurrection P0 fix (13cd891d3) must hold against.
 #[test]
 fn weakref_callback_calling_gc_collect_keeps_target_live() {
     let _guard = CApiTestGuard::new();

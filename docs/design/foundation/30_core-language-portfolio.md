@@ -9,7 +9,7 @@ ledger (Batches A-E) for the next build slots. -->
 
 # Core-Language Feature/Op Portfolio Audit — molt
 
-**Date:** 2026-06-06. All file:line anchors verified against current HEAD (commit `951938075`). This document is the language-semantics counterpart to doc 29 (stdlib portfolio); it does not duplicate stdlib-subsystem analysis.
+**Date:** 2026-06-06. All file:line anchors verified against current HEAD (commit `fef48ecb0`). This document is the language-semantics counterpart to doc 29 (stdlib portfolio); it does not duplicate stdlib-subsystem analysis.
 
 ---
 
@@ -134,7 +134,7 @@ operation is retired; ordinary class allocation preserves heap ownership.
 
 #### 1h. Hash/eq contract
 
-**UPSTREAM.** No explicit `__hash__`/`__eq__` lowering at the frontend. Hash computations happen entirely in the runtime (`molt_hash`, `molt_ensure_hashable`). `ensure_hashable` context parity (CPython 3.14 unhashable message context) was fixed (`5fe6b0980`).
+**UPSTREAM.** No explicit `__hash__`/`__eq__` lowering at the frontend. Hash computations happen entirely in the runtime (`molt_hash`, `molt_ensure_hashable`). `ensure_hashable` context parity (CPython 3.14 unhashable message context) was fixed (`4ab2587ce`).
 
 **SEMANTICS.** Hash/eq consistency for user objects: not statically verified. A class defining `__eq__` without `__hash__` correctly sets `__hash__ = None` (runtime handles). `frozenset`/tuple hash composition: in the runtime via recursive `molt_hash`. No differential test covers deep recursive hash chain.
 
@@ -238,9 +238,9 @@ operation is retired; ordinary class allocation preserves heap ownership.
 
 **UPSTREAM.** Free variables are represented as indices into the closure frame (1-element list cells, loaded/stored via `LOAD_CLOSURE`/`STORE_CLOSURE`). `nonlocal_decls`, `global_decls` tracked. `_box_local` creates a 1-element list cell for variables that escape into closures or are assigned in `try`/`with` blocks. 
 
-**SEMANTICS.** Nonlocal: `LOAD_CLOSURE(cell_index)` / `STORE_CLOSURE(cell_index, val)`. Global: `_emit_module_attr_get`/`_emit_module_attr_set`. The `comp_shadow_locals` mechanism (`__init__.py:276`) handles the comprehension scope isolation (walrus operator in comprehension sees outer scope per PEP 572). Inliner closure env-misbind fix: `0920ce213` (patched). Corpus: `closure_cell_sharing.py`, `free_vars_basic.py`, `nonlocal_del_binding.py`, `comprehension_walrus_scope.py`, `comprehension_walrus_nested_targets.py`.
+**SEMANTICS.** Nonlocal: `LOAD_CLOSURE(cell_index)` / `STORE_CLOSURE(cell_index, val)`. Global: `_emit_module_attr_get`/`_emit_module_attr_set`. The `comp_shadow_locals` mechanism (`__init__.py:276`) handles the comprehension scope isolation (walrus operator in comprehension sees outer scope per PEP 572). Inliner closure env-misbind fix: `e718b01c1` (patched). Corpus: `closure_cell_sharing.py`, `free_vars_basic.py`, `nonlocal_del_binding.py`, `comprehension_walrus_scope.py`, `comprehension_walrus_nested_targets.py`.
 
-**Score.** IMPORTANCE=3, GAP=1. The comp-walrus class had a real miscompile (`99723d589`, now fixed). No standing structural gap; the evidence base confirms working coverage.
+**Score.** IMPORTANCE=3, GAP=1. The comp-walrus class had a real miscompile (`fa8a394a9`, now fixed). No standing structural gap; the evidence base confirms working coverage.
 
 ---
 
@@ -288,7 +288,7 @@ operation is retired; ordinary class allocation preserves heap ownership.
 
 #### 6a. for-loop desugaring
 
-**UPSTREAM.** `_emit_iter_new` (frontend:9443–9458) + `_emit_iter_next_checked` (`:9460–9475`) + `_emit_for_loop` (`:10195`). The exception-pending path after `ITER_NEXT` correctly routes via `_emit_raise_if_pending` (C2 fix landed: `430e09793`).
+**UPSTREAM.** `_emit_iter_new` (frontend:9443–9458) + `_emit_iter_next_checked` (`:9460–9475`) + `_emit_for_loop` (`:10195`). The exception-pending path after `ITER_NEXT` correctly routes via `_emit_raise_if_pending` (C2 fix landed: `ab323ec10`).
 
 **DOWNSTREAM.** `range_devirt` (passes/range_devirt.rs): eliminates range object + iterator allocations for `for i in range(...)`. `iter_devirt` (passes/iter_devirt.rs): converts `for x in list` to indexed loop. Both are proven, working passes.
 

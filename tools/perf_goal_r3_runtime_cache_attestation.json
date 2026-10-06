@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "claim": "PERF-GOAL-R3",
-  "git_rev": "995da996dd27c8b125d20b169da05191d7c73a87",
+  "git_rev": "3d9d11ad29610cf443ce5e39fdfacf6f1e13d552",
   "machine": {
     "platform": "Windows-11-10.0.26200-SP0",
     "processor": "AMD64 Family 23 Model 113 Stepping 0, AuthenticAMD",

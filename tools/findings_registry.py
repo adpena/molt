@@ -45,7 +45,7 @@ CLI::
     python tools/findings_registry.py list
     python tools/findings_registry.py get probe_int_checkedmul_peel_v1
     python tools/findings_registry.py query --consumer tools/bench_evidence.py
-    python tools/findings_registry.py query --producer 261efc7b2
+    python tools/findings_registry.py query --producer 346e3563b
     python tools/findings_registry.py query --domain windows
     python tools/findings_registry.py register --from-json record.json
     python tools/findings_registry.py seed        # write the seeded keystones
@@ -904,11 +904,11 @@ def build_seed_findings() -> list[Finding]:
                     measurement_method=(
                         "molt build --release probe_int.py; wall vs CPython 3.12"
                     ),
-                    source_artifact="commit 261efc7b2 (int-mul CheckedMul peel LANDED)",
+                    source_artifact="commit 346e3563b (int-mul CheckedMul peel LANDED)",
                     measured_utc=_SEED_UTC,
                 ),
             ),
-            producers=("commit 261efc7b2", "tools/bench_evidence.py"),
+            producers=("commit 346e3563b", "tools/bench_evidence.py"),
             consumers=(
                 "docs/agent/PERF_AUTHORITY.md",
                 "tools/check_perf_freshness.py",
@@ -956,7 +956,7 @@ def build_seed_findings() -> list[Finding]:
                     measurement_method=(
                         "molt build --release accumulator loops; wall vs CPython 3.12"
                     ),
-                    source_artifact="commit dcc00a506 (sum genexpr/listcomp raw-lane)",
+                    source_artifact="commit 9d7bc876e (sum genexpr/listcomp raw-lane)",
                     measured_utc=_SEED_UTC,
                 ),
                 EmpiricalAnchor(
@@ -968,11 +968,11 @@ def build_seed_findings() -> list[Finding]:
                     measurement_method=(
                         "molt build --release accumulator loops; wall vs CPython 3.12"
                     ),
-                    source_artifact="commit dcc00a506 (sum genexpr/listcomp raw-lane)",
+                    source_artifact="commit 9d7bc876e (sum genexpr/listcomp raw-lane)",
                     measured_utc=_SEED_UTC,
                 ),
             ),
-            producers=("commit dcc00a506", "tools/bench_evidence.py"),
+            producers=("commit 9d7bc876e", "tools/bench_evidence.py"),
             consumers=(
                 "docs/agent/PERF_AUTHORITY.md",
                 "memory/M46",
@@ -1017,7 +1017,7 @@ def build_seed_findings() -> list[Finding]:
                         "compile (M71 technique); serial re-lower wall"
                     ),
                     source_artifact=(
-                        "commit 522b7fe04 (Tarjan SCC condensation fixes serial bail)"
+                        "commit 7cc0cea4a (Tarjan SCC condensation fixes serial bail)"
                     ),
                     measured_utc=_SEED_UTC,
                     noise_floor=20.0,
@@ -1028,7 +1028,7 @@ def build_seed_findings() -> list[Finding]:
                     ),
                 ),
             ),
-            producers=("commit 522b7fe04", "commit 522b7fe04 (SCC condensation)"),
+            producers=("commit 7cc0cea4a", "commit 7cc0cea4a (SCC condensation)"),
             consumers=(
                 "docs/agent/CODEX_CENTURY_GOAL.md",
                 "memory/M55",
@@ -1077,11 +1077,11 @@ def build_seed_findings() -> list[Finding]:
                         "build wall-clock A/B on the canonical box; landed as the "
                         "default lever (M09 BINDING build-time attack)"
                     ),
-                    source_artifact="commit aa15340aa (incremental-when-sccache-off)",
+                    source_artifact="commit 3d47353c6 (incremental-when-sccache-off)",
                     measured_utc=_SEED_UTC,
                 ),
             ),
-            producers=("commit aa15340aa",),
+            producers=("commit 3d47353c6",),
             consumers=(
                 "docs/agent/BUILD_TIME.md",
                 "memory/M09",

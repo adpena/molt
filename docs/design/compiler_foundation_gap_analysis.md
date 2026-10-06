@@ -69,7 +69,7 @@ These six are absent and are prerequisites cited repeatedly across lanes.
   (frontend:2964) opts functions out of EH bookkeeping by a syntactic scan, but raising callees set
   the pending flag regardless → a `needs_exception_stack=False` lambda with a raising call (e.g.
   `lambda: int("x")`) leaves an unobserved pending exception, returns None → silent wrong propagation.
-  Only the iterator-consumer manifestation was patched (LOOP_BREAK_IF_EXCEPTION, b8ebc7703/6cb05b104).
+  Only the iterator-consumer manifestation was patched (LOOP_BREAK_IF_EXCEPTION, 813f789cb/3f8a457e5).
   Structural fix: make the per-op exception-routing decision effect-oracle-driven (S3), OR default
   needs_exception_stack=True and lean on check_exception_elim to drop redundant checks.
 - **C3: async `*_poll` "TIR roundtrip emitted invalid labels" panic** (simple_backend.rs:2526). A

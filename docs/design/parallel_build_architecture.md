@@ -248,7 +248,7 @@ monolith) + #3 (shared canonical artifact roots and sccache). Keep
 
 ## Addendum (2026-06-03): backend god-file split landed; crate-extraction boundary scoped
 
-Step 1 (module split) LANDED `34e3bddbf`: `runtime/molt-backend/src/lib.rs` 6,928→264 lines.
+Step 1 (module split) LANDED `fd58a0a93`: `runtime/molt-backend/src/lib.rs` 6,928→264 lines.
 `SimpleBackend` + native codegen now live in `native_backend/simple_backend.rs`.
 
 Step 2 (extract `molt-backend-native`) — measured boundary from `simple_backend.rs`:
@@ -275,7 +275,7 @@ Step 2 (extract `molt-backend-native`) — measured boundary from `simple_backen
 ## Addendum (2026-06-27): backend-native boundary landed
 
 The deleted `docs/design/foundation/dx_phase3_extraction_baton.md` was a
-pre-`molt-tir` handoff anchored to base `9e93503bb`. Its durable boundary has
+pre-`molt-tir` handoff anchored to base `9e8428e2e`. Its durable boundary has
 now landed as code: `runtime/molt-backend-native/` owns `native_backend/` and
 `llvm_backend/` on top of `molt-ir`, `molt-passes`, `molt-tir`, and
 `molt-codegen-abi`.

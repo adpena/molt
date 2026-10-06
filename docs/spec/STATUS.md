@@ -1619,7 +1619,7 @@ numeric construction. Evidence:
 Counter uses the shared native dictionary subclass storage and compiled Python
 methods. Its streaming tally primitive shares dictionary hash lookup and store
 operations, while overridden mapping methods retain ordinary Python dispatch.
-The removed handle-backed implementation's benchmark at `git_rev=a5ccd8d5e`
+The removed handle-backed implementation's benchmark at `git_rev=8a17605f4`
 (`bench/results/counter_words_head_20260520.json`) is historical evidence only;
 it does not qualify the current implementation or establish a current speedup.
 Native, linked-WASM and authoritative performance qualification remain required.

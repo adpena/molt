@@ -1142,7 +1142,7 @@ def _prune_stale_repo_processes(
         return ()
     samples = memory_guard.sample_processes()
     # CANONICAL: the preflight terminates ONLY under explicit guard custody, like
-    # the continuous sentinel (commit 5df6b35d5 "Require explicit custody for repo
+    # the continuous sentinel (commit aa3133ed0 "Require explicit custody for repo
     # sentinel termination"). A guard about to launch a command owns nothing yet,
     # and repo-scope heuristics match parent shells, Codex/Claude helpers, and
     # unrelated processes that merely reference the repo path on their command

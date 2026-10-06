@@ -524,9 +524,9 @@ All Python differential tests above must pass on native/Cranelift, WASM, and LLV
 ## 8. Risk + Rollback + Dependencies
 
 ### Blocked by (what W1 depends on):
-- S2 (TargetInfo) — **LANDED** (`9ff5d2e00`). The `ProfileData` hook, `with_profile_data`, `is_pgo_hot`, `inline_budget` are all in production code.
-- S4 (module phase / call graph) — **LANDED** (`7915b29a0`). The inliner E1 runs in `run_module_pipeline`.
-- E1 inliner a+b — **LANDED** (`f14b196ce`). Phase W1-a feeds real `ProfileData` to the inliner's existing budget path.
+- S2 (TargetInfo) — **LANDED** (`6dc287a3f`). The `ProfileData` hook, `with_profile_data`, `is_pgo_hot`, `inline_budget` are all in production code.
+- S4 (module phase / call graph) — **LANDED** (`cd5acdb7d`). The inliner E1 runs in `run_module_pipeline`.
+- E1 inliner a+b — **LANDED** (`e9af31a03`). Phase W1-a feeds real `ProfileData` to the inliner's existing budget path.
 
 ### Unblocks (what W1 enables):
 - W2 CHA + speculative devirt: profile type frequencies (not yet collected) enable W2's speculative inline guard.

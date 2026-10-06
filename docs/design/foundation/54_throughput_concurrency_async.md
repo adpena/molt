@@ -13,7 +13,7 @@ generated, checkable CONCURRENCY FACT PLANE that (a) makes a whole CLASS of data
 become CONSUMERS of these facts; this doc is the producer + transport + validator contract.
 
 All file:line anchors verified against the live worktree on branch `main` at the session HEAD
-(2026-06-24). Where doc 33 (HEAD bd0b76d3, 2026-06-06) and doc 28 (2026-06-06) cite anchors,
+(2026-06-24). Where doc 33 (HEAD 927f168f, 2026-06-06) and doc 28 (2026-06-06) cite anchors,
 this doc re-verifies the load-bearing ones and flags drift inline. The doc-33 anchors that still
 hold at HEAD: scheduler uses `crossbeam_deque::{Injector, Worker}` (scheduler.rs:11), worker
 count `num_cpus::get().max(1)` (scheduler.rs:378), task state on `MoltHeader` flag bits

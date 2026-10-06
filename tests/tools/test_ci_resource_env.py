@@ -158,13 +158,13 @@ max_jobs = 4
 measured_peak_rss_bytes = 2347479040
 headroom_ratio = 0.0
 measurement_run_id = 29646901351
-measurement_commit = "4002a0956af24736d39bc6b077045a1c278f0adc"
+measurement_commit = "c299b9e8cdf4537a389d6f93760951398c5f3c0a"
 measurement_command = "python3 tools/run_cargo_test_truth.py"
 
 [cargo_environment]
 incident_run_id = 30211145633
 incident_job_id = 89817499999
-incident_commit = "66c042c7ba51bc8606f34b27cfc6af90783cec61"
+incident_commit = "20b046b79bd4ca64a8c859f737f6e330377bcc4e"
 incident_command = "cargo metadata --locked --format-version 1"
 
 [cargo_execution]
@@ -178,7 +178,7 @@ observed_cold_timeout_seconds = 300.51
 minimum_cold_headroom_multiplier = 3.0
 measurement_run_id = 30209686001
 measurement_job_id = 89813773652
-measurement_commit = "88f2c1ae305e78bbbf4ad2b86aa8d620825d9523"
+measurement_commit = "adcc350d6ed1fb8541bb0202e7bc4b248cd9a8c4"
 measurement_command = "cargo build --locked --profile dev-fast -p molt-wasm-host"
 """.strip(),
         encoding="utf-8",
@@ -220,7 +220,7 @@ def test_cargo_environment_policy_retains_native_incident_receipt() -> None:
     )
     assert policy.incident_run_id == 30_211_145_633
     assert policy.incident_job_id == 89_817_499_999
-    assert policy.incident_commit == "66c042c7ba51bc8606f34b27cfc6af90783cec61"
+    assert policy.incident_commit == "20b046b79bd4ca64a8c859f737f6e330377bcc4e"
     assert policy.incident_command == "cargo metadata --locked --format-version 1"
 
 

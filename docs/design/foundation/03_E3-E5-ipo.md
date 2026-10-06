@@ -81,7 +81,7 @@ For each function in bottom-up order:
 1. Extend the shared escape analysis to explicitly seed parameter values before computing parameter summaries. The current allocation-root analysis does not return facts for arbitrary parameters: a missing map entry means unknown, never noncapture. A positive summary requires every alias, CFG edge, retained result and callback use to satisfy the noncapture contract.
 2. Compute body effects from the generated operation authority and identity-bound callee summaries. Builtin and method names are not effect summaries. Exception propagation and callback mutations remain observable; an effect-free result calculation alone does not permit motion across a handler or heap mutation.
 3. Compute `return_repr`: collect all `Return` terminators' returned value `ValueId`s; for each, look up the function's own `repr_by_value` (if available via `representation_plan.rs`). If all return sites agree on the same `Repr`, record it; otherwise `None`.
-4. Compute `return_alias` — migrate the existing `passes::compute_return_alias_summaries` (passes.rs:156) from the legacy SimpleIR layer to TIR, operating on the same bottom-up order (this is the "deferred" slot S4 reserved at 7915b29a0).
+4. Compute `return_alias` — migrate the existing `passes::compute_return_alias_summaries` (passes.rs:156) from the legacy SimpleIR layer to TIR, operating on the same bottom-up order (this is the "deferred" slot S4 reserved at cd5acdb7d).
 
 **Integration point**: escape_analysis.rs:367 — the `OpCode::Call` arm currently sets `GlobalEscape` unconditionally. After E3 lands, this arm becomes:
 
@@ -586,9 +586,9 @@ The existing `tools/verify_native_binary_valid.sh` runs after every build. E5 sp
 
 ### Dependencies (blocking)
 
-- **E3 requires S4 call_graph + run_module_pipeline** — already landed (`7915b29a0`). Unblocked.
+- **E3 requires S4 call_graph + run_module_pipeline** — already landed (`cd5acdb7d`). Unblocked.
 - **E3's does_not_capture requires escape_analysis::analyze** — already exists and is correct. Unblocked.
-- **E5 requires repr_by_value in RepresentationPlan** — already exists (`cd66f365e` S6 + `64c2c53b8` repr-promotion). Unblocked.
+- **E5 requires repr_by_value in RepresentationPlan** — already exists (`3ffb5b686` S6 + `ce6a34b91` repr-promotion). Unblocked.
 - **E5 requires run_pipeline operating on cloned TirFunctions** — already exists. Unblocked.
 - **E5 requires inliner clone primitives** — `clone_function_body_with_fresh_ids` at inliner.rs. Reuse directly.
 - **E3's CheckException interaction with has_exception_handling** — the MEMORY.md keystone finding: `CheckException` sets `has_exception_handling = true`, making `is_inlineable` refuse real functions. The `is_pure` computation in E3 MUST use `has_exception_handlers()` (the narrower predicate from function.rs:153, which only fires on TryStart/TryEnd/StateBlock), NOT `has_exception_handling`. A function with only CheckException observation is still pure. This is the exact same distinction the inliner already draws.

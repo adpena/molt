@@ -13,7 +13,7 @@ The historical gap: on the dormant native value-tracking lane the loop-body
 elements stayed above zero after ``clear()`` and the log stayed empty
 (``entries 0``). Fixed by flipping native onto the TIR drop-insertion lane —
 the round-10/11/12 native-drop arc (Blocker B loop body/exit polarity derived
-from the CFG in ``13ecbdb16``) merged via ``df8f080d0`` — which retires the
+from the CFG in ``029e9fe27``) merged via ``5ebf77791`` — which retires the
 value-tracking lane and DecRefs the temp at its true last use (right after the
 ``append`` consumes it), inside the loop body. Distinct from #58 (ordering) and
 from the round-13 drop-lane fix.

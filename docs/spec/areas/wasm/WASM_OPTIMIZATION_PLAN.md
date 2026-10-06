@@ -66,17 +66,17 @@ recorded source snapshots, not the current candidate's performance.
 | Optimization | Impact | Effort | Priority |
 |---|---|---|---|
 | Local variable coalescing (liveness analysis) | Exact shared-CFG liveness plans every non-parameter value in plain and jumpful frames (§1.6); artifact impact not yet measured | Medium | P1 |
-| Box/unbox elimination when types are statically known | DONE (cd3f98df) — eq/ne skip unbox entirely, arithmetic uses trusted unbox saving 4 insns/op | High | P1 |
-| `br_table` for large state dispatch | 2-5x faster generator resume | DONE (c1ae684a) | P1 |
-| Constant folding at WASM emission time | DONE (cd3f1b5f) — forward data-flow, folds add/sub/mul/bitwise on fast_int constants | Low | P2 |
-| Dead local elimination | 2-5% size reduction | DONE (0b9c39ad) | P2 |
-| Instruction combining (adjacent operations) | DONE (d468918f) — const propagation through box/unbox, 5→2 insns for known-const unbox | Medium | P2 |
+| Box/unbox elimination when types are statically known | DONE (7388c7fe) — eq/ne skip unbox entirely, arithmetic uses trusted unbox saving 4 insns/op | High | P1 |
+| `br_table` for large state dispatch | 2-5x faster generator resume | DONE (7ce16de2) | P1 |
+| Constant folding at WASM emission time | DONE (36006125) — forward data-flow, folds add/sub/mul/bitwise on fast_int constants | Low | P2 |
+| Dead local elimination | 2-5% size reduction | DONE (eb5655e5) | P2 |
+| Instruction combining (adjacent operations) | DONE (a21c3341) — const propagation through box/unbox, 5→2 insns for known-const unbox | Medium | P2 |
 
 ### 1.4 Audit Findings (2026-03-20)
 
 - 215/602 imports unused (35.6%) — handled by wasm-opt --remove-unused-module-elements post-link
-- DONE (fef9990c) — local.tee optimization: 37 eliminated LocalGet instructions
-- DONE (ffd95a5d) — Constant materialization: ConstantCache for INT_SHIFT/INT_MIN/INT_MAX
+- DONE (0145e014) — local.tee optimization: 37 eliminated LocalGet instructions
+- DONE (a43f658e) — Constant materialization: ConstantCache for INT_SHIFT/INT_MIN/INT_MAX
 - memory.copy for buffer operations not yet implemented (P2)
 
 ### 1.5 Completed Optimization Summary (2026-03-20)
@@ -85,22 +85,22 @@ All of the following optimizations were completed in the 2026-03-20 session:
 
 | Optimization | Commit | Impact |
 |---|---|---|
-| Local variable coalescing | ac215c48 | Greedy linear-scan for `__tmp`/`__v` temporaries; superseded by §1.6 because current SimpleIR no longer uses those spellings |
-| Constant folding at WASM emission | cd3f1b5f | Forward data-flow analysis, folds add/sub/mul/bitwise on `fast_int` constants; 3-5% size reduction |
-| Instruction combining | d468918f | Const propagation through box/unbox, reduces 5 insns to 2 for known-const unbox; 3-8% speed improvement |
-| `local.tee` introduction | fef9990c | 37 eliminated `LocalGet` instructions; ~1-2% instruction reduction |
-| Constant caching (`ConstantCache`) | ffd95a5d | Cache for `INT_SHIFT`/`INT_MIN`/`INT_MAX` materialization in helper functions |
+| Local variable coalescing | 3ab0dbf3 | Greedy linear-scan for `__tmp`/`__v` temporaries; superseded by §1.6 because current SimpleIR no longer uses those spellings |
+| Constant folding at WASM emission | 36006125 | Forward data-flow analysis, folds add/sub/mul/bitwise on `fast_int` constants; 3-5% size reduction |
+| Instruction combining | a21c3341 | Const propagation through box/unbox, reduces 5 insns to 2 for known-const unbox; 3-8% speed improvement |
+| `local.tee` introduction | 0145e014 | 37 eliminated `LocalGet` instructions; ~1-2% instruction reduction |
+| Constant caching (`ConstantCache`) | a43f658e | Cache for `INT_SHIFT`/`INT_MIN`/`INT_MAX` materialization in helper functions |
 | Precompiled `.molt.cwasm` containers | Host-owned producer migration | `--precompile` removes startup compilation; consumer proof and current startup measurements required |
-| `br_table` O(1) state dispatch | c1ae684a | Generator/coroutine state machines use `br_table`; 2-5x faster resume |
-| Dead local elimination (`__dead_sink`) | 0b9c39ad | Unused locals routed to single sink; 2-5% binary size reduction |
-| `memory.fill` for generator zero-init | 2bff6165 | Bulk zero-init replaces N individual stores; code size + throughput |
-| `memory_copy` intrinsic op | 4ca5c360 | `memory.copy` emission for bulk linear-memory copies |
-| Full wasm-opt Oz/O3 pipelines | bf65d218 | Integrated post-link optimization; 15-30% binary size reduction |
-| `--wasm-profile pure` import stripping | ddc8ea4c | Compile-time IO/ASYNC/TIME import stripping for pure-compute modules |
-| Tail call emission (`return_call`) | 49af0f7a | Conservative tail calls for non-stateful functions without EH |
-| Native exception handling groundwork | 4b7a52c5 | Tag section, try_table/catch/throw; enabled by default (MOLT_WASM_NATIVE_EH=0 to disable) |
-| SIMD stub rewriter support | 0eb06e6c | WASI stub rewriter handles SIMD instructions; enables +simd128 freestanding |
-| Box/unbox elimination | cd3f98df | eq/ne skip unbox; arithmetic uses trusted unbox saving 4 insns/op |
+| `br_table` O(1) state dispatch | 7ce16de2 | Generator/coroutine state machines use `br_table`; 2-5x faster resume |
+| Dead local elimination (`__dead_sink`) | eb5655e5 | Unused locals routed to single sink; 2-5% binary size reduction |
+| `memory.fill` for generator zero-init | 19b4ecf2 | Bulk zero-init replaces N individual stores; code size + throughput |
+| `memory_copy` intrinsic op | df7f0895 | `memory.copy` emission for bulk linear-memory copies |
+| Full wasm-opt Oz/O3 pipelines | 31a183a4 | Integrated post-link optimization; 15-30% binary size reduction |
+| `--wasm-profile pure` import stripping | 483cb18a | Compile-time IO/ASYNC/TIME import stripping for pure-compute modules |
+| Tail call emission (`return_call`) | 8e5f9f55 | Conservative tail calls for non-stateful functions without EH |
+| Native exception handling groundwork | 00ed70bf | Tag section, try_table/catch/throw; enabled by default (MOLT_WASM_NATIVE_EH=0 to disable) |
+| SIMD stub rewriter support | 76aebc3a | WASI stub rewriter handles SIMD instructions; enables +simd128 freestanding |
+| Box/unbox elimination | 7388c7fe | eq/ne skip unbox; arithmetic uses trusted unbox saving 4 insns/op |
 
 ### 1.6 Frame Local Storage
 
@@ -246,7 +246,7 @@ buffer, import, or callable-closure work.
 - Use `memory.copy` for buffer-to-buffer operations where both source and destination are in linear memory.
 - Estimated impact: 10-30% speedup for large buffer operations; 2-5% binary size reduction from shorter initialization sequences.
 
-**UPDATE 2026-03-20:** `memory.fill` is now used for generator control block zero-initialization (2bff6165). `memory_copy` intrinsic op (4ca5c360) added to the WASM emitter, emitting `memory.copy` (src_mem=0, dst_mem=0) for bulk linear-memory-to-linear-memory copies.
+**UPDATE 2026-03-20:** `memory.fill` is now used for generator control block zero-initialization (19b4ecf2). `memory_copy` intrinsic op (df7f0895) added to the WASM emitter, emitting `memory.copy` (src_mem=0, dst_mem=0) for bulk linear-memory-to-linear-memory copies.
 
 **UPDATE 2026-03-20:** `memory_copy` intrinsic op added to the WASM emitter. The op emits `memory.copy` (src_mem=0, dst_mem=0) for bulk linear-memory-to-linear-memory copies. IR signature: `memory_copy(dst, src, len)` where all three args are i64-boxed i32 byte offsets. Current buffer ops (`bytes_concat`, `str_concat`, `list_copy`, `slice`, etc.) all delegate to host imports which perform the copy on the host side; the new intrinsic is available for future IR lowering passes that can identify cases where both source and destination are already resolved to linear memory addresses (e.g. closure slot migration, frame spill/restore, data-segment-to-heap initialization).
 
@@ -270,7 +270,7 @@ buffer, import, or callable-closure work.
   admission is preserved. Other hosts must establish their own matching policy.
 - Browser compatibility is good (Chrome 91+, Firefox 89+, Safari 16.4+).
 
-**UPDATE 2026-03-20:** SIMD instructions fully supported in the WASI stub rewriter (0eb06e6c), enabling freestanding builds with +simd128.
+**UPDATE 2026-03-20:** SIMD instructions fully supported in the WASI stub rewriter (76aebc3a), enabling freestanding builds with +simd128.
 
 **Priority**: P2 (stdlib intrinsics), P3 (auto-vectorization).
 
@@ -285,7 +285,7 @@ buffer, import, or callable-closure work.
 - Primary beneficiaries: recursive algorithms (tree traversal, list processing), trampoline dispatch.
 - Estimated impact: prevents stack overflow for deep recursion; minor performance improvement from eliminated stack frame setup/teardown.
 
-**UPDATE 2026-03-20:** Implemented (49af0f7a). Conservative: only non-stateful functions without exception handling. Reports count via MOLT_WASM_IMPORT_AUDIT=1.
+**UPDATE 2026-03-20:** Implemented (8e5f9f55). Conservative: only non-stateful functions without exception handling. Reports count via MOLT_WASM_IMPORT_AUDIT=1.
 
 **Priority**: P2 -- correctness improvement more than performance.
 
@@ -301,7 +301,7 @@ buffer, import, or callable-closure work.
 - Move exception payload (class, message, traceback) into WASM-side data structures, eliminating host round-trips for exception attribute access.
 - Estimated impact: 20-40% speedup for exception-heavy code (generators, iterators, `dict.get` with default); 5-10% binary size reduction from eliminated check_exception blocks.
 
-**UPDATE 2026-03-20:** Groundwork complete (4b7a52c5). Tag section, try_table/catch/throw emission implemented. Currently works for unlinked output only (wasm-ld EH relocation support pending).
+**UPDATE 2026-03-20:** Groundwork complete (00ed70bf). Tag section, try_table/catch/throw emission implemented. Currently works for unlinked output only (wasm-ld EH relocation support pending).
 
 **UPDATE 2026-03-21:** Native EH enabled by default. Set `MOLT_WASM_NATIVE_EH=0` to disable. 20-40% speedup for exception-heavy code; eliminates `exception_pending` polling after every host call.
 
@@ -390,7 +390,7 @@ brotli / gzip  -->  output_stripped.wasm.br
 |---|---|---|
 | **Non-reloc Auto import stripping** (`WasmProfile::Auto`) | Workload-dependent; removes unused function imports after codegen | DONE — emitted-use ledger (`TrackedImportIds`) plus validated `strip_unused_imports` owns final non-reloc retention |
 | **Reloc Auto import stripping** (`WasmProfile::Auto` + reloc) | Enables linker GC without unused runtime imports | DONE — emitted-use ledger plus padded-width function-index remap strips unused imports before relocation/linking sections |
-| **Pure capability stripping** (`--wasm-profile pure`) | 30-50% for pure-compute modules | DONE (ddc8ea4c) — compile-time IO/ASYNC/TIME import family omission |
+| **Pure capability stripping** (`--wasm-profile pure`) | 30-50% for pure-compute modules | DONE (483cb18a) — compile-time IO/ASYNC/TIME import family omission |
 | **Dead code elimination** via `wasm-opt --dce` | 10-20% | Integrated into build |
 | **Name section stripping** via `wasm-tools strip` | 5-10% | Integrated (--strip-debug in Oz pipeline) |
 | **Brotli compression** | 60-70% of stripped size | Available, not integrated into build |

@@ -10,7 +10,7 @@
   },
   "artifact": "C:\\Molt\\wt-optmatrix\\tmp\\opt_matrix_r1\\molt_runtime.release.wasm",
   "artifact_sha256": "7588e70cb3bb990c0c572af631d8c3af6f37bc5e5316da2088fb105a9576766d",
-  "git_revision": "1ead493fd3d0b050d2673d1c23fd5ab031f389a2",
+  "git_revision": "d8937ee1b26e9bc007d926e54d7eacf1ac7a4d7a",
   "before": {
     "mode": "duplicate import plus export-signature scans",
     "runs": [

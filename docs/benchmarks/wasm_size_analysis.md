@@ -39,7 +39,7 @@ A production `wasm-strip` or `wasm-opt --strip-debug` would reduce the file to:
 
 ### 2. Export count is high but already addressed
 
-6,419 exports is significant. Commit `599affbd` already eliminated 7,359 dead table ref exports from non-split builds. The remaining exports are live runtime entry points used by compiled user code.
+6,419 exports is significant. Commit `a842365c` already eliminated 7,359 dead table ref exports from non-split builds. The remaining exports are live runtime entry points used by compiled user code.
 
 ### 3. Function count (10,611) suggests tree-shaking opportunity
 

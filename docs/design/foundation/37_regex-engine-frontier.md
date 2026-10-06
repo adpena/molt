@@ -5,8 +5,8 @@ no implementation landed. Doc number 37 reserved by the supervisor in the doc-29
 remapping note (29 §header: "its 'Doc 32 Regex' -> slot 37"). Do not renumber.
 
 All file:line anchors verified against the live worktree at HEAD commit
-8679b065540d90a03e3253e24638da39643b42bf (branch main, 2026-06-06). The doc-29
-SUBSYSTEM 6 audit and the doc-16 regex rows were written at 951938075; this doc
+ea9ef5c0f0995d8c99e324cd2d73d97293401fc6 (branch main, 2026-06-06). The doc-29
+SUBSYSTEM 6 audit and the doc-16 regex rows were written at fef48ecb0; this doc
 RE-AUDITS the engine at HEAD and flags FOUR divergences from those audits inline
 (they are materially STALE — see §0.1).
 
@@ -63,7 +63,7 @@ layer** and the two homegrown Rust engines are **deleted**.
 ## 0. Method, scores, refusals
 
 House conventions (docs 26–33): every claim carries a `file:line` anchor verified at
-HEAD `8679b0655`; gaps are scored **IMPORTANCE × GAP** on the 1–3 scale; refused
+HEAD `ea9ef5c0f`; gaps are scored **IMPORTANCE × GAP** on the 1–3 scale; refused
 designs are stated with the reason; research provenance is inline.
 
 ### 0.1 FOUR stale claims in the prior audits (re-audited at HEAD)
@@ -293,7 +293,7 @@ exhaustion raises, it does not return a wrong span.
 
 ---
 
-## 2. Current-state audit (HEAD `8679b0655`) — the real gaps
+## 2. Current-state audit (HEAD `ea9ef5c0f`) — the real gaps
 
 The engine is `molt-runtime-regex/src/regex.rs` (live; satellite) ≡ `builtins/regex.rs`
 (duplicate; in-tree). All anchors below are the satellite copy.
@@ -826,4 +826,4 @@ Sources (provenance):
 - [google/re2](https://github.com/google/re2) + [Russ Cox, Regular Expression Matching](https://swtch.com/~rsc/regexp/) (BSD ideas) — linear-time philosophy, Pike VM submatch tracking.
 - [CPython re docs](https://docs.python.org/3/library/re.html) (PSF, semantics oracle) — empty-match 3.7 rule, `$`/`\Z`/MULTILINE, IGNORECASE full fold, `PatternError` attributes (msg/pattern/pos/lineno/colno), atomic/possessive 3.11, conditionals 3.12.
 - [Python 3.11 atomic groups & possessive quantifiers](https://learnbyexample.github.io/python-regex-possessive-quantifier/) (bpo-433030).
-- In-repo audited at HEAD `8679b0655`: `runtime/molt-runtime-regex/src/regex.rs`, `runtime/molt-runtime/src/builtins/regex.rs`, `runtime/molt-runtime/src/builtins/functions_re.rs`, `runtime/molt-runtime-regex/src/bridge.rs`, `src/molt/stdlib/re/__init__.py`, `src/molt/stdlib/{sre_constants,sre_parse,sre_compile,_sre}.py`, `Cargo.lock` (regex 1.12.3), `runtime/molt-runtime/Cargo.toml`, `docs/design/foundation/{16,29,33}_*.md`, `third_party/cpython-3.12/Lib/test/test_re.py`, `tools/fuzz_compiler.py`.
+- In-repo audited at HEAD `ea9ef5c0f`: `runtime/molt-runtime-regex/src/regex.rs`, `runtime/molt-runtime/src/builtins/regex.rs`, `runtime/molt-runtime/src/builtins/functions_re.rs`, `runtime/molt-runtime-regex/src/bridge.rs`, `src/molt/stdlib/re/__init__.py`, `src/molt/stdlib/{sre_constants,sre_parse,sre_compile,_sre}.py`, `Cargo.lock` (regex 1.12.3), `runtime/molt-runtime/Cargo.toml`, `docs/design/foundation/{16,29,33}_*.md`, `third_party/cpython-3.12/Lib/test/test_re.py`, `tools/fuzz_compiler.py`.

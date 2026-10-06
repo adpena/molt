@@ -57,7 +57,7 @@ KNOWN_GOOD = """\
 == driver exit code: 10
 """
 
-# Regression 1: datetime CAPI capsule reverted (09c8d2337) -> PyCapsule_Import
+# Regression 1: datetime CAPI capsule reverted (fc454b04f) -> PyCapsule_Import
 # silently fails, numpy stops BEFORE the numpy.exceptions import. (Mirrors the
 # real x86_64-Linux drive captured 2026-07-10.)
 REGRESSION_DATETIME = """\
@@ -72,7 +72,7 @@ REGRESSION_DATETIME = """\
 == driver exit code: 10
 """
 
-# Regression 2: allocator/private-symbol batch reverted (61093cb4a) -> the
+# Regression 2: allocator/private-symbol batch reverted (aa75c1ea7) -> the
 # static Py* symbol wall widens above the known-good ceiling.
 REGRESSION_SYMBOLS = """\
 == static symbol-gap check ...

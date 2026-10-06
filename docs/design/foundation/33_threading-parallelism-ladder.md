@@ -5,8 +5,8 @@ no implementation landed. This doc number (33) was reserved by the supervisor in
 doc-29 remapping note (29 §header: "its 'Doc 28 Threading' -> slot 33"). Do not renumber.
 
 All file:line anchors verified against the live worktree at HEAD commit
-bd0b76d3180a94952971f82a3473bfa579225d00 (branch main, 2026-06-06). The doc-29
-SUBSYSTEM 1 audit was written at 951938075; every claim it makes is re-verified here
+927f168f6b6ecaccd5ca53e54e21ae29d0be720e (branch main, 2026-06-06). The doc-29
+SUBSYSTEM 1 audit was written at fef48ecb0; every claim it makes is re-verified here
 against HEAD with fresh anchors, and three divergences from that audit are flagged
 inline (§2-b: io.rs holds the GIL across blocking file reads; §2-e: the locks use
 std Mutex+Condvar not parking_lot; §5-P1: the two-GIL convergence target).
@@ -1041,7 +1041,7 @@ shared-mutable-thread-parallel.
 
 ---
 
-## 10. KEY FILE ANCHORS (verified against HEAD bd0b76d3, 2026-06-06)
+## 10. KEY FILE ANCHORS (verified against HEAD 927f168f, 2026-06-06)
 
 - **GIL (authoritative):** `runtime/molt-runtime/src/concurrency/gil.rs`
   (`PREINIT_GIL` static :177; `molt_gil()` :181; `GIL_THREAD_COUNT` fastpath gate

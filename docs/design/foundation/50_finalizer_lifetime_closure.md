@@ -50,7 +50,7 @@ Matrix sections it unblocks: `del_statement`, `scope_exit`, `reassignment`, exce
 ## Open slice B — #63 loop-body PLACEMENT (dormant-native value-tracking)
 **Bug:** a per-iteration owned call-result temporary (`bag.append(B())`, `for i: x=R(i); del x`)
 is not released on dormant-native; the object never reaches rc 0. The round-13 §1b fix
-(`fe951364d`/drop_insertion) covers the DROP LANES (LLVM / flipped-native), NOT dormant
+(`3955a28d4`/drop_insertion) covers the DROP LANES (LLVM / flipped-native), NOT dormant
 native, which uses the `function_compiler.rs` value-tracking substrate. Fix lives in the
 value-tracking's per-iteration last-use handling for loop-body owned temporaries consumed
 by a call (the `Transferred` operand-ownership, #70b).

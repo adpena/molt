@@ -1,5 +1,5 @@
 <!-- Foundation design 28 (renumbered from the commissioned slot 27, which a parallel
-session took for the Perceus borrow-inference doc be9f64d16). Architect: read-only
+session took for the Perceus borrow-inference doc 5f7441f94). Architect: read-only
 research-granted agent, 2026-06-06. Runtime complement of doc 26. Saved verbatim.
 SUPERVISOR NOTES: (1) Part 1 §1.4 ROOT-CAUSES task #25 (InvalidStateError = dual
 source of truth between HEADER_FLAG_TASK_DONE and FutureState.done) with the Phase-1
@@ -10,7 +10,7 @@ Trio-style strict mode is UNLEASHED-tier (explicit opt-in), CPython cancel seman
 stay the default; (4) per the target-tiered principle, Phase 6 (WASM/design-18) is a
 first-class executor design, not a fallback.
 
-CORRECTION (2026-06-06, implementation session, commit d8665ba1a): §1.4's root-cause
+CORRECTION (2026-06-06, implementation session, commit dfed8b594): §1.4's root-cause
 attribution for task #25 is DISPROVEN by reproduction. The InvalidStateError is NOT
 the HEADER_FLAG_TASK_DONE/FutureState.done desync: minimal repro
 `async def main(): raise RuntimeError("x"); asyncio.run(main())` (no async-for, no
@@ -22,14 +22,14 @@ function_compiler.rs:13538-13572 + _emit_await_value/_emit_raise_if_pending; sam
 class as the LLVM state-resume dominance baton → StateDispatch #24). §1.4's
 state-sync fix applied alone converts the loud InvalidStateError into a SILENT WRONG
 RESULT (asyncio.run returns None) — forbidden. What survives of Phase 1: (a) the
-message-string parity fix LANDED (d8665ba1a; NB the C-accelerator strings differ
+message-string parity fix LANDED (dfed8b594; NB the C-accelerator strings differ
 from this doc's quoted pure-Python sources: 'Result is not set.' / 'Exception is not
 set.' / 'invalid state'); (b) the done-callback call_soon ordering design is CORRECT
 but BLOCKED on a second pre-existing bug — call_soon scheduled while the loop runs
 is never drained (ready-runner not polled by block_on's drain_ready,
 scheduler.rs:3793) — land them TOGETHER or callback execution regresses
 (deferred-but-never-run). Three CPython-verified differentials for the ordering
-contract are written and parked in the d8665ba1a history (removed from tree until
+contract are written and parked in the dfed8b594 history (removed from tree until
 both fixes land). -->
 
 # Asyncio Frontier Runtime — Architecture Design

@@ -1,6 +1,6 @@
 # Product Surface Audit — Measured New-User Reality
 
-Status: measured on Windows from `C:\Molt\wt-pillars` at commit `5de436f647`
+Status: measured on Windows from `C:\Molt\wt-pillars` at commit `5082f80bac`
 on 2026-07-11. This is an observation record, not a support claim.
 
 ## 1. Level 0: `molt run script.py`

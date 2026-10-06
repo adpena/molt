@@ -3271,7 +3271,7 @@ pub unsafe extern "C" fn PyMember_SetOne(
                 }
                 // 8-byte member: `field` may be only 4-aligned on a C-minted
                 // (wasm32, struct-align-4) object — see PyMember_GetOne's
-                // read_unaligned for the same class (a98ef2978e). An aligned
+                // read_unaligned for the same class (d461a6fea6). An aligned
                 // write here would be UB (misaligned dereference).
                 std::ptr::write_unaligned(field as *mut c_longlong, v);
                 0

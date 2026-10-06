@@ -20,7 +20,7 @@ deferred-drain" design that this file originally proposed was built on a
 **misdiagnosis** and has been reverted; this document records the true root
 cause, the falsification of the deferral premise, the landed runtime primitive,
 and the remaining executable gates. The original deferral text is preserved in
-git history (commit 48418a3bf and the WIP commits on the `wt_fin` branch).
+git history (commit b865aca3d and the WIP commits on the `wt_fin` branch).
 
 ## 1. The true root cause (definitively measured)
 A raise inside `__del__` is **NOT** "molt's custom native unwind to the nearest

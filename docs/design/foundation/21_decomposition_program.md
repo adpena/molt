@@ -3,7 +3,7 @@ decomposition program — kill the god-file problem, make concurrent dev + incre
 builds fast. Companion to 08_DX-buildspeed.md (build-speed sub-arc); this doc is the
 superset program (crate graph + frontend Python package + runtime satellite dedup +
 concurrency/ownership model). EVERY factual claim below is verified against the tree at
-base 9e93503bb; verification commands are inlined. This doc is a PLAN ONLY — no code was
+base 9e8428e2e; verification commands are inlined. This doc is a PLAN ONLY — no code was
 refactored in the session that produced it. -->
 
 # 21 — Codebase Decomposition Program
@@ -15,8 +15,8 @@ refactored in the session that produced it. -->
 > `Cargo.toml` plus
 > `docs/agent/RUNTIME_ARTIFACT_CODEGEN_AUTHORITY_20260727.md`.
 
-Status: **IN EXECUTION.** T1 (`molt-tir` crate) LANDED (`cd8a62a30`); M1
-(`function_compiler` function-split) in progress. Base commit: `9e93503bb`.
+Status: **IN EXECUTION.** T1 (`molt-tir` crate) LANDED (`5df2adbc7`); M1
+(`function_compiler` function-split) in progress. Base commit: `9e8428e2e`.
 Companion: `08_DX-buildspeed.md` (the build-speed sub-arc, partially landed — see §0.3).
 
 > **CORRECTIONS — read these for the authoritative plan.** This doc's original move #1
@@ -34,7 +34,7 @@ Companion: `08_DX-buildspeed.md` (the build-speed sub-arc, partially landed — 
 >   the live-state, per-S-move execution spec for 21b's S1-S8 crate moves, including
 >   file partitions, feature wiring, visibility widening, and per-commit gates.
 > - **Frontend move #2** → [`21c_frontend_mixin_decomposition_PLAN.md`](21c_frontend_mixin_decomposition_PLAN.md).
-Methodology precedent: `34e3bddbf` (the `lib.rs` god-file split: 6,928→264 lines,
+Methodology precedent: `fd58a0a93` (the `lib.rs` god-file split: 6,928→264 lines,
 move-only, 0-warning build + byte-identical diagnostics + lib tests + symbol identity +
 e2e). This program continues that arc.
 
@@ -130,7 +130,7 @@ cache). The runtime wants the *completion* of crate splits it half-did.
 
 ## 1. Evidence: inventory + churn + dependency findings
 
-### 1.1 God-file inventory (verified `wc -l`, base 9e93503bb)
+### 1.1 God-file inventory (verified `wc -l`, base 9e8428e2e)
 
 **Python (`src/molt/`):**
 
@@ -233,7 +233,7 @@ All verified by `grep -rE 'crate::<mod>' <subtree>`:
   - `luau.rs`, `rust.rs`: only `representation_plan` (minimal coupling — easiest to extract).
 - **`native_backend/` privacy mechanism:** uses `use super::*` glob (module-ancestry privacy;
   verified `native_backend/mod.rs:1`, `simple_backend.rs` 6 `super::` refs). The `lib.rs` split
-  (34e3bddbf) preserved this by widening private→`pub(crate)` and moving shared Cranelift imports
+  (fd58a0a93) preserved this by widening private→`pub(crate)` and moving shared Cranelift imports
   into `native_backend/mod.rs`. **A crate split must replace `use super::*` with explicit
   `use molt_tir::{...}` / `use molt_backend_core::{...}`** — this is the main mechanical cost of
   move #5 (NOT a blocker, but the reason move #5 is riskier than the within-crate move #1).
@@ -248,7 +248,7 @@ All verified by `grep -rE 'crate::<mod>' <subtree>`:
 > **CORRECTION.** An earlier draft of this section claimed the 28 in-tree
 > `cfg(not(feature))` copies are "content-identical" to their satellites
 > (`functions_http` sorted-diff = 0). **That claim was false.** Verification at a
-> later base (`d48ac22df`+) found **every one of the 28 pairs had bidirectionally
+> later base (`3e25ebae5`+) found **every one of the 28 pairs had bidirectionally
 > drifted** — `functions_http`'s raw sorted-diff was 820 lines, not 0. The drift
 > is the silent-miscompile bug-class this program targets, already materialized:
 > a behavioral fix landed in only ONE copy makes **shipped behavior differ by
@@ -496,7 +496,7 @@ precedent once that lands.
 
 ## 3. Migration plan (phased; each phase = one independently-complete move-only commit)
 
-**Universal gate methodology (the 34e3bddbf contract), applied to EVERY phase:**
+**Universal gate methodology (the fd58a0a93 contract), applied to EVERY phase:**
 
 ```bash
 export MOLT_SESSION_ID="<unique>" && export CARGO_TARGET_DIR="$PWD/target-<id>"
@@ -554,7 +554,7 @@ interleave anytime. N1 must wait for the LLVM partner's arc (§0.3). C1/O are cl
   `NativeOpFamily` routing authority so the old mixed indexing bucket cannot
   accumulate new codegen concerns.
 - Each submodule keeps `use super::*` (module-ancestry privacy preserved — NO crate boundary, so
-  this is safe and unchanged from 34e3bddbf methodology).
+  this is safe and unchanged from fd58a0a93 methodology).
 - Line budget: no submodule >6,000 lines; target ~4,000 avg.
 - Blast-radius win: `{DX-BASELINE:fc-incremental}` — editing one op family recompiles ~4-6K lines
   instead of 39K. (08 will measure; placeholder until then.)
@@ -713,7 +713,7 @@ Ranked by `(friction-relief × build-win) / risk`. Rationale per move:
 
 1. **M1 — split `function_compiler.rs`.** Highest score: it is the largest single file (39,043),
    the #2 contention source, and the split is the *safest* kind (within-crate, `use super::*`
-   preserved, byte-identical, proven by 34e3bddbf). Delivers a real incremental-build win with
+   preserved, byte-identical, proven by fd58a0a93). Delivers a real incremental-build win with
    minimal risk. Likely owned by the DX agent — coordinate, don't duplicate.
 2. **F1 — frontend package (mixins).** #1 contention source (the only 3-touch file; documented
    repeated contention). No build win (Python) but the *highest friction relief*: it converts the

@@ -2,7 +2,7 @@
 Design doc — MM-ladder rung 2 (Perceus-style borrow inference + drop/reuse
 specialization). The required frontier follow-through to the DropInsertion arc
 (design 20, rung 1). DESIGN ONLY; no implementation landed. All file:line anchors
-verified against the origin/main worktree at e83f6b07f (2026-06-06). This doc is
+verified against the origin/main worktree at 2da4106f1 (2026-06-06). This doc is
 numbered 27 because 26 was taken by `26_real-async-generators.md` after this
 task was scoped; the canonical short name remains "Perceus borrow inference".
 -->
@@ -772,7 +772,7 @@ hide in *this* design and which gate catches it. Plus new risks rung 2 introduce
 
 ---
 
-## 9. Key file anchors (verified against origin/main e83f6b07f, 2026-06-06)
+## 9. Key file anchors (verified against origin/main 2da4106f1, 2026-06-06)
 
 - DropInsertion pass + the seven defenses: `runtime/molt-passes/src/tir/passes/drop_insertion.rs` (run at :403; alias-root canon :560; borrowed parameter roots, stack/no-RC roots, C5 non-owning `Copy` roots, and generated `[[result_validity]]` conditionally-valid result roots sourced through `OwnershipRootFacts`; composed droppable/root/raw decision sourced through `DropEligibility`; Python local/slot/release roots, boundary-release root composition, statement-release eligibility, and return-boundary deferral classification sourced through `PythonLifetimeFacts`, including `PythonLifetimeFacts::boundary_release_roots`; result-absorption, adopted operands (`op_transferred_operands`, planned in `drop_insertion/transfers.rs`), generated terminator transfer roots, and FinalizerSensitive roots sourced through `OwnershipLattice`/the ownership module; raw scalar production still sourced through `TirLivenessResult`; §5 retain :1005; per-arc custody and lexical Python lifetimes in `drop_insertion/availability.rs`; dominance guard :806)
 - Statement-release plan authority: `runtime/molt-passes/src/tir/passes/ownership_lattice_min.rs` (`StatementReleasePlan`) composes `OwnershipLattice::statement_release_finalizer_boundaries`, `PythonLifetimeFacts::is_statement_release_boundary_root`, and `DropEligibility`; `runtime/molt-passes/src/tir/passes/drop_insertion.rs` consumes the plan and owns only DecRef materialization.

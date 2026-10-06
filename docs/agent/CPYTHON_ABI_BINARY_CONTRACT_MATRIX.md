@@ -722,7 +722,7 @@ re-does another's work.
   rows are MATCHES).** The wasm32 4-byte-alignment clobber class is closed:
   `_molt_abi_layout.generated.h` pins `ob_type@4` and the bridge reads the
   trailing handle via `read_unaligned` (the `bridge.rs` `# Alignment` doc + the
-  `a98ef2978e` wasm32-alignment class + the `PyMember_SetOne` `write_unaligned`
+  `d461a6fea6` wasm32-alignment class + the `PyMember_SetOne` `write_unaligned`
   fix). `Py_buffer` is byte-pinned on both widths by the `_Static_assert` gate
   (the Miri-C offset fix + `gen_cpython_abi_layout.py`); the buffer descriptor
   provenance UB (`format`/`shape`/`strides` raw-projection) was fixed at root

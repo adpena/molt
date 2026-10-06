@@ -17,7 +17,7 @@ use crate::tir::values::ValueId;
 // and the perf invariant (range-loop IVs stay RawI64Safe), and that WASM
 // and LLVM derive an identical map from the same `ValueRange` (single
 // source of truth — a divergence would re-create the native-vs-wasm
-// trusted-unbox bug, 2bf51b730).
+// trusted-unbox bug, 8de85576f).
 // ======================================================================
 
 use crate::tir::blocks::{LoopRole, Terminator, TirBlock};

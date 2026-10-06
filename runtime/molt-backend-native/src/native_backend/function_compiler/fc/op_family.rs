@@ -9,14 +9,14 @@
 //! *independently* matched the same set
 //! internally — two hand-synced copies of one kind list.
 //!
-//! That duplication is exactly what regressed in commit `8b5773878` ("Extract
+//! That duplication is exactly what regressed in commit `334c4466d` ("Extract
 //! arithmetic codegen handler"): the dispatch arm listed only the scalar arith
 //! kinds, dropping the 24 `vec_*` reduction kinds that `handle_arith_op`
 //! delegates to `fc::vec_reductions`. The dropped kinds fell through the silent
 //! `_ => {}` catch-all — no codegen emitted, the result SSA value left undefined
 //! (resolved to the None sentinel), and every in-function accumulator loop
 //! (`for i in range(n): total += i`) silently miscompiled until the dispatch arm
-//! was restored in `0323ad28c`.
+//! was restored in `85de1bbb2`.
 //!
 //! ## The fix: derive routing, never mirror it
 //!
@@ -26,7 +26,7 @@
 //! a kind → [`NativeOpFamily`] map ([`native_op_family`]). The dispatch *consults*
 //! that map instead of carrying its own copy of every kind list, so the dispatch
 //! can no longer disagree with a handler about which kinds it owns — the
-//! `8b5773878` drift class is now unexpressible.
+//! `334c4466d` drift class is now unexpressible.
 //!
 //! Residual drift between a handler's `HANDLED_KINDS` and its internal `match`
 //! arms is caught loudly, never silently: a kind in `HANDLED_KINDS` but missing
@@ -240,7 +240,7 @@ pub(in crate::native_backend::function_compiler) const INLINE_DISPATCH_KINDS: &[
 ///
 /// The catch-all panics for any result-producing (`op.out.is_some()`) kind NOT
 /// on this allowlist, because leaving such a kind unhandled is the silent
-/// miscompile class from `8b5773878` (undefined result SSA value → None
+/// miscompile class from `334c4466d` (undefined result SSA value → None
 /// sentinel). This list is intentionally empty: every result-producing kind is
 /// currently owned by an inline arm or a family. Add an entry here ONLY with a
 /// documented reason why the kind needs no native codegen, never to silence a
@@ -365,7 +365,7 @@ mod tests {
         }
     }
 
-    /// The `vec_*` reduction kinds — the family that drifted in `8b5773878` —
+    /// The `vec_*` reduction kinds — the family that drifted in `334c4466d` —
     /// must live in exactly one authority and route to `Arith`. This pins the
     /// invariant that prevents the regression from recurring.
     #[test]

@@ -3748,7 +3748,7 @@
     }
   },
   "created_at": "2026-05-23T00:19:56.674455+00:00",
-  "git_rev": "8cb430a3feedce2023c0c857371b5b73525dc98f",
+  "git_rev": "5c14ce1adb7a9a4f1b185909854758231e61827b",
   "memory_guard": {
     "child_rlimit_gb": 32.97893522607422,
     "dynamic_child_rlimit": true,
@@ -3785,6 +3785,6 @@
     "authoritative_reason": "historical perf snapshot; the only citable perf source is `tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent --quiescence-wait-s 180 --quiescence-poll-s 15`",
     "canonical_gate": "tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent --quiescence-wait-s 180 --quiescence-poll-s 15",
     "generated_at": "2026-05-23T00:19:56.674455+00:00",
-    "git_rev": "8cb430a3feedce2023c0c857371b5b73525dc98f"
+    "git_rev": "5c14ce1adb7a9a4f1b185909854758231e61827b"
   }
 }

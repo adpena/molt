@@ -7,7 +7,7 @@ Composes with 08_DX-buildspeed.md (LANDED Phase 1a thin-LTO), dx_baseline.md
 (the MEASURED baseline + the "module≠crate / function-is-the-codegen-unit" laws),
 21/21a/21b/21d (decomposition program), 51 (10-year roadmap), 52 (autonomous
 charter). Every factual claim verified against the tree at branch `main`
-(HEAD 1d92bc5cf); verification pointers inlined. No code refactored in this
+(HEAD 2f7c40cf7); verification pointers inlined. No code refactored in this
 session; this is the executable plan the lead integrates. -->
 
 # 56 — Developer Experience: Build Speed, Daemon, Concurrent Dev, Debugging
@@ -84,7 +84,7 @@ control plane (46) and the autonomous charter's "the verifier is the product"
 
 ---
 
-## 2. Current state (VERIFIED against `main` @ 1d92bc5cf) — what already landed
+## 2. Current state (VERIFIED against `main` @ 2f7c40cf7) — what already landed
 
 The stale docs (08, dx_baseline) predate large wins. The authoritative current
 state, grep/read-verified this session:
@@ -303,7 +303,7 @@ the audit-board-named gap); register `MOLT_DX_DUMP` in `main.rs`
 
 ## 4. Concrete phases (dependency order; each independently landable, green gates)
 
-**Universal gate methodology (the 34e3bddbf / dx_baseline §9 / 21 §3 contract),
+**Universal gate methodology (the fd58a0a93 / dx_baseline §9 / 21 §3 contract),
 applied to every phase below.** Each phase is its own complete structural piece
 (CLAUDE.md "structural change as the unit of work"); intermediate commits are
 acceptable only when each is itself complete + carries a baton note.

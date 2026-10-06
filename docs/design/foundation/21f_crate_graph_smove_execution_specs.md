@@ -1,7 +1,7 @@
 <!-- Foundation blueprint 21f. Architect: portfolio-architect (Plan agent), 2026-06-24. Arc:
 the per-S-move EXECUTABLE specs for the crate-graph decomposition (21b's S1-S8), detailed to
 the 21a/21d/21e execution level so the swarm can run each move precisely. Verified against the
-live tree at HEAD 13dde78b7 (T1 landed; M1 fc/ families landed; crate decomposition mid-flight).
+live tree at HEAD 6cdde4e6b (T1 landed; M1 fc/ families landed; crate decomposition mid-flight).
 Move-only / zero-logic-change / minimal-cross-crate-surface. Design only -- no code refactored
 in the session that produced it. Governed by DESIGN_DOCTRINE.md (god-files-are-killers: the
 crate split is THE incremental-build killer; pythonista-rustacean). -->
@@ -157,7 +157,7 @@ molt-backend-rust} -> molt-backend`.
 
 ## 2. The gate set (G1-G7 + G-oracle) -- applied to EVERY S-move commit
 
-Inherits the 34e3bddbf / 21a section-5 / 21 section-3 methodology (isolated `CARGO_TARGET_DIR`,
+Inherits the fd58a0a93 / 21a section-5 / 21 section-3 methodology (isolated `CARGO_TARGET_DIR`,
 CI-exact: NO `--lib` on the clippy gate so tests compile too -- the "build != test for warnings"
 lesson). Three gates are NEW for the crate-graph arc (G6 cross-crate-surface snapshot, G7
 cargo-tree feature audit, G-oracle the matches!-exhaustiveness gate).

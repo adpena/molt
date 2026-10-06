@@ -1,8 +1,8 @@
 # Molt Bench Summary
 
 ## Inputs
-- Native: `bench/results/full_native_refresh_20260522_tracked_vec.json`; git_rev=8cb430a3feedce2023c0c857371b5b73525dc98f; created_at=2026-05-23T00:19:56.674455+00:00; timing_mode=warm_throughput, warmup=1, samples=3; system=cpu_count=18, load_avg=[4.6904296875, 5.2109375, 5.55322265625], machine=arm64, platform=macOS-26.4-arm64-arm-64bit, python=3.12.13
-- WASM: `bench/results/bench_wasm_20260522_tracked_vec.json`; git_rev=8cb430a3feedce2023c0c857371b5b73525dc98f; created_at=2026-05-23T00:46:16.865341+00:00; timing_mode=legacy-unknown, warmup=0, samples=1; system=cpu_count=18, load_avg=[11.31298828125, 11.22021484375, 9.830078125], machine=arm64, platform=macOS-26.4-arm64-arm-64bit, python=3.12.13
+- Native: `bench/results/full_native_refresh_20260522_tracked_vec.json`; git_rev=5c14ce1adb7a9a4f1b185909854758231e61827b; created_at=2026-05-23T00:19:56.674455+00:00; timing_mode=warm_throughput, warmup=1, samples=3; system=cpu_count=18, load_avg=[4.6904296875, 5.2109375, 5.55322265625], machine=arm64, platform=macOS-26.4-arm64-arm-64bit, python=3.12.13
+- WASM: `bench/results/bench_wasm_20260522_tracked_vec.json`; git_rev=5c14ce1adb7a9a4f1b185909854758231e61827b; created_at=2026-05-23T00:46:16.865341+00:00; timing_mode=legacy-unknown, warmup=0, samples=1; system=cpu_count=18, load_avg=[11.31298828125, 11.22021484375, 9.830078125], machine=arm64, platform=macOS-26.4-arm64-arm-64bit, python=3.12.13
 
 ## Summary
 - Benchmarks: 56 total; native ok 56/56; wasm ok 53/56.
