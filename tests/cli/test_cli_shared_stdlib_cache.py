@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import traceback
-from typing import Mapping
+from typing import Iterator, Mapping
 
 from molt.cli import native_symbol_inspection
 import pytest
@@ -20,7 +20,10 @@ from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.native_link_plan import resolve_native_target_spec
 from molt.exact_json import canonical_json_sha256
 from tests.cli.process_guard import run_cli_test_process
-from tests.cli.native_link_test_support import static_archive_bytes
+from tests.cli.native_link_test_support import (
+    mock_symbol_reader_admission,
+    static_archive_bytes,
+)
 from tests.native_artifact_fixtures import native_relocatable_object
 from tests.compiler_identity_helper import (
     stub_compiler_admission,
@@ -43,34 +46,14 @@ CACHE_KEYS = importlib.import_module("molt.cli.cache_keys")
 
 
 @pytest.fixture(autouse=True)
-def _admit_mock_symbol_reader_commands(monkeypatch: pytest.MonkeyPatch):
-    identity = BACKEND_CACHE.stable_regular_file_identity(
-        Path(sys.executable).resolve(strict=True), label="test symbol reader"
-    )
-
-    @contextmanager
-    def admitted_reader(path, *, label, identity=None):
-        del label
-        assert identity is not None
-        yield path, identity
-
-    monkeypatch.setattr(
-        native_symbol_inspection,
-        "_native_symbol_reader_candidate",
-        lambda command: native_symbol_inspection._NativeSymbolReaderCandidate(
-            tuple(command), executable_identity=identity, reader_family="llvm"
-        ),
-    )
-    monkeypatch.setattr(
-        native_symbol_inspection, "stable_executable_probe", admitted_reader
-    )
-    # Each test supplies a distinct external reader implementation. Within a
-    # test, the production content cache remains live across all sibling paths.
-    native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
-    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
-    yield
-    native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
-    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+def _admit_mock_symbol_reader_commands(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> Iterator[None]:
+    # Each test supplies a distinct external reader implementation.
+    with mock_symbol_reader_admission(
+        monkeypatch, tmp_path_factory.mktemp("symbol-facts")
+    ):
+        yield
 
 
 @pytest.mark.parametrize(
