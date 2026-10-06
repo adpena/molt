@@ -23,7 +23,7 @@ import subprocess
 import sys
 import threading
 import tomllib
-from typing import Any, Iterable, Mapping
+from typing import Any, Collection, Iterable, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -2287,8 +2287,41 @@ def _terminate_guarded_executor(process: subprocess.Popen[Any]) -> bool:
         return True
 
 
+def _admitted_linker_helpers(plan: ProofPlan) -> dict[str, frozenset[str]]:
+    """Declared linker helper basename -> the linker basenames it may outlive.
+
+    Toolchain capture already binds these helpers (MSVC's link.exe leaves
+    vctip.exe uploading telemetry after it exits) with a terminate-on-root-exit
+    disposition; Job closure honors the same declaration and nothing else.
+    """
+    helpers: dict[str, set[str]] = {}
+    for policy in plan.toolchain_policies:
+        for linker, names in (policy.data.get("linker_process_helpers") or {}).items():
+            for name in names:
+                helpers.setdefault(str(name).casefold(), set()).add(str(linker))
+    return {name: frozenset(linkers) for name, linkers in helpers.items()}
+
+
+def _admitted_job_survivor(
+    process: object, admitted_linker_helpers: Mapping[str, Collection[str]]
+) -> bool:
+    """A Job survivor is admitted only as a declared helper beside its linker."""
+    if not isinstance(process, dict) or not isinstance(process.get("image"), str):
+        return False
+    image = Path(process["image"])
+    linkers = admitted_linker_helpers.get(image.name.casefold(), ())
+    return image.is_absolute() and any(
+        image.with_name(linker).is_file() for linker in linkers
+    )
+
+
 def _guarded_failure_scope(
-    metrics: Mapping[str, Any], *, metrics_valid: bool, returncode: int, cancelled: bool
+    metrics: Mapping[str, Any],
+    *,
+    metrics_valid: bool,
+    returncode: int,
+    cancelled: bool,
+    admitted_linker_helpers: Mapping[str, Collection[str]] | None = None,
 ) -> tuple[str, str | None]:
     """Classify the existing guard's evidence, never infer safe timeout from 124."""
     if cancelled:
@@ -2316,7 +2349,10 @@ def _guarded_failure_scope(
         not isinstance(cleanup, dict)
         or cleanup.get("completed") is not True
         or not isinstance(cleanup.get("remaining_processes"), list)
-        or cleanup.get("remaining_processes")
+        or not all(
+            _admitted_job_survivor(process, admitted_linker_helpers or {})
+            for process in cleanup["remaining_processes"]
+        )
     ):
         return "global", "guard job closure is uncertain"
     quarantine = metrics.get("cargo_incremental_quarantine")
@@ -2454,7 +2490,11 @@ def _run_command(
         else "failure"
     )
     failure_scope, failure_reason = _guarded_failure_scope(
-        metrics, metrics_valid=metrics_valid, returncode=returncode, cancelled=cancelled
+        metrics,
+        metrics_valid=metrics_valid,
+        returncode=returncode,
+        cancelled=cancelled,
+        admitted_linker_helpers=_admitted_linker_helpers(plan),
     )
     if failure_scope == "global" and status == "success":
         status, returncode = "failure", 2
