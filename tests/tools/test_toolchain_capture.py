@@ -677,6 +677,16 @@ def test_custody_cas_recursively_fsyncs_new_directories(
             'RUST_FLAGS="escaped \\"quote\\" and \\\\path" "/usr/bin/cc" "-o" "probe"\n',
             "",
         ),
+        # rustc strips Apple deployment targets with env_remove, which
+        # std::process::Command's Debug form prints as an `env -u` prefix.
+        (
+            "env -u IPHONEOS_DEPLOYMENT_TARGET -u TVOS_DEPLOYMENT_TARGET "
+            'LC_ALL="C" PATH="/rust/lib:/usr/bin" "/usr/bin/cc" "-o" "probe"\n',
+            "",
+        ),
+        ('env -i PATH="/usr/bin" "/usr/bin/cc" "-o" "probe"\n', ""),
+        ('cd "/work dir" && env -u SDKROOT "/usr/bin/cc" "-o" "probe"\n', ""),
+        ('["/usr/bin/cc"] "cc-display-name" "-o" "probe"\n', ""),
     ],
 )
 def test_rust_link_selection_accepts_exactly_one_command_from_either_channel(
@@ -696,6 +706,9 @@ def test_rust_link_selection_accepts_exactly_one_command_from_either_channel(
         ('LC_ALL="C" PATH="/usr/bin"\n', "", 0),
         ('LC_ALL="C" not a command\n', "", 0),
         ('LC_ALL="C""/usr/bin/cc" "-o" "probe"\n', "", 0),
+        ('env -u SDKROOT PATH="/usr/bin"\n', "", 0),
+        ('cd "/work" "/usr/bin/cc" "-o" "probe"\n', "", 0),
+        ('["/usr/bin/cc" "cc" "-o" "probe"\n', "", 0),
         (
             'LC_ALL="C" "/usr/bin/cc" "one"\n',
             'PATH="/usr/bin" "/usr/bin/ld" "two"\n',
