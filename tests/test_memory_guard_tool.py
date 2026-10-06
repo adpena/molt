@@ -855,9 +855,10 @@ def test_active_guard_markers_follow_external_artifact_custody(tmp_path: Path) -
             "MOLT_MEMORY_GUARD_STATE_ROOT": str(state_root),
         },
     ) == (state_root / "active").resolve(strict=False)
-    assert pytest_guard_summary_dir(repo_root, {}) == (
-        repo_root / "tmp" / "pytest-memory-guard"
-    ).resolve(strict=False)
+    # Pytest custody sits beside the unconfigured guard state, out of tree.
+    default_pytest = pytest_guard_summary_dir(repo_root, {})
+    assert default_pytest == default_markers.parent.parent / "pytest-memory-guard"
+    assert repo_root.resolve() not in default_pytest.parents
     assert pytest_guard_summary_dir(
         repo_root, {"MOLT_EXT_ROOT": str(artifact_root)}
     ) == (artifact_root / "tmp" / "pytest-memory-guard").resolve(strict=False)

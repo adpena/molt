@@ -97,7 +97,9 @@ def test_guarded_result_transports_child_and_infrastructure_outcomes(
     assert event["exit_signal"] == guard.exit_signal_payload(child_returncode)
 
 
-@pytest.mark.parametrize("root_kind", ["repo", "external", "external_forest", "queue"])
+@pytest.mark.parametrize(
+    "root_kind", ["unconfigured", "external", "external_forest", "queue"]
+)
 def test_harness_default_outputs_follow_guard_state_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -119,6 +121,7 @@ def test_harness_default_outputs_follow_guard_state_authority(
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(harness_memory_guard, "_REPO_ROOT", repo)
     env = {"MOLT_GUARD_PROFILE": "incident"}
+    # Unconfigured state belongs to the checkout family, never the tree.
     expected = (
         custody_layout.unconfigured_state_root(repo) / "tmp" / "harness_memory_guard"
     )
@@ -144,8 +147,7 @@ def test_harness_default_outputs_follow_guard_state_authority(
         expected / "commands.jsonl"
     )
     assert harness_memory_guard._command_profile_mode(env) == "incident"
-    if root_kind != "repo":
-        assert not expected.is_relative_to(repo)
+    assert not expected.is_relative_to(repo)
 
 
 def test_harness_explicit_profile_path_preserves_selection_and_mode(
@@ -648,7 +650,9 @@ def test_timeout_from_env_zero_disables_default(monkeypatch) -> None:
     )
 
 
-def test_canonical_harness_env_installs_unconfigured_defaults(tmp_path: Path) -> None:
+def test_canonical_harness_env_installs_checkout_defaults_with_out_of_tree_scratch(
+    tmp_path: Path,
+) -> None:
     env = harness_memory_guard.canonical_harness_env(
         {"PATH": "/usr/bin"},
         repo_root=tmp_path,
@@ -666,6 +670,7 @@ def test_canonical_harness_env_installs_unconfigured_defaults(tmp_path: Path) ->
     assert env["MOLT_DIFF_TMPDIR"] == str(scratch)
     assert env["UV_CACHE_DIR"] == str(tmp_path / ".uv-cache")
     assert env["TMPDIR"] == str(scratch)
+    assert not scratch.is_relative_to(tmp_path.resolve())
     assert env["MOLT_SESSION_ID"].startswith("guard-")
 
 
