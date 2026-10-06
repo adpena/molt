@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -115,6 +116,12 @@ def main(argv: list[str] | None = None) -> int:
         venv = resolve_venv(explicit=args.venv)
         env = venv_env(venv=venv)
         resolved = resolve_command(command, venv=venv)
+        if os.name == "nt":
+            # Windows has no exec: os.exec* starts the program and exits this
+            # process with status 0 at once, so every wrapped gate would
+            # report success and leave its child running detached. Wait for
+            # the single child and return its exit status instead.
+            return subprocess.run(resolved, env=env, check=False).returncode
         os.execvpe(resolved[0], resolved, env)
     except VenvExecError as exc:
         parser.exit(127, f"venv_exec: {exc}\n")
