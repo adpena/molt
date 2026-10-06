@@ -52,6 +52,7 @@ from wasm_abi_gen.paths import (
     OUT_RUNTIME_CALLABLES_RS,
     OUT_RUNTIME_CALLABLE_ABI_RS,
     OUT_RUNTIME_BOXED_ABI_RS,
+    OUT_RUNTIME_RAW_ABI_RS,
     OUT_TABLE_LAYOUT_INC,
     OUT_WASM_FACTS_CALLABLE_TABLE_RS,
     REMOVED_GENERATED_FILES,
@@ -61,7 +62,7 @@ from wasm_abi_gen.paths import (
 
 FRONTEND_TYPES = ROOT / "src/molt/frontend/_types.py"
 
-GENERATOR_CACHE_VERSION = "wasm-abi-render-v4"
+GENERATOR_CACHE_VERSION = "wasm-abi-render-v5"
 RUSTFMT_CACHE_VERSION = "wasm-abi-rustfmt-v1"
 RUSTFMT_CACHE_ENABLED = True
 RENDER_CACHE_FIELDS = (
@@ -70,6 +71,7 @@ RENDER_CACHE_FIELDS = (
     "rendered_runtime_callables_rs",
     "rendered_runtime_callable_abi_rs",
     "rendered_runtime_boxed_abi_rs",
+    "rendered_runtime_raw_abi_rs",
     "rendered_python_builtin_callables_rs",
     "rendered_wasm_facts_callable_table_rs",
     "rendered_py",
@@ -1689,6 +1691,39 @@ def render_runtime_callable_abi_rs(data: dict) -> str:
     return "".join(lines)
 
 
+def render_runtime_raw_abi_rs(data: dict) -> str:
+    lines = [
+        _header("//"),
+        "//! Target-neutral ABI for runtime entrypoints whose result is raw bits.\n",
+        "//! Only rows whose machine signature is all i64 words are projected;\n",
+        "//! wasm32 pointer and length words do not prove a native signature.\n",
+        "//! A raw result carries no ownership: bound as-is, never released.\n\n",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+        "pub struct RuntimeRawAbi {\n",
+        "    pub symbol: &'static str,\n",
+        "    pub arity: usize,\n",
+        "}\n\n",
+        "pub const RUNTIME_RAW_ABIS: &[RuntimeRawAbi] = &[\n",
+    ]
+    for spec in data["runtime_raw_abi"]:
+        lines.append(
+            "    RuntimeRawAbi { "
+            f'symbol: "{spec["runtime_name"]}", arity: {spec["arity"]}'
+            " },\n"
+        )
+    lines.extend(
+        [
+            "];\n\n",
+            "pub fn runtime_raw_abi(symbol: &str, arity: usize) -> Option<&'static RuntimeRawAbi> {\n",
+            "    let index = RUNTIME_RAW_ABIS.binary_search_by_key(&symbol, |abi| abi.symbol).ok()?;\n",
+            "    let abi = &RUNTIME_RAW_ABIS[index];\n",
+            "    (abi.arity == arity).then_some(abi)\n",
+            "}\n",
+        ]
+    )
+    return "".join(lines)
+
+
 def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str]) -> str:
     lines: list[str] = [_runtime_callables_header("//")]
     poll_imports = sorted(
@@ -2610,6 +2645,12 @@ def main(argv: list[str]) -> int:
                 render_runtime_callable_abi_rs(data),
             ),
         )
+        rendered_runtime_raw_abi_rs = timed(
+            "render_runtime_raw_abi_rs",
+            lambda: _rustfmt(
+                "runtime_raw_abi_generated.rs", render_runtime_raw_abi_rs(data)
+            ),
+        )
         rendered_runtime_boxed_abi_rs = timed(
             "render_runtime_boxed_abi_rs",
             lambda: _rustfmt(
@@ -2650,6 +2691,7 @@ def main(argv: list[str]) -> int:
             "rendered_runtime_callables_rs": rendered_runtime_callables_rs,
             "rendered_runtime_callable_abi_rs": rendered_runtime_callable_abi_rs,
             "rendered_runtime_boxed_abi_rs": rendered_runtime_boxed_abi_rs,
+            "rendered_runtime_raw_abi_rs": rendered_runtime_raw_abi_rs,
             "rendered_python_builtin_callables_rs": rendered_python_builtin_callables_rs,
             "rendered_wasm_facts_callable_table_rs": rendered_wasm_facts_callable_table_rs,
             "rendered_py": rendered_py,
@@ -2667,6 +2709,7 @@ def main(argv: list[str]) -> int:
     rendered_runtime_callables_rs = str(bundle["rendered_runtime_callables_rs"])
     rendered_runtime_callable_abi_rs = str(bundle["rendered_runtime_callable_abi_rs"])
     rendered_runtime_boxed_abi_rs = str(bundle["rendered_runtime_boxed_abi_rs"])
+    rendered_runtime_raw_abi_rs = str(bundle["rendered_runtime_raw_abi_rs"])
     rendered_python_builtin_callables_rs = str(
         bundle["rendered_python_builtin_callables_rs"]
     )
@@ -2689,6 +2732,7 @@ def main(argv: list[str]) -> int:
             and _check(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
             and _check(OUT_RUNTIME_CALLABLE_ABI_RS, rendered_runtime_callable_abi_rs)
             and _check(OUT_RUNTIME_BOXED_ABI_RS, rendered_runtime_boxed_abi_rs)
+            and _check(OUT_RUNTIME_RAW_ABI_RS, rendered_runtime_raw_abi_rs)
             and _check(
                 OUT_PYTHON_BUILTIN_CALLABLES_RS, rendered_python_builtin_callables_rs
             )
@@ -2719,6 +2763,7 @@ def main(argv: list[str]) -> int:
     _write_if_changed(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
     _write_if_changed(OUT_RUNTIME_CALLABLE_ABI_RS, rendered_runtime_callable_abi_rs)
     _write_if_changed(OUT_RUNTIME_BOXED_ABI_RS, rendered_runtime_boxed_abi_rs)
+    _write_if_changed(OUT_RUNTIME_RAW_ABI_RS, rendered_runtime_raw_abi_rs)
     _write_if_changed(
         OUT_PYTHON_BUILTIN_CALLABLES_RS, rendered_python_builtin_callables_rs
     )

@@ -121,7 +121,13 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
   backend: ordinary runtime trampolines unpack boxed arguments unchanged;
   call-frame entries receive `(closure, argv, argc)` directly. Native-only
   providers retain their ABI without becoming WASM imports. Raw/borrowed helpers
-  excluded from Python callable publication remain excluded.
+  excluded from Python callable publication remain excluded. A direct `call`
+  to a runtime entry uses the generated boxed ABI, or, for a manifest row that
+  opts in with `raw_call = true` (a raw-bits return through an all-i64 word
+  signature, such as the host init's `molt_runtime_init`), the generated raw
+  ABI (`runtime/molt-ir/src/runtime_raw_abi_generated.rs`): LLVM binds that
+  word without an owner and never releases it. Raw machine helpers whose
+  operands or results are not Python values never become generic call targets.
 - **SSA**: every value is defined once; all uses are dominated by the definition (loop index carried via block params).
 - **Executable edges**: typed block-argument meets and LIR branch parameters are
   computed only from blocks reachable from the function entry through explicit

@@ -20,6 +20,8 @@ use molt_codegen_abi as nanbox;
 use molt_ir::runtime_boxed_abi_generated::{
     RuntimeBoxedAbi, RuntimeBoxedReturn, runtime_boxed_abi,
 };
+#[cfg(feature = "llvm")]
+use molt_ir::runtime_raw_abi_generated::{RuntimeRawAbi, runtime_raw_abi};
 
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::LlvmBackend;

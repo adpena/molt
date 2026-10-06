@@ -156,6 +156,46 @@ def test_runtime_callable_abi_preserves_target_neutral_callable_contracts() -> N
     assert "enum ReservedRuntimeCallableTrampolineAbi" not in wasm_rendered
 
 
+def test_runtime_raw_abi_projects_all_word_raw_returns_only() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    specs = data["runtime_raw_abi"]
+    symbols = {spec["runtime_name"]: spec["arity"] for spec in specs}
+    assert len(symbols) == len(specs)
+    assert list(symbols) == sorted(symbols)
+    # The host init entry the CLI calls directly is a raw-bits word source.
+    assert symbols["molt_runtime_init"] == 0
+    # Raw machine helpers never become generic call targets, even with an
+    # all-word raw_bits signature; only an explicit raw_call row is projected.
+    assert "molt_int_as_i64" not in symbols
+    assert "molt_exception_pending" not in symbols
+    contracts = manifest.runtime_import_return_specs(data)
+    static_types = data["static_type"]
+    for entry in data["import"]:
+        symbol = manifest.runtime_export_name(entry)
+        signature = static_types[entry["type"]]
+        projected = symbol in symbols
+        assert projected == entry.get("raw_call", False), symbol
+        if projected:
+            assert contracts[entry["name"]] == "raw_bits", symbol
+            assert all(param == "i64" for param in signature["params"]), symbol
+            assert signature["results"] == ["i64"], symbol
+            assert symbols[symbol] == len(signature["params"]), symbol
+    boxed = {spec["runtime_name"] for spec in manifest.runtime_boxed_call_specs(data)}
+    callable_rows = {spec["runtime_name"] for spec in data["runtime_callable_abi"]}
+    assert not (symbols.keys() & boxed) and not (symbols.keys() & callable_rows)
+    rendered = gen.render_runtime_raw_abi_rs(data)
+    assert "pub fn runtime_raw_abi(symbol: &str, arity: usize)" in rendered
+    assert 'RuntimeRawAbi { symbol: "molt_runtime_init", arity: 0 }' in rendered
+    # The opt-in is checked, not trusted: a boxed-object row cannot claim it.
+    drifted = copy.deepcopy(data)
+    next(row for row in drifted["import"] if row["name"] == "cell_new")["raw_call"] = (
+        True
+    )
+    with pytest.raises(manifest.WasmAbiManifestError, match="raw_call requires"):
+        manifest.runtime_raw_abi_specs(drifted)
+
+
 def test_runtime_callable_abi_rejects_transport_arity_drift() -> None:
     data = copy.deepcopy(_load_gen_wasm_abi().load_manifest())
     entry = next(
@@ -842,6 +882,13 @@ def test_wasm_abi_generated_files_are_in_sync() -> None:
         gen._rustfmt(
             "runtime_callable_abi_generated.rs",
             gen.render_runtime_callable_abi_rs(data),
+        ),
+    )
+    assert gen._check(
+        gen.OUT_RUNTIME_RAW_ABI_RS,
+        gen._rustfmt(
+            "runtime_raw_abi_generated.rs",
+            gen.render_runtime_raw_abi_rs(data),
         ),
     )
     assert gen._check(

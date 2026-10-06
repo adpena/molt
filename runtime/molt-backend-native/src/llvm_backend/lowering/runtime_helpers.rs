@@ -82,6 +82,40 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         );
     }
 
+    /// Emit a direct runtime CALL whose result is raw bits: the generated raw
+    /// ABI (all-word manifest rows with a raw_bits return) authorizes the
+    /// signature, operands pass as borrowed words, and the result is bound
+    /// without an owner and never released.
+    pub(super) fn emit_raw_runtime_call(&mut self, op: &TirOp, abi: &RuntimeRawAbi) {
+        let symbol = abi.symbol;
+        if !self.backend.runtime_callable_symbols.contains(symbol) {
+            self.record_fatal(format!(
+                "raw runtime symbol `{symbol}` is unavailable in the selected runtime"
+            ));
+            return;
+        }
+        if op.operands.len() != abi.arity {
+            self.record_fatal(format!(
+                "raw runtime symbol `{symbol}` has mismatched arity"
+            ));
+            return;
+        }
+        if op.results.len() > 1 {
+            self.record_fatal(format!(
+                "raw runtime symbol `{symbol}` has multiple result values"
+            ));
+            return;
+        }
+        let callee = self.ensure_runtime_i64_fn(symbol, abi.arity);
+        self.emit_positional_runtime_call(
+            op,
+            callee,
+            RuntimeResultCustody::Unowned,
+            "raw_call",
+            symbol,
+        );
+    }
+
     /// Bind a transferred object owner, or retire it when the op discards it.
     /// Dedicated mixed-ABI calls use this only after establishing ownership;
     /// a borrowed runtime result must be explicitly retained first.
