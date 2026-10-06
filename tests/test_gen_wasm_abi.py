@@ -3004,3 +3004,35 @@ def test_wasm_literal_projection_includes_aliases_and_rejects_local_drift() -> N
         manifest.WasmAbiManifestError, match="disagrees with op_kinds.toml"
     ):
         manifest.validate_loaded_manifest(data)
+
+
+def test_pure_profile_keeps_every_intrinsic_core_stdlib_modules_require() -> None:
+    """Pure omits IO/async/time families, never what every program imports.
+
+    The core closure (``builtins``, ``sys``, ``__future__`` and their support
+    modules) is compiled into every guest. ``asyncgen_`` and ``future_`` used
+    to strip ``sys``'s asyncgen hook accessors and ``__future__``'s feature
+    table, so every ``--wasm-profile pure`` (and Cloudflare) program died in
+    ``import sys`` with "intrinsic unavailable: molt_asyncgen_hooks_get".
+    """
+    from molt._wasm_abi_generated import pure_profile_skips_import, wasm_import_name
+
+    stdlib = ROOT / "src" / "molt" / "stdlib"
+    core_modules = ("builtins", "sys", "__future__", "_sitebuiltins", "_intrinsics")
+    required = set()
+    for module in core_modules:
+        source = (stdlib / f"{module}.py").read_text(encoding="utf-8")
+        required.update(
+            re.findall(r"""_require_intrinsic\(\s*["'](molt_\w+)["']""", source)
+        )
+    assert {"molt_asyncgen_hooks_get", "molt_future_features"} <= required
+    stripped = sorted(
+        name
+        for name in required
+        if (import_name := wasm_import_name(name)) is not None
+        and pure_profile_skips_import(import_name)
+    )
+    assert stripped == []
+    # The async execution families themselves stay out of Pure guests.
+    for name in ("asyncgen_new", "asyncgen_poll", "future_poll", "future_cancel"):
+        assert pure_profile_skips_import(name)
