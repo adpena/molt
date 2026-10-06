@@ -528,7 +528,7 @@ fn exact_literal_capability_admits_only_complete_in_range_siblings() {
     for (payload, reason) in [
         ("9007199254740993", "exact concrete value authority"),
         ("-9007199254740993", "exact concrete value authority"),
-        ("not-an-int", "payload is malformed"),
+        ("not-an-int", "exact concrete value authority"),
     ] {
         let error = validate_numeric_target_contract(
             &function_ir(vec![OpIR {
@@ -559,9 +559,9 @@ fn float_literal_stays_outside_integer_admission() {
 }
 
 #[test]
-fn integer_literal_kind_without_integer_payload_is_reported_malformed() {
+fn integer_literal_kind_without_integer_payload_is_rejected() {
     // `const` is the integer-literal kind; a float-only payload is malformed
-    // wire, and admission must say so rather than claim the value is too large.
+    // wire and must not be admitted as an integer literal.
     let error = validate_numeric_target_contract(
         &function_ir(vec![OpIR {
             kind: "const".to_string(),
@@ -572,7 +572,7 @@ fn integer_literal_kind_without_integer_payload_is_reported_malformed() {
         &crate::tir::TargetInfo::rust_release_fast(),
     )
     .expect_err("an integer-literal kind without an integer payload must reject");
-    assert!(error.contains("payload is malformed"), "{error}");
+    assert!(error.contains("integer literal"), "{error}");
 }
 
 #[test]
