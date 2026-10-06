@@ -1008,7 +1008,7 @@ fn c_api_unicode_from_string() {
         assert!(!utf8_ptr2.is_null());
         assert_eq!(out_size, 11); // "hello world" is 11 bytes
         let observed2 =
-            unsafe { std::slice::from_raw_parts(utf8_ptr2 as *const u8, out_size as usize) };
+            unsafe { std::slice::from_raw_parts(utf8_ptr2.cast::<u8>(), out_size as usize) };
         assert_eq!(observed2, b"hello world");
 
         dec_ref_bits(_py, str_bits);

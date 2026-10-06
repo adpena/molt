@@ -67,6 +67,21 @@ pub const fn c_ulonglong_to_u64(value: c_ulonglong) -> u64 {
     value as u64
 }
 
+/// Narrow a `u64` to a C `unsigned long`, saturating at `ULONG_MAX`: the
+/// shape of a resource limit (`rlim_t`) computed in bytes.
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "c_ulong is u64 on LP64 and u32 on LLP64/wasm32"
+)]
+#[inline]
+pub const fn c_ulong_from_u64_saturating(value: u64) -> c_ulong {
+    if value > c_ulong::MAX as u64 {
+        c_ulong::MAX
+    } else {
+        value as c_ulong
+    }
+}
+
 /// Reinterpret a C `char` as the byte it stores.
 #[allow(
     clippy::unnecessary_cast,
@@ -117,6 +132,17 @@ mod tests {
         assert!(c_long_to_i64(c_long::MAX) >= i64::from(i32::MAX));
         assert!(c_ulong_to_u64(c_ulong::MAX) >= u64::from(u32::MAX));
         assert_eq!(c_ulonglong_to_u64(c_ulonglong::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn saturating_narrowing_keeps_values_in_range_and_clamps_the_rest() {
+        assert_eq!(c_ulong_from_u64_saturating(0), 0);
+        assert_eq!(c_ulong_from_u64_saturating(0xffff_ffff), 0xffff_ffff);
+        assert_eq!(c_ulong_from_u64_saturating(u64::MAX), c_ulong::MAX);
+        assert_eq!(
+            c_ulong_to_u64(c_ulong_from_u64_saturating(u64::from(u32::MAX) + 1)),
+            u64::from(u32::MAX) + 1
+        );
     }
 
     #[test]

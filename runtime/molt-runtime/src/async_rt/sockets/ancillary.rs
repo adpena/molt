@@ -148,10 +148,8 @@ pub(super) fn encode_sendmsg_ancillary_buffer(items: &[AncillaryItem]) -> Result
     let mut control = vec![0u8; total];
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
     msg.msg_control = control.as_mut_ptr() as *mut c_void;
-    msg.msg_controllen = control
-        .len()
-        .try_into()
-        .map_err(|_| "ancillary payload too large".to_string())?;
+    msg.msg_controllen = molt_runtime_platform::msghdr::msg_controllen(control.len())
+        .ok_or_else(|| "ancillary payload too large".to_string())?;
     let mut cmsg = unsafe { libc::CMSG_FIRSTHDR(&msg as *const _) };
     for (level, kind, data) in items {
         if cmsg.is_null() {
