@@ -120,6 +120,87 @@ def test_github_new_branch_push_checks_commits_absent_from_remotes(
     assert policy.main(["--repo", str(repo), "--github-event"]) == 1
 
 
+def _ci_clone(origin: Path, tmp_path: Path) -> Path:
+    """Clone `origin` the way a CI checkout does: every branch is fetched."""
+    clone = tmp_path / "ci-clone"
+    run_guarded_test_process(
+        ["git", "clone", "-q", str(origin), str(clone)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return clone
+
+
+def test_github_new_branch_push_checks_commits_even_when_ci_fetched_the_branch(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _commit(repo, "a", "Base")
+    _git(repo, "checkout", "-q", "-b", "feature")
+    head = _commit(repo, "b", f"Attributed\n\n{TRAILER}")
+    _git(repo, "checkout", "-q", "main")
+    clone = _ci_clone(repo, tmp_path)
+    assert _git(clone, "rev-parse", "origin/feature") == head
+
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.setenv(
+        "GITHUB_EVENT_PATH",
+        str(
+            _event(
+                tmp_path,
+                {"ref": "refs/heads/feature", "before": "0" * 40, "after": head},
+            )
+        ),
+    )
+    assert policy.main(["--repo", str(clone), "--github-event"]) == 1
+
+
+def test_github_forced_push_checks_commits_when_the_old_tip_is_gone(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _commit(repo, "a", "Base")
+    head = _commit(repo, "b", f"Rewritten\n\n{TRAILER}")
+    clone = _ci_clone(repo, tmp_path)
+    # A history rewrite force-pushed `main`; the clone never had the old tip,
+    # and `origin/HEAD` points at the pushed branch.
+    vanished = "1234567" * 5 + "89abc"
+    assert _git(clone, "rev-parse", "origin/HEAD") == head
+
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.setenv(
+        "GITHUB_EVENT_PATH",
+        str(
+            _event(
+                tmp_path,
+                {"ref": "refs/heads/main", "before": vanished, "after": head},
+            )
+        ),
+    )
+    assert policy.main(["--repo", str(clone), "--github-event"]) == 1
+
+
+def test_github_new_branch_push_skips_commits_already_on_other_branches(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _commit(repo, "a", f"Old attributed history\n\n{TRAILER}")
+    _git(repo, "checkout", "-q", "-b", "feature")
+    head = _commit(repo, "b", "Clean")
+    _git(repo, "checkout", "-q", "main")
+    clone = _ci_clone(repo, tmp_path)
+
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.setenv(
+        "GITHUB_EVENT_PATH",
+        str(
+            _event(
+                tmp_path,
+                {"ref": "refs/heads/feature", "before": "0" * 40, "after": head},
+            )
+        ),
+    )
+    assert policy.main(["--repo", str(clone), "--github-event"]) == 0
+
+
 @pytest.mark.parametrize("event_name", ["pull_request", "merge_group"])
 def test_github_pull_request_and_merge_group_check_base_to_head(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, event_name: str

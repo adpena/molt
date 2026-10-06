@@ -192,6 +192,47 @@ def _pe_dependencies(
     return tuple(sorted(dependencies))
 
 
+def _elf_loaded_bytes(
+    data: bytes,
+    loads: list[tuple[int, int, int, int]],
+    address: int,
+    size: int,
+) -> bytes:
+    """Read ``size`` bytes at virtual ``address`` as the loader maps them.
+
+    The dynamic loader reads ``DT_STRTAB`` from memory, so the table may span
+    adjacent ``PT_LOAD`` segments whose file ranges differ (BOLT and patchelf
+    produce this layout; python-build-standalone's x86_64 interpreter has it).
+    Each byte must be file-backed by a ``PT_LOAD``; ``.bss`` fill is not a
+    string table. ``loads`` holds ``(vaddr, memsz, offset, filesz)`` rows.
+    """
+    chunks: list[bytes] = []
+    cursor, end = address, address + size
+    while cursor < end:
+        segment = next(
+            (
+                (virtual_address, file_offset, file_size)
+                for virtual_address, _memory_size, file_offset, file_size in loads
+                if virtual_address <= cursor < virtual_address + file_size
+            ),
+            None,
+        )
+        if segment is None:
+            raise PythonEnvironmentIdentityError(
+                "ELF dependency string table is outside loaded segments"
+            )
+        virtual_address, file_offset, file_size = segment
+        take = min(end, virtual_address + file_size) - cursor
+        start = file_offset + cursor - virtual_address
+        if start + take > len(data):
+            raise PythonEnvironmentIdentityError(
+                "ELF dependency string table is outside the file"
+            )
+        chunks.append(data[start : start + take])
+        cursor += take
+    return b"".join(chunks)
+
+
 def _elf_dependencies(
     data: bytes, *, architecture: str | None = None
 ) -> tuple[NativeDependency, ...]:
@@ -261,28 +302,14 @@ def _elf_dependencies(
                 "ELF dependency table has no string table"
             )
         return ()
-    string_offset: int | None = None
-    for virtual_address, memory_size, file_offset, file_size in program_headers:
-        if virtual_address <= string_address < virtual_address + memory_size:
-            candidate = file_offset + string_address - virtual_address
-            if (
-                candidate + string_size <= file_offset + file_size
-                and candidate + string_size <= len(data)
-            ):
-                string_offset = candidate
-                break
-    if string_offset is None:
-        raise PythonEnvironmentIdentityError(
-            "ELF dependency string table is outside loaded segments"
-        )
+    strings = _elf_loaded_bytes(data, program_headers, string_address, string_size)
     names: set[str] = set()
     for name_offset in needed:
-        start = string_offset + name_offset
-        end = data.find(b"\0", start, string_offset + string_size)
-        if start < string_offset or end < 0:
+        end = strings.find(b"\0", name_offset)
+        if end < 0:
             raise PythonEnvironmentIdentityError("ELF dependency name is invalid")
         try:
-            name = data[start:end].decode("utf-8")
+            name = strings[name_offset:end].decode("utf-8")
         except UnicodeDecodeError as exc:
             raise PythonEnvironmentIdentityError(
                 "ELF dependency name is not UTF-8"
@@ -579,21 +606,24 @@ def _native_dependency_closure(
             del data
             continue
         loaded_macho_identity = macos_image_identities.get(path)
-        rpaths = (
-            _macho_rpaths(
+        try:
+            rpaths = (
+                _macho_rpaths(
+                    data,
+                    architecture=architecture,
+                    loaded_macho_identity=loaded_macho_identity,
+                )
+                if operating_system == "macos"
+                else ()
+            )
+            dependencies = _native_dependencies(
                 data,
+                operating_system,
                 architecture=architecture,
                 loaded_macho_identity=loaded_macho_identity,
             )
-            if operating_system == "macos"
-            else ()
-        )
-        dependencies = _native_dependencies(
-            data,
-            operating_system,
-            architecture=architecture,
-            loaded_macho_identity=loaded_macho_identity,
-        )
+        except PythonEnvironmentIdentityError as exc:
+            raise PythonEnvironmentIdentityError(f"{path}: {exc}") from exc
         del data
         for declaration in dependencies:
             if declaration.kind in DEFERRED_DEPENDENCY_KINDS[operating_system]:

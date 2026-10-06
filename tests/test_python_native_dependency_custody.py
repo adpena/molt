@@ -275,6 +275,38 @@ def test_elf_requires_name_termination_inside_string_table() -> None:
         native._elf_dependencies(bytes(image))
 
 
+def _elf_image_with_split_string_table(*, second_vaddr: int) -> bytearray:
+    """A string table that straddles two PT_LOADs mapped from distant file bytes.
+
+    Mirrors python-build-standalone's BOLT/patchelf x86_64 interpreter, whose
+    ``DT_STRTAB`` starts in one PT_LOAD and continues into the next.
+    """
+    image = _elf_image(b"libc.so")
+    struct.pack_into("<HH", image, 54, 56, 3)
+    # LOAD 0 maps file [0, 0x304) at vaddr 0: the table's first four bytes.
+    struct.pack_into("<IIQQQQQQ", image, 64, 1, 0, 0, 0, 0, 0x304, 0x304, 1)
+    # LOAD 1 maps file [0x380, 0x400) at `second_vaddr`: the table's rest.
+    struct.pack_into(
+        "<IIQQQQQQ", image, 176, 1, 0, 0x380, second_vaddr, 0, 0x80, 0x80, 1
+    )
+    image[0x304:0x380] = b"\xff" * (0x380 - 0x304)
+    image[0x380:0x385] = b"c.so\0"
+    return image
+
+
+def test_elf_string_table_may_span_adjacent_loaded_segments() -> None:
+    image = _elf_image_with_split_string_table(second_vaddr=0x304)
+    assert native._elf_dependencies(bytes(image)) == (
+        native.NativeDependency("libc.so", "required"),
+    )
+
+
+def test_elf_string_table_cannot_span_a_gap_between_loaded_segments() -> None:
+    image = _elf_image_with_split_string_table(second_vaddr=0x1000)
+    with pytest.raises(PythonEnvironmentIdentityError, match="outside loaded segments"):
+        native._elf_dependencies(bytes(image))
+
+
 @pytest.mark.parametrize("endian", ["<", ">"])
 @pytest.mark.parametrize("fat64", [False, True])
 @pytest.mark.parametrize(

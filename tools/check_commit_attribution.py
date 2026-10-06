@@ -56,8 +56,8 @@ def attribution_lines(message: str) -> list[str]:
     ]
 
 
-def _git(args: Sequence[str], *, cwd: Path) -> str:
-    result = subprocess.run(
+def _git(args: Sequence[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         ["git", *args],
         cwd=cwd,
         capture_output=True,
@@ -66,6 +66,10 @@ def _git(args: Sequence[str], *, cwd: Path) -> str:
         errors="replace",
         check=False,
     )
+
+
+def _git_output(args: Sequence[str], *, cwd: Path) -> str:
+    result = _git(args, cwd=cwd)
     if result.returncode != 0:
         raise SystemExit(
             f"check_commit_attribution: git {' '.join(args)} failed "
@@ -74,10 +78,14 @@ def _git(args: Sequence[str], *, cwd: Path) -> str:
     return result.stdout
 
 
+def _is_commit(revision: str, *, cwd: Path) -> bool:
+    return _git(["cat-file", "-e", f"{revision}^{{commit}}"], cwd=cwd).returncode == 0
+
+
 def check_revisions(revisions: Sequence[str], *, cwd: Path) -> list[Violation]:
     """Check every commit `git log <revisions>` selects, in one git process."""
     violations: list[Violation] = []
-    output = _git(["log", "--format=%H%n%B%x00", *revisions], cwd=cwd)
+    output = _git_output(["log", "--format=%H%n%B%x00", *revisions], cwd=cwd)
     for record in output.split("\x00"):
         commit, _, message = record.strip("\n").partition("\n")
         if commit:
@@ -109,11 +117,24 @@ def github_event_revisions(
     if event_name == "push":
         after = sha(event, "after")
         before = event.get("before")
-        if isinstance(before, str) and before and not ZERO_SHA.match(before):
+        if (
+            isinstance(before, str)
+            and before
+            and not ZERO_SHA.match(before)
+            and _is_commit(before, cwd=cwd)
+        ):
             return [f"{before}..{after}"]
-        # A new ref: every commit not already on a remote-tracking branch.
-        return [after, "--not", "--remotes"]
-    head = _git(["rev-parse", "HEAD"], cwd=cwd).strip()
+        # A new ref, or a forced push whose old tip this clone no longer has:
+        # every commit not already on ANOTHER remote-tracking branch. The CI
+        # checkout fetches the pushed branch itself, and a clone's
+        # `<remote>/HEAD` may point at it, so both are excluded; otherwise
+        # `--not --remotes` would hide every pushed commit.
+        exclusions = ["--exclude=*/HEAD"]
+        ref = event.get("ref")
+        if isinstance(ref, str) and ref.startswith("refs/heads/"):
+            exclusions.append(f"--exclude=*/{ref.removeprefix('refs/heads/')}")
+        return [after, "--not", *exclusions, "--remotes"]
+    head = _git_output(["rev-parse", "HEAD"], cwd=cwd).strip()
     return [f"{head}^!"]
 
 
