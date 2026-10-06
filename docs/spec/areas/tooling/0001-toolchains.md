@@ -312,6 +312,12 @@ WASM targets:
   `MOLT_WASI_SYSROOT`, `MOLT_WASM_LD`, and `MOLT_LLVM_NM` (or set
   `WASI_SDK_PATH=<install>/sdk`). WASM symbol inspection finds the
   custody-provisioned SDK without an export.
+- Every `wasm-ld` consumer (runtime WASM builds, final links, `tools/wasm_link.py`
+  and `molt doctor`) resolves the linker through
+  `molt.llvm_toolchain.resolve_wasi_sdk_tool`: `MOLT_WASM_LD`, else the SDK named
+  by `WASI_SDK_PATH`, else the custody-provisioned SDK. There is no `PATH` or
+  rustup search, and Molt never installs a linker; when none is selected the
+  error names `tools/provision_wasi_sdk.py` and the selectors.
 
 ## Cargo workspace truth custody
 

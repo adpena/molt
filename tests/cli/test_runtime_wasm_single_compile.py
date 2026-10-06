@@ -65,6 +65,7 @@ from molt.cli.runtime_wasm_generation import (
     publish_runtime_wasm_generation,
     runtime_wasm_generation_path,
 )
+from tests.executable_test_support import write_mock_executable
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
     mock_wasm_optimizer_cache_fact,
@@ -1621,6 +1622,22 @@ def _prepare_host_precompile_routing(
     monkeypatch.setattr(nno, "_app_export_manifest", app_exports)
     monkeypatch.setattr(nno, "resolve_molt_wasm_host_binary", resolve_host)
     monkeypatch.setattr(nno, "_run_completed_command", run_child)
+    # Host routing is under test, not toolchain selection: bind a hermetic
+    # wasm-ld so the result never depends on whether this host provisioned the
+    # WASI SDK (Linux CI has none; the toolchain authority would refuse).
+    hermetic_linker = write_mock_executable(
+        tmp_path / ("wasm-ld.exe" if os.name == "nt" else "wasm-ld"), b"wasm-ld"
+    )
+    monkeypatch.setattr(
+        nno.wasm_toolchain,
+        "resolve_wasm_linker",
+        lambda: nno.wasm_toolchain.WasmLinkerIdentity(
+            hermetic_linker,
+            "22.1.0",
+            None,
+            hashlib.sha256(b"wasm-ld").hexdigest(),
+        ),
+    )
     build_kwargs = dict(
         resolved_capability_policy=CapabilityManifest().resolve(),
         is_rust_transpile=False,

@@ -737,7 +737,6 @@ def resolve_runtime_wasm_link_inputs(
     )
     if (
         not sysroot
-        or linker is None
         or policy.error
         or policy.printscan is None
         or policy.builtins is None

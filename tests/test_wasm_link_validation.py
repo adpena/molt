@@ -2191,23 +2191,6 @@ def test_relocatable_runtime_preflight_classifies_linker_crash(
     assert "returncode=3221225477" in error
 
 
-def test_find_wasm_ld_uses_attested_toolchain_authority(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    identity = wasm_link_command.wasm_toolchain.WasmLinkerIdentity(
-        Path("C:/wasi-sdk/bin/wasm-ld.exe"), "22.1.7", "22.1.0"
-    )
-    monkeypatch.setattr(
-        wasm_link_command.wasm_toolchain, "resolve_wasm_linker", lambda: identity
-    )
-
-    assert wasm_link_command._find_wasm_ld() == str(identity.path)
-    diagnostic = capsys.readouterr().err
-    assert "version=22.1.7" in diagnostic
-    assert "sha256=unattested" in diagnostic
-    assert "wasi-sdk-llvm=22.1.0" in diagnostic
-
-
 def _write_wasm_ld_output(cmd: list[str], data: bytes) -> Path | None:
     if "-o" not in cmd:
         return None
@@ -9687,9 +9670,9 @@ def test_wasm_module_identity_survives_distinct_staging_paths(
     tmp_path: Path, relocatable: bool
 ) -> None:
     """Exercise lld's name emission, including the output-name negative control."""
-    linker = wasm_link_command.wasm_toolchain.resolve_wasm_linker()
-    if linker is None:
-        pytest.skip("WASM linker is not available")
+    from tests.wasm_linked_runner import selected_wasm_ld
+
+    linker = selected_wasm_ld()
     source = tmp_path / "input.o"
     data = wasm_link_format._append_linking_function_symbols(
         _build_exported_runtime_module("user_entry"),
@@ -9722,7 +9705,7 @@ def test_wasm_module_identity_survives_distinct_staging_paths(
                 else ("-o", str(staged))
             )
             result = wasm_link_command._run_external_tool(
-                [str(linker.path), *flags, *output_args, str(source)],
+                [str(linker), *flags, *output_args, str(source)],
                 capture_output=True,
                 text=True,
             )

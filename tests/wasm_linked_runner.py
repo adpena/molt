@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from molt.cli.llvm_wasi_tools import llvm_linker_candidates
+from molt.cli import wasm_toolchain
 from molt.cli.wasm_host import resolve_molt_wasm_host_binary
 from molt.dx import development_artifact_env, generated_session_id
 from molt.node_runtime import NodeRuntimeError, resolve_node_runtime
@@ -131,11 +131,27 @@ def _wasm_test_target_dir(root: Path, out_dir: Path, artifact_root: Path) -> Pat
     return target
 
 
+def wasm_ld_unavailable_reason() -> str | None:
+    """Why the WASM toolchain authority selects no wasm-ld, or None."""
+    try:
+        wasm_toolchain.resolve_wasm_linker()
+    except wasm_toolchain.WasmLinkerContractError as exc:
+        return str(exc)
+    return None
+
+
+def selected_wasm_ld() -> Path:
+    """The wasm-ld the WASM toolchain authority selects, or a precise skip."""
+    try:
+        return wasm_toolchain.resolve_wasm_linker().path
+    except wasm_toolchain.WasmLinkerContractError as exc:
+        pytest.skip(f"wasm-ld is required: {exc}")
+
+
 def require_wasm_build_toolchain() -> None:
     if shutil.which("cargo") is None:
         pytest.skip("cargo is required for wasm parity test")
-    if not llvm_linker_candidates("wasm-ld", target_family="wasm"):
-        pytest.skip("wasm-ld is required for linked wasm parity test")
+    selected_wasm_ld()
 
 
 def require_wasm_toolchain() -> None:

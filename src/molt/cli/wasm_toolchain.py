@@ -11,14 +11,7 @@ import tomllib
 
 from molt.cli import wasm_link_inputs
 from molt.cli.command_runtime import _run_completed_command
-from molt.toolchain_identity import (
-    resolve_explicit_tool_command,
-    stable_executable_probe,
-)
-from molt.cli.llvm_wasi_tools import (
-    llvm_linker_candidates,
-)
-from molt.llvm_linker_roles import executable_selects_linker_role
+from molt.toolchain_identity import stable_executable_probe
 from molt.wasi_sysroot import (
     wasi_sysroot_llvm_version,
 )
@@ -217,47 +210,30 @@ def _llvm_release_line(version: str) -> tuple[int, int]:
 
 def resolve_wasm_linker(
     *, env: Mapping[str, str] | None = None, cwd: Path | None = None
-) -> WasmLinkerIdentity | None:
-    environment = os.environ if env is None else env
-    sysroot = wasm_link_inputs.resolve_wasi_sysroot(env=environment)
-    explicit_commands: tuple[tuple[str, ...], ...] = ()
-    override = environment.get("MOLT_WASM_LD", "").strip()
-    if override:
-        try:
-            explicit = resolve_explicit_tool_command(
-                override, label="MOLT_WASM_LD", environment=environment
-            )
-        except ValueError as exc:
-            raise WasmLinkerContractError(str(exc)) from exc
-        if len(explicit) != 1:
-            raise WasmLinkerContractError(
-                "MOLT_WASM_LD must select one linker executable without embedded arguments"
-            )
-        if not executable_selects_linker_role(Path(explicit[0]), "wasm-ld"):
-            raise WasmLinkerContractError(
-                "MOLT_WASM_LD must select the wasm-ld entrypoint; generic lld and "
-                f"other linker roles are not wasm linkers: {explicit[0]}"
-            )
-        explicit_commands = (explicit,)
-    sibling_directories: tuple[Path, ...] = ()
-    if sysroot is not None:
-        sdk_root = wasm_link_inputs._wasi_sdk_root_for_sysroot(sysroot)
-        if sdk_root is not None:
-            sibling_directories = (sdk_root / "bin",)
-    candidates = llvm_linker_candidates(
-        "wasm-ld",
-        target_family="wasm",
-        explicit_commands=explicit_commands,
-        sibling_directories=sibling_directories,
-        environment=environment,
-    )
-    if not candidates:
-        return None
-    linker = candidates[0]
+) -> WasmLinkerIdentity:
+    """Attest the one wasm-ld the WebAssembly toolchain authority selects.
+
+    ``molt.llvm_toolchain.resolve_wasi_sdk_tool`` owns the selection: an
+    explicit ``MOLT_WASM_LD``, the SDK named by ``WASI_SDK_PATH``, or the
+    provisioned wasi-sdk. There is no ambient PATH search and Molt never
+    installs a linker; an unavailable one fails with the exact provisioning
+    command or selector to set.
+    """
+    from molt.llvm_toolchain import LlvmToolchainConfigError, resolve_wasi_sdk_tool
+    from molt.source_root import compiler_source_root
+
+    environment = dict(os.environ if env is None else env)
+    try:
+        linker = resolve_wasi_sdk_tool(
+            compiler_source_root(), "wasm-ld", environ=environment
+        )
+    except LlvmToolchainConfigError as exc:
+        raise WasmLinkerContractError(str(exc)) from exc
     version, sha256 = _wasm_linker_binary_identity(
         linker, env=environment, cwd=cwd or Path.cwd()
     )
     expected = None
+    sysroot = wasm_link_inputs.resolve_wasi_sysroot(env=environment)
     if sysroot is not None:
         expected = wasi_sysroot_llvm_version(sysroot)
         if expected is not None and _llvm_release_line(version) != _llvm_release_line(
@@ -266,7 +242,7 @@ def resolve_wasm_linker(
             raise WasmLinkerContractError(
                 "wasm linker/toolchain mismatch: "
                 f"{linker} reports {version}, but {sysroot / 'VERSION'} requires "
-                f"LLVM {expected}; use the matching wasi-sdk bin/wasm-ld or set "
-                "MOLT_WASM_LD"
+                f"LLVM {expected}; select the matching wasi-sdk with WASI_SDK_PATH "
+                "or its bin/wasm-ld with MOLT_WASM_LD"
             )
     return WasmLinkerIdentity(linker, version, expected, sha256)

@@ -15,7 +15,6 @@ from molt.temporary_artifacts import OwnedTemporaryDirectory
 import time
 
 from command_execution import CommandExecutor
-from molt.cli import wasm_toolchain
 from wasm_link_edit import _add_symtab_alias
 from wasm_link_format import (
     CALL_INDIRECT_MANGLED_RE,
@@ -109,20 +108,6 @@ def _read_wasm_bytes_with_retry(
             return data
         time.sleep(delay_sec)
     return data
-
-
-def _find_wasm_ld() -> str | None:
-    """Return the attested ``wasm-ld`` selected by toolchain authority."""
-
-    try:
-        identity = wasm_toolchain.resolve_wasm_linker()
-    except wasm_toolchain.WasmLinkerContractError as exc:
-        print(f"Wasm linker contract failed: {exc}", file=sys.stderr)
-        return None
-    if identity is None:
-        return None
-    print(f"Wasm linker identity: {identity.diagnostic}", file=sys.stderr)
-    return str(identity.path)
 
 
 def _deduplicated_export_flags(*groups: Iterable[str]) -> list[str]:
