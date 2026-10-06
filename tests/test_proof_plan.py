@@ -2773,6 +2773,49 @@ def test_executor_failure_scope_uses_guard_and_quarantine_authority(
     assert reason
 
 
+def _job_cleanup_with_survivor(image: Path) -> dict[str, object]:
+    return {
+        "windows_job_cleanup": {
+            "completed": True,
+            "remaining_processes": [{"pid": 720, "image": str(image)}],
+        }
+    }
+
+
+def test_job_closure_admits_only_declared_helpers_beside_their_linker(
+    tmp_path: Path,
+) -> None:
+    admitted = proof_plan._admitted_linker_helpers(PLAN)
+    assert admitted["vctip.exe"] == frozenset({"link.exe"})
+    msvc = tmp_path / "MSVC" / "bin"
+    msvc.mkdir(parents=True)
+    (msvc / "link.exe").write_bytes(b"")
+    (msvc / "vctip.exe").write_bytes(b"")
+    lone = tmp_path / "elsewhere"
+    lone.mkdir()
+    (lone / "vctip.exe").write_bytes(b"")
+    uncertain = ("global", "guard job closure is uncertain")
+
+    def scope(image: Path, helpers=admitted) -> tuple[str, str | None]:
+        return proof_plan._guarded_failure_scope(
+            _job_cleanup_with_survivor(image),
+            metrics_valid=True,
+            returncode=0,
+            cancelled=False,
+            admitted_linker_helpers=helpers,
+        )
+
+    # MSVC's linker leaves its telemetry helper running after it exits; the
+    # plan declares it, so terminating it through the Job is ordinary closure.
+    assert scope(msvc / "vctip.exe") != uncertain
+    assert scope(msvc / "VCTIP.EXE") != uncertain
+    # A helper name without its declared linker beside it, an undeclared
+    # survivor, or no plan policy at all remains uncertain closure.
+    assert scope(lone / "vctip.exe") == uncertain
+    assert scope(msvc / "link.exe") == uncertain
+    assert scope(msvc / "vctip.exe", helpers={}) == uncertain
+
+
 def test_executor_missing_guard_outcome_is_a_global_stop() -> None:
     assert (
         proof_plan._guarded_failure_scope(
