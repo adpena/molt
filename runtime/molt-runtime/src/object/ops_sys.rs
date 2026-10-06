@@ -2297,7 +2297,9 @@ pub unsafe extern "C" fn molt_set_argv(argc: i32, argv: *const *const u8) {
                         args.push(Vec::new());
                         continue;
                     }
-                    let bytes = CStr::from_ptr(ptr as *const i8).to_bytes();
+                    // `c_char` is unsigned on aarch64/arm/ppc/riscv/s390x Linux;
+                    // let the cast infer it instead of naming one signedness.
+                    let bytes = CStr::from_ptr(ptr.cast()).to_bytes();
                     let (decoded, _) = decode_bytes_text("utf-8", "surrogateescape", bytes)
                         .expect("argv decode must succeed for utf-8+surrogateescape");
                     args.push(decoded);
