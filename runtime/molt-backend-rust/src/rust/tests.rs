@@ -1811,7 +1811,7 @@ fn jump_after_loop_rejects_an_undefined_target_before_emission() {
 }
 
 /// An op kind that no dispatch arm claims must fail at the Result boundary.
-/// The synthetic kind routes to `emit_op_other` and records a dispatch error.
+/// SimpleIR admission rejects the synthetic kind before dispatch.
 #[test]
 fn compile_checked_fails_closed_on_synthetically_unsupported_op() {
     let mut backend = RustBackend::new();
@@ -1844,7 +1844,10 @@ fn compile_checked_fails_closed_on_synthetically_unsupported_op() {
     let err = backend
         .compile_checked(&ir)
         .expect_err("a synthetically-unsupported op must fail the build closed");
-    assert!(err.contains("unclassified"), "got: {err}");
+    assert!(
+        err.contains("unregistered op kind") && err.contains("function `molt_main` op#0"),
+        "got: {err}"
+    );
     assert!(
         err.contains("molt_synthetic_unsupported_op_probe"),
         "diagnostic must name the unsupported op kind, got: {err}"
@@ -1862,7 +1865,7 @@ fn compile_checked_fails_closed_without_emitted_value_marker() {
             name: "molt_main".to_string(),
             params: vec![],
             ops: vec![OpIR {
-                // No `out`: dispatch still records the unsupported operation.
+                // No `out`: admission still rejects the unsupported operation.
                 kind: "molt_synthetic_unsupported_sink_probe".to_string(),
                 ..OpIR::default()
             }],
@@ -1879,7 +1882,10 @@ fn compile_checked_fails_closed_without_emitted_value_marker() {
     let err = backend
         .compile_checked(&ir)
         .expect_err("an unsupported op with no output must still fail closed");
-    assert!(err.contains("unclassified"), "got: {err}");
+    assert!(
+        err.contains("unregistered op kind") && err.contains("function `molt_main` op#0"),
+        "got: {err}"
+    );
     assert!(
         err.contains("molt_synthetic_unsupported_sink_probe"),
         "got: {err}"

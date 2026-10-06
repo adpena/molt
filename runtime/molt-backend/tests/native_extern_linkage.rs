@@ -214,10 +214,13 @@ fn native_object_retains_exact_generated_object_abi_import() {
     let anchor_section = file
         .section_by_index(anchor.section_index().expect("anchor section"))
         .expect("read anchor section");
-    let pointer_bytes = match file.architecture() {
-        object::Architecture::X86_64 | object::Architecture::Aarch64 => 8,
-        _ => 4,
-    };
+    let pointer_bytes = if file.is_64() { 8 } else { 4 };
+    assert!(anchor_section.align() >= pointer_bytes);
+    assert_eq!(
+        (anchor.address() - anchor_section.address()) % pointer_bytes,
+        0,
+        "ABI anchor pointer offset must retain its alignment among other emitted data"
+    );
     assert_eq!(
         anchor_section.size(),
         pointer_bytes,
@@ -293,6 +296,13 @@ fn cross_format_objects_retain_generated_object_abi_anchor() {
         let section = file
             .section_by_index(anchor.section_index().expect("anchor section"))
             .expect("read anchor section");
+        let pointer_bytes = if file.is_64() { 8 } else { 4 };
+        assert!(section.align() >= pointer_bytes, "{target}");
+        assert_eq!(
+            (anchor.address() - section.address()) % pointer_bytes,
+            0,
+            "{target}: ABI anchor pointer offset must remain aligned"
+        );
         match (expected_format, section.flags()) {
             (object::BinaryFormat::Elf, object::SectionFlags::Elf { sh_flags }) => assert_ne!(
                 sh_flags & u64::from(object::elf::SHF_GNU_RETAIN),

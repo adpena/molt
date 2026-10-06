@@ -433,10 +433,10 @@ fn test_compile_via_ir_rejects_unsupported_output() {
         .compile_via_ir(&ir)
         .expect_err("preview/IR path must reject unsupported output");
     assert!(
-        err.contains("rejected before source generation")
+        err.contains("unregistered op kind")
             && err.contains("`unknown_luau_op`")
-            && err.contains("unclassified"),
-        "diagnostic must name the unclassified op at pre-source admission, got: {err}"
+            && err.contains("function `unsupported_test` op#0"),
+        "diagnostic must name the unregistered op at SimpleIR admission, got: {err}"
     );
 }
 
@@ -456,7 +456,7 @@ fn test_compile_via_ir_fails_closed_without_emitted_value_line() {
             parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::None,
             ops: vec![OpIR {
-                // No `out`: dispatch still records the unsupported operation.
+                // No `out`: admission still rejects the unsupported operation.
                 kind: "molt_synthetic_unsupported_sink_probe".to_string(),
                 ..OpIR::default()
             }],
@@ -468,7 +468,7 @@ fn test_compile_via_ir_fails_closed_without_emitted_value_line() {
         .compile_via_ir(&ir)
         .expect_err("an unsupported op with no output must still fail closed");
     assert!(
-        err.contains("rejected before source generation") && err.contains("unclassified"),
+        err.contains("unregistered op kind") && err.contains("function `molt_main` op#0"),
         "got: {err}"
     );
     assert!(

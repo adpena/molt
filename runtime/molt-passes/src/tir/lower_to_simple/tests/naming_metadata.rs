@@ -567,7 +567,7 @@ fn passthrough_var_read_uses_its_resolved_ssa_operand_after_renaming() {
                 ..OpIR::default()
             },
             OpIR {
-                kind: "transport_probe".into(),
+                kind: "cast".into(),
                 var: Some("value".into()),
                 args: Some(vec!["arg".into()]),
                 ..OpIR::default()
@@ -592,9 +592,7 @@ fn passthrough_var_read_uses_its_resolved_ssa_operand_after_renaming() {
         .blocks
         .values()
         .flat_map(|block| &block.ops)
-        .find(|op| {
-            op.attrs.get("_original_kind") == Some(&AttrValue::Str("transport_probe".into()))
-        })
+        .find(|op| op.attrs.get("_original_kind") == Some(&AttrValue::Str("cast".into())))
         .unwrap();
     assert_eq!(
         probe.attrs.get("_simple_var_operand"),
@@ -602,10 +600,7 @@ fn passthrough_var_read_uses_its_resolved_ssa_operand_after_renaming() {
     );
     assert_eq!(probe.operands[1], produced);
     let lowered = lower_to_simple_ir(&tir);
-    let probe = lowered
-        .iter()
-        .find(|op| op.kind == "transport_probe")
-        .unwrap();
+    let probe = lowered.iter().find(|op| op.kind == "cast").unwrap();
     assert_eq!(probe.args, Some(vec!["arg".into()]));
     assert_eq!(probe.var, Some(names.value_name(produced)));
     assert_ne!(probe.var.as_deref(), Some("value"));
@@ -624,9 +619,7 @@ fn passthrough_var_read_uses_its_resolved_ssa_operand_after_renaming() {
         .blocks
         .values()
         .flat_map(|block| &block.ops)
-        .find(|op| {
-            op.attrs.get("_original_kind") == Some(&AttrValue::Str("transport_probe".into()))
-        })
+        .find(|op| op.attrs.get("_original_kind") == Some(&AttrValue::Str("cast".into())))
         .unwrap();
     assert_eq!(probe.operands.len(), 2);
     assert_eq!(probe.operands[1], produced);
@@ -649,7 +642,7 @@ fn passthrough_unresolved_var_preserves_metadata_and_all_positional_arguments() 
                 params: vec!["arg".into()],
                 ops: vec![
                     OpIR {
-                        kind: "transport_probe".into(),
+                        kind: "cast".into(),
                         var: Some(raw.into()),
                         args: args.clone(),
                         source_op_idx: Some(701),
@@ -670,8 +663,7 @@ fn passthrough_unresolved_var_preserves_metadata_and_all_positional_arguments() 
                     .values()
                     .flat_map(|block| &block.ops)
                     .find(|op| {
-                        op.attrs.get("_original_kind")
-                            == Some(&AttrValue::Str("transport_probe".into()))
+                        op.attrs.get("_original_kind") == Some(&AttrValue::Str("cast".into()))
                     })
                     .unwrap();
                 assert!(
@@ -695,10 +687,7 @@ fn passthrough_unresolved_var_preserves_metadata_and_all_positional_arguments() 
                     .map(|&operand| names.value_name(operand))
                     .collect();
                 let lowered = lower_to_simple_ir(&tir);
-                let probe = lowered
-                    .iter()
-                    .find(|op| op.kind == "transport_probe")
-                    .unwrap();
+                let probe = lowered.iter().find(|op| op.kind == "cast").unwrap();
                 assert_eq!(probe.var.as_deref(), Some(raw), "{case}");
                 assert_eq!(
                     probe.args.as_deref().unwrap_or_default(),

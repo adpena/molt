@@ -876,7 +876,7 @@ mod tests {
     fn roundtrip_passthrough_preserves_var() {
         let ops = vec![
             OpIR {
-                kind: "some_custom_op".to_string(),
+                kind: "cast".to_string(),
                 var: Some("my_var_name".into()),
                 out: Some("result".into()),
                 value: Some(7),
@@ -885,8 +885,8 @@ mod tests {
             op_args("ret", &["result"]),
         ];
         let result = roundtrip_no_opt(ops);
-        let custom = result.iter().find(|o| o.kind == "some_custom_op");
-        assert!(custom.is_some(), "custom op must survive round-trip");
+        let custom = result.iter().find(|o| o.kind == "cast");
+        assert!(custom.is_some(), "cast must survive round-trip");
         assert!(
             custom.unwrap().var.is_some(),
             "var field must be preserved for passthrough ops, got: {:?}",
@@ -902,7 +902,7 @@ mod tests {
     fn roundtrip_passthrough_preserves_f_value() {
         let ops = vec![
             OpIR {
-                kind: "some_float_op".to_string(),
+                kind: "cast".to_string(),
                 out: Some("result".into()),
                 f_value: Some(PI),
                 ..OpIR::default()
@@ -910,8 +910,8 @@ mod tests {
             op_args("ret", &["result"]),
         ];
         let result = roundtrip_no_opt(ops);
-        let fop = result.iter().find(|o| o.kind == "some_float_op");
-        assert!(fop.is_some(), "float op must survive round-trip");
+        let fop = result.iter().find(|o| o.kind == "cast");
+        assert!(fop.is_some(), "cast must survive round-trip");
         assert_eq!(
             fop.unwrap().f_value,
             Some(PI),
@@ -927,7 +927,7 @@ mod tests {
     fn roundtrip_passthrough_preserves_bytes() {
         let ops = vec![
             OpIR {
-                kind: "some_bytes_op".to_string(),
+                kind: "cast".to_string(),
                 out: Some("result".into()),
                 bytes: Some(vec![1, 2, 3]),
                 ..OpIR::default()
@@ -935,8 +935,8 @@ mod tests {
             op_args("ret", &["result"]),
         ];
         let result = roundtrip_no_opt(ops);
-        let bop = result.iter().find(|o| o.kind == "some_bytes_op");
-        assert!(bop.is_some(), "bytes op must survive round-trip");
+        let bop = result.iter().find(|o| o.kind == "cast");
+        assert!(bop.is_some(), "cast must survive round-trip");
         assert_eq!(
             bop.unwrap().bytes.as_deref(),
             Some(&[1u8, 2, 3][..]),
@@ -1176,7 +1176,7 @@ mod tests {
     fn roundtrip_passthrough_preserves_metadata() {
         let ops = vec![
             OpIR {
-                kind: "async_spawn".to_string(),
+                kind: "cast".to_string(),
                 out: Some("t".into()),
                 task_kind: Some("coro".into()),
                 container_type: Some("list".into()),
@@ -1185,8 +1185,8 @@ mod tests {
             op_args("ret", &["t"]),
         ];
         let result = roundtrip_no_opt(ops);
-        let asp = result.iter().find(|o| o.kind == "async_spawn");
-        assert!(asp.is_some(), "async_spawn must survive round-trip");
+        let asp = result.iter().find(|o| o.kind == "cast");
+        assert!(asp.is_some(), "cast must survive round-trip");
         let a = asp.unwrap();
         assert_eq!(
             a.task_kind.as_deref(),

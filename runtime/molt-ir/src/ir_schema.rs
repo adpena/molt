@@ -2,8 +2,9 @@ use crate::native_callable_abi::{NATIVE_CALLABLE_ABI_CHOICES, parse_native_calla
 use crate::tir::op_kinds_generated::{
     SimpleIrCallTargetRole, SimpleIrOpValueRule, SimpleIrReturnShape, SimpleIrRuntimeRequirements,
     SimpleIrVarFieldRole, kind_consumed_operand_table, kind_source_call_callable_operand,
-    kind_source_call_first_adopted_operand, kind_to_opcode_table, simpleir_backend_service_kind,
-    simpleir_call_target_role, simpleir_kind_has_function_reference_s_value,
+    kind_source_call_first_adopted_operand, kind_to_opcode_table, simpleir_backend_private_owner,
+    simpleir_backend_service_kind, simpleir_call_target_role,
+    simpleir_kind_has_function_reference_s_value, simpleir_kind_is_registered,
     simpleir_kind_may_carry_async_work_poll_marker,
     simpleir_kind_may_carry_runtime_requirement_bits, simpleir_kind_may_carry_runtime_symbol,
     simpleir_op_shape, simpleir_return_shape, simpleir_var_field_role_table,
@@ -111,6 +112,10 @@ const CONTAINER_TYPES: &[&str] = &[
 const BCE_SAFE_KINDS: &[&str] = &["index", "store_index"];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpShapeViolation {
+    UnregisteredKind,
+    BackendPrivate {
+        backend: &'static str,
+    },
     ForbiddenVar,
     OperandCount {
         expected: usize,
@@ -127,14 +132,27 @@ pub enum OpShapeViolation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpShapeDiagnostic {
     pub family: &'static str,
-    pub kind: &'static str,
+    pub kind: String,
     pub violation: OpShapeViolation,
 }
 
 impl std::fmt::Display for OpShapeDiagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let OpShapeViolation::Retired { reason } = self.violation {
-            return write!(f, "retired compiler operation `{}`: {reason}", self.kind);
+        match self.violation {
+            OpShapeViolation::Retired { reason } => {
+                return write!(f, "retired compiler operation `{}`: {reason}", self.kind);
+            }
+            OpShapeViolation::UnregisteredKind => {
+                return write!(f, "unregistered op kind `{}`", self.kind);
+            }
+            OpShapeViolation::BackendPrivate { backend } => {
+                return write!(
+                    f,
+                    "backend-private op kind `{}` belongs to {backend} internal lowering and cannot enter an external SimpleIR program",
+                    self.kind
+                );
+            }
+            _ => {}
         }
         write!(f, "[family={}] `{}` ", self.family, self.kind)?;
         match self.violation {
@@ -148,7 +166,11 @@ impl std::fmt::Display for OpShapeDiagnostic {
                     None => write!(f, "none"),
                 }
             }
-            OpShapeViolation::Retired { .. } => unreachable!("retired diagnostic formatted above"),
+            OpShapeViolation::Retired { .. }
+            | OpShapeViolation::UnregisteredKind
+            | OpShapeViolation::BackendPrivate { .. } => {
+                unreachable!("admission diagnostic formatted above")
+            }
             OpShapeViolation::NonNegativeValue { actual } => {
                 write!(
                     f,
@@ -186,7 +208,7 @@ pub(crate) fn validate_op_not_retired(kind: &str) -> Result<(), OpShapeDiagnosti
     if let Some((kind, reason)) = retired {
         return Err(OpShapeDiagnostic {
             family: "retired",
-            kind,
+            kind: kind.into(),
             violation: OpShapeViolation::Retired { reason },
         });
     }
@@ -222,14 +244,27 @@ pub fn validate_op_shape(
     match violation {
         Some(violation) => Err(OpShapeDiagnostic {
             family: shape.family,
-            kind: shape.kind,
+            kind: shape.kind.into(),
             violation,
         }),
         None => Ok(()),
     }
 }
 
+pub(crate) fn validate_registered_op_kind(kind: &str) -> Result<(), OpShapeDiagnostic> {
+    validate_op_not_retired(kind)?;
+    if !simpleir_kind_is_registered(kind) {
+        return Err(OpShapeDiagnostic {
+            family: "registration",
+            kind: kind.into(),
+            violation: OpShapeViolation::UnregisteredKind,
+        });
+    }
+    Ok(())
+}
+
 fn validate_simple_op_shape(op: &OpIR) -> Result<(), OpShapeDiagnostic> {
+    validate_registered_op_kind(&op.kind)?;
     validate_op_shape(&op.kind, op.args.as_ref().map(Vec::len), op.value)?;
     if let Some(shape) = simpleir_op_shape(&op.kind)
         && simpleir_var_field_role_table(&op.kind) == SimpleIrVarFieldRole::Forbidden
@@ -237,7 +272,7 @@ fn validate_simple_op_shape(op: &OpIR) -> Result<(), OpShapeDiagnostic> {
     {
         return Err(OpShapeDiagnostic {
             family: shape.family,
-            kind: shape.kind,
+            kind: shape.kind.into(),
             violation: OpShapeViolation::ForbiddenVar,
         });
     }
@@ -276,9 +311,25 @@ pub fn validate_function_op_shapes(
     Ok(())
 }
 
+/// Admission for external programs, before any backend may prune or rewrite
+/// their operations. Internal function lowering uses the shape validator above
+/// and may re-lift explicitly registered backend-private carriers.
 pub fn validate_simple_ir_op_shapes(ir: &crate::SimpleIR) -> Result<(), FunctionOpShapeDiagnostic> {
     for func in &ir.functions {
         validate_function_op_shapes(func)?;
+        for (op_index, op) in func.ops.iter().enumerate() {
+            if let Some(backend) = simpleir_backend_private_owner(&op.kind) {
+                return Err(FunctionOpShapeDiagnostic {
+                    function: func.name.clone(),
+                    op_index,
+                    shape: OpShapeDiagnostic {
+                        family: "registration",
+                        kind: op.kind.clone(),
+                        violation: OpShapeViolation::BackendPrivate { backend },
+                    },
+                });
+            }
+        }
     }
     Ok(())
 }

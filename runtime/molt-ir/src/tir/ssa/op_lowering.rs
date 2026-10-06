@@ -22,7 +22,7 @@ use super::*;
 impl<'a> SsaContext<'a> {
     /// Reserved singleton reads and ordinary names have one resolution path
     /// across semantic argument, var, and terminator reads. Unresolved fields
-    /// on unknown passthrough operations remain transport metadata instead.
+    /// on registered preserved operations remain transport metadata instead.
     /// Reserved `none` is never a mutable stack entry or a textual string literal.
     pub(super) fn resolve_known_or_reserved_operand(
         &mut self,
@@ -101,7 +101,7 @@ impl<'a> SsaContext<'a> {
             && let Some(vid) = if mapped_kind {
                 self.resolve_known_or_reserved_operand(op_idx, v, var_stacks)
             } else if is_variable(v) {
-                // An unknown wire operation carries unresolved `var` verbatim;
+                // A registered preserved operation carries unresolved `var` verbatim;
                 // only an actual SSA name proves that this field is a read.
                 self.resolve_known_var(v, var_stacks)
             } else {
@@ -334,10 +334,10 @@ impl<'a> SsaContext<'a> {
             }
         }
 
-        // Preserve `_original_kind` for unknown Copy fallbacks and for mapped
+        // Preserve `_original_kind` for registered Copy carriers and for mapped
         // spellings whose non-canonical name is semantically visible to
         // round-trip/backends. The generated predicate owns the mapped spelling
-        // set; unknown fallback preservation stays here because SSA is the
+        // set; registered carrier preservation stays here because SSA is the
         // backstop for kinds with no first-class opcode.
         if (opcode == OpCode::Copy && !mapped_kind)
             || simpleir_kind_preserves_original_kind_for_ssa(op.kind.as_str())
@@ -380,12 +380,14 @@ impl<'a> SsaContext<'a> {
 /// (`runtime/molt-ir/src/tir/op_kinds.toml`, generated into
 /// [`crate::tir::op_kinds_generated::kind_to_opcode_table`]; see
 /// `docs/design/foundation/25_op_kind_registry.md`). A kind with no first-class
-/// opcode falls back to `OpCode::Copy` (carrying its spelling in
-/// `_original_kind`), exactly as before — this is the runtime backstop the
-/// registry's sync test (`tests/test_gen_op_kinds.py`) and the drift audit
-/// (`tools/audit_op_kinds.py --check`) keep statically total for known kinds.
+/// opcode uses `OpCode::Copy` (carrying its spelling in `_original_kind`).
+/// Admission rejects unregistered spellings before SSA conversion.
 fn kind_to_opcode(kind: &str) -> OpCode {
-    kind_to_opcode_table(kind).unwrap_or(OpCode::Copy)
+    match kind_to_opcode_table(kind) {
+        Some(opcode) => opcode,
+        None if super::super::op_kinds_generated::simpleir_kind_is_registered(kind) => OpCode::Copy,
+        None => panic!("unregistered op kind `{kind}` reached SSA lowering"),
+    }
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ import re
 from tools import harness_memory_guard
 
 from .paths import ROOT
+from .registration import backend_private_kinds, registered_simpleir_kinds
 from .primitive_effects import render_primitive_effects_rs
 from .runtime_requirements import (
     INTEGER_SEMANTIC_ROLES,
@@ -90,6 +91,37 @@ def _render_rs_unformatted(data: dict) -> str:
     kinds = data.get("kind", [])
 
     out: list[str] = [_RS_HEADER]
+
+    out.append(
+        "/// Whether a wire operation has a declarative registry owner.\n"
+        "#[inline]\n"
+        "pub fn simpleir_kind_is_registered(kind: &str) -> bool {\n"
+        "    matches!(kind,\n"
+    )
+    out.append(
+        " |\n".join(
+            f'        "{kind}"' for kind in sorted(registered_simpleir_kinds(data))
+        )
+    )
+    out.append("\n    )\n}\n\n")
+
+    private = backend_private_kinds(data)
+    out.append(
+        "/// Internal backend vocabulary; never accepted as external program input.\n"
+    )
+    out.append("pub const SIMPLEIR_BACKEND_PRIVATE_KINDS: &[(&str, &str)] = &[\n")
+    out.extend(
+        f'    ("{kind}", "{owner}"),\n' for kind, owner in sorted(private.items())
+    )
+    out.append("] ;\n\n")
+    out.append(
+        "pub fn simpleir_backend_private_owner(kind: &str) -> Option<&'static str> {\n    match kind {\n"
+    )
+    out.extend(
+        f'        "{kind}" => Some("{owner}"),\n'
+        for kind, owner in sorted(private.items())
+    )
+    out.append("        _ => None,\n    }\n}\n\n")
 
     out.append(_render_simpleir_control_facts(data))
     out.append("\n\n")

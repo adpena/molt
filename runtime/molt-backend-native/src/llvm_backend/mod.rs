@@ -358,27 +358,15 @@ impl<'ctx> LlvmBackend<'ctx> {
 mod tests {
     use super::*;
     use inkwell::context::Context;
-    use object::{Object, ObjectSymbol};
+    use object::{Object, ObjectSection, ObjectSymbol};
 
-    struct TempArtifact(std::path::PathBuf);
-
-    impl TempArtifact {
-        fn new(extension: &str) -> Self {
-            let nonce = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock after epoch")
-                .as_nanos();
-            Self(std::env::temp_dir().join(format!(
-                "molt-llvm-abi-{}-{nonce}.{extension}",
-                std::process::id()
-            )))
-        }
-    }
-
-    impl Drop for TempArtifact {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
+    // LLVM emits in process; the shared helper also owns subprocess arguments.
+    #[allow(dead_code)]
+    mod cargo_test_artifacts {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../test_support/cargo_test_artifacts.rs"
+        ));
     }
 
     #[test]
@@ -396,11 +384,14 @@ mod tests {
     fn direct_bitcode_emitter_retains_generated_object_abi_witness() {
         let ctx = Context::create();
         let backend = LlvmBackend::new(&ctx, "direct_bitcode_abi");
-        let artifact = TempArtifact::new("bc");
-        assert!(backend.emit_bitcode(&artifact.0));
-        let bitcode = std::fs::read(&artifact.0).expect("read direct LLVM bitcode");
-        assert!(bitcode.starts_with(b"BC\xc0\xde"), "LLVM bitcode magic");
-        let ir = backend.dump_ir();
+        let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("llvm-bitcode-abi")
+            .expect("create LLVM bitcode outputs within Cargo image custody");
+        let artifact = artifacts.path().join("backend.bc");
+        assert!(backend.emit_bitcode(&artifact));
+        // The reader accepts raw bitcode and target-specific bitcode wrappers.
+        let parsed = inkwell::module::Module::parse_bitcode_from_path(&artifact, &ctx)
+            .expect("parse emitted LLVM bitcode");
+        let ir = parsed.print_to_string().to_string();
         assert!(ir.contains(molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL));
         let opposite = if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC {
             molt_codegen_abi::GENERATED_OBJECT_ABI_GIL_SYMBOL
@@ -416,22 +407,36 @@ mod tests {
     fn direct_object_emitter_imports_exact_generated_object_abi_witness() {
         let ctx = Context::create();
         let backend = LlvmBackend::new(&ctx, "direct_object_abi");
-        let artifact = TempArtifact::new(if cfg!(windows) { "obj" } else { "o" });
+        let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("llvm-object-abi")
+            .expect("create LLVM object outputs within Cargo image custody");
+        let artifact = artifacts.path().join(if cfg!(windows) {
+            "backend.obj"
+        } else {
+            "backend.o"
+        });
         backend
-            .emit_object(&artifact.0, MoltOptLevel::None)
+            .emit_object(&artifact, MoltOptLevel::None)
             .expect("direct LLVM object emission");
-        let bytes = std::fs::read(&artifact.0).expect("read direct LLVM object");
-        let file = object::File::parse(bytes.as_slice()).expect("parse direct LLVM object");
-        let undefined: std::collections::BTreeSet<String> = file
+        let bytes = std::fs::read(&artifact).expect("read direct LLVM object");
+        let object = object::File::parse(bytes.as_slice()).expect("parse direct LLVM object");
+        let pointer_bytes = if object.is_64() { 8 } else { 4 };
+        let anchor = object
             .symbols()
-            .filter(|symbol| symbol.is_undefined())
-            .filter_map(|symbol| {
-                symbol
-                    .name()
-                    .ok()
-                    .map(|name| name.strip_prefix('_').unwrap_or(name).to_owned())
+            .find(|symbol| {
+                symbol.name().is_ok_and(|name| {
+                    name == crate::GENERATED_OBJECT_ABI_ANCHOR_SYMBOL
+                        || (object.format() == object::BinaryFormat::MachO
+                            && name.strip_prefix('_')
+                                == Some(crate::GENERATED_OBJECT_ABI_ANCHOR_SYMBOL))
+                })
             })
-            .collect();
+            .expect("LLVM generated-object ABI anchor");
+        let section = object
+            .section_by_index(anchor.section_index().expect("LLVM anchor section"))
+            .expect("read LLVM anchor section");
+        assert!(section.align() >= pointer_bytes);
+        assert_eq!((anchor.address() - section.address()) % pointer_bytes, 0);
+        let undefined = crate::test_support::native_object_symbols(&bytes).undefined;
         assert!(
             undefined.contains(molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL),
             "direct LLVM object must import exact selected ABI witness: {undefined:?}"

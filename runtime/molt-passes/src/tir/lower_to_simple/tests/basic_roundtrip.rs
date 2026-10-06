@@ -252,7 +252,7 @@ fn named_builtin_encoding_survives_repeated_tir_roundtrips() {
                     ..OpIR::default()
                 },
                 OpIR {
-                    kind: "return".into(),
+                    kind: "ret".into(),
                     args: Some(vec!["callable".into()]),
                     ..OpIR::default()
                 },

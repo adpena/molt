@@ -70,6 +70,7 @@ pub fn convert_to_ssa_with_name_and_params(
     ops: &[OpIR],
     params: &[String],
 ) -> SsaOutput {
+    crate::ir::validate_op_kinds(func_name, ops).unwrap_or_else(|error| panic!("{error}"));
     let mut ctx = SsaContext::new(func_name, cfg, ops, params);
     ctx.run();
     ctx.into_output()

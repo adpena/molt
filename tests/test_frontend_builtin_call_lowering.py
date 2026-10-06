@@ -2860,8 +2860,15 @@ def test_imported_exception_class_ctor_uses_imported_class_value() -> None:
     )
     argument = next(op for op in func_ops if op.get("out") == call["args"][1])
     assert argument["kind"] == "const_str" and argument["s_value"] == "bad"
+    prepared = next(
+        op for op in func_ops if op.get("s_value") == "molt_exception_prepare_raise"
+    )
+    assert len(prepared["args"]) == 2 and prepared["args"][0] == call["out"]
+    cause = next(op for op in func_ops if op.get("out") == prepared["args"][1])
+    assert cause["kind"] == "missing", "implicit cause must retain the missing sentinel"
     assert any(
-        op.get("kind") == "raise" and op.get("args") == [call["out"]] for op in func_ops
+        op.get("kind") == "raise" and op.get("args") == [prepared["out"]]
+        for op in func_ops
     )
     assert not any(op["kind"].startswith("exception_new") for op in func_ops)
 
@@ -2894,8 +2901,15 @@ def test_imported_uppercase_constructor_uses_live_binding_outside_module_scope()
     )
     argument = next(op for op in func_ops if op.get("out") == call["args"][1])
     assert argument["kind"] == "const_str" and argument["s_value"] == "bad"
+    prepared = next(
+        op for op in func_ops if op.get("s_value") == "molt_exception_prepare_raise"
+    )
+    assert len(prepared["args"]) == 2 and prepared["args"][0] == call["out"]
+    cause = next(op for op in func_ops if op.get("out") == prepared["args"][1])
+    assert cause["kind"] == "missing", "implicit cause must retain the missing sentinel"
     assert any(
-        op.get("kind") == "raise" and op.get("args") == [call["out"]] for op in func_ops
+        op.get("kind") == "raise" and op.get("args") == [prepared["out"]]
+        for op in func_ops
     )
     assert all(
         not (op.get("kind") == "call" and op.get("s_value") == "AxisError")

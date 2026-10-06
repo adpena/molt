@@ -1249,7 +1249,16 @@ pub fn validate_simple_ir(ir: &SimpleIR) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn validate_op_kinds(function_name: &str, ops: &[OpIR]) -> Result<(), String> {
+    for (op_index, op) in ops.iter().enumerate() {
+        ir_schema::validate_registered_op_kind(&op.kind)
+            .map_err(|error| format!("function `{function_name}` op#{op_index}: {error}"))?;
+    }
+    Ok(())
+}
+
 fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
+    ir_schema::validate_simple_ir_op_shapes(ir).map_err(|error| error.to_string())?;
     let inherited = ir
         .functions
         .iter()
@@ -1481,7 +1490,11 @@ fn simple_ir_op_is_reachable(dominators: &[Option<usize>], op_index: usize) -> b
 
 #[cfg(test)]
 mod json_parse_tests {
-    use super::{FunctionIR, OpIR, SimpleIR, write_function_ir_contract};
+    use super::{
+        BackendIrDocument, FunctionIR, OpIR, SimpleIR, validate_op_kinds, validate_simple_ir,
+        write_function_ir_contract,
+    };
+    use crate::tir::cfg::CFG;
 
     #[test]
     fn return_abi_is_required_and_survives_empty_bodies_and_extern_projection() {
@@ -1658,6 +1671,114 @@ mod json_parse_tests {
         assert!(ir.functions[0].param_types.is_none());
         assert!(ir.functions[0].ops[0].args.is_none());
         assert!(ir.functions[0].ops[0].fast_int.is_none());
+    }
+
+    #[test]
+    fn simple_ir_rejects_unregistered_op_kinds_on_every_transport() {
+        for kind in [
+            "CONST_MISSING",
+            "const_missing",
+            "future_unregistered_op",
+            "",
+        ] {
+            for out in [None, Some("unused_result")] {
+                let function = serde_json::json!({
+                    "name": "unreachable_function",
+                    "params": [],
+                    "return_abi": "void",
+                    "ops": [{"kind": "ret_void"}, {"kind": kind, "out": out}]
+                });
+                let document = serde_json::json!({"functions": [function.clone()]});
+                let json = document.to_string();
+                let binary = rmp_serde::to_vec_named(&document).unwrap();
+                let mut streamed = function;
+                streamed["kind"] = serde_json::json!("function");
+                let ndjson = format!("{streamed}\n");
+                let errors = [
+                    SimpleIR::from_json_str(&json).unwrap_err(),
+                    serde_json::from_str::<SimpleIR>(&json)
+                        .unwrap_err()
+                        .to_string(),
+                    rmp_serde::from_slice::<SimpleIR>(&binary)
+                        .unwrap_err()
+                        .to_string(),
+                    SimpleIR::from_ndjson_reader(ndjson.as_bytes()).unwrap_err(),
+                    BackendIrDocument::from_json_str(&json).unwrap_err(),
+                    serde_json::from_str::<BackendIrDocument>(&json)
+                        .unwrap_err()
+                        .to_string(),
+                    rmp_serde::from_slice::<BackendIrDocument>(&binary)
+                        .unwrap_err()
+                        .to_string(),
+                    BackendIrDocument::from_ndjson_reader(ndjson.as_bytes()).unwrap_err(),
+                ];
+                for error in errors {
+                    assert!(error.contains("unregistered op kind"), "{error}");
+                    assert!(error.contains(&format!("`{kind}`")), "{error}");
+                    assert!(error.contains("unreachable_function"), "{error}");
+                    assert!(error.contains("op#1"), "{error}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn programmatic_ir_and_ssa_reject_unregistered_op_kinds() {
+        let ops = vec![OpIR {
+            kind: "future_unregistered_op".into(),
+            ..OpIR::default()
+        }];
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: "programmatic_function".into(),
+                ops: ops.clone(),
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        };
+        let error = validate_simple_ir(&ir).unwrap_err();
+        assert!(error.contains("future_unregistered_op"), "{error}");
+        assert!(error.contains("programmatic_function"), "{error}");
+        let cfg = CFG::build(&ops);
+        let error = std::panic::catch_unwind(|| {
+            crate::tir::ssa::convert_to_ssa_with_name_and_params(
+                "programmatic_function",
+                &cfg,
+                &ops,
+                &[],
+            );
+        })
+        .err()
+        .expect("SSA must reject unregistered kinds");
+        let diagnostic = error.downcast_ref::<String>().expect("string diagnostic");
+        assert!(
+            diagnostic.contains("future_unregistered_op"),
+            "{diagnostic}"
+        );
+        assert!(diagnostic.contains("programmatic_function"), "{diagnostic}");
+    }
+
+    #[test]
+    fn registered_preserved_and_structural_kinds_remain_admitted() {
+        for kind in [
+            "missing",
+            "nop",
+            "label",
+            "cast",
+            "widen",
+            "store_fast",
+            "string_split_field_to_int",
+            "floor_div",
+        ] {
+            validate_op_kinds(
+                "registered_function",
+                &[OpIR {
+                    kind: kind.into(),
+                    ..OpIR::default()
+                }],
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
+        }
     }
 
     #[test]

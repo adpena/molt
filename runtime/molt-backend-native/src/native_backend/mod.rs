@@ -53,7 +53,11 @@ fn emit_generated_object_abi_anchor(module: &mut ObjectModule) {
         )
         .expect("declare generated-object ABI anchor");
     let mut description = DataDescription::new();
-    description.define_zeroinit(module.target_config().pointer_type().bytes() as usize);
+    description.set_align(u64::from(module.target_config().pointer_type().bytes()));
+    // A relocation needs real pointer bytes. Zero-fill storage emits a Mach-O
+    // __bss relocation, which is not a linkable ABI witness (Apple ld crashes).
+    description
+        .define(vec![0; module.target_config().pointer_type().bytes() as usize].into_boxed_slice());
     description.set_used(true);
     let witness_ref = module.declare_data_in_data(witness, &mut description);
     description.write_data_addr(0, witness_ref, 0);
@@ -106,7 +110,7 @@ mod function_compiler;
 #[cfg(test)]
 mod header_flags_tests {
     use super::*;
-    use cranelift_object::object::{Object, ObjectSymbol};
+    use cranelift_object::object::Object;
 
     #[test]
     fn generated_metadata_flag_reads_are_relaxed_in_every_execution_mode() {
@@ -189,24 +193,81 @@ mod header_flags_tests {
     }
 
     #[test]
-    fn generated_object_retains_exact_abi_import() {
-        let backend = SimpleBackend::new();
-        let mut module = backend.module;
-        emit_generated_object_abi_anchor(&mut module);
-        let bytes = module.finish().emit().expect("emit ABI witness object");
-        let object =
-            cranelift_object::object::File::parse(&*bytes).expect("parse ABI witness object");
-        let undefined: BTreeSet<String> = object
-            .symbols()
-            .filter(|symbol| symbol.is_undefined())
-            .filter_map(|symbol| symbol.name().ok().map(str::to_owned))
-            .collect();
-        assert!(undefined.contains(molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL));
-        let opposite = if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC {
-            molt_codegen_abi::GENERATED_OBJECT_ABI_GIL_SYMBOL
-        } else {
-            molt_codegen_abi::GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL
-        };
-        assert!(!undefined.contains(opposite));
+    fn generated_object_retains_exact_abi_import_in_initialized_storage() {
+        use cranelift_object::object::{ObjectSection, ObjectSymbol, SectionKind};
+
+        // Inspect target objects, not host-based symbol assumptions. Real host
+        // final links are separately exercised by native_callable_dispatch.
+        for target in [
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
+            "aarch64-pc-windows-msvc",
+            "x86_64-pc-windows-msvc",
+        ] {
+            let backend = SimpleBackend::new_with_target(Some(target));
+            let mut module = backend.module;
+            emit_generated_object_abi_anchor(&mut module);
+            let bytes = module.finish().emit().expect("emit ABI witness object");
+            let object =
+                cranelift_object::object::File::parse(&*bytes).expect("parse ABI witness object");
+            let pointer_bytes = if object.is_64() { 8 } else { 4 };
+            let anchor = object
+                .symbols()
+                .find(|symbol| {
+                    symbol.name().is_ok_and(|name| {
+                        name == GENERATED_OBJECT_ABI_ANCHOR_SYMBOL
+                            || (object.format() == cranelift_object::object::BinaryFormat::MachO
+                                && name.strip_prefix('_')
+                                    == Some(GENERATED_OBJECT_ABI_ANCHOR_SYMBOL))
+                    })
+                })
+                .expect("retained generated-object ABI anchor");
+            let anchor_section = object
+                .section_by_index(anchor.section_index().expect("anchor section"))
+                .expect("read anchor section");
+            assert!(
+                anchor_section.align() >= pointer_bytes,
+                "{target}: linker must guarantee pointer alignment for the ABI anchor"
+            );
+            assert_eq!(
+                (anchor.address() - anchor_section.address()) % pointer_bytes,
+                0,
+                "{target}: ABI anchor must begin at a pointer-aligned section offset"
+            );
+            let symbols = crate::test_support::native_object_symbols(&bytes);
+            assert!(
+                symbols
+                    .undefined
+                    .contains(molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL),
+                "{target}"
+            );
+            let opposite = if molt_codegen_abi::MOLT_REFCOUNT_ATOMIC {
+                molt_codegen_abi::GENERATED_OBJECT_ABI_GIL_SYMBOL
+            } else {
+                molt_codegen_abi::GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL
+            };
+            assert!(!symbols.undefined.contains(opposite), "{target}");
+            let mut relocations = 0;
+            for section in object.sections() {
+                for (offset, _) in section.relocations() {
+                    relocations += 1;
+                    assert_ne!(
+                        section.kind(),
+                        SectionKind::UninitializedData,
+                        "{target}: ABI anchor relocation must not reside in zero-fill storage"
+                    );
+                    assert!(
+                        offset + pointer_bytes <= section.data().unwrap().len() as u64,
+                        "{target}: ABI anchor relocation requires initialized pointer bytes"
+                    );
+                }
+            }
+            assert_eq!(
+                relocations, 1,
+                "{target}: exactly one ABI witness relocation"
+            );
+        }
     }
 }

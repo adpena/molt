@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from .registration import (
+    backend_private_kinds,
+    registered_frontend_kinds,
+    registered_simpleir_kinds,
+)
 from .runtime_requirements import (
     integer_semantics_by_kind,
     runtime_callable_attribute_requirement_masks,
@@ -368,6 +373,21 @@ def render_py(data: dict) -> str:
     out: list[str] = [_PY_HEADER, render_primitive_effects_py(data)]
     out.append(
         _render_py_frozenset(
+            "SIMPLEIR_REGISTERED_KINDS", sorted(registered_simpleir_kinds(data))
+        )
+    )
+    out.append(
+        _render_py_frozenset(
+            "SIMPLEIR_BACKEND_PRIVATE_KINDS", sorted(backend_private_kinds(data))
+        )
+    )
+    out.append(
+        _render_py_frozenset(
+            "FRONTEND_REGISTERED_KINDS", sorted(registered_frontend_kinds(data))
+        )
+    )
+    out.append(
+        _render_py_frozenset(
             "SIMPLEIR_STRUCTURAL_KINDS",
             [row["kind"] for row in data["simpleir_control_kind"] if row["structural"]],
         )
@@ -639,18 +659,34 @@ def render_py(data: dict) -> str:
 
     out.append(_render_py_binary_image_fact_sets(data))
 
-    out.append("def validate_serialized_kind(kind: str) -> None:\n")
-    out.append('    """Reject frontend semantic tokens at the wire boundary.\n\n')
+    out.append("def validate_frontend_kind(kind: str, function_name: str) -> None:\n")
+    out.append("    if kind not in FRONTEND_REGISTERED_KINDS:\n")
+    out.append(
+        '        raise ValueError(f"function {function_name!r}: unregistered frontend op kind {kind!r}")\n\n\n'
+    )
+
+    out.append(
+        'def validate_serialized_kind(kind: str, function_name: str = "<direct>") -> None:\n'
+    )
+    out.append('    """Reject unregistered kinds and frontend semantic tokens.\n\n')
     out.append(
         "    Preserved wire operations retain their spelling and target-specific\n"
     )
     out.append(
         "    admission. This check never collapses local binding aliases or invents\n"
     )
-    out.append('    a target support claim for an unclassified wire operation."""\n')
+    out.append('    a target support claim for a registered wire operation."""\n')
     out.append("    if kind in FRONTEND_EFFECT_CLASS:\n")
     out.append(
-        '        raise ValueError(f"frontend operation {kind!r} escaped serialization")\n\n\n'
+        '        raise ValueError(f"function {function_name!r}: frontend operation {kind!r} escaped serialization")\n'
+    )
+    out.append("    if kind in SIMPLEIR_BACKEND_PRIVATE_KINDS:\n")
+    out.append(
+        '        raise ValueError(f"function {function_name!r}: backend-private SimpleIR op kind {kind!r} escaped frontend serialization")\n'
+    )
+    out.append("    if kind not in SIMPLEIR_REGISTERED_KINDS:\n")
+    out.append(
+        '        raise ValueError(f"function {function_name!r}: unregistered SimpleIR op kind {kind!r}")\n\n\n'
     )
 
     out.append("def canonical_kind(kind: str) -> str:\n")

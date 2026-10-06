@@ -518,8 +518,7 @@ fn test_pcall_try_except_compile() {
                     ..OpIR::default()
                 },
                 OpIR {
-                    kind: "binary_op".into(),
-                    s_value: Some("/".into()),
+                    kind: "div".into(),
                     args: Some(vec!["v0".into(), "v1".into()]),
                     out: Some("v2".into()),
                     ..OpIR::default()

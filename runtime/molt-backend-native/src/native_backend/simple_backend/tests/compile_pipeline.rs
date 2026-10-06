@@ -1468,8 +1468,6 @@ fn native_backend_import_ids_are_cached_by_symbol() {
 
 #[test]
 fn marked_finally_observer_imports_only_the_fused_runtime_projection() {
-    use cranelift_object::object::{Object, ObjectSymbol};
-
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -1494,13 +1492,8 @@ fn marked_finally_observer_imports_only_the_fused_runtime_projection() {
     };
 
     let output = SimpleBackend::new().compile(ir);
-    let object = cranelift_object::object::File::parse(&*output.bytes)
-        .expect("parse marked-observer object");
-    let undefined: BTreeSet<String> = object
-        .symbols()
-        .filter(|symbol| symbol.is_undefined())
-        .filter_map(|symbol| symbol.name().ok().map(str::to_owned))
-        .collect();
+    let undefined =
+        crate::test_support::native_object_symbols(&output.bytes).undefined;
 
     assert!(
         undefined.contains("molt_async_work_poll_and_exception_last_pending"),
