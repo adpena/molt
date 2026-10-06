@@ -39,7 +39,10 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::{LazyLock, Mutex};
 static MODULES: LazyLock<Mutex<HashSet<u64>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
-thread_local! { static EXEC_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+thread_local! {
+    static EXEC_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static EXEC_MODULE_CHECK: std::cell::Cell<c_int> = const { std::cell::Cell::new(0) };
+}
 unsafe extern "C" fn classify(bits: u64) -> u8 {
     if support::fake_strings::contains(bits) {
         MoltTypeTag::Str as u8
@@ -109,10 +112,17 @@ const PY_MOD_GIL_USED: *mut c_void = ptr::null_mut(); // ((void *)0)
 const PY_MOD_GIL_NOT_USED: *mut c_void = ptr::without_provenance_mut(1);
 
 unsafe extern "C" fn noop_exec(module: *mut PyObject) -> c_int {
-    assert_eq!(
-        unsafe { molt_cpython_abi::api::modules::PyModule_Check(module) },
-        1
-    );
+    let classification = unsafe { molt_cpython_abi::api::modules::PyModule_Check(module) };
+    EXEC_MODULE_CHECK.with(|observed| observed.set(classification));
+    if classification != 1 {
+        unsafe {
+            molt_cpython_abi::api::errors::PyErr_SetString(
+                (&raw mut molt_cpython_abi::abi_types::PyExc_SystemError).cast(),
+                c"exec callback requires a module".as_ptr(),
+            )
+        };
+        return -1;
+    }
     EXEC_CALLS.with(|count| count.set(count.get() + 1));
     0
 }
@@ -238,8 +248,7 @@ fn absent_slot_records_cpython_default_gil_used() {
 #[test]
 fn execdef_records_the_declaration_too() {
     // The two-step loader path: creation elsewhere, exec through
-    // PyModule_ExecDef. A dummy non-null module suffices — the def's only
-    // exec slot ignores it.
+    // PyModule_ExecDef. The exec slot must receive a semantically valid module.
     let def = make_def(
         "gil_itest_execdef\0",
         vec![
@@ -258,6 +267,11 @@ fn execdef_records_the_declaration_too() {
     assert!(!module.is_null());
     let rc = unsafe { PyModule_ExecDef(module, def) };
     unsafe { molt_cpython_abi::api::refcount::Py_DECREF(module) };
+    assert_eq!(
+        EXEC_MODULE_CHECK.with(std::cell::Cell::get),
+        1,
+        "the exec slot must receive an object PyModule_Check accepts"
+    );
     assert_eq!(EXEC_CALLS.with(std::cell::Cell::get), 1);
     assert_eq!(rc, 0, "exec slot returning 0 must succeed");
     assert_eq!(
