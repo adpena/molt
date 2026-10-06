@@ -1008,14 +1008,14 @@
 - Global rule: Molt must expose one top-level stdlib module or package for every CPython stdlib entry in the 3.12/3.13/3.14 union baseline.
 - Global rule: required package names must be implemented as packages (not single-file modules).
 - Global rule: do not provide both `name.py` and `name/__init__.py` for the same top-level entry.
-- Baseline source: `tools/stdlib_module_union.py` (regenerate with `python3 tools/gen_stdlib_module_union.py`).
+- Baseline source: `tools/stdlib_module_union.py` (regenerate with `python3 tools/gen_stdlib_module_union.py --write`).
 - Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).
 
 ## CPython Submodule Union Gate
 - Global rule: Molt must expose one stdlib submodule/subpackage for every CPython stdlib `.py` module in the 3.12/3.13/3.14 union baseline.
 - Global rule: required subpackage names must be implemented as packages (`pkg/subpkg/__init__.py`), not single-file modules.
 - Global rule: do not provide both `pkg/name.py` and `pkg/name/__init__.py` for the same submodule entry.
-- Baseline source: `tools/stdlib_module_union.py` (regenerate with `python3 tools/gen_stdlib_module_union.py`).
+- Baseline source: `tools/stdlib_module_union.py` (regenerate with `python3 tools/gen_stdlib_module_union.py --write`).
 - Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).
 
 ## Backlog Focus

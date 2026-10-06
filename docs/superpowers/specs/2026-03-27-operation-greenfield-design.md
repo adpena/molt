@@ -349,8 +349,8 @@ Each module change lands the full intrinsic mapping in the same commit.
 Regeneration commands run after each:
 
 ```bash
-python3 tools/gen_intrinsics.py
-python3 tools/gen_stdlib_module_union.py
+python3 tools/gen_intrinsics.py --write
+python3 tools/gen_stdlib_module_union.py --write
 python3 tools/sync_stdlib_top_level_stubs.py --write
 python3 tools/check_stdlib_intrinsics.py --update-doc
 ```

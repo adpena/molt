@@ -223,7 +223,7 @@ blanket `pub(crate)→pub`), gate on a byte-identical corpus build + 0-warning +
 lib tests + symbol identity (21f specs); (c) ISOLATED worktree, commit small
 per-move by EXACT pathspec, ping the integrator to cherry-pick; (d) new crates
 born UNGATED — register the per-crate clippy gate in `tools/proof_plan.toml` and
-regenerate (`tools/gen_proof_plan.py`) in the SAME move; (e) generated files
+regenerate (`tools/gen_proof_plan.py --write`) in the SAME move; (e) generated files
 (`wasm_abi_generated/**`, `intrinsics/generated.rs`, `op_kinds_generated.rs`, `import_metadata.rs`) OWNED
 BY THEIR GENERATORS — never hand-split; fix the generator/authority. This is
 R5b: the permanent fix for the ~2160s god-crate wasm rebuild.

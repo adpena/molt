@@ -156,7 +156,7 @@ for the unbounded `builtins` seeding.
   `runtime/molt-runtime/src/intrinsics/manifest.pyi` and regenerate
   `src/molt/_intrinsics.pyi` plus
   `runtime/molt-runtime/src/intrinsics/generated.rs` via
-  `uv run --python 3.12 python tools/gen_intrinsics.py`.
+  `uv run --python 3.12 python tools/gen_intrinsics.py --write`.
 - Literal positional defaults in `manifest.pyi` are canonical metadata. The
   generator records supported concrete trailing defaults (`None`, booleans, and
   integers) in `IntrinsicSpec.defaults`; runtime registration must attach the

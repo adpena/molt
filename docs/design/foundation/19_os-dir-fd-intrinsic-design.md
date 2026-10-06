@@ -193,7 +193,7 @@ Update the `supports_dir_fd` set to add: `stat`, `lstat`, `rename`, `replace`, `
 
 **Step 2:** `manifest.pyi` — add the 8 signatures after `molt_os_replace` (line ~1141).
 
-**Step 3:** `python3 tools/gen_intrinsics.py` → regenerates `generated.rs` + `_intrinsics.pyi` (both CHECKED IN — git add with the manifest in one atomic commit; never hand-edit).
+**Step 3:** `python3 tools/gen_intrinsics.py --write` → regenerates `generated.rs` + `_intrinsics.pyi` (both CHECKED IN — git add with the manifest in one atomic commit; never hand-edit).
 
 **Step 4:** os.py wrapper dispatch + `supports_dir_fd` + `utime(ns=)`.
 

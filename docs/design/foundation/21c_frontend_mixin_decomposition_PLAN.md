@@ -84,7 +84,7 @@ PEP-634. **Route them to `lowering/analysis.py`, NOT `pattern_match.py`.**
 6. `@staticmethod`/`@contextmanager` move with decorators intact; callers via `self._foo` still
    resolve through MRO.
 7. **Regenerate `_protocol.py` / `_protocol_attrs.py`** after each extraction
-   (`python tools/gen_protocol.py`) so cross-family `self.*` references stay
+   (`python tools/gen_protocol.py --write`) so cross-family `self.*` references stay
    type-clean. Never hand-edit generated protocol files.
 
 ## Verification (per extraction + final)
