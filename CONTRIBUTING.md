@@ -104,6 +104,12 @@ Molt expects production-grade changes, not opportunistic patches.
 - After syncing the development environment, install the configured hooks with
   `uv run --python 3.12 pre-commit install`. They validate staged changes on
   commit, including the public-source artifact boundary.
+- Install Molt's managed Git hooks once per clone with
+  `uv run --python 3.12 python tools/install_git_hooks.py`: the `pre-push`
+  drift gate and the `commit-msg` attribution policy.
+- Commit messages and pull requests carry no AI attribution: no
+  `Co-Authored-By: Claude` trailer and no "Generated with Claude Code" footer.
+  The `commit-msg` hook and CI (`tools/check_commit_attribution.py`) reject them.
 - Keep pre-commit hooks read-only. Formatting and automatic fixes must be run
   explicitly before staging so commit hooks cannot rewrite files mid-commit.
 - Use the canonical CLI DX surface for repo-wide proof only when making a

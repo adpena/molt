@@ -85,11 +85,11 @@ The program is done only when all four hold. Release acceptance authorities:
    is POISON and terrible OSS hygiene (it once reached ~130 worktrees plus a
    165-branch OneDrive `.git`). LAND your signal onto main and
    DELETE your worktree+branch when a lane finishes — do not leave it. Install the
-   enforcement hook once per clone: **`python tools/install_git_hooks.py`** (idempotent;
-   wires the drift gate into `.git/hooks/pre-push` — NOT `core.hooksPath`, which would
-   also enable the pre-commit type-check and block every commit; preserves+chains a
-   foreign pre-push hook; `--check` for CI). It runs the gate `--no-fetch` in ~3 s on
-   every push. Every session also
+   managed hooks once per clone: **`python tools/install_git_hooks.py`** (idempotent;
+   wires the drift gate into `.git/hooks/pre-push` and the attribution policy into
+   `.git/hooks/commit-msg` — NOT `core.hooksPath`, which would also enable the
+   pre-commit type-check and block every commit; preserves+chains foreign hooks;
+   `--check` for CI). The drift gate runs `--no-fetch` in ~3 s on every push. Every session also
    run **`python tools/drift_harvest.py --gate`** — it FAILS (exit 1) on SPRAWL
    (>24 live worktrees) or STALE-SIGNAL (a SIGNAL worktree whose unlanded unique
    commits are older than 72 h). A red gate is a blocker: harvest + prune before new
