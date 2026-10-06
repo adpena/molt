@@ -663,6 +663,7 @@ def test_ungated_generator_is_flagged(tmp_path: Path):
         'source = "x"\n'
         "check_mode = true\n"
         'check_command = "tools/gen_op_kinds.py --check"\n'
+        'generate_command = "tools/gen_op_kinds.py"\n'
         'sync_test_reason = "stub"\n'
         "closed_domains = []\n"
         "discovery_only = false\n",
@@ -694,6 +695,7 @@ def test_phantom_sync_test_fails_loud(tmp_path: Path):
         'source = "s"\n'
         "check_mode = true\n"
         'check_command = "tools/gen_x.py --check"\n'
+        'generate_command = "tools/gen_x.py"\n'
         'sync_test = "tests/test_does_not_exist.py"\n'
         "closed_domains = []\n"
         "discovery_only = false\n",
@@ -718,6 +720,7 @@ def test_malformed_manifest_temp(tmp_path: Path):
         'outputs = ["a"]\n'
         'source = "s"\n'
         "check_mode = true\n"
+        'generate_command = "tools/gen_x.py"\n'
         'sync_test = "t"\n'
         "closed_domains = []\n"
         "discovery_only = false\n"
