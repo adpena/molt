@@ -4,16 +4,19 @@
 Repository policy: no commit or pull request is attributed to Claude or
 Anthropic (no `Co-Authored-By: Claude ...` trailer, no "Generated with Claude
 Code" footer, no `noreply@anthropic.com` address). This checker is the one
-authority for that rule; the `commit-msg` hook and CI both run it.
+authority for that rule; the `commit-msg` hook and the `repository_policy`
+proof-plan family both run it.
 
 Modes (exactly one):
   --message-file PATH   check one message file (the git `commit-msg` hook)
   --range BASE..HEAD    check every commit in a revision range
-  --github-event        check the commits of the current GitHub Actions event
+  --introduced          check the commits this change introduces: the current
+                        GitHub Actions event's commits in CI, otherwise the
+                        commits on HEAD that no remote-tracking branch has
   --all                 audit every commit reachable from any branch or tag
 
-Standard library only, so CI can run it with any Python 3.10+ before the
-project environment exists.
+`--introduced` and `--all` need complete history and fail closed in a shallow
+clone. Standard library only, so it runs before the project environment exists.
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -138,6 +141,32 @@ def github_event_revisions(
     return [f"{head}^!"]
 
 
+def introduced_revisions(environ: Mapping[str, str], *, cwd: Path) -> list[str]:
+    """Return the `git log` arguments for the commits this change introduces."""
+    event_name = environ.get("GITHUB_EVENT_NAME", "")
+    event_path = environ.get("GITHUB_EVENT_PATH", "")
+    if event_name or event_path:
+        if not (event_name and event_path):
+            raise SystemExit(
+                "check_commit_attribution: GITHUB_EVENT_NAME and GITHUB_EVENT_PATH "
+                "must both be set to check a GitHub Actions event"
+            )
+        event = json.loads(Path(event_path).read_text(encoding="utf-8"))
+        return github_event_revisions(event_name, event, cwd=cwd)
+    return ["HEAD", "--not", "--remotes"]
+
+
+def require_complete_history(*, cwd: Path) -> None:
+    """Fail closed when a shallow clone would silently truncate the range."""
+    shallow = _git_output(["rev-parse", "--is-shallow-repository"], cwd=cwd)
+    if shallow.strip() == "true":
+        raise SystemExit(
+            "check_commit_attribution: this clone is shallow, so the commit range "
+            "is incomplete. Check out full history (actions/checkout "
+            "`fetch-depth: 0`, or `git fetch --unshallow`) and retry."
+        )
+
+
 def _report(violations: Sequence[Violation]) -> int:
     if not violations:
         return 0
@@ -162,7 +191,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--message-file", type=Path)
     mode.add_argument("--range", dest="revision_range")
-    mode.add_argument("--github-event", action="store_true")
+    mode.add_argument("--introduced", action="store_true")
     mode.add_argument("--all", action="store_true")
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     args = parser.parse_args(argv)
@@ -172,18 +201,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _report([Violation(None, line) for line in attribution_lines(message)])
     if args.revision_range is not None:
         revisions = [args.revision_range]
-    elif args.all:
-        revisions = ["--branches", "--tags"]
     else:
-        event_path = os.environ.get("GITHUB_EVENT_PATH", "")
-        event_name = os.environ.get("GITHUB_EVENT_NAME", "")
-        if not event_path or not event_name:
-            raise SystemExit(
-                "check_commit_attribution: --github-event needs GITHUB_EVENT_NAME "
-                "and GITHUB_EVENT_PATH"
-            )
-        event = json.loads(Path(event_path).read_text(encoding="utf-8"))
-        revisions = github_event_revisions(event_name, event, cwd=args.repo)
+        require_complete_history(cwd=args.repo)
+        revisions = (
+            ["--branches", "--tags"]
+            if args.all
+            else introduced_revisions(os.environ, cwd=args.repo)
+        )
     return _report(check_revisions(revisions, cwd=args.repo))
 
 

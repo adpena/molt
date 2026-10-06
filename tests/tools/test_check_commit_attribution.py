@@ -101,12 +101,12 @@ def test_github_push_event_checks_before_to_after(
     monkeypatch.setenv(
         "GITHUB_EVENT_PATH", str(_event(tmp_path, {"before": before, "after": after}))
     )
-    assert policy.main(["--repo", str(repo), "--github-event"]) == 1
+    assert policy.main(["--repo", str(repo), "--introduced"]) == 1
 
     monkeypatch.setenv(
         "GITHUB_EVENT_PATH", str(_event(tmp_path, {"before": after, "after": after}))
     )
-    assert policy.main(["--repo", str(repo), "--github-event"]) == 0
+    assert policy.main(["--repo", str(repo), "--introduced"]) == 0
 
 
 def test_github_new_branch_push_checks_commits_absent_from_remotes(
@@ -117,7 +117,7 @@ def test_github_new_branch_push_checks_commits_absent_from_remotes(
     monkeypatch.setenv(
         "GITHUB_EVENT_PATH", str(_event(tmp_path, {"before": "0" * 40, "after": head}))
     )
-    assert policy.main(["--repo", str(repo), "--github-event"]) == 1
+    assert policy.main(["--repo", str(repo), "--introduced"]) == 1
 
 
 def _ci_clone(origin: Path, tmp_path: Path) -> Path:
@@ -152,7 +152,7 @@ def test_github_new_branch_push_checks_commits_even_when_ci_fetched_the_branch(
             )
         ),
     )
-    assert policy.main(["--repo", str(clone), "--github-event"]) == 1
+    assert policy.main(["--repo", str(clone), "--introduced"]) == 1
 
 
 def test_github_forced_push_checks_commits_when_the_old_tip_is_gone(
@@ -176,7 +176,7 @@ def test_github_forced_push_checks_commits_when_the_old_tip_is_gone(
             )
         ),
     )
-    assert policy.main(["--repo", str(clone), "--github-event"]) == 1
+    assert policy.main(["--repo", str(clone), "--introduced"]) == 1
 
 
 def test_github_new_branch_push_skips_commits_already_on_other_branches(
@@ -198,7 +198,7 @@ def test_github_new_branch_push_skips_commits_already_on_other_branches(
             )
         ),
     )
-    assert policy.main(["--repo", str(clone), "--github-event"]) == 0
+    assert policy.main(["--repo", str(clone), "--introduced"]) == 0
 
 
 @pytest.mark.parametrize("event_name", ["pull_request", "merge_group"])
@@ -214,7 +214,57 @@ def test_github_pull_request_and_merge_group_check_base_to_head(
     )
     monkeypatch.setenv("GITHUB_EVENT_NAME", event_name)
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_event(tmp_path, payload)))
-    assert policy.main(["--repo", str(repo), "--github-event"]) == 1
+    assert policy.main(["--repo", str(repo), "--introduced"]) == 1
+
+
+def _without_github_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The suite itself may run inside GitHub Actions.
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
+
+
+def test_local_introduced_mode_checks_only_commits_no_remote_has(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _without_github_event(monkeypatch)
+    _commit(repo, "a", f"Already published\n\n{TRAILER}")
+    clone = _ci_clone(repo, tmp_path)
+    _git(clone, "config", "user.email", "dev@example.com")
+    _git(clone, "config", "user.name", "Dev")
+    _git(clone, "config", "commit.gpgsign", "false")
+
+    _commit(clone, "b", "Local clean change")
+    assert policy.main(["--repo", str(clone), "--introduced"]) == 0
+    _commit(clone, "c", f"Local attributed change\n\n{TRAILER}")
+    assert policy.main(["--repo", str(clone), "--introduced"]) == 1
+
+
+def test_introduced_mode_rejects_half_a_github_event(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _without_github_event(monkeypatch)
+    _commit(repo, "a", "Base")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    with pytest.raises(SystemExit, match="must both be set"):
+        policy.main(["--repo", str(repo), "--introduced"])
+
+
+@pytest.mark.parametrize("mode", ["--introduced", "--all"])
+def test_history_modes_fail_closed_in_a_shallow_clone(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    _without_github_event(monkeypatch)
+    _commit(repo, "a", f"Hidden below the shallow boundary\n\n{TRAILER}")
+    _commit(repo, "b", "Clean tip")
+    shallow = tmp_path / "shallow"
+    run_guarded_test_process(
+        ["git", "clone", "-q", "--depth=1", repo.as_uri(), str(shallow)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    with pytest.raises(SystemExit, match="clone is shallow"):
+        policy.main(["--repo", str(shallow), mode])
 
 
 def test_all_mode_audits_commits_reachable_only_from_a_tag(repo: Path) -> None:

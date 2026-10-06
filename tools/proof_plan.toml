@@ -1409,6 +1409,20 @@ dependencies = []
 argv = ["uv", "run", "python3", "tools/check_github_actions.py"]
 toolchains = ["python", "uv"]
 
+# Commit-message policy for the commits this event introduces. The docs-gates
+# checkout keeps full history for it; the checker fails closed when shallow.
+[[command]]
+id = "repository.commit-attribution"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 60
+cache_domain = "none"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/check_commit_attribution.py", "--introduced"]
+toolchains = ["python", "uv"]
+
 [[command]]
 id = "repository.status-blocks.generated"
 family = "repository_policy"

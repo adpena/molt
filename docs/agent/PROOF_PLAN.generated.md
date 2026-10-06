@@ -159,6 +159,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `portability.ir.macos` | `platform_portability` | `macos-arm64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
 | `portability.ir.windows` | `platform_portability` | `windows-x86_64-py312-queue-portability` | `explicit` | 120 s | `python-tests` | 0 |
 | `repository.github-actions.static` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
+| `repository.commit-attribution` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 60 s | `repository-policy` | 0 |
 | `repository.status-blocks.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.benchmark-docs.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.docs.architecture` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
