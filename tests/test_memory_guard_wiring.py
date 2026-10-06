@@ -1087,8 +1087,10 @@ def test_windows_native_proof_scratch_layout_retains_linker_path_budget() -> Non
 
     # Replays the CI2 quote build-script output shape that failed with LNK1104.
     # Long-path-aware Python does not make MSVC's output paths long-path-aware.
-    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    setup = workflow.split("- name: Configure verified ephemeral custody", 1)[1]
+    action = (REPO_ROOT / ".github/actions/ephemeral-custody/action.yml").read_text(
+        encoding="utf-8"
+    )
+    setup = action.split("- name: Configure verified ephemeral custody", 1)[1]
     template = next(
         line.strip().split('"')[1]
         for line in setup.splitlines()
@@ -1467,6 +1469,9 @@ def test_pytest_current_test_hooks_write_live_identity(
     tmp_path: Path,
 ) -> None:
     current_test_path = tmp_path / "pytest-memory-guard" / "current-test.json"
+    # The aggregate record path; an inherited xdist worker id would select
+    # that worker's own record (covered by the per-worker test below).
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
     monkeypatch.setenv(
         pytest_memory_guard_bootstrap.PYTEST_CURRENT_TEST_FILE_ENV,
@@ -1543,6 +1548,9 @@ def test_pytest_current_test_writer_ignores_test_monkeypatched_os_replace(
     tmp_path: Path,
 ) -> None:
     current_test_path = tmp_path / "pytest-memory-guard" / "current-test.json"
+    # The aggregate record path; an inherited xdist worker id would select
+    # that worker's own record (covered by the per-worker test below).
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
     monkeypatch.setenv(
         pytest_memory_guard_bootstrap.PYTEST_CURRENT_TEST_FILE_ENV,
@@ -1569,6 +1577,9 @@ def test_pytest_current_test_writer_retries_windows_atomic_replace(
     tmp_path: Path,
 ) -> None:
     current_test_path = tmp_path / "pytest-memory-guard" / "current-test.json"
+    # The aggregate record path; an inherited xdist worker id would select
+    # that worker's own record (covered by the per-worker test below).
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     monkeypatch.setenv("MOLT_MEMORY_GUARD_STATE_ROOT", str(tmp_path / "memory_guard"))
     monkeypatch.setenv(
         pytest_memory_guard_bootstrap.PYTEST_CURRENT_TEST_FILE_ENV,

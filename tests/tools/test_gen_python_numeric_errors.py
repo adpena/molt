@@ -9,6 +9,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 import gen_python_numeric_errors as policy  # noqa: E402
+from tests.process_guard_common import run_guarded_test_process  # noqa: E402
 
 
 def test_policy_coordinates_and_class_contract():
@@ -99,7 +100,6 @@ def test_generated_consumers_are_semantically_identical_and_idempotent():
 
 def test_compiled_policy_and_integer_sign_family(tmp_path):
     import shutil
-    import subprocess
 
     compiler = shutil.which("rustc")
     if compiler is None:
@@ -138,14 +138,14 @@ def test_compiled_policy_and_integer_sign_family(tmp_path):
     binary = tmp_path / (
         "numeric_policy.exe" if sys.platform == "win32" else "numeric_policy"
     )
-    subprocess.run(
+    run_guarded_test_process(
         [compiler, "--edition=2024", str(source), "-o", str(binary)],
         check=True,
         capture_output=True,
         text=True,
         timeout=60,
     )
-    subprocess.run(
+    run_guarded_test_process(
         [str(binary)], check=True, capture_output=True, text=True, timeout=10
     )
 
@@ -154,7 +154,6 @@ def test_standalone_rust_emitted_arithmetic_signed_and_bool_cases(tmp_path):
     """Compile the real emitted arithmetic fragments without compiling Cargo."""
     import ast
     import shutil
-    import subprocess
 
     compiler = shutil.which("rustc")
     if compiler is None:
@@ -226,20 +225,21 @@ fn molt_sys_version_state()->&'static std::sync::Mutex<Target> { static STATE:st
     binary = tmp_path / (
         "emitted_numeric.exe" if sys.platform == "win32" else "emitted_numeric"
     )
-    result = subprocess.run(
+    result = run_guarded_test_process(
         [compiler, "--edition=2024", str(source), "-o", str(binary)],
         capture_output=True,
         text=True,
         timeout=60,
     )
     assert result.returncode == 0, result.stderr
-    result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+    result = run_guarded_test_process(
+        [str(binary)], capture_output=True, text=True, timeout=10
+    )
     assert result.returncode == 0, result.stderr
 
 
 def test_actual_timedelta_integer_normalizer_sign_range_and_overflow(tmp_path):
     import shutil
-    import subprocess
 
     compiler = shutil.which("rustc")
     if compiler is None:
@@ -275,14 +275,16 @@ def test_actual_timedelta_integer_normalizer_sign_range_and_overflow(tmp_path):
     binary = tmp_path / (
         "td_normalizer.exe" if sys.platform == "win32" else "td_normalizer"
     )
-    result = subprocess.run(
+    result = run_guarded_test_process(
         [compiler, "--edition=2024", str(path), "-o", str(binary)],
         capture_output=True,
         text=True,
         timeout=60,
     )
     assert result.returncode == 0, result.stderr
-    result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+    result = run_guarded_test_process(
+        [str(binary)], capture_output=True, text=True, timeout=10
+    )
     assert result.returncode == 0, result.stderr
 
 
@@ -292,7 +294,6 @@ def test_compiled_float_divmod_against_host_cpython(tmp_path):
     import math
     import shutil
     import struct
-    import subprocess
 
     compiler = shutil.which("rustc")
     if compiler is None:
@@ -346,14 +347,16 @@ def test_compiled_float_divmod_against_host_cpython(tmp_path):
         if sys.platform == "win32"
         else "numeric_float_divmod"
     )
-    result = subprocess.run(
+    result = run_guarded_test_process(
         [compiler, "--edition=2024", str(source), "-o", str(binary)],
         capture_output=True,
         text=True,
         timeout=60,
     )
     assert result.returncode == 0, result.stderr
-    result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+    result = run_guarded_test_process(
+        [str(binary)], capture_output=True, text=True, timeout=10
+    )
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == expected
 

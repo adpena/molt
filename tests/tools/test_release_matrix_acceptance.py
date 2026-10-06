@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.process_guard_common import run_guarded_test_process
 from tools import perf_schema
 from tools.release_matrix_acceptance import (
     ReleaseMatrix,
@@ -269,7 +270,6 @@ def test_profile_claims_and_experimental_exclusions_are_visible_not_runtime_wins
 
 
 def _source_repo(tmp_path):
-    import subprocess
 
     root = tmp_path / "source"
     (root / "src").mkdir(parents=True)
@@ -277,8 +277,8 @@ def _source_repo(tmp_path):
     (root / "src/dependency.py").write_bytes(b"VALUE = 1\n")
 
     def git(*args):
-        return subprocess.run(
-            ["git", "-C", str(root), *args], check=True, capture_output=True
+        return run_guarded_test_process(
+            ["git", "-C", str(root), *args], check=True, text=False
         ).stdout
 
     git("init")

@@ -472,7 +472,6 @@ def test_pinned_operation_fork_audit_blocked_but_quiescent_handle_allowed(tmp_pa
 
 
 def test_blocked_audit_registration_fails_import_closed():
-    import subprocess
     import sys
 
     code = """import sys
@@ -484,7 +483,7 @@ def block(event, args):
 sys.addaudithook(block)
 runpy.run_path(sys.argv[1], run_name="blocked_file_lock_registration")
 """
-    result = subprocess.run(
+    result = run_custody_subject_process(
         [sys.executable, "-c", code, build_locks.__file__],
         capture_output=True,
         text=True,
@@ -616,7 +615,6 @@ def test_fork_callback_reentrant_lock_operations_fail_before_mutex(tmp_path, ope
 
 
 def test_profile_close_callback_cannot_deadlock_child_lock_reset():
-    import subprocess
 
     code = """import sys,tempfile
 from pathlib import Path
@@ -637,7 +635,7 @@ assert rejected and all('fork lifecycle callbacks end' in x for x in rejected)
 assert locks._FILE_LOCK_ATOMIC_LOCAL.__dict__ == {}
 print('CALLBACK_REENTRY_REJECTED')
 """
-    result = subprocess.run(
+    result = run_custody_subject_process(
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=15
     )
     assert result.returncode == 0, result.stderr
@@ -648,7 +646,6 @@ print('CALLBACK_REENTRY_REJECTED')
 def test_child_reset_callback_failure_is_complete_or_explicitly_fail_closed(
     catch_callback_error,
 ):
-    import subprocess
 
     code = """import sys,tempfile
 from pathlib import Path
@@ -687,7 +684,7 @@ else:
     for h in handles: h.file.close()
 print('RESET_COMPLETE_OR_CLOSED')
 """.replace("CATCH", repr(catch_callback_error))
-    result = subprocess.run(
+    result = run_custody_subject_process(
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=15
     )
     assert result.returncode == 0, result.stderr

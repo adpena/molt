@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -11,6 +10,8 @@ import pytest
 from molt import file_locks as locks
 from tools import memory_guard, process_sentinel as sentinel
 from tools.memory_guard_core import process_custody as core
+
+from tests.process_guard_common import run_custody_subject_process
 
 
 @pytest.mark.parametrize("replacement_leader", [False, True])
@@ -90,7 +91,7 @@ def test_quiescent_owned_lock_allows_normal_compiler_subprocess(tmp_path):
     handle = locks._try_acquire_file_lock(tmp_path / "compiler.lock")
     assert handle is not None
     try:
-        result = subprocess.run(
+        result = run_custody_subject_process(
             [sys.executable, "-c", "print('quiescent')"],
             capture_output=True,
             text=True,

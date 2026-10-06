@@ -120,6 +120,50 @@ class SubprocessGuardAudit:
 
 ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     AllowedRawSubprocessUse(
+        "tools/memory_guard_core/cargo_quarantine.py",
+        "_observed_pid_is_definitely_closed",
+        "os.kill",
+        "cargo quarantine pid-existence probe with signal 0; not signal authority",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/memory_guard_core/process_custody.py",
+        "ChildExecutionClock.send_signal",
+        "os.kill",
+        "memory guard signal primitive for its own reserved, not-yet-reaped child",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/release_matrix_acceptance.py",
+        "source_admission_problems.git",
+        "run",
+        "bounded git metadata probe of release source admission",
+    ),
+    AllowedRawSubprocessUse(
+        "tools/ci_cargo_cache.py",
+        "_cargo_metadata",
+        "run",
+        "bounded cargo metadata probe in the CI cache save step, which runs "
+        "under the runner's bare python3 outside the project environment",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/test_backend_daemon_suite_custody.py",
+        "test_fork_child_does_not_keep_suite_eof_alive",
+        "os.kill",
+        "terminates the single forked child this custody test owns",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/test_child_clock_custody.py",
+        "test_actual_posix_owned_signal_keeps_child_reserved_until_reap",
+        "Popen",
+        "the raw POSIX child is the ChildExecutionClock custody subject",
+    ),
+    AllowedRawSubprocessUse(
+        "tests/test_child_clock_custody.py",
+        "test_actual_posix_owned_signal_keeps_child_reserved_until_reap",
+        "process.terminate",
+        "terminates the raw POSIX custody subject before and after reap",
+        expected_count=2,
+    ),
+    AllowedRawSubprocessUse(
         "tools/proof_plan.py",
         "_run_git",
         "check_output",
@@ -672,12 +716,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
     ),
     AllowedRawSubprocessUse(
         "tests/molt_diff.py",
-        "_list_backend_daemon_processes",
-        "run",
-        "differential harness daemon metadata sampler",
-    ),
-    AllowedRawSubprocessUse(
-        "tests/molt_diff.py",
         "_dyld_preflight_error",
         "run",
         "differential harness bounded dyld preflight compile probe",
@@ -731,12 +769,6 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         "run",
         "Windows deterministic-PYTHONHASHSEED self-reexec path; POSIX uses "
         "execvpe and the restarted process preserves the same CLI custody path",
-    ),
-    AllowedRawSubprocessUse(
-        "src/molt/backend_daemon_custody.py",
-        "_process_command",
-        "run",
-        "bounded ps metadata probe before daemon identity sidecars can authorize signals",
     ),
     AllowedRawSubprocessUse(
         "src/molt/backend_daemon_custody.py",
