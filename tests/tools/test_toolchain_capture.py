@@ -1418,6 +1418,208 @@ def test_rust_driver_alias_preserves_invocation_and_revalidates_selection(
         )
 
 
+def _gcc_link_fixture(tmp_path: Path, collect2_report) -> dict[str, object]:
+    """A GCC driver whose `-###` stops at collect2, as gcc prints it.
+
+    `collect2_report(command)` answers the `-Wl,-debug` relink. Any other
+    linker-discovery query (for example `-print-prog-name=ld`) fails the test.
+    """
+    suffix = ".exe" if os.name == "nt" else ""
+    driver = tmp_path / "bin" / ("cc" + suffix)
+    collect2 = tmp_path / "libexec" / ("collect2" + suffix)
+    # The driver's own program directory has an `ld` that collect2 does not run.
+    decoy = tmp_path / "bin" / ("ld" + suffix)
+    for path in (driver, collect2, decoy):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(path.name.encode())
+        path.chmod(0o755)
+    link_args = ["-o", str(tmp_path / "probe"), str(tmp_path / "probe.o")]
+    calls: list[list[str]] = []
+
+    def run(command, **kwargs):
+        metadata = _rust_metadata_probe(command, tmp_path)
+        if metadata is not None:
+            return metadata
+        command = [str(value) for value in command]
+        calls.append(command)
+        assert not any(value.startswith("-print-prog-name") for value in command)
+        if "-###" in command:
+            assert command == [str(driver), "-###", *link_args]
+            quoted = str(collect2).replace("\\", "\\\\")
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "",
+                "Using built-in specs.\nCOLLECT_GCC=cc\n"
+                f' "{quoted}" -plugin --build-id -o probe probe.o\n',
+            )
+        if "-Wl,-debug" in command:
+            assert kwargs["cwd"] == tmp_path
+            return collect2_report(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            " ".join(json.dumps(value) for value in (str(driver), *link_args)) + "\n",
+            "",
+        )
+
+    return {
+        "driver": driver,
+        "collect2": collect2,
+        "decoy": decoy,
+        "link_args": link_args,
+        "calls": calls,
+        "run": run,
+    }
+
+
+def _collect2_debug(linker_line: str) -> str:
+    # Shape of gcc 15 collect2 -debug stderr.
+    return (
+        "Looking for 'real-ld'\nLooking for 'collect-ld'\nLooking for 'ld'\n"
+        "collect2 version 15.2.0\n"
+        f"{linker_line}\n"
+        "c_file_name         = /usr/bin/gcc\nnm_file_name        = /usr/bin/nm\n"
+    )
+
+
+def test_gcc_link_capture_seals_the_linker_collect2_reports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    suffix = ".exe" if os.name == "nt" else ""
+    # collect2 searched PATH and chose this file, not the driver-directory `ld`.
+    reported = tmp_path / "path dir" / ("ld" + suffix)
+    reported.parent.mkdir()
+    reported.write_bytes(b"path-selected linker")
+    reported.chmod(0o755)
+    fixture = _gcc_link_fixture(
+        tmp_path,
+        lambda command: subprocess.CompletedProcess(
+            command, 0, "", _collect2_debug(f"ld_file_name        = {reported}")
+        ),
+    )
+    monkeypatch.setattr(
+        toolchain_capture, "_COMMANDS", SimpleNamespace(run=fixture["run"])
+    )
+
+    images, telemetry = toolchain_capture.capture_rust_link_process_images(
+        rustc=tmp_path / "rustc",
+        cargo=None,
+        cwd=tmp_path,
+        env={"PATH": ""},
+        target=None,
+    )
+
+    sealed = {Path(str(row["path"])).resolve() for row in images}
+    assert sealed == {
+        Path(str(fixture["driver"])).resolve(),
+        Path(str(fixture["collect2"])).resolve(),
+        reported.resolve(),
+    }
+    assert Path(str(fixture["decoy"])).resolve() not in sealed
+    relinks = [call for call in fixture["calls"] if "-Wl,-debug" in call]
+    assert relinks == [[str(fixture["driver"]), *fixture["link_args"], "-Wl,-debug"]], (
+        "collect2 is asked once, through the exact selected driver argv"
+    )
+    [unit] = telemetry["units"]
+    assert unit["collect2_probe_count"] == 1
+    assert unit["process_resolution"][-1]["origin"] == "collect2-report"
+    assert unit["process_resolution"][-1]["requested"] == str(reported)
+
+
+@pytest.mark.parametrize(
+    ("linker_lines", "returncode", "message"),
+    [
+        (["ld_file_name        = not found"], 1, "found no linker"),
+        ([], 0, "reported 0 linker selections"),
+        (
+            ["ld_file_name        = /a/ld", "ld_file_name        = /b/ld"],
+            0,
+            "reported 2 linker selections",
+        ),
+        (["ld_file_name        = /absent/ld"], 0, "selected linker is unavailable"),
+    ],
+)
+def test_gcc_collect2_linker_report_fails_closed_with_child_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    linker_lines: list[str],
+    returncode: int,
+    message: str,
+) -> None:
+    stderr = _collect2_debug("\n".join(linker_lines))
+    fixture = _gcc_link_fixture(
+        tmp_path,
+        lambda command: subprocess.CompletedProcess(command, returncode, "", stderr),
+    )
+    monkeypatch.setattr(
+        toolchain_capture, "_COMMANDS", SimpleNamespace(run=fixture["run"])
+    )
+    with pytest.raises(toolchain_capture.RustLinkCaptureError, match=message) as caught:
+        toolchain_capture.capture_rust_link_process_images(
+            rustc=tmp_path / "rustc",
+            cargo=None,
+            cwd=tmp_path,
+            env={"PATH": ""},
+            target=None,
+        )
+    assert caught.value.diagnostic["phase"] == "collect2-linker"
+    assert caught.value.stderr == stderr
+    assert caught.value.returncode == returncode
+
+
+def test_gcc_link_capture_follows_the_rust_lld_wrapper_collect2_selects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # rustc 1.90+ on x86_64 Linux: cc -fuse-ld=lld -B<sysroot bin>/gcc-ld.
+    # `_rust_metadata_probe` reports tmp_path as the sysroot.
+    windows = os.name == "nt"
+    host = "x86_64-pc-windows-msvc" if windows else "x86_64-unknown-linux-gnu"
+    suffix = ".exe" if windows else ""
+    bin_dir = tmp_path / "lib" / "rustlib" / host / "bin"
+    wrapper = bin_dir / "gcc-ld" / ("ld.lld" + suffix)
+    rust_lld = bin_dir / ("rust-lld" + suffix)
+    for path in (wrapper, rust_lld):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(path.name.encode())
+        path.chmod(0o755)
+    fixture = _gcc_link_fixture(
+        tmp_path,
+        lambda command: subprocess.CompletedProcess(
+            command, 0, "", _collect2_debug(f"ld_file_name        = {wrapper}")
+        ),
+    )
+    monkeypatch.setattr(
+        toolchain_capture, "_COMMANDS", SimpleNamespace(run=fixture["run"])
+    )
+
+    images, telemetry = toolchain_capture.capture_rust_link_process_images(
+        rustc=tmp_path / "rustc",
+        cargo=None,
+        cwd=tmp_path,
+        env={"PATH": ""},
+        target=None,
+    )
+
+    roles = {Path(str(row["path"])).resolve(): row["role"] for row in images}
+    assert roles[wrapper.resolve()] == "rust-link-helper"
+    assert roles[rust_lld.resolve()] == "rust-link-helper"
+    [unit] = telemetry["units"]
+    assert [row["origin"] for row in unit["process_resolution"][-2:]] == [
+        "collect2-report",
+        "rust-lld-wrapper",
+    ]
+    revalidated, _ = toolchain_capture.revalidate_rust_link_process_images(
+        {"process_images": images, "link_selection": telemetry}, target=None
+    )
+    assert revalidated == images
+    rust_lld.write_bytes(b"substituted rust-lld")
+    with pytest.raises(ValueError, match="changed while live custody armed"):
+        toolchain_capture.revalidate_rust_link_process_images(
+            {"process_images": images, "link_selection": telemetry}, target=None
+        )
+
+
 def test_process_image_capture_revalidates_exact_identity(tmp_path: Path) -> None:
     executable = tmp_path / "captured-tool.exe"
     executable.write_bytes(b"canonical-process-image")

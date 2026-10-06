@@ -241,8 +241,55 @@ class RustToolSearch:
         path = path.absolute()
         if not path.is_file() or not os.access(path, os.X_OK):
             raise ValueError(f"selected Rust process image is not executable: {path}")
-        return path, {
-            "requested": executable,
+        return path, self._evidence(executable, path, origin)
+
+    def bundled_lld(self, wrapper: Path) -> tuple[Path, dict[str, object]] | None:
+        """Return the rust-lld image that a Rust `gcc-ld` wrapper executes.
+
+        rustc adds `-B<host tool dir>/gcc-ld` for a self-contained linker (the
+        x86_64-unknown-linux-gnu default since Rust 1.90), so the C driver or
+        GCC's collect2 runs `gcc-ld/ld.lld`. rust-lang/rust
+        src/tools/lld-wrapper derives its child from its own executable path:
+        `<wrapper dir>/../rust-lld` plus the host suffix, exec'd on Unix and
+        spawned on Windows. Any other path, including a `gcc-ld` entry linked
+        to a system lld, selects no further image.
+        """
+        content = wrapper.resolve(strict=True)
+        tool_directories = {
+            directory.resolve()
+            for directory in self.directories()
+            if directory.is_dir()
+        }
+        windows = "windows" in self.host.split("-")
+        name = content.name.casefold() if windows else content.name
+        if windows and name.endswith(".exe"):
+            name = name[: -len(".exe")]
+        if (
+            content.parent.name != "gcc-ld"
+            or content.parent.parent not in tool_directories
+            or name not in _RUST_LLD_WRAPPER_NAMES
+        ):
+            return None
+        child = "rust-lld.exe" if windows else "rust-lld"
+        target = content.parent.parent / child
+        if not target.is_file() or not os.access(target, os.X_OK):
+            raise ValueError(
+                f"Rust lld wrapper {content} has no rust-lld beside its directory: "
+                f"{target}"
+            )
+        # current_exe() is canonical on Linux but the invoked spelling on macOS
+        # and Windows. Both spellings must select one image.
+        lexical = wrapper.absolute().parent.parent / child
+        if not lexical.is_file() or lexical.resolve() != target.resolve():
+            raise ValueError(
+                f"Rust lld wrapper {wrapper} selects {target} through its content "
+                f"path but {lexical} through its invoked path"
+            )
+        return target, self._evidence(str(wrapper), target, "rust-lld-wrapper")
+
+    def _evidence(self, requested: str, path: Path, origin: str) -> dict[str, object]:
+        return {
+            "requested": requested,
             "path": str(path),
             "content_path": str(path.resolve(strict=True)),
             "origin": origin,
@@ -251,3 +298,7 @@ class RustToolSearch:
             "compiler_sysroot": str(self.compiler_sysroot),
             "tool_search_directories": [str(value) for value in self.directories()],
         }
+
+
+# The executable names rust-lang/rust src/tools/lld-wrapper maps to an lld flavor.
+_RUST_LLD_WRAPPER_NAMES = frozenset({"ld.lld", "ld64.lld", "lld-link", "wasm-ld"})

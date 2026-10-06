@@ -417,6 +417,18 @@ Rust command-debug output may prefix the quoted driver with quoted environment
 assignments (including Linux `LC_ALL` and `PATH`). Decode those assignments before
 selecting the driver argv in both target and host-unit probes; assignment-only,
 malformed, missing, and multiple-command selections still fail closed.
+A C driver's `-###` dry run names its helpers. GCC's dry run stops at
+`collect2`, which then picks the real linker itself (`real-ld`, `collect-ld`,
+the `-fuse-ld` name in the driver's program path, then `PATH`). The capture
+relinks the synthetic inputs through the same driver argv with `-Wl,-debug` and
+seals the `ld_file_name` that collect2 reports (GNU ld, gold, lld or mold). It
+never substitutes `-print-prog-name=ld`: that follows the driver's search and
+can name another file. A Rust `gcc-ld/{ld.lld,ld64.lld,lld-link,wasm-ld}`
+wrapper in a selected sysroot's host tool directory execs `../rust-lld`, so the
+capture seals that image too. Rust 1.90+ selects this wrapper by default on
+x86_64 Linux (`-fuse-ld=lld -B<sysroot>/lib/rustlib/<host>/bin/gcc-ld`). A
+missing collect2 linker, a missing `rust-lld`, or a wrapper whose invoked and
+content paths select different `rust-lld` files fails the capture.
 
 Guard scratch is owned by `src/molt/temporary_artifacts.py`. The parent allocates
 one short `pt-*` directory before child launch and passes it through
