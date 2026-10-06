@@ -155,3 +155,17 @@ def test_check_and_update_cli(
     assert pcg.main(["--update"]) == 0
     assert pcg.main(["--check"]) == 0
     assert "[public-contract] OK" in capsys.readouterr().out
+
+
+def test_positional_requiredness_is_derived_from_nargs_not_argparse_version() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    rest = parser.add_argument("rest", nargs=argparse.REMAINDER)
+    some = parser.add_argument("some", nargs="+")
+    flag = parser.add_argument("--flag", required=True)
+    # Interpreters before gh-72795 marked REMAINDER positionals required.
+    rest.required = True
+    assert pcg._action_record(rest)["required"] is False
+    assert pcg._action_record(some)["required"] is True
+    assert pcg._action_record(flag)["required"] is True
