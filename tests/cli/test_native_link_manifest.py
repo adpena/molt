@@ -38,6 +38,7 @@ from molt.cli.native_link_manifest import (
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from tests.cli.native_link_test_support import write_test_static_archive
 from tests.cli.process_guard import run_cli_test_process
+from tests.llvm_sdk_test_support import verified_llvm_tools
 from tests.runtime_build_identity_helper import (
     RuntimeFixtureRoot,
     native_runtime_staticlib_identity,
@@ -1471,12 +1472,18 @@ def test_rustc_lowered_native_flags_are_not_reconstructed(tmp_path: Path) -> Non
     ]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="COFF archive resolution rescans inputs")
+@pytest.mark.slow
 def test_static_nobundle_order_changes_real_archive_resolution(tmp_path: Path) -> None:
-    clang = shutil.which("clang")
-    ar = shutil.which("llvm-ar") or shutil.which("ar")
-    if clang is None or ar is None:
-        pytest.skip("clang and an ar implementation are required")
+    """Archive order is semantic, so rustc's library order is replayed verbatim.
+
+    One-pass archive resolution (GNU ld, gold) cannot resolve the reversed order
+    below; lld, Apple ld and link.exe rescan archives, so a host's default linker
+    is not this oracle. ld.lld --warn-backrefs reports exactly the references a
+    one-pass linker leaves undefined, which makes the proof host-independent.
+    """
+    tools = verified_llvm_tools()
+    target = tools.native_target("elf")
+    linker = tools.linker("ld.lld")
     sources = {
         "main": "extern int consumer(void); int main(void){return consumer()!=7;}",
         "consumer": "extern int provider(void); int consumer(void){return provider();}",
@@ -1488,7 +1495,14 @@ def test_static_nobundle_order_changes_real_archive_resolution(tmp_path: Path) -
         object_path = tmp_path / f"{name}.o"
         source_path.write_text(source, encoding="utf-8")
         run_cli_test_process(
-            [clang, "-c", str(source_path), "-o", str(object_path)],
+            [
+                tools.clang,
+                f"--target={target}",
+                "-c",
+                str(source_path),
+                "-o",
+                str(object_path),
+            ],
             text=True,
             timeout=30,
             check=True,
@@ -1496,46 +1510,38 @@ def test_static_nobundle_order_changes_real_archive_resolution(tmp_path: Path) -
         objects[name] = object_path
     consumer = tmp_path / "libconsumer.a"
     provider = tmp_path / "libprovider.a"
-    run_cli_test_process(
-        [ar, "rcs", str(consumer), str(objects["consumer"])],
-        text=True,
-        timeout=30,
-        check=True,
-    )
-    run_cli_test_process(
-        [ar, "rcs", str(provider), str(objects["provider"])],
-        text=True,
-        timeout=30,
-        check=True,
-    )
-    good = run_cli_test_process(
-        [
-            clang,
-            str(objects["main"]),
-            str(consumer),
-            str(provider),
-            "-o",
-            str(tmp_path / "good"),
-        ],
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    bad = run_cli_test_process(
-        [
-            clang,
-            str(objects["main"]),
-            str(provider),
-            str(consumer),
-            "-o",
-            str(tmp_path / "bad"),
-        ],
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    for archive, member in ((consumer, "consumer"), (provider, "provider")):
+        run_cli_test_process(
+            [tools.ar, "rcs", str(archive), str(objects[member])],
+            text=True,
+            timeout=30,
+            check=True,
+        )
+
+    def link(*archives: Path, output: str):
+        # Freestanding: no CRT or libc, so no host sysroot is involved.
+        return run_cli_test_process(
+            [
+                linker,
+                "--warn-backrefs",
+                "--fatal-warnings",
+                "-e",
+                "main",
+                str(objects["main"]),
+                *map(str, archives),
+                "-o",
+                str(tmp_path / output),
+            ],
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+    good = link(consumer, provider, output="good")
+    bad = link(provider, consumer, output="bad")
     assert good.returncode == 0, good.stderr
     assert bad.returncode != 0
+    assert "backward reference detected: provider" in bad.stderr
 
 
 def test_link_dependency_authority_cannot_return_to_build_directory_scanning() -> None:

@@ -19,6 +19,7 @@ from molt.cli import link_fingerprints
 from molt import file_publication
 from molt.cli.native_link_plan import NativeArtifactKind, NativeObjectFormat
 from tests.cli.native_link_test_support import RUNTIME_BUILD_IDENTITY
+from tests.llvm_sdk_test_support import verified_llvm_tools
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkInput,
     SourceExtensionLinkRequirements,
@@ -230,14 +231,9 @@ def test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_r
     monkeypatch,
     tmp_path,
 ) -> None:
-    from molt.cli.llvm_wasi_tools import llvm_tool_candidates, llvm_linker_candidates
-
-    target = "x86_64-unknown-linux-gnu"
-    candidates = {kind: llvm_tool_candidates(kind) for kind in ("cc", "ar", "nm")}
-    linkers = llvm_linker_candidates("ld.lld")
-    if any(not paths for paths in candidates.values()) or not linkers:
-        pytest.skip("canonical LLVM clang/ar/nm/ld.lld tool family is unavailable")
-    cc, ar, nm = (str(candidates[kind][0]) for kind in ("cc", "ar", "nm"))
+    tools = verified_llvm_tools()
+    target = tools.native_target("elf")
+    cc, ar, nm, linker = tools.clang, tools.ar, tools.nm, tools.linker("ld.lld")
 
     def run(command):
         result = _COMMANDS.run(
@@ -297,7 +293,7 @@ def test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_r
             [
                 cc,
                 f"--target={target}",
-                f"-fuse-ld={linkers[0]}",
+                f"-fuse-ld={linker}",
                 "-nostdlib",
                 f"-L{tmp_path}",
                 "-Wl,-e,main",

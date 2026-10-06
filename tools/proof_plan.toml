@@ -900,7 +900,7 @@ dependencies = []
 [[ci_family]]
 name = "native_integration"
 description = "Native compiler/linker and supervisor receipt integration isolated from pure Python proof."
-inputs = [".github/workflows/ci.yml", ".python-version", "pyproject.toml", "uv.lock", "src/**", "tests/test_bench_tool.py", "tests/test_bench_harness.py", "tests/test_manifest_pipeline_e2e.py", "tests/cli/test_native_link_*.py", "tests/cli/test_native_symbol_authority.py", "tests/tools/test_proof_queue_native_receipts.py", "tests/proof_queue_custody_test_support.py", "tests/python_environment_test_support.py", "tools/proof_queue_pkg/**", "tools/proof_supervisor/**", "runtime/**", "tests/proof_queue_owned_roots.py"
+inputs = [".github/workflows/ci.yml", ".python-version", "pyproject.toml", "uv.lock", "src/**", "tests/test_bench_tool.py", "tests/test_bench_harness.py", "tests/test_manifest_pipeline_e2e.py", "tests/cli/test_native_link_*.py", "tests/cli/test_native_symbol_authority.py", "tests/cli/test_link_selection_admission.py", "tests/llvm_sdk_test_support.py", "tests/tools/test_proof_queue_native_receipts.py", "tests/proof_queue_custody_test_support.py", "tests/python_environment_test_support.py", "tools/proof_queue_pkg/**", "tools/proof_supervisor/**", "runtime/**", "tests/proof_queue_owned_roots.py"
 ]
 executor = "github-job"
 workflow = ".github/workflows/ci.yml"
@@ -2308,7 +2308,7 @@ resource_class = "python-tests"
 timeout_seconds = 300
 cache_domain = "pytest"
 dependencies = []
-argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe", "tests/test_runtime_build_python.py", "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive", "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges", "tests/cli/test_link_selection_admission.py"]
+argv = ["uv", "run", "--python", "3.12", "python", "-m", "pytest", "-q", "tests/cli/test_runtime_build_identity.py::test_python_identity_live_content_probe", "tests/test_runtime_build_python.py", "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive", "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive", "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges", "tests/cli/test_native_link_manifest.py::test_static_nobundle_order_changes_real_archive_resolution", "tests/cli/test_link_selection_admission.py"]
 toolchains = ["python", "uv", "rustc", "clang", "llvm-ar", "llvm-nm", "wasm-ld"]
 
 [[command]]
