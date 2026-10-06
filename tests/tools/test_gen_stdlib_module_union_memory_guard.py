@@ -111,3 +111,65 @@ def test_render_outputs_split_version_data_and_preserve_facade(tmp_path: Path) -
     facade = output.read_text(encoding="utf-8")
     assert "_load_version_data" in facade
     assert "STDLIB_MODULES = (" not in facade
+
+
+def _fake_capture(version: str):
+    return (
+        ("abc", "sys"),
+        ("asyncio",),
+        ("abc", "asyncio.base_events"),
+        ("asyncio",),
+    )
+
+
+def test_generated_outputs_query_the_target_python_authority(
+    monkeypatch, tmp_path: Path
+) -> None:
+    output = tmp_path / "stdlib_module_union.py"
+    monkeypatch.setattr(gen_stdlib_module_union, "OUT_PATH", output)
+    queried: list[str] = []
+
+    def fake_capture(version: str):
+        queried.append(version)
+        return _fake_capture(version)
+
+    monkeypatch.setattr(gen_stdlib_module_union, "_capture_version", fake_capture)
+
+    rendered = gen_stdlib_module_union.generated_outputs()
+
+    versions = gen_stdlib_module_union.DEFAULT_PYTHONS
+    assert tuple(queried) == tuple(versions)
+    assert set(rendered) == {
+        output,
+        *(
+            tmp_path / f"stdlib_module_union_{version.replace('.', '_')}.py"
+            for version in versions
+        ),
+    }
+    assert not any(path.exists() for path in rendered)
+
+
+def test_generated_outputs_fail_closed_on_a_retired_version_module(
+    monkeypatch, tmp_path: Path
+) -> None:
+    output = tmp_path / "stdlib_module_union.py"
+    monkeypatch.setattr(gen_stdlib_module_union, "OUT_PATH", output)
+    retired = tmp_path / "stdlib_module_union_3_11.py"
+    retired.write_text(
+        f'"""\n{gen_stdlib_module_union.GENERATED_DATA_MARKER}\n"""\n',
+        encoding="utf-8",
+    )
+    hand_written = tmp_path / "stdlib_module_union_notes.py"
+    hand_written.write_text("# not generated\n", encoding="utf-8")
+
+    def unreachable(version: str):
+        raise AssertionError("retired outputs must fail before querying Python")
+
+    monkeypatch.setattr(gen_stdlib_module_union, "_capture_version", unreachable)
+
+    with pytest.raises(RuntimeError, match="no longer renders") as raised:
+        gen_stdlib_module_union.generated_outputs()
+
+    assert str(retired) in str(raised.value)
+    assert str(hand_written) not in str(raised.value)
+    assert retired.exists()

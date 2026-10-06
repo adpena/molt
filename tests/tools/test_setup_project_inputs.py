@@ -148,8 +148,8 @@ def _python_bootstrap(tmp_path: Path, *, failure: str = "", pin: str = "3.12.15\
     )
     return (
         result,
-        events.read_text().splitlines() if events.exists() else [],
-        {name: path.read_text() for name, path in exports.items()},
+        events.read_text(encoding="utf-8").splitlines() if events.exists() else [],
+        {name: path.read_text(encoding="utf-8") for name, path in exports.items()},
     )
 
 

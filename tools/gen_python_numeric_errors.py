@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -11,7 +10,7 @@ import re
 import sys
 import tomllib
 
-from generator_io import generated_file_matches, write_generated_text
+from generator_io import generator_main
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -197,39 +196,17 @@ pub const fn python_integer_divmod(a: i128, b: i128) -> Option<(i128, i128)> {
 """
 
 
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    contexts = load_policy()
+    return {
+        path: render(contexts, integer_helper="molt-backend-luau" not in path.parts)
+        for path in OUTPUTS
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true")
-    args = parser.parse_args(argv)
-    try:
-        contexts = load_policy()
-        outputs = {
-            path: render(
-                contexts,
-                integer_helper="molt-backend-luau" not in path.parts,
-            )
-            for path in OUTPUTS
-        }
-    except (OSError, ValueError) as exc:
-        parser.exit(2, f"numeric policy invalid: {exc}\n")
-    stale = [
-        p for p, output in outputs.items() if not generated_file_matches(p, output)
-    ]
-    if args.check:
-        if stale:
-            print(
-                "numeric policy projections stale: "
-                + ", ".join(str(p.relative_to(ROOT)) for p in stale)
-            )
-            return 1
-        print("numeric policy projections synchronized")
-        return 0
-    for path, output in outputs.items():
-        write_generated_text(path, output)
-    print(
-        f"numeric policy generated contexts={len(load_policy())} targets={len(TARGETS)} consumers={len(OUTPUTS)}"
-    )
-    return 0
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 FLOAT_DIVMOD = r"""/// CPython-compatible fmod-derived floor quotient and divisor-signed remainder.

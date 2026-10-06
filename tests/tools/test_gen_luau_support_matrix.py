@@ -141,7 +141,9 @@ def test_classifies_luau_op_arms_from_fixture() -> None:
     assert rows["getargv"].status == "not-admitted"
 
 
-def test_check_mode_detects_stale_generated_output(tmp_path: Path) -> None:
+def test_check_mode_detects_stale_generated_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
     mod = _load_module()
     source = tmp_path / "luau.rs"
     output = tmp_path / "luau_support_matrix.generated.md"
@@ -156,10 +158,18 @@ def test_check_mode_detects_stale_generated_output(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     output.write_text("stale\n", encoding="utf-8")
+    monkeypatch.setattr(mod, "SOURCE", source)
+    monkeypatch.setattr(mod, "OUTPUT", output)
 
-    rc = mod.main(["--source", str(source), "--output", str(output), "--check"])
-
-    assert rc == 1
+    assert mod.generated_outputs() == {output: mod.build_output(source)}
+    assert mod.main(["--check"]) == 1
+    assert f"stale: {output}" in capsys.readouterr().err
+    assert output.read_text(encoding="utf-8") == "stale\n"
+    assert mod.main(["--write"]) == 0
+    assert mod.main(["--check"]) == 0
+    assert "| `add` | `implemented-target-limited` |" in output.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_build_output_aggregates_decomposed_emitter_directory(tmp_path: Path) -> None:
@@ -360,8 +370,7 @@ def test_supported_branch_before_late_rejection_is_not_universal_rejection():
 def test_every_actual_shared_rejection_arm_has_honest_support_status():
     mod = _load_module()
     source = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in mod._source_files(mod.DEFAULT_SOURCE)
+        path.read_text(encoding="utf-8") for path in mod._source_files(mod.SOURCE)
     )
     seen = set()
     for match in mod._extract_emit_op_matches(source):
@@ -414,14 +423,13 @@ def test_luau_classifier_source_family_and_regressions_are_mandatory():
         "runtime/molt-ir/src/tir/op_kinds.toml",
     } <= set(plan["authority_inputs"])
     assert {
-        path.relative_to(REPO_ROOT).as_posix()
-        for path in mod._source_files(mod.DEFAULT_SOURCE)
+        path.relative_to(REPO_ROOT).as_posix() for path in mod._source_files(mod.SOURCE)
     } <= set(plan["authority_inputs"])
 
 
 def test_actual_raw_fallback_report_explicitly_excludes_structured_cfg_acceptance():
     mod = _load_module()
-    output = mod.build_output(mod.DEFAULT_SOURCE)
+    output = mod.build_output(mod.SOURCE)
     assert "**Scope:** raw OpIR emitter-arm classification" in output
     assert "whole-function acceptance or execution" in output
     assert "`function_body.rs` and `flow_dispatch.rs`" in output
@@ -429,8 +437,8 @@ def test_actual_raw_fallback_report_explicitly_excludes_structured_cfg_acceptanc
     assert "that route requires its own validation" in output
     for kind in ("jump", "goto", "br_if", "branch_false", "check_exception"):
         assert f"| `{kind}` | `compile-error` |" in output
-    flow = (mod.DEFAULT_SOURCE / "flow_dispatch.rs").read_text(encoding="utf-8")
-    function = (mod.DEFAULT_SOURCE / "function_body.rs").read_text(encoding="utf-8")
+    flow = (mod.SOURCE / "flow_dispatch.rs").read_text(encoding="utf-8")
+    function = (mod.SOURCE / "function_body.rs").read_text(encoding="utf-8")
     assert "simpleir_kind_is_exception_check" in flow
     assert "simpleir_kind_is_structural" in flow
     assert "emit_logical_flow" in function

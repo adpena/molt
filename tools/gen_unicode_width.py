@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 from pathlib import Path
@@ -12,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 import harness_memory_guard  # noqa: E402
-from generator_io import generated_file_matches, write_generated_text  # noqa: E402
+from generator_io import generator_main  # noqa: E402
 from molt.target_python import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS  # noqa: E402
 
 OUTPUT = ROOT / "runtime/molt-runtime/src/object/unicode_width_generated.rs"
@@ -98,18 +97,13 @@ def render() -> str:
     return "\n".join(lines)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true")
-    args = parser.parse_args()
-    output = render()
-    if args.check:
-        if not generated_file_matches(OUTPUT, output):
-            print(f"stale Unicode width authority: {OUTPUT}", file=sys.stderr)
-            return 1
-    else:
-        write_generated_text(OUTPUT, output)
-    return 0
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    return {OUTPUT: render()}
+
+
+def main(argv: list[str] | None = None) -> int:
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":

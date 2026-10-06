@@ -708,7 +708,7 @@ def test_protocol_covers_full_class_method_surface() -> None:
     missing = _assembled_class_methods() - _protocol_methods()
     assert not missing, (
         "Protocol drift: methods on SimpleTIRGenerator missing from "
-        f"_GeneratorProtocol (re-run tools/gen_protocol.py): {sorted(missing)}"
+        f"_GeneratorProtocol (re-run tools/gen_protocol.py --write): {sorted(missing)}"
     )
 
 
@@ -718,7 +718,7 @@ def test_protocol_covers_full_class_attr_surface() -> None:
     missing = _assembled_class_attrs() - _protocol_attrs()
     assert not missing, (
         "Protocol drift: attributes on SimpleTIRGenerator missing from "
-        f"_GeneratorProtocol (re-run tools/gen_protocol.py): {sorted(missing)}"
+        f"_GeneratorProtocol (re-run tools/gen_protocol.py --write): {sorted(missing)}"
     )
 
 
@@ -766,7 +766,7 @@ def test_every_mixin_method_is_on_protocol() -> None:
             drift[mixin_name] = missing
     assert not drift, (
         "Protocol drift: mixin methods missing from _GeneratorProtocol "
-        f"(re-run tools/gen_protocol.py): {drift}"
+        f"(re-run tools/gen_protocol.py --write): {drift}"
     )
 
 

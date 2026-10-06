@@ -3,14 +3,11 @@
 
 from __future__ import annotations
 
-import argparse
-import difflib
 import stringprep
 import subprocess
-import sys
 from pathlib import Path
 
-from generator_io import generated_file_matches, write_generated_text
+from generator_io import generator_main
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "runtime/molt-runtime-stringprep/src/tables.rs"
@@ -150,28 +147,13 @@ def _rustfmt_text(text: str) -> str:
         tmp.unlink(missing_ok=True)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true", help="check without writing")
-    args = parser.parse_args()
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    return {OUT: _rustfmt_text(render())}
 
-    rendered = _rustfmt_text(render())
-    if args.check:
-        if not generated_file_matches(OUT, rendered):
-            current = OUT.read_text(encoding="utf-8") if OUT.exists() else ""
-            diff = difflib.unified_diff(
-                current.splitlines(keepends=True),
-                rendered.splitlines(keepends=True),
-                fromfile=str(OUT),
-                tofile=f"{OUT} (generated)",
-            )
-            sys.stderr.writelines(diff)
-            return 1
-        print("stringprep tables: in sync")
-        return 0
-    write_generated_text(OUT, rendered)
-    print(f"wrote {OUT}")
-    return 0
+
+def main(argv: list[str] | None = None) -> int:
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":

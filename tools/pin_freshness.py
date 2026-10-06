@@ -804,7 +804,7 @@ def update(root: Path, name: str, fetchers: Fetchers = Fetchers()) -> str:
         _apply_edits(edits, validate)
     return (
         f"{name}: {pin.current} -> {latest} (every asset verified); "
-        "regenerate with `tools/gen_proof_plan.py`"
+        "regenerate with `tools/gen_proof_plan.py --write`"
     )
 
 

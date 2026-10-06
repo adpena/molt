@@ -8,7 +8,6 @@ small set of gateable statuses.
 
 from __future__ import annotations
 
-import argparse
 import re
 import sys
 import tomllib
@@ -16,7 +15,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from generator_io import generated_file_matches, write_generated_text
+from generator_io import generator_main
 from molt.rust_source_scan import mask_rust_comments_and_strings
 
 
@@ -30,8 +29,8 @@ from tools.op_kinds.runtime_requirements import (  # noqa: E402 - direct-script 
     target_runtime_requirement_masks,
 )
 
-DEFAULT_SOURCE = ROOT / "runtime" / "molt-backend-luau" / "src" / "luau"
-DEFAULT_OUTPUT = (
+SOURCE = ROOT / "runtime" / "molt-backend-luau" / "src" / "luau"
+OUTPUT = (
     ROOT / "docs" / "spec" / "areas" / "compiler" / "luau_support_matrix.generated.md"
 )
 
@@ -490,31 +489,13 @@ def build_output(source: Path) -> str:
     return _render(collect_rows_from_text(text), source)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--write", action="store_true")
-    mode.add_argument("--check", action="store_true")
-    args = parser.parse_args(argv)
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    return {OUTPUT: build_output(SOURCE)}
 
-    output = build_output(args.source)
-    if args.write:
-        write_generated_text(args.output, output)
-        print(f"wrote {args.output}")
-        return 0
-    if args.check:
-        if not generated_file_matches(args.output, output):
-            print(
-                f"generated Luau support matrix is stale: {args.output}",
-                file=sys.stderr,
-            )
-            return 1
-        print(f"generated Luau support matrix is current: {args.output}")
-        return 0
-    print(output, end="")
-    return 0
+
+def main(argv: list[str] | None = None) -> int:
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":

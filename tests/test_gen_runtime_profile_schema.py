@@ -21,7 +21,7 @@ def test_generated_runtime_profile_schema_is_byte_exact() -> None:
     for path, expected in rendered.items():
         assert path.read_bytes() == expected.encode("utf-8"), (
             f"{path.relative_to(ROOT)} is stale; run "
-            "`python tools/gen_runtime_profile_schema.py`"
+            "`python tools/gen_runtime_profile_schema.py --write`"
         )
 
 

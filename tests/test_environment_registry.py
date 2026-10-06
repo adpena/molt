@@ -35,7 +35,7 @@ REGISTRY_TOML = ROOT / "src" / "molt" / "environment_registry.toml"
 
 def test_projection_and_reference_page_are_current() -> None:
     assert G.projection_is_current(), (
-        "run `python3 tools/gen_environment_registry.py`; the projection or "
+        "run `python3 tools/gen_environment_registry.py --write`; the projection or "
         "the reference page is stale"
     )
 

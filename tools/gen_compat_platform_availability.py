@@ -5,18 +5,21 @@ Sources:
 - docs/python_documentation/python-3.12-docs-text/library/*.txt
 - docs/python_documentation/python-3.13-docs-text/library/*.txt
 - docs/python_documentation/python-3.14-docs-text/library/*.txt
+
+Usage::
+
+    python3 tools/gen_compat_platform_availability.py --write
+    python3 tools/gen_compat_platform_availability.py --check
 """
 
 from __future__ import annotations
 
-import argparse
 import datetime as _dt
 import re
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from generator_io import generated_file_matches, write_generated_text
+from generator_io import generator_main
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -158,39 +161,13 @@ def _render(rows: list[Row]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--write", action="store_true", help="Write output file in-place"
-    )
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help="exit 1 if the generated availability doc is stale (CI mode); do not write",
-    )
-    args = parser.parse_args()
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text."""
+    return {OUT_PATH: _render(_collect_rows())}
 
-    rows = _collect_rows()
-    output = _render(rows)
 
-    if args.check:
-        if not generated_file_matches(OUT_PATH, output):
-            print(
-                f"STALE generated file: {OUT_PATH}\n"
-                "  run `python3 tools/gen_compat_platform_availability.py --write` "
-                "to regenerate",
-                file=sys.stderr,
-            )
-            return 1
-        print("compat platform availability doc: in sync")
-        return 0
-
-    if args.write:
-        write_generated_text(OUT_PATH, output)
-        print(f"wrote {OUT_PATH}")
-    else:
-        print(output, end="")
-    return 0
+def main(argv: list[str] | None = None) -> int:
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":

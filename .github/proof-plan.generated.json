@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "deb2b24983457c49f4c9f306c9a54fd16c15ada7690614f1c0d18e697bb179d5",
+  "authority_sha256": "234a19cf601d229840bbc5bcd9a376a6da94581858b1bf1e8c3ea689d2bb6df8",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -1982,181 +1982,26 @@
         "uv",
         "run",
         "python3",
-        "tools/gen_op_kinds.py",
-        "--check"
+        "tools/generators.py",
+        "check"
       ],
       "cache_domain": "uv",
       "cell": "linux-x86_64-py312-repository-policy",
       "dependencies": [],
       "family": "repository_policy",
-      "id": "repository.op-kinds.generated",
+      "id": "repository.generators",
       "resource_class": "repository-policy",
       "tiers": [
         "pre-push",
         "pr",
         "main"
       ],
-      "timeout_seconds": 300,
+      "timeout_seconds": 600,
       "toolchains": [
         "python",
         "uv",
-        "rustfmt"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_unicode_width.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.unicode-width.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 120,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_heap_kinds.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.heap-kinds.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv",
-        "rustfmt"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_python_effects.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.python-effects.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv",
-        "rustfmt"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "--python",
-        "3.12",
-        "python",
-        "tools/gen_host_capabilities.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.host-capabilities.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv",
-        "rustfmt"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_runtime_profile_schema.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.runtime-profile.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv",
-        "rustfmt"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_cpython_type_slots.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.cpython-slots.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv"
+        "rustfmt",
+        "node"
       ]
     },
     {
@@ -2170,370 +2015,10 @@
       "cache_domain": "uv",
       "cell": "linux-x86_64-py312-repository-policy",
       "dependencies": [
-        "repository.op-kinds.generated"
+        "repository.generators"
       ],
       "family": "repository_policy",
       "id": "repository.op-kinds.drift",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_wasm_abi.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.wasm-abi.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv",
-        "rustfmt"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_cpython_coverage.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.cpython-coverage.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_intrinsics.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.intrinsics.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv",
-        "rustfmt"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_codecs.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.codecs.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv",
-        "rustfmt"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_stringprep_tables.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.stringprep.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv",
-        "rustfmt"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_protocol.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.frontend-protocol.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_frontend_diagnostics.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.frontend-diagnostics.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_luau_support_matrix.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.luau-support.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_diff_lanes.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.differential-lanes.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_target_feature_manifest.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.target-features.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_browser_asset_graph.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [
-        "repository.target-features.generated",
-        "repository.wasm-abi.generated",
-        "repository.native-callable-abi.generated"
-      ],
-      "family": "repository_policy",
-      "id": "repository.browser-assets.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv",
-        "node"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_cpython_abi_layout.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.cpython-abi-layout.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_native_callable_abi.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.native-callable-abi.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv",
-        "rustfmt"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_release_matrix.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.release-matrix.generated",
       "resource_class": "repository-policy",
       "tiers": [
         "pre-push",
@@ -2557,24 +2042,7 @@
       "cache_domain": "uv",
       "cell": "linux-x86_64-py312-repository-policy",
       "dependencies": [
-        "repository.op-kinds.generated",
-        "repository.heap-kinds.generated",
-        "repository.runtime-profile.generated",
-        "repository.cpython-slots.generated",
-        "repository.wasm-abi.generated",
-        "repository.cpython-coverage.generated",
-        "repository.intrinsics.generated",
-        "repository.codecs.generated",
-        "repository.stringprep.generated",
-        "repository.frontend-protocol.generated",
-        "repository.frontend-diagnostics.generated",
-        "repository.luau-support.generated",
-        "repository.differential-lanes.generated",
-        "repository.target-features.generated",
-        "repository.browser-assets.generated",
-        "repository.cpython-abi-layout.generated",
-        "repository.native-callable-abi.generated",
-        "repository.release-matrix.generated"
+        "repository.generators"
       ],
       "family": "repository_policy",
       "id": "repository.generator-manifest",
@@ -2645,56 +2113,6 @@
         "uv",
         "run",
         "python3",
-        "tools/gen_environment_registry.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.environment-registry.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 120,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_proof_plan.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.proof-plan.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
         "tools/llvm_runtime_abi_audit.py",
         "--check"
       ],
@@ -2753,31 +2171,6 @@
       "dependencies": [],
       "family": "repository_policy",
       "id": "repository.canonicalization",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/check_runtime_bridge_test_stubs.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.runtime-bridge-stubs",
       "resource_class": "repository-policy",
       "tiers": [
         "pre-push",
@@ -2901,10 +2294,9 @@
       "cell": "linux-x86_64-py312-repository-policy",
       "dependencies": [
         "repository.generator-manifest",
-        "repository.proof-plan.generated",
+        "repository.generators",
         "repository.structural-debt",
         "repository.canonicalization",
-        "repository.runtime-bridge-stubs",
         "repository.call-fact-coverage"
       ],
       "family": "repository_policy",
@@ -5176,56 +4568,6 @@
         "rustc",
         "cargo"
       ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/gen_python_numeric_errors.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.python-numeric-errors.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
-    },
-    {
-      "argv": [
-        "uv",
-        "run",
-        "python3",
-        "tools/compatibility_error_protocol.py",
-        "--check"
-      ],
-      "cache_domain": "uv",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [],
-      "family": "repository_policy",
-      "id": "repository.python-compatibility-errors.generated",
-      "resource_class": "repository-policy",
-      "tiers": [
-        "pre-push",
-        "pr",
-        "main"
-      ],
-      "timeout_seconds": 300,
-      "toolchains": [
-        "python",
-        "uv"
-      ]
     }
   ],
   "executor": {
@@ -5271,10 +4613,10 @@
       "repository_policy": {
         "budget_seconds": 3600,
         "critical_path_seconds": 1500,
-        "headroom_seconds": 60,
-        "projected_makespan_seconds": 3540,
+        "headroom_seconds": 1500,
+        "projected_makespan_seconds": 2100,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 3240
+          "repository-policy": 1530
         }
       },
       "rust": {

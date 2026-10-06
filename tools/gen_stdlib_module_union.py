@@ -11,11 +11,17 @@ It queries `sys.stdlib_module_names` for each selected Python version using
 3) union sets used by stdlib coverage gates.
 
 The output is intentionally deterministic and sorted so diffs are reviewable.
+The selected versions are the supported target-Python authority
+(`src/molt/target_python.py`); every one must be runnable through `uv`.
+
+Usage::
+
+    python3 tools/gen_stdlib_module_union.py --write
+    python3 tools/gen_stdlib_module_union.py --check
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import subprocess
 import sys
@@ -30,7 +36,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 import harness_memory_guard  # noqa: E402
-from generator_io import generated_file_matches, write_generated_text  # noqa: E402
+from generator_io import display_path, generator_main  # noqa: E402
 
 from molt.target_python import (  # noqa: E402
     SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS,
@@ -212,7 +218,7 @@ def _format_facade_module(
             "",
             "Update workflow:",
             "1. Install/enable target CPython versions with `uv`.",
-            "2. Run `python3 tools/gen_stdlib_module_union.py`.",
+            "2. Run `python3 tools/gen_stdlib_module_union.py --write`.",
             "3. Run `python3 tools/sync_stdlib_top_level_stubs.py --write`.",
             "4. Re-run `python3 tools/check_stdlib_intrinsics.py --update-doc`.",
             "",
@@ -327,8 +333,10 @@ def render_outputs(
     return rendered
 
 
-def _remove_stale_generated_siblings(output: Path, expected: set[Path]) -> None:
-    for path in output.parent.glob(f"{output.stem}_*.py"):
+def _stale_generated_siblings(output: Path, expected: set[Path]) -> list[Path]:
+    """Per-version data modules of a version no longer in the baseline."""
+    stale: list[Path] = []
+    for path in sorted(output.parent.glob(f"{output.stem}_*.py")):
         if path in expected:
             continue
         try:
@@ -336,44 +344,33 @@ def _remove_stale_generated_siblings(output: Path, expected: set[Path]) -> None:
         except OSError:
             continue
         if GENERATED_DATA_MARKER in text:
-            path.unlink()
+            stale.append(path)
+    return stale
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Generate tools/stdlib_module_union.py from sys.stdlib_module_names "
-            "across selected CPython versions."
+def generated_outputs() -> dict[Path, str]:
+    """Each output path mapped to its exact generated text.
+
+    A per-version data module for a version that left the baseline is part of
+    the authority: rendering raises while one exists (before any interpreter
+    is queried), so ``--check`` and ``--write`` both fail closed naming it.
+    """
+    versions = tuple(dict.fromkeys(DEFAULT_PYTHONS))
+    expected = {OUT_PATH} | {
+        OUT_PATH.with_name(f"{_version_module_stem(OUT_PATH, version)}.py")
+        for version in versions
+    }
+    stale = _stale_generated_siblings(OUT_PATH, expected)
+    if stale:
+        raise RuntimeError(
+            "delete generated files that tools/gen_stdlib_module_union.py no "
+            "longer renders: " + ", ".join(display_path(path) for path in stale)
         )
-    )
-    parser.add_argument(
-        "--python",
-        dest="pythons",
-        action="append",
-        help="CPython version for union baseline (repeatable). Defaults to 3.12/3.13/3.14.",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=OUT_PATH,
-        help="Output path for generated baseline module.",
-    )
-    parser.add_argument(
-        "--check",
-        action="store_true",
-        help=(
-            "exit 1 if a generated baseline is stale (CI mode); do not write. "
-            "Requires the selected CPython interpreters to be available."
-        ),
-    )
-    args = parser.parse_args()
 
-    versions = tuple(dict.fromkeys(args.pythons or DEFAULT_PYTHONS))
     by_version_modules: dict[str, tuple[str, ...]] = {}
     by_version_packages: dict[str, tuple[str, ...]] = {}
     by_version_py_modules: dict[str, tuple[str, ...]] = {}
     by_version_py_packages: dict[str, tuple[str, ...]] = {}
-
     for version in versions:
         modules, packages, py_modules, py_packages = _capture_version(version)
         by_version_modules[version] = modules
@@ -381,8 +378,8 @@ def main() -> int:
         by_version_py_modules[version] = py_modules
         by_version_py_packages[version] = py_packages
 
-    rendered = render_outputs(
-        output=args.output,
+    return render_outputs(
+        output=OUT_PATH,
         versions=versions,
         by_version_modules=by_version_modules,
         by_version_packages=by_version_packages,
@@ -390,43 +387,9 @@ def main() -> int:
         by_version_py_packages=by_version_py_packages,
     )
 
-    if args.check:
-        ok = True
-        for path, text in rendered.items():
-            if not generated_file_matches(path, text):
-                print(
-                    f"STALE generated file: {path}\n"
-                    "  run `python3 tools/gen_stdlib_module_union.py` to regenerate",
-                    file=sys.stderr,
-                )
-                ok = False
-        if ok:
-            print("stdlib module union baseline: in sync")
-        return 0 if ok else 1
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    for path, text in rendered.items():
-        write_generated_text(path, text)
-    _remove_stale_generated_siblings(args.output, set(rendered))
-    union_modules = tuple(
-        sorted({name for names in by_version_modules.values() for name in names})
-    )
-    union_packages = tuple(
-        sorted({name for names in by_version_packages.values() for name in names})
-    )
-    union_py_modules = tuple(
-        sorted({name for names in by_version_py_modules.values() for name in names})
-    )
-    union_py_packages = tuple(
-        sorted({name for names in by_version_py_packages.values() for name in names})
-    )
-    print(
-        "generated stdlib union baseline: "
-        f"{args.output} "
-        f"({len(union_modules)} top-level modules, {len(union_packages)} top-level packages, "
-        f"{len(union_py_modules)} py modules, {len(union_py_packages)} py packages)"
-    )
-    return 0
+def main(argv: list[str] | None = None) -> int:
+    return generator_main(generated_outputs, argv, description=__doc__)
 
 
 if __name__ == "__main__":
