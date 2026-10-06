@@ -317,7 +317,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "641452732c31a2512d66ae49be5badaaee30efa9aec9a34d821d4118cf37ab77",
+  "authority_sha256": "44971d051c657d7362fc40ffa6be4461614bb13ea12a797cb7dc5c6cd62d76c7",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -1532,6 +1532,34 @@
       "dependencies": [],
       "family": "platform_portability",
       "id": "portability.rust.macos.clippy-workspace",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "suite",
+      "timeout_seconds": 1800,
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-aarch64-py312-rust-native-dev",
+      "dependencies": [],
+      "family": "platform_portability",
+      "id": "portability.rust.linux-aarch64.clippy-workspace",
       "resource_class": "compiler-build-resource",
       "tiers": [
         "pr",
@@ -6118,6 +6146,16 @@
       "python": "3.12",
       "runner": "ubuntu-latest",
       "target": "host"
+    },
+    {
+      "arch": "aarch64",
+      "backend": "rust",
+      "id": "linux-aarch64-py312-rust-native-dev",
+      "os": "linux",
+      "profile": "dev",
+      "python": "3.12",
+      "runner": "ubuntu-24.04-arm",
+      "target": "aarch64-unknown-linux-gnu"
     },
     {
       "arch": "aarch64",

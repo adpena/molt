@@ -1223,8 +1223,9 @@ def test_platform_portability_is_one_generated_cross_os_authority() -> None:
         for command in plan["command"]
         if command["family"] == "platform_portability"
     ]
-    # Besides the three queue cells, the family carries the macOS Rust cell:
-    # the primary host's workspace clippy and runtime gate.
+    # Besides the three queue cells, the family carries two Rust cells: the
+    # macOS cell (the primary host's workspace clippy and runtime gate) and the
+    # aarch64 Linux cell (workspace clippy where C char is unsigned).
     rust_cells = {
         cell["id"]: cell
         for cell in plan["matrix_cell"]
@@ -1233,7 +1234,7 @@ def test_platform_portability_is_one_generated_cross_os_authority() -> None:
     }
     assert {
         (cell["os"], cell["arch"], cell["runner"]) for cell in rust_cells.values()
-    } == {("macos", "aarch64", "macos-14")}
+    } == {("linux", "aarch64", "ubuntu-24.04-arm"), ("macos", "aarch64", "macos-14")}
     assert {command["cell"] for command in commands} == set(cells) | set(rust_cells)
     commands = [command for command in commands if command["cell"] in cells]
     queue_commands = [command for command in commands if ".queue." in command["id"]]

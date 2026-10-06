@@ -1470,10 +1470,20 @@ def test_generated_matrix_records_selection_reason() -> None:
     rust_cells = [entry for entry in matrix if entry["backend"] == "rust"]
     assert [
         (entry["cell"], entry["runner"], entry["target"]) for entry in rust_cells
-    ] == [("macos-arm64-py312-rust-native-dev", "macos-14", "aarch64-apple-darwin")]
-    assert rust_cells[0]["command_ids"] == [
-        "portability.rust.macos.clippy-workspace",
-        "portability.rust.macos.runtime-gate",
+    ] == [
+        (
+            "linux-aarch64-py312-rust-native-dev",
+            "ubuntu-24.04-arm",
+            "aarch64-unknown-linux-gnu",
+        ),
+        ("macos-arm64-py312-rust-native-dev", "macos-14", "aarch64-apple-darwin"),
+    ]
+    assert [entry["command_ids"] for entry in rust_cells] == [
+        ["portability.rust.linux-aarch64.clippy-workspace"],
+        [
+            "portability.rust.macos.clippy-workspace",
+            "portability.rust.macos.runtime-gate",
+        ],
     ]
 
 
@@ -1484,6 +1494,7 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
 
     assert [(entry["os"], entry["runner"]) for entry in matrix] == [
         ("linux", "ubuntu-latest"),
+        ("linux", "ubuntu-24.04-arm"),
         ("macos", "macos-14"),
         ("macos", "macos-14"),
         ("windows", "windows-2022"),
@@ -1498,6 +1509,9 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
             "portability.queue.macos",
             "portability.ir.macos",
             "portability.cargo-custody.macos",
+        ],
+        "linux-aarch64-py312-rust-native-dev": [
+            "portability.rust.linux-aarch64.clippy-workspace",
         ],
         "macos-arm64-py312-rust-native-dev": [
             "portability.rust.macos.clippy-workspace",

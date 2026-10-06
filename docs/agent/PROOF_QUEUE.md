@@ -1133,8 +1133,10 @@ command in workflow YAML. The same matrix selects on Rust inputs and carries
 the macOS Rust cell: `cargo clippy --workspace --all-targets` on every pull
 request and push, and `tools/run_runtime_test_gate.py` on `main`, so
 aarch64-apple-darwin compile, lint, and runtime test truth is hosted rather
-than left to the development host. The Linux `rust` job owns the
-wasm32-wasip1 lint of the runtime closure and TIR crate (`rust.clippy.wasi32`). Its shard includes the DX provenance contract,
+than left to the development host, and an `ubuntu-24.04-arm` cell runs the
+workspace clippy sweep on aarch64 Linux (unsigned C `char`, no baseline CRC
+extension). The Linux `rust` job owns the wasm32-wasip1 lint of the runtime
+closure and TIR crate (`rust.clippy.wasi32`). Its shard includes the DX provenance contract,
 scientific/source-build custody, and the queue suite so the hosted checkout is
 exercised before test collection as well as through the product wrapper.
 Queue-owned pytest commands carry `MOLT_PROOF_QUEUE_*` custody plus a canonical
