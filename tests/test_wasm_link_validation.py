@@ -818,6 +818,16 @@ def _native_symbol_reader_fixture(
 ) -> None:
     """Mock SDK selection and nm transport, retaining native artifact admission."""
     reader_path: Path | None = None
+    real_tool_version = native_symbol_inspection._tool_version
+
+    def tool_version(path: Path) -> str | None:
+        # The mock reader is an llvm-nm transport: it answers the --version
+        # probe with llvm-nm's banner, so reader admission names its family.
+        if reader_path is not None and path == reader_path:
+            return "llvm-nm, compatible with GNU nm"
+        return real_tool_version(path)
+
+    monkeypatch.setattr(native_symbol_inspection, "_tool_version", tool_version)
 
     def reader(*, nm_command, target_triple, requirement):
         nonlocal reader_path
@@ -832,6 +842,7 @@ def _native_symbol_reader_fixture(
             (str(reader_path),)
         )
         assert candidate.admission_error is None
+        assert candidate.reader_family == "llvm"
         return native_symbol_inspection._NativeSymbolReader(
             (candidate,),
             (candidate.cache_identity(), requirement.cache_identity()),
@@ -840,9 +851,9 @@ def _native_symbol_reader_fixture(
 
     def run_nm(command, **kwargs):
         assert reader_path is not None
-        assert command[:2] == [str(reader_path), "-g"]
-        assert len(command) == 3
-        path = Path(command[2])
+        assert command[:3] == [str(reader_path), "-g", "--no-llvm-bc"]
+        assert len(command) == 4
+        path = Path(command[3])
         assert kwargs["cwd"] == path.parent
         rows: list[str] = []
         archive = path.read_bytes().startswith(wasm_archive.AR_MAGIC)
