@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -287,14 +288,16 @@ fn process_is_alive(pid: i32) -> bool {
 }
 
 fn fixture(label: &str) -> Fixture {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_molt-proof-supervisor"));
     let directory = std::env::temp_dir().join(format!(
-        "molt-proof-supervisor-macos-{label}-{}-{}",
+        "molt-proof-supervisor-macos-{label}-{}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(&directory).unwrap();
     Fixture {
