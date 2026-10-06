@@ -75,8 +75,8 @@ def _configure_guard(
     monkeypatch.setenv("MOLT_DIFF_ROOT", str(tmp_path / "diff"))
     monkeypatch.setenv("MOLT_DIFF_TMPDIR", str(tmp_path / "tmp"))
     monkeypatch.setenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", str(process_gb))
-    monkeypatch.setenv("MOLT_DIFF_MAX_TREE_RSS_GB", str(tree_gb))
-    monkeypatch.setenv("MOLT_DIFF_GLOBAL_RSS_LIMIT_GB", str(global_gb))
+    monkeypatch.setenv("MOLT_DIFF_MAX_TOTAL_RSS_GB", str(tree_gb))
+    monkeypatch.setenv("MOLT_DIFF_MAX_GLOBAL_RSS_GB", str(global_gb))
     monkeypatch.setenv("MOLT_DIFF_MEMORY_GUARD_POLL_SEC", "0.02")
     guard_root = tmp_path / "diff" / "memory_guard"
     monkeypatch.setenv(
@@ -275,11 +275,11 @@ def test_memory_guard_sample_interval_env_is_bounded(monkeypatch) -> None:
 
 def test_diff_memory_guard_defaults_are_adaptive(monkeypatch) -> None:
     module = _load_diff_module()
-    monkeypatch.setenv("MOLT_DIFF_TOTAL_MEMORY_GB", "128")
-    monkeypatch.setenv("MOLT_DIFF_MEM_AVAILABLE_GB", "96")
-    monkeypatch.delenv("MOLT_DIFF_GLOBAL_RSS_LIMIT_GB", raising=False)
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "96")
     monkeypatch.delenv("MOLT_DIFF_MAX_GLOBAL_RSS_GB", raising=False)
-    monkeypatch.delenv("MOLT_DIFF_MAX_TREE_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_GLOBAL_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_TOTAL_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_DIFF_MAX_TOTAL_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", raising=False)
 
@@ -293,11 +293,11 @@ def test_diff_memory_guard_defaults_are_adaptive(monkeypatch) -> None:
 
 def test_diff_memory_guard_refresh_accounts_active_tree_rss(monkeypatch) -> None:
     module = _load_diff_module()
-    monkeypatch.setenv("MOLT_DIFF_TOTAL_MEMORY_GB", "128")
-    monkeypatch.setenv("MOLT_DIFF_MEM_AVAILABLE_GB", "46")
-    monkeypatch.delenv("MOLT_DIFF_GLOBAL_RSS_LIMIT_GB", raising=False)
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "46")
     monkeypatch.delenv("MOLT_DIFF_MAX_GLOBAL_RSS_GB", raising=False)
-    monkeypatch.delenv("MOLT_DIFF_MAX_TREE_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_GLOBAL_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_TOTAL_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_DIFF_MAX_TOTAL_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", raising=False)
 
@@ -314,11 +314,11 @@ def test_shared_sentinel_refreshes_limits_from_active_tree_rss(
 ) -> None:
     module = _load_diff_module()
     monkeypatch.setenv("MOLT_DIFF_ROOT", str(tmp_path / "diff"))
-    monkeypatch.setenv("MOLT_DIFF_TOTAL_MEMORY_GB", "128")
-    monkeypatch.setenv("MOLT_DIFF_MEM_AVAILABLE_GB", "46")
-    monkeypatch.delenv("MOLT_DIFF_GLOBAL_RSS_LIMIT_GB", raising=False)
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "46")
     monkeypatch.delenv("MOLT_DIFF_MAX_GLOBAL_RSS_GB", raising=False)
-    monkeypatch.delenv("MOLT_DIFF_MAX_TREE_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_GLOBAL_RSS_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_TOTAL_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_DIFF_MAX_TOTAL_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", raising=False)
     module._prepare_memory_guard_run(module._diff_memory_guard_config())
@@ -370,8 +370,8 @@ def test_shared_sentinel_refreshes_limits_from_active_tree_rss(
 
 def test_diff_scheduler_uses_memory_scaled_job_budget(monkeypatch) -> None:
     module = _load_diff_module()
-    monkeypatch.setenv("MOLT_DIFF_TOTAL_MEMORY_GB", "128")
-    monkeypatch.setenv("MOLT_DIFF_MEM_AVAILABLE_GB", "96")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "96")
     monkeypatch.delenv("MOLT_DIFF_MEM_PER_JOB_GB", raising=False)
     monkeypatch.setattr(module.os, "cpu_count", lambda: 12)
 
@@ -389,8 +389,8 @@ def test_diff_default_jobs_use_guard_budget_under_memory_pressure(
     monkeypatch,
 ) -> None:
     module = _load_diff_module()
-    monkeypatch.setenv("MOLT_DIFF_TOTAL_MEMORY_GB", "128")
-    monkeypatch.setenv("MOLT_DIFF_MEM_AVAILABLE_GB", "32")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "32")
     monkeypatch.delenv("MOLT_DIFF_MEM_PER_JOB_GB", raising=False)
     monkeypatch.setattr(module.os, "cpu_count", lambda: 64)
 
@@ -406,7 +406,7 @@ def test_diff_memory_guard_inherits_shared_parent_overrides(monkeypatch) -> None
     module = _load_diff_module()
     monkeypatch.delenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_DIFF_MAX_TOTAL_RSS_GB", raising=False)
-    monkeypatch.delenv("MOLT_DIFF_GLOBAL_RSS_LIMIT_GB", raising=False)
+    monkeypatch.delenv("MOLT_DIFF_MAX_GLOBAL_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_DIFF_MAX_GLOBAL_RSS_GB", raising=False)
     monkeypatch.setenv("MOLT_MAX_PROCESS_RSS_GB", "7")
     monkeypatch.setenv("MOLT_MAX_TOTAL_RSS_GB", "8")
@@ -428,8 +428,8 @@ def test_diff_memory_guard_family_overrides_parent_controls(monkeypatch) -> None
     monkeypatch.setenv("MOLT_MAX_GLOBAL_RSS_GB", "9")
     monkeypatch.setenv("MOLT_CHILD_RLIMIT_GB", "10")
     monkeypatch.setenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", "3")
-    monkeypatch.setenv("MOLT_DIFF_MAX_TREE_RSS_GB", "4")
-    monkeypatch.setenv("MOLT_DIFF_GLOBAL_RSS_LIMIT_GB", "5")
+    monkeypatch.setenv("MOLT_DIFF_MAX_TOTAL_RSS_GB", "4")
+    monkeypatch.setenv("MOLT_DIFF_MAX_GLOBAL_RSS_GB", "5")
     monkeypatch.setenv("MOLT_DIFF_CHILD_RLIMIT_GB", "6")
 
     config = module._diff_memory_guard_config()
@@ -490,10 +490,8 @@ def test_metadata_stdlib_profile_is_validated(tmp_path: Path) -> None:
 
 def test_diff_rlimit_defaults_to_adaptive_process_budget(monkeypatch) -> None:
     module = _load_diff_module()
-    monkeypatch.setenv("MOLT_DIFF_TOTAL_MEMORY_GB", "128")
-    monkeypatch.setenv("MOLT_DIFF_MEM_AVAILABLE_GB", "96")
-    monkeypatch.delenv("MOLT_DIFF_RLIMIT_GB", raising=False)
-    monkeypatch.delenv("MOLT_DIFF_RLIMIT_MB", raising=False)
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "96")
     monkeypatch.delenv("MOLT_DIFF_CHILD_RLIMIT_GB", raising=False)
 
     config = module._diff_memory_guard_config()
@@ -519,8 +517,8 @@ def test_popen_group_kwargs_applies_child_rlimit(monkeypatch) -> None:
         return
     applied: list[int] = []
     monkeypatch.setenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", "0.5")
-    monkeypatch.setenv("MOLT_DIFF_MAX_TREE_RSS_GB", "1.0")
-    monkeypatch.setenv("MOLT_DIFF_GLOBAL_RSS_LIMIT_GB", "2.0")
+    monkeypatch.setenv("MOLT_DIFF_MAX_TOTAL_RSS_GB", "1.0")
+    monkeypatch.setenv("MOLT_DIFF_MAX_GLOBAL_RSS_GB", "2.0")
     monkeypatch.setenv("MOLT_DIFF_CHILD_RLIMIT_GB", "0.5")
     monkeypatch.setattr(
         module.memory_guard,

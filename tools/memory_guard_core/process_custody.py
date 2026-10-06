@@ -882,7 +882,7 @@ def _inject_guard_memory_contract_env(
         limit_candidates.append(child_rlimit_kb)
     limit_kb = min(limit_candidates)
     _set_env_gb_ceiling(env, "MOLT_BACKEND_MEMORY_AVAILABLE_GB", limit_kb)
-    _set_env_gb_ceiling(env, "MOLT_BACKEND_MAX_RSS_GB", limit_kb)
+    _set_env_gb_ceiling(env, "MOLT_BACKEND_MAX_PROCESS_RSS_GB", limit_kb)
 
 
 def _terminate_single_process_group(pgid: int, *, grace: float) -> bool:

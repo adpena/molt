@@ -163,7 +163,7 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--sysroot",
         help=(
             "Sysroot path for native linking (relative paths resolve under the project "
-            "root; defaults to MOLT_SYSROOT or MOLT_CROSS_SYSROOT when set)."
+            "root; defaults to MOLT_SYSROOT when set)."
         ),
     )
     build_parser.add_argument(

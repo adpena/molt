@@ -371,6 +371,63 @@ class CapabilityManifest(CapabilityPolicy):
 # ---------------------------------------------------------------------------
 
 
+_SIZE_UNITS: dict[str, int] = {
+    "": 1,
+    "B": 1,
+    "K": 1024,
+    "KB": 1024,
+    "KIB": 1024,
+    "M": 1024**2,
+    "MB": 1024**2,
+    "MIB": 1024**2,
+    "G": 1024**3,
+    "GB": 1024**3,
+    "GIB": 1024**3,
+    "T": 1024**4,
+    "TB": 1024**4,
+    "TIB": 1024**4,
+}
+
+
+def parse_human_size(raw: str) -> int:
+    """Parse ``MOLT_RESOURCE_MAX_MEMORY``: a byte count or a size like ``512M``.
+
+    The grammar is the runtime's (``molt_runtime::resource::parse_human_size``):
+    a decimal number with an optional unit ``B``, ``K``/``KB``/``KiB``,
+    ``M``/``MB``/``MiB``, ``G``/``GB``/``GiB`` or ``T``/``TB``/``TiB``,
+    case-insensitive, binary multiples. Raises ``ValueError`` for anything
+    else, including a size that resolves to zero bytes.
+    """
+
+    text = raw.strip()
+    if not text:
+        raise ValueError("must be a positive size, got an empty value")
+    index = 0
+    while index < len(text) and (text[index].isdigit() or text[index] == "."):
+        index += 1
+    number, unit = text[:index].strip(), text[index:].strip().upper()
+    if not number:
+        raise ValueError(
+            f"invalid memory size {raw!r}: expected a number with an optional "
+            "unit like 512M, 2G, or 64MB"
+        )
+    if unit not in _SIZE_UNITS:
+        raise ValueError(
+            f"invalid memory size unit {unit!r} in {raw!r}: expected one of "
+            "B, K/KB, M/MB, G/GB, T/TB"
+        )
+    try:
+        value = float(number)
+    except ValueError as exc:
+        raise ValueError(
+            f"invalid memory size {raw!r}: {number!r} is not a number"
+        ) from exc
+    size = int(value * _SIZE_UNITS[unit])
+    if size <= 0:
+        raise ValueError(f"must be a positive size, got {raw!r} (resolves to 0 bytes)")
+    return size
+
+
 class ManifestError(Exception):
     """Raised when a manifest is structurally invalid."""
 
@@ -386,6 +443,15 @@ def resolve_runtime_policy_from_env(
         for token in env.get("MOLT_CAPABILITIES", "").split(",")
         if token.strip()
     ]
+
+    def optional_size(name: str) -> int | None:
+        raw = env.get(name)
+        if raw is None or not raw.strip():
+            return None
+        try:
+            return parse_human_size(raw)
+        except ValueError as exc:
+            raise ManifestError(f"{name} {exc}") from exc
 
     def optional_int(name: str) -> int | None:
         raw = env.get(name)
@@ -418,7 +484,7 @@ def resolve_runtime_policy_from_env(
     manifest = CapabilityManifest(
         allow=list(dict.fromkeys(explicit)),
         resources=ResourceLimits(
-            max_memory=optional_int("MOLT_RESOURCE_MAX_MEMORY"),
+            max_memory=optional_size("MOLT_RESOURCE_MAX_MEMORY"),
             max_duration=None if duration_ms is None else duration_ms / 1000.0,
             max_allocations=optional_int("MOLT_RESOURCE_MAX_ALLOCATIONS"),
             max_recursion_depth=optional_int("MOLT_RESOURCE_MAX_RECURSION_DEPTH"),

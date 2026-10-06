@@ -13,7 +13,7 @@ from molt_accel.codec import (
 from molt_accel.framing import read_frame, write_frame
 
 
-WIRE = os.environ.get("MOLT_WIRE") or None
+WIRE = os.environ.get("MOLT_WORKER_WIRE") or None
 LIST_ITEMS_CODEC_OUT = os.environ.get("MOLT_STUB_LIST_ITEMS_CODEC_OUT")
 FAIL_ONCE_ENTRY = os.environ.get("MOLT_STUB_FAIL_ONCE_ENTRY")
 FAIL_ONCE_SENTINEL = os.environ.get("MOLT_STUB_FAIL_ONCE_SENTINEL")

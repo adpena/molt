@@ -476,7 +476,7 @@ fn sys_bootstrap_state_ignores_pythonpath_and_includes_module_roots_and_pwd() {
         &[
             ("PYTHONPATH", &py_path),
             ("MOLT_MODULE_ROOTS", &module_roots),
-            ("MOLT_DEV_TRUSTED", "1"),
+            ("MOLT_CAPABILITY_TIER", "full"),
             ("PWD", "/tmp/molt_pwd"),
         ],
         || {
@@ -527,7 +527,7 @@ fn sys_bootstrap_state_omits_cwd_when_dev_untrusted() {
         &[
             ("PYTHONPATH", &py_path),
             ("MOLT_MODULE_ROOTS", ""),
-            ("MOLT_DEV_TRUSTED", "0"),
+            ("MOLT_CAPABILITY_TIER", "none"),
             ("PWD", "/tmp/molt_pwd"),
         ],
         || {
@@ -545,7 +545,7 @@ fn sys_bootstrap_state_normalizes_stdlib_root_for_stdlib_submodule() {
         &[
             ("PYTHONPATH", ""),
             ("MOLT_MODULE_ROOTS", ""),
-            ("MOLT_DEV_TRUSTED", "1"),
+            ("MOLT_CAPABILITY_TIER", "full"),
             ("PWD", "/tmp/molt_pwd"),
         ],
         || {
@@ -568,7 +568,7 @@ fn sys_bootstrap_state_falls_back_to_current_dir_when_pwd_missing() {
         &[
             ("PYTHONPATH", ""),
             ("MOLT_MODULE_ROOTS", ""),
-            ("MOLT_DEV_TRUSTED", "1"),
+            ("MOLT_CAPABILITY_TIER", "full"),
             ("PWD", ""),
         ],
         || {
@@ -608,7 +608,7 @@ fn sys_bootstrap_state_ignores_virtual_env_site_packages_when_present() {
             ("PYTHONPATH", ""),
             ("MOLT_MODULE_ROOTS", ""),
             ("VIRTUAL_ENV", &venv_root_text),
-            ("MOLT_DEV_TRUSTED", "1"),
+            ("MOLT_CAPABILITY_TIER", "full"),
             ("PWD", "/tmp/molt_pwd"),
         ],
         || {
@@ -631,7 +631,7 @@ fn bootstrap_resolve_abspath_uses_bootstrap_pwd_for_relative_paths() {
         &[
             ("PYTHONPATH", ""),
             ("MOLT_MODULE_ROOTS", ""),
-            ("MOLT_DEV_TRUSTED", "1"),
+            ("MOLT_CAPABILITY_TIER", "full"),
             ("PWD", &pwd),
         ],
         || {
@@ -1708,7 +1708,7 @@ fn importlib_find_spec_payload_package_context_prefers_module_root_projection() 
             &[
                 ("PYTHONPATH", ""),
                 ("MOLT_MODULE_ROOTS", &module_roots),
-                ("MOLT_DEV_TRUSTED", "1"),
+                ("MOLT_CAPABILITY_TIER", "full"),
                 ("PWD", &pwd),
             ],
             || {
@@ -1717,7 +1717,7 @@ fn importlib_find_spec_payload_package_context_prefers_module_root_projection() 
                     let bootstrap =
                         sys_bootstrap_state_from_module_file(Some(bootstrap_module_file()));
                     assert!(bootstrap.include_cwd);
-                    assert_eq!(bootstrap.dev_trusted_raw, "1");
+                    assert_eq!(bootstrap.capability_tier_raw, "full");
                     let payload_result = importlib_find_spec_payload(
                         _py,
                         "nativepkg._native",
@@ -1898,7 +1898,7 @@ fn importlib_search_paths_includes_bootstrap_roots_and_stdlib_candidates() {
         &[
             ("PYTHONPATH", ""),
             ("MOLT_MODULE_ROOTS", &module_roots),
-            ("MOLT_DEV_TRUSTED", "1"),
+            ("MOLT_CAPABILITY_TIER", "full"),
             ("PWD", "/tmp/bootstrap_pwd"),
         ],
         || {
@@ -2163,7 +2163,7 @@ fn importlib_bootstrap_payload_reports_resolved_search_paths_and_env_fields() {
             ("PYTHONPATH", "alpha"),
             ("MOLT_MODULE_ROOTS", &module_roots),
             ("VIRTUAL_ENV", ""),
-            ("MOLT_DEV_TRUSTED", "1"),
+            ("MOLT_CAPABILITY_TIER", "full"),
             ("PWD", "/tmp/bootstrap_pwd"),
         ],
         || {

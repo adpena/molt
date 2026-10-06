@@ -585,10 +585,10 @@ def test_run_diff_serial_emits_run_line_before_file_work(
 
 def test_diff_memory_guard_config_clamps_implausible_global_limit(monkeypatch) -> None:
     module = _load_diff_module()
-    monkeypatch.setenv("MOLT_DIFF_TOTAL_MEMORY_GB", "128")
-    monkeypatch.setenv("MOLT_DIFF_MEM_AVAILABLE_GB", "128")
-    monkeypatch.setenv("MOLT_DIFF_GLOBAL_RSS_LIMIT_GB", "5000")
-    monkeypatch.setenv("MOLT_DIFF_MAX_TREE_RSS_GB", "4500")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_TOTAL_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MEMORY_AVAILABLE_GB", "128")
+    monkeypatch.setenv("MOLT_DIFF_MAX_GLOBAL_RSS_GB", "5000")
+    monkeypatch.setenv("MOLT_DIFF_MAX_TOTAL_RSS_GB", "4500")
     monkeypatch.setenv("MOLT_DIFF_MAX_PROCESS_RSS_GB", "4200")
 
     config = module._diff_memory_guard_config()

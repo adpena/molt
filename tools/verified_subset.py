@@ -680,8 +680,6 @@ def run_differential_suites(
     env = _profile_environment(build_profile)
     env["MOLT_DIFF_RESULTS_JSONL"] = str(results_path)
     env["MOLT_DIFF_PYTHON"] = sys.executable
-    env["MOLT_VERIFIED_SUBSET_COORDINATE"] = coordinate.id
-    env["MOLT_DIFF_TRUSTED"] = "0"
     env["MOLT_CAPABILITY_TIER"] = EXPLICIT_CAPABILITY_TIER
     env.pop("MOLT_DIFF_CAPABILITIES", None)
     env.pop("MOLT_CAPABILITIES", None)

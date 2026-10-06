@@ -737,7 +737,7 @@ pub fn clear_resource_state() {
 }
 
 // ---------------------------------------------------------------------------
-// Human-readable size parsing (MOLT_MEMORY_LIMIT front door)
+// Human-readable size parsing (the MOLT_RESOURCE_MAX_MEMORY grammar)
 // ---------------------------------------------------------------------------
 
 /// Error describing why a human-readable size string could not be parsed.
@@ -758,8 +758,8 @@ impl fmt::Display for SizeParseError {
 /// `"1024"`, or `"1.5GiB"` into a byte count.
 ///
 /// This mirrors `parse_size` in `src/molt/capability_manifest.py` so the
-/// user-facing `MOLT_MEMORY_LIMIT` front door normalizes into the SAME
-/// `ResourceLimits.max_memory` field as `MOLT_RESOURCE_MAX_MEMORY` — there is
+/// human-readable spelling of `MOLT_RESOURCE_MAX_MEMORY` normalizes into the
+/// SAME `ResourceLimits.max_memory` field as the raw byte count — there is
 /// exactly one enforcement path. Units are base-1024 (a bare `K`/`M`/`G`
 /// suffix is treated identically to `KB`/`MB`/`GB`, matching common CLI
 /// ergonomics; an explicit `KiB`/`MiB`/`GiB` is also accepted). A bare integer

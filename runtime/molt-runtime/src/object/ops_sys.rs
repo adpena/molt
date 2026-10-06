@@ -597,38 +597,21 @@ where
 
 /// Resolve the memory limit from the two coherent env sources.
 ///
-/// `MOLT_MEMORY_LIMIT` is the ergonomic, human-readable front door (`"512M"`,
-/// `"2G"`); `MOLT_RESOURCE_MAX_MEMORY` is the canonical raw-byte field emitted
-/// by the capability manifest. Both resolve to the SAME
+/// `MOLT_RESOURCE_MAX_MEMORY` is the one memory cap: the capability manifest
+/// emits it as a raw byte count, and a person may write a human-readable size
+/// (`"512M"`, `"2G"`, `"1.5GiB"`). Both spellings resolve into the SAME
 /// `ResourceLimits.max_memory` field — there is exactly one enforcement path.
-/// When both are set the user-facing alias wins and a one-line override notice
-/// is printed. A misconfigured value fails loudly (never silently ignored).
+/// A misconfigured value fails loudly (never silently ignored).
 fn resolve_memory_limit_from_env() -> Result<Option<usize>, String> {
-    let alias = match std::env::var("MOLT_MEMORY_LIMIT") {
-        Ok(raw) => Some(
+    match std::env::var("MOLT_RESOURCE_MAX_MEMORY") {
+        Ok(raw) => Ok(Some(
             crate::resource::parse_human_size(&raw)
-                .map_err(|e| format!("MOLT_MEMORY_LIMIT: {e}"))?,
-        ),
-        Err(std::env::VarError::NotPresent) => None,
+                .map_err(|e| format!("MOLT_RESOURCE_MAX_MEMORY: {e}"))?,
+        )),
+        Err(std::env::VarError::NotPresent) => Ok(None),
         Err(std::env::VarError::NotUnicode(_)) => {
-            return Err("MOLT_MEMORY_LIMIT must be valid UTF-8".to_string());
+            Err("MOLT_RESOURCE_MAX_MEMORY must be valid UTF-8".to_string())
         }
-    };
-    let canonical = parse_positive_integer_resource_env::<usize>("MOLT_RESOURCE_MAX_MEMORY")?;
-
-    match (alias, canonical) {
-        (Some(alias_bytes), Some(canonical_bytes)) => {
-            if alias_bytes != canonical_bytes {
-                eprintln!(
-                    "molt: MOLT_MEMORY_LIMIT ({alias_bytes} bytes) overrides \
-                     MOLT_RESOURCE_MAX_MEMORY ({canonical_bytes} bytes)"
-                );
-            }
-            Ok(Some(alias_bytes))
-        }
-        (Some(alias_bytes), None) => Ok(Some(alias_bytes)),
-        (None, Some(canonical_bytes)) => Ok(Some(canonical_bytes)),
-        (None, None) => Ok(None),
     }
 }
 
@@ -685,8 +668,8 @@ fn resource_limits_from_env() -> Result<Option<crate::resource::ResourceLimits>,
 /// Initialize the resource tracker from environment variables set by the
 /// capability manifest. Called during runtime startup.
 ///
-/// Reads (raw-byte canonical fields, all positive integers):
-///   MOLT_MEMORY_LIMIT (human-size alias for the memory cap),
+/// Reads (raw-byte canonical fields, all positive integers; the memory cap
+/// also accepts a human-readable size):
 ///   MOLT_RESOURCE_MAX_MEMORY, MOLT_RESOURCE_MAX_DURATION_MS,
 ///   MOLT_RESOURCE_MAX_ALLOCATIONS, MOLT_RESOURCE_MAX_RECURSION_DEPTH,
 ///   MOLT_RESOURCE_MAX_OPERATION_RESULT and the per-op caps
@@ -731,7 +714,6 @@ mod runtime_resource_env_tests {
     use std::time::Duration;
 
     const RESOURCE_ENV_KEYS: &[&str] = &[
-        "MOLT_MEMORY_LIMIT",
         "MOLT_RESOURCE_MAX_MEMORY",
         "MOLT_RESOURCE_MAX_DURATION_MS",
         "MOLT_RESOURCE_MAX_ALLOCATIONS",
@@ -820,10 +802,10 @@ mod runtime_resource_env_tests {
     }
 
     #[test]
-    fn molt_memory_limit_alias_parses_human_size() {
+    fn resource_max_memory_parses_human_size() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         clear_resource_env();
-        unsafe { std::env::set_var("MOLT_MEMORY_LIMIT", "64M") };
+        unsafe { std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", "64M") };
 
         let limits = resource_limits_from_env().unwrap().unwrap();
 
@@ -832,32 +814,27 @@ mod runtime_resource_env_tests {
     }
 
     #[test]
-    fn molt_memory_limit_alias_overrides_canonical_field() {
-        // When both are set, the user-facing alias wins (single source of
-        // truth; the alias resolves into the SAME max_memory field).
+    fn resource_max_memory_parses_raw_bytes_the_manifest_emits() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         clear_resource_env();
-        unsafe {
-            std::env::set_var("MOLT_MEMORY_LIMIT", "128M");
-            std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", "1048576");
-        }
+        unsafe { std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", "1048576") };
 
         let limits = resource_limits_from_env().unwrap().unwrap();
 
         clear_resource_env();
-        assert_eq!(limits.max_memory, Some(128 * 1024 * 1024));
+        assert_eq!(limits.max_memory, Some(1024 * 1024));
     }
 
     #[test]
-    fn molt_memory_limit_alias_rejects_garbage() {
+    fn resource_max_memory_rejects_garbage() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         clear_resource_env();
-        unsafe { std::env::set_var("MOLT_MEMORY_LIMIT", "not-a-size") };
+        unsafe { std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", "not-a-size") };
 
         let err = resource_limits_from_env().unwrap_err();
 
         clear_resource_env();
-        assert!(err.contains("MOLT_MEMORY_LIMIT"));
+        assert!(err.contains("MOLT_RESOURCE_MAX_MEMORY"));
     }
 
     #[test]

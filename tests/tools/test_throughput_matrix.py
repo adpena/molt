@@ -66,7 +66,6 @@ def test_diff_matrix_inherits_adaptive_child_rlimit_by_default(
             stderr_tail="",
         )
 
-    monkeypatch.delenv("MOLT_DIFF_RLIMIT_GB", raising=False)
     monkeypatch.delenv("MOLT_DIFF_CHILD_RLIMIT_GB", raising=False)
     monkeypatch.setattr(module, "_run_command", fake_run_command)
 
@@ -75,7 +74,6 @@ def test_diff_matrix_inherits_adaptive_child_rlimit_by_default(
     assert len(captured_envs) == 1
     env = captured_envs[0]
     assert env["MOLT_DIFF_MEASURE_RSS"] == "1"
-    assert "MOLT_DIFF_RLIMIT_GB" not in env
     assert "MOLT_DIFF_CHILD_RLIMIT_GB" not in env
 
 
@@ -106,7 +104,6 @@ def test_diff_matrix_explicit_child_rlimit_is_opt_in(
             stderr_tail="",
         )
 
-    monkeypatch.delenv("MOLT_DIFF_RLIMIT_GB", raising=False)
     monkeypatch.delenv("MOLT_DIFF_CHILD_RLIMIT_GB", raising=False)
     monkeypatch.setattr(module, "_run_command", fake_run_command)
 
@@ -115,5 +112,4 @@ def test_diff_matrix_explicit_child_rlimit_is_opt_in(
     assert len(captured_envs) == 1
     env = captured_envs[0]
     assert env["MOLT_DIFF_MEASURE_RSS"] == "1"
-    assert "MOLT_DIFF_RLIMIT_GB" not in env
     assert env["MOLT_DIFF_CHILD_RLIMIT_GB"] == "5.5"

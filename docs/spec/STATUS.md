@@ -576,9 +576,9 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   finalizer blockers before Molt can claim complete finalizer parity.
 - Configurable runtime memory protection is supported and opt-in. A compiled
   binary caps its own memory through a single `ResourceLimits` enforcement path:
-  the human-readable `MOLT_MEMORY_LIMIT` env (e.g. `64M`, `2G`) is an alias that
-  normalizes into the same `max_memory` field as the manifest-emitted
-  `MOLT_RESOURCE_MAX_MEMORY`, installed via the global tracker factory so worker
+  `MOLT_RESOURCE_MAX_MEMORY` accepts a human-readable size (e.g. `64M`, `2G`)
+  or the raw byte count the manifest emits, normalized into the one
+  `max_memory` field, installed via the global tracker factory so worker
   threads inherit it. Enforcement is two-layer: the precise in-VM
   `LimitedTracker` (Layer 1, cross-target, deterministic, uncatchable
   `MemoryError`) plus an OS-level committed-memory backstop (Layer 2: Linux

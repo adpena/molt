@@ -182,11 +182,7 @@ def _max_slots_from_env(
     *,
     plan: resource_pressure.ResourcePressurePlan | None = None,
 ) -> int:
-    explicit = (
-        env.get("MOLT_COMPILE_MAX_CONCURRENT_BUILDS")
-        or env.get("MOLT_COMPILE_GUARD_MAX_SLOTS")
-        or env.get("MOLT_MAX_CONCURRENT_AGENTS")
-    )
+    explicit = env.get("MOLT_COMPILE_GUARD_MAX_SLOTS")
     if explicit is not None:
         return _parse_int(explicit, DEFAULT_MAX_COMPILE_SLOTS, min_value=1)
     resolved_plan = plan or _resource_pressure_plan(env)

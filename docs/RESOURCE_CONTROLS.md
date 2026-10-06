@@ -149,27 +149,23 @@ the host. This is **opt-in** (off by default — no limit is installed unless on
 is configured) and resolves through the single `ResourceLimits` path, so there
 is exactly one enforcement model with two layered backstops.
 
-### Front door: `MOLT_MEMORY_LIMIT`
+### Setting the cap: `MOLT_RESOURCE_MAX_MEMORY`
 
-`MOLT_MEMORY_LIMIT` is the ergonomic, human-readable alias for the memory cap.
-It accepts sizes like `512M`, `2G`, `64MB`, `1.5GiB`, or a bare byte count, and
-resolves into the **same** `ResourceLimits.max_memory` field as the canonical
-`MOLT_RESOURCE_MAX_MEMORY` (which the capability manifest emits). It is **not** a
-parallel enforcement path.
+`MOLT_RESOURCE_MAX_MEMORY` is the one memory cap. The capability manifest
+emits it as a raw byte count; a person may write a human-readable size like
+`512M`, `2G`, `64MB`, or `1.5GiB`. Both spellings resolve into the **same**
+`ResourceLimits.max_memory` field. There is no second name and no parallel
+enforcement path.
 
 ```bash
 # Cap the compiled binary at 64 MiB. A program that allocates past it gets a
 # (uncatchable) MemoryError from the in-VM tracker instead of OOM-killing the host.
-MOLT_MEMORY_LIMIT=64M ./my_app
+MOLT_RESOURCE_MAX_MEMORY=64M ./my_app
 ```
 
-Resolution / precedence:
-
-- If both `MOLT_MEMORY_LIMIT` and `MOLT_RESOURCE_MAX_MEMORY` are set, the
-  user-facing alias wins and a one-line override notice is printed to stderr.
-- A malformed value (e.g. `MOLT_MEMORY_LIMIT=not-a-size`, `0M`, `-5M`) is a
-  configuration error: the runtime reports it and aborts at init rather than
-  silently ignoring the limit.
+- A malformed value (e.g. `MOLT_RESOURCE_MAX_MEMORY=not-a-size`, `0M`, `-5M`)
+  is a configuration error: the runtime reports it and aborts at init rather
+  than silently ignoring the limit.
 - With neither set, behavior is unchanged: no tracker and no OS backstop are
   installed (the zero-overhead `UnlimitedTracker` default remains).
 
@@ -198,8 +194,8 @@ cap (a per-thread `set_tracker` alone would leave them unlimited).
      binary's reservation footprint, so the next mapping fails and main-stack
      growth becomes SIGSEGV before the program allocates anything.
    - **Child processes:** spawned children inherit the same budget (limit plus
-     headroom) as a hard `RLIMIT_DATA` cap, tightened by any explicit
-     `MOLT_CHILD_RLIMIT_BYTES` / `MOLT_CHILD_RLIMIT_GB`.
+     headroom) as a hard `RLIMIT_DATA` cap, tightened by an explicit
+     `MOLT_CHILD_RLIMIT_GB`.
    - **macOS / Windows:** no committed-memory rlimit exists (macOS's
      `RLIMIT_DATA` governs only `brk`), so the in-VM tracker (Layer 1) is the
      sole enforcement. `install_memory_backstop` honestly reports `None`.
@@ -275,11 +271,11 @@ layer.
 ## Source Files
 
 - Trait, `ResourceLimits` (single source of truth), `LimitedTracker`,
-  `parse_human_size` (the `MOLT_MEMORY_LIMIT` front door), and
+  `parse_human_size` (the `MOLT_RESOURCE_MAX_MEMORY` size grammar), and
   `install_memory_backstop` (Linux `RLIMIT_DATA`):
   `runtime/molt-runtime-resource/src/lib.rs` (re-exported as `molt_runtime::resource`)
-- Env parsing + `molt_runtime_init_resources` (resolves `MOLT_MEMORY_LIMIT` /
-  `MOLT_RESOURCE_MAX_*` and installs both layers):
+- Env parsing + `molt_runtime_init_resources` (resolves `MOLT_RESOURCE_MAX_*`
+  and installs both layers):
   `runtime/molt-runtime/src/object/ops_sys.rs`
 - Child-process limit inheritance (per-op caps + memory):
   `runtime/molt-runtime/src/async_rt/process/child_resources.rs`

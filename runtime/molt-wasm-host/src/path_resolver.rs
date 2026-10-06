@@ -261,8 +261,7 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
 }
 
 fn resolve_exports_path() -> Option<PathBuf> {
-    if let Ok(path) = env::var("MOLT_WASM_DB_EXPORTS").or_else(|_| env::var("MOLT_WORKER_EXPORTS"))
-    {
+    if let Ok(path) = env::var("MOLT_WORKER_EXPORTS") {
         let path = PathBuf::from(path);
         if path.exists() {
             return Some(path);
@@ -280,22 +279,22 @@ fn resolve_exports_path() -> Option<PathBuf> {
 }
 
 pub(super) fn resolve_worker_cmd() -> Result<Vec<String>> {
-    if let Ok(cmd) = env::var("MOLT_WASM_DB_WORKER_CMD").or_else(|_| env::var("MOLT_WORKER_CMD")) {
+    if let Ok(cmd) = env::var("MOLT_WORKER_CMD") {
         let parts = cmd
             .split_whitespace()
             .map(|s| s.to_string())
             .collect::<Vec<_>>();
         if parts.is_empty() {
-            bail!("MOLT_WASM_DB_WORKER_CMD is empty");
+            bail!("MOLT_WORKER_CMD is empty");
         }
         return Ok(parts);
     }
     let worker = find_in_path("molt-worker").or_else(|| find_in_path("molt_worker"));
     let Some(worker) = worker else {
-        bail!("molt-worker not found; set MOLT_WASM_DB_WORKER_CMD or MOLT_WORKER_CMD");
+        bail!("molt-worker not found; set MOLT_WORKER_CMD");
     };
     let exports_path = resolve_exports_path()
-        .context("molt-worker exports manifest not found (set MOLT_WASM_DB_EXPORTS)")?;
+        .context("molt-worker exports manifest not found (set MOLT_WORKER_EXPORTS)")?;
     let mut cmd = vec![
         worker.to_string_lossy().to_string(),
         "--stdio".into(),
@@ -310,8 +309,7 @@ pub(super) fn resolve_worker_cmd() -> Result<Vec<String>> {
 }
 
 pub(super) fn resolve_timeout_ms() -> u64 {
-    if let Ok(raw) =
-        env::var("MOLT_WASM_DB_TIMEOUT_MS").or_else(|_| env::var("MOLT_DB_QUERY_TIMEOUT_MS"))
+    if let Ok(raw) = env::var("MOLT_WASM_DB_TIMEOUT_MS")
         && let Ok(val) = raw.parse::<u64>()
     {
         return val;

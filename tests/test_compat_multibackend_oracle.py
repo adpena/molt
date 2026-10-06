@@ -539,7 +539,6 @@ def test_native_and_wasm_receive_one_explicit_untrusted_test_context(
     )
     monkeypatch.setenv("MOLT_CAPABILITY_TIER", "full")
     monkeypatch.setenv("MOLT_CAPABILITIES", "poison.inherited")
-    monkeypatch.delenv("MOLT_DIFF_TRUSTED", raising=False)
     registry, native_contexts = install_fake_registry(
         {
             "native": compat_backends.BackendResult("42\n", "", 0),

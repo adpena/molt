@@ -189,9 +189,8 @@ def _resolve_sysroot_cached(
     project_root_str: str,
     sysroot: str | None,
     env_sysroot: str | None,
-    env_cross_sysroot: str | None,
 ) -> Path | None:
-    raw = sysroot or env_sysroot or env_cross_sysroot
+    raw = sysroot or env_sysroot
     if not raw:
         return None
     project_root = Path(project_root_str)
@@ -206,7 +205,6 @@ def _resolve_sysroot(project_root: Path, sysroot: str | None) -> Path | None:
         os.fspath(project_root),
         sysroot,
         os.environ.get("MOLT_SYSROOT"),
-        os.environ.get("MOLT_CROSS_SYSROOT"),
     )
 
 

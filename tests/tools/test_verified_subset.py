@@ -481,7 +481,6 @@ def test_run_differential_suites_uses_projected_file_schedule(
     )
     projection = _one_test_projection(coordinate)
     captured: dict[str, object] = {}
-    monkeypatch.setenv("MOLT_DIFF_TRUSTED", "1")
     monkeypatch.setenv("MOLT_CAPABILITY_TIER", "full")
     monkeypatch.setenv("MOLT_DIFF_CAPABILITIES", "all")
     monkeypatch.setenv("MOLT_CAPABILITIES", "all")
@@ -522,7 +521,6 @@ def test_run_differential_suites_uses_projected_file_schedule(
     env = captured["kwargs"]["env"]
     assert env["MOLT_DIFF_RESULTS_JSONL"] == str(results)
     assert env["MOLT_DIFF_PYTHON"] == verified_subset.sys.executable
-    assert env["MOLT_DIFF_TRUSTED"] == "0"
     assert env["MOLT_CAPABILITY_TIER"] == "none"
     assert "MOLT_DIFF_CAPABILITIES" not in env
     assert "MOLT_CAPABILITIES" not in env

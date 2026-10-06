@@ -887,7 +887,7 @@ def main() -> None:
     accel_config = {
         "client_mode": env.get("MOLT_ACCEL_CLIENT_MODE"),
         "pool_size": env.get("MOLT_ACCEL_POOL_SIZE"),
-        "wire": env.get("MOLT_WORKER_WIRE") or env.get("MOLT_WIRE"),
+        "wire": env.get("MOLT_WORKER_WIRE"),
     }
     if any(value for value in accel_config.values() if value is not None):
         artifact["molt_accel"] = accel_config

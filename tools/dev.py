@@ -19,9 +19,6 @@ if str(ROOT) not in sys.path:
 
 from tools import harness_memory_guard  # noqa: E402
 from tools.import_file import load_module_from_path  # noqa: E402
-from molt._host_capabilities_generated import (  # noqa: E402
-    MAXIMUM_BUILTIN_CAPABILITY_TIER,
-)
 
 
 def _load_dx_module():
@@ -147,13 +144,6 @@ def run_uv(
     run_env = _normalized_uv_run_env(base_env, python=python)
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", run_env)
     _check_call_guarded(cmd, run_env, limits=limits)
-
-
-def _apply_dev_trusted(env: dict[str, str]) -> None:
-    raw = env.get("MOLT_DEV_TRUSTED", "").strip().lower()
-    if raw and raw in {"0", "false", "no", "off"}:
-        return
-    env.setdefault("MOLT_CAPABILITY_TIER", MAXIMUM_BUILTIN_CAPABILITY_TIER)
 
 
 def _parse_test_runner_flags(args: list[str]) -> tuple[list[str], bool, str | None]:
@@ -494,8 +484,9 @@ def main() -> None:
         _require_project_python(env)
         _run_dx_command("format-check", env, tty=use_tty)
     elif cmd[0] == "test":
+        # The ambient capability tier is never raised here: tests that need
+        # capabilities declare them, so local runs match CI.
         env = os.environ.copy()
-        _apply_dev_trusted(env)
         test_cmd_args, random_order, random_seed = _parse_test_runner_flags(cmd[1:])
         if test_cmd_args:
             raise RuntimeError(

@@ -93,18 +93,13 @@ fn env_lock() -> &'static Mutex<()> {
 }
 
 const CACHE_ENV_NAMES: &[&str] = &[
-    "MOLT_BACKEND_TIR_CACHE_MEMORY_BYTES",
     "MOLT_BACKEND_TIR_CACHE_MEMORY_MB",
     "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
     "MOLT_CLI_MEMORY_AVAILABLE_GB",
-    "MOLT_CLI_MEM_AVAILABLE_GB",
     "MOLT_MEMORY_AVAILABLE_GB",
-    "MOLT_MEM_AVAILABLE_GB",
     "MOLT_BACKEND_MEMORY_RESERVE_GB",
     "MOLT_CLI_MEMORY_RESERVE_GB",
-    "MOLT_CLI_MEM_RESERVE_GB",
     "MOLT_MEMORY_RESERVE_GB",
-    "MOLT_MEM_RESERVE_GB",
 ];
 
 struct EnvRestore {
@@ -313,12 +308,12 @@ fn memory_cache_does_not_retain_oversized_artifacts() {
 fn explicit_memory_cache_env_overrides_adaptive_default() {
     let _guard = env_lock().lock().expect("env lock");
     let _env = EnvRestore::apply(&[
-        ("MOLT_BACKEND_TIR_CACHE_MEMORY_BYTES", "12345"),
+        ("MOLT_BACKEND_TIR_CACHE_MEMORY_MB", "3"),
         ("MOLT_MEMORY_AVAILABLE_GB", "1"),
         ("MOLT_MEMORY_RESERVE_GB", "1"),
     ]);
     let limit = default_memory_cache_limit_bytes();
-    assert_eq!(limit, 12345);
+    assert_eq!(limit, 3 * 1024 * 1024);
 }
 
 #[test]

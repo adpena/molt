@@ -852,7 +852,6 @@ MOLT_PERF_PROFILE=native-arch \
 uv run --python 3.14 python3 tools/bench.py --compare codon
 ```
 
-Equivalent toggle: `MOLT_NATIVE_ARCH_PERF=1`.
 When enabled for `target=native`, Molt appends `-C target-cpu=native` to `RUSTFLAGS`.
 
 ## Compile Throughput Tuning

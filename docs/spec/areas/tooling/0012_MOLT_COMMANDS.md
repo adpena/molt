@@ -85,7 +85,7 @@ Environment defaults:
 - `MOLT_HOME` (default `~/.molt`): base directory for Molt state, including build artifacts under `build/`.
 - `MOLT_BIN` (default `$MOLT_HOME/bin`): default directory for compiled native binaries.
 - `MOLT_CACHE` (default OS cache, e.g. `~/Library/Caches/molt` or `$XDG_CACHE_HOME/molt`): IR artifact cache.
-- `MOLT_SYSROOT` / `MOLT_CROSS_SYSROOT`: default sysroot path for native linking (overridden by `--sysroot`).
+- `MOLT_SYSROOT`: default sysroot path for native linking (overridden by `--sysroot`).
 - `MOLT_CARGO_TIMEOUT`: optional timeout in seconds for cargo build steps (backend/runtime/wasm).
 - `MOLT_BACKEND_TIMEOUT`: optional timeout in seconds for backend compilation (IR -> object/wasm).
 - `MOLT_LINK_TIMEOUT`: optional timeout in seconds for native linker invocations (cc/zig).

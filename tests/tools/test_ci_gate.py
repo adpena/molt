@@ -157,9 +157,7 @@ def test_check_env_seeds_canonical_artifact_roots(monkeypatch) -> None:
     for key in (
         "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
         "MOLT_PREFER_EXTERNAL_ARTIFACTS",
-        "MOLT_USE_EXTERNAL_ARTIFACTS",
         "MOLT_EXTERNAL_ARTIFACT_ROOTS",
-        "MOLT_EXTERNAL_ARTIFACT_CANDIDATES",
         "MOLT_ALLOW_C_DRIVE_ARTIFACTS",
     ):
         monkeypatch.delenv(key, raising=False)

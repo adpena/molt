@@ -99,13 +99,13 @@ from tools.memory_guard_core.memory_limits import (  # noqa: E402
     _float_env as _float_env,
     _gb_from_bytes as _gb_from_bytes,
     _linux_meminfo_bytes as _linux_meminfo_bytes,
-    _normalize_env_prefix as _normalize_env_prefix,
     _parse_darwin_vm_stat_available_bytes as _parse_darwin_vm_stat_available_bytes,
     _prefixed_names as _prefixed_names,
     adaptive_memory_budget as adaptive_memory_budget,
     available_memory_bytes as available_memory_bytes,
     child_rlimit_kb_from_gb as child_rlimit_kb_from_gb,
     default_child_rlimit_gb as default_child_rlimit_gb,
+    normalize_env_prefix as normalize_env_prefix,
     max_global_rss_kb_from_gb as max_global_rss_kb_from_gb,
     max_rss_kb_from_gb as max_rss_kb_from_gb,
     physical_memory_bytes as physical_memory_bytes,
@@ -439,10 +439,7 @@ def _temporary_artifact_descendant_closure(
 
 def termination_wait_seconds(env: Mapping[str, str] | None = None) -> float:
     source = os.environ if env is None else env
-    for name in (
-        "MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC",
-        "MOLT_MEMORY_GUARD_TERMINATE_WAIT_SEC",
-    ):
+    for name in ("MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC",):
         raw = source.get(name, "").strip()
         if not raw:
             continue

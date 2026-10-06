@@ -24,7 +24,7 @@ export MOLT_DIFF_TMPDIR=$PWD/tmp
 export UV_CACHE_DIR=$PWD/.uv-cache
 export TMPDIR=$PWD/tmp
 # RSS measurement and adaptive memory limits are default-on; set
-# MOLT_DIFF_MEASURE_RSS=0 or MOLT_DIFF_RLIMIT_GB=0 only for explicit local
+# MOLT_DIFF_MEASURE_RSS=0 or MOLT_DIFF_CHILD_RLIMIT_GB=0 only for explicit local
 # investigations.
 ```
 

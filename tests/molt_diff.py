@@ -34,7 +34,6 @@ if str(_SRC_ROOT) not in sys.path:
 from tools.batch_compile_client import BatchCompileServerClient  # noqa: E402  (must follow the sys.path self-bootstrap above)
 from molt._host_capabilities_generated import (  # noqa: E402
     EXPLICIT_CAPABILITY_TIER,
-    MAXIMUM_BUILTIN_CAPABILITY_TIER,
 )
 from tools import (  # noqa: E402  (must follow the sys.path self-bootstrap above)
     harness_memory_guard,
@@ -1123,11 +1122,6 @@ def _diff_log_passes() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-def _diff_trusted_default() -> bool:
-    raw = os.environ.get("MOLT_DIFF_TRUSTED", "").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
-
-
 def _backend_execution_context(
     file_path: str,
     python_exe: PythonCommand,
@@ -1138,11 +1132,9 @@ def _backend_execution_context(
 ) -> compat_backends.BackendExecutionContext:
     resolved_target = _resolve_molt_target_python(python_exe, target_python)
     env = os.environ.copy()
-    env["MOLT_CAPABILITY_TIER"] = (
-        MAXIMUM_BUILTIN_CAPABILITY_TIER
-        if _diff_trusted_default()
-        else EXPLICIT_CAPABILITY_TIER
-    )
+    # Diff runs start at the explicit tier; a test that needs capabilities
+    # declares them in its metadata, so local runs match CI.
+    env["MOLT_CAPABILITY_TIER"] = EXPLICIT_CAPABILITY_TIER
     env.update(_collect_env_overrides(file_path))
     metadata_error = _apply_metadata_env_overrides(
         file_path,
@@ -1725,18 +1717,9 @@ def _diff_memory_guard_stream_target(mode: str) -> io.TextIOBase | None:
 
 
 def _memory_limit_bytes() -> int | None:
-    gb = _parse_float_env("MOLT_DIFF_RLIMIT_GB")
-    mb = _parse_float_env("MOLT_DIFF_RLIMIT_MB")
-    if gb is not None:
-        if gb <= 0:
-            return None
-        return int(gb * 1024 * 1024 * 1024)
-    if mb is not None:
-        if mb <= 0:
-            return None
-        return int(mb * 1024 * 1024)
-    # Default to the adaptive child RSS budget. Recursive process/tree/global
-    # sampling remains authoritative; this is only the matching kernel backstop.
+    # The adaptive child RSS budget (MOLT_DIFF_CHILD_RLIMIT_GB overrides it).
+    # Recursive process/tree/global sampling remains authoritative; this is
+    # only the matching kernel backstop.
     child_rlimit_kb = _diff_memory_guard_config().child_rlimit_kb
     return None if child_rlimit_kb is None else child_rlimit_kb * 1024
 
@@ -1745,10 +1728,7 @@ _MEM_LIMIT_APPLIED = False
 
 
 def _diff_fail_rss_kb() -> int | None:
-    raw = (
-        os.environ.get("MOLT_DIFF_FAIL_RSS_KB", "").strip()
-        or os.environ.get("MOLT_DIFF_MAX_RSS_KB", "").strip()
-    )
+    raw = os.environ.get("MOLT_DIFF_MAX_RSS_KB", "").strip()
     if not raw:
         return None
     try:
@@ -3224,11 +3204,7 @@ def _run_molt_owned(
     # MOLT_DIFF_CARGO_TARGET_DIR) instead of inheriting unrelated shell state.
     env["CARGO_TARGET_DIR"] = str(layout.cargo_target_root)
     if execution_context is None:
-        env["MOLT_CAPABILITY_TIER"] = (
-            MAXIMUM_BUILTIN_CAPABILITY_TIER
-            if _diff_trusted_default()
-            else EXPLICIT_CAPABILITY_TIER
-        )
+        env["MOLT_CAPABILITY_TIER"] = EXPLICIT_CAPABILITY_TIER
         env.update(_collect_env_overrides(file_path))
         metadata_error = _apply_metadata_env_overrides(file_path, env)
         if metadata_error is not None:

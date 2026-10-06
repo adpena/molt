@@ -1558,16 +1558,16 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
 - NON-NEGOTIABLE: Differential memory profiling is default-on; set `MOLT_DIFF_MEASURE_RSS=0` only for an explicit local investigation.
 - NON-NEGOTIABLE: Treat memory blowups as failures; if RSS climbs rapidly or threatens system stability, terminate the diff run early (kill the harness) and record the abort plus last-known RSS metrics in [tests/differential/INDEX.md](tests/differential/INDEX.md).
 - NON-NEGOTIABLE: Use the adaptive diff memory guard and adaptive per-process OS rlimit; direct pytest and harnessed test runs must not bypass RSS custody, and cleanup must never kill Claude, Codex, or other host control-plane process groups.
-  - macOS/Linux: let `tests/molt_diff.py` apply its adaptive child limit by default; use `MOLT_DIFF_RLIMIT_GB`/`MOLT_DIFF_RLIMIT_MB` only for a deliberate narrower cap, or `MOLT_DIFF_RLIMIT_GB=0` only for an explicit local investigation.
+  - macOS/Linux: let `tests/molt_diff.py` apply its adaptive child limit by default; use `MOLT_DIFF_CHILD_RLIMIT_GB` only for a deliberate narrower cap, or `MOLT_DIFF_CHILD_RLIMIT_GB=0` only for an explicit local investigation.
   - If the adaptive limit is hit or memory pressure occurs, inspect the guard telemetry, reduce parallelism (`--jobs 2` or `--jobs 1`) only as a containment step, and fix the underlying allocation growth.
 - Differential artifacts can be redirected to an external volume to avoid local disk pressure.
   - Set `MOLT_DIFF_ROOT` to an absolute path; all per-test build artifacts, caches, and temp dirs will live under it.
   - Optional: set `MOLT_DIFF_TMPDIR` to override only the temp root.
   - Optional: set `MOLT_CACHE` to a shared path to reuse Molt codegen artifacts across tests (dramatically faster on large suites).
   - Optional: set `MOLT_DIFF_KEEP=1` to preserve per-test artifacts after each run.
-  - Optional: set `MOLT_DIFF_TRUSTED=1` to force trusted mode for diff runs (defaults to trusted unless `MOLT_DEV_TRUSTED=0`).
+  - Diff runs start at the explicit capability tier (`MOLT_CAPABILITY_TIER=none`, as in CI); a test that needs capabilities declares them in its metadata.
   - Default to a shorter timeout unless a test is known to be slow: `MOLT_DIFF_TIMEOUT=180` (bump per-test only when needed).
-  - Optional: set `MOLT_DIFF_RLIMIT_GB=<n>` or `MOLT_DIFF_RLIMIT_MB=<n>` to override the adaptive per-process OS rlimit; set `MOLT_DIFF_RLIMIT_GB=0` only for an explicit local investigation.
+  - Optional: set `MOLT_DIFF_CHILD_RLIMIT_GB=<n>` to override the adaptive per-process OS rlimit; set `MOLT_DIFF_CHILD_RLIMIT_GB=0` only for an explicit local investigation.
   - Optional: set `MOLT_DIFF_MEM_PER_JOB_GB=<n>` to tune auto-parallelism by scheduler budget (default: adaptive cumulative budget divided across CPU capacity, capped below the process-tree kill ceiling).
   - Optional: set `MOLT_DIFF_MAX_JOBS=<n>` to hard-cap the auto-selected job count.
   - Optional: set `MOLT_DIFF_ORDER=auto|name|size-asc|size-desc` to control scheduling order (default: auto).
@@ -1597,7 +1597,7 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
     `MOLT_DIFF_TIMEOUT=180 MOLT_DIFF_GLOB='**/*.py' uv run --python 3.12 python -u tests/molt_diff.py --jobs 8 --live --log-file ${MOLT_DIFF_TMPDIR:?}/diff_live.log --log-aggregate ${MOLT_DIFF_TMPDIR:?}/diff_full.log --log-dir ${MOLT_DIFF_TMPDIR:?}/diff_logs tests/differential`
   - Example (monitor live log): `tail -f ${MOLT_DIFF_TMPDIR:?}/diff_live.log`
   - Example (monitor aggregate log): `tail -f ${MOLT_DIFF_TMPDIR:?}/diff_full.log`
-  - Disable trusted default: `MOLT_DEV_TRUSTED=0 uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic`.
+  - Run a deliberate trusted investigation: `MOLT_CAPABILITY_TIER=full uv run --python 3.12 python -u tests/molt_diff.py tests/differential/basic`.
   - Optional speed workflow: prebuild runtime (`cargo build --release --package molt-runtime`), then do a two-pass diff run (no RSS first, RSS only for failures).
   - Always update [tests/differential/INDEX.md](tests/differential/INDEX.md) after diff runs:
     - Record the run date/time, host Python (`uv run --python 3.12/3.13/3.14`), totals, and failure list.

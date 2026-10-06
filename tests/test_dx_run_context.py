@@ -442,7 +442,7 @@ def test_development_artifacts_requested_is_explicit_dev_control_plane() -> None
     assert not development_artifacts_requested({"MOLT_REQUIRE_EXTERNAL_ARTIFACTS": ""})
     assert development_artifacts_requested({"MOLT_REQUIRE_EXTERNAL_ARTIFACTS": "1"})
     assert development_artifacts_requested({"MOLT_PREFER_EXTERNAL_ARTIFACTS": "true"})
-    assert development_artifacts_requested({"MOLT_USE_EXTERNAL_ARTIFACTS": "yes"})
+    assert development_artifacts_requested({"MOLT_PREFER_EXTERNAL_ARTIFACTS": "yes"})
 
 
 def test_run_context_rejects_explicit_c_drive_canonical_root(

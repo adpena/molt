@@ -123,7 +123,7 @@ pub extern "C" fn molt_sys_bootstrap_payload(module_file_bits: u64) -> u64 {
             Ok(bits) => bits,
             Err(err) => return err,
         };
-        let dev_trusted_bits = match alloc_str_bits(_py, &state.dev_trusted_raw) {
+        let capability_tier_bits = match alloc_str_bits(_py, &state.capability_tier_raw) {
             Ok(bits) => bits,
             Err(err) => return err,
         };
@@ -151,7 +151,7 @@ pub extern "C" fn molt_sys_bootstrap_payload(module_file_bits: u64) -> u64 {
             (b"pythonpath", pythonpath_bits),
             (b"module_roots", module_roots_bits),
             (b"virtual_env", virtual_env_bits),
-            (b"dev_trusted", dev_trusted_bits),
+            (b"capability_tier", capability_tier_bits),
             (b"pwd", pwd_bits),
             (b"stdlib_root", stdlib_root_bits),
             (b"include_cwd", include_cwd_bits),

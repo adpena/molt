@@ -2813,8 +2813,8 @@ def test_memory_guard_defaults_adapt_to_live_memory_budget() -> None:
     budget = memory_guard.adaptive_memory_budget(
         "MOLT_BENCH",
         {
-            "MOLT_BENCH_TOTAL_MEMORY_GB": "128",
-            "MOLT_BENCH_MEM_AVAILABLE_GB": "96",
+            "MOLT_BENCH_MEMORY_TOTAL_GB": "128",
+            "MOLT_BENCH_MEMORY_AVAILABLE_GB": "96",
         },
     )
 
@@ -2829,15 +2829,15 @@ def test_adaptive_budget_scales_up_and_down_with_live_available_memory() -> None
     high = memory_guard.adaptive_memory_budget(
         "MOLT_BENCH",
         {
-            "MOLT_BENCH_TOTAL_MEMORY_GB": "128",
-            "MOLT_BENCH_MEM_AVAILABLE_GB": "120",
+            "MOLT_BENCH_MEMORY_TOTAL_GB": "128",
+            "MOLT_BENCH_MEMORY_AVAILABLE_GB": "120",
         },
     )
     pressured = memory_guard.adaptive_memory_budget(
         "MOLT_BENCH",
         {
-            "MOLT_BENCH_TOTAL_MEMORY_GB": "128",
-            "MOLT_BENCH_MEM_AVAILABLE_GB": "32",
+            "MOLT_BENCH_MEMORY_TOTAL_GB": "128",
+            "MOLT_BENCH_MEMORY_AVAILABLE_GB": "32",
         },
     )
 
@@ -2858,8 +2858,8 @@ def test_adaptive_budget_accounts_guarded_tree_rss_without_self_tightening() -> 
     budget = memory_guard.adaptive_memory_budget(
         "MOLT_BENCH",
         {
-            "MOLT_BENCH_TOTAL_MEMORY_GB": "128",
-            "MOLT_BENCH_MEM_AVAILABLE_GB": "46",
+            "MOLT_BENCH_MEMORY_TOTAL_GB": "128",
+            "MOLT_BENCH_MEMORY_AVAILABLE_GB": "46",
         },
         accounted_rss_kb=50 * 1024 * 1024,
     )
@@ -2875,8 +2875,8 @@ def test_adaptive_budget_clamps_large_hosts_below_rss_conversion_cap() -> None:
     budget = memory_guard.adaptive_memory_budget(
         "MOLT_BENCH",
         {
-            "MOLT_BENCH_TOTAL_MEMORY_GB": "512",
-            "MOLT_BENCH_MEM_AVAILABLE_GB": "500",
+            "MOLT_BENCH_MEMORY_TOTAL_GB": "512",
+            "MOLT_BENCH_MEMORY_AVAILABLE_GB": "500",
         },
     )
 
@@ -2965,8 +2965,8 @@ def test_memory_guard_adaptive_defaults_do_not_starve_small_hosts() -> None:
     budget = memory_guard.adaptive_memory_budget(
         "MOLT_BENCH",
         {
-            "MOLT_BENCH_TOTAL_MEMORY_GB": "7",
-            "MOLT_BENCH_MEM_AVAILABLE_GB": "5",
+            "MOLT_BENCH_MEMORY_TOTAL_GB": "7",
+            "MOLT_BENCH_MEMORY_AVAILABLE_GB": "5",
         },
     )
 
@@ -6760,7 +6760,7 @@ def test_run_guarded_exports_backend_memory_contract() -> None:
             (
                 "import os; "
                 "print(os.environ.get('MOLT_BACKEND_MEMORY_AVAILABLE_GB')); "
-                "print(os.environ.get('MOLT_BACKEND_MAX_RSS_GB'))"
+                "print(os.environ.get('MOLT_BACKEND_MAX_PROCESS_RSS_GB'))"
             ),
         ],
         max_rss_kb=512 * 1024,

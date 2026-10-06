@@ -131,15 +131,15 @@ schema. These limits are enforced by the in-VM `ResourceTracker`, shared by all
 backends.
 
 For memory specifically, a compiled binary can also cap itself at run time
-through the ergonomic `MOLT_MEMORY_LIMIT` env var (human sizes like `64M`,
-`2G`), which is an **alias** that resolves into the same single
-`ResourceLimits.max_memory` enforcement path as the manifest-emitted
-`MOLT_RESOURCE_MAX_MEMORY` — there is no parallel limit system:
+through `MOLT_RESOURCE_MAX_MEMORY`, which accepts human sizes like `64M` and
+`2G` as well as the raw byte count the manifest emits; both resolve into the
+same single `ResourceLimits.max_memory` enforcement path — there is no
+parallel limit system:
 
 ```bash
 # Cap the binary at 64 MiB; a runaway raises an uncatchable MemoryError
 # instead of OOM-killing the host.
-MOLT_MEMORY_LIMIT=64M ./my_app
+MOLT_RESOURCE_MAX_MEMORY=64M ./my_app
 ```
 
 Enforcement is two-layer: the precise in-VM tracker (deterministic, identical

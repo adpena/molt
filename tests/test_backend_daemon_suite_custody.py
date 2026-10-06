@@ -227,13 +227,13 @@ def test_persistent_daemon_cannot_use_command_scratch(tmp_path):
         "TMPDIR": str(scratch / "nested"),
         "TEMP": str(external),
         suite.LEASE_ENV: "owner",
-        "MOLT_BACKEND_MAX_RSS_GB": "1",
+        "MOLT_BACKEND_MAX_PROCESS_RSS_GB": "1",
     }
     clean = suite.persistent_daemon_env(env)
     assert clean == {
         "TEMP": str(external),
         suite.LEASE_ENV: "owner",
-        "MOLT_BACKEND_MAX_RSS_GB": "1",
+        "MOLT_BACKEND_MAX_PROCESS_RSS_GB": "1",
     }
     assert env["MOLT_GUARD_SCRATCH_ROOT"] == str(scratch)
 

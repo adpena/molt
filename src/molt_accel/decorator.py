@@ -118,7 +118,7 @@ def _pool_size_from_env() -> int:
 
 def _resolve_worker_cmd() -> tuple[list[str], str | None]:
     cmd = os.environ.get("MOLT_WORKER_CMD")
-    wire = os.environ.get("MOLT_WORKER_WIRE") or os.environ.get("MOLT_WIRE")
+    wire = os.environ.get("MOLT_WORKER_WIRE")
     if cmd:
         return cmd.split(), wire
 

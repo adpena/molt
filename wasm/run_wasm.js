@@ -1314,7 +1314,7 @@ const findInPath = (name) => {
 };
 
 const resolveExportsPath = () => {
-  const envPath = process.env.MOLT_WASM_DB_EXPORTS || process.env.MOLT_WORKER_EXPORTS;
+  const envPath = process.env.MOLT_WORKER_EXPORTS;
   if (envPath && fs.existsSync(envPath)) {
     return envPath;
   }
@@ -1330,7 +1330,7 @@ const resolveExportsPath = () => {
 };
 
 const resolveWorkerCmd = () => {
-  const envCmd = process.env.MOLT_WASM_DB_WORKER_CMD || process.env.MOLT_WORKER_CMD;
+  const envCmd = process.env.MOLT_WORKER_CMD;
   if (envCmd) {
     return envCmd.split(/\s+/).filter(Boolean);
   }
@@ -1353,7 +1353,6 @@ const resolveWorkerCmd = () => {
 const resolveTimeoutMs = () => {
   const raw =
     process.env.MOLT_WASM_DB_TIMEOUT_MS ||
-    process.env.MOLT_DB_QUERY_TIMEOUT_MS ||
     '';
   if (raw !== '') {
     const parsed = Number.parseInt(raw, 10);
@@ -1953,7 +1952,7 @@ const getDbWorkerClient = () => {
   const cmd = resolveWorkerCmd();
   if (!cmd) {
     throw new Error(
-      'molt-worker not found; set MOLT_WASM_DB_WORKER_CMD or MOLT_WORKER_CMD',
+      'molt-worker not found; set MOLT_WORKER_CMD',
     );
   }
   dbWorkerClient = new DbWorkerClient(cmd);
@@ -5233,48 +5232,6 @@ const makeRuntimeImportAdapter = (
     }
     return sig ? normalizeRuntimeImportReturn(result, sig.retType) : result;
   };
-};
-
-const buildRuntimeImportWrappers = () => {
-  if (!witSource) {
-    throw new Error(
-      'molt runtime WIT metadata is unavailable; disable MOLT_WASM_TRACE=1 or provide wit/molt-runtime.wit',
-    );
-  }
-  const funcSigs = runtimeImportFuncSigs();
-
-  const runtimeImports = {};
-  const traceStrings = process.env.MOLT_WASM_TRACE_STRINGS === '1';
-  const seen = new Set();
-  for (const entry of outputImports.funcImports) {
-    if (entry.module !== 'molt_runtime' || seen.has(entry.name)) {
-      continue;
-    }
-    seen.add(entry.name);
-    const name = entry.name;
-    runtimeImports[name] = (...args) => {
-      const runtimeExport = runtimeExportNameForImport(name);
-      const sig =
-        funcSigs.get(name) ||
-        (runtimeExport ? runtimeExportImportSignature(runtimeExport) : null);
-      let fn =
-        runtimeInstance && runtimeExport
-          ? runtimeInstance.exports[runtimeExport]
-          : null;
-      if (typeof fn !== 'function') {
-        if (!runtimeInstance) {
-          throw new Error(`molt_runtime not initialized (${name})`);
-        } else {
-          fn = runtimeFallbackFunction(runtimeInstance.exports, name);
-        }
-      }
-      if (typeof fn !== 'function') {
-        throw new Error(`molt_runtime.${name} missing export ${runtimeExport || name}`);
-      }
-      return makeRuntimeImportAdapter(name, fn, sig, { traceStrings })(...args);
-    };
-  }
-  return runtimeImports;
 };
 
 const runtimeFallbackFunction = (runtimeExports, name) => {
