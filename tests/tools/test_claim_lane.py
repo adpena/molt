@@ -5,7 +5,6 @@ from __future__ import annotations
 from tests.process_guard_common import run_guarded_test_process
 
 import datetime as dt
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -14,7 +13,6 @@ import pytest
 
 TOOLS = Path(__file__).resolve().parents[2] / "tools"
 CLAIM = TOOLS / "claim_lane.py"
-FF_LAND = TOOLS / "ff_land.py"
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -44,14 +42,11 @@ def repo(tmp_path: Path) -> Path:
     bare.mkdir()
     _git(bare, "init", "--bare", "-q", "-b", "main")
     w = tmp_path / "work"
-    (w / "tools").mkdir(parents=True)
     (w / "docs" / "agent").mkdir(parents=True)
     _git(w, "init", "-q", "-b", "main")
     _git(w, "config", "user.email", "t@t")
     _git(w, "config", "user.name", "t")
     _git(w, "remote", "add", "origin", str(bare))
-    shutil.copy(CLAIM, w / "tools" / "claim_lane.py")
-    shutil.copy(FF_LAND, w / "tools" / "ff_land.py")
     (w / "docs" / "agent" / "CLAIMS.md").write_text(_claims_body(""))
     _git(w, "add", "-A")
     _git(w, "commit", "-q", "-m", "init")

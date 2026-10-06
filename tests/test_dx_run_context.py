@@ -1331,3 +1331,9 @@ def test_onedrive_paths_rejected_fail_closed():
     dx._reject_onedrive(Path(r"C:\Molt"), "artifacts")
     assert dx._is_onedrive_path(Path(r"C:\Users\x\OneDrive\Documents\molt")) is True
     assert dx._is_onedrive_path(Path(r"C:\Molt\molt-src")) is False
+    # macOS syncs OneDrive under ~/Library/CloudStorage/OneDrive-<account>.
+    with _pytest.raises(dx.DxConfigError, match="OneDrive"):
+        dx._reject_onedrive(
+            Path("/Users/x/Library/CloudStorage/OneDrive-Personal/molt"), "checkout"
+        )
+    dx._reject_onedrive(Path("/Users/x/Projects/molt"), "checkout")

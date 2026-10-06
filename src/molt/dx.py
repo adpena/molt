@@ -1220,8 +1220,8 @@ def _is_onedrive_path(path: Path) -> bool:
 
     OneDrive continuously syncs the `.git` + build tree (thousands of tiny objects),
     throttling every git/build op and corrupting the working set; it was the root of
-    the drift retired 2026-07-08. The canonical checkout is `C:\\Molt\\molt-src` and
-    artifacts live on `C:\\Molt` — nothing may drift back onto OneDrive.
+    the drift retired 2026-07-08. Each host's canonical checkout and artifact root
+    are listed in docs/agent/ORCHESTRATION.md — nothing may drift back onto OneDrive.
     """
     try:
         parts = path.resolve().parts
@@ -1235,7 +1235,7 @@ def _reject_onedrive(path: Path, kind: str) -> None:
         raise DxConfigError(
             f"Molt {kind} must NOT be under OneDrive (it throttles/corrupts git + "
             f"builds and was the retired drift root). Rejected: {path}. Use the "
-            f"canonical checkout C:\\Molt\\molt-src and artifacts C:\\Molt "
+            f"host's canonical checkout and artifact root "
             f"(see docs/agent/ORCHESTRATION.md canonical paths)."
         )
 
