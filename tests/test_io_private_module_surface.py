@@ -10,6 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STDLIB_ROOT = REPO_ROOT / "src" / "molt" / "stdlib"
 
 _PROBE = f"""
+import abc
 import builtins
 import importlib.util
 import _io as _host_native_io
@@ -29,13 +30,18 @@ for _path in ({str(STDLIB_ROOT / "_io.py")!r}, {str(STDLIB_ROOT / "io.py")!r}):
 
 
 def _io_class(name):
-    if name in ("IOBase", "RawIOBase", "BufferedIOBase", "TextIOBase"):
-        name = "_" + name
+    return getattr(_host_native_io, name)
+
+
+def _builtin_class_lookup(name):
+    # The runtime resolves builtin exception classes by name; the host's _io
+    # owns the same UnsupportedOperation identity.
     return getattr(_host_native_io, name)
 
 
 builtins._molt_intrinsics = {{
     "molt_io_class": _io_class,
+    "molt_builtin_class_lookup": _builtin_class_lookup,
 }}
 
 _intrinsics_mod = types.ModuleType("_intrinsics")
@@ -103,10 +109,10 @@ checks = {{
         and _private.DEFAULT_BUFFER_SIZE == 8192
     ),
     "classes": (
-        _private.IOBase is _host_native_io._IOBase
-        and _private.RawIOBase is _host_native_io._RawIOBase
-        and _private.BufferedIOBase is _host_native_io._BufferedIOBase
-        and _private.TextIOBase is _host_native_io._TextIOBase
+        _private._IOBase is _host_native_io._IOBase
+        and _private._RawIOBase is _host_native_io._RawIOBase
+        and _private._BufferedIOBase is _host_native_io._BufferedIOBase
+        and _private._TextIOBase is _host_native_io._TextIOBase
         and _private.FileIO is _host_native_io.FileIO
         and _private.BytesIO is _host_native_io.BytesIO
         and _private.StringIO is _host_native_io.StringIO
@@ -114,6 +120,18 @@ checks = {{
     "aliases": all(
         getattr(_public, name) is getattr(_private, name)
         for name in _private.__all__
+    ),
+    # CPython layering: _io owns the concrete bases, io publishes ABCs over them.
+    "public_abcs": (
+        all(
+            type(getattr(_public, name)) is abc.ABCMeta
+            and getattr(_private, "_" + name) in getattr(_public, name).__mro__
+            and name not in vars(_private)
+            for name in ("IOBase", "RawIOBase", "BufferedIOBase", "TextIOBase")
+        )
+        and issubclass(_public.FileIO, _public.RawIOBase)
+        and issubclass(_public.BytesIO, _public.BufferedIOBase)
+        and issubclass(_public.StringIO, _public.TextIOBase)
     ),
     "open": _private.open is _published_open and _public.open is _published_open,
     "native_mode_error": _native_mode_error,
@@ -126,7 +144,8 @@ checks = {{
         and _without_open_public.BytesIO(b"memory").read() == b"memory"
         and _without_open_public.StringIO("memory").read() == "memory"
     ),
-    "intrinsics": _intrinsic_requests == ["molt_io_class", "molt_io_class"],
+    "intrinsics": _intrinsic_requests
+    == ["molt_io_class", "molt_builtin_class_lookup"] * 2,
     "unsupported_operation": (
         _private.UnsupportedOperation.__module__ == "io"
         and issubclass(_private.UnsupportedOperation, OSError)
@@ -161,20 +180,16 @@ def _run_probe() -> tuple[list[tuple[str, str, str]], dict[str, str]]:
 def test__io_public_surface_matches_expected_shape() -> None:
     rows, checks = _run_probe()
     assert rows == [
-        ("BufferedIOBase", "type", "True"),
         ("BufferedRandom", "type", "True"),
         ("BufferedReader", "type", "True"),
         ("BufferedWriter", "type", "True"),
         ("BytesIO", "type", "True"),
         ("DEFAULT_BUFFER_SIZE", "int", "False"),
         ("FileIO", "type", "True"),
-        ("IOBase", "type", "True"),
-        ("RawIOBase", "type", "True"),
         ("SEEK_CUR", "int", "False"),
         ("SEEK_END", "int", "False"),
         ("SEEK_SET", "int", "False"),
         ("StringIO", "type", "True"),
-        ("TextIOBase", "type", "True"),
         ("TextIOWrapper", "type", "True"),
         ("UnsupportedOperation", "type", "True"),
         ("open", "builtin_function_or_method", "True"),
@@ -188,5 +203,6 @@ def test__io_public_surface_matches_expected_shape() -> None:
         "memory_io_without_open": "True",
         "native_mode_error": "True",
         "open": "True",
+        "public_abcs": "True",
         "unsupported_operation": "True",
     }
