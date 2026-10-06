@@ -5,6 +5,33 @@ from types import SimpleNamespace
 from tools.memory_guard_core import process_custody
 
 
+def _kqueue_api(queue_type):
+    return SimpleNamespace(
+        kqueue=queue_type,
+        kevent=lambda *args, **kwargs: kwargs,
+        KQ_FILTER_PROC=1,
+        KQ_EV_ADD=2,
+        KQ_EV_ONESHOT=4,
+        KQ_NOTE_EXIT=8,
+        KQ_EV_ERROR=16,
+    )
+
+
+def _exit_event(pid, *, flags=0, data=0):
+    # A kevent record: ident, flags (EV_ERROR=16 here), NOTE_EXIT fflags, data.
+    return SimpleNamespace(ident=pid, flags=flags, fflags=8, data=data)
+
+
+def _owned_handle():
+    return SimpleNamespace(
+        pid=123,
+        args=["owned"],
+        returncode=None,
+        wait=lambda: None,
+        _waitpid_lock=threading.Lock(),
+    )
+
+
 def test_reserved_reap_cannot_signal_reused_pid_before_publication(monkeypatch):
     reaped = threading.Event()
     publish = threading.Event()
@@ -107,10 +134,10 @@ def test_kqueue_registration_race_only_reaps_owned_reserved_child(monkeypatch):
             closed.append(True)
 
     def wait4(pid, flags):
+        # ESRCH at attach means exiting; WNOHANG cannot reap until the child
+        # is a zombie, so only the blocking reap (flags 0) succeeds.
         waits.append(flags)
-        return (
-            (0, 0, None) if len(waits) == 1 else (pid, 0, SimpleNamespace(ru_maxrss=64))
-        )
+        return (pid, 0, SimpleNamespace(ru_maxrss=64)) if flags == 0 else (0, 0, None)
 
     monkeypatch.setattr(
         process_custody,
@@ -123,30 +150,12 @@ def test_kqueue_registration_race_only_reaps_owned_reserved_child(monkeypatch):
             kill=lambda *args: kills.append(args),
         ),
     )
-    monkeypatch.setattr(
-        process_custody,
-        "select",
-        SimpleNamespace(
-            kqueue=Queue,
-            kevent=lambda *args, **kwargs: kwargs,
-            KQ_FILTER_PROC=1,
-            KQ_EV_ADD=2,
-            KQ_EV_ONESHOT=4,
-            KQ_NOTE_EXIT=8,
-            KQ_EV_ERROR=16,
-        ),
-    )
-    proc = SimpleNamespace(
-        pid=123,
-        args=["owned"],
-        returncode=None,
-        wait=lambda: None,
-        _waitpid_lock=threading.Lock(),
-    )
+    monkeypatch.setattr(process_custody, "select", _kqueue_api(Queue))
+    proc = _owned_handle()
     clock = process_custody.ChildExecutionClock(proc, time.perf_counter())
     assert proc.wait(timeout=2) == 0 and clock.posix_kqueue
     proc.send_signal(15)
-    assert waits == [1, 1] and closed == [True] and not kills
+    assert waits == [1, 0] and closed == [True] and not kills
 
 
 def test_kqueue_unknown_registration_failure_disables_signaling(monkeypatch):
@@ -213,7 +222,7 @@ def test_kqueue_blocking_exit_watch_does_not_hold_signal_lock(monkeypatch):
         def control(self, *args):
             awaiting.set()
             assert killed.wait(2)
-            return [SimpleNamespace(ident=123)]
+            return [_exit_event(123)]
 
         def close(self):
             pass
@@ -259,6 +268,133 @@ def test_kqueue_blocking_exit_watch_does_not_hold_signal_lock(monkeypatch):
     assert awaiting.wait(2)
     proc.send_signal(15)
     assert proc.wait(timeout=2) == 0 and clock.finished is not None
+
+
+def test_kqueue_exit_notification_before_zombie_waits_for_reapable_child(
+    monkeypatch,
+):
+    # XNU posts NOTE_EXIT from proc_exit() before the child is a zombie; under
+    # load wait4(WNOHANG) still returns 0 then. The reap must wait for the
+    # zombie, never report the certain exit as unreapable.
+    waits = []
+
+    class Queue:
+        def control(self, *args):
+            return [_exit_event(123)]
+
+        def close(self):
+            pass
+
+    def wait4(pid, flags):
+        waits.append(flags)
+        return (pid, 0, SimpleNamespace(ru_maxrss=64)) if flags == 0 else (0, 0, None)
+
+    monkeypatch.setattr(
+        process_custody,
+        "os",
+        SimpleNamespace(
+            name="posix",
+            wait4=wait4,
+            WNOHANG=1,
+            waitstatus_to_exitcode=lambda status: 0,
+            kill=lambda *args: None,
+        ),
+    )
+    monkeypatch.setattr(process_custody, "select", _kqueue_api(Queue))
+    proc = _owned_handle()
+    clock = process_custody.ChildExecutionClock(proc, time.perf_counter())
+    assert proc.wait(timeout=2) == 0
+    assert clock.error is None and clock.finished is not None
+    assert clock.usage is not None and clock.usage.max_rss_kb > 0
+    assert waits == [1, 0]
+
+
+def test_kqueue_error_event_is_registration_evidence_not_exit(monkeypatch):
+    import errno
+
+    import pytest
+
+    for code in (errno.ESRCH, errno.EPERM):
+        waits = []
+
+        class Queue:
+            def control(self, *args):
+                # kevent returns a changelist error as an EV_ERROR record.
+                return [_exit_event(123, flags=16, data=code)]
+
+            def close(self):
+                pass
+
+        def wait4(pid, flags):
+            waits.append(flags)
+            return (
+                (pid, 0, SimpleNamespace(ru_maxrss=64)) if flags == 0 else (0, 0, None)
+            )
+
+        monkeypatch.setattr(
+            process_custody,
+            "os",
+            SimpleNamespace(
+                name="posix",
+                wait4=wait4,
+                WNOHANG=1,
+                waitstatus_to_exitcode=lambda status: 0,
+                kill=lambda *args: None,
+            ),
+        )
+        monkeypatch.setattr(process_custody, "select", _kqueue_api(Queue))
+        proc = _owned_handle()
+        clock = process_custody.ChildExecutionClock(proc, time.perf_counter())
+        assert clock.done.wait(2)
+        if code == errno.ESRCH:
+            # The unreaped child keeps its PID: ESRCH is exit evidence.
+            assert proc.wait(timeout=1) == 0 and waits == [1, 0]
+        else:
+            # Unknown registration failure: never block on a possibly live
+            # child, and never mistake the record for an exit.
+            with pytest.raises(OSError) as caught:
+                proc.wait(timeout=1)
+            assert caught.value.errno == errno.EPERM
+            assert waits == [1, 1] and clock.finished is None
+
+
+def test_reaper_failure_never_raises_from_popen_lifecycle(monkeypatch):
+    import errno
+    import sys
+
+    import pytest
+
+    class Queue:
+        def control(self, *args):
+            return [_exit_event(123)]
+
+        def close(self):
+            pass
+
+    def wait4(pid, flags):
+        if flags == 0:
+            raise ChildProcessError(errno.ECHILD, "No child processes")
+        return (0, 0, None)
+
+    monkeypatch.setattr(
+        process_custody,
+        "os",
+        SimpleNamespace(
+            name="posix",
+            wait4=wait4,
+            WNOHANG=1,
+            waitstatus_to_exitcode=lambda status: 0,
+            kill=lambda *args: None,
+        ),
+    )
+    monkeypatch.setattr(process_custody, "select", _kqueue_api(Queue))
+    proc = _owned_handle()
+    clock = process_custody.ChildExecutionClock(proc, time.perf_counter())
+    assert clock.done.wait(2)
+    # Popen.__del__ and subprocess._cleanup reach the reaper only here.
+    assert proc._internal_poll(_deadstate=sys.maxsize) is None
+    with pytest.raises(ChildProcessError, match="reaped outside its"):
+        proc.poll()
 
 
 def test_actual_posix_owned_signal_keeps_child_reserved_until_reap():

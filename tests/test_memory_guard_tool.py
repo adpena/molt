@@ -3120,6 +3120,65 @@ def test_run_guarded_sampler_failure_cleans_then_reraises(
     assert all(call.get("root_owned") is True for call in terminations)
 
 
+def test_run_guarded_finalizer_survives_owned_reaper_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_popen_without_windows_job: None,
+) -> None:
+    # A failed sole reaper makes the handle's poll/wait raise. The guard must
+    # surface that failure once and still finish custody: the finalizer reads
+    # the published exit, so it cannot re-raise and skip handler restoration.
+    reaper_failure = RuntimeError("owned child reaper failed")
+
+    class FakePopen:
+        pid = 6767
+        stdin = None
+        returncode: int | None = None
+        _handle = None
+
+        def __init__(self, command: list[str], **_kwargs: object) -> None:
+            self.command = command
+
+        def poll(self) -> int | None:
+            raise reaper_failure
+
+        def wait(self, timeout: float | None = None) -> int:
+            raise reaper_failure
+
+        def terminate(self) -> None:
+            raise reaper_failure
+
+        def kill(self) -> None:
+            raise reaper_failure
+
+    reasons: list[object] = []
+
+    def recording_terminate(
+        root_pid: int, **kwargs: object
+    ) -> memory_guard.GuardTerminationReport:
+        reasons.append(kwargs.get("reason"))
+        return _guard_termination_report(
+            reason=str(kwargs.get("reason")), root_pid=root_pid
+        )
+
+    _patch_guard_popen_without_windows_job(monkeypatch, FakePopen)
+    monkeypatch.setattr(
+        memory_guard, "terminate_watched_processes", recording_terminate
+    )
+    handler_before = signal.getsignal(signal.SIGTERM)
+
+    with pytest.raises(RuntimeError) as caught:
+        memory_guard.run_guarded(
+            ["fake-python"],
+            max_rss_kb=1_000_000,
+            poll_interval=0.01,
+            sampler=lambda: {},
+        )
+
+    assert caught.value is reaper_failure
+    assert reasons == ["run_guarded_finalizer"]
+    assert signal.getsignal(signal.SIGTERM) == handler_before
+
+
 def test_run_guarded_windows_snapshot_timeout_preserves_healthy_child(
     monkeypatch: pytest.MonkeyPatch,
     fake_popen_without_windows_job: None,

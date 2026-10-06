@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 import contextlib
 from dataclasses import dataclass
+import errno
 import os
 from pathlib import Path
 import signal
@@ -666,9 +667,10 @@ class ChildExecutionClock:
         )
         if self.posix_reserved_wait:
             # Popen's owned signal methods and the sole reap commit share this
-            # short critical section. The blocking wait NEVER holds this lock.
+            # short critical section. The wait for exit NEVER holds this lock;
+            # only the reap of a child already known to have exited does.
             proc.send_signal = self.send_signal
-            proc._internal_poll = lambda *args, **kwargs: self.poll()
+            proc._internal_poll = self._internal_poll
         proc._molt_child_clock = self
         # Popen polling/waiting must not race wait4 for the same child.
         proc.poll = self.poll
@@ -730,6 +732,36 @@ class ChildExecutionClock:
                 self.error = exc
                 raise
 
+    def _commit_exited_child(self, *, finished: float | None) -> None:
+        """Reap a child whose exit is already certain, waiting until reapable.
+
+        XNU posts NOTE_EXIT from proc_exit() before the process becomes a
+        zombie, and EVFILT_PROC attach fails with ESRCH for a child that is
+        exiting but not yet a zombie. In both windows ``wait4(WNOHANG)`` still
+        returns 0, so only a blocking wait4 turns that exit evidence into a
+        reap. The lock is held across it: the child can no longer run, and
+        its exit must publish before any owned signal could reach a reused PID.
+        """
+        with self.reap_signal_lock:
+            try:
+                try:
+                    pid, status, usage = getattr(os, "wait4")(self.proc.pid, 0)
+                except ChildProcessError as exc:
+                    raise ChildProcessError(
+                        exc.errno,
+                        f"owned child {self.proc.pid} exited but was reaped "
+                        "outside its ChildExecutionClock; its exit status and "
+                        "rusage are lost (another waiter called wait on it)",
+                    ) from exc
+                if pid != self.proc.pid:
+                    raise RuntimeError("unexpected owned child reap identity")
+                self.proc.returncode = os.waitstatus_to_exitcode(status)
+                self.finished = time.perf_counter() if finished is None else finished
+                self.usage = ChildExitResourceUsage(max_rss_kb=_rusage_maxrss_kb(usage))
+            except BaseException as exc:
+                self.error = exc
+                raise
+
     def _wait_kqueue_exit(self):
         # CPython 3.12 macOS has kqueue but no os.waitid. Kqueue observes exit
         # without reaping, retaining the child's PID reservation until commit.
@@ -745,19 +777,42 @@ class ChildExecutionClock:
             )
             try:
                 events = queue.control([event], 1, None)
-            except OSError:
-                # An already-exited child may disappear from the event filter.
-                # Only an actual owned-child reap can resolve that race.
-                if self._commit_reserved_exit(finished=None):
-                    return
-                raise
+            except OSError as exc:
+                self._commit_after_exit_watch_error(exc)
+                return
             finished = time.perf_counter()
-            if not self._commit_reserved_exit(finished=finished):
-                raise RuntimeError("owned child exit notification was not reapable")
             if any(int(item.ident) != self.proc.pid for item in events):
                 raise RuntimeError("unexpected owned child exit notification")
+            error_flag = getattr(select, "KQ_EV_ERROR")
+            for item in events:
+                if int(item.flags) & error_flag:
+                    # kevent reports a changelist failure as an EV_ERROR event
+                    # (errno in data) when the event list has room; it is not
+                    # an exit notification.
+                    code = int(item.data)
+                    self._commit_after_exit_watch_error(
+                        OSError(code, f"EVFILT_PROC registration failed: errno {code}")
+                    )
+                    return
+            self._commit_exited_child(finished=finished)
         finally:
             queue.close()
+
+    def _commit_after_exit_watch_error(self, exc: OSError) -> None:
+        if exc.errno == errno.ESRCH:
+            # The unreaped child keeps its PID, so ESRCH means it has exited
+            # or is exiting: certain exit evidence.
+            self._commit_exited_child(finished=None)
+            return
+        if self._commit_reserved_exit(finished=None):
+            return
+        raise exc
+
+    def _internal_poll(self, *_args, **_kwargs):
+        # Popen.__del__ and subprocess._cleanup call this during collection
+        # and interpreter teardown, where it must never raise. A reaper
+        # failure stays on poll() and wait() for the owner.
+        return self.proc.returncode if self.done.is_set() else None
 
     def send_signal(self, sig):
         # Only used for a native POSIX Popen whose exit remains reserved by
