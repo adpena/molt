@@ -51,6 +51,7 @@ from molt.cli.native_toolchain import (
     _append_darwin_runtime_frameworks,
     _detect_macos_arch,
     _detect_macos_deployment_target,
+    _resolve_macos_sdk_root,
 )
 
 
@@ -219,6 +220,13 @@ def _build_native_link_driver_command(
         deployment_target = _detect_macos_deployment_target(arch)
         if deployment_target:
             link_cmd.append(f"-mmacosx-version-min={deployment_target}")
+        if sysroot_path is None:
+            # Apple's clang selects the active SDK through xcrun by itself; a
+            # managed LLVM clang has no implicit macOS SDK and cannot even find
+            # <stdio.h> for the main stub. Name the same SDK for both drivers.
+            sdk_root = _resolve_macos_sdk_root()
+            if sdk_root is not None:
+                link_cmd.extend(["-isysroot", sdk_root])
     try:
         validate_compiler_target(
             link_cmd,
