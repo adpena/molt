@@ -799,6 +799,16 @@ target = "host"
 profile = "portability"
 
 [[matrix_cell]]
+id = "macos-arm64-py312-rust-native-dev"
+runner = "macos-14"
+os = "macos"
+arch = "aarch64"
+python = "3.12"
+backend = "rust"
+target = "aarch64-apple-darwin"
+profile = "dev"
+
+[[matrix_cell]]
 id = "windows-x86_64-py312-queue-portability"
 runner = "windows-2022"
 os = "windows"
@@ -973,10 +983,21 @@ dependencies = []
 
 [[ci_family]]
 name = "platform_portability"
-description = "Hosted Linux, macOS, and Windows queue, process, path, and source-build custody proof."
+description = "Hosted Linux, macOS, and Windows queue, process, path, and source-build custody proof, plus Rust workspace lint/compile and runtime test truth on macOS."
 inputs = [
   ".github/workflows/ci.yml",
   ".python-version",
+  ".cargo/**",
+  "Cargo.lock",
+  "Cargo.toml",
+  "config/ci_resource_policy.toml",
+  "runtime/**",
+  "tools/cargo_test_binary_runner.py",
+  "tools/ci_resource_env.py",
+  "tools/libtest_results.py",
+  "tools/run_runtime_test_gate.py",
+  "tools/runtime_descendant_receipts.py",
+  "tests/tools/test_runtime_test_gate.py",
   "config/source_extension_package_sets.toml",
   "docs/agent/PROOF_QUEUE.md",
   "docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md",
@@ -1078,7 +1099,10 @@ admission_job = "platform-portability"
 admission_needs = ["classify-changes"]
 tiers = ["pr", "main"]
 required = true
-timeout_minutes = 20
+# The macOS Rust cell serializes its workspace lint (suite budget) and runtime
+# gate (shipping budget) on one compiler-build resource; the Python cells keep
+# their own 600-second command envelopes inside this backstop.
+timeout_minutes = 180
 resource_class = "python-tests"
 dependencies = []
 
@@ -1396,6 +1420,40 @@ cache_domain = "none"
 dependencies = []
 argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "tools/verify_ir_suite.py", "--dir", "tests/differential/basic", "--glob", "arith.py", "--json-out", "proof-receipts/evidence/portability-ir-windows.json"]
 toolchains = ["python", "uv"]
+
+[[command]]
+id = "portability.rust.macos.clippy-workspace"
+family = "platform_portability"
+cell = "macos-arm64-py312-rust-native-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+# Whole-workspace lint on the primary development host: every lib, bin, test,
+# bench and example target type-checks and lints on aarch64-apple-darwin, so
+# LP64/Mach-O drift surfaces in CI instead of on a developer's machine. Cold
+# macos-14 timing is unmeasured; the suite budget keeps headroom over the
+# 240-second Linux cross-check for the same command.
+timeout_budget = "suite"
+cache_domain = "cargo-workspace"
+dependencies = []
+argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"]
+toolchains = ["rustc", "cargo"]
+
+[[command]]
+id = "portability.rust.macos.runtime-gate"
+family = "platform_portability"
+cell = "macos-arm64-py312-rust-native-dev"
+tiers = ["main"]
+resource_class = "compiler-build-resource"
+# The runtime libtest suite on macOS: parallel remainder plus the fresh-process
+# lifecycle/GIL witnesses at the dev-fast correctness profile. The gate sizes
+# its harness threads to the runner. main-only so hosted macOS minutes stay
+# inside the pull-request budget; the clippy sweep above still compiles the
+# same test code on every pull request.
+timeout_budget = "shipping"
+cache_domain = "cargo-workspace"
+dependencies = []
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "tools/run_runtime_test_gate.py", "--profile", "dev-fast", "--build-timeout-seconds", "6300", "--child-timeout-seconds", "120"]
+toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
 id = "repository.github-actions.static"
@@ -2218,16 +2276,21 @@ argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "tests/test_manifest_pi
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 
 [[command]]
-id = "rust.check.tir-wasi32"
+id = "rust.clippy.wasi32"
 family = "rust"
 cell = "linux-x86_64-rust-wasi-dev"
 tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
-timeout_budget = "cross-check"
+# Every crate that builds for wasm32-wasip1 lints there: the runtime closure,
+# whose cfg(target_arch = "wasm32") lanes native clippy never sees, and the
+# TIR crate the browser compiler path consumes. Clippy subsumes the former
+# cargo check of molt-tir. The runtime's C shims compile with the provisioned
+# WASI SDK, which the wasm-ld contract witnesses.
+timeout_budget = "cold"
 cache_domain = "cargo-workspace"
 dependencies = []
-argv = ["cargo", "check", "--locked", "--target", "wasm32-wasip1", "-p", "molt-tir"]
-toolchains = ["rustc", "cargo"]
+argv = ["cargo", "clippy", "--locked", "--target", "wasm32-wasip1", "--lib", "-p", "molt-runtime", "-p", "molt-tir", "--", "-D", "warnings"]
+toolchains = ["rustc", "cargo", "wasm-ld"]
 
 [[command]]
 id = "rust.check.math-aarch64"
