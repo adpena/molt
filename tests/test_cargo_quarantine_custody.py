@@ -23,6 +23,7 @@ from tools.memory_guard_core import cargo_quarantine as cargo
 from tools.memory_guard_core.process_model import process_identity
 from tests.process_guard_common import (
     close_owned_test_process,
+    current_thread_only,
     install_module_os_view,
     run_custody_subject_process,
     start_owned_test_process,
@@ -613,8 +614,14 @@ def test_release_failure_attempts_all_coordinate_handles(tmp_path, monkeypatch):
         if len(released) == 1:
             raise OSError("injected coordinate close failure")
 
-    monkeypatch.setattr(locks, "_try_acquire_file_lock", capture)
-    monkeypatch.setattr(locks, "_release_file_lock", release_then_fail_once)
+    monkeypatch.setattr(
+        locks, "_try_acquire_file_lock", current_thread_only(capture, acquire)
+    )
+    monkeypatch.setattr(
+        locks,
+        "_release_file_lock",
+        current_thread_only(release_then_fail_once, release),
+    )
     try:
         receipt = recover(target, (observation(owned),))
         assert len(acquired) == len(released) == 2
@@ -867,8 +874,12 @@ def test_release_interrupt_attempts_all_handles_then_propagates(tmp_path, monkey
         if len(attempts) == 1:
             raise KeyboardInterrupt("injected release interruption")
 
-    monkeypatch.setattr(locks, "_try_acquire_file_lock", capture)
-    monkeypatch.setattr(locks, "_release_file_lock", interrupt_once)
+    monkeypatch.setattr(
+        locks, "_try_acquire_file_lock", current_thread_only(capture, acquire)
+    )
+    monkeypatch.setattr(
+        locks, "_release_file_lock", current_thread_only(interrupt_once, release)
+    )
     try:
         with pytest.raises(KeyboardInterrupt, match="injected release interruption"):
             recover(target, (observation(owned),))
@@ -1954,8 +1965,12 @@ def test_recovery_diagnostics_cannot_interrupt_cleanup(
             raise _UnformattableRecoveryError("injected publication failure")
         return publish(**kwargs)
 
-    monkeypatch.setattr(locks, "_try_acquire_file_lock", capture)
-    monkeypatch.setattr(locks, "_release_file_lock", release_once)
+    monkeypatch.setattr(
+        locks, "_try_acquire_file_lock", current_thread_only(capture, acquire)
+    )
+    monkeypatch.setattr(
+        locks, "_release_file_lock", current_thread_only(release_once, release)
+    )
     monkeypatch.setattr(cargo, "_write_cargo_quarantine_receipt", failing_publication)
     try:
         receipt = recover(target, (observation(owned),))

@@ -333,3 +333,23 @@ def test_module_os_view_keeps_patches_out_of_the_process_wide_os(monkeypatch):
     assert Path(".").resolve().is_absolute()
     monkeypatch.undo()
     assert process_custody.os is os
+
+
+def test_current_thread_only_leaves_other_threads_on_the_original():
+    import threading
+
+    from tests.process_guard_common import current_thread_only
+
+    calls = []
+    dispatch = current_thread_only(
+        lambda value: calls.append(("double", value)) or "double",
+        lambda value: calls.append(("original", value)) or "original",
+    )
+    seen = []
+    worker = threading.Thread(target=lambda: seen.append(dispatch("worker")))
+    worker.start()
+    worker.join(5)
+
+    assert dispatch("owner") == "double"
+    assert seen == ["original"]
+    assert sorted(calls) == [("double", "owner"), ("original", "worker")]
