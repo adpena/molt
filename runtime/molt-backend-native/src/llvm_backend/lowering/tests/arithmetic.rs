@@ -244,7 +244,7 @@ fn plain_trampoline_adopted_raw_inputs_use_canonical_release() {
     // The ordinary lowering builder has no insertion point. The trampoline
     // must allocate and store its argument transport in its own function.
     let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
-    let trampoline = lowering.ensure_plain_trampoline("helper_raw", 2, false);
+    let trampoline = lowering.ensure_plain_trampoline("helper_raw", false);
     backend
         .module
         .verify()
@@ -289,7 +289,7 @@ fn plain_trampoline_boxes_bool_return_into_i64_abi() {
         Some(inkwell::module::Linkage::External),
     );
     let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
-    let trampoline = lowering.ensure_plain_trampoline("helper_bool", 0, false);
+    let trampoline = lowering.ensure_plain_trampoline("helper_bool", false);
 
     assert_eq!(
         trampoline.get_type().get_return_type(),
@@ -326,7 +326,7 @@ fn plain_trampoline_boxes_f64_return_into_i64_abi() {
         Some(inkwell::module::Linkage::External),
     );
     let lowering = make_dummy_lowering(&backend, &dummy, dummy_fn);
-    let trampoline = lowering.ensure_plain_trampoline("helper_f64", 0, false);
+    let trampoline = lowering.ensure_plain_trampoline("helper_f64", false);
 
     assert_eq!(
         trampoline.get_type().get_return_type(),

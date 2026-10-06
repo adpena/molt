@@ -866,15 +866,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }) else {
                     return false;
                 };
-                let arity = op
-                    .attrs
-                    .get("value")
-                    .and_then(|v| match v {
-                        AttrValue::Int(v) => usize::try_from(*v).ok(),
-                        _ => None,
-                    })
-                    .unwrap_or(0);
-                let func = self.ensure_function_symbol(&func_name, arity, false);
+                // A task poll entry registers without an arity claim; its
+                // linkage row names the one task parameter. A present claim
+                // must agree with that row.
+                let claimed_arity = op.attrs.get("value").and_then(|v| match v {
+                    AttrValue::Int(v) => usize::try_from(*v).ok(),
+                    _ => None,
+                });
+                let func = match claimed_arity {
+                    Some(arity) => self.ensure_function_symbol(&func_name, arity, false),
+                    None => self.ensure_linked_function_symbol(&func_name, false),
+                };
                 let func_addr = self
                     .backend
                     .builder
