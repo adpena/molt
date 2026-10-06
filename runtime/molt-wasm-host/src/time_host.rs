@@ -50,7 +50,7 @@ fn tzname_for_secs(secs: i64) -> Option<String> {
     if written == 0 {
         return None;
     }
-    let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, written as usize) };
+    let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), written as usize) };
     Some(String::from_utf8_lossy(bytes).to_string())
 }
 

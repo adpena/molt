@@ -9,6 +9,7 @@ pub use molt_obj_model::{opaque_handle_bits, register_ptr, resolve_opaque_ptr, r
 
 pub mod app_bootstrap;
 pub mod cached_handle;
+pub mod crc32;
 pub mod float_repr;
 pub mod host_capabilities_generated;
 pub mod numeric_error_policy_generated;

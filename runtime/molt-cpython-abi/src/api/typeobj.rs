@@ -10,7 +10,7 @@ use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
-use std::os::raw::{c_char, c_int, c_longlong, c_ulong, c_ulonglong};
+use std::os::raw::{c_char, c_int, c_long, c_longlong, c_ulong, c_ulonglong};
 use std::ptr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -3032,7 +3032,7 @@ pub unsafe extern "C" fn PyMember_GetOne(
                 field as *const f64,
             )),
             PY_T_BOOL => {
-                let b = *(field as *const i8) != 0;
+                let b = *field.cast::<c_char>() != 0;
                 let obj = if b {
                     (&raw mut crate::abi_types::Py_True).cast::<PyObject>()
                 } else {
@@ -3041,8 +3041,12 @@ pub unsafe extern "C" fn PyMember_GetOne(
                 crate::api::refcount::Py_INCREF(obj);
                 obj
             }
-            PY_T_BYTE => crate::api::numbers::PyLong_FromSsize_t(*(field as *const i8) as isize),
-            PY_T_UBYTE => crate::api::numbers::PyLong_FromSize_t(*(field as *const u8) as usize),
+            // CPython reads `*(char *)addr`: the result follows the target's
+            // `char` signedness (0..=255 on aarch64 Linux, -128..=127 elsewhere).
+            PY_T_BYTE => {
+                crate::api::numbers::PyLong_FromLong(c_long::from(*field.cast::<c_char>()))
+            }
+            PY_T_UBYTE => crate::api::numbers::PyLong_FromSize_t(*field.cast::<u8>() as usize),
             PY_T_USHORT => crate::api::numbers::PyLong_FromSize_t(*(field as *const u16) as usize),
             PY_T_UINT => crate::api::numbers::PyLong_FromSize_t(*(field as *const u32) as usize),
             PY_T_ULONG => crate::api::numbers::PyLong_FromUnsignedLongLong(
@@ -3059,7 +3063,7 @@ pub unsafe extern "C" fn PyMember_GetOne(
             PY_T_PYSSIZET => crate::api::numbers::PyLong_FromSsize_t(*(field as *const isize)),
             PY_T_CHAR => {
                 let c = *(field as *const c_char);
-                let buf = [c as u8, 0u8];
+                let buf = [crate::platform::c_char_to_u8(c), 0u8];
                 crate::api::strings::PyUnicode_FromStringAndSize(buf.as_ptr().cast(), 1)
             }
             PY_T_STRING => {
@@ -3177,7 +3181,7 @@ pub unsafe extern "C" fn PyMember_SetOne(
                     );
                     return -1;
                 }
-                *field.cast::<i8>() = is_true as i8;
+                *field.cast::<c_char>() = c_char::from(is_true);
                 0
             }
             PY_T_BYTE => {
@@ -3185,7 +3189,8 @@ pub unsafe extern "C" fn PyMember_SetOne(
                 if v == -1 && err_set() {
                     return -1;
                 }
-                *field.cast::<i8>() = v as i8;
+                // CPython stores `(char)long_val`; the width is one byte on every target.
+                *field.cast::<c_char>() = v as c_char;
                 0
             }
             PY_T_UBYTE => {
@@ -3193,7 +3198,7 @@ pub unsafe extern "C" fn PyMember_SetOne(
                 if v == -1 && err_set() {
                     return -1;
                 }
-                *(field as *mut u8) = v as u8;
+                *field.cast::<u8>() = v as u8;
                 0
             }
             PY_T_SHORT => {
