@@ -175,7 +175,7 @@ def analyze_ir_json(ir_data: dict) -> dict:
 def analyze_ir_file(ir_path: Path) -> dict | None:
     """Analyze a single IR JSON file."""
     try:
-        data = json.loads(ir_path.read_text())
+        data = json.loads(ir_path.read_text(encoding="utf-8"))
         result = analyze_ir_json(data)
         result["file"] = str(ir_path)
         return result

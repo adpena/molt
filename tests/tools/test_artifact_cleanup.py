@@ -110,7 +110,9 @@ def test_repo_root_must_be_this_checkout(tmp_path: Path) -> None:
     module = _load_artifact_cleanup()
     other_repo = tmp_path / "other"
     other_repo.mkdir()
-    (other_repo / "pyproject.toml").write_text("[project]\nname = 'molt'\n")
+    (other_repo / "pyproject.toml").write_text(
+        "[project]\nname = 'molt'\n", encoding="utf-8"
+    )
 
     try:
         module.validate_repo_root(other_repo)

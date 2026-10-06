@@ -275,7 +275,9 @@ def test_agent_coordination_command_path_uses_supplied_environment(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     executable = bin_dir / ("agent-tool.cmd" if os.name == "nt" else "agent-tool")
-    executable.write_text("@echo off\n" if os.name == "nt" else "#!/bin/sh\n")
+    executable.write_text(
+        "@echo off\n" if os.name == "nt" else "#!/bin/sh\n", encoding="utf-8"
+    )
     if os.name != "nt":
         executable.chmod(0o755)
 

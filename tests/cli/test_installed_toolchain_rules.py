@@ -38,7 +38,7 @@ def _complete_toolchain_inputs(bundle: Path) -> None:
     """Give the transport fixture real contracts consumed by doctor/update."""
     source = bundle / "source"
     manifest = source / distribution.MANIFEST_NAME
-    payload = json.loads(manifest.read_text())
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
     records = {entry["path"]: entry for entry in payload["files"]}
     for name in ("pyproject.toml", "config/tool_releases.toml"):
         data = (Path(__file__).resolve().parents[2] / name).read_bytes()
@@ -53,7 +53,7 @@ def _complete_toolchain_inputs(bundle: Path) -> None:
             "sha256": hashlib.sha256(data).hexdigest(),
         }
     payload["files"] = [records[name] for name in sorted(records)]
-    manifest.write_text(json.dumps(payload))
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _refuse_rust(monkeypatch) -> None:

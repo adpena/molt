@@ -152,7 +152,7 @@ def test_installed_source_closure_fails_closed(installation, damage):
     if damage == "file":
         (installation / "Cargo.toml").write_bytes(b"edited")
     elif damage == "extra":
-        (installation / "extra.py").write_text("pass")
+        (installation / "extra.py").write_text("pass", encoding="utf-8")
     elif damage == "empty-directory":
         (installation / "extra").mkdir()
     else:
@@ -190,8 +190,8 @@ def test_guest_project_discovery_starts_at_entry_without_launcher_override(
     project = tmp_path / "project"
     entry = project / "src" / "app.py"
     entry.parent.mkdir(parents=True)
-    entry.write_text("print('hello')\n")
-    (project / "pyproject.toml").write_text("[tool.molt]\n")
+    entry.write_text("print('hello')\n", encoding="utf-8")
+    (project / "pyproject.toml").write_text("[tool.molt]\n", encoding="utf-8")
     unrelated_cwd = tmp_path / "unrelated"
     unrelated_cwd.mkdir()
     monkeypatch.chdir(unrelated_cwd)
@@ -255,17 +255,19 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
     repository = Path(__file__).resolve().parents[2]
     bootstrap = (repository / "packaging/bootstrap.py").read_text(encoding="utf-8")
     (source / "pyproject.toml").write_text(
-        '[project]\nname="molt"\nversion="0.0.1"\nrequires-python=">=3.12"\n'
+        '[project]\nname="molt"\nversion="0.0.1"\nrequires-python=">=3.12"\n',
+        encoding="utf-8",
     )
     (source / "uv.lock").write_text(
         'version=1\nrevision=3\nrequires-python=">=3.12"\n'
-        '[[package]]\nname="molt"\nversion="0.0.1"\nsource={virtual="."}\n'
+        '[[package]]\nname="molt"\nversion="0.0.1"\nsource={virtual="."}\n',
+        encoding="utf-8",
     )
     package = source / "src/molt"
     package.mkdir(parents=True)
-    (package / "__init__.py").write_text("")
+    (package / "__init__.py").write_text("", encoding="utf-8")
     (package / "cli").mkdir()
-    (package / "cli/__init__.py").write_text("")
+    (package / "cli/__init__.py").write_text("", encoding="utf-8")
     (package / "cli/__main__.py").write_text(
         "import json, os, subprocess, sys\n"
         "child = subprocess.check_output([sys.executable, '-c', 'import molt; print(molt.__file__)'], text=True).strip()\n"
@@ -273,7 +275,8 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
         "'isolated':sys.flags.isolated, 'cli':__file__, 'child_source':child, "
         "'home':os.environ.get('MOLT_HOME'), "
         "'project':os.environ.get('MOLT_PROJECT_ROOT')}))\n"
-        "sys.exit(23)\n"
+        "sys.exit(23)\n",
+        encoding="utf-8",
     )
     default_paths = package / "cli/default_paths.py"
     shutil.copyfile(repository / "src/molt/cli/default_paths.py", default_paths)
@@ -302,11 +305,12 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
                     )
                 ],
             }
-        )
+        ),
+        encoding="utf-8",
     )
     project = tmp_path / "unrelated project"
     project.mkdir()
-    (project / "pyproject.toml").write_text("not a valid project")
+    (project / "pyproject.toml").write_text("not a valid project", encoding="utf-8")
     env = os.environ.copy()
     env.update(
         MOLT_CACHE=str(tmp_path / "cache"),
@@ -341,6 +345,7 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
             text=True,
             timeout=60,
             check=False,
+            encoding="utf-8",
         )
         assert result.returncode == 23, result.stderr
         return result
@@ -354,6 +359,7 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
             text=True,
             timeout=60,
             check=False,
+            encoding="utf-8",
         )
         assert result.returncode == 0, result.stderr
         assert "does not install Python or toolchains" in result.stderr
@@ -366,6 +372,7 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
         text=True,
         timeout=60,
         check=False,
+        encoding="utf-8",
     )
     assert result.returncode != 0 and "No dependencies were changed" in result.stderr
     assert not (expected_home / "environments").exists()
@@ -389,10 +396,11 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
     extra = site_packages / "unrequested-1.0.dist-info"
     extra.mkdir()
     (extra / "METADATA").write_text(
-        "Metadata-Version: 2.4\nName: unrequested\nVersion: 1.0\n"
+        "Metadata-Version: 2.4\nName: unrequested\nVersion: 1.0\n", encoding="utf-8"
     )
     (extra / "RECORD").write_text(
-        "unrequested-1.0.dist-info/METADATA,,\nunrequested-1.0.dist-info/RECORD,,\n"
+        "unrequested-1.0.dist-info/METADATA,,\nunrequested-1.0.dist-info/RECORD,,\n",
+        encoding="utf-8",
     )
     result = commands.run(
         command,
@@ -402,6 +410,7 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
         text=True,
         timeout=60,
         check=False,
+        encoding="utf-8",
     )
     assert result.returncode != 0 and extra.exists()  # no unsolicited repair
     setup()
@@ -426,6 +435,7 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
         text=True,
         timeout=30,
         check=False,
+        encoding="utf-8",
     )
     assert (
         rejected.returncode != 0 and "outside the immutable bundle" in rejected.stderr
@@ -445,6 +455,7 @@ def test_bootstrap_uses_locked_uv_environment_and_reuses_it(tmp_path, explicit_h
                 text=True,
                 timeout=30,
                 check=False,
+                encoding="utf-8",
             )
             assert result.returncode != 0 and result.stdout == ""
             assert "differs from the release manifest" in result.stderr
@@ -505,9 +516,9 @@ def test_installed_public_wrapper_cold_then_cache_hit_owns_admission(
     project = tmp_path / "guest"
     project.mkdir()
     entry = project / "app.py"
-    entry.write_text("VALUE = 1\n")
+    entry.write_text("VALUE = 1\n", encoding="utf-8")
     (project / "pyproject.toml").write_text(
-        '[project]\nname="guest"\nversion="0.1.0"\n'
+        '[project]\nname="guest"\nversion="0.1.0"\n', encoding="utf-8"
     )
     output = project / "compiled-program"
     monkeypatch.setattr(cache_fingerprints, "_compiler_root", lambda: installation)

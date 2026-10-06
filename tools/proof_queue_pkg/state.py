@@ -874,6 +874,7 @@ def _git_snapshot(cwd: Path) -> dict[str, object]:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
         )
 
     head = run_git("rev-parse", "HEAD")

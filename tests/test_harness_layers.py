@@ -21,10 +21,12 @@ def test_cargo_layers_execute_from_root_membership(monkeypatch, tmp_path: Path):
     import molt.harness_layers as layers
 
     manifest = tmp_path / "Cargo.toml"
-    manifest.write_text('[workspace]\nmembers = ["runtime/backend-dir"]\n')
+    manifest.write_text(
+        '[workspace]\nmembers = ["runtime/backend-dir"]\n', encoding="utf-8"
+    )
     member = tmp_path / "runtime" / "backend-dir" / "Cargo.toml"
     member.parent.mkdir(parents=True)
-    member.write_text('[package]\nname = "molt-backend"\n')
+    member.write_text('[package]\nname = "molt-backend"\n', encoding="utf-8")
     calls = []
 
     def run(args, *, cwd=None, **kwargs):

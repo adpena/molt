@@ -104,11 +104,11 @@ def _merge(tmp_path, documents):
     paths = []
     for i, doc in enumerate(documents):
         path = tmp_path / f"source-{i}.json"
-        path.write_text(json.dumps(doc))
+        path.write_text(json.dumps(doc), encoding="utf-8")
         paths.append(path)
     out = tmp_path / "merged.json"
     rc = ps._merge_boards(paths, out, no_gate=True)
-    return rc, json.loads(out.read_text()) if out.exists() else None
+    return rc, json.loads(out.read_text(encoding="utf-8")) if out.exists() else None
 
 
 @pytest.mark.parametrize(
@@ -217,13 +217,13 @@ def test_summary_rebuild_cannot_fill_unrecorded_measurement_identities(
     doc["provenance"]["backend_binary_identity"]["native/release-fast"] = None
     doc["provenance"]["stdlib_cache_key"] = None
     path = tmp_path / "prior.json"
-    path.write_text(json.dumps(doc))
+    path.write_text(json.dumps(doc), encoding="utf-8")
     # Present-day artifacts are deliberately available: they cannot attest old samples.
     monkeypatch.setattr(ps, "_backend_binary_identity_for", lambda *args: "new-binary")
     monkeypatch.setattr(ps, "_stdlib_cache_key_signal", lambda: "new-cache")
     rc = ps._rebuild_summary(path, no_gate=True)
     assert rc == 0
-    rebuilt = json.loads(path.read_text())
+    rebuilt = json.loads(path.read_text(encoding="utf-8"))
     assert (
         rebuilt["provenance"]["backend_binary_identity"]["native/release-fast"] is None
     )
@@ -243,7 +243,7 @@ def test_native_measurement_passes_oracle_minor_to_build(monkeypatch, tmp_path):
     monkeypatch.setattr(measure, "_perfscore_build_env", lambda spec: {})
     monkeypatch.setattr(measure.bench, "prepare_molt_binary", build)
     script = tmp_path / "bench_probe.py"
-    script.write_text("print(1)")
+    script.write_text("print(1)", encoding="utf-8")
     measure.measure_cell(
         script_path=script,
         spec=measure.BackendSpec("native", "native", None, "native"),

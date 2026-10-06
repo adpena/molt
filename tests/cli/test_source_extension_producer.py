@@ -3605,7 +3605,9 @@ def test_extension_staging_rewrites_all_inputs_into_relocatable_seal_payload(
         },
     )
 
-    staged_manifest = json.loads(staged.artifact_manifest_path.read_text())
+    staged_manifest = json.loads(
+        staged.artifact_manifest_path.read_text(encoding="utf-8")
+    )
     validate_source_extension_manifest_input_custody(staged_manifest)
     assert staged_manifest["runtime_python_import_modules"] == []
     assert "source_root" not in staged_manifest["source_plan"]
@@ -3851,7 +3853,11 @@ def test_stage_build_metadata_recomputes_canonical_leaf_and_identity_digests(
         ).hexdigest()
     )
     assert (
-        json.loads(staged["target/source-extension-target-metadata.json"].read_text())
+        json.loads(
+            staged["target/source-extension-target-metadata.json"].read_text(
+                encoding="utf-8"
+            )
+        )
         == canonical
     )
     assert "stale" not in json.dumps(canonical)

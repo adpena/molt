@@ -123,7 +123,7 @@ def test_parent_allocation_binds_consumption_and_terminal_cleanup(tmp_path):
     lease, env = _lease(tmp_path)
     legacy = lease.target.parent / "pt-abcdefgh"
     legacy.mkdir()
-    (legacy / "keep").write_text("legacy")
+    (legacy / "keep").write_text("legacy", encoding="utf-8")
     (lease.target / "output").write_bytes(b"scratch")
     assert scratch.guard_scratch(tmp_path, env) == lease.target
     result = _finish(lease)
@@ -131,7 +131,7 @@ def test_parent_allocation_binds_consumption_and_terminal_cleanup(tmp_path):
     assert lease.lock is None
     assert not lease.target.exists()
     assert not (lease.generation / "payload").exists()
-    assert (legacy / "keep").read_text() == "legacy"
+    assert (legacy / "keep").read_text(encoding="utf-8") == "legacy"
     assert _read(lease.generation / "terminal.json")["source_target"] == str(
         lease.target
     )
@@ -490,10 +490,10 @@ def test_unowned_pending_entries_remain_fail_closed(tmp_path, name):
     lease, _ = _lease(tmp_path)
     _finish(lease, success=False)
     invalid = scratch._index_path(lease.generation).parent / name
-    invalid.write_text("{}")
+    invalid.write_text("{}", encoding="utf-8")
     result = scratch.reclaim_terminal_scratch(lease.generation.parent)
     assert result["errors"] == [f"{invalid}: invalid scratch pending entry"]
-    assert invalid.read_text() == "{}"
+    assert invalid.read_text(encoding="utf-8") == "{}"
     assert (lease.generation / "payload").is_dir()
 
 

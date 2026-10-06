@@ -189,6 +189,7 @@ def cython_execution(
             text=True,
             timeout=60,
             check=False,
+            encoding="utf-8",
         )
         if probe.returncode != 0:
             raise ValueError(

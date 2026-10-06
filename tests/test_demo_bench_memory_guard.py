@@ -280,13 +280,13 @@ def test_demo_regression_cli_reads_actual_artifact(tmp_path):
         name: scenario_summary() for name in ("baseline", "offload", "offload_table")
     }
     path = tmp_path / "demo.json"
-    path.write_text(json.dumps(artifact))
+    path.write_text(json.dumps(artifact), encoding="utf-8")
     passing = run_checker(path)
     assert passing.returncode == 0, passing.stderr
     assert passing.stdout.strip() == "Perf check OK"
     assert "not bound to a demo run" in passing.stderr
     artifact["offload_table"]["metrics"]["http_req_duration"] = {}
-    path.write_text(json.dumps(artifact))
+    path.write_text(json.dumps(artifact), encoding="utf-8")
     failing = run_checker(path)
     assert failing.returncode != 0
     assert "offload_table: missing or invalid p95" in failing.stderr
@@ -310,9 +310,9 @@ def test_demo_k6_failure_retains_full_diagnostic(monkeypatch, tmp_path, capsys):
             {"K6_SUMMARY_EXPORT": str(tmp_path / "summary.json")},
         )
     assert "threshold breached" in capsys.readouterr().err
-    assert (
-        tmp_path / "k6_baseline_stderr.log"
-    ).read_text() == "threshold breached\nguard repro context\n"
+    assert (tmp_path / "k6_baseline_stderr.log").read_text(
+        encoding="utf-8"
+    ) == "threshold breached\nguard repro context\n"
 
 
 BASH = (
@@ -333,7 +333,8 @@ def test_stack_cleanup_waits_for_graceful_service_exit(tmp_path, exit_status):
     service.write_text(
         'trap \'kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; '
         'sleep 0.2; printf drained > "$2"; exit 0\' TERM\n'
-        'sleep 60 &\nchild=$!\nprintf "%s" "$child" > "$1"\nwait "$child"\n'
+        'sleep 60 &\nchild=$!\nprintf "%s" "$child" > "$1"\nwait "$child"\n',
+        encoding="utf-8",
     )
     helper = REPO_ROOT / "bench/scripts/stack_lifecycle.sh"
     script = tmp_path / "lifecycle.sh"
@@ -341,7 +342,8 @@ def test_stack_cleanup_waits_for_graceful_service_exit(tmp_path, exit_status):
         'set -euo pipefail\nROOT="$1"\nsource "$2"\n'
         'bash "$3" "$4" "$5" &\nSERVICE_PIDS+=("$!")\n'
         'for _ in {1..100}; do [[ ! -f "$4" ]] || break; sleep 0.05; done\n'
-        '[[ -f "$4" ]] || exit 90\nexit "$6"\n'
+        '[[ -f "$4" ]] || exit 90\nexit "$6"\n',
+        encoding="utf-8",
     )
     # The raw shell's process-group cleanup is the subject under test.
     proc = run_custody_subject_process(
@@ -360,8 +362,8 @@ def test_stack_cleanup_waits_for_graceful_service_exit(tmp_path, exit_status):
         timeout=20,
     )
     assert proc.returncode == exit_status, proc.stderr
-    assert finished.read_text() == "drained"
-    descendant_pid = ready.read_text()
+    assert finished.read_text(encoding="utf-8") == "drained"
+    descendant_pid = ready.read_text(encoding="utf-8")
     probe = run_custody_subject_process(
         [BASH, "-c", 'kill -0 "$1" 2>/dev/null', "probe", descendant_pid],
         capture_output=True,
@@ -385,7 +387,7 @@ def test_demo_regressions_reject_malformed_metric_blocks(key):
 def test_demo_regression_cli_checks_partial_failed_run(tmp_path, source_identity):
     run_dir = demo_bench.prepare_run(tmp_path / "demo-runs")
     (run_dir / "k6_baseline_summary.json").write_text(
-        json.dumps(scenario_summary(1100))
+        json.dumps(scenario_summary(1100)), encoding="utf-8"
     )
     proc = run_checker(run_dir)
     assert proc.returncode != 0
@@ -489,7 +491,8 @@ def test_demo_results_root_is_not_a_run(monkeypatch, tmp_path, source_identity):
                 name: scenario_summary()
                 for name in ("baseline", "offload", "offload_table")
             }
-        )
+        ),
+        encoding="utf-8",
     )
     complete_run(monkeypatch, tmp_path / "demo-runs")
     for root in (tmp_path, tmp_path / "demo-runs"):

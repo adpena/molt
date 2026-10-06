@@ -72,7 +72,7 @@ class CompileOnlyFuzzer:
                     continue
 
                 source_path = os.path.join(tmpdir, f"fuzz_co_{i:06d}.py")
-                Path(source_path).write_text(source)
+                Path(source_path).write_text(source, encoding="utf-8")
 
                 try:
                     binary, build_error = compile_molt(

@@ -33,7 +33,8 @@ def test_wasm_string_ops_parity(tmp_path: Path) -> None:
             print('mississippi'.count('iss'))
             print('mississippi'.count('iss', 1, 6))
             """
-        )
+        ),
+        encoding="utf-8",
     )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)

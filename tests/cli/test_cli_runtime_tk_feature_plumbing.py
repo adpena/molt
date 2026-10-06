@@ -1004,7 +1004,7 @@ def test_backend_fingerprint_reuses_stored_hash_when_inputs_unchanged(
     stub_compiler_admission(monkeypatch)
     write_compiler_lock(tmp_path)
     source = tmp_path / "backend_source.rs"
-    source.write_text("pub fn marker() {}\n")
+    source.write_text("pub fn marker() {}\n", encoding="utf-8")
     monkeypatch.setattr(
         cli_backend_binary,
         "_backend_source_paths",
@@ -1046,7 +1046,7 @@ def test_backend_fingerprint_reuses_clean_source_state_without_metadata_scan(
     stub_compiler_admission(monkeypatch)
     write_compiler_lock(tmp_path)
     source = tmp_path / "backend_source.rs"
-    source.write_text("pub fn marker() {}\n")
+    source.write_text("pub fn marker() {}\n", encoding="utf-8")
     source_state = {
         "schema_version": 1,
         "kind": "git-clean-head",

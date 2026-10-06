@@ -49,7 +49,12 @@ def _git(
     root: Path, *args: str, check: bool = True
 ) -> subprocess.CompletedProcess[str]:
     return _COMMANDS.run(
-        ["git", *args], cwd=root, check=check, capture_output=True, text=True
+        ["git", *args],
+        cwd=root,
+        check=check,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
 
 

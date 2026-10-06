@@ -295,7 +295,7 @@ def main() -> int:
                     _log(f"  seed={r.seed}: {original_lines} -> {new_lines} lines")
                     if output_dir:
                         min_path = output_dir / f"fuzz_{r.program_id:06d}_minimized.py"
-                        min_path.write_text(shrunk.source)
+                        min_path.write_text(shrunk.source, encoding="utf-8")
                         _log(f"    -> {min_path}")
 
         receipt = classified_fuzz_receipt(summary, "safe")

@@ -1127,7 +1127,7 @@ def test_llvm_alone_requires_atl_after_shared_msvc_activation(tmp_path):
     env = {"INCLUDE": str(include)}
     with pytest.raises(SystemExit, match="Microsoft.VisualStudio.Component.VC.ATL"):
         bootstrap_llvm._require_windows_atl(env, tmp_path)
-    (include / "atlbase.h").write_text("")
+    (include / "atlbase.h").write_text("", encoding="utf-8")
     bootstrap_llvm._require_windows_atl(env, tmp_path)
 
 

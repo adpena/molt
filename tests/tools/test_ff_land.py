@@ -25,7 +25,7 @@ def _run(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _init_commit(repo: Path, name: str = "a.txt", content: str = "v1\n") -> None:
-    (repo / name).write_text(content)
+    (repo / name).write_text(content, encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", f"add {name}")
 
@@ -73,7 +73,7 @@ def test_nothing_to_land(work: Path) -> None:
 
 
 def test_dirty_tree_refused(work: Path) -> None:
-    (work / "a.txt").write_text("locally edited\n")
+    (work / "a.txt").write_text("locally edited\n", encoding="utf-8")
     res = _run(work)
     assert res.returncode == 2, res.stdout
     assert "REFUSED" in res.stdout and "uncommitted" in res.stdout

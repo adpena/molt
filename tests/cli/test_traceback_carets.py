@@ -112,7 +112,7 @@ def _compile_and_run(source: str) -> subprocess.CompletedProcess[str]:
         src_file = os.path.join(tmpdir, "test_input.py")
         out_dir = os.path.join(tmpdir, "out")
 
-        with open(src_file, "w") as f:
+        with open(src_file, "w", encoding="utf-8") as f:
             f.write(source)
 
         # Build
@@ -189,7 +189,7 @@ def _ensure_native_build_warm() -> None:
             tmpdir = _resolve_macos_tmp(tmpdir)
             src_file = os.path.join(tmpdir, "warm_input.py")
             out_dir = os.path.join(tmpdir, "warm_out")
-            with open(src_file, "w") as f:
+            with open(src_file, "w", encoding="utf-8") as f:
                 f.write("print(1)\n")
             try:
                 warm_result = run_cli_test_process(

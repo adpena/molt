@@ -482,11 +482,11 @@ def _load_generated_importer(
 
 def test_resolve_module_path_prefers_package_over_module(tmp_path: Path) -> None:
     module = tmp_path / "shadowed.py"
-    module.write_text("value = 'module'\n")
+    module.write_text("value = 'module'\n", encoding="utf-8")
     package_dir = tmp_path / "shadowed"
     package_dir.mkdir()
     package_init = package_dir / "__init__.py"
-    package_init.write_text("value = 'package'\n")
+    package_init.write_text("value = 'package'\n", encoding="utf-8")
     assert (
         cli_module_resolution._resolve_module_path("shadowed", [tmp_path])
         == package_init
@@ -631,7 +631,7 @@ def test_stdlib_test_support_layout_resolves_like_cpython() -> None:
 
 def test_write_importer_module_is_transaction_shim(tmp_path: Path) -> None:
     importer = cli._write_importer_module(tmp_path)
-    text = importer.read_text()
+    text = importer.read_text(encoding="utf-8")
     assert "molt_importlib_import_transaction" in text
     assert "return _IMPORT_TRANSACTION(name, globals, locals, fromlist, level)" in text
     assert "_KNOWN_MODULES" not in text
@@ -930,8 +930,12 @@ def test_prepare_entry_module_graph_adds_runtime_import_support_once(
     target: str,
 ) -> None:
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("import importlib\nvalue = importlib.import_module('json')\n")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_path.write_text(
+        "import importlib\nvalue = importlib.import_module('json')\n", encoding="utf-8"
+    )
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     module_reasons: dict[str, set[str]] = {}
 
     prepared, error = cli._prepare_entry_module_graph(
@@ -969,8 +973,10 @@ def test_materialize_import_plan_does_not_rescan_importlib_support(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("value = 1\n")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_path.write_text("value = 1\n", encoding="utf-8")
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     module_reasons: dict[str, set[str]] = {}
     prepared, error = cli._prepare_entry_module_graph(
         source_path=entry_path,
@@ -1024,8 +1030,10 @@ def test_materialize_import_plan_retains_external_native_artifact_plan(
         native_archives=native_archives,
     )
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("import nativepkg\n")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_path.write_text("import nativepkg\n", encoding="utf-8")
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli._resolve_import_admission_policy(
         external_module_roots=(external_root,),
@@ -1082,8 +1090,10 @@ def test_materialize_import_plan_keeps_runtime_dispatch_native_artifact(
         manifest_overrides={"python_exports": ["nativepkg.dynamic"]},
     )
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("print('demo')\n")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_path.write_text("print('demo')\n", encoding="utf-8")
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli._resolve_import_admission_policy(
         external_module_roots=(external_root,),
@@ -1292,7 +1302,9 @@ def test_materialize_import_plan_adds_native_runtime_python_import_closure(
     )
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("print('demo')\n", encoding="utf-8")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli._resolve_import_admission_policy(
         external_module_roots=(external_root,),
@@ -1626,7 +1638,9 @@ def test_materialize_import_plan_adds_reachable_native_support_source_closure(
     )
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("print('demo')\n", encoding="utf-8")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli._resolve_import_admission_policy(
         external_module_roots=(external_root,),
@@ -1763,7 +1777,9 @@ def test_materialize_import_plan_closes_cross_package_native_support_source(
     )
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("import numpy\nprint(numpy)\n", encoding="utf-8")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "numpy scipy")
     policy, policy_error = cli._resolve_import_admission_policy(
         external_module_roots=(external_root,),
@@ -1877,7 +1893,9 @@ def test_materialize_import_plan_compiles_pruned_native_support_source(
     )
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("print('demo')\n", encoding="utf-8")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli._resolve_import_admission_policy(
         external_module_roots=(external_root,),
@@ -2115,7 +2133,9 @@ def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
     )
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("print('demo')\n", encoding="utf-8")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli._resolve_import_admission_policy(
         external_module_roots=(external_root,),
@@ -2259,7 +2279,9 @@ def test_materialize_import_plan_compiles_native_runtime_package_import_init(
     )
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("print('demo')\n", encoding="utf-8")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli._resolve_import_admission_policy(
         external_module_roots=(external_root,),
@@ -2361,7 +2383,9 @@ def test_entry_native_package_import_compiles_package_init_closure(
     entry_path.write_text(
         "import nativepkg\nprint(nativepkg.VALUE)\n", encoding="utf-8"
     )
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli._resolve_import_admission_policy(
         external_module_roots=(external_root,),
@@ -2443,7 +2467,9 @@ def test_materialize_import_plan_does_not_compile_package_init_support_without_r
     )
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("print('demo')\n", encoding="utf-8")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli._resolve_import_admission_policy(
         external_module_roots=(external_root,),
@@ -2547,7 +2573,9 @@ def test_materialize_import_plan_rejects_missing_native_support_artifact(
     )
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("print('demo')\n", encoding="utf-8")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli._resolve_import_admission_policy(
         external_module_roots=(external_root,),
@@ -2700,7 +2728,9 @@ def test_materialize_import_plan_accepts_relocated_object_closure_source_custody
     )
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("print('demo')\n", encoding="utf-8")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli._resolve_import_admission_policy(
         external_module_roots=(external_root,),
@@ -2793,7 +2823,9 @@ def test_materialize_import_plan_rejects_manifest_mutation_after_plan_validation
     )
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("print('demo')\n", encoding="utf-8")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli._resolve_import_admission_policy(
         external_module_roots=(external_root,),
@@ -2930,7 +2962,9 @@ def test_native_support_source_stdlib_imports_join_compile_closure(
     )
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("print('demo')\n", encoding="utf-8")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     monkeypatch.setenv("MOLT_EXTERNAL_STATIC_PACKAGES", "nativepkg")
     policy, policy_error = cli._resolve_import_admission_policy(
         external_module_roots=(external_root,),
@@ -2990,8 +3024,10 @@ def test_entry_collections_closure_preserves_static_helper_import_edges(
     tmp_path: Path,
 ) -> None:
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("import collections\n")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_path.write_text("import collections\n", encoding="utf-8")
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     module_reasons: dict[str, set[str]] = {}
 
     prepared, error = cli._prepare_entry_module_graph(
@@ -3022,8 +3058,10 @@ def test_collections_static_helper_copy_reaches_backend_symbol_contract(
     monkeypatch,
 ) -> None:
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("import collections\n")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_path.write_text("import collections\n", encoding="utf-8")
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     module_reasons: dict[str, set[str]] = {}
 
     prepared, error = cli._prepare_entry_module_graph(
@@ -3109,8 +3147,10 @@ def test_prepare_entry_module_graph_marks_source_import_syntax_runtime_supported
     tmp_path: Path,
 ) -> None:
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("import math\nvalue = math.sqrt(4)\n")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_path.write_text("import math\nvalue = math.sqrt(4)\n", encoding="utf-8")
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     prepared, error = cli._prepare_entry_module_graph(
         source_path=entry_path,
         entry_module="demo",
@@ -3137,9 +3177,12 @@ def test_prepare_entry_module_graph_marks_dynamic_import_entry_as_runtime_suppor
 ) -> None:
     entry_path = tmp_path / "demo.py"
     entry_path.write_text(
-        "import importlib as loader\nvalue = loader.import_module('json')\n"
+        "import importlib as loader\nvalue = loader.import_module('json')\n",
+        encoding="utf-8",
     )
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     prepared, error = cli._prepare_entry_module_graph(
         source_path=entry_path,
         entry_module="demo",
@@ -3176,7 +3219,9 @@ def test_prepare_entry_module_graph_keeps_dependency_function_dynamic_import_laz
     (runtime / "ops_cpu.py").write_text("VALUE = 1\n", encoding="utf-8")
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("import pkg\n", encoding="utf-8")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
 
     prepared, error = cli._prepare_entry_module_graph(
         source_path=entry_path,
@@ -3215,7 +3260,9 @@ def test_prepare_entry_module_graph_admits_declared_static_runtime_import(
     (runtime / "ops_cpu.py").write_text("import base64\nVALUE = 1\n", encoding="utf-8")
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("import pkg\n", encoding="utf-8")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     monkeypatch.setenv("MOLT_STDLIB_PROFILE", "full")
     monkeypatch.setenv("MOLT_STATIC_IMPORT_MODULES", "pkg.runtime.ops_cpu")
 
@@ -3260,7 +3307,9 @@ def test_prepare_entry_module_graph_full_scans_declared_static_module(
     (runtime / "ops_cpu.py").write_text("VALUE = 1\n", encoding="utf-8")
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("import pkg\n", encoding="utf-8")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     monkeypatch.setenv("MOLT_STATIC_IMPORT_MODULES", "pkg.device")
 
     prepared, error = cli._prepare_entry_module_graph(
@@ -3298,7 +3347,9 @@ def test_prepare_entry_module_graph_rejects_unadmitted_static_runtime_import(
     (runtime / "ops_cpu.py").write_text("VALUE = 1\n", encoding="utf-8")
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("import pkg\n", encoding="utf-8")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     monkeypatch.setenv("MOLT_STATIC_IMPORT_MODULES", "pkg.runtime.ops_cpu")
 
     prepared, error = cli._prepare_entry_module_graph(
@@ -3337,7 +3388,9 @@ def test_prepare_entry_module_graph_marks_dependency_module_init_dynamic_import(
     (runtime / "ops_cpu.py").write_text("VALUE = 1\n", encoding="utf-8")
     entry_path = tmp_path / "demo.py"
     entry_path.write_text("import pkg\n", encoding="utf-8")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
 
     prepared, error = cli._prepare_entry_module_graph(
         source_path=entry_path,
@@ -3363,8 +3416,10 @@ def test_prepare_entry_module_graph_collects_literal_dunder_import_targets(
     tmp_path: Path,
 ) -> None:
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("value = __import__('math')\n")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_path.write_text("value = __import__('math')\n", encoding="utf-8")
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     prepared, error = cli._prepare_entry_module_graph(
         source_path=entry_path,
         entry_module="demo",
@@ -3415,7 +3470,9 @@ def test_prepare_entry_module_graph_closes_added_package_parent_imports(
     entry_path.write_text(
         "from molt import intrinsics as _intrinsics\n", encoding="utf-8"
     )
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     module_reasons: dict[str, set[str]] = {}
 
     prepared, error = cli._prepare_entry_module_graph(
@@ -3452,8 +3509,10 @@ def test_prepare_entry_module_graph_marks_generated_importer_references_explicit
     tmp_path: Path,
 ) -> None:
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("import _molt_importer\n")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_path.write_text("import _molt_importer\n", encoding="utf-8")
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     prepared, error = cli._prepare_entry_module_graph(
         source_path=entry_path,
         entry_module="demo",
@@ -3477,8 +3536,10 @@ def test_materialize_import_plan_does_not_mutate_prepared_entry_graph(
     tmp_path: Path,
 ) -> None:
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("import _molt_importer\n")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_path.write_text("import _molt_importer\n", encoding="utf-8")
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     prepared, error = cli._prepare_entry_module_graph(
         source_path=entry_path,
         entry_module="demo",
@@ -3515,8 +3576,10 @@ def test_materialize_import_plan_does_not_mutate_prepared_entry_graph(
 
 def test_import_plan_freezes_graph_and_allowlist(tmp_path: Path) -> None:
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("value = 1\n")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_path.write_text("value = 1\n", encoding="utf-8")
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     prepared, error = cli._prepare_entry_module_graph(
         source_path=entry_path,
         entry_module="demo",
@@ -3558,8 +3621,10 @@ def test_generated_importer_import_plan_includes_runtime_support_modules(
     tmp_path: Path,
 ) -> None:
     entry_path = tmp_path / "demo.py"
-    entry_path.write_text("import _molt_importer\n")
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_path.write_text("import _molt_importer\n", encoding="utf-8")
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     prepared, error = cli._prepare_entry_module_graph(
         source_path=entry_path,
         entry_module="demo",
@@ -4042,9 +4107,12 @@ def test_prepare_entry_module_graph_marks_getattr_runtime_import_entry_as_suppor
     entry_path.write_text(
         "import importlib\n"
         "loader = getattr(importlib, 'import_module')\n"
-        "value = loader('json')\n"
+        "value = loader('json')\n",
+        encoding="utf-8",
     )
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     prepared, error = cli._prepare_entry_module_graph(
         source_path=entry_path,
         entry_module="demo",
@@ -4164,10 +4232,14 @@ def test_find_project_root_observes_new_project_markers(tmp_path, monkeypatch):
     nested = tmp_path / "a" / "b"
     nested.mkdir(parents=True)
     entry = nested / "main.py"
-    entry.write_text("print(1)")
-    (tmp_path / "pyproject.toml").write_text("[project]\nname='outer'\n")
+    entry.write_text("print(1)", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='outer'\n", encoding="utf-8"
+    )
     assert cli._find_project_root(entry) == tmp_path
-    (nested / "pyproject.toml").write_text("[project]\nname='inner'\n")
+    (nested / "pyproject.toml").write_text(
+        "[project]\nname='inner'\n", encoding="utf-8"
+    )
     assert cli._find_project_root(entry) == nested
     (nested / "pyproject.toml").unlink()
     assert cli._find_project_root(entry) == tmp_path
@@ -4191,7 +4263,7 @@ def test_stdlib_allowlist_is_cached(
         tmp_path / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
     )
     spec_path.parent.mkdir(parents=True, exist_ok=True)
-    spec_path.write_text("| Module |\n| --- |\n| json / pathlib |\n")
+    spec_path.write_text("| Module |\n| --- |\n| json / pathlib |\n", encoding="utf-8")
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("MOLT_SOURCE_ROOT", str(tmp_path))
     monkeypatch.chdir(tmp_path)
@@ -4354,9 +4426,11 @@ def test_external_root_direct_import_does_not_admit_transitive_children(
     project.mkdir()
     package = external_root / "hugepkg"
     package.mkdir(parents=True)
-    (project / "main.py").write_text("import hugepkg\n")
-    (package / "__init__.py").write_text("import hugepkg.heavy\nVALUE = 1\n")
-    (package / "heavy.py").write_text("VALUE = 2\n")
+    (project / "main.py").write_text("import hugepkg\n", encoding="utf-8")
+    (package / "__init__.py").write_text(
+        "import hugepkg.heavy\nVALUE = 1\n", encoding="utf-8"
+    )
+    (package / "heavy.py").write_text("VALUE = 2\n", encoding="utf-8")
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [project.resolve(), external_root.resolve()]
     policy = cli._ImportAdmissionPolicy(external_roots=(external_root.resolve(),))
@@ -4387,9 +4461,11 @@ def test_external_static_package_admission_closes_transitive_children(
     project.mkdir()
     package = external_root / "hugepkg"
     package.mkdir(parents=True)
-    (project / "main.py").write_text("import hugepkg\n")
-    (package / "__init__.py").write_text("import hugepkg.heavy\nVALUE = 1\n")
-    (package / "heavy.py").write_text("VALUE = 2\n")
+    (project / "main.py").write_text("import hugepkg\n", encoding="utf-8")
+    (package / "__init__.py").write_text(
+        "import hugepkg.heavy\nVALUE = 1\n", encoding="utf-8"
+    )
+    (package / "heavy.py").write_text("VALUE = 2\n", encoding="utf-8")
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [project.resolve(), external_root.resolve()]
     policy = cli._ImportAdmissionPolicy(
@@ -4421,12 +4497,16 @@ def test_external_package_parent_closure_cannot_backdoor_children(
     subpackage = package / "sub"
     subpackage.mkdir(parents=True)
     entry = project / "main.py"
-    entry.write_text("import externalpkg.sub.leaf\n")
-    (package / "__init__.py").write_text("import externalpkg.massive\n")
-    (package / "massive.py").write_text("VALUE = 1\n")
-    (subpackage / "__init__.py").write_text("import externalpkg.sub.massive\n")
-    (subpackage / "massive.py").write_text("VALUE = 2\n")
-    (subpackage / "leaf.py").write_text("VALUE = 3\n")
+    entry.write_text("import externalpkg.sub.leaf\n", encoding="utf-8")
+    (package / "__init__.py").write_text(
+        "import externalpkg.massive\n", encoding="utf-8"
+    )
+    (package / "massive.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (subpackage / "__init__.py").write_text(
+        "import externalpkg.sub.massive\n", encoding="utf-8"
+    )
+    (subpackage / "massive.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (subpackage / "leaf.py").write_text("VALUE = 3\n", encoding="utf-8")
     stdlib_root = cli_module_resolution._stdlib_root_path()
     policy = cli._ImportAdmissionPolicy(external_roots=(external_root.resolve(),))
 
@@ -4436,7 +4516,7 @@ def test_external_package_parent_closure_cannot_backdoor_children(
         module_roots=[project.resolve(), external_root.resolve()],
         stdlib_root=stdlib_root,
         project_root=project,
-        entry_tree=ast.parse(entry.read_text()),
+        entry_tree=ast.parse(entry.read_text(encoding="utf-8")),
         diagnostics_enabled=True,
         module_reasons={},
         json_output=False,
@@ -4458,7 +4538,9 @@ def test_native_artifact_source_package_denies_fallback_source_root(
 ) -> None:
     fallback_init = tmp_path / "upstream" / "scipy" / "_external" / "__init__.py"
     fallback_init.parent.mkdir(parents=True)
-    fallback_init.write_text("import scipy._external.packaging_version.version\n")
+    fallback_init.write_text(
+        "import scipy._external.packaging_version.version\n", encoding="utf-8"
+    )
     policy = cli._ImportAdmissionPolicy(
         native_artifact_source_packages=frozenset({"scipy"})
     )
@@ -4868,7 +4950,9 @@ def _write_external_native_package(
                 manifest, manifest_path=manifest_path
             )
             assert errors == [], errors
-        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
     if shim_source is not None:
         (package_dir / f"{artifact_name}.molt.py").write_text(
             shim_source,
@@ -6599,8 +6683,12 @@ def test_external_native_artifact_plan_allows_object_local_resolved_undefineds(
     entry_source = tmp_path / "sources" / "entry.c"
     filters_source = tmp_path / "sources" / "filters.c"
     entry_source.parent.mkdir()
-    entry_source.write_text("int PyInit__nd_image(void) { return 0; }\n")
-    filters_source.write_text("int NI_Correlate(void) { return 0; }\n")
+    entry_source.write_text(
+        "int PyInit__nd_image(void) { return 0; }\n", encoding="utf-8"
+    )
+    filters_source.write_text(
+        "int NI_Correlate(void) { return 0; }\n", encoding="utf-8"
+    )
     _write_external_native_artifact(
         external_root,
         native_archives=native_archives,
@@ -11243,7 +11331,7 @@ def test_discover_with_core_modules_includes_asyncio_ssl_dependency(
     tmp_path: Path,
 ) -> None:
     entry = tmp_path / "main.py"
-    entry.write_text("import asyncio\n")
+    entry.write_text("import asyncio\n", encoding="utf-8")
 
     module_graph = _discover_with_core_modules(entry)
 
@@ -11639,7 +11727,7 @@ def test_backend_ir_lease_streams_json_without_bytes_helper(
     )
 
     assert lease_path.parent == tmp_path / "tmp" / "backend-ir-leases"
-    payload = json.loads(lease_path.read_text())
+    payload = json.loads(lease_path.read_text(encoding="utf-8"))
     assert payload["functions"][0]["name"] == "main"
 
 
@@ -11737,7 +11825,7 @@ def test_link_fingerprint_reuses_inputs_digest_when_unchanged(tmp_path: Path) ->
     stub = tmp_path / "main_stub.c"
     obj = tmp_path / "output.o"
     runtime = tmp_path / "libmolt_runtime.a"
-    stub.write_text("int main(void) { return 0; }\n")
+    stub.write_text("int main(void) { return 0; }\n", encoding="utf-8")
     obj.write_bytes(b"\x7fELFobject")
     runtime.write_bytes(b"archive")
 
@@ -11761,7 +11849,7 @@ def test_link_fingerprint_changes_when_link_command_changes(tmp_path: Path) -> N
     stub = tmp_path / "main_stub.c"
     obj = tmp_path / "output.o"
     runtime = tmp_path / "libmolt_runtime.a"
-    stub.write_text("int main(void) { return 0; }\n")
+    stub.write_text("int main(void) { return 0; }\n", encoding="utf-8")
     obj.write_bytes(b"\x7fELFobject")
     runtime.write_bytes(b"archive")
 
@@ -12479,7 +12567,7 @@ def test_build_native_link_plan_does_not_read_ambient_stdlib_env(
     output_binary = tmp_path / "app"
     ambient_stdlib = tmp_path / "ambient.stdlib.o"
     output_obj.write_bytes(b"\x7fELFobject")
-    stub_path.write_text("int main(void) { return 0; }\n")
+    stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
     runtime_lib.write_bytes(b"archive")
     ambient_stdlib.write_bytes(b"stdlib")
 
@@ -12511,7 +12599,7 @@ def test_linux_release_link_omits_safe_icf_without_capable_linker(
     runtime_lib = tmp_path / "libmolt_runtime.a"
     output_binary = tmp_path / "app"
     output_obj.write_bytes(b"\x7fELFobject")
-    stub_path.write_text("int main(void) { return 0; }\n")
+    stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
     runtime_lib.write_bytes(b"archive")
     clang = tmp_path / "clang"
     clang.write_bytes(b"tool")
@@ -12551,7 +12639,7 @@ def test_linux_link_places_source_extension_archives_in_runtime_group(
     runtime_lib = tmp_path / "libmolt_runtime.a"
     output_binary = tmp_path / "app"
     output_obj.write_bytes(b"\x7fELFobject")
-    stub_path.write_text("int main(void) { return 0; }\n")
+    stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
     runtime_lib.write_bytes(b"archive")
     extension_archive = tmp_path / "libextension.a"
     extension_archive.write_bytes(b"extension")
@@ -12615,7 +12703,7 @@ def test_darwin_link_force_loads_each_source_extension_archive_without_runtime_e
     runtime_lib = tmp_path / "libmolt_runtime.a"
     output_binary = tmp_path / "app"
     output_obj.write_bytes(b"Mach-O object")
-    stub_path.write_text("int main(void) { return 0; }\n")
+    stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
     runtime_lib.write_bytes(b"archive")
     extension_archives = (
         tmp_path / "libextension_core.a",
@@ -12694,7 +12782,7 @@ def test_linux_release_link_selects_lld_without_icf_for_fn_identity(
     runtime_lib = tmp_path / "libmolt_runtime.a"
     output_binary = tmp_path / "app"
     output_obj.write_bytes(b"\x7fELFobject")
-    stub_path.write_text("int main(void) { return 0; }\n")
+    stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
     runtime_lib.write_bytes(b"archive")
     clang = tmp_path / "clang"
     clang.write_bytes(b"tool")
@@ -12737,7 +12825,7 @@ def test_windows_link_omits_icf_for_fn_identity(
     runtime_lib = tmp_path / "molt_runtime.lib"
     output_binary = tmp_path / "app.exe"
     output_obj.write_bytes(b"COFFobject")
-    stub_path.write_text("int main(void) { return 0; }\n")
+    stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
     runtime_lib.write_bytes(b"archive")
 
     monkeypatch.setenv("CC", "clang")
@@ -12773,7 +12861,7 @@ def test_windows_link_force_loads_source_extension_archives_without_wildcard_exp
     runtime_lib = tmp_path / "molt_runtime.lib"
     output_binary = tmp_path / "app.exe"
     output_obj.write_bytes(b"COFFobject")
-    stub_path.write_text("int main(void) { return 0; }\n")
+    stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
     runtime_lib.write_bytes(b"archive")
     extension_archive = tmp_path / "extension.lib"
     extension_archive.write_bytes(b"extension")
@@ -12830,7 +12918,7 @@ def test_windows_gnu_link_uses_gnu_system_lib_flags(
     runtime_lib = tmp_path / "molt_runtime.lib"
     output_binary = tmp_path / "app.exe"
     output_obj.write_bytes(b"COFFobject")
-    stub_path.write_text("int main(void) { return 0; }\n")
+    stub_path.write_text("int main(void) { return 0; }\n", encoding="utf-8")
     runtime_lib.write_bytes(b"archive")
 
     monkeypatch.setattr(
@@ -12967,12 +13055,12 @@ def test_shared_module_resolution_cache_reduces_repeated_resolution(
     pkg = tmp_path / "pkg"
     subpkg = pkg / "subpkg"
     subpkg.mkdir(parents=True)
-    (pkg / "__init__.py").write_text("from .subpkg import mod\n")
-    (subpkg / "__init__.py").write_text("from . import mod\n")
+    (pkg / "__init__.py").write_text("from .subpkg import mod\n", encoding="utf-8")
+    (subpkg / "__init__.py").write_text("from . import mod\n", encoding="utf-8")
     entry = subpkg / "mod.py"
-    entry.write_text("import pkg.subpkg.helper\n")
+    entry.write_text("import pkg.subpkg.helper\n", encoding="utf-8")
     helper = subpkg / "helper.py"
-    helper.write_text("VALUE = 1\n")
+    helper.write_text("VALUE = 1\n", encoding="utf-8")
 
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
@@ -13060,9 +13148,9 @@ def test_shared_module_resolution_cache_reuses_source_and_ast_across_passes(
 ) -> None:
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("from . import helper\n")
+    (pkg / "__init__.py").write_text("from . import helper\n", encoding="utf-8")
     entry = pkg / "helper.py"
-    entry.write_text("VALUE = 1\n")
+    entry.write_text("VALUE = 1\n", encoding="utf-8")
 
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
@@ -13152,7 +13240,7 @@ def test_shared_module_resolution_cache_reuses_resolved_paths(
 ) -> None:
     entry = tmp_path / "pkg" / "__init__.py"
     entry.parent.mkdir()
-    entry.write_text("VALUE = 1\n")
+    entry.write_text("VALUE = 1\n", encoding="utf-8")
     stdlib_root = cli_module_resolution._stdlib_root_path()
 
     resolve_calls = 0
@@ -13225,9 +13313,9 @@ def test_shared_module_resolution_cache_reuses_graph_import_scans(
 ) -> None:
     entry = tmp_path / "pkg" / "__init__.py"
     entry.parent.mkdir()
-    entry.write_text("import pkg.helper\n")
+    entry.write_text("import pkg.helper\n", encoding="utf-8")
     helper = entry.parent / "helper.py"
-    helper.write_text("import warnings\n")
+    helper.write_text("import warnings\n", encoding="utf-8")
 
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
@@ -13293,9 +13381,9 @@ def test_discover_module_graph_reuses_persisted_import_scan_cache(
 ) -> None:
     entry = tmp_path / "pkg" / "__init__.py"
     entry.parent.mkdir()
-    entry.write_text("import pkg.helper\n")
+    entry.write_text("import pkg.helper\n", encoding="utf-8")
     helper = entry.parent / "helper.py"
-    helper.write_text("import warnings\n")
+    helper.write_text("import warnings\n", encoding="utf-8")
 
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
@@ -13571,9 +13659,9 @@ def test_discover_module_graph_reconstructs_on_pure_scan_miss(
 ) -> None:
     entry = tmp_path / "pkg" / "__init__.py"
     entry.parent.mkdir()
-    entry.write_text("import pkg.helper\n")
+    entry.write_text("import pkg.helper\n", encoding="utf-8")
     helper = entry.parent / "helper.py"
-    helper.write_text("VALUE = 1\n")
+    helper.write_text("VALUE = 1\n", encoding="utf-8")
 
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
@@ -13662,12 +13750,12 @@ def test_discover_module_graph_reuses_precomputed_entry_imports(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     entry = tmp_path / "main.py"
-    entry.write_text("import pkg.helper\n")
+    entry.write_text("import pkg.helper\n", encoding="utf-8")
     package = tmp_path / "pkg"
     package.mkdir()
-    (package / "__init__.py").write_text("")
+    (package / "__init__.py").write_text("", encoding="utf-8")
     helper = package / "helper.py"
-    helper.write_text("VALUE = 1\n")
+    helper.write_text("VALUE = 1\n", encoding="utf-8")
 
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
@@ -13714,11 +13802,11 @@ def test_discover_module_graph_from_paths_batches_shared_dependency_scan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first = tmp_path / "first.py"
-    first.write_text("import shared\n")
+    first.write_text("import shared\n", encoding="utf-8")
     second = tmp_path / "second.py"
-    second.write_text("import shared\n")
+    second.write_text("import shared\n", encoding="utf-8")
     shared = tmp_path / "shared.py"
-    shared.write_text("VALUE = 1\n")
+    shared.write_text("VALUE = 1\n", encoding="utf-8")
 
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
@@ -13757,11 +13845,11 @@ def test_discover_module_graph_from_paths_deduplicates_repeated_import_names(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first = tmp_path / "first.py"
-    first.write_text("import shared\n")
+    first.write_text("import shared\n", encoding="utf-8")
     second = tmp_path / "second.py"
-    second.write_text("import shared\n")
+    second.write_text("import shared\n", encoding="utf-8")
     shared = tmp_path / "shared.py"
-    shared.write_text("VALUE = 1\n")
+    shared.write_text("VALUE = 1\n", encoding="utf-8")
 
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
@@ -13852,11 +13940,11 @@ def test_discover_module_graph_resolves_all_paths_but_reparses_only_changed_sour
 ) -> None:
     entry = tmp_path / "pkg" / "__init__.py"
     entry.parent.mkdir()
-    entry.write_text("import pkg.helper\nimport pkg.extra\n")
+    entry.write_text("import pkg.helper\nimport pkg.extra\n", encoding="utf-8")
     helper = entry.parent / "helper.py"
-    helper.write_text("VALUE = 1\n")
+    helper.write_text("VALUE = 1\n", encoding="utf-8")
     extra = entry.parent / "extra.py"
-    extra.write_text("VALUE = 2\n")
+    extra.write_text("VALUE = 2\n", encoding="utf-8")
 
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
@@ -13876,7 +13964,7 @@ def test_discover_module_graph_resolves_all_paths_but_reparses_only_changed_sour
     assert {"pkg", "pkg.helper", "pkg.extra"} <= set(graph)
     assert {"pkg.helper", "pkg.extra"} <= explicit_imports
 
-    helper.write_text("VALUE = 10\n")
+    helper.write_text("VALUE = 10\n", encoding="utf-8")
     cache = cli_module_resolution._ModuleResolutionCache()
     read_paths: list[Path] = []
     original_read = cache.parse_module_ast
@@ -13926,10 +14014,10 @@ def test_discover_module_graph_prunes_removed_dependency_with_warm_source_reques
 ) -> None:
     entry = tmp_path / "pkg" / "__init__.py"
     entry.parent.mkdir()
-    entry.write_text("import pkg.helper\nimport pkg.old\n")
-    (entry.parent / "helper.py").write_text("VALUE = 1\n")
+    entry.write_text("import pkg.helper\nimport pkg.old\n", encoding="utf-8")
+    (entry.parent / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
     old = entry.parent / "old.py"
-    old.write_text("VALUE = 2\n")
+    old.write_text("VALUE = 2\n", encoding="utf-8")
 
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [tmp_path.resolve()]
@@ -13947,7 +14035,7 @@ def test_discover_module_graph_prunes_removed_dependency_with_warm_source_reques
     graph = discovery_result.graph
     assert "pkg.old" in graph
 
-    entry.write_text("import pkg.helper\n")
+    entry.write_text("import pkg.helper\n", encoding="utf-8")
     discovery_result = cli_module_graph_discovery._discover_module_graph(
         entry,
         roots,
@@ -14516,12 +14604,12 @@ def test_validate_shared_stdlib_cache_contract_ignores_runtime_mtime_for_retenti
 ) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir()
-    (project_root / "Cargo.toml").write_text("[workspace]\n")
+    (project_root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
     stdlib_object = tmp_path / "stdlib_shared.o"
-    stdlib_object.write_text("stdlib")
+    stdlib_object.write_text("stdlib", encoding="utf-8")
     explicit_runtime = tmp_path / "explicit-target" / "release" / "libmolt_runtime.a"
     explicit_runtime.parent.mkdir(parents=True)
-    explicit_runtime.write_text("runtime")
+    explicit_runtime.write_text("runtime", encoding="utf-8")
     removed: list[Path] = []
 
     monkeypatch.setenv("MOLT_SESSION_ID", "alpha/session:beta")
@@ -14630,18 +14718,25 @@ def test_verify_cargo_lock_uses_workspace_member_manifests_only(
     root_manifest.write_text(
         "[workspace]\n"
         'members = ["runtime/molt-runtime", "runtime/molt-backend"]\n'
-        'resolver = "2"\n'
+        'resolver = "2"\n',
+        encoding="utf-8",
     )
-    (tmp_path / "Cargo.lock").write_text("# lock\n")
+    (tmp_path / "Cargo.lock").write_text("# lock\n", encoding="utf-8")
     runtime_manifest = tmp_path / "runtime" / "molt-runtime" / "Cargo.toml"
     runtime_manifest.parent.mkdir(parents=True)
-    runtime_manifest.write_text('[package]\nname = "molt-runtime"\nversion = "0.1.0"\n')
+    runtime_manifest.write_text(
+        '[package]\nname = "molt-runtime"\nversion = "0.1.0"\n', encoding="utf-8"
+    )
     backend_manifest = tmp_path / "runtime" / "molt-backend" / "Cargo.toml"
     backend_manifest.parent.mkdir(parents=True)
-    backend_manifest.write_text('[package]\nname = "molt-backend"\nversion = "0.1.0"\n')
+    backend_manifest.write_text(
+        '[package]\nname = "molt-backend"\nversion = "0.1.0"\n', encoding="utf-8"
+    )
     stray_manifest = tmp_path / "scratch" / "Cargo.toml"
     stray_manifest.parent.mkdir(parents=True)
-    stray_manifest.write_text('[package]\nname = "scratch"\nversion = "0.1.0"\n')
+    stray_manifest.write_text(
+        '[package]\nname = "scratch"\nversion = "0.1.0"\n', encoding="utf-8"
+    )
 
     captured: dict[str, list[Path]] = {}
 
@@ -15074,7 +15169,7 @@ def test_load_module_imports_reuses_persisted_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_path = tmp_path / "pkg.py"
-    module_path.write_text("import warnings\n")
+    module_path.write_text("import warnings\n", encoding="utf-8")
     cache = cli_module_resolution._ModuleResolutionCache()
 
     imports = cli_module_graph_discovery._load_module_import_scan(
@@ -15110,7 +15205,9 @@ def test_load_module_analysis_reuses_persisted_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_path = tmp_path / "pkg.py"
-    module_path.write_text("import warnings\n\ndef f(a, *, b=1):\n    return a + b\n")
+    module_path.write_text(
+        "import warnings\n\ndef f(a, *, b=1):\n    return a + b\n", encoding="utf-8"
+    )
     source = cli_module_source._read_module_source(module_path)
     cache = cli_module_resolution._ModuleResolutionCache()
 
@@ -15176,7 +15273,7 @@ def test_load_module_analysis_persists_bytes_defaults(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_path = tmp_path / "pkg.py"
-    module_path.write_text("def f(blob=b'abc'):\n    return blob\n")
+    module_path.write_text("def f(blob=b'abc'):\n    return blob\n", encoding="utf-8")
     source = cli_module_source._read_module_source(module_path)
     cache = cli_module_resolution._ModuleResolutionCache()
 
@@ -15252,7 +15349,7 @@ def test_load_module_analysis_rejects_persisted_defaults_without_function_kind(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg.py"
-    module_path.write_text("def g():\n    yield 1\n")
+    module_path.write_text("def g():\n    yield 1\n", encoding="utf-8")
     cache = cli_module_resolution._ModuleResolutionCache()
     stat = module_path.stat()
     source_sha256 = cli_module_source._source_content_sha256(module_path, stat)
@@ -15321,7 +15418,9 @@ def test_load_module_analysis_reuses_facts_but_always_admits_import_scan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_path = tmp_path / "pkg.py"
-    module_path.write_text("import warnings\n\ndef f(a, *, b=1):\n    return a + b\n")
+    module_path.write_text(
+        "import warnings\n\ndef f(a, *, b=1):\n    return a + b\n", encoding="utf-8"
+    )
     source = cli_module_source._read_module_source(module_path)
     cache = cli_module_resolution._ModuleResolutionCache()
 
@@ -15390,7 +15489,9 @@ def test_load_module_analysis_keeps_full_and_module_init_caches_disjoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_path = tmp_path / "pkg.py"
-    module_path.write_text("import os\n\ndef f():\n    import warnings\n")
+    module_path.write_text(
+        "import os\n\ndef f():\n    import warnings\n", encoding="utf-8"
+    )
     cache = cli_module_resolution._ModuleResolutionCache()
 
     first = cli._load_module_analysis(
@@ -15460,7 +15561,9 @@ def test_load_module_analysis_keeps_module_init_and_full_caches_disjoint_reverse
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg.py"
-    module_path.write_text("import os\n\ndef f():\n    import warnings\n")
+    module_path.write_text(
+        "import os\n\ndef f():\n    import warnings\n", encoding="utf-8"
+    )
     cache = cli_module_resolution._ModuleResolutionCache()
 
     first = cli._load_module_analysis(
@@ -15497,7 +15600,9 @@ def test_load_module_analysis_reuses_single_module_stat_for_persisted_hits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_path = tmp_path / "pkg.py"
-    module_path.write_text("import warnings\n\ndef f(a, *, b=1):\n    return a + b\n")
+    module_path.write_text(
+        "import warnings\n\ndef f(a, *, b=1):\n    return a + b\n", encoding="utf-8"
+    )
     source = cli_module_source._read_module_source(module_path)
     cache = cli_module_resolution._ModuleResolutionCache()
 
@@ -15575,7 +15680,9 @@ def test_load_module_analysis_misses_after_body_only_edit(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg.py"
-    module_path.write_text("import warnings\n\ndef f(a, *, b=1):\n    return a + b\n")
+    module_path.write_text(
+        "import warnings\n\ndef f(a, *, b=1):\n    return a + b\n", encoding="utf-8"
+    )
     cache = cli_module_resolution._ModuleResolutionCache()
 
     cli._load_module_analysis(
@@ -15590,7 +15697,8 @@ def test_load_module_analysis_misses_after_body_only_edit(
     )
 
     module_path.write_text(
-        "import warnings\n\ndef f(a, *, b=1):\n    total = a + b\n    return total\n"
+        "import warnings\n\ndef f(a, *, b=1):\n    total = a + b\n    return total\n",
+        encoding="utf-8",
     )
     cache = cli_module_resolution._ModuleResolutionCache()
 
@@ -15626,7 +15734,7 @@ def test_persisted_module_lowering_roundtrip_respects_context_digest(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg.py"
-    module_path.write_text("x = ...\n")
+    module_path.write_text("x = ...\n", encoding="utf-8")
     context_digest = cli._module_lowering_context_digest({"module": "pkg", "v": 1})
     assert context_digest is not None
     result = {
@@ -15700,7 +15808,7 @@ def test_persisted_module_lowering_rejects_missing_local_function_reference(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg.py"
-    module_path.write_text("x = 1\n")
+    module_path.write_text("x = 1\n", encoding="utf-8")
     context_digest = cli._module_lowering_context_digest({"module": "pkg", "v": 1})
     assert context_digest is not None
     result = {
@@ -15852,7 +15960,7 @@ def test_persisted_module_lowering_tracks_source_content(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg.py"
-    module_path.write_text("x = 1\n")
+    module_path.write_text("x = 1\n", encoding="utf-8")
     original = module_path.stat()
     context_digest = cli._module_lowering_context_digest({"module": "pkg", "v": 1})
     assert context_digest is not None
@@ -15892,7 +16000,7 @@ def test_persisted_module_lowering_reuses_process_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_path = tmp_path / "pkg.py"
-    module_path.write_text("x = 1\n")
+    module_path.write_text("x = 1\n", encoding="utf-8")
     context_digest = cli._module_lowering_context_digest({"module": "pkg", "v": 1})
     assert context_digest is not None
     cli._PERSISTED_JSON_OBJECT_CACHE.clear()
@@ -15941,7 +16049,7 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg.py"
-    module_path.write_text("x = 1\n")
+    module_path.write_text("x = 1\n", encoding="utf-8")
     context_digest = cli._module_lowering_context_digest({"module": "pkg", "v": 1})
     assert context_digest is not None
     cli._PERSISTED_JSON_OBJECT_CACHE.clear()
@@ -16013,7 +16121,7 @@ def test_persisted_module_lowering_repairs_truncated_param_types(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg.py"
-    module_path.write_text("x = 1\n")
+    module_path.write_text("x = 1\n", encoding="utf-8")
     context_digest = cli._module_lowering_context_digest({"module": "pkg", "v": 1})
     assert context_digest is not None
     cli._PERSISTED_JSON_OBJECT_CACHE.clear()
@@ -16059,7 +16167,7 @@ def test_prepare_frontend_parallel_batch_reuses_precomputed_context_digest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_path = tmp_path / "alpha.py"
-    module_path.write_text("VALUE = 1\n")
+    module_path.write_text("VALUE = 1\n", encoding="utf-8")
     project_root = tmp_path
     context_payload_calls = 0
 
@@ -16151,7 +16259,7 @@ def test_prepare_frontend_parallel_batch_reuses_content_and_context_matched_cach
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_path = tmp_path / "alpha.py"
-    module_path.write_text("VALUE = 1\n")
+    module_path.write_text("VALUE = 1\n", encoding="utf-8")
     project_root = tmp_path
     reads: list[str] = []
 
@@ -16277,7 +16385,7 @@ def test_load_cached_module_lowering_result_reuses_single_module_stat(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_path = tmp_path / "alpha.py"
-    module_path.write_text("VALUE = 1\n")
+    module_path.write_text("VALUE = 1\n", encoding="utf-8")
     cache = cli_module_resolution._ModuleResolutionCache()
     context_digest = cli._module_lowering_context_digest({"module": "alpha", "v": 1})
     assert context_digest is not None
@@ -16780,7 +16888,7 @@ def test_prepare_frontend_parallel_batch_precomputes_scoped_known_classes_once(
     for path, source in zip(
         module_graph.values(), module_sources.values(), strict=False
     ):
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
 
     original = cli_module_cache._scoped_known_classes
     calls = 0
@@ -16861,8 +16969,10 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
         "main": tmp_path / "main.py",
         "alpha": tmp_path / "alpha.py",
     }
-    module_graph["main"].write_text("import alpha\nVALUE = alpha.VALUE\n")
-    module_graph["alpha"].write_text("VALUE = 1\n")
+    module_graph["main"].write_text(
+        "import alpha\nVALUE = alpha.VALUE\n", encoding="utf-8"
+    )
+    module_graph["alpha"].write_text("VALUE = 1\n", encoding="utf-8")
     module_source_catalog = cli_module_source._build_module_source_catalog(module_graph)
     module_graph_metadata = cli._build_module_graph_metadata(
         module_graph,
@@ -16926,9 +17036,9 @@ def test_prepare_frontend_parallel_batch_uses_path_backed_source_leases(
 
 def test_worker_source_lease_rejects_path_drift(tmp_path: Path) -> None:
     module_path = tmp_path / "main.py"
-    module_path.write_text("VALUE = 1\n")
+    module_path.write_text("VALUE = 1\n", encoding="utf-8")
     lease = cli_module_source._ModuleSourceLease.path_backed(module_path)
-    module_path.write_text("VALUE = 100\n")
+    module_path.write_text("VALUE = 100\n", encoding="utf-8")
 
     result = cli_frontend_worker._frontend_lower_module_worker(
         cli._module_worker_payload(
@@ -17421,7 +17531,7 @@ def test_load_cached_module_lowering_result_reuses_precomputed_views(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_path = tmp_path / "alpha.py"
-    module_path.write_text("VALUE = 1\n")
+    module_path.write_text("VALUE = 1\n", encoding="utf-8")
     cache = cli_module_resolution._ModuleResolutionCache()
     context_digest = cli._module_lowering_context_digest({"module": "alpha", "v": 1})
     assert context_digest is not None
@@ -17880,17 +17990,19 @@ def test_parallel_build_reuses_cached_lowering_across_parallel_builds(
     project = tmp_path / "project"
     project.mkdir()
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     entry = project / "main.py"
-    entry.write_text("import alpha\nimport beta\nprint(alpha.VALUE + beta.VALUE)\n")
-    (project / "alpha.py").write_text("VALUE = 1\n")
-    (project / "beta.py").write_text("VALUE = 2\n")
+    entry.write_text(
+        "import alpha\nimport beta\nprint(alpha.VALUE + beta.VALUE)\n", encoding="utf-8"
+    )
+    (project / "alpha.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (project / "beta.py").write_text("VALUE = 2\n", encoding="utf-8")
 
     build_state_root = tmp_path / "build-state"
     cache_root = tmp_path / "cache"
     backend_bin = tmp_path / "fake-backend"
-    backend_bin.write_text("")
+    backend_bin.write_text("", encoding="utf-8")
 
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
@@ -18035,18 +18147,20 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
     project = tmp_path / "project"
     project.mkdir()
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     entry = project / "main.py"
-    entry.write_text("import alpha\nimport beta\nprint(alpha.VALUE + beta.VALUE)\n")
+    entry.write_text(
+        "import alpha\nimport beta\nprint(alpha.VALUE + beta.VALUE)\n", encoding="utf-8"
+    )
     alpha = project / "alpha.py"
-    alpha.write_text("VALUE = 1\n")
-    (project / "beta.py").write_text("VALUE = 2\n")
+    alpha.write_text("VALUE = 1\n", encoding="utf-8")
+    (project / "beta.py").write_text("VALUE = 2\n", encoding="utf-8")
 
     build_state_root = tmp_path / "build-state"
     cache_root = tmp_path / "cache"
     backend_bin = tmp_path / "fake-backend"
-    backend_bin.write_text("")
+    backend_bin.write_text("", encoding="utf-8")
 
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
@@ -18145,7 +18259,7 @@ def test_parallel_build_reuses_dependent_cache_after_stable_interface_change(
         )
     assert rc == 0, first_stdout.getvalue()
 
-    alpha.write_text("VALUE = 10\n")
+    alpha.write_text("VALUE = 10\n", encoding="utf-8")
 
     second_stdout = io.StringIO()
     with contextlib.redirect_stdout(second_stdout):
@@ -18177,17 +18291,19 @@ def test_parallel_build_allows_scoped_type_facts(
     project = tmp_path / "project"
     project.mkdir()
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     entry = project / "main.py"
-    entry.write_text("import alpha\nimport beta\nprint(alpha.VALUE + beta.VALUE)\n")
-    (project / "alpha.py").write_text("VALUE = 1\n")
-    (project / "beta.py").write_text("VALUE = 2\n")
+    entry.write_text(
+        "import alpha\nimport beta\nprint(alpha.VALUE + beta.VALUE)\n", encoding="utf-8"
+    )
+    (project / "alpha.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (project / "beta.py").write_text("VALUE = 2\n", encoding="utf-8")
 
     build_state_root = tmp_path / "build-state"
     cache_root = tmp_path / "cache"
     backend_bin = tmp_path / "fake-backend"
-    backend_bin.write_text("")
+    backend_bin.write_text("", encoding="utf-8")
 
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
@@ -18317,15 +18433,15 @@ def test_build_one_shot_backend_compile_uses_ir_file_lease(
     project = tmp_path / "project"
     project.mkdir()
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     entry = project / "main.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
 
     build_state_root = tmp_path / "build-state"
     cache_root = tmp_path / "cache"
     backend_bin = tmp_path / "fake-backend"
-    backend_bin.write_text("")
+    backend_bin.write_text("", encoding="utf-8")
 
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
@@ -18373,17 +18489,17 @@ def test_build_skips_daemon_preflight_when_socket_exists(
     project = tmp_path / "project"
     project.mkdir()
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     entry = project / "main.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
 
     build_state_root = tmp_path / "build-state"
     cache_root = tmp_path / "cache"
     backend_bin = tmp_path / "fake-backend"
-    backend_bin.write_text("")
+    backend_bin.write_text("", encoding="utf-8")
     daemon_socket = tmp_path / "daemon.sock"
-    daemon_socket.write_text("")
+    daemon_socket.write_text("", encoding="utf-8")
 
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
     monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
@@ -18465,15 +18581,15 @@ def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
     project = tmp_path / "project"
     project.mkdir()
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     entry = project / "main.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
 
     build_state_root = tmp_path / "build-state"
     cache_root = tmp_path / "cache"
     backend_bin = tmp_path / "fake-backend"
-    backend_bin.write_text("")
+    backend_bin.write_text("", encoding="utf-8")
 
     def unexpected_stdlib_object_cache_path(*args: object, **kwargs: object) -> Path:
         pytest.fail("Explicit object output must not request a shared stdlib artifact")
@@ -18723,7 +18839,7 @@ def _stub_backend_daemon_harness(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_stdlib_graph_ignores_nested_imports_for_core_scan(tmp_path: Path) -> None:
     entry = tmp_path / "main.py"
-    entry.write_text("print(1)\n")
+    entry.write_text("print(1)\n", encoding="utf-8")
     graph = _discover_with_core_modules(entry)
     assert "builtins" in graph
     assert "sys" in graph
@@ -18751,7 +18867,7 @@ def test_typing_static_graph_keeps_collections_abc_without_lazy_deprecated(
     tmp_path: Path,
 ) -> None:
     entry = tmp_path / "main.py"
-    entry.write_text("import typing\n")
+    entry.write_text("import typing\n", encoding="utf-8")
     graph = _discover_with_core_modules(entry)
     assert "typing" in graph
     assert "_collections_abc" in graph
@@ -18878,7 +18994,7 @@ def test_decimal_graph_keeps_intrinsic_dependencies_without_typing_or_regex(
     tmp_path: Path,
 ) -> None:
     entry = tmp_path / "main.py"
-    entry.write_text("import decimal\n")
+    entry.write_text("import decimal\n", encoding="utf-8")
     graph = _discover_with_core_modules(entry)
     assert "decimal" in graph
     assert "builtins" in graph
@@ -18889,7 +19005,7 @@ def test_decimal_graph_keeps_intrinsic_dependencies_without_typing_or_regex(
 
 def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> None:
     entry = tmp_path / "main.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
     roots = module_roots + [stdlib_root]
@@ -18939,7 +19055,7 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
 
 def test_spawn_entry_override_required_for_multiprocessing(tmp_path: Path) -> None:
     entry = tmp_path / "main.py"
-    entry.write_text("import multiprocessing\nprint('ok')\n")
+    entry.write_text("import multiprocessing\nprint('ok')\n", encoding="utf-8")
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_roots = [ROOT.resolve(), (ROOT / "src").resolve(), entry.parent.resolve()]
     roots = module_roots + [stdlib_root]
@@ -19335,7 +19451,7 @@ def test_augment_module_graph_does_not_add_entry_alias_as_second_module(
     examples_dir = project_root / "examples"
     examples_dir.mkdir()
     source_path = examples_dir / "hello.py"
-    source_path.write_text("print('hello')\n")
+    source_path.write_text("print('hello')\n", encoding="utf-8")
     stdlib_root = cli_module_resolution._stdlib_root_path()
     module_graph = {"hello": source_path}
 
@@ -19588,7 +19704,7 @@ def test_native_support_source_slices_reuse_persisted_import_scan(
 
 def test_module_lowering_metadata_view_reuses_precomputed_maps(tmp_path: Path) -> None:
     module_path = tmp_path / "pkg.py"
-    module_path.write_text("VALUE = 1\n")
+    module_path.write_text("VALUE = 1\n", encoding="utf-8")
     metadata = cli._build_module_graph_metadata(
         {"pkg": module_path},
         generated_module_source_paths={"pkg": "generated/pkg.py"},
@@ -19617,7 +19733,7 @@ def test_module_lowering_execution_view_bundles_metadata_and_scoped_state(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "main.py"
-    module_path.write_text("import alpha\n")
+    module_path.write_text("import alpha\n", encoding="utf-8")
     metadata = cli._build_module_graph_metadata(
         {"main": module_path, "alpha": tmp_path / "alpha.py"},
         generated_module_source_paths={"main": "generated/main.py"},
@@ -20195,7 +20311,7 @@ def test_emit_build_diagnostics_full_prints_extended_hotspots(
 
 def test_module_name_from_path_outside_module_roots_uses_stem(tmp_path: Path) -> None:
     script = tmp_path / "outside_script.py"
-    script.write_text("print('ok')\n")
+    script.write_text("print('ok')\n", encoding="utf-8")
     roots_root = tmp_path / "module_roots"
     stdlib_root = roots_root / "stdlib"
     roots = [roots_root / "project", roots_root / "src"]
@@ -20343,7 +20459,7 @@ def test_start_backend_daemon_leaves_warming_process_running(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend_bin = tmp_path / "molt-backend"
-    backend_bin.write_text("backend")
+    backend_bin.write_text("backend", encoding="utf-8")
     socket_path = tmp_path / "daemon.sock"
     identity_path = tmp_path / "daemon.identity.json"
     log_path = tmp_path / "daemon.log"
@@ -20422,7 +20538,7 @@ def test_start_backend_daemon_leaves_warming_process_running(
         is False
     )
     assert wait_timeouts == [0.25]
-    payload = json.loads(identity_path.read_text())
+    payload = json.loads(identity_path.read_text(encoding="utf-8"))
     assert payload["pid"] == 4321
     assert payload["socket_path"] == str(socket_path)
     assert terminated == []
@@ -20434,9 +20550,9 @@ def test_start_backend_daemon_trusts_verified_busy_socket_with_live_pid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend_bin = tmp_path / "molt-backend"
-    backend_bin.write_text("backend")
+    backend_bin.write_text("backend", encoding="utf-8")
     socket_path = tmp_path / "daemon.sock"
-    socket_path.write_text("")
+    socket_path.write_text("", encoding="utf-8")
     identity_path = tmp_path / "daemon.identity.json"
     log_path = tmp_path / "daemon.log"
     existing_identity = _test_backend_daemon_identity(
@@ -20552,7 +20668,7 @@ def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
     import tempfile
 
     backend_bin = tmp_path / "molt-backend"
-    backend_bin.write_text("backend")
+    backend_bin.write_text("backend", encoding="utf-8")
     build_state_root = tmp_path / "target" / ".molt_state"
     wait_timeouts: list[float | None] = []
 
@@ -20612,7 +20728,7 @@ def test_start_backend_daemon_ignores_foreign_socket_dir_entries(
         socket_path = socket_dir / "moltbd.current.sock"
 
         for idx in range(3):
-            (socket_dir / f"moltbd.foreign{idx}.sock").write_text("")
+            (socket_dir / f"moltbd.foreign{idx}.sock").write_text("", encoding="utf-8")
 
         assert (
             cli._start_backend_daemon(
@@ -20647,7 +20763,7 @@ def test_start_backend_daemon_refuses_to_kill_unverified_stale_identity(
     project_root.mkdir()
     backend_bin = project_root / "target" / "debug" / "molt-backend"
     backend_bin.parent.mkdir(parents=True)
-    backend_bin.write_text("backend")
+    backend_bin.write_text("backend", encoding="utf-8")
     socket_path = tmp_path / "daemon.sock"
     identity_path = tmp_path / "daemon.identity.json"
     log_path = tmp_path / "daemon.log"
@@ -22303,7 +22419,9 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
             )
             rival_bytes[receipt_path] = receipt_path.read_bytes()
             assert output.with_name("app.wasm").read_bytes() == payload_b
-            manifest = json.loads(output.with_name("manifest.json").read_text())
+            manifest = json.loads(
+                output.with_name("manifest.json").read_text(encoding="utf-8")
+            )
             assert manifest["capability_policy_digest"] == policy_b.digest()
             assert (
                 manifest["modules"]["app"]["sha256"]
@@ -22338,7 +22456,7 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
         expected_payload, expected_policy = payload_a, policy_a
     receipt = cli_link_fingerprints._read_link_fingerprint(receipt_path)
     assert receipt is not None
-    manifest = json.loads(output.with_name("manifest.json").read_text())
+    manifest = json.loads(output.with_name("manifest.json").read_text(encoding="utf-8"))
     assert output.with_name("app.wasm").read_bytes() == expected_payload
     assert manifest["capability_policy_digest"] == expected_policy.digest()
     assert (
@@ -22657,7 +22775,9 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         assert "nativepkg/_ndimage.molt.wasm" not in bundle_names
         bundle_manifest = json.loads(tar.extractfile("__manifest__.json").read())
     assert bundle_manifest["files"]
-    manifest = json.loads((output_wasm.parent / "manifest.json").read_text())
+    manifest = json.loads(
+        (output_wasm.parent / "manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["modules"]["app"] == {
         "path": "app.wasm",
         "size": (output_wasm.parent / "app.wasm").stat().st_size,
@@ -24534,10 +24654,10 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     project = tmp_path / "project"
     project.mkdir()
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     entry = project / "main.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
 
     build_state_root = tmp_path / "build-state"
     cache_root = tmp_path / "cache"
@@ -24603,13 +24723,13 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
             if output.name.startswith("molt_backend_probe_"):
                 assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "rust"
                 output.parent.mkdir(parents=True, exist_ok=True)
-                output.write_text("fn main() {}\n")
+                output.write_text("fn main() {}\n", encoding="utf-8")
                 return subprocess.CompletedProcess(cmd, 0, b"", b"")
             backend_cmds.append(list(cmd))
             assert cmd[1:3] == ["--target", "rust"]
             assert "--output" in cmd
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text("fn main() {}\n")
+            output.write_text("fn main() {}\n", encoding="utf-8")
             return subprocess.CompletedProcess(cmd, 0, b"", b"")
         return original_run(cmd, *args, **kwargs)
 
@@ -24622,13 +24742,13 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
         if output.name.startswith("molt_backend_probe_"):
             assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "rust"
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text("fn main() {}\n")
+            output.write_text("fn main() {}\n", encoding="utf-8")
             return subprocess.CompletedProcess(cmd, 0, b"", b"")
         backend_cmds.append(list(cmd))
         assert cmd[1:3] == ["--target", "rust"]
         assert "--output" in cmd
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text("fn main() {}\n")
+        output.write_text("fn main() {}\n", encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setattr(
@@ -24684,7 +24804,7 @@ def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
     assert cmd[0] == str(backend_bin)
     assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "rust"
     assert "--output" in cmd
-    assert backend_output.read_text() == "fn main() {}\n"
+    assert backend_output.read_text(encoding="utf-8") == "fn main() {}\n"
 
 
 def test_build_release_rust_target_uses_release_backend_profile_by_default(
@@ -24696,10 +24816,10 @@ def test_build_release_rust_target_uses_release_backend_profile_by_default(
     project = tmp_path / "project"
     project.mkdir()
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     entry = project / "main.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
 
     build_state_root = tmp_path / "build-state"
     cache_root = tmp_path / "cache"
@@ -24764,7 +24884,7 @@ def test_build_release_rust_target_uses_release_backend_profile_by_default(
                 return subprocess.CompletedProcess(cmd, 0, b"", b"")
             output = Path(cmd[cmd.index("--output") + 1])
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text("fn main() {}\n")
+            output.write_text("fn main() {}\n", encoding="utf-8")
             return subprocess.CompletedProcess(cmd, 0, b"", b"")
         return original_run(cmd, *args, **kwargs)
 
@@ -24777,7 +24897,7 @@ def test_build_release_rust_target_uses_release_backend_profile_by_default(
         assert "--output" in cmd
         output = Path(cmd[cmd.index("--output") + 1])
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text("fn main() {}\n")
+        output.write_text("fn main() {}\n", encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setattr(
@@ -24840,7 +24960,7 @@ def test_browser_deploy_profile_enables_split_runtime_publication(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     entry = tmp_path / "main.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
     seen: list[bool] = []
 
     def fake_build(*args: object, **kwargs: object) -> int:
@@ -24865,7 +24985,7 @@ def test_wasm_optimizer_level_follows_build_intent_and_explicit_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     entry = tmp_path / "main.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
     seen: list[str | None] = []
 
     def fake_build(*args: object, **kwargs: object) -> int:
@@ -24913,7 +25033,7 @@ def test_build_cli_defaults_to_auto_wasm_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     entry = tmp_path / "main.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
     seen_profiles: list[str | None] = []
 
     def fake_build(*args: object, **kwargs: object) -> int:
@@ -24938,7 +25058,7 @@ def test_build_cli_defaults_to_auto_stdlib_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     entry = tmp_path / "main.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
     seen_profiles: list[str | None] = []
 
     def fake_build(*args: object, **kwargs: object) -> int:
@@ -24961,7 +25081,7 @@ def test_build_cli_keeps_deploy_stdlib_profile_auto_intent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     entry = tmp_path / "main.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
     seen_profiles: list[str | None] = []
 
     def fake_build(*args: object, **kwargs: object) -> int:
@@ -24993,7 +25113,7 @@ def test_build_scopes_pipeline_env_updates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     entry = tmp_path / "main.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
     cleared_keys = {
         "MOLT_AUDIT_ENABLED",
         "MOLT_AUDIT_SINK",
@@ -25036,13 +25156,13 @@ def test_run_script_uses_build_resolved_entry_for_package_override_file(
     pkg_dir = project / "pkg"
     pkg_dir.mkdir(parents=True)
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     entry = pkg_dir / "__main__.py"
-    entry.write_text('__package__ = "pkg"\nprint("ok")\n')
+    entry.write_text('__package__ = "pkg"\nprint("ok")\n', encoding="utf-8")
     output_binary = tmp_path / "bin" / "pkg_molt"
     output_binary.parent.mkdir(parents=True)
-    output_binary.write_text("")
+    output_binary.write_text("", encoding="utf-8")
     payload = cli._json_payload(
         "build",
         "ok",
@@ -25091,13 +25211,13 @@ def test_run_script_uses_build_json_output_for_binary_path(
     project = tmp_path / "project"
     project.mkdir()
     entry = project / "demo.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     consumer_output = tmp_path / "dist" / "custom_binary"
     consumer_output.parent.mkdir(parents=True)
-    consumer_output.write_text("")
+    consumer_output.write_text("", encoding="utf-8")
     payload = cli._json_payload(
         "build",
         "ok",
@@ -25157,13 +25277,13 @@ def test_run_script_replays_build_messages_and_warnings_in_non_json_mode(
     project = tmp_path / "project"
     project.mkdir()
     entry = project / "demo.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     consumer_output = tmp_path / "dist" / "custom_binary"
     consumer_output.parent.mkdir(parents=True)
-    consumer_output.write_text("")
+    consumer_output.write_text("", encoding="utf-8")
     payload = cli._json_payload(
         "build",
         "ok",
@@ -25211,9 +25331,9 @@ def test_run_script_surfaces_nested_build_error_detail_in_non_json_mode(
     project = tmp_path / "project"
     project.mkdir()
     entry = project / "demo.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     payload = cli._json_payload(
         "build",
@@ -25962,11 +26082,11 @@ def test_run_script_cross_respects_pythonpath_for_module_artifact_resolution(
     pkg_dir = pythonpath_root / "demo"
     pkg_dir.mkdir(parents=True)
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
-    (pkg_dir / "__main__.py").write_text("print('ok')\n")
+    (pkg_dir / "__main__.py").write_text("print('ok')\n", encoding="utf-8")
     artifact = out_dir / "demo.luau"
-    artifact.write_text("-- compiled\n")
+    artifact.write_text("-- compiled\n", encoding="utf-8")
     payload = cli._json_payload(
         "build",
         "ok",
@@ -26038,9 +26158,9 @@ def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
     project = tmp_path / "project"
     project.mkdir()
     entry = project / "demo.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -26201,11 +26321,11 @@ def test_deploy_roblox_respects_pythonpath_for_module_artifact_resolution(
     roblox_dir = tmp_path / "roblox"
     roblox_dir.mkdir()
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
-    (pkg_dir / "__main__.py").write_text("print('ok')\n")
+    (pkg_dir / "__main__.py").write_text("print('ok')\n", encoding="utf-8")
     artifact = out_dir / "demo.luau"
-    artifact.write_text("-- compiled\n")
+    artifact.write_text("-- compiled\n", encoding="utf-8")
     payload = cli._json_payload(
         "build",
         "ok",
@@ -26266,7 +26386,7 @@ def test_deploy_roblox_respects_pythonpath_for_module_artifact_resolution(
             "demo",
         ]
     ]
-    assert (roblox_dir / "demo.luau").read_text() == "-- compiled\n"
+    assert (roblox_dir / "demo.luau").read_text(encoding="utf-8") == "-- compiled\n"
 
 
 def test_deploy_roblox_honors_build_json_output_override(
@@ -26278,13 +26398,13 @@ def test_deploy_roblox_honors_build_json_output_override(
     roblox_dir = tmp_path / "roblox"
     roblox_dir.mkdir()
     entry = project / "demo.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     consumer_output = tmp_path / "build" / "nested" / "custom.luau"
     consumer_output.parent.mkdir(parents=True)
-    consumer_output.write_text("-- custom compiled\n")
+    consumer_output.write_text("-- custom compiled\n", encoding="utf-8")
     payload = cli._json_payload(
         "build",
         "ok",
@@ -26339,7 +26459,9 @@ def test_deploy_roblox_honors_build_json_output_override(
             str(entry),
         ]
     ]
-    assert (roblox_dir / consumer_output.name).read_text() == "-- custom compiled\n"
+    assert (roblox_dir / consumer_output.name).read_text(
+        encoding="utf-8"
+    ) == "-- custom compiled\n"
 
 
 def test_deploy_cloudflare_uses_build_json_bundle_root(
@@ -26349,14 +26471,14 @@ def test_deploy_cloudflare_uses_build_json_bundle_root(
     project = tmp_path / "project"
     project.mkdir()
     entry = project / "demo.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     bundle_root = tmp_path / "dist" / "worker"
     bundle_root.mkdir(parents=True)
     wrangler_config = bundle_root / "wrangler.jsonc"
-    wrangler_config.write_text('{"name":"demo"}\n')
+    wrangler_config.write_text('{"name":"demo"}\n', encoding="utf-8")
     payload = cli._json_payload(
         "build",
         "ok",
@@ -26441,7 +26563,7 @@ def test_run_script_reports_run_command_on_resolution_failure_json(
     project = tmp_path / "project"
     project.mkdir()
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
@@ -26467,7 +26589,7 @@ def test_run_script_cross_reports_run_command_on_resolution_failure_json(
     project = tmp_path / "project"
     project.mkdir()
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
@@ -26494,7 +26616,7 @@ def test_deploy_reports_deploy_command_on_resolution_failure_json(
     project = tmp_path / "project"
     project.mkdir()
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
 
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
@@ -27861,13 +27983,13 @@ def test_compare_uses_build_profile_flag_for_nested_build(
     project = tmp_path / "project"
     project.mkdir()
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n'
+        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     entry = project / "main.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
     built_binary = project / "build" / "main_molt"
     built_binary.parent.mkdir(parents=True, exist_ok=True)
-    built_binary.write_text("")
+    built_binary.write_text("", encoding="utf-8")
 
     seen_cmds: list[list[str]] = []
 
@@ -28288,7 +28410,7 @@ def test_start_backend_daemon_rejects_overlong_unix_socket_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend_bin = tmp_path / "molt-backend"
-    backend_bin.write_text("backend")
+    backend_bin.write_text("backend", encoding="utf-8")
     socket_path = tmp_path / ("sock-" + "a" * 140)
     warnings: list[str] = []
     popen_called = False
@@ -29482,7 +29604,9 @@ def test_backend_daemon_request_bytes_ignores_redirect_file(
 ) -> None:
     sent: list[bytes] = []
     socket_path = tmp_path / "daemon.sock"
-    socket_path.with_suffix(".redirect").write_text(str(tmp_path / "foreign.sock"))
+    socket_path.with_suffix(".redirect").write_text(
+        str(tmp_path / "foreign.sock"), encoding="utf-8"
+    )
 
     class _FakeSocket:
         def __enter__(self) -> "_FakeSocket":
@@ -29533,10 +29657,10 @@ def test_orphaned_backend_daemon_sweep_removes_dead_identity_and_legacy_pid(
     daemon_root = canonical_root / "backend_daemon"
     daemon_root.mkdir(parents=True)
     legacy_pid_path = daemon_root / "molt-backend.dev-fast.alpha.legacy.pid"
-    legacy_pid_path.write_text("9999\n")
+    legacy_pid_path.write_text("9999\n", encoding="utf-8")
     backend_bin = tmp_path / "target" / "debug" / "molt-backend"
     socket_path = tmp_path / "daemon.sock"
-    socket_path.write_text("")
+    socket_path.write_text("", encoding="utf-8")
     identity_path = daemon_root / "molt-backend.dev-fast.alpha.deadbeef.identity.json"
     identity = _test_backend_daemon_identity(
         4321,
@@ -29603,7 +29727,7 @@ def test_sweep_orphaned_backend_daemon_locks_removes_dead_and_unverified_identit
     backend_bin = project_root / "target" / "debug" / "molt-backend"
     dead_identity_file = own_root / "molt-backend.dev-fast.dead.aaaa.identity.json"
     dead_socket = tmp_path / "actual-dead-daemon.sock"
-    dead_socket.write_text("")
+    dead_socket.write_text("", encoding="utf-8")
     cli._write_backend_daemon_identity(
         dead_identity_file,
         _test_backend_daemon_identity(
@@ -29651,10 +29775,10 @@ def test_sweep_orphaned_backend_daemon_locks_removes_dead_and_unverified_identit
     )
 
     malformed = own_root / "molt-backend.dev-fast.bad.eeee.identity.json"
-    malformed.write_text("not-json\n")
+    malformed.write_text("not-json\n", encoding="utf-8")
 
     legacy_pid_file = own_root / "molt-backend.dev-fast.legacy.ffff.pid"
-    legacy_pid_file.write_text("4242\n")
+    legacy_pid_file.write_text("4242\n", encoding="utf-8")
 
     monkeypatch.setattr(
         BACKEND_EXECUTION,
@@ -30017,7 +30141,7 @@ def test_emitted_ir_preserves_exact_backend_control_flow(tmp_path: Path) -> None
     original = json.loads(json.dumps(ir))
     output = tmp_path / "backend-input.json"
     assert BACKEND_IR._write_emitted_ir(output, ir) is None
-    assert json.loads(output.read_text()) == original
+    assert json.loads(output.read_text(encoding="utf-8")) == original
     assert ir == original
 
 

@@ -714,7 +714,9 @@ def test_parser_preserves_external_static_link_contract() -> None:
 
 def test_implementation_identity_keeps_namespace_only_topology(tmp_path, monkeypatch):
     seed = tmp_path / "entry.py"
-    seed.write_text("__package__ = unknown\nfrom .missing import member\n")
+    seed.write_text(
+        "__package__ = unknown\nfrom .missing import member\n", encoding="utf-8"
+    )
     monkeypatch.setattr(benchmark, "ROOT", tmp_path)
     monkeypatch.setattr(
         benchmark,

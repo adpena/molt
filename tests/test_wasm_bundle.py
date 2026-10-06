@@ -57,7 +57,7 @@ def test_bundle_rejects_malformed_publication_lock(tmp_path):
 def test_bundle_skips_pycache(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
-    (src / "main.py").write_text("pass")
+    (src / "main.py").write_text("pass", encoding="utf-8")
     cache = src / "__pycache__"
     cache.mkdir()
     (cache / "main.cpython-312.pyc").write_bytes(b"compiled")
@@ -72,7 +72,7 @@ def test_bundle_skips_pycache(tmp_path):
 def test_bundle_includes_subdirectories(tmp_path):
     src = tmp_path / "src"
     (src / "pkg").mkdir(parents=True)
-    (src / "pkg" / "__init__.py").write_text("")
+    (src / "pkg" / "__init__.py").write_text("", encoding="utf-8")
     artifact_publication.atomic_write_text(src / "pkg" / "mod.py", "Y = 2")
 
     output = tmp_path / "bundle.tar"
@@ -86,7 +86,7 @@ def test_bundle_includes_subdirectories(tmp_path):
 def test_bundle_manifest_is_valid_json(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
-    (src / "app.py").write_text("pass")
+    (src / "app.py").write_text("pass", encoding="utf-8")
 
     output = tmp_path / "bundle.tar"
     bundle_mod.create_bundle(src, output)

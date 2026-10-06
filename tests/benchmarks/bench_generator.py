@@ -391,7 +391,7 @@ def main():
     md_content = generate_markdown(
         cp_summary, mo_summary, iterations, cpython_results, molt_results, py_version
     )
-    md_path.write_text(md_content)
+    md_path.write_text(md_content, encoding="utf-8")
     print(f"Markdown report written to: {md_path}")
 
 

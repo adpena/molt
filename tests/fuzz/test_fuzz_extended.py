@@ -212,7 +212,7 @@ class TestFuzzMoltCompile:
         for seed in range(10):
             source = _generate(seed, max_depth=3, max_stmts=15)
             src_file = tmp_path / f"fuzz_{seed}.py"
-            src_file.write_text(source)
+            src_file.write_text(source, encoding="utf-8")
             try:
                 result = run_native_test_process(
                     [

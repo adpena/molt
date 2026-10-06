@@ -145,6 +145,7 @@ def _windows_process_snapshot_rows_hard_timeout() -> list[
             timeout=timeout_sec,
             check=False,
             creationflags=creationflags,
+            encoding="utf-8",
         )
     except subprocess.TimeoutExpired as exc:
         raise WindowsProcessSnapshotTimeout(

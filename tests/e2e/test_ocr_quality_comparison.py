@@ -512,5 +512,5 @@ if __name__ == "__main__":
         / "ocr_quality_comparison.md"
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(report)
+    out_path.write_text(report, encoding="utf-8")
     print(f"\nReport saved to: {out_path}")

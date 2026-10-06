@@ -89,7 +89,7 @@ def test_rustc_metadata_observes_compiler_not_guest_toolchain(tmp_path, monkeypa
     guest = tmp_path / "guest"
     for root, channel in ((compiler, "compiler-version"), (guest, "guest-version")):
         root.mkdir()
-        (root / "rust-toolchain.toml").write_text(channel)
+        (root / "rust-toolchain.toml").write_text(channel, encoding="utf-8")
     monkeypatch.setenv("MOLT_SOURCE_ROOT", str(compiler))
     monkeypatch.chdir(guest)
     monkeypatch.setattr(compiler_metadata, "_read_cached_rustc_version", lambda _: None)
@@ -100,7 +100,7 @@ def test_rustc_metadata_observes_compiler_not_guest_toolchain(tmp_path, monkeypa
     def probe(argv, *, cwd, **kwargs):
         selected = Path(cwd) if cwd is not None else Path.cwd()
         return subprocess.CompletedProcess(
-            argv, 0, (selected / "rust-toolchain.toml").read_text(), ""
+            argv, 0, (selected / "rust-toolchain.toml").read_text(encoding="utf-8"), ""
         )
 
     monkeypatch.setattr(compiler_metadata, "_run_completed_command", probe)
@@ -118,14 +118,14 @@ def test_build_dependency_admission_has_one_owner(
     source = installation if installed else _source_tree(tmp_path / "checkout")
     if not installed:
         for name in ("pyproject.toml", "uv.lock", "Cargo.lock"):
-            (source / name).write_text("source")
+            (source / name).write_text("source", encoding="utf-8")
     monkeypatch.delenv("UV_NO_SYNC", raising=False)
     monkeypatch.delenv("MOLT_SKIP_CARGO_LOCK", raising=False)
     monkeypatch.setenv("MOLT_SOURCE_ROOT", str(source))
     guest = tmp_path / "guest"
     guest.mkdir()
     entry = guest / "app.py"
-    entry.write_text("print('guest')\n")
+    entry.write_text("print('guest')\n", encoding="utf-8")
     monkeypatch.chdir(guest)
     calls = []
 
@@ -166,7 +166,7 @@ def test_shared_lock_admission_rejects_damaged_sealed_inputs(
         is None
     )
     assert warnings == []
-    (installation / "uv.lock").write_text("edited")
+    (installation / "uv.lock").write_text("edited", encoding="utf-8")
     assert (
         lockfiles._check_lockfiles(
             installation, True, warnings, deterministic, True, "extension-build"
@@ -338,13 +338,13 @@ def test_packaged_stdlib_and_policy_follow_live_source_identity(tmp_path, monkey
     source = bundle / "source"
     policy = source / "docs/spec/areas/compat/surfaces/stdlib/stdlib_surface_matrix.md"
     policy.parent.mkdir(parents=True)
-    policy.write_text("| Module |\n| --- |\n| first |\n")
+    policy.write_text("| Module |\n| --- |\n| first |\n", encoding="utf-8")
     monkeypatch.delenv("MOLT_SOURCE_ROOT", raising=False)
     monkeypatch.setattr(source_root, "packaged_distribution_root", lambda: bundle)
     assert module_resolution._stdlib_root_path() == source / "src/molt/stdlib"
     assert module_stdlib_policy._stdlib_allowlist() == {"first"}
     before = policy.stat()
-    policy.write_text("| Module |\n| --- |\n| other |\n")
+    policy.write_text("| Module |\n| --- |\n| other |\n", encoding="utf-8")
     os.utime(policy, ns=(before.st_atime_ns, before.st_mtime_ns))
     assert module_stdlib_policy._stdlib_allowlist() == {"other"}
 

@@ -243,7 +243,9 @@ def test_receipt_rejects_policy_and_identity_drift(tmp_path, snapshot, mutation)
 def test_environment_drops_ambient_policy_and_isolates_cargo(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
-    (source / "rust-toolchain.toml").write_text('[toolchain]\nchannel="1.96.1"\n')
+    (source / "rust-toolchain.toml").write_text(
+        '[toolchain]\nchannel="1.96.1"\n', encoding="utf-8"
+    )
     inherited = {
         "PATH": "tools",
         "CARGO_HOME": "ambient",
@@ -280,10 +282,12 @@ def test_environment_drops_ambient_policy_and_isolates_cargo(tmp_path):
 
 
 def test_build_cwd_rejects_ancestor_cargo_configuration(tmp_path):
-    (tmp_path / "rust-toolchain.toml").write_text('[toolchain]\nchannel="1.96.1"\n')
+    (tmp_path / "rust-toolchain.toml").write_text(
+        '[toolchain]\nchannel="1.96.1"\n', encoding="utf-8"
+    )
     config = tmp_path / ".cargo" / "config.toml"
     config.parent.mkdir()
-    config.write_text("[profile.release]\nopt-level=0\n")
+    config.write_text("[profile.release]\nopt-level=0\n", encoding="utf-8")
     with pytest.raises(ValueError, match="ambient Cargo configuration") as failure:
         native_build.build_environment(tmp_path, tmp_path / "build", {}, epoch=123)
     assert str(config) in str(failure.value)
@@ -294,7 +298,7 @@ def test_explicit_build_root_avoids_unrelated_user_configuration(tmp_path):
     poisoned = tmp_path / "user-profile"
     config = poisoned / ".cargo/config.toml"
     config.parent.mkdir(parents=True)
-    config.write_text("[build]\n")
+    config.write_text("[build]\n", encoding="utf-8")
     clean = tmp_path / "builds"
     inherited = {"RUNNER_TEMP": str(poisoned / "temp")}
     with pytest.raises(ValueError, match="--build-root"):
@@ -419,7 +423,9 @@ def test_producer_publishes_only_complete_verified_generation(
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(native_image() + binary.encode())
         if failure == "source":
-            (cwd / "source" / "rust-toolchain.toml").write_text("mutated")
+            (cwd / "source" / "rust-toolchain.toml").write_text(
+                "mutated", encoding="utf-8"
+            )
 
     monkeypatch.setattr(native_build, "_COMMANDS", SimpleNamespace(run=cargo))
     output = tmp_path / "published"

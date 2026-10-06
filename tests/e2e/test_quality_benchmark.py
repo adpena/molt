@@ -116,7 +116,7 @@ def read_safetensors(path: str) -> dict:
 
 def load_int8_sharded_tensors() -> dict:
     """Load all INT8 sharded tensors into a single dict."""
-    with open(_INT8_INDEX_PATH, "r") as f:
+    with open(_INT8_INDEX_PATH, "r", encoding="utf-8") as f:
         index = json.load(f)
 
     seen_shards = []
@@ -426,7 +426,7 @@ def test_embedding_discrimination():
     scales = None
     if _INT8_AVAILABLE:
         tensors = load_int8_sharded_tensors()
-        with open(_INT8_SCALES_PATH, "r") as f:
+        with open(_INT8_SCALES_PATH, "r", encoding="utf-8") as f:
             scales = json.load(f)
     else:
         tensors = read_safetensors(_F32_MODEL_PATH)
@@ -521,7 +521,7 @@ def test_vocabulary_coverage():
             print("SKIP: tokenizer.json not found")
             return
 
-    with open(_TOKENIZER_PATH, "r") as f:
+    with open(_TOKENIZER_PATH, "r", encoding="utf-8") as f:
         tokenizer_data = json.load(f)
 
     # Build reverse vocabulary: token_string -> id
@@ -630,13 +630,13 @@ def test_logit_distribution():
     scales = None
     if _INT8_AVAILABLE:
         tensors = load_int8_sharded_tensors()
-        with open(_INT8_SCALES_PATH, "r") as f:
+        with open(_INT8_SCALES_PATH, "r", encoding="utf-8") as f:
             scales = json.load(f)
-        with open(_INT8_CONFIG_PATH, "r") as f:
+        with open(_INT8_CONFIG_PATH, "r", encoding="utf-8") as f:
             config = json.load(f)
     else:
         tensors = read_safetensors(_F32_MODEL_PATH)
-        with open(_CONFIG_PATH, "r") as f:
+        with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
             config = json.load(f)
 
     vocab_size = config.get("vocab_size", 65536)
@@ -788,7 +788,7 @@ def test_int8_embedding_fidelity():
 
     # Load INT8 weights
     int8_tensors = load_int8_sharded_tensors()
-    with open(_INT8_SCALES_PATH, "r") as f:
+    with open(_INT8_SCALES_PATH, "r", encoding="utf-8") as f:
         scales = json.load(f)
     int8_proj = tensor_to_floats(
         int8_tensors["img_projector.weight"], scales, "img_projector.weight"
@@ -836,7 +836,7 @@ def test_synthetic_invoice_patches():
     scales = None
     if _INT8_AVAILABLE:
         tensors = load_int8_sharded_tensors()
-        with open(_INT8_SCALES_PATH, "r") as f:
+        with open(_INT8_SCALES_PATH, "r", encoding="utf-8") as f:
             scales = json.load(f)
     else:
         tensors = read_safetensors(_F32_MODEL_PATH)

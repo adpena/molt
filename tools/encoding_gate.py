@@ -36,8 +36,9 @@ IS flagged (it does not actually pin an encoding — it re-selects the default).
 SCOPE
 -----
 First-party, highest-traffic Python that relays process/file text:
-``tools/**/*.py`` and ``src/molt/**/*.py``. (Vendored/generated/``target`` trees
-are excluded.) This is the surface where a relayed cp1252 crash poisons a build.
+``tools/**/*.py``, ``src/molt/**/*.py`` and ``tests/**/*.py``. Vendored, generated
+and ``target`` trees are excluded, as is Python that Molt compiles or that mirrors
+CPython (``src/molt/stdlib``, the differential/compliance program corpora). This is the surface where a relayed cp1252 crash poisons a build.
 
 RATCHET
 -------
@@ -51,6 +52,7 @@ Usage:
     python tools/encoding_gate.py            # or --check: fail if NEW violations
     python tools/encoding_gate.py --list     # print every current violation
     python tools/encoding_gate.py --update   # rebaseline (review the drop/rise)
+    python tools/encoding_gate.py --fix [PATHS]  # pin encoding="utf-8" on flagged calls
 
 Exit: 0 = at-or-below baseline; 2 = a NEW violation (fix it, or --update with
 justification); 3 = usage/IO error.
@@ -77,7 +79,16 @@ ROOT = Path(__file__).resolve().parents[1]
 BASELINE = Path(__file__).resolve().parent / "encoding_gate_baseline.json"
 
 # Roots scanned for first-party Python sources (relative to repo ROOT).
-_SCAN_ROOTS = ("tools", "src/molt")
+_SCAN_ROOTS = ("tools", "src/molt", "tests")
+# Python that Molt compiles or that mirrors CPython, where the platform default
+# encoding is the behavior under test, never a first-party bug.
+_SKIP_PREFIXES = (
+    "src/molt/stdlib/",
+    "tests/differential/",
+    "tests/molt_only/",
+    "tests/compliance/",
+    "tests/harness/corpus/",
+)
 # Directory names that are never first-party source (vendored/build/generated).
 _SKIP_DIR_PARTS = frozenset(
     {".git", "target", "__pycache__", ".venv", "node_modules", "vendor", ".mypy_cache"}
@@ -176,7 +187,12 @@ def _check_call(call: ast.Call, relpath: str, out: list[Violation]) -> None:
     if _is_open_call(call):
         mode = _mode_string(call)
         if mode is not None and "b" not in mode:  # text mode (proven or default)
-            if not _has_double_star(call) and not _encoding_is_pinned(call):
+            # open(file, mode, buffering, encoding): a fourth positional pins it.
+            if (
+                len(call.args) < 4
+                and not _has_double_star(call)
+                and not _encoding_is_pinned(call)
+            ):
                 out.append(Violation(relpath, call.lineno, "open-no-encoding"))
         return
 
@@ -188,7 +204,16 @@ def _check_call(call: ast.Call, relpath: str, out: list[Violation]) -> None:
     # bound methods, so require the attribute form (a bare read_text() is not a
     # thing) to avoid false positives on unrelated same-named functions.
     if name in ("read_text", "write_text") and isinstance(func, ast.Attribute):
-        if not _has_double_star(call) and not _encoding_is_pinned(call):
+        # pathlib passes encoding positionally after write_text's data; a
+        # read_text with a positional argument is either that encoding or a
+        # different API entirely (importlib.metadata Distribution.read_text
+        # takes a filename and has no encoding parameter).
+        positional_encoding = len(call.args) >= (1 if name == "read_text" else 2)
+        if (
+            not positional_encoding
+            and not _has_double_star(call)
+            and not _encoding_is_pinned(call)
+        ):
             out.append(Violation(relpath, call.lineno, f"{name}-no-encoding"))
         return
 
@@ -221,6 +246,92 @@ def scan_source(source: str, relpath: str) -> list[Violation]:
     return out
 
 
+def fix_source(source: str, relpath: str) -> tuple[str, int]:
+    """Pin ``encoding="utf-8"`` on every call :func:`scan_source` flags.
+
+    Inserts the keyword after the last argument (or inside empty parentheses)
+    and replaces an explicit ``encoding=None``. The result is re-parsed, so a
+    rewrite can never land invalid Python; formatting is left to ``ruff format``.
+    """
+    try:
+        tree = ast.parse(source, filename=relpath)
+    except SyntaxError:
+        return source, 0
+    # AST lines count only newlines and columns are UTF-8 byte offsets;
+    # str.splitlines would also split on form feeds and Unicode separators.
+    lines = [line + "\n" for line in source.split("\n")]
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line))
+
+    def offset(lineno: int, col: int) -> int:
+        text = lines[lineno - 1].encode("utf-8")[:col].decode("utf-8")
+        return starts[lineno - 1] + len(text)
+
+    edits: list[tuple[int, int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        found: list[Violation] = []
+        _check_call(node, relpath, found)
+        if not found:
+            continue
+        existing = _kwarg(node, "encoding")
+        if existing is not None:
+            value = existing.value
+            start = offset(value.lineno, value.col_offset)
+            end = offset(value.end_lineno or value.lineno, value.end_col_offset or 0)
+            edits.append((start, end, '"utf-8"'))
+            continue
+        elements = [*node.args, *(keyword.value for keyword in node.keywords)]
+        if elements:
+            last = max(
+                elements,
+                key=lambda item: (item.end_lineno or 0, item.end_col_offset or 0),
+            )
+            at = offset(last.end_lineno or last.lineno, last.end_col_offset or 0)
+            edits.append((at, at, ', encoding="utf-8"'))
+        else:
+            close = offset(node.end_lineno or node.lineno, node.end_col_offset or 0) - 1
+            if source[close] != ")":
+                return source, 0  # unexpected layout: leave it to the reporter
+            edits.append((close, close, 'encoding="utf-8"'))
+    if not edits:
+        return source, 0
+    fixed = source
+    for start, end, text in sorted(edits, reverse=True):
+        fixed = fixed[:start] + text + fixed[end:]
+    try:
+        ast.parse(fixed, filename=relpath)
+    except SyntaxError:
+        return source, 0
+    return fixed, len(edits)
+
+
+def fix_files(paths: list[Path] | None = None) -> dict[str, int]:
+    """Apply :func:`fix_source` in place; returns fixes per repo-relative path.
+
+    ``paths`` limits the rewrite to files inside the gate's scope (pre-commit
+    style); ``None`` rewrites the whole scanned tree.
+    """
+    in_scope = dict(_iter_python_files())
+    if paths is not None:
+        wanted = {path.resolve() for path in paths}
+        in_scope = {
+            path: relpath
+            for path, relpath in in_scope.items()
+            if path.resolve() in wanted
+        }
+    fixed: dict[str, int] = {}
+    for path, relpath in sorted(in_scope.items(), key=lambda item: item[1]):
+        source = path.read_bytes().decode("utf-8")
+        rewritten, count = fix_source(source, relpath)
+        if count:
+            path.write_bytes(rewritten.encode("utf-8"))
+            fixed[relpath] = count
+    return fixed
+
+
 def _scan_file(path: Path, relpath: str) -> list[Violation]:
     try:
         source = path.read_text(encoding="utf-8", errors="replace")
@@ -238,7 +349,10 @@ def _iter_python_files() -> list[tuple[Path, str]]:
         for py in root.rglob("*.py"):
             if _SKIP_DIR_PARTS & set(py.parts):
                 continue
-            files.append((py, py.relative_to(ROOT).as_posix()))
+            relpath = py.relative_to(ROOT).as_posix()
+            if relpath.startswith(_SKIP_PREFIXES):
+                continue
+            files.append((py, relpath))
     return files
 
 
@@ -300,6 +414,7 @@ def _write_baseline(violations: list[Violation]) -> None:
     BASELINE.write_text(
         json.dumps(_baseline_payload(violations), indent=2) + "\n",
         encoding="utf-8",
+        newline="\n",  # LF on every OS; the baseline is a committed artifact
     )
 
 
@@ -385,7 +500,24 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument(
         "--update", action="store_true", help="rebaseline to the current violations"
     )
+    group.add_argument(
+        "--fix",
+        action="store_true",
+        help='pin encoding="utf-8" on every flagged call (in PATHS, or the whole scope)',
+    )
+    ap.add_argument("paths", nargs="*", type=Path, help="files for --fix")
     args = ap.parse_args(argv)
+    if args.paths and not args.fix:
+        ap.error("paths are only accepted with --fix")
+
+    if args.fix:
+        fixed = fix_files(args.paths or None)
+        for relpath, count in fixed.items():
+            print(f"encoding_gate: pinned {count} call(s) in {relpath}")
+        print(
+            f"encoding_gate: pinned {sum(fixed.values())} call(s) in {len(fixed)} file(s)"
+        )
+        return 0
 
     violations = scan()
 

@@ -476,7 +476,7 @@ examples:
         if not bench_files:
             # Legacy mode: built-in zone generator
             py_path = os.path.join(tmp_dir, "zone_generator.py")
-            with open(py_path, "w") as f:
+            with open(py_path, "w", encoding="utf-8") as f:
                 f.write(GENERATOR_SOURCE)
             bench_files = [("zone_generator", py_path)]
 
@@ -543,7 +543,7 @@ examples:
             report = generate_markdown_report(results, args.iterations)
             artifact_root.mkdir(parents=True, exist_ok=True)
             report_path = os.path.join(str(artifact_root), "bench_luau_report.md")
-            with open(report_path, "w") as f:
+            with open(report_path, "w", encoding="utf-8") as f:
                 f.write(report)
             print(f"Report written to: {report_path}")
             print()

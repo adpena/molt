@@ -62,7 +62,8 @@ def test_wasm_print_keywords_parity(tmp_path: Path) -> None:
             except Exception as exc:
                 print("flush-missing", type(exc).__name__, exc)
             """
-        )
+        ),
+        encoding="utf-8",
     )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)

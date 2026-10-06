@@ -162,6 +162,7 @@ def _identity(*, label: str) -> dict[str, object]:
             capture_output=True,
             text=True,
             cwd=IMPLEMENTATION_ROOT,
+            encoding="utf-8",
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
         git_head = None
@@ -448,6 +449,7 @@ def _run_isolated_sample(
         text=True,
         env=child_env,
         cwd=IMPLEMENTATION_ROOT,
+        encoding="utf-8",
     )
     if completed.returncode:
 

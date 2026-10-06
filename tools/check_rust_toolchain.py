@@ -71,6 +71,7 @@ def _run(args: list[str], *, timeout: float = 15.0) -> subprocess.CompletedProce
         check=False,
         timeout=timeout,
         env=env,
+        encoding="utf-8",
     )
 
 

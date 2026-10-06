@@ -42,7 +42,8 @@ def _prepare(source: Path, *, policy="check", is_wasm=False):
         entry_execution_kind="script",
         namespace_module_names=set(),
         module_source_catalog=module_source._build_module_source_catalog(
-            {"entry": source}, module_sources={"entry": source.read_text()}
+            {"entry": source},
+            module_sources={"entry": source.read_text(encoding="utf-8")},
         ),
         is_wasm=is_wasm,
         frontend_parallel_details=details,
@@ -57,7 +58,9 @@ def test_build_keeps_source_annotations_without_running_a_checker(
     tmp_path, monkeypatch, policy, is_wasm
 ) -> None:
     source = tmp_path / "entry.py"
-    source.write_text("def f(x: int):\n    y = 1\n    y = 'text'\n    return y\n")
+    source.write_text(
+        "def f(x: int):\n    y = 1\n    y = 'text'\n    return y\n", encoding="utf-8"
+    )
 
     def unexpected_check(*args, **kwargs):
         pytest.fail("ordinary compilation must not consult an ambient checker")
@@ -74,7 +77,7 @@ def test_trusted_build_revalidates_external_environment_and_reports_failure(
     tmp_path, monkeypatch, capsys
 ) -> None:
     source = tmp_path / "entry.py"
-    source.write_text("value: int = 1\n")
+    source.write_text("value: int = 1\n", encoding="utf-8")
     outcomes = iter([(True, ""), (False, "dependency annotation changed")])
     monkeypatch.setattr(typecheck, "_run_ty_check", lambda _: next(outcomes))
     config, failure, _, details = _prepare(source, policy="trust")
@@ -94,7 +97,8 @@ def test_type_fact_export_never_promotes_assignments_to_scope_wide_types(tmp_pat
         "    local = []\n"
         "    if flag:\n        local = {'key': 1}\n"
         "    annotated_local: int = 4\n"
-        "    return local\n"
+        "    return local\n",
+        encoding="utf-8",
     )
     for trust in ("guarded", "trusted"):
         module = collect_type_facts_from_paths([source], trust).modules["entry"]
@@ -108,7 +112,7 @@ def test_check_exports_the_same_guarded_annotations_regardless_of_validation(
     tmp_path, monkeypatch, ty_ok
 ) -> None:
     source = tmp_path / "entry.py"
-    source.write_text("annotated: int = 1\nunannotated = 2\n")
+    source.write_text("annotated: int = 1\nunannotated = 2\n", encoding="utf-8")
     output = tmp_path / "facts.json"
     monkeypatch.setattr(typecheck, "_run_ty_check", lambda _: (ty_ok, "diagnostic"))
     assert (
@@ -121,7 +125,7 @@ def test_check_exports_the_same_guarded_annotations_regardless_of_validation(
         )
         == 0
     )
-    facts = json.loads(output.read_text())
+    facts = json.loads(output.read_text(encoding="utf-8"))
     assert facts["modules"]["entry"]["globals"] == {
         "annotated": {"type": "int", "trust": "guarded"}
     }
@@ -132,9 +136,9 @@ def test_failed_strict_check_never_publishes_facts_even_without_diagnostics(
     tmp_path, monkeypatch
 ) -> None:
     source = tmp_path / "entry.py"
-    source.write_text("value: int = 1\n")
+    source.write_text("value: int = 1\n", encoding="utf-8")
     output = tmp_path / "facts.json"
-    output.write_text("previous artifact\n")
+    output.write_text("previous artifact\n", encoding="utf-8")
     monkeypatch.setattr(typecheck, "_run_ty_check", lambda _: (False, ""))
     assert (
         typecheck.check(
@@ -142,16 +146,17 @@ def test_failed_strict_check_never_publishes_facts_even_without_diagnostics(
         )
         != 0
     )
-    assert output.read_text() == "previous artifact\n"
+    assert output.read_text(encoding="utf-8") == "previous artifact\n"
 
 
 def test_explicit_checker_cannot_import_a_project_shadow(tmp_path, monkeypatch):
     source = tmp_path / "entry.py"
-    source.write_text("value: int = 1\n")
+    source.write_text("value: int = 1\n", encoding="utf-8")
     marker = tmp_path / "executed"
     (tmp_path / "ty.py").write_text(
         f"from pathlib import Path\nPath({str(marker)!r}).write_text('shadow')\n"
-        "raise RuntimeError('project ty module executed')\n"
+        "raise RuntimeError('project ty module executed')\n",
+        encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PYTHONPATH", str(tmp_path))

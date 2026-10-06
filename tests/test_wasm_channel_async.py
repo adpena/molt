@@ -27,7 +27,8 @@ def test_wasm_channel_async_parity(tmp_path: Path) -> None:
         "    print(await chan.recv_async())\n"
         "    chan.close()\n"
         "\n"
-        "asyncio.run(main())\n"
+        "asyncio.run(main())\n",
+        encoding="utf-8",
     )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)

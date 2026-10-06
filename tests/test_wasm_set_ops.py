@@ -88,7 +88,8 @@ def test_wasm_set_ops_parity(tmp_path: Path) -> None:
             show_err("frozenset_symdiff_0", lambda: fs.symmetric_difference())
             show_err("frozenset_union_wrong_self_set", lambda: frozenset.union({1}, {2}))
             """
-        )
+        ),
+        encoding="utf-8",
     )
 
     expected = textwrap.dedent(

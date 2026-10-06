@@ -220,7 +220,9 @@ def test_foreign_or_mutated_child_record_is_rejected(tmp_path, change, message):
     elif change == "stream_size":
         cold["stdout"]["bytes"] += 1
     elif change == "stream_label":
-        (Path(cold["stdout"]["path"]).parent / "artifact-label.txt").write_text("other")
+        (Path(cold["stdout"]["path"]).parent / "artifact-label.txt").write_text(
+            "other", encoding="utf-8"
+        )
     elif change == "two_owners":
         cold["stderr"] = deepcopy(trap["stderr"])
     support.republish(receipt, "stderr", support.records_text(records))
@@ -375,9 +377,9 @@ def test_promotion_reopens_raw_parent_and_descendant_evidence(
         path = Path(execution["stderr_evidence"])
         path.write_bytes(path.read_bytes() + b"mutation\n")
     elif change == "descendant_bytes":
-        Path(records[0]["stderr"]["path"]).write_text("mutation")
+        Path(records[0]["stderr"]["path"]).write_text("mutation", encoding="utf-8")
     elif change == "incomplete_success":
-        text = stdout.read_text().split("test result:")[0]
+        text = stdout.read_text(encoding="utf-8").split("test result:")[0]
         support.republish(receipt, "stdout", text)
     elif change == "foreign_loader_root":
         root = tmp_path / "other-receipts"
@@ -388,7 +390,9 @@ def test_promotion_reopens_raw_parent_and_descendant_evidence(
         execution["stdout_evidence"] = str(moved)
     elif change == "record_on_stdout":
         support.republish(
-            receipt, "stdout", stdout.read_text() + support.records_text(records[:1])
+            receipt,
+            "stdout",
+            stdout.read_text(encoding="utf-8") + support.records_text(records[:1]),
         )
     elif change == "image_changed":
         image = Path(receipt["executable_resolved"])

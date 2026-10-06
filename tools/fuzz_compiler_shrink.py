@@ -50,7 +50,7 @@ def _shrink_program(
         if not _validate_syntax(candidate):
             return False
         src_path = Path(tmpdir) / f"shrink_{result.seed}.py"
-        src_path.write_text(candidate)
+        src_path.write_text(candidate, encoding="utf-8")
         probe_result = _fuzz_one_program(
             source=candidate,
             seed=result.seed,
@@ -136,7 +136,7 @@ def _fuzz_one_program(
     Factored out of fuzz_one_safe for reuse by the shrinking logic.
     """
     src_path = Path(tmpdir) / f"fuzz_{seed}.py"
-    src_path.write_text(source)
+    src_path.write_text(source, encoding="utf-8")
     elapsed_start = time.monotonic()
 
     # CPython baseline

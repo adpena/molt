@@ -88,7 +88,7 @@ from molt.target_python import (
 def _collect_env_overrides(file_path: str) -> dict[str, str]:
     overrides: dict[str, str] = {}
     try:
-        text = Path(file_path).read_text()
+        text = Path(file_path).read_text(encoding="utf-8")
     except OSError:
         return overrides
     for line in text.splitlines():
@@ -1123,13 +1123,13 @@ def _load_molt_config(project_root: Path) -> dict[str, Any]:
     molt_toml = project_root / "molt.toml"
     if molt_toml.exists():
         try:
-            config.update(tomllib.loads(molt_toml.read_text()))
+            config.update(tomllib.loads(molt_toml.read_text(encoding="utf-8")))
         except (OSError, tomllib.TOMLDecodeError):
             pass
     pyproject = project_root / "pyproject.toml"
     if pyproject.exists():
         try:
-            data = tomllib.loads(pyproject.read_text())
+            data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
         except (OSError, tomllib.TOMLDecodeError):
             data = {}
         tool_cfg = data.get("tool", {}).get("molt", {})

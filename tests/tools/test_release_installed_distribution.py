@@ -61,7 +61,9 @@ def test_runtime_inventory_publication_is_one_exclusive_commit(
         (stage / "member").write_bytes(b"complete runtime member")
         if outcome == "failed-admission":
             raise ValueError("runtime source identity mismatch")
-        (stage / runtime_cells.INVENTORY_NAME).write_text(json.dumps(inventory))
+        (stage / runtime_cells.INVENTORY_NAME).write_text(
+            json.dumps(inventory), encoding="utf-8"
+        )
         if outcome == "rival":
             output.mkdir()
             (output / "winner").write_bytes(b"preserve concurrent generation")
@@ -89,7 +91,10 @@ def test_runtime_inventory_publication_is_one_exclusive_commit(
         assert produce() == inventory
         assert (output / "member").read_bytes() == b"complete runtime member"
         assert (
-            json.loads((output / runtime_cells.INVENTORY_NAME).read_text()) == inventory
+            json.loads(
+                (output / runtime_cells.INVENTORY_NAME).read_text(encoding="utf-8")
+            )
+            == inventory
         )
     assert not staged[0].parent.exists()
 
@@ -303,7 +308,7 @@ def _admit(release_inputs, mutate):
     candidate_dir = release_inputs["candidate_root"] / "linux-x86_64"
     candidate = release_authority._load_candidate(candidate_dir / "candidate.json")
     receipt = candidate_dir / "consumer-verification.json"
-    payload = json.loads(receipt.read_text())
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
     mutate(payload["pip_proof"])
     release_model.write_json(receipt, payload)
     return release_authority._admit_candidate(

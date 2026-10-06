@@ -20,7 +20,7 @@ _tq_path = os.path.join(
 _tq_path = os.path.abspath(_tq_path)
 
 # Read the source, extract only the MXFP section (which has no imports)
-with open(_tq_path) as f:
+with open(_tq_path, encoding="utf-8") as f:
     _full_source = f.read()
 
 # Find the MXFP section — it starts after the QJL function

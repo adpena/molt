@@ -44,7 +44,7 @@ def test_typescript_files_syntactically_valid():
         path = os.path.join(DEPLOY_ENJOICE, ts_file)
         assert os.path.isfile(path), f"Missing TypeScript file: {ts_file}"
 
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             content = f.read()
 
         # Structural check: verify braces and parentheses are roughly
@@ -83,7 +83,7 @@ def test_typescript_files_syntactically_valid():
 def test_falcon_ocr_molt_has_no_duplicate_const_declarations_in_same_scope():
     """The bridge file must not contain duplicate const declarations."""
     path = os.path.join(DEPLOY_ENJOICE, "falcon-ocr-molt.ts")
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         content = f.read()
 
     assert content.count("const padded = new Uint8Array") == 1
@@ -92,7 +92,7 @@ def test_falcon_ocr_molt_has_no_duplicate_const_declarations_in_same_scope():
 def test_falcon_ocr_molt_decoder_preserves_unknown_token_ids():
     """Unknown token IDs are signal and must not disappear during decode."""
     path = os.path.join(DEPLOY_ENJOICE, "falcon-ocr-molt.ts")
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         content = f.read()
 
     assert "parts.push(`[UNK:${id}]`)" in content
@@ -101,7 +101,7 @@ def test_falcon_ocr_molt_decoder_preserves_unknown_token_ids():
 def test_falcon_ocr_molt_decoder_preserves_edge_whitespace():
     """Decoded OCR whitespace is signal and must not be trimmed away."""
     path = os.path.join(DEPLOY_ENJOICE, "falcon-ocr-molt.ts")
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         content = f.read()
 
     assert 'return parts.join("");' in content
@@ -110,7 +110,7 @@ def test_falcon_ocr_molt_decoder_preserves_edge_whitespace():
 
 def test_ocr_backend_molt_does_not_default_nemotron_endpoint():
     path = os.path.join(DEPLOY_ENJOICE, "ocr-backend-molt.ts")
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         content = f.read()
 
     assert "adpena--nemotron-ocr-ocr-endpoint.modal.run" not in content
@@ -120,7 +120,7 @@ def test_ocr_backend_molt_does_not_default_nemotron_endpoint():
 
 def test_ocr_backend_molt_avoids_unverified_speed_or_availability_claims():
     path = os.path.join(DEPLOY_ENJOICE, "ocr-backend-molt.ts")
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         content = f.read()
 
     assert "fastest browser path" not in content
@@ -139,7 +139,7 @@ def test_typescript_files_have_jsdoc():
 
     for ts_file in ts_files:
         path = os.path.join(DEPLOY_ENJOICE, ts_file)
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             content = f.read()
 
         # Check for module-level doc comment (/** ... */ or // at top).
@@ -158,7 +158,7 @@ def test_integration_pr_document_complete():
     path = os.path.join(DEPLOY_ENJOICE, "INTEGRATION_PR.md")
     assert os.path.isfile(path), "Missing INTEGRATION_PR.md"
 
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         content = f.read()
 
     required_sections = [
@@ -200,11 +200,11 @@ def test_worker_api_contract_matches_typescript():
     """
     # Read the Worker source to verify endpoints exist.
     worker_path = os.path.join(DEPLOY_CLOUDFLARE, "worker.js")
-    with open(worker_path, "r") as f:
+    with open(worker_path, "r", encoding="utf-8") as f:
         worker_content = f.read()
 
     ocr_api_path = os.path.join(DEPLOY_CLOUDFLARE, "ocr_api.js")
-    with open(ocr_api_path, "r") as f:
+    with open(ocr_api_path, "r", encoding="utf-8") as f:
         ocr_api_content = f.read()
 
     combined_worker = worker_content + ocr_api_content
@@ -230,7 +230,7 @@ def test_ocr_result_schema_compatible():
     """
     # Parse OcrResult interface from TypeScript.
     ts_path = os.path.join(DEPLOY_ENJOICE, "falcon-ocr-molt.ts")
-    with open(ts_path, "r") as f:
+    with open(ts_path, "r", encoding="utf-8") as f:
         ts_content = f.read()
 
     # Extract OcrResult interface fields.
@@ -254,11 +254,11 @@ def test_ocr_result_schema_compatible():
 
     # Read the Worker's OCR response construction.
     ocr_api_path = os.path.join(DEPLOY_CLOUDFLARE, "ocr_api.js")
-    with open(ocr_api_path, "r") as f:
+    with open(ocr_api_path, "r", encoding="utf-8") as f:
         ocr_content = f.read()
 
     worker_path = os.path.join(DEPLOY_CLOUDFLARE, "worker.js")
-    with open(worker_path, "r") as f:
+    with open(worker_path, "r", encoding="utf-8") as f:
         worker_content = f.read()
 
     combined = ocr_content + worker_content
@@ -273,7 +273,7 @@ def test_backend_status_schema():
     """The health endpoint returns a schema compatible with enjoice."""
     # The capabilities-update.ts expects specific backend statuses.
     caps_path = os.path.join(DEPLOY_ENJOICE, "capabilities-update.ts")
-    with open(caps_path, "r") as f:
+    with open(caps_path, "r", encoding="utf-8") as f:
         caps_content = f.read()
 
     # Verify the backend choice types match what the Worker reports.
@@ -283,7 +283,7 @@ def test_backend_status_schema():
 
     # The Worker's health endpoint should report backend statuses.
     worker_path = os.path.join(DEPLOY_CLOUDFLARE, "worker.js")
-    with open(worker_path, "r") as f:
+    with open(worker_path, "r", encoding="utf-8") as f:
         worker_content = f.read()
 
     assert "workers-ai" in worker_content, (

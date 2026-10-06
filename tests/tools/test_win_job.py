@@ -79,7 +79,7 @@ def test_kill_on_job_close_reaps_child_and_grandchild() -> None:
         win_job.assign_and_resume(job, proc)
 
         for _ in range(100):
-            raw = open(pidfile.name).read().strip()
+            raw = open(pidfile.name, encoding="utf-8").read().strip()
             if raw:
                 gc_pid = int(raw)
                 break
@@ -139,7 +139,7 @@ def test_completion_waits_for_descendant_release_before_returning() -> None:
         )
         win_job.assign_and_resume(job, proc)
         proc.wait(timeout=10)
-        gc_pid = int(open(pidfile.name).read().strip())
+        gc_pid = int(open(pidfile.name, encoding="utf-8").read().strip())
         assert _alive(gc_pid)
         assert win_job.active_process_count(job) >= 1
 

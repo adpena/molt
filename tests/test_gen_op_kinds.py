@@ -3898,7 +3898,7 @@ def test_image_heap_exposure_diagnostics_do_not_admit_rc_elision() -> None:
     assert "build_heap_exposed_set" not in refcount
     assert "eliminate_non_heap_exposed_refs" not in refcount
     assert "promote_unique_decref_to_free" not in refcount
-    fact_graph = tir_path("fact_graph.rs").read_text()
+    fact_graph = tir_path("fact_graph.rs").read_text(encoding="utf-8")
     assert "escape_analysis::analyze(func)" in fact_graph
     assert '"ownership.escape_state"' in fact_graph
     assert "opcode_is_refcount_heap_exposure_table" not in fact_graph
@@ -3921,7 +3921,7 @@ def test_boxed_allocation_layout_is_one_exhaustive_generated_authority() -> None
             in body
         )
     assert "_ =>" not in body
-    consumer = tir_path("passes/typed_slot_access.rs").read_text()
+    consumer = tir_path("passes/typed_slot_access.rs").read_text(encoding="utf-8")
     assert f"{table_name}(op.opcode)" in consumer
     assert "OpCode::Alloc =>" not in consumer
     assert "OpCode::ObjectNewBound =>" not in consumer
@@ -7645,7 +7645,7 @@ def test_fresh_result_ownership_requires_exact_kind():
     assert {"vec_sum", "vec_prod", "vec_min", "vec_max"} <= fresh
     assert "vec_unknown" not in fresh
     assert "classifier_owned_value_prefixes" not in data
-    assert "FRESH_VALUE_PREFIXES" not in OUT_RS.read_text()
+    assert "FRESH_VALUE_PREFIXES" not in OUT_RS.read_text(encoding="utf-8")
 
 
 def test_retired_fresh_result_prefix_configuration_is_rejected(tmp_path):
@@ -7653,7 +7653,8 @@ def test_retired_fresh_result_prefix_configuration_is_rejected(tmp_path):
 
     candidate = tmp_path / "op_kinds.toml"
     candidate.write_text(
-        'classifier_owned_value_prefixes = ["vec_"]\n' + TABLE.read_text(),
+        'classifier_owned_value_prefixes = ["vec_"]\n'
+        + TABLE.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     with pytest.raises(gen.OpKindTableError, match="retired"):

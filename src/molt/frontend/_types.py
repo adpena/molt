@@ -891,7 +891,7 @@ def _iter_intrinsic_signatures() -> Iterable[tuple[str, list[str]]]:
     for pyi_path in _intrinsic_signature_paths():
         if not pyi_path.exists():
             continue
-        text = pyi_path.read_text()
+        text = pyi_path.read_text(encoding="utf-8")
         collapsed: list[str] = []
         buf = ""
         for line in text.splitlines():
@@ -963,7 +963,7 @@ def _ensure_intrinsic_symbol_cache() -> dict[str, str]:
             / "generated.rs"
         )
         if generated_path.exists():
-            text = generated_path.read_text()
+            text = generated_path.read_text(encoding="utf-8")
             entry_re = _re.compile(
                 r'IntrinsicSpec\s*\{\s*name:\s*"(?P<name>[^"]+)"\s*,\s*symbol:\s*"(?P<symbol>[^"]+)"',
                 _re.DOTALL,

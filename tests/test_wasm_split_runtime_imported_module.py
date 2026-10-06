@@ -166,10 +166,11 @@ def test_split_runtime_imported_module_function_attr_survives_publication(
     tmp_path: Path,
 ) -> None:
     module_src = tmp_path / "probe_mod.py"
-    module_src.write_text("def foo():\n    return 7\n")
+    module_src.write_text("def foo():\n    return 7\n", encoding="utf-8")
     main_src = tmp_path / "probe_main.py"
     main_src.write_text(
-        "import probe_mod\nprint(callable(probe_mod.foo))\nprint(probe_mod.foo())\n"
+        "import probe_mod\nprint(callable(probe_mod.foo))\nprint(probe_mod.foo())\n",
+        encoding="utf-8",
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -197,7 +198,7 @@ def test_split_runtime_imported_module_function_attr_survives_publication(
 @pytest.mark.slow
 def test_split_runtime_import_os_exposes_open_flags(tmp_path: Path) -> None:
     main_src = tmp_path / "probe_main.py"
-    main_src.write_text("import os\nprint(os.O_RDONLY)\n")
+    main_src.write_text("import os\nprint(os.O_RDONLY)\n", encoding="utf-8")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
@@ -220,7 +221,7 @@ def test_split_runtime_import_os_exposes_open_flags(tmp_path: Path) -> None:
 @pytest.mark.slow
 def test_split_runtime_import_builtins_direct_mode(tmp_path: Path) -> None:
     main_src = tmp_path / "probe_main.py"
-    main_src.write_text("import builtins\n")
+    main_src.write_text("import builtins\n", encoding="utf-8")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
@@ -243,7 +244,7 @@ def test_split_runtime_import_builtins_direct_mode(tmp_path: Path) -> None:
 @pytest.mark.slow
 def test_split_runtime_import_importlib_direct_mode(tmp_path: Path) -> None:
     main_src = tmp_path / "probe_main.py"
-    main_src.write_text("import importlib\nprint('hi')\n")
+    main_src.write_text("import importlib\nprint('hi')\n", encoding="utf-8")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
@@ -269,7 +270,8 @@ def test_split_runtime_sys_version_info_direct_mode(tmp_path: Path) -> None:
     main_src.write_text(
         "import sys\n"
         "print(type(sys.version_info).__name__)\n"
-        "print(sys.version_info[0])\n"
+        "print(sys.version_info[0])\n",
+        encoding="utf-8",
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -313,7 +315,8 @@ def test_split_runtime_typing_alias_bootstrap(tmp_path: Path) -> None:
         "    KeysView = _TypingAlias()\n"
         "    ValuesView = _TypingAlias()\n"
         "\n"
-        "print('ok')\n"
+        "print('ok')\n",
+        encoding="utf-8",
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -337,7 +340,7 @@ def test_split_runtime_typing_alias_bootstrap(tmp_path: Path) -> None:
 @pytest.mark.slow
 def test_split_runtime_import_typing_direct_mode(tmp_path: Path) -> None:
     main_src = tmp_path / "probe_main.py"
-    main_src.write_text("import typing\nprint('ok')\n")
+    main_src.write_text("import typing\nprint('ok')\n", encoding="utf-8")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
@@ -373,7 +376,8 @@ def test_split_runtime_branch_local_object_merge_direct_mode(tmp_path: Path) -> 
         "        alias = (1, 2, 3, 4, 5)\n"
         "    return alias\n"
         "\n"
-        "print(repr(f((3, 12, 0, 'final', 0))))\n"
+        "print(repr(f((3, 12, 0, 'final', 0))))\n",
+        encoding="utf-8",
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -405,7 +409,8 @@ def test_split_runtime_annotated_staticmethod_tuple_param_direct_mode(
         "    def m(values: tuple[int, ...]):\n"
         "        return len(values)\n"
         "\n"
-        "print(C.m((1, 2, 3)))\n"
+        "print(C.m((1, 2, 3)))\n",
+        encoding="utf-8",
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -429,7 +434,9 @@ def test_split_runtime_annotated_staticmethod_tuple_param_direct_mode(
 @pytest.mark.slow
 def test_split_runtime_generator_creation_direct_mode(tmp_path: Path) -> None:
     main_src = tmp_path / "probe_main.py"
-    main_src.write_text("def _f():\n    yield\n\n_g = _f()\nprint(type(_g))\n")
+    main_src.write_text(
+        "def _f():\n    yield\n\n_g = _f()\nprint(type(_g))\n", encoding="utf-8"
+    )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
@@ -456,7 +463,8 @@ def test_split_runtime_namedtuple_replace_direct_mode(tmp_path: Path) -> None:
         "from collections import namedtuple\n"
         "\n"
         "T = namedtuple('T', ['a', 'b'])\n"
-        "print(T(1, 2)._replace(a=3))\n"
+        "print(T(1, 2)._replace(a=3))\n",
+        encoding="utf-8",
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -485,7 +493,8 @@ def test_split_runtime_imported_module_load_safetensors_bytes_is_published(
     main_src.write_text(
         "import molt.gpu.interop as interop\n"
         "print(hasattr(interop, 'load_safetensors_bytes'))\n"
-        "print(type(interop.load_safetensors_bytes).__name__)\n"
+        "print(type(interop.load_safetensors_bytes).__name__)\n",
+        encoding="utf-8",
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -514,10 +523,13 @@ def test_split_runtime_imported_module_getframe_globals_direct_mode(
         "import sys\n"
         "\n"
         "def probe():\n"
-        "    return sys._getframe(1).f_globals.get('__name__', '__main__')\n"
+        "    return sys._getframe(1).f_globals.get('__name__', '__main__')\n",
+        encoding="utf-8",
     )
     main_src = tmp_path / "probe_main.py"
-    main_src.write_text("from probe_mod import probe\nprint(probe())\n")
+    main_src.write_text(
+        "from probe_mod import probe\nprint(probe())\n", encoding="utf-8"
+    )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
@@ -546,7 +558,7 @@ def test_split_runtime_inline_python_function_returned_list_prints(
     tmp_path: Path,
 ) -> None:
     main_src = tmp_path / "probe_main.py"
-    main_src.write_text("def f():\n    return [1, 2]\n\nprint(f())\n")
+    main_src.write_text("def f():\n    return [1, 2]\n\nprint(f())\n", encoding="utf-8")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
@@ -574,7 +586,8 @@ def test_split_runtime_module_loop_dict_store_direct_mode(tmp_path: Path) -> Non
         "_INDEX = {}\n"
         "for _i__SYS_FLAGS_SEQUENCE_INDEX in range(len(_FIELDS)):\n"
         "    _INDEX[_FIELDS[_i__SYS_FLAGS_SEQUENCE_INDEX]] = _i__SYS_FLAGS_SEQUENCE_INDEX\n"
-        "print(_INDEX)\n"
+        "print(_INDEX)\n",
+        encoding="utf-8",
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -600,7 +613,7 @@ def test_split_runtime_direct_mode_surfaces_unhandled_exception(
     tmp_path: Path,
 ) -> None:
     main_src = tmp_path / "probe_main.py"
-    main_src.write_text("raise RuntimeError('boom')\n")
+    main_src.write_text("raise RuntimeError('boom')\n", encoding="utf-8")
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
@@ -625,7 +638,9 @@ def test_split_runtime_import_typing_then_raise_direct_mode_surfaces_exception(
     tmp_path: Path,
 ) -> None:
     main_src = tmp_path / "probe_main.py"
-    main_src.write_text("import typing\nraise RuntimeError('AFTER')\n")
+    main_src.write_text(
+        "import typing\nraise RuntimeError('AFTER')\n", encoding="utf-8"
+    )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 

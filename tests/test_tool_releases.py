@@ -427,7 +427,7 @@ def test_pinned_tool_runner_rejects_mutation_during_execution(tmp_path, monkeypa
 def test_cli_exports_only_attested_tool_directory(tmp_path: Path, monkeypatch) -> None:
     discovery = _installed_demo(tmp_path, monkeypatch)
     output = tmp_path / "github-path"
-    output.write_text("existing-directory\n")
+    output.write_text("existing-directory\n", encoding="utf-8")
     assert (
         tool_releases.main(
             [
@@ -441,7 +441,7 @@ def test_cli_exports_only_attested_tool_directory(tmp_path: Path, monkeypatch) -
         )
         == 0
     )
-    assert output.read_text().splitlines() == [
+    assert output.read_text(encoding="utf-8").splitlines() == [
         "existing-directory",
         str(discovery.executable.parent),
     ]

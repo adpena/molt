@@ -31,7 +31,7 @@ def fuzz_one_safe(
     source = gen.generate()
 
     source_path = os.path.join(tmpdir, f"fuzz_{program_id:06d}.py")
-    Path(source_path).write_text(source)
+    Path(source_path).write_text(source, encoding="utf-8")
 
     try:
         cp_stdout, cp_stderr, cp_rc = run_cpython(source_path, timeout)
@@ -154,7 +154,7 @@ def fuzz_one_reject(
     source, reason = gen.generate()
 
     source_path = os.path.join(tmpdir, f"fuzz_reject_{program_id:06d}.py")
-    Path(source_path).write_text(source)
+    Path(source_path).write_text(source, encoding="utf-8")
 
     try:
         binary, build_error = compile_molt(source_path, profile, timeout, env)

@@ -58,7 +58,7 @@ def _compile_and_run(source: str) -> str:
         prefix="molt-https-urlopen-"
     ) as tmp:
         src_path = tmp / "https_demo.py"
-        src_path.write_text(source)
+        src_path.write_text(source, encoding="utf-8")
         binary_path = tmp / "https_demo_molt"
 
         env = development_artifact_env(

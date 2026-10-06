@@ -126,7 +126,9 @@ def test_real_selection_dormant_api_is_ignored_but_selected_api_is_rejected(
         )
 
     def run(command):
-        result = _COMMANDS.run(command, capture_output=True, text=True, timeout=30)
+        result = _COMMANDS.run(
+            command, capture_output=True, text=True, timeout=30, encoding="utf-8"
+        )
         assert result.returncode == 0, result.stderr
         return result
 

@@ -125,9 +125,9 @@ def test_native_selection_does_not_admit_incomplete_or_redirected_receipt(tmp_pa
     coordinate = tmp_path / "dev-fast" / "libmolt_runtime.micro.a"
     first = publish(coordinate)
     selector = generations.native_runtime_generation_path(coordinate)
-    payload = json.loads(selector.read_text())
+    payload = json.loads(selector.read_text(encoding="utf-8"))
     payload["generation"] = "0" * 64
-    selector.write_text(json.dumps(payload))
+    selector.write_text(json.dumps(payload), encoding="utf-8")
     assert read(coordinate) is None
     selector.unlink()
     write_test_static_archive(coordinate)

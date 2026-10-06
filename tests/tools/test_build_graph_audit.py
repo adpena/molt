@@ -356,6 +356,7 @@ def test_cli_check_exits_zero_on_clean_tree():
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     assert proc.returncode == 0, proc.stderr
     assert "build-graph ratchet OK" in proc.stdout

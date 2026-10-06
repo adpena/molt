@@ -74,8 +74,8 @@ def _cosign_sign_blob(
         if result.returncode != 0:
             detail = (result.stderr or result.stdout).strip() or "unknown error"
             raise RuntimeError(f"cosign sign-blob failed: {detail}")
-        signature = sig_path.read_text().strip()
-        certificate = cert_path.read_text().strip()
+        signature = sig_path.read_text(encoding="utf-8").strip()
+        certificate = cert_path.read_text(encoding="utf-8").strip()
     metadata: dict[str, Any] = {
         "tool": {"name": "cosign"},
         "signature": {"format": "cosign-blob", "value": signature},
@@ -243,9 +243,9 @@ def _load_trust_policy(path: Path) -> TrustPolicy:
     if not path.exists():
         raise FileNotFoundError(f"Trust policy not found: {path}")
     if path.suffix == ".json":
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     else:
-        data = tomllib.loads(path.read_text())
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
     cosign = data.get("cosign", {})
     codesign = data.get("codesign", {})
     cosign_keys: set[str] = set()

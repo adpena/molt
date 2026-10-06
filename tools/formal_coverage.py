@@ -137,7 +137,9 @@ def parse_lean_binops() -> set[str]:
     syntax = LEAN_DIR / "Syntax.lean"
     if not syntax.exists():
         return set()
-    return set(parse_lean_inductive_variants(syntax.read_text(), "BinOp"))
+    return set(
+        parse_lean_inductive_variants(syntax.read_text(encoding="utf-8"), "BinOp")
+    )
 
 
 def parse_lean_unops() -> set[str]:
@@ -145,7 +147,9 @@ def parse_lean_unops() -> set[str]:
     syntax = LEAN_DIR / "Syntax.lean"
     if not syntax.exists():
         return set()
-    return set(parse_lean_inductive_variants(syntax.read_text(), "UnOp"))
+    return set(
+        parse_lean_inductive_variants(syntax.read_text(encoding="utf-8"), "UnOp")
+    )
 
 
 def parse_lean_expr_kinds() -> set[str]:
@@ -153,14 +157,16 @@ def parse_lean_expr_kinds() -> set[str]:
     syntax = LEAN_DIR / "Syntax.lean"
     if not syntax.exists():
         return set()
-    return set(parse_lean_inductive_variants(syntax.read_text(), "Expr"))
+    return set(
+        parse_lean_inductive_variants(syntax.read_text(encoding="utf-8"), "Expr")
+    )
 
 
 def count_theorems(path: Path) -> int:
     """Count theorem/lemma declarations in a Lean file."""
     if not path.exists():
         return 0
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     return len(
         re.findall(
             r"^(theorem|lemma|private theorem|private lemma)\s+", text, re.MULTILINE
@@ -172,7 +178,7 @@ def count_sorry(path: Path) -> int:
     """Count sorry occurrences (actual usage, not comments) in a Lean file."""
     if not path.exists():
         return 0
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     return len(re.findall(r"^\s*sorry\b", text, re.MULTILINE))
 
 

@@ -202,6 +202,7 @@ def _default_rust_files() -> list[Path]:
                 ["git", "-C", str(ROOT), "grep", "-l", 'extern "', "--", "*.rs"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
             )
         except OSError:
             pass

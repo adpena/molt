@@ -29,11 +29,11 @@ def test_unreachable_bad_rows_do_not_become_a_second_lock_validator(tmp_path):
             '\n[[package]]\nname="unrelated"\nversion="0.1.0"\nchecksum="invalid"\ndependencies=["missing", "broken ("]\n'
         )
     assert lock_identity(tmp_path) == baseline
-    text = (tmp_path / "Cargo.lock").read_text()
+    text = (tmp_path / "Cargo.lock").read_text(encoding="utf-8")
     text = text.replace(
         'version = "0.1.0"', 'version = "0.1.0"\ndependencies=["unrelated"]', 1
     )
-    (tmp_path / "Cargo.lock").write_text(text)
+    (tmp_path / "Cargo.lock").write_text(text, encoding="utf-8")
     with pytest.raises(compiler_identity.CompilerIdentityError, match="checksum"):
         lock_identity(tmp_path)
 
@@ -63,16 +63,17 @@ def test_cargo_git_reference_and_path_precedence(tmp_path, reference, source):
     text = (
         root + "dependencies=[" + json.dumps(reference) + "]\n" + selected + unrelated
     )
-    lock.write_text(text)
+    lock.write_text(text, encoding="utf-8")
     baseline = lock_identity(tmp_path)
-    lock.write_text(text.replace("a" * 64, "b" * 64))
+    lock.write_text(text.replace("a" * 64, "b" * 64), encoding="utf-8")
     assert lock_identity(tmp_path) == baseline
     if source:
-        lock.write_text(text.replace("#abc", "#def"))
+        lock.write_text(text.replace("#abc", "#def"), encoding="utf-8")
     else:
         lock.write_text(
             text.replace(selected, selected + 'dependencies=["extra"]\n')
-            + '\n[[package]]\nname="extra"\nversion="1.0.0"\n'
+            + '\n[[package]]\nname="extra"\nversion="1.0.0"\n',
+            encoding="utf-8",
         )
     assert lock_identity(tmp_path) != baseline
 
@@ -186,7 +187,7 @@ def test_cargo_mutation_rejected_before_any_alias_probe_or_receipt(
 ):
     write_compiler_lock(tmp_path)
     source = tmp_path / "runtime/molt-backend/lib.rs"
-    source.write_text("pub const VALUE: u8 = 1;\n")
+    source.write_text("pub const VALUE: u8 = 1;\n", encoding="utf-8")
     admission = compiler_build_admission(("native-backend",), "release")
     built = False
 
@@ -216,7 +217,7 @@ def test_cargo_mutation_rejected_before_any_alias_probe_or_receipt(
         assert "--locked" in plan.command
         built = True
         if mutation == "source":
-            source.write_text("pub const VALUE: u8 = 2;\n")
+            source.write_text("pub const VALUE: u8 = 2;\n", encoding="utf-8")
         elif mutation in {"restored-source", "restored-lock"}:
             changed = (
                 source if mutation == "restored-source" else tmp_path / "Cargo.lock"
@@ -227,12 +228,15 @@ def test_cargo_mutation_rejected_before_any_alias_probe_or_receipt(
             os.utime(changed, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
         elif mutation == "restored-topology":
             extra = source.parent / "during-cargo.rs"
-            extra.write_text("pub const TEMP: u8 = 1;")
+            extra.write_text("pub const TEMP: u8 = 1;", encoding="utf-8")
             extra.unlink()
         elif mutation == "lock":
             lock = tmp_path / "Cargo.lock"
             lock.write_text(
-                lock.read_text().replace('version = "0.1.0"', 'version = "0.2.0"')
+                lock.read_text(encoding="utf-8").replace(
+                    'version = "0.1.0"', 'version = "0.2.0"'
+                ),
+                encoding="utf-8",
             )
         return subprocess.CompletedProcess(plan.command, 0, "", "")
 
@@ -301,13 +305,13 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
 
     seen = []
     configuration = tmp_path / "config.toml"
-    configuration.write_text('[build]\nrustflags=["-Copt-level=2"]\n')
+    configuration.write_text('[build]\nrustflags=["-Copt-level=2"]\n', encoding="utf-8")
     monkeypatch.setattr(cargo_execution, "_cargo_build_env", lambda env: dict(env))
 
     def resolve(root, *, env, cargo_command, requested_target, environment_transform):
         env = environment_transform(env)
         seen.append(dict(env))
-        config_digest = canonical_json_sha256(configuration.read_text())
+        config_digest = canonical_json_sha256(configuration.read_text(encoding="utf-8"))
         return SimpleNamespace(
             environment=env,
             configuration=(),
@@ -354,7 +358,7 @@ def test_prepared_cargo_environment_and_configuration_govern_identity(
         }
     )
     assert guest.fingerprint == baseline.fingerprint
-    configuration.write_text('[build]\nrustflags=["-Copt-level=3"]\n')
+    configuration.write_text('[build]\nrustflags=["-Copt-level=3"]\n', encoding="utf-8")
     assert admission(baseline_env).fingerprint != baseline.fingerprint
 
 

@@ -22,7 +22,7 @@ def _read_cached_json_object(path: Path) -> dict[str, Any] | None:
         if cached_size == stat.st_size and cached_mtime_ns == stat.st_mtime_ns:
             return cached_payload
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         _PERSISTED_JSON_OBJECT_CACHE[path] = (stat.st_size, stat.st_mtime_ns, None)
         return None

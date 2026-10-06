@@ -158,7 +158,7 @@ def check_lean_build(*, skip_build: bool = False) -> CheckResult:
     sorry_count = 0
     lean_files = list(LEAN_DIR.rglob("*.lean"))
     for lf in lean_files:
-        text = lf.read_text(errors="replace")
+        text = lf.read_text(errors="replace", encoding="utf-8")
         theorem_count += len(re.findall(r"\btheorem\b", text))
         sorry_count += len(re.findall(r"\bsorry\b", text))
 

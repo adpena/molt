@@ -82,7 +82,9 @@ def test_unchanged_request_cache_is_not_republished(tmp_path, monkeypatch):
     helper.unlink()
     graph.local_python_import_closure(tmp_path, (seed,))
     assert len(publications) == 3
-    payload = json.loads((graph.python_source_closure_cache_path(tmp_path)).read_text())
+    payload = json.loads(
+        (graph.python_source_closure_cache_path(tmp_path)).read_text(encoding="utf-8")
+    )
     assert set(payload["entries"]) == {"entry.py"}
 
 
@@ -262,7 +264,7 @@ def test_inventory_receipt_captures_bytes_once_without_parsing_covered_owners(
         calls[path] += 1
         snapshot = capture(resolver, path)
         if path == owner:
-            owner.write_text("a different source generation\n")
+            owner.write_text("a different source generation\n", encoding="utf-8")
         return snapshot
 
     with monkeypatch.context() as patch:
@@ -274,7 +276,9 @@ def test_inventory_receipt_captures_bytes_once_without_parsing_covered_owners(
     changed = graph.local_python_import_closure(tmp_path, (seed,))
     assert changed.content_digest != receipt.content_digest
     # Real graph reachability still owns parse errors despite complete coverage.
-    seed.write_text(seed.read_text() + "import owner\n")
+    seed.write_text(
+        seed.read_text(encoding="utf-8") + "import owner\n", encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="cannot parse local Python source"):
         graph.local_python_import_closure(tmp_path, (seed,))
 

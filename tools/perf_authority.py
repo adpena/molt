@@ -210,6 +210,7 @@ def _git_output(args: list[str]) -> str | None:
             text=True,
             check=False,
             timeout=30,
+            encoding="utf-8",
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -865,6 +866,7 @@ def git_rev_is_ancestor_of_origin(git_rev: str | None) -> bool | None:
             text=True,
             check=False,
             timeout=30,
+            encoding="utf-8",
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

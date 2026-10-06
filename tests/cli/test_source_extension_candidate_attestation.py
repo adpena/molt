@@ -454,7 +454,8 @@ def test_promotion_rejects_duplicate_json_and_retains_candidate(
     attestation.report_path.write_text(
         original.replace(
             '"schema_version": 1', '"schema_version": 1, "schema_version": 1', 1
-        )
+        ),
+        encoding="utf-8",
     )
     assert (
         promotion.publish_source_extension_set_candidate(

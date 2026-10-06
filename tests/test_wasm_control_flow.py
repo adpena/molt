@@ -12,7 +12,9 @@ def test_wasm_control_flow_parity(tmp_path: Path) -> None:
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "if_else.py"
-    src.write_text("x = 1\nif x < 2:\n    print(1)\nelse:\n    print(2)\n")
+    src.write_text(
+        "x = 1\nif x < 2:\n    print(1)\nelse:\n    print(2)\n", encoding="utf-8"
+    )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)
     run = run_wasm_linked(root, output_wasm)
@@ -36,7 +38,8 @@ def test_wasm_module_try_exception_loop_parity(tmp_path: Path) -> None:
         "    except RuntimeError:\n"
         "        total = total + 100\n"
         "    i = i + 1\n"
-        "print(total)\n"
+        "print(total)\n",
+        encoding="utf-8",
     )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)

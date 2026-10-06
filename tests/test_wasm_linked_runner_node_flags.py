@@ -337,7 +337,7 @@ def test_build_wasm_linked_treats_symlinked_ext_root_as_repo_local(
     except OSError as exc:
         pytest.skip(f"directory symlinks are unavailable on this host: {exc}")
     src = tmp_path / "probe.py"
-    src.write_text("print('hi')\n")
+    src.write_text("print('hi')\n", encoding="utf-8")
     recorded: dict[str, Any] = {}
 
     def _fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
@@ -362,7 +362,7 @@ def test_build_wasm_linked_marks_repo_local_output_as_output_not_required_extern
     root = tmp_path / "repo"
     root.mkdir()
     src = tmp_path / "probe.py"
-    src.write_text("print('hi')\n")
+    src.write_text("print('hi')\n", encoding="utf-8")
     recorded: dict[str, Any] = {}
 
     def _fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
@@ -496,7 +496,7 @@ def test_build_wasm_linked_does_not_mutate_process_runtime_env(
 ) -> None:
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "probe.py"
-    src.write_text("print('hi')\n")
+    src.write_text("print('hi')\n", encoding="utf-8")
     monkeypatch.delenv("MOLT_RUNTIME_WASM", raising=False)
 
     def _fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]

@@ -46,7 +46,7 @@ LEAN_PASSES_DIR = ROOT / "formal" / "lean" / "MoltTIR" / "Passes"
 
 def _read(path: Path) -> str:
     if path.exists():
-        return path.read_text(errors="replace")
+        return path.read_text(errors="replace", encoding="utf-8")
     pytest.skip(f"Source file not found: {path}")
     return ""
 
@@ -291,7 +291,7 @@ class TestCompilerPassCorrespondence:
         path = LEAN_PASSES_DIR / filename
         if not path.exists():
             pytest.skip(f"Lean pass file not found: {path}")
-        text = path.read_text(errors="replace")
+        text = path.read_text(errors="replace", encoding="utf-8")
         assert func_name in text, f"Function {func_name} not found in {path}"
 
     def test_python_mentions_pass_concepts(self) -> None:

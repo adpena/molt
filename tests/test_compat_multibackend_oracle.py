@@ -421,7 +421,7 @@ def test_build_failed_backend_excluded_from_cross_check() -> None:
 @pytest.fixture
 def fake_test_file(tmp_path) -> Path:
     f = tmp_path / "prog.py"
-    f.write_text("print(42)\n")
+    f.write_text("print(42)\n", encoding="utf-8")
     return f
 
 
@@ -507,7 +507,9 @@ def test_all_backends_receive_one_stdlib_profile(
         monkeypatch.setenv("MOLT_DIFF_STDLIB_PROFILE", "full")
     else:
         monkeypatch.delenv("MOLT_DIFF_STDLIB_PROFILE", raising=False)
-        fake_test_file.write_text("# MOLT_META: stdlib_profile=full\nprint(42)\n")
+        fake_test_file.write_text(
+            "# MOLT_META: stdlib_profile=full\nprint(42)\n", encoding="utf-8"
+        )
     targets = ("native", "wasm", "llvm", "luau")
     registry, native_contexts = install_fake_registry(
         {target: compat_backends.BackendResult("42\n", "", 0) for target in targets}
@@ -838,7 +840,8 @@ def test_timeout_cannot_be_xfailed_even_with_other_backend_divergence(
     backend, fake_test_file, install_fake_registry, monkeypatch
 ):
     fake_test_file.write_text(
-        "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n"
+        "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n",
+        encoding="utf-8",
     )
     targets = ("native", "wasm", "llvm", "luau")
     outcomes = {name: _outcome(name) for name in targets}
@@ -887,7 +890,8 @@ def test_missing_target_is_not_pass_or_expected_semantic_failure(
     native_output, fake_test_file, install_fake_registry, monkeypatch
 ):
     fake_test_file.write_text(
-        "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n"
+        "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n",
+        encoding="utf-8",
     )
     registry, _ = install_fake_registry(
         {"native": _outcome(native_output), "luau": _outcome("")}
@@ -911,7 +915,8 @@ def test_cpython_timeout_cannot_become_semantic_parity(
     fake_test_file, install_fake_registry, monkeypatch
 ):
     fake_test_file.write_text(
-        "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n"
+        "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n",
+        encoding="utf-8",
     )
     registry, native_contexts = install_fake_registry(
         {"native": _outcome("", rc=124)},
@@ -942,7 +947,8 @@ def test_infrastructure_failure_is_not_semantic_or_oom_evidence(
     backend, build_failed, fake_test_file, install_fake_registry, monkeypatch, capsys
 ):
     fake_test_file.write_text(
-        "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n"
+        "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n",
+        encoding="utf-8",
     )
     targets = ("native", "wasm", "llvm", "luau")
     outcomes = {name: _outcome(name) for name in targets}
@@ -977,7 +983,8 @@ def test_guest_cleanup_failure_cannot_be_hidden_by_xfail(
     backend, fake_test_file, install_fake_registry, monkeypatch, tmp_path
 ):
     fake_test_file.write_text(
-        "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n"
+        "# MOLT_META: expect_fail=molt expect_fail_reason=semantic_gap\nprint(42)\n",
+        encoding="utf-8",
     )
     lease = SimpleNamespace(
         path=tmp_path, retire=lambda **_kwargs: "owned guest cleanup failed"

@@ -80,7 +80,7 @@ def _build_luau(src_path: Path, out_dir: Path) -> str | None:
     # Find .luau or .lua output file.
     for ext in ("*.luau", "*.lua"):
         for f in out_dir.rglob(ext):
-            return f.read_text()
+            return f.read_text(encoding="utf-8")
     return None
 
 
@@ -171,7 +171,7 @@ class TestLuauArithmeticPatterns:
         Verify the generated code contains the expected pattern.
         """
         src_file = tmp_path / f"{name}.py"
-        src_file.write_text(source)
+        src_file.write_text(source, encoding="utf-8")
         out_dir = tmp_path / "out"
         out_dir.mkdir()
         luau_source = _build_luau(src_file, out_dir)
@@ -222,7 +222,7 @@ class TestLuauIndexAdjustment:
         Reference: LuauCorrect.lean, emitTableAccess_structure
         """
         src_file = tmp_path / "list_access.py"
-        src_file.write_text("xs = [10, 20, 30]\nprint(xs[0])\n")
+        src_file.write_text("xs = [10, 20, 30]\nprint(xs[0])\n", encoding="utf-8")
         out_dir = tmp_path / "out"
         out_dir.mkdir()
         luau_source = _build_luau(src_file, out_dir)
@@ -295,7 +295,7 @@ class TestLuauBuiltinMapping:
             source = f"print({python_builtin}(1))\n"
 
         src_file = tmp_path / f"builtin_{python_builtin}.py"
-        src_file.write_text(source)
+        src_file.write_text(source, encoding="utf-8")
         out_dir = tmp_path / "out"
         out_dir.mkdir()
         luau_source = _build_luau(src_file, out_dir)
@@ -343,7 +343,7 @@ class TestLuauSyntaxValidity:
         - Parentheses and brackets should be balanced.
         """
         src_file = tmp_path / f"{name}.py"
-        src_file.write_text(source)
+        src_file.write_text(source, encoding="utf-8")
         out_dir = tmp_path / "out"
         out_dir.mkdir()
         luau_source = _build_luau(src_file, out_dir)
@@ -369,7 +369,7 @@ class TestLuauSyntaxValidity:
         that would be invalid in Luau.
         """
         src_file = tmp_path / f"{name}.py"
-        src_file.write_text(source)
+        src_file.write_text(source, encoding="utf-8")
         out_dir = tmp_path / "out"
         out_dir.mkdir()
         luau_source = _build_luau(src_file, out_dir)
@@ -406,7 +406,7 @@ class TestLuauSyntaxValidity:
         `local` declaration in the output is syntactically well-formed.
         """
         src_file = tmp_path / f"{name}.py"
-        src_file.write_text(source)
+        src_file.write_text(source, encoding="utf-8")
         out_dir = tmp_path / "out"
         out_dir.mkdir()
         luau_source = _build_luau(src_file, out_dir)

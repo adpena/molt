@@ -106,8 +106,8 @@ def _build_native_binary_with_env(
         for rel_path, contents in extra_files.items():
             path = tmp_path / rel_path
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(contents)
-    src_path.write_text(source)
+            path.write_text(contents, encoding="utf-8")
+    src_path.write_text(source, encoding="utf-8")
 
     env = os.environ.copy()
     env["PYTHONPATH"] = str(SRC_DIR)

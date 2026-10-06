@@ -66,7 +66,12 @@ def _git(
     root: Path, *args: str, check: bool = True
 ) -> subprocess.CompletedProcess[str]:
     return _COMMANDS.run(
-        ["git", *args], cwd=root, check=check, capture_output=True, text=True
+        ["git", *args],
+        cwd=root,
+        check=check,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
 
 
@@ -169,6 +174,7 @@ def _append_row_and_land(
         cwd=root,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     print(land.stdout.strip())
     if land.stderr.strip():

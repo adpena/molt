@@ -73,7 +73,9 @@ def _resolved(root, requested="native"):
     if target.target_triple == "wasm32-wasip1":
         sysroot = root / "wasi-sysroot"
         (sysroot / "include").mkdir(parents=True)
-        (sysroot / "include" / "errno.h").write_text("#define EINVAL 22\n")
+        (sysroot / "include" / "errno.h").write_text(
+            "#define EINVAL 22\n", encoding="utf-8"
+        )
         archive = root / "libcompiler_builtins-fixture.rlib"
         archive.write_bytes(b"!<arch>\nfixture builtins")
     for role in ("c", "cpp"):
@@ -189,10 +191,9 @@ def test_wasi_metadata_consumes_selected_archive_without_discovery(
         "path": str(resolved.link_inputs.compiler_builtins),
         "sha256": resolved.link_inputs.sha256,
     }
-    assert (
-        str(resolved.link_inputs.compiler_builtins).replace("\\", "/")
-        in metadata.meson_cross.read_text()
-    )
+    assert str(resolved.link_inputs.compiler_builtins).replace(
+        "\\", "/"
+    ) in metadata.meson_cross.read_text(encoding="utf-8")
     resolved.link_inputs.compiler_builtins.write_bytes(b"changed archive")
     with pytest.raises(ValueError, match="content changed"):
         source_extension_toolchain._materialize_source_extension_target_metadata_with_toolchain(
@@ -328,7 +329,9 @@ def test_indirect_compiler_inputs_fail_closed(tmp_path, monkeypatch, flag):
 def test_wasi_sysroot_bytes_are_identity_inputs(tmp_path, monkeypatch):
     resolved = _resolved(tmp_path, "wasm")
     identity = _capture(monkeypatch, resolved)
-    (resolved.wasi_sysroot / "include" / "errno.h").write_text("#define EINVAL 999\n")
+    (resolved.wasi_sysroot / "include" / "errno.h").write_text(
+        "#define EINVAL 999\n", encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="sysroot content changed"):
         provider.validate_identity(_policy(), identity)
 
@@ -579,7 +582,9 @@ def test_wasi_user_selectors_bind_selected_home_in_cache(
         if selector == "MOLT_TARGET_ROOT":
             root /= "toolchains/wasi-sysroot"
         (root / "include").mkdir(parents=True)
-        (root / "include" / "errno.h").write_text("#define EINVAL 22\n")
+        (root / "include" / "errno.h").write_text(
+            "#define EINVAL 22\n", encoding="utf-8"
+        )
         assert (
             wasm_link_inputs.resolve_wasi_sysroot(
                 env={home_key: str(home), selector: "~/sdk"}

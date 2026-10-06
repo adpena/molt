@@ -31,7 +31,7 @@ def _has_molt_runner() -> bool:
 def test_threading_gate_intrinsic_exists() -> None:
     """The Rust source defines the molt_threading_available intrinsic."""
     threads_rs = ROOT / "runtime" / "molt-runtime" / "src" / "async_rt" / "threads.rs"
-    content = threads_rs.read_text()
+    content = threads_rs.read_text(encoding="utf-8")
     assert "molt_threading_available" in content
     assert "molt_thread_start" in content
     assert "molt_wasm_check_module_gate" in content
@@ -40,7 +40,7 @@ def test_threading_gate_intrinsic_exists() -> None:
 def test_wasm_thread_submit_gate_defined() -> None:
     """The WASM gate for molt_thread_submit produces RuntimeError."""
     threads_rs = ROOT / "runtime" / "molt-runtime" / "src" / "async_rt" / "threads.rs"
-    content = threads_rs.read_text()
+    content = threads_rs.read_text(encoding="utf-8")
     # The WASM version should raise RuntimeError
     assert (
         'raise_exception::<u64>(_py, "RuntimeError", "thread submit unsupported on wasm")'
@@ -51,14 +51,14 @@ def test_wasm_thread_submit_gate_defined() -> None:
 def test_wasm_thread_start_gate_defined() -> None:
     """The WASM gate for molt_thread_start produces RuntimeError."""
     threads_rs = ROOT / "runtime" / "molt-runtime" / "src" / "async_rt" / "threads.rs"
-    content = threads_rs.read_text()
+    content = threads_rs.read_text(encoding="utf-8")
     assert "threading.Thread is not available in the WASM runtime" in content
 
 
 def test_wasm_module_gate_blocks_expected_modules() -> None:
     """The WASM module gate blocks smtplib, socketserver, etc."""
     threads_rs = ROOT / "runtime" / "molt-runtime" / "src" / "async_rt" / "threads.rs"
-    content = threads_rs.read_text()
+    content = threads_rs.read_text(encoding="utf-8")
     blocked_modules = [
         "smtplib",
         "socketserver",
@@ -76,14 +76,14 @@ def test_wasm_module_gate_blocks_expected_modules() -> None:
 def test_wasm_module_gate_references_mol184() -> None:
     """Error messages reference MOL-184 for traceability."""
     threads_rs = ROOT / "runtime" / "molt-runtime" / "src" / "async_rt" / "threads.rs"
-    content = threads_rs.read_text()
+    content = threads_rs.read_text(encoding="utf-8")
     assert "MOL-184" in content
 
 
 def test_threading_available_native() -> None:
     """On native build, molt_threading_available returns true (bool)."""
     threads_rs = ROOT / "runtime" / "molt-runtime" / "src" / "async_rt" / "threads.rs"
-    content = threads_rs.read_text()
+    content = threads_rs.read_text(encoding="utf-8")
     # The native version returns true
     assert "MoltObject::from_bool(true).bits()" in content
 
@@ -91,7 +91,7 @@ def test_threading_available_native() -> None:
 def test_threading_available_wasm_returns_false() -> None:
     """On WASM, molt_threading_available returns false."""
     threads_rs = ROOT / "runtime" / "molt-runtime" / "src" / "async_rt" / "threads.rs"
-    content = threads_rs.read_text()
+    content = threads_rs.read_text(encoding="utf-8")
     # The WASM version returns false
     assert "MoltObject::from_bool(false).bits()" in content
 
@@ -100,7 +100,7 @@ def test_wasm_main_thread_identity_is_stable_and_nonzero() -> None:
     isolates_rs = (
         ROOT / "runtime" / "molt-runtime" / "src" / "concurrency" / "isolates.rs"
     )
-    content = isolates_rs.read_text()
+    content = isolates_rs.read_text(encoding="utf-8")
     assert "const WASM_MAIN_THREAD_IDENT: i64 = 1;" in content
     assert content.count("MoltObject::from_int(WASM_MAIN_THREAD_IDENT).bits()") == 3
 

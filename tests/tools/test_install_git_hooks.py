@@ -181,7 +181,9 @@ def test_foreign_hook_preserved_and_chained_then_restored(tmp_path, monkeypatch)
     assert ig.install(check=True, uninstall=False, repo_root=repo) == 0
     assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
     assert (hooks / "pre-push").read_text(encoding="utf-8") == installed
-    ig.SOURCE.write_text(ig.SOURCE.read_text() + "# revised gate\n", encoding="utf-8")
+    ig.SOURCE.write_text(
+        ig.SOURCE.read_text(encoding="utf-8") + "# revised gate\n", encoding="utf-8"
+    )
     assert ig.install(check=True, uninstall=False, repo_root=repo) == 1
     assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
     refreshed = (hooks / "pre-push").read_text(encoding="utf-8")
@@ -205,7 +207,7 @@ def test_uninstall_noop_when_absent(tmp_path, monkeypatch):
 
 
 def test_hook_binds_worktree_startup_before_uv_without_project_sync() -> None:
-    source = HOOK.read_text()
+    source = HOOK.read_text(encoding="utf-8")
     assert source.index("export PYTHONPATH=") < source.index("run_gate()")
     assert 'PYTHONPATH="$python_root/src;$python_root"' in source
     assert 'PYTHONPATH="$repo_root/src:$repo_root"' in source

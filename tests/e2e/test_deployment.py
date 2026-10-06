@@ -38,7 +38,7 @@ def test_wasm_driver_exports():
     driver_path = os.path.normpath(driver_path)
     assert os.path.isfile(driver_path), f"wasm_driver.py not found at {driver_path}"
 
-    with open(driver_path) as f:
+    with open(driver_path, encoding="utf-8") as f:
         source = f.read()
 
     # Must define exactly these two public functions
@@ -68,7 +68,7 @@ def test_wasm_driver_delegates_to_falcon_ocr():
             "wasm_driver.py",
         )
     )
-    with open(driver_path) as f:
+    with open(driver_path, encoding="utf-8") as f:
         source = f.read()
 
     tree = ast.parse(source)
@@ -157,7 +157,7 @@ def test_wasm_manifest_structure():
         f"wasm_manifest.json not found at {manifest_path}"
     )
 
-    with open(manifest_path) as f:
+    with open(manifest_path, encoding="utf-8") as f:
         manifest = json.load(f)
 
     assert manifest["name"] == "falcon-ocr"
@@ -187,7 +187,7 @@ def test_wasm_manifest_export_signatures():
             "wasm_manifest.json",
         )
     )
-    with open(manifest_path) as f:
+    with open(manifest_path, encoding="utf-8") as f:
         manifest = json.load(f)
 
     init_export = manifest["exports"]["init"]
@@ -264,7 +264,7 @@ def test_worker_js_exists():
     )
     assert os.path.isfile(worker_path)
 
-    with open(worker_path) as f:
+    with open(worker_path, encoding="utf-8") as f:
         source = f.read()
 
     assert "import" in source and "ocr_api.js" in source
@@ -288,7 +288,7 @@ def test_ocr_api_js_exists():
     )
     assert os.path.isfile(api_path)
 
-    with open(api_path) as f:
+    with open(api_path, encoding="utf-8") as f:
         source = f.read()
 
     assert "handleOcrRequest" in source
@@ -372,7 +372,7 @@ def test_mcp_tool_definition():
     )
     assert os.path.isfile(mcp_path)
 
-    with open(mcp_path) as f:
+    with open(mcp_path, encoding="utf-8") as f:
         tool = json.load(f)
 
     assert tool["name"] == "falcon_ocr"
@@ -424,7 +424,7 @@ def test_x402_required_for_ocr_endpoints():
             "worker.js",
         )
     )
-    with open(worker_path) as f:
+    with open(worker_path, encoding="utf-8") as f:
         source = f.read()
 
     # Health check must be before the common POST payment gate in the
@@ -456,7 +456,7 @@ def test_supported_image_formats():
             "ocr_api.js",
         )
     )
-    with open(api_path) as f:
+    with open(api_path, encoding="utf-8") as f:
         source = f.read()
 
     for fmt in ["image/jpeg", "image/png", "image/webp"]:
@@ -475,7 +475,7 @@ def test_cors_restricted_to_freeinvoicemaker():
             "worker.js",
         )
     )
-    with open(worker_path) as f:
+    with open(worker_path, encoding="utf-8") as f:
         source = f.read()
 
     assert "freeinvoicemaker.app" in source
@@ -494,7 +494,7 @@ def test_no_pii_logging():
                 filename,
             )
         )
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             source = f.read()
 
         # console.log/error calls must not include image/rgb/bytes variables
@@ -523,7 +523,7 @@ def test_migration_guide_exists():
     )
     assert os.path.isfile(guide_path)
 
-    with open(guide_path) as f:
+    with open(guide_path, encoding="utf-8") as f:
         content = f.read()
 
     required_sections = [

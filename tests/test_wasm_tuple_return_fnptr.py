@@ -47,7 +47,7 @@ def test_wasm_unpack_sequence_direct_call(tmp_path: Path) -> None:
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "unpack_sequence_direct.py"
-    src.write_text(UNPACK_SEQUENCE_DIRECT_SRC)
+    src.write_text(UNPACK_SEQUENCE_DIRECT_SRC, encoding="utf-8")
 
     output_wasm = build_wasm_linked(
         root,
@@ -80,7 +80,8 @@ def test_wasm_unpack_sequence_function_local(tmp_path: Path) -> None:
 
             print(first_sum(pair(5)))
             """
-        )
+        ),
+        encoding="utf-8",
     )
 
     output_wasm = build_wasm_linked(
@@ -100,7 +101,7 @@ def test_wasm_tuple_return_function_object_call(tmp_path: Path) -> None:
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "tuple_return_fnptr.py"
-    src.write_text(TUPLE_RETURN_FN_PTR_SRC)
+    src.write_text(TUPLE_RETURN_FN_PTR_SRC, encoding="utf-8")
 
     output_wasm = build_wasm_linked(
         root,

@@ -114,6 +114,7 @@ def _run_fast_captured_command(
             text=True,
             timeout=timeout,
             check=False,
+            encoding="utf-8",
         )
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout if isinstance(exc.stdout, str) else ""

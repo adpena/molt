@@ -49,7 +49,7 @@ def test_registry_evidence_is_not_stale():
 def test_attached_facts_do_not_regress():
     c = CFC.census(ROOT)
     assert BASELINE.is_file(), "run --update-baseline first"
-    base = json.loads(BASELINE.read_text())
+    base = json.loads(BASELINE.read_text(encoding="utf-8"))
     assert c["attached"] >= base["attached"], (
         f"call-fact representation regressed: attached {base['attached']} -> "
         f"{c['attached']} (a fact un-attached from the call op)"
@@ -88,7 +88,7 @@ def test_corpus_typed_return_parse():
     }
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "rep.json"
-        p.write_text(json.dumps(doc))
+        p.write_text(json.dumps(doc), encoding="utf-8")
         out = CFC._corpus_typed_return([p])
     # call result reprs: dynbox 3 + i64 1 + i64 4 = 8 total; typed = 1 + 4 = 5
     assert out["call_result_reprs_total"] == 8

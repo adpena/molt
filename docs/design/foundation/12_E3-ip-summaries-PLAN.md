@@ -239,7 +239,9 @@ All shapes must be byte-identical vs CPython 3.12 / 3.13 / 3.14 on native + WASM
 
 ```python
 # Shape 1: returned parameter alias must remain a capture obligation
-def identity(x): return x  # returning x is not a noncapture proof
+def identity(x):
+    return x  # returning x is not a noncapture proof
+
 
 def f():
     class Box:

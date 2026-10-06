@@ -32,7 +32,7 @@ SCRIPTS_DIR = os.path.join(DEPLOY_DIR, "scripts")
 
 
 def _read(path: str) -> str:
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return f.read()
 
 
@@ -543,7 +543,7 @@ def test_no_todos_in_deployment_code():
             filepath = os.path.join(dir_path, filename)
             if not os.path.isfile(filepath):
                 continue
-            with open(filepath) as f:
+            with open(filepath, encoding="utf-8") as f:
                 for line_num, line in enumerate(f, 1):
                     if todo_pattern.search(line):
                         violations.append(f"{filepath}:{line_num}: {line.strip()}")

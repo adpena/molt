@@ -2548,7 +2548,7 @@ def test_lexical_discovery_twin_cannot_fill_unknown_source_package(
     path = tmp_path / "pkg" / "entry.py"
     path.parent.mkdir()
     path.write_text("__package__ = choose()\nfrom . import child\n", encoding="utf-8")
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     projection = module_import_scanner._collect_imports_for_graph(tree, "pkg.entry")
     assert "pkg.child" in projection.dynamic_relative_import_candidates
     assert "pkg.child" not in projection.imports

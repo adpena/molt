@@ -49,7 +49,8 @@ def test_native_generator_exception_cleanup(tmp_path: Path) -> None:
         "print(next(g))\n"
         "g = None\n"
         "gc.collect()\n"
-        "print('cleared', refs[0]() is None)\n"
+        "print('cleared', refs[0]() is None)\n",
+        encoding="utf-8",
     )
 
     output_root = tmp_path

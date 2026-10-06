@@ -38,7 +38,7 @@ def run_generate_only(
             _log(f"  [WARN] seed={program_seed} produced invalid Python -- skipping")
             continue
         path = output_dir / f"fuzz_{program_seed}.py"
-        path.write_text(source)
+        path.write_text(source, encoding="utf-8")
         valid += 1
     _log(f"Generated {valid}/{count} valid programs in {output_dir}")
     return valid

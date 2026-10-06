@@ -138,6 +138,7 @@ def _tracked_perf_artifacts() -> list[Path] | None:
             text=True,
             check=False,
             timeout=30,
+            encoding="utf-8",
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

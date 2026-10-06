@@ -44,7 +44,8 @@ def test_wasm_pickle_protocol01_roundtrip(tmp_path: Path) -> None:
                     type(out["ba"]).__name__,
                 )
             """
-        )
+        ),
+        encoding="utf-8",
     )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)

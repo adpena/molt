@@ -219,7 +219,8 @@ def test_run_wasm_resolves_linked_module_only_from_manifest(
             str(manifest_path),
             str(module_dir),
             str(tmp_path),
-        )
+        ),
+        encoding="utf-8",
     )
 
     run = __import__("subprocess").run(
@@ -228,6 +229,7 @@ def test_run_wasm_resolves_linked_module_only_from_manifest(
         capture_output=True,
         text=True,
         check=False,
+        encoding="utf-8",
     )
     assert run.returncode == 0, run.stderr
     resolved = __import__("json").loads(run.stdout)
@@ -266,7 +268,8 @@ def test_run_wasm_rejects_module_path_as_discovery_authority(
             str(temp_wasm),
             str(module_dir),
             str(tmp_dir),
-        )
+        ),
+        encoding="utf-8",
     )
 
     run = __import__("subprocess").run(
@@ -275,6 +278,7 @@ def test_run_wasm_rejects_module_path_as_discovery_authority(
         capture_output=True,
         text=True,
         check=False,
+        encoding="utf-8",
     )
     assert run.returncode != 0, run.stdout
     assert "accepts a runtime manifest path, not a module path" in run.stderr
@@ -322,7 +326,8 @@ def test_run_wasm_resolves_split_modules_relative_to_manifest(
             str(repo_root / "wasm" / "run_wasm.js"),
             str(manifest_path),
             str(module_dir),
-        )
+        ),
+        encoding="utf-8",
     )
 
     run = __import__("subprocess").run(
@@ -331,6 +336,7 @@ def test_run_wasm_resolves_split_modules_relative_to_manifest(
         capture_output=True,
         text=True,
         check=False,
+        encoding="utf-8",
     )
     assert run.returncode == 0, run.stderr
     resolved = __import__("json").loads(run.stdout)
@@ -383,7 +389,8 @@ def test_run_wasm_rejects_manifest_module_digest_drift(
             str(repo_root / "wasm" / "run_wasm.js"),
             str(manifest_path),
             str(module_dir),
-        )
+        ),
+        encoding="utf-8",
     )
 
     run = __import__("subprocess").run(
@@ -392,6 +399,7 @@ def test_run_wasm_rejects_manifest_module_digest_drift(
         capture_output=True,
         text=True,
         check=False,
+        encoding="utf-8",
     )
     assert run.returncode != 0
     assert "runtime wasm SHA-256 mismatch" in run.stderr
@@ -431,6 +439,7 @@ def test_run_wasm_execution_and_owned_value_guards_release_on_throw(
         capture_output=True,
         text=True,
         check=False,
+        encoding="utf-8",
     )
     assert run.returncode == 0, run.stderr
     assert json.loads(run.stdout) == [

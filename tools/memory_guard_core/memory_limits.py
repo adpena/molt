@@ -127,6 +127,7 @@ def _darwin_physical_memory_bytes() -> int | None:
             text=True,
             timeout=1.0,
             check=False,
+            encoding="utf-8",
         )
     except (OSError, subprocess.TimeoutExpired, TypeError):
         result = None
@@ -182,6 +183,7 @@ def _darwin_available_memory_bytes() -> int | None:
             text=True,
             timeout=1.0,
             check=False,
+            encoding="utf-8",
         )
     except (OSError, subprocess.TimeoutExpired, TypeError):
         return None

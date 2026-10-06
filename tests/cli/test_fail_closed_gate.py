@@ -656,7 +656,10 @@ def test_negative_control_ratchet_regression_fails(tmp_path: Path) -> None:
     # is the ratchet, not a missing anchor.
     hdr = tmp_path / "include" / "numpy" / "real.h"
     hdr.parent.mkdir(parents=True, exist_ok=True)
-    hdr.write_text("typedef struct PyArray_Descr { int x; } PyArray_Descr;\n", "utf-8")
+    hdr.write_text(
+        "typedef struct PyArray_Descr { int x; } PyArray_Descr;\n",
+        "utf-8",
+    )
     registry = tmp_path / "tools" / "fail_closed_registry.toml"
     registry.parent.mkdir(parents=True, exist_ok=True)
     registry.write_text(

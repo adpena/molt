@@ -1149,7 +1149,7 @@ def test_run_molt_build_only_uses_build_profile_flag(
         seen_envs.append(dict(env))
         output_path = Path(cmd[cmd.index("--output") + 1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text("")
+        output_path.write_text("", encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(module, "_run_with_optional_time", fake_run_with_optional_time)
@@ -1225,7 +1225,7 @@ def test_run_molt_preserves_explicit_runtime_diagnostics_file(
         if "build" in cmd:
             output_path = Path(cmd[cmd.index("--output") + 1])
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text("")
+            output_path.write_text("", encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(module, "_run_with_optional_time", fake_run_with_optional_time)
@@ -1277,7 +1277,7 @@ def test_run_molt_build_only_uses_diff_stdlib_profile_flag(
         seen_cmds.append(list(cmd))
         output_path = Path(cmd[cmd.index("--output") + 1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text("")
+        output_path.write_text("", encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setenv("MOLT_DIFF_STDLIB_PROFILE", "full")
@@ -1325,7 +1325,7 @@ def test_run_molt_build_only_uses_metadata_stdlib_profile_flag(
         seen_cmds.append(list(cmd))
         output_path = Path(cmd[cmd.index("--output") + 1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text("")
+        output_path.write_text("", encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.delenv("MOLT_DIFF_STDLIB_PROFILE", raising=False)
@@ -1425,7 +1425,7 @@ def test_run_molt_build_only_uses_persistent_diff_cache_by_default(
         seen_envs.append(dict(env))
         output_path = Path(cmd[cmd.index("--output") + 1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text("")
+        output_path.write_text("", encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.delenv("MOLT_CACHE", raising=False)
@@ -1476,7 +1476,7 @@ def test_run_molt_build_only_preserves_explicit_molt_cache(
         seen_envs.append(dict(env))
         output_path = Path(cmd[cmd.index("--output") + 1])
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text("")
+        output_path.write_text("", encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     def fail_diff_cache_root() -> Path:
@@ -1665,10 +1665,10 @@ def test_guest_replaced_leaf_is_never_retired(admitted_guest_environment):
     )
     lease.path.rename(root / "original")
     lease.path.mkdir()
-    (lease.path / "unowned").write_text("preserve")
+    (lease.path / "unowned").write_text("preserve", encoding="utf-8")
     error = lease.retire(environment=env, repo_root=repo)
     assert error and "identity changed" in error
-    assert (lease.path / "unowned").read_text() == "preserve"
+    assert (lease.path / "unowned").read_text(encoding="utf-8") == "preserve"
     assert (root / "original").is_dir()
 
 

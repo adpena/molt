@@ -54,7 +54,7 @@ from molt.frontend.lowering.op_kinds_generated import FRONTEND_EFFECT_CLASS  # n
 
 def _read(path: Path) -> str:
     if path.exists():
-        return path.read_text(errors="replace")
+        return path.read_text(errors="replace", encoding="utf-8")
     pytest.skip(f"Source file not found: {path}")
     return ""
 

@@ -438,7 +438,7 @@ def _infer_module_attr_callable_export_payloads(
 
 def _load_manifest(path: Path) -> dict[str, Any] | None:
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
 

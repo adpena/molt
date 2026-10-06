@@ -37,6 +37,7 @@ def _run_probe(script: str) -> list[str]:
             capture_output=True,
             text=True,
             env=env,
+            encoding="utf-8",
         )
         if proc.returncode != 0:
             raise AssertionError(

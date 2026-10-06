@@ -57,7 +57,9 @@ class Finding:
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, check=False, capture_output=True, text=True)
+    return subprocess.run(
+        cmd, check=False, capture_output=True, text=True, encoding="utf-8"
+    )
 
 
 def _is_placeholder_value(value: str) -> bool:

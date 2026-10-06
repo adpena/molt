@@ -66,7 +66,8 @@ def test_wasm_list_dict_ops_parity(tmp_path: Path) -> None:
         "sumv = 0\n"
         "for x in d3.values():\n"
         "    sumv = sumv + x\n"
-        "print(sumv)\n"
+        "print(sumv)\n",
+        encoding="utf-8",
     )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)

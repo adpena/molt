@@ -19,7 +19,8 @@ def _production_rust() -> str:
         for path in sorted(authority.rglob("*.rs")):
             chunks.append(f"\n// FILE: {path.relative_to(ROOT).as_posix()}\n")
             chunks.extend(
-                line.split("//", 1)[0] + "\n" for line in path.read_text().splitlines()
+                line.split("//", 1)[0] + "\n"
+                for line in path.read_text(encoding="utf-8").splitlines()
             )
     return "".join(chunks)
 
@@ -40,9 +41,15 @@ def test_integer_carried_abi_values_never_use_truncating_pointer_conversions() -
 
 
 def test_checked_width_authorities_remain_fail_closed_and_inlined() -> None:
-    platform = (ROOT / "runtime/molt-runtime-platform/src/utils.rs").read_text()
-    provenance = (ROOT / "runtime/molt-runtime/src/provenance/abi.rs").read_text()
-    layout = (ROOT / "runtime/molt-runtime/src/object/layout.rs").read_text()
+    platform = (ROOT / "runtime/molt-runtime-platform/src/utils.rs").read_text(
+        encoding="utf-8"
+    )
+    provenance = (ROOT / "runtime/molt-runtime/src/provenance/abi.rs").read_text(
+        encoding="utf-8"
+    )
+    layout = (ROOT / "runtime/molt-runtime/src/object/layout.rs").read_text(
+        encoding="utf-8"
+    )
     assert "#[inline(always)]\npub fn usize_from_bits" in platform
     assert "usize::try_from(bits).ok()" in platform
     assert "with_exposed_provenance::<T>" in provenance

@@ -708,7 +708,9 @@ def test_same_content_backend_metadata_refresh_preserves_admission(
     assert _dispatch(["internal-backend-build", "--target", "native", "--json"]) == 0
     after = json.loads(capsys.readouterr().out)["data"]
     assert before["compiler"]["fingerprint"] == after["compiler"]["fingerprint"]
-    source = json.loads(Path(after["receipts"]["source_content"]["path"]).read_text())
+    source = json.loads(
+        Path(after["receipts"]["source_content"]["path"]).read_text(encoding="utf-8")
+    )
     assert source["inputs_digest"] == canonical_json_sha256(
         "new timestamps same content"
     )

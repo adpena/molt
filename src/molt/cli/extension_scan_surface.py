@@ -989,7 +989,7 @@ def _load_c_api_scan_surface(
     if numpy_include_root.exists():
         for numpy_header in sorted(numpy_include_root.rglob("*.h")):
             try:
-                numpy_text = numpy_header.read_text()
+                numpy_text = numpy_header.read_text(encoding="utf-8")
             except OSError:
                 continue
             numpy_tokens.update(

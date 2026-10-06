@@ -59,6 +59,7 @@ def _find_repo_root() -> Path:
             ["git", "rev-parse", "--show-toplevel"],
             stderr=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
         ).strip()
         return Path(out)
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -166,7 +167,7 @@ class CategoryResult:
 
 def _read(path: Path) -> str:
     if path.exists():
-        return path.read_text(errors="replace")
+        return path.read_text(errors="replace", encoding="utf-8")
     return ""
 
 
@@ -174,7 +175,8 @@ def _read_tree(path: Path, pattern: str) -> str:
     if not path.is_dir():
         return ""
     return "\n".join(
-        source.read_text(errors="replace") for source in sorted(path.rglob(pattern))
+        source.read_text(errors="replace", encoding="utf-8")
+        for source in sorted(path.rglob(pattern))
     )
 
 

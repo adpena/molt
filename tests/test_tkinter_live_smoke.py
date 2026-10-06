@@ -646,7 +646,7 @@ def _run_live_smoke(expected_platform: str) -> None:
     script_path = run_dir / "live_smoke.py"
     out_dir = run_dir / "out"
     output = out_dir / f"tk_live_{expected_platform}_molt"
-    script_path.write_text(_live_smoke_script(expected_platform))
+    script_path.write_text(_live_smoke_script(expected_platform), encoding="utf-8")
 
     env = _build_env()
     build_cmd = [
@@ -845,7 +845,9 @@ def _run_live_filehandler_smoke(expected_platform: str) -> None:
     script_path = run_dir / "live_filehandler_smoke.py"
     out_dir = run_dir / "out"
     output = out_dir / f"tk_filehandler_{expected_platform}_molt"
-    script_path.write_text(_live_filehandler_smoke_script(expected_platform))
+    script_path.write_text(
+        _live_filehandler_smoke_script(expected_platform), encoding="utf-8"
+    )
 
     env = _build_env()
     build_cmd = [

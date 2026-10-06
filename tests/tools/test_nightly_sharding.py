@@ -504,7 +504,10 @@ def test_discovery_custody_dependency_changes_invalidate_plan_authority(tmp_path
 def test_new_discovery_import_is_automatically_bound_by_shared_source_closure(tmp_path):
     root = _repo(tmp_path)
     path = root / "src/molt/file_publication.py"
-    path.write_text(path.read_text() + "\nfrom molt import discovery_probe\n")
+    path.write_text(
+        path.read_text(encoding="utf-8") + "\nfrom molt import discovery_probe\n",
+        encoding="utf-8",
+    )
     extra = root / "src/molt/discovery_probe.py"
     _write(extra, "VALUE = 1\n")
     before = _plan(root)
@@ -522,7 +525,9 @@ def test_unknown_dynamic_discovery_import_cannot_produce_a_partial_plan(tmp_path
     root = _repo(tmp_path)
     path = root / "src/molt/file_publication.py"
     path.write_text(
-        path.read_text() + "\nimport importlib\nimportlib.import_module(module_name)\n"
+        path.read_text(encoding="utf-8")
+        + "\nimport importlib\nimportlib.import_module(module_name)\n",
+        encoding="utf-8",
     )
     with pytest.raises(ValueError, match="dynamic"):
         _plan(root)
@@ -532,7 +537,9 @@ def test_namespace_only_topology_invalidates_plan_and_measurement_contract(tmp_p
     root = _repo(tmp_path)
     seed = root / nightly_sharding.DISCOVERY_SOURCE_SEEDS[0]
     seed.write_text(
-        seed.read_text() + "\n__package__ = unknown\nfrom .missing import member\n"
+        seed.read_text(encoding="utf-8")
+        + "\n__package__ = unknown\nfrom .missing import member\n",
+        encoding="utf-8",
     )
     before = nightly_sharding._authority_inputs(root)
     plan = _plan(root)

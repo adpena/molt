@@ -257,7 +257,7 @@ def test_worker_exception_drains_running_results_and_releases_suite_guard_once(
         )
     assert "worker protocol failed" in str(caught.value.exceptions[0])
     assert guarded_suite.calls == [str(path) for path in guarded_suite.files[:2]]
-    assert f"[PASS] {guarded_suite.files[1]}" in log.read_text()
+    assert f"[PASS] {guarded_suite.files[1]}" in log.read_text(encoding="utf-8")
     assert len(guarded_suite.exits) == 1
     assert guarded_suite.exit_callbacks == []
     assert molt_diff.os.environ[sentinel_key] == "previous-owner"
@@ -324,7 +324,9 @@ def test_parent_trip_infrastructure_stops_admission_without_oom(
 
         def read_marker(sentinel=None):
             if suite.guard_trip:
-                marker.write_text('{"event":"guard_tripped","violation":null}')
+                marker.write_text(
+                    '{"event":"guard_tripped","violation":null}', encoding="utf-8"
+                )
             return original(None)
 
         monkeypatch.setattr(molt_diff, "_memory_guard_trip_outcome", read_marker)

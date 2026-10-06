@@ -35,7 +35,9 @@ def main(argv: list[str] | None = None) -> int:
     cmd.append(args.pattern)
     cmd.extend(args.paths)
 
-    proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    proc = subprocess.run(
+        cmd, check=False, capture_output=True, text=True, encoding="utf-8"
+    )
     if args.json:
         rows = []
         for line in proc.stdout.splitlines():

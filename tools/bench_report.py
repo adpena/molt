@@ -30,7 +30,7 @@ from bench_evidence import (  # noqa: E402
 def _load_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise SystemExit(f"missing benchmark file: {path}")
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _normalize_name(name: str) -> str:
@@ -395,9 +395,9 @@ def _startup_status_line(startup_audit: dict[str, Any]) -> str | None:
 
 def _update_status_doc(status_path: Path, summary_block: str) -> None:
     updated = _render_updated_status_doc(
-        status_path.read_text(), status_path, summary_block
+        status_path.read_text(encoding="utf-8"), status_path, summary_block
     )
-    status_path.write_text(updated)
+    status_path.write_text(updated, encoding="utf-8")
 
 
 def _render_updated_status_doc(
@@ -705,7 +705,7 @@ def _render_startup_section(startup_audit: dict[str, Any]) -> list[str]:
 def _check_expected_file(path: Path, expected: str, label: str) -> None:
     if not path.exists():
         raise SystemExit(f"missing generated {label}: {path}")
-    actual = path.read_text()
+    actual = path.read_text(encoding="utf-8")
     if actual != expected:
         raise SystemExit(f"stale generated {label}: {path}")
 
@@ -720,7 +720,7 @@ def _resolve_manifest_path(path: str | None) -> Path | None:
 
 
 def _load_manifest(path: Path) -> dict[str, Path]:
-    payload = json.loads(path.read_text())
+    payload = json.loads(path.read_text(encoding="utf-8"))
     resolved: dict[str, Path] = {}
     for key in ("native", "wasm", "out", "status_doc", "startup_audit"):
         raw_value = payload.get(key)
@@ -825,7 +825,7 @@ def main(argv: list[str] | None = None) -> int:
             _check_expected_file(out_path, report, "benchmark report")
         else:
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(report)
+            out_path.write_text(report, encoding="utf-8")
     except SystemExit as exc:
         print(exc, file=sys.stderr)
         return 1
@@ -840,7 +840,9 @@ def main(argv: list[str] | None = None) -> int:
                 if not status_doc_path.exists():
                     raise SystemExit(f"missing generated STATUS doc: {status_doc_path}")
                 updated = _render_updated_status_doc(
-                    status_doc_path.read_text(), status_doc_path, summary_block
+                    status_doc_path.read_text(encoding="utf-8"),
+                    status_doc_path,
+                    summary_block,
                 )
                 _check_expected_file(status_doc_path, updated, "STATUS benchmark block")
             else:

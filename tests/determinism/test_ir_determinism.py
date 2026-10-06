@@ -202,7 +202,7 @@ HASH_ORDER_LEAK_PROGRAMS = _hash_order_leak_programs()
 )
 def test_ir_determinism_in_process(program: Path) -> None:
     """Compiling the same source twice in the same process gives identical IR."""
-    source = program.read_text()
+    source = program.read_text(encoding="utf-8")
     ir_a = _compile_source_to_ir(source)
     ir_b = _compile_source_to_ir(source)
     assert ir_a == ir_b, (
@@ -222,7 +222,7 @@ def test_ir_determinism_in_process(program: Path) -> None:
 )
 def test_ir_determinism_cross_process(program: Path) -> None:
     """Two separate Python processes produce identical IR for the same source."""
-    source = program.read_text()
+    source = program.read_text(encoding="utf-8")
     ir_a = _compile_source_to_ir_subprocess(source, pythonhashseed="0")
     ir_b = _compile_source_to_ir_subprocess(source, pythonhashseed="0")
     assert ir_a == ir_b, f"IR differs for {program.name} between two separate processes"
@@ -240,7 +240,7 @@ def test_ir_determinism_cross_process(program: Path) -> None:
 )
 def test_ir_hashseed_independence(program: Path) -> None:
     """Different PYTHONHASHSEED values must not change compiler IR output."""
-    source = program.read_text()
+    source = program.read_text(encoding="utf-8")
     seeds = ["0", "42", "12345", "99999"]
     ir_results = []
     for seed in seeds:
@@ -275,7 +275,7 @@ def _assert_outcome_hashseed_stable(program: Path, parse_codec: str) -> None:
     hash seed, so it catches a leak even when a hand-picked fixed-seed set
     happens to agree (which is exactly how #34 evaded the original test).
     """
-    source = program.read_text()
+    source = program.read_text(encoding="utf-8")
     seeds = ["0", "1", "42", "12345", str(_random_seed()), "random"]
     reference = _compile_outcome_subprocess(
         source, pythonhashseed=seeds[0], parse_codec=parse_codec
@@ -456,7 +456,7 @@ def test_midend_ir_independent_of_walltime_budget(
     across the spec set at the *tightest* budget (the decisive #34 configuration,
     where a hash-ordered worklist schedule is most able to flip cap behaviour).
     """
-    source = program.read_text()
+    source = program.read_text(encoding="utf-8")
     reference = _compile_ir_subprocess_with_env(
         source, parse_codec=parse_codec, extra_env={}, pythonhashseed="0"
     )
@@ -511,8 +511,8 @@ def test_compile_order_independence() -> None:
 
     prog_a = BASIC_PROGRAMS[0]
     prog_b = BASIC_PROGRAMS[1]
-    src_a = prog_a.read_text()
-    src_b = prog_b.read_text()
+    src_a = prog_a.read_text(encoding="utf-8")
+    src_b = prog_b.read_text(encoding="utf-8")
 
     # Order 1: A then B
     ir_a1 = _compile_source_to_ir(src_a)

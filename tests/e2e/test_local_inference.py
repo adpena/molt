@@ -123,7 +123,7 @@ def test_config_matches_weights():
     if _skip_if_no_weights():
         return
 
-    with open(_CONFIG_PATH) as f:
+    with open(_CONFIG_PATH, encoding="utf-8") as f:
         config = json.load(f)
 
     assert config["dim"] == 768
@@ -147,7 +147,7 @@ def test_tokenizer_loads():
     if _skip_if_no_weights():
         return
 
-    with open(_TOKENIZER_PATH) as f:
+    with open(_TOKENIZER_PATH, encoding="utf-8") as f:
         data = json.load(f)
 
     assert data["model"]["type"] == "BPE"
@@ -345,7 +345,7 @@ def test_full_inference():
     with open(_MODEL_PATH, "rb") as f:
         weights_bytes = f.read()
 
-    with open(_CONFIG_PATH) as f:
+    with open(_CONFIG_PATH, encoding="utf-8") as f:
         config_json = f.read()
 
     # Initialize model

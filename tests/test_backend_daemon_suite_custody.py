@@ -271,7 +271,10 @@ def test_eof_guardian_drains_only_its_registered_births(lease, tmp_path, monkeyp
     assert suite.drain_lease(path)
     assert signaled == [30, 31]
     assert 50 in samples
-    assert json.loads((path.parent / "drain.json").read_text())["closed"] is True
+    assert (
+        json.loads((path.parent / "drain.json").read_text(encoding="utf-8"))["closed"]
+        is True
+    )
 
 
 def test_birth_bound_daemon_reuse_never_signals_replacement(tmp_path, monkeypatch):
@@ -311,7 +314,12 @@ def test_owned_suite_guardian_closes_on_eof_without_backend_build(tmp_path):
     closed_record = suite.read_lease(active.path)
     assert closed_record is not None
     assert closed_record["state"] == "closed"
-    assert json.loads((active.path.parent / "drain.json").read_text())["closed"] is True
+    assert (
+        json.loads((active.path.parent / "drain.json").read_text(encoding="utf-8"))[
+            "closed"
+        ]
+        is True
+    )
 
 
 def test_fork_descriptor_cleanup_closes_both_pipe_ends_without_unlock(monkeypatch):
@@ -473,7 +481,7 @@ def test_transient_snapshot_error_retries_and_writes_receipt(
 
     monkeypatch.setattr(memory_guard, "sample_processes", sampler)
     assert suite.drain_lease(path)
-    receipt = json.loads((path.parent / "drain.json").read_text())
+    receipt = json.loads((path.parent / "drain.json").read_text(encoding="utf-8"))
     assert receipt["closed"] is True
     assert receipt["sampling_errors"] == ["ProcessSnapshotError: transient snapshot"]
 
@@ -487,7 +495,7 @@ def test_persistent_snapshot_failure_is_bounded_and_fail_closed(lease, monkeypat
 
     monkeypatch.setattr(memory_guard, "sample_processes", sampler)
     assert not suite.drain_lease(path)
-    receipt = json.loads((path.parent / "drain.json").read_text())
+    receipt = json.loads((path.parent / "drain.json").read_text(encoding="utf-8"))
     assert receipt["closed"] is False
     assert receipt["sampling_errors"]
 
@@ -512,9 +520,9 @@ def test_dead_leader_never_claims_unobserved_worker_custody(
         lambda *_a, **_k: pytest.fail("unproven orphan signaled"),
     )
     assert not suite.drain_lease(path)
-    assert json.loads((path.parent / "drain.json").read_text())["unresolved_pgids"] == [
-        30
-    ]
+    assert json.loads((path.parent / "drain.json").read_text(encoding="utf-8"))[
+        "unresolved_pgids"
+    ] == [30]
 
 
 def test_birth_probe_snapshot_error_is_unavailable(monkeypatch):
@@ -577,7 +585,7 @@ def test_guarded_protocol_daemon_transfer_and_failure_cleanup(tmp_path, exit_cod
             timeout=10,
         )
         assert result.returncode == exit_code, result.stderr
-        pid = int((tmp_path / "daemon.pid").read_text())
+        pid = int((tmp_path / "daemon.pid").read_text(encoding="utf-8"))
         assert result.temporary_artifacts is not None
         closure = result.temporary_artifacts["closure"]
         assert isinstance(closure, dict)
@@ -590,7 +598,12 @@ def test_guarded_protocol_daemon_transfer_and_failure_cleanup(tmp_path, exit_cod
             assert pid not in memory_guard.sample_processes()
     finally:
         active.close()
-    assert json.loads((active.path.parent / "drain.json").read_text())["closed"] is True
+    assert (
+        json.loads((active.path.parent / "drain.json").read_text(encoding="utf-8"))[
+            "closed"
+        ]
+        is True
+    )
 
 
 def acknowledge(lease, tmp_path, *, daemon_root=None):
@@ -686,7 +699,7 @@ def test_dead_root_unknown_members_remain_unresolved(lease, tmp_path, monkeypatc
     assert not suite.drain_lease(path)
     assert calls[0][1]["watched"] == {31}
     assert 32 in samples
-    closure = json.loads((path.parent / "drain.json").read_text())
+    closure = json.loads((path.parent / "drain.json").read_text(encoding="utf-8"))
     assert closure["unresolved_pgids"] == [30]
 
 
@@ -729,14 +742,14 @@ def test_damaged_acknowledgement_fails_export_and_closure(
     elif damage == "index-delete":
         index.unlink()
     elif damage in {"digest", "index-schema"}:
-        payload = json.loads(index.read_text())
+        payload = json.loads(index.read_text(encoding="utf-8"))
         if damage == "digest":
             payload["receipts"][receipt.name] = "0" * 64
         else:
             payload["schema"] = "wrong"
         write_exact(index, payload)
     else:
-        payload = json.loads(receipt.read_text())
+        payload = json.loads(receipt.read_text(encoding="utf-8"))
         if damage == "token":
             payload["lease_token"] = "f" * 32
         elif damage == "source":
@@ -936,7 +949,9 @@ def test_adoption_after_completed_drain_is_revoked(lease, tmp_path, monkeypatch)
         path, lease=record, identity=owned, members={30: samples[30]}
     )
     assert (
-        json.loads((path.parent / "adoption-index.json").read_text())["state"]
+        json.loads((path.parent / "adoption-index.json").read_text(encoding="utf-8"))[
+            "state"
+        ]
         == "closed"
     )
 
@@ -1020,7 +1035,7 @@ def test_adoption_inner_schema_rejects_even_matching_content_digest(
     path, record, _handle = lease
     owned, _operational, samples = acknowledge(lease, tmp_path)
     receipt = suite._adoption_path(path, owned)
-    payload = json.loads(receipt.read_text())
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
     if damage == "project_root":
         payload[damage] = str(tmp_path / "foreign")
     elif damage == "member-bool":
@@ -1031,7 +1046,7 @@ def test_adoption_inner_schema_rejects_even_matching_content_digest(
         payload[damage] = "f" * (32 if damage == "lease_token" else 64)
     write_exact(receipt, payload)
     indexpath = path.parent / "adoption-index.json"
-    index = json.loads(indexpath.read_text())
+    index = json.loads(indexpath.read_text(encoding="utf-8"))
     index["receipts"][receipt.name] = hashlib.sha256(
         canonical_json_bytes(payload)
     ).hexdigest()
@@ -1101,13 +1116,17 @@ def test_staged_receipt_recovers_after_final_commit_interruption(
     assert suite.registered_groups(path, lease=record, samples=samples) == ()
     receipt = suite._adoption_path(path, owned)
     assert receipt.exists()
-    staged = json.loads((path.parent / "adoption-index.json").read_text())
+    staged = json.loads(
+        (path.parent / "adoption-index.json").read_text(encoding="utf-8")
+    )
     assert receipt.name in staged["pending"] and receipt.name not in staged["receipts"]
     monkeypatch.setattr(suite, "write_exact", original)
     operational.unlink()
     calls = mocked_drain(monkeypatch, samples)
     assert suite.drain_lease(path)
-    committed = json.loads((path.parent / "adoption-index.json").read_text())
+    committed = json.loads(
+        (path.parent / "adoption-index.json").read_text(encoding="utf-8")
+    )
     assert committed["pending"] == {} and receipt.name in committed["receipts"]
     assert calls[0][1]["watched"] == {30, 31}
 
@@ -1132,7 +1151,10 @@ def test_staged_update_recovers_old_committed_generation(lease, tmp_path, monkey
     assert errors == [] and len(records) == 1
     assert records[0][1] == {30: 300, 31: 310}
     assert (
-        json.loads((path.parent / "adoption-index.json").read_text())["pending"] == {}
+        json.loads((path.parent / "adoption-index.json").read_text(encoding="utf-8"))[
+            "pending"
+        ]
+        == {}
     )
 
 
@@ -1428,7 +1450,7 @@ def test_transitive_moved_members_are_journaled_and_drained(
     samples[32] = sample(32, 31, 32, 320)
     groups = suite.registered_groups(path, lease=record, samples=samples)
     assert set(groups[0][2]) == {30, 31, 32}
-    receipt = json.loads(suite._adoption_path(path, owned).read_text())
+    receipt = json.loads(suite._adoption_path(path, owned).read_text(encoding="utf-8"))
     assert receipt["custody_members"] == {"30": 300, "31": 310, "32": 320}
     operational.unlink()
     samples.pop(30)
@@ -1453,7 +1475,7 @@ def test_unknown_moved_descendant_remains_unresolved_after_parent_drains(
     assert not suite.drain_lease(path)
     assert {call[0] for call in calls} == {31}
     assert 32 in samples
-    result = json.loads((path.parent / "drain.json").read_text())
+    result = json.loads((path.parent / "drain.json").read_text(encoding="utf-8"))
     assert result["closed"] is False
 
 

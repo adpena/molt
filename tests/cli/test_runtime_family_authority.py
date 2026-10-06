@@ -552,7 +552,7 @@ def test_native_capture_closes_custody_after_python_probe(
         if mutation == "new-config":
             extra = plan_root / "cargo-home" / "config.toml"
             extra.parent.mkdir(exist_ok=True)
-            extra.write_text('[build]\nrustflags="--cfg inserted"\n')
+            extra.write_text('[build]\nrustflags="--cfg inserted"\n', encoding="utf-8")
         else:
             path = {
                 "rustc": plan.tools["rustc"],
@@ -922,15 +922,17 @@ def test_unselected_profile_namespace_does_not_pollute_runtime_identity(
     manifest = plan_root / "Cargo.toml"
     selected = '[profile.release-output]\ninherits="release"\n'
     sibling = '[profile.release-size]\ninherits="release-output"\n'
-    manifest.write_text(selected + (sibling if source == "manifest" else ""))
+    manifest.write_text(
+        selected + (sibling if source == "manifest" else ""), encoding="utf-8"
+    )
     args: tuple[str, ...] = ()
     if source == "config":
         config = plan_root / ".cargo" / "config.toml"
         config.parent.mkdir(exist_ok=True)
-        config.write_text(sibling)
+        config.write_text(sibling, encoding="utf-8")
     elif source == "cli-file":
         config = plan_root / "profiles.toml"
-        config.write_text(sibling)
+        config.write_text(sibling, encoding="utf-8")
         args = ("--config", str(config))
     elif source == "cli-inline":
         args = ("--config", 'profile.release-size.inherits="release-output"')
@@ -964,7 +966,8 @@ def test_legal_ancestor_controls_survive_profile_namespace_overlap(
 ) -> None:
     (plan_root / "Cargo.toml").write_text(
         f'[profile.{profile}]\ninherits="dev"\n'
-        '[profile.release-debug]\ninherits="dev"\n'
+        '[profile.release-debug]\ninherits="dev"\n',
+        encoding="utf-8",
     )
     shared = "CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_OPT_LEVEL"
     assertions = "CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS"
@@ -995,7 +998,8 @@ def test_profile_environment_aliases_share_cargo_key(
 ) -> None:
     (plan_root / "Cargo.toml").write_text(
         '[profile.release-output]\ninherits="release"\n'
-        '[profile.release_output]\ninherits="dev"\n'
+        '[profile.release_output]\ninherits="dev"\n',
+        encoding="utf-8",
     )
     environment = {"CARGO_PROFILE_RELEASE_OUTPUT_DEBUG": "2"}
     plan = _plan(plan_root, env=environment)

@@ -72,6 +72,7 @@ def _git_rev() -> str | None:
             text=True,
             check=False,
             cwd=ROOT,
+            encoding="utf-8",
         )
     except OSError:
         return None
@@ -1272,11 +1273,11 @@ def main() -> None:
                 )
 
     manifest_path = out_dir / "profile_manifest.json"
-    manifest_path.write_text(json.dumps(metadata, indent=2) + "\n")
+    manifest_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     if args.summary:
         summary = _collect_profile_summary(metadata, args.summary_top)
         summary_path = out_dir / "profile_summary.json"
-        summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+        summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(f"Profile outputs saved to {out_dir}")
     print(f"Manifest: {manifest_path}")
     if args.summary:

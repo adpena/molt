@@ -245,7 +245,9 @@ def test_refusal_assertions_reject_partial_or_dishonest_execution(
     elif mutation == "stdout":
         result_path.with_suffix(".stdout.bin").write_bytes(b"partial execution")
     elif mutation == "policy":
-        result_path.with_suffix(".supervisor-policy.json").write_text("{}")
+        result_path.with_suffix(".supervisor-policy.json").write_text(
+            "{}", encoding="utf-8"
+        )
     elif mutation == "available":
         capability["available"] = True
     result_path.write_text(json.dumps(record), encoding="utf-8")

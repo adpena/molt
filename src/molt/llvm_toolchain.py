@@ -1289,6 +1289,7 @@ def _run_llvm_config(executable: Path, *args: str) -> str:
             capture_output=True,
             text=True,
             timeout=30,
+            encoding="utf-8",
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise LlvmToolchainConfigError(
@@ -1459,6 +1460,7 @@ def _compile_link_probe(
                 capture_output=True,
                 text=True,
                 timeout=120,
+                encoding="utf-8",
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise LlvmToolchainConfigError(
@@ -1633,6 +1635,7 @@ def _tool_version_fact_and_identity(
                 capture_output=True,
                 text=True,
                 timeout=30,
+                encoding="utf-8",
             )
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise LlvmToolchainConfigError(
@@ -2166,6 +2169,7 @@ def _llvm_config_version(executable: str) -> tuple[int, int, str]:
             capture_output=True,
             text=True,
             timeout=15,
+            encoding="utf-8",
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise LlvmToolchainConfigError(

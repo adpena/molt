@@ -6475,7 +6475,7 @@ def test_run_guarded_retention_sweep_health_preserves_primary_result(
         timeout_s=None,
         poll_interval_s=0.01,
     )
-    payload = json.loads(summary.read_text())
+    payload = json.loads(summary.read_text(encoding="utf-8"))
     assert payload["returncode"] == expected_returncode
     assert payload["child_returncode"] == child_returncode
     assert payload[

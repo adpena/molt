@@ -360,7 +360,8 @@ def test_supported_branch_before_late_rejection_is_not_universal_rejection():
 def test_every_actual_shared_rejection_arm_has_honest_support_status():
     mod = _load_module()
     source = "\n".join(
-        path.read_text() for path in mod._source_files(mod.DEFAULT_SOURCE)
+        path.read_text(encoding="utf-8")
+        for path in mod._source_files(mod.DEFAULT_SOURCE)
     )
     seen = set()
     for match in mod._extract_emit_op_matches(source):
@@ -397,7 +398,9 @@ def test_luau_classifier_source_family_and_regressions_are_mandatory():
     import tomllib
 
     mod = _load_module()
-    plan = tomllib.loads((REPO_ROOT / "tools/proof_plan.toml").read_text())
+    plan = tomllib.loads(
+        (REPO_ROOT / "tools/proof_plan.toml").read_text(encoding="utf-8")
+    )
     commands = {command["id"]: command for command in plan["command"]}
     assert (
         "tests/tools/test_gen_luau_support_matrix.py"
@@ -426,8 +429,8 @@ def test_actual_raw_fallback_report_explicitly_excludes_structured_cfg_acceptanc
     assert "that route requires its own validation" in output
     for kind in ("jump", "goto", "br_if", "branch_false", "check_exception"):
         assert f"| `{kind}` | `compile-error` |" in output
-    flow = (mod.DEFAULT_SOURCE / "flow_dispatch.rs").read_text()
-    function = (mod.DEFAULT_SOURCE / "function_body.rs").read_text()
+    flow = (mod.DEFAULT_SOURCE / "flow_dispatch.rs").read_text(encoding="utf-8")
+    function = (mod.DEFAULT_SOURCE / "function_body.rs").read_text(encoding="utf-8")
     assert "simpleir_kind_is_exception_check" in flow
     assert "simpleir_kind_is_structural" in flow
     assert "emit_logical_flow" in function
@@ -438,10 +441,11 @@ def test_source_reader_excludes_test_code_even_with_emitter_shaped_text(tmp_path
     root = tmp_path / "luau"
     root.mkdir()
     production = root / "op_values.rs"
-    production.write_text("production")
+    production.write_text("production", encoding="utf-8")
     (root / "tests.rs").write_text(
-        'fn emit_fake_op() { match op.kind { "const_none" => self.emit_unsupported_op(op), } }'
+        'fn emit_fake_op() { match op.kind { "const_none" => self.emit_unsupported_op(op), } }',
+        encoding="utf-8",
     )
     (root / "tests").mkdir()
-    (root / "tests" / "fake.rs").write_text("test code")
+    (root / "tests" / "fake.rs").write_text("test code", encoding="utf-8")
     assert mod._source_files(root) == [production]

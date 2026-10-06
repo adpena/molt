@@ -183,7 +183,9 @@ def test_final_queue_outcome_binds_database_generation_and_retention(
     generation, expected_status, expected_rc, capsys
 ):
     args, lease, context = generation
-    record = json.loads((Path(args.logs_root) / "unit.execution.json").read_text())
+    record = json.loads(
+        (Path(args.logs_root) / "unit.execution.json").read_text(encoding="utf-8")
+    )
     assert record["receipt_context"] == context
     outcome = context["queue_terminal"]
     assert outcome["status"] == expected_status
@@ -276,8 +278,14 @@ def test_retirement_cli_preserves_terminal_receipt_and_records_disposition(
         and result["disposition_elapsed_s"] >= 0
     )
     assert not lease.target.exists()
-    assert json.loads(lease.owner_path.read_text())["lifecycle"] == "retired-sealed"
-    assert json.loads(lease.pointer.read_text())["state"] == "retired-sealed"
+    assert (
+        json.loads(lease.owner_path.read_text(encoding="utf-8"))["lifecycle"]
+        == "retired-sealed"
+    )
+    assert (
+        json.loads(lease.pointer.read_text(encoding="utf-8"))["state"]
+        == "retired-sealed"
+    )
     with closing(state._connect(Path(args.db))) as conn:
         row = state._row_by_run_id(conn, args.run_id)
         assert json.loads(row["receipt_context_json"]) == context
@@ -597,9 +605,9 @@ def test_missing_or_replaced_external_root_never_authorizes_retirement(
 ):
     args, lease, _ = generation
     owner_path = Path(lease.provenance["generation_owner"])
-    owner = json.loads(owner_path.read_text())
+    owner = json.loads(owner_path.read_text(encoding="utf-8"))
     owner["lifecycle"] = lifecycle
-    owner_path.write_text(json.dumps(owner))
+    owner_path.write_text(json.dumps(owner), encoding="utf-8")
     original = cargo_output_layout.declare_root
 
     def replaced(raw):
@@ -617,7 +625,7 @@ def test_missing_or_replaced_external_root_never_authorizes_retirement(
     with pytest.raises(ValueError, match="unavailable|replaced or remounted"):
         cargo_output_lifecycle.finalize_declared_success(Path(args.db), args.run_id)
     assert lease.target.exists()
-    assert json.loads(owner_path.read_text())["lifecycle"] == lifecycle
+    assert json.loads(owner_path.read_text(encoding="utf-8"))["lifecycle"] == lifecycle
 
 
 @pytest.mark.parametrize(
@@ -795,7 +803,7 @@ def test_pending_recovery_records_but_does_not_retry_partial_retirement(
 ):
     args, lease, _ = generation
     owner_path = Path(lease.provenance["generation_owner"])
-    owner = json.loads(owner_path.read_text())
+    owner = json.loads(owner_path.read_text(encoding="utf-8"))
     owner["lifecycle"] = lifecycle
     cache._write_owner(owner_path, owner)
     monkeypatch.setattr(
@@ -832,7 +840,7 @@ def test_retired_tombstone_closes_interrupted_append_only_outcome(generation):
 def test_owner_lifetime_substitution_cannot_authorize_or_hide_disposal(generation):
     args, lease, _ = generation
     owner_path = Path(lease.provenance["generation_owner"])
-    owner = json.loads(owner_path.read_text())
+    owner = json.loads(owner_path.read_text(encoding="utf-8"))
     owner["cargo_output_lifetime"] = "retain"
     cache._write_owner(owner_path, owner)
     with pytest.raises(ValueError, match="lifetime mismatch"):

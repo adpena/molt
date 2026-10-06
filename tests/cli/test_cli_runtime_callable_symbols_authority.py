@@ -74,7 +74,7 @@ def test_callable_projection_cannot_reuse_same_size_restored_mtime(
     stamp = runtime_lib.stat()
 
     def inspect_archive(path, *, target_triple, identity, requirement):
-        symbol = "molt_" + path.read_text()
+        symbol = "molt_" + path.read_text(encoding="utf-8")
         symbols = frozenset({symbol})
         return native_symbol_inspection._NativeGlobalSymbolFacts(
             symbols, frozenset(), symbols, artifact_digest=identity.sha256
@@ -94,15 +94,15 @@ def test_callable_projection_cannot_reuse_same_size_restored_mtime(
     )
     assert failure is None and second is not None
     assert second.identity.path != first.identity.path
-    assert second.identity.path.read_text() == "molt_later\n"
-    second.identity.path.write_text("corrupt\n")
+    assert second.identity.path.read_text(encoding="utf-8") == "molt_later\n"
+    second.identity.path.write_text("corrupt\n", encoding="utf-8")
     rejected, failure = runtime_callable_symbols._runtime_callable_symbols_file(
         runtime_lib,
         identity=native_symbol_inspection._native_symbol_artifact_identity(runtime_lib),
     )
     assert rejected is None
     assert failure is not None and "archive-derived admission" in failure
-    assert second.identity.path.read_text() == "corrupt\n"
+    assert second.identity.path.read_text(encoding="utf-8") == "corrupt\n"
 
 
 def test_callable_projection_concurrent_creators_preserve_winner_generation(
@@ -412,7 +412,10 @@ def test_async_runtime_completion_is_bound_before_codegen(
     assert state.runtime_lib_ready_future is None
     binding = state.native_runtime_codegen_binding
     assert binding is not None and binding.build_identity == identity
-    assert binding.callable_symbols.path.read_text() == "molt_async_fixture\n"
+    assert (
+        binding.callable_symbols.path.read_text(encoding="utf-8")
+        == "molt_async_fixture\n"
+    )
     assert (
         binding.callable_symbols.sha256
         == hashlib.sha256(b"molt_async_fixture\n").hexdigest()

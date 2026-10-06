@@ -268,7 +268,7 @@ def generate_reference(max_tokens: int = 16) -> Optional[Path]:
     }
 
     ref_path = REFERENCE_DIR / "falcon_ocr_reference.json"
-    with open(ref_path, "w") as f:
+    with open(ref_path, "w", encoding="utf-8") as f:
         json.dump(reference, f, indent=2)
     print(f"Reference saved to {ref_path}")
     return ref_path
@@ -303,7 +303,7 @@ def print_info() -> None:
     print()
     ref_path = REFERENCE_DIR / "falcon_ocr_reference.json"
     if ref_path.exists():
-        with open(ref_path) as f:
+        with open(ref_path, encoding="utf-8") as f:
             ref = json.load(f)
         print(f"Reference: AVAILABLE (generated {ref.get('generated_at', 'unknown')})")
         print(f"  Tensors: {ref.get('num_tensors', '?')}")

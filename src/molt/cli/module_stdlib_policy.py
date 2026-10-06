@@ -63,7 +63,7 @@ def _stdlib_allowlist() -> set[str]:
         return set()
     # Only parsing is cached. Root selection and policy bytes stay live,
     # including same-size edits with restored modification timestamps.
-    return set(_stdlib_allowlist_cached(spec_path.read_text()))
+    return set(_stdlib_allowlist_cached(spec_path.read_text(encoding="utf-8")))
 
 
 @_source_tree_fingerprint_transaction()

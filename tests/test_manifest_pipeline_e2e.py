@@ -35,7 +35,8 @@ def _write_manifest(path: Path) -> None:
         "max_recursion_depth = 100\n"
         "[audit]\n"
         "enabled = true\n"
-        'sink = "stderr"\n'
+        'sink = "stderr"\n',
+        encoding="utf-8",
     )
 
 
@@ -205,7 +206,7 @@ def test_molt_build_with_manifest():
         _write_manifest(manifest)
 
         src = tmpdir / "hello.py"
-        src.write_text('print("hello from molt")\n')
+        src.write_text('print("hello from molt")\n', encoding="utf-8")
 
         result = run_native_test_process(
             [

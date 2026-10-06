@@ -675,7 +675,7 @@ def _git_grep_quarantine_text_files(root: Path) -> list[Path] | None:
         cmd.extend(["-e", token])
     cmd.append("--")
     cmd.extend(_QUARANTINE_SCAN_DIRS)
-    result = _COMMANDS.run(cmd, capture_output=True, text=True)
+    result = _COMMANDS.run(cmd, capture_output=True, text=True, encoding="utf-8")
     if result.returncode == 1:
         return []
     if result.returncode != 0:

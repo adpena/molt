@@ -537,7 +537,7 @@ def test_historical_target_lifecycle_preserves_receipts_and_new_acquisition_is_c
     lease.owner["target"] = str(historical)
     lease.environment = inputs["outputs"].bind(inputs["env"], target=historical)
     cache._write_owner(lease.owner_path, lease.owner)
-    pointer = cache.loads_exact(lease.pointer.read_text())
+    pointer = cache.loads_exact(lease.pointer.read_text(encoding="utf-8"))
     pointer.pop("cargo_target_layout")
     pointer["target"] = str(historical)
     cache._atomic_json(lease.pointer, pointer)
@@ -617,7 +617,7 @@ def test_pointer_binding_precedes_terminal_mutation_or_deletion(
     projection = (
         cache.record_terminal_receipt(**terminal) if phase != "terminal" else None
     )
-    pointer = cache.loads_exact(lease.pointer.read_text())
+    pointer = cache.loads_exact(lease.pointer.read_text(encoding="utf-8"))
     if value is None:
         pointer.pop(field)
     else:
@@ -671,7 +671,7 @@ def test_active_publication_requires_its_current_pointer(tmp_path, missing):
     inputs = _inputs(tmp_path)
     lease = cache.acquire(**inputs)
     try:
-        pointer = cache.loads_exact(lease.pointer.read_text())
+        pointer = cache.loads_exact(lease.pointer.read_text(encoding="utf-8"))
         if missing:
             lease.pointer.unlink()
         else:

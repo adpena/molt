@@ -311,7 +311,8 @@ def test_browser_host_direct_mode_bridges_isolate_import(tmp_path: Path) -> None
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "browser_host_direct.py"
     src.write_text(
-        "import asyncio\n\nasync def main():\n    print('ok')\n\nasyncio.run(main())\n"
+        "import asyncio\n\nasync def main():\n    print('ok')\n\nasyncio.run(main())\n",
+        encoding="utf-8",
     )
 
     build_env = _browser_wasm_build_env(root)
@@ -388,7 +389,8 @@ const host = await loadMoltWasm({{
   preferLinked: false,
 }});
 host.run();
-""".lstrip()
+""".lstrip(),
+            encoding="utf-8",
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
@@ -521,7 +523,8 @@ def test_browser_host_direct_mode_import_stat_constants(tmp_path: Path) -> None:
         "import stat\n"
         "print(type(stat._constants).__name__)\n"
         "print(len(stat._constants))\n"
-        "print(stat.S_IFDIR)\n"
+        "print(stat.S_IFDIR)\n",
+        encoding="utf-8",
     )
 
     build_env = _browser_wasm_build_env(root)
@@ -598,7 +601,8 @@ const host = await loadMoltWasm({{
   preferLinked: false,
 }});
 host.run();
-""".lstrip()
+""".lstrip(),
+            encoding="utf-8",
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
@@ -1084,7 +1088,9 @@ def test_browser_host_direct_mode_import_asyncio_iov_max(tmp_path: Path) -> None
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "browser_host_asyncio_iov.py"
-    src.write_text("import asyncio\nprint(asyncio.selector_events.SC_IOV_MAX)\n")
+    src.write_text(
+        "import asyncio\nprint(asyncio.selector_events.SC_IOV_MAX)\n", encoding="utf-8"
+    )
 
     build_env = _browser_wasm_build_env(root)
     build = _run_wasm_test_process(
@@ -1160,7 +1166,8 @@ const host = await loadMoltWasm({{
   preferLinked: false,
 }});
 host.run();
-""".lstrip()
+""".lstrip(),
+            encoding="utf-8",
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
@@ -1184,7 +1191,7 @@ def test_browser_direct_run_wasm_import_os_name(tmp_path: Path) -> None:
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "browser_direct_os_name.py"
-    src.write_text("import os\nprint(os.name)\n")
+    src.write_text("import os\nprint(os.name)\n", encoding="utf-8")
 
     build_env = _browser_wasm_build_env(root)
     build = _run_wasm_test_process(
@@ -1244,7 +1251,8 @@ def test_browser_direct_run_wasm_bool_or_call_result(tmp_path: Path) -> None:
         "cap = require_intrinsic('molt_capabilities_has')\n"
         "print(cap('time.wall'))\n"
         "print(cap('time'))\n"
-        "print(bool(cap('time.wall') or cap('time')))\n"
+        "print(bool(cap('time.wall') or cap('time')))\n",
+        encoding="utf-8",
     )
 
     build_env = _browser_wasm_build_env(root)
@@ -1307,7 +1315,8 @@ def test_browser_direct_run_wasm_namedtuple_replace(tmp_path: Path) -> None:
         "from collections import namedtuple\n"
         "\n"
         "T = namedtuple('T', ['a', 'b'])\n"
-        "print(T(1, 2)._replace(a=3))\n"
+        "print(T(1, 2)._replace(a=3))\n",
+        encoding="utf-8",
     )
 
     build_env = _browser_wasm_build_env(root)
@@ -1379,7 +1388,8 @@ def test_browser_direct_run_wasm_slots_function_field_roundtrip(
         "box = Box()\n"
         "box.value = ident\n"
         "print(box.value is ident)\n"
-        "print(box.value(7))\n"
+        "print(box.value(7))\n",
+        encoding="utf-8",
     )
 
     build_env = _browser_wasm_build_env(root)
@@ -1437,7 +1447,7 @@ def test_browser_direct_run_wasm_enumerate_tuple(tmp_path: Path) -> None:
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "browser_direct_enumerate.py"
-    src.write_text("print(list(enumerate(('a', 'b'))))\n")
+    src.write_text("print(list(enumerate(('a', 'b'))))\n", encoding="utf-8")
 
     build_env = _browser_wasm_build_env(root)
     build = _run_wasm_test_process(
@@ -1493,7 +1503,9 @@ def test_browser_direct_run_wasm_dict_get_default(tmp_path: Path) -> None:
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "browser_direct_dict_get.py"
-    src.write_text("d = {'a': 3}\nprint(d.get('a', 2))\nprint(d.get('b', 2))\n")
+    src.write_text(
+        "d = {'a': 3}\nprint(d.get('a', 2))\nprint(d.get('b', 2))\n", encoding="utf-8"
+    )
 
     build_env = _browser_wasm_build_env(root)
     build = _run_wasm_test_process(
@@ -1556,7 +1568,8 @@ def test_browser_direct_run_wasm_tuple_subclass_custom_repr(tmp_path: Path) -> N
         "        return tuple.__new__(cls, args)\n"
         "    def __repr__(self):\n"
         "        return f'T({self[0]}, {self[1]})'\n"
-        "print(repr(T(1, 2)))\n"
+        "print(repr(T(1, 2)))\n",
+        encoding="utf-8",
     )
 
     build_env = _browser_wasm_build_env(root)
@@ -1615,7 +1628,8 @@ def test_browser_direct_run_wasm_try_except_clears_typeerror(tmp_path: Path) -> 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "browser_direct_try_except.py"
     src.write_text(
-        "fn = None\ntry:\n    fn()\nexcept Exception:\n    pass\nprint('ok')\n"
+        "fn = None\ntry:\n    fn()\nexcept Exception:\n    pass\nprint('ok')\n",
+        encoding="utf-8",
     )
 
     build_env = _browser_wasm_build_env(root)
@@ -1672,7 +1686,9 @@ def test_browser_direct_run_wasm_try_bare_except_clears_typeerror(
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "browser_direct_bare_except.py"
-    src.write_text("fn = None\ntry:\n    fn()\nexcept:\n    pass\nprint('ok')\n")
+    src.write_text(
+        "fn = None\ntry:\n    fn()\nexcept:\n    pass\nprint('ok')\n", encoding="utf-8"
+    )
 
     build_env = _browser_wasm_build_env(root)
     build = _run_wasm_test_process(
@@ -1743,7 +1759,8 @@ def test_wasm_browser_db_host_parity(tmp_path: Path) -> None:
         "    resp2 = await task\n"
         "    print(resp2.status)\n"
         "\n"
-        "asyncio.run(main())\n"
+        "asyncio.run(main())\n",
+        encoding="utf-8",
     )
 
     build_env = _browser_wasm_build_env(root)
@@ -1801,7 +1818,8 @@ const host = await loadMoltWasm({{
   dbEndpoint,
 }});
 host.run();
-""".lstrip()
+""".lstrip(),
+            encoding="utf-8",
         )
         run = _run_wasm_test_process(
             ["node", str(script)],
@@ -1842,7 +1860,8 @@ const linked = resolveMoltWasmUrls({{
 }}, 'https://example.com/releases/v9/manifest.json');
 
 console.log(JSON.stringify({{ split, linked }}));
-""".lstrip()
+""".lstrip(),
+        encoding="utf-8",
     )
 
     run = _run_wasm_test_process(

@@ -45,7 +45,7 @@ def test_msvc_activation_owns_installation_and_search_roots_without_atl(
     install = tmp_path / "Visual Studio Build Tools"
     script = install / "Common7/Tools/VsDevCmd.bat"
     script.parent.mkdir(parents=True)
-    script.write_text("")
+    script.write_text("", encoding="utf-8")
     (install / "VC").mkdir()
     calls = []
     monkeypatch.setattr(platform_tools.platform, "system", lambda: "Windows")

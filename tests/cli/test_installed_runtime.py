@@ -120,7 +120,8 @@ def _native_cell(
         from molt.cli.native_link_custody import native_link_custody_archive_path
 
         custody = native_link_custody_archive_path(
-            archive, json.loads(manifest.read_text("utf-8"))["custody"]
+            archive,
+            json.loads(manifest.read_text("utf-8"))["custody"],
         )
         assert custody is not None and custody.is_file()
         members[custody.name] = (custody, "native_link_custody_archive")

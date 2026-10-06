@@ -295,7 +295,9 @@ def _write_build_timeout_diag(
         "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
     }
     try:
-        diag_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        diag_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         print(f"Wrote build timeout diagnostic: {diag_path}", file=sys.stderr)
     except OSError as exc:
         print(f"Failed to write build timeout diagnostic: {exc}", file=sys.stderr)
@@ -337,6 +339,7 @@ def _git_rev() -> str | None:
             capture_output=True,
             text=True,
             check=False,
+            encoding="utf-8",
         )
     except OSError:
         return None
@@ -1396,7 +1399,9 @@ def bench_results(
 
 def write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def main() -> None:

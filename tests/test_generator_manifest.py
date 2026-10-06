@@ -225,7 +225,7 @@ def test_closed_domains_parse_to_live_enums():
         enum_file = ROOT / cd["enum_file"]
         assert enum_file.is_file(), f"{cd['name']}: missing {cd['enum_file']}"
         variants = sa._count_enum_variants(
-            enum_file.read_text(errors="replace"), cd["enum_name"]
+            enum_file.read_text(errors="replace", encoding="utf-8"), cd["enum_name"]
         )
         assert variants, f"{cd['name']}: parsed 0 variants of {cd['enum_name']}"
 

@@ -60,6 +60,7 @@ select = ["E4", "E7", "E9", "F"]
 [tool.ruff.lint.per-file-ignores]
 "src/molt/cli/__init__.py" = ["F401"]         # Public CLI compatibility facade re-exports split-module symbols.
 "src/molt/stdlib/**/*.py" = ["E402"]
+"demos/tinygrad/**/*.py" = ["E402"]          # Molt-compiled modules bind runtime intrinsics or sys.path before imports.
 "src/molt/stdlib/_pyio.py" = ["E722", "F401"]  # CPython mirror: finalizer suppression and __all__ re-export.
 "src/molt/stdlib/builtins.py" = ["F821"]       # Runtime-provided builtins can be version-gated ahead of host Python.
 "src/molt/stdlib/colorsys.py" = ["E741"]

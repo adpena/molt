@@ -136,11 +136,13 @@ def main() -> int:
         )
 
     if args.json_output:
-        Path(args.json_output).write_text(json.dumps(entries, indent=2, sort_keys=True))
+        Path(args.json_output).write_text(
+            json.dumps(entries, indent=2, sort_keys=True), encoding="utf-8"
+        )
 
     report = build_report(entries)
     if args.report_output:
-        Path(args.report_output).write_text(report)
+        Path(args.report_output).write_text(report, encoding="utf-8")
     else:
         print(report)
 

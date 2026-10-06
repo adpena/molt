@@ -286,7 +286,7 @@ def _expand(maybe_path: str | None) -> str | None:
 def parse_inventory(path: Path) -> list[Host]:
     if not path.exists():
         raise FileNotFoundError(f"inventory not found: {path}")
-    raw = tomllib.loads(path.read_text())
+    raw = tomllib.loads(path.read_text(encoding="utf-8"))
     hosts_raw = raw.get("host", [])
     if not isinstance(hosts_raw, list) or not hosts_raw:
         raise ValueError(
@@ -389,7 +389,7 @@ def _local_compile(
     case_dir = work / target / case.name
     case_dir.mkdir(parents=True, exist_ok=True)
     src_path = case_dir / f"{case.name}.py"
-    src_path.write_text(case.source)
+    src_path.write_text(case.source, encoding="utf-8")
     out_dir = case_dir / "out"
     out_dir.mkdir(exist_ok=True)
     # Compliance harness convention: molt build with --out-dir produces
@@ -934,7 +934,7 @@ def _write_report(
             lines.append(r.setup_error)
             lines.append("```")
             lines.append("")
-    path.write_text("\n".join(lines))
+    path.write_text("\n".join(lines), encoding="utf-8")
     return path
 
 

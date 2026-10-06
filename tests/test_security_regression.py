@@ -25,7 +25,7 @@ class TestGenerateWorkerInjectionPrevention:
 
         output = tmp_path / "worker.js"
         generate_worker(output, ["fs.read'; alert(1); //"])
-        content = output.read_text()
+        content = output.read_text(encoding="utf-8")
         # json.dumps produces double-quoted strings; a raw single-quote
         # splice would leave the payload unescaped.
         assert "alert(1)" in content  # the string is present ...
@@ -37,7 +37,7 @@ class TestGenerateWorkerInjectionPrevention:
 
         output = tmp_path / "worker.js"
         generate_worker(output, ["fs.read`${evil}`"])
-        content = output.read_text()
+        content = output.read_text(encoding="utf-8")
         assert json.dumps(["fs.read`${evil}`"]) in content
 
     def test_angle_brackets_escaped(self, tmp_path):
@@ -45,7 +45,7 @@ class TestGenerateWorkerInjectionPrevention:
 
         output = tmp_path / "worker.js"
         generate_worker(output, ["<script>alert(1)</script>"])
-        content = output.read_text()
+        content = output.read_text(encoding="utf-8")
         assert json.dumps(["<script>alert(1)</script>"]) in content
 
     def test_output_uses_json_dumps_encoding(self, tmp_path):
@@ -56,7 +56,7 @@ class TestGenerateWorkerInjectionPrevention:
         caps = ["fs.read", "net"]
         output = tmp_path / "worker.js"
         generate_worker(output, caps)
-        content = output.read_text()
+        content = output.read_text(encoding="utf-8")
         assert json.dumps(caps) in content
         # Must not contain Python-style single-quoted list repr.
         assert "['fs.read'" not in content

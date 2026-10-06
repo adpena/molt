@@ -508,7 +508,7 @@ def run_benchmark_suite(
     with OwnedTemporaryDirectory(prefix="molt-bench-") as tmpdir:
         for name, code in BENCHMARK_PROGRAMS:
             src_path = Path(tmpdir) / f"{name}.py"
-            src_path.write_text(code)
+            src_path.write_text(code, encoding="utf-8")
 
             if not json_output:
                 print(f"\n{'=' * 60}")

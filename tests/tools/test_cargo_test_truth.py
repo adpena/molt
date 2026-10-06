@@ -2317,7 +2317,9 @@ def test_truth_loader_rederives_descendants_instead_of_saved_summaries(
     truth = _load_tool("run_cargo_test_truth_rederive", "run_cargo_test_truth.py")
     [loaded] = truth.load_binary_receipts(receipts, expected_run_id="run")
     assert loaded["runtime_descendants"]["children"] == 2
-    Path(records[0]["stderr"]["path"]).write_text("changed after publication")
+    Path(records[0]["stderr"]["path"]).write_text(
+        "changed after publication", encoding="utf-8"
+    )
     with pytest.raises(RuntimeError, match="changed after receipt publication"):
         truth.load_binary_receipts(receipts, expected_run_id="run")
 

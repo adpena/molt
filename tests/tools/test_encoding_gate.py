@@ -180,3 +180,43 @@ def test_planted_violation_fails() -> None:
 
     # And, crucially, removing the plant returns the tree to green.
     assert _run_check().returncode == 0
+
+
+def test_fix_pins_utf8_on_every_flagged_call_and_stays_valid() -> None:
+    source = (
+        "import subprocess\n"
+        "from pathlib import Path\n"
+        "p = Path('x')\n"
+        "p.read_text()\n"
+        "p.write_text('data',\n"
+        "             errors='strict')\n"
+        "open('f', encoding=None)\n"
+        "open('f', 'rb')\n"
+        "subprocess.run(['x'], text=True)\n"
+        "label = '\u2028 not a line break'\n"
+        "p.read_text(**kwargs)\n"
+    )
+    fixed, count = eg.fix_source(source, "tools/fixture.py")
+
+    assert count == 4
+    assert eg.scan_source(fixed, "tools/fixture.py") == []
+    assert 'p.read_text(encoding="utf-8")' in fixed
+    assert "errors='strict', encoding=\"utf-8\")" in fixed
+    assert "open('f', encoding=\"utf-8\")" in fixed
+    assert "open('f', 'rb')" in fixed  # binary mode is never touched
+    assert "p.read_text(**kwargs)" in fixed  # forwarded kwargs may carry it
+    assert eg.fix_source(fixed, "tools/fixture.py") == (fixed, 0)
+
+
+def test_positional_encodings_and_foreign_read_text_are_not_violations() -> None:
+    source = (
+        "from importlib import metadata\n"
+        "from pathlib import Path\n"
+        "p = Path('x')\n"
+        "p.read_text('utf-8')\n"
+        "p.write_text('data', 'utf-8')\n"
+        "open('f', 'r', -1, 'utf-8')\n"
+        "next(metadata.distributions()).read_text('direct_url.json')\n"
+    )
+    assert eg.scan_source(source, "tools/fixture.py") == []
+    assert eg.fix_source(source, "tools/fixture.py") == (source, 0)

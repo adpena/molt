@@ -706,7 +706,8 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
         "  fi\n"
         "  shift\n"
         "done\n"
-        "printf 'ok' > \"$out\"\n"
+        "printf 'ok' > \"$out\"\n",
+        encoding="utf-8",
     )
     canonical_backend.chmod(0o755)
 
@@ -755,7 +756,9 @@ def test_ensure_backend_binary_hydrates_from_canonical_target(
         project_root=project_root,
         backend_features=("native-backend",),
     )
-    assert isolated_backend.read_text() == canonical_backend.read_text()
+    assert isolated_backend.read_text(encoding="utf-8") == canonical_backend.read_text(
+        encoding="utf-8"
+    )
     assert os.access(isolated_backend, os.X_OK)
 
 

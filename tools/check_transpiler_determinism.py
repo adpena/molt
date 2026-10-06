@@ -346,7 +346,7 @@ def main() -> int:
     if args.json_out:
         out = Path(args.json_out).expanduser().resolve()
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(payload, indent=2) + "\n")
+        out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         print(f"JSON report: {out}")
 
     print(f"Results: {n_pass} pass, {n_fail} fail, {n_error} error")

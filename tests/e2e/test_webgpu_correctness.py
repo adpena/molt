@@ -26,14 +26,14 @@ WORKER_URL = "https://falcon-ocr.adpena.workers.dev"
 def webgpu_engine_source() -> str:
     """Read the webgpu-engine.js source."""
     assert WEBGPU_ENGINE.exists(), f"Missing: {WEBGPU_ENGINE}"
-    return WEBGPU_ENGINE.read_text()
+    return WEBGPU_ENGINE.read_text(encoding="utf-8")
 
 
 @pytest.fixture(scope="module")
 def webgpu_matmul_source() -> str:
     """Read the webgpu-matmul.js source."""
     assert WEBGPU_MATMUL.exists(), f"Missing: {WEBGPU_MATMUL}"
-    return WEBGPU_MATMUL.read_text()
+    return WEBGPU_MATMUL.read_text(encoding="utf-8")
 
 
 class TestWebGPUShaderCorrectness:

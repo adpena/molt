@@ -250,7 +250,7 @@ def test_candidate_journal_rejects_boolean_integer_fields(
     try:
         _begin(root, custody)
         journal = root / "candidate-transaction.json"
-        record = json.loads(journal.read_text())
+        record = json.loads(journal.read_text(encoding="utf-8"))
         record[field] = True
         write_exact(journal, record)
         with pytest.raises(
@@ -292,7 +292,9 @@ def test_failure_recording_preserves_prepared_commit_intent(
             root, custody=custody, error="interrupted"
         )
         assert (
-            json.loads((root / "candidate-transaction.json").read_text())["state"]
+            json.loads(
+                (root / "candidate-transaction.json").read_text(encoding="utf-8")
+            )["state"]
             == "prepared"
         )
         assert recover_and_prune_source_extension_candidate_transactions(

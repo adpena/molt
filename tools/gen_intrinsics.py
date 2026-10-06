@@ -359,11 +359,13 @@ def _mechanically_derived_link_affecting_features(
     feature_gates: list[tuple[str, str]],
 ) -> tuple[str, ...]:
     runtime_crate = ROOT / "runtime/molt-runtime"
-    cargo = tomllib.loads((runtime_crate / "Cargo.toml").read_text())
+    cargo = tomllib.loads((runtime_crate / "Cargo.toml").read_text(encoding="utf-8"))
     features = cargo.get("features", {})
     mod_features = _cfg_gated_mod_features(
-        (runtime_crate / "src/builtins/mod.rs").read_text()
-    ) | _cfg_gated_mod_features((runtime_crate / "src/lib.rs").read_text())
+        (runtime_crate / "src/builtins/mod.rs").read_text(encoding="utf-8")
+    ) | _cfg_gated_mod_features(
+        (runtime_crate / "src/lib.rs").read_text(encoding="utf-8")
+    )
     dep_features = {
         feature
         for feature in features

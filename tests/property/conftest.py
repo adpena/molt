@@ -156,7 +156,7 @@ def run_via_molt(code: str, *, timeout: float = 60.0) -> str:
     tmpdir = tempfile.mkdtemp(prefix="molt_prop_")
     try:
         src_file = os.path.join(tmpdir, "prop_test.py")
-        with open(src_file, "w") as f:
+        with open(src_file, "w", encoding="utf-8") as f:
             f.write(code)
 
         env = _property_env(f"property-run-{os.getpid()}")

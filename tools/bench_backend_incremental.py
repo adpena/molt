@@ -379,7 +379,7 @@ def main() -> int:
         },
         "results": [asdict(item) for item in all_results],
     }
-    json_path.write_text(json.dumps(payload, indent=2) + "\n")
+    json_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(f"wrote {json_path}")
 
     failed = any(

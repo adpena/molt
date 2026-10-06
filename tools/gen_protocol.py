@@ -712,6 +712,7 @@ def _format_generated_text(path: Path, text: str) -> str:
         capture_output=True,
         cwd=ROOT,
         check=False,
+        encoding="utf-8",
     )
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()

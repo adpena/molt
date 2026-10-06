@@ -181,7 +181,8 @@ def test_python_payload_rejects_supervisor_path_before_preflight_or_command(
                 "result_path": str(result),
                 "timeout_seconds": 30,
             }
-        )
+        ),
+        encoding="utf-8",
     )
     admit = layout.CargoOutputLayout.admit_supervisor_target_path
     monkeypatch.setattr(
@@ -201,7 +202,7 @@ def test_python_payload_rejects_supervisor_path_before_preflight_or_command(
         lambda **kwargs: calls.append("provision"),
     )
     assert guarded_execution.execute_guarded_request(request) == 2
-    observation = json.loads(result.read_text())
+    observation = json.loads(result.read_text(encoding="utf-8"))
     assert observation["command_started"] is False
     assert "Windows tool path budget" in observation["error"]
     assert calls == []
@@ -237,7 +238,8 @@ def test_supervisor_boundary_rejects_root_replaced_during_preflight(
                 "result_path": str(result),
                 "timeout_seconds": 30,
             }
-        )
+        ),
+        encoding="utf-8",
     )
     # This model selects the unrestricted POSIX path-budget coordinate on the
     # host. It tests real directory identity replacement, not native POSIX use.
@@ -268,7 +270,7 @@ def test_supervisor_boundary_rejects_root_replaced_during_preflight(
         lambda **kwargs: calls.append("provision"),
     )
     assert guarded_execution.execute_guarded_request(request) == 2
-    observation = json.loads(result.read_text())
+    observation = json.loads(result.read_text(encoding="utf-8"))
     assert observation["command_started"] is False
     assert "replaced or remounted" in observation["error"]
     assert calls == ["preflight"]
@@ -583,7 +585,7 @@ def test_secondary_environment_output_escape_is_refused(tmp_path, name):
 @pytest.mark.parametrize("field", ["build-dir", "target-dir", "artifact-dir"])
 def test_config_output_escape_is_refused(tmp_path, monkeypatch, field):
     config = tmp_path / "config.toml"
-    config.write_text(f'[build]\n{field} = "elsewhere"\n')
+    config.write_text(f'[build]\n{field} = "elsewhere"\n', encoding="utf-8")
     monkeypatch.setattr(
         execution_environment.command_identity,
         "_tool_configuration_identities",
@@ -637,7 +639,11 @@ def test_root_identity_survives_immutable_queue_and_detached_request(tmp_path, i
             summary_path=metadata / "guard.json",
             timeout_seconds=10,
         )
-        assert request_envelope == envelope == json.loads(path.read_text())["envelope"]
+        assert (
+            request_envelope
+            == envelope
+            == json.loads(path.read_text(encoding="utf-8"))["envelope"]
+        )
         assert envelope["cargo_output_root"] == layout.declare_root(str(root))
         assert "cargo_output_lifetime" not in envelope
         with pytest.raises(sqlite3.IntegrityError):
@@ -744,7 +750,7 @@ def test_cache_payload_capacity_and_roles_follow_root_but_identity_and_metadata_
 ):
     source = tmp_path / "source"
     source.mkdir()
-    (source / "main.rs").write_text("fn main() {}")
+    (source / "main.rs").write_text("fn main() {}", encoding="utf-8")
     metadata = tmp_path / "receipts"
     monkeypatch.setattr(
         execution_environment,
@@ -800,7 +806,9 @@ def test_cache_payload_capacity_and_roles_follow_root_but_identity_and_metadata_
             owner = Path(lease.provenance["generation_owner"])
             assert owner.is_relative_to(metadata / "cargo-cache")
             assert (owner.parent.parent / "target.lock").exists()
-            pointer = json.loads((owner.parent.parent / "state.json").read_text())
+            pointer = json.loads(
+                (owner.parent.parent / "state.json").read_text(encoding="utf-8")
+            )
             assert pointer["cargo_output_root"] == declaration
             assert Path(lease.provenance["inputs"]["path"]).is_relative_to(
                 metadata / "custody-cas"
@@ -885,7 +893,8 @@ def test_submission_log_projects_immutable_storage_contract(
         + json.dumps(str(root))
         + "\ncargo_output_lifetime = "
         + json.dumps(lifetime)
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     args = argparse.Namespace(
         dsl=str(dsl),
@@ -925,7 +934,7 @@ def test_submission_log_projects_immutable_storage_contract(
         assert "cargo_output_lifetime" not in envelope
     logged = next(
         line.removeprefix("command_envelope=")
-        for line in Path(row[1]).read_text().splitlines()
+        for line in Path(row[1]).read_text(encoding="utf-8").splitlines()
         if line.startswith("command_envelope=")
     )
     assert json.loads(logged) == envelope
@@ -1014,7 +1023,8 @@ def test_oversized_metadata_image_rejects_before_preflight_or_provision(
                 "result_path": str(result),
                 "timeout_seconds": 30,
             }
-        )
+        ),
+        encoding="utf-8",
     )
     # Isolate the executable CAS coordinate; the Cargo budget has its own
     # admission models. No command or native tool is provisioned by this test.
@@ -1039,7 +1049,7 @@ def test_oversized_metadata_image_rejects_before_preflight_or_provision(
         lambda **kwargs: calls.append("provision"),
     )
     assert guarded_execution.execute_guarded_request(request) == 2
-    record = json.loads(result.read_text())
+    record = json.loads(result.read_text(encoding="utf-8"))
     assert record["command_started"] is False
     assert (
         "Supervisor CAS executable exceeds Windows launch path budget"

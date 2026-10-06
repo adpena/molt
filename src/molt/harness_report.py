@@ -163,14 +163,15 @@ class Baseline:
                     "metrics": self.metrics,
                 },
                 indent=2,
-            )
+            ),
+            encoding="utf-8",
         )
 
     @classmethod
     def load(cls, path: Path) -> Baseline:
         if not path.exists():
             return cls.empty()
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         return cls(
             test_counts=data.get("test_counts", {}),
             metrics={k: float(v) for k, v in data.get("metrics", {}).items()},

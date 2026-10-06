@@ -77,7 +77,7 @@ sink = "stderr"
 mode = "virtual"
 """
     path = tmp_path / "test.toml"
-    path.write_text(toml_content)
+    path.write_text(toml_content, encoding="utf-8")
 
     m = load_manifest(str(path))
     env = m.to_env_vars()

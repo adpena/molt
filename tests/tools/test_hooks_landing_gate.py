@@ -110,7 +110,9 @@ def test_evaluate_first_stop_sets_baseline_never_blocks(tmp_path, monkeypatch):
     monkeypatch.setattr(lg._common, "git_head", lambda root: "BASE")
     data = {"session_id": "s1", "transcript_path": None}
     assert lg.evaluate(data, tmp_path) is None
-    marker = json.loads((tmp_path / ".molt" / "state" / lg.MARKER_NAME).read_text())
+    marker = json.loads(
+        (tmp_path / ".molt" / "state" / lg.MARKER_NAME).read_text(encoding="utf-8")
+    )
     assert marker["session_id"] == "s1" and marker["start_head"] == "BASE"
 
 
@@ -196,7 +198,9 @@ def test_read_only_review_does_not_request_implementation(tmp_path, monkeypatch)
         lg.evaluate({"session_id": "review", "transcript_path": str(path)}, tmp_path)
         is None
     )
-    marker = json.loads((common.state_dir(tmp_path) / lg.MARKER_NAME).read_text())
+    marker = json.loads(
+        (common.state_dir(tmp_path) / lg.MARKER_NAME).read_text(encoding="utf-8")
+    )
     assert marker["last_block_head"] is None
 
 

@@ -1033,6 +1033,7 @@ def sample_processes_posix() -> dict[int, ProcessSample]:
             timeout=2.0,
             check=False,
             env={**os.environ, "LC_ALL": "C"},
+            encoding="utf-8",
         )
     except (OSError, subprocess.TimeoutExpired, TypeError) as exc:
         raise ProcessSnapshotError(f"POSIX process snapshot failed: {exc}") from exc

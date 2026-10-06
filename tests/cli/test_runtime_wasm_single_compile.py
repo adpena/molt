@@ -1745,7 +1745,9 @@ def test_precompile_build_failures_reach_exact_routing_boundary(
     assert report["status"] == "error" and report["command"] == "build"
     assert len(report["errors"]) == 1 and diagnostic in report["errors"][0]
     assert native_path.read_bytes() == b"previous native generation"
-    assert (tmp_path / "manifest.json").read_text() == '{"previous":"deployment"}\n'
+    assert (tmp_path / "manifest.json").read_text(
+        encoding="utf-8"
+    ) == '{"previous":"deployment"}\n'
 
 
 def _observed_pair_fixture(tmp_path: Path, *, flags: int = 0):

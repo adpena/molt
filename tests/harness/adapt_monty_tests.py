@@ -29,7 +29,7 @@ from tests import process_guard_common  # noqa: E402
 
 def parse_expectation(filepath: Path) -> tuple[str, str]:
     """Parse expectation from test file comments and docstrings."""
-    text = filepath.read_text()
+    text = filepath.read_text(encoding="utf-8")
     lines = text.strip().splitlines()
 
     # call-external files depend on helpers not in the file
@@ -89,7 +89,7 @@ def adapt_file(src: Path, dst: Path) -> bool:
     if kind == "skip":
         return False
 
-    content = src.read_text()
+    content = src.read_text(encoding="utf-8")
 
     if kind == "return":
         # The file evaluates an expression on the last non-comment line.
@@ -102,8 +102,8 @@ def adapt_file(src: Path, dst: Path) -> bool:
                 lines[i] = " " * indent + f"print(repr({stripped}))"
                 break
         adapted = "\n".join(lines) + "\n"
-        dst.write_text(adapted)
-        dst.with_suffix(".expected").write_text(expected + "\n")
+        dst.write_text(adapted, encoding="utf-8")
+        dst.with_suffix(".expected").write_text(expected + "\n", encoding="utf-8")
         return True
 
     elif kind == "return_str":
@@ -115,8 +115,8 @@ def adapt_file(src: Path, dst: Path) -> bool:
                 lines[i] = " " * indent + f"print(str({stripped}))"
                 break
         adapted = "\n".join(lines) + "\n"
-        dst.write_text(adapted)
-        dst.with_suffix(".expected").write_text(expected + "\n")
+        dst.write_text(adapted, encoding="utf-8")
+        dst.with_suffix(".expected").write_text(expected + "\n", encoding="utf-8")
         return True
 
     elif kind == "return_type":
@@ -128,8 +128,8 @@ def adapt_file(src: Path, dst: Path) -> bool:
                 lines[i] = " " * indent + f"print(type({stripped}).__name__)"
                 break
         adapted = "\n".join(lines) + "\n"
-        dst.write_text(adapted)
-        dst.with_suffix(".expected").write_text(expected + "\n")
+        dst.write_text(adapted, encoding="utf-8")
+        dst.with_suffix(".expected").write_text(expected + "\n", encoding="utf-8")
         return True
 
     elif kind == "raise":
@@ -164,7 +164,7 @@ def adapt_file(src: Path, dst: Path) -> bool:
             + "else:\n"
             + '    print("NO_EXCEPTION_RAISED")\n'
         )
-        dst.write_text(adapted)
+        dst.write_text(adapted, encoding="utf-8")
         # Generate expected output by running the adapted file through CPython.
         # This handles edge cases like KeyError (uses repr of key) and other
         # exceptions where str(e) differs from the Raise= comment's message.
@@ -177,16 +177,26 @@ def adapt_file(src: Path, dst: Path) -> bool:
                 timeout=10,
             )
             if cp_result.returncode == 0 and cp_result.stdout.strip():
-                dst.with_suffix(".expected").write_text(cp_result.stdout.strip() + "\n")
+                dst.with_suffix(".expected").write_text(
+                    cp_result.stdout.strip() + "\n", encoding="utf-8"
+                )
             elif exc_msg:
-                dst.with_suffix(".expected").write_text(f"{exc_type}: {exc_msg}\n")
+                dst.with_suffix(".expected").write_text(
+                    f"{exc_type}: {exc_msg}\n", encoding="utf-8"
+                )
             else:
-                dst.with_suffix(".expected").write_text(f"{exc_type}:\n")
+                dst.with_suffix(".expected").write_text(
+                    f"{exc_type}:\n", encoding="utf-8"
+                )
         except Exception:
             if exc_msg:
-                dst.with_suffix(".expected").write_text(f"{exc_type}: {exc_msg}\n")
+                dst.with_suffix(".expected").write_text(
+                    f"{exc_type}: {exc_msg}\n", encoding="utf-8"
+                )
             else:
-                dst.with_suffix(".expected").write_text(f"{exc_type}:\n")
+                dst.with_suffix(".expected").write_text(
+                    f"{exc_type}:\n", encoding="utf-8"
+                )
         return True
 
     elif kind == "raise_traceback":
@@ -207,7 +217,7 @@ def adapt_file(src: Path, dst: Path) -> bool:
             + "else:\n"
             + '    print("NO_EXCEPTION_RAISED")\n'
         )
-        dst.write_text(adapted)
+        dst.write_text(adapted, encoding="utf-8")
         # Generate expected by running through CPython (same as raise handler)
         try:
             cp_result = process_guard_common.run_guarded_test_process(
@@ -218,17 +228,23 @@ def adapt_file(src: Path, dst: Path) -> bool:
                 timeout=10,
             )
             if cp_result.returncode == 0 and cp_result.stdout.strip():
-                dst.with_suffix(".expected").write_text(cp_result.stdout.strip() + "\n")
+                dst.with_suffix(".expected").write_text(
+                    cp_result.stdout.strip() + "\n", encoding="utf-8"
+                )
             else:
-                dst.with_suffix(".expected").write_text(expected + "\n")
+                dst.with_suffix(".expected").write_text(
+                    expected + "\n", encoding="utf-8"
+                )
         except Exception:
-            dst.with_suffix(".expected").write_text(expected + "\n")
+            dst.with_suffix(".expected").write_text(expected + "\n", encoding="utf-8")
         return True
 
     elif kind in ("noexception", "assert_only"):
         # Just copy -- exit code 0 means pass
-        dst.write_text(content)
-        dst.with_suffix(".expected").write_text("")  # empty = just check exit 0
+        dst.write_text(content, encoding="utf-8")
+        dst.with_suffix(".expected").write_text(
+            "", encoding="utf-8"
+        )  # empty = just check exit 0
         return True
 
     return False

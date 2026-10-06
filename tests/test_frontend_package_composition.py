@@ -146,7 +146,9 @@ def test_shared_types_live_in_leaf_module() -> None:
     assert MoltValue.__module__ == "molt.frontend._types"
     assert MoltOp.__module__ == "molt.frontend._types"
     # The leaf must never import back into __init__ at runtime.
-    types_src = (ROOT / "src" / "molt" / "frontend" / "_types.py").read_text()
+    types_src = (ROOT / "src" / "molt" / "frontend" / "_types.py").read_text(
+        encoding="utf-8"
+    )
     assert "from molt.frontend import" not in types_src.split("if TYPE_CHECKING")[0]
 
 

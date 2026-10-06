@@ -57,7 +57,8 @@ def test_wasm_bytes_ops_parity(tmp_path: Path) -> None:
         "print(bytes(filled).find(b'b'))\n"
         "print(bytes(filled)[0])\n"
         "print(bytes(filled)[6])\n"
-        "print(i)\n"
+        "print(i)\n",
+        encoding="utf-8",
     )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)

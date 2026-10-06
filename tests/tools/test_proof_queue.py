@@ -3027,6 +3027,7 @@ def test_synthetic_receipt_verifier_rejects_unissued_requests(
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
         )
 
 
@@ -16149,7 +16150,7 @@ def test_metadata_case_identity_and_root_replacement_are_failclosed(
     monkeypatch.setenv("MOLT_PROOF_TEST_METADATA_ROOT", str(root))
     declaration = _real_metadata_root()
     case = _owned_metadata_case(declaration, "module::case[coordinate]", "a" * 32)
-    owner = json.loads((case / "metadata-owner.json").read_text())
+    owner = json.loads((case / "metadata-owner.json").read_text(encoding="utf-8"))
     assert len(case.name) == 64
     assert owner["namespace_sha256"] == case.name
     assert owner["identity"]["nodeid"] == "module::case[coordinate]"
@@ -16187,7 +16188,7 @@ def test_native_fixture_environment_uses_declared_short_root_and_preserves_input
     assert target.parent.parent.name == "proof-supervisor"
     owner_files = list(Path(str(metadata["path"])).glob("*/metadata-owner.json"))
     assert any(
-        json.loads(p.read_text())["identity"]["nodeid"]
+        json.loads(p.read_text(encoding="utf-8"))["identity"]["nodeid"]
         == "test_proof_queue.py::supervisor-build"
         for p in owner_files
     )
@@ -16219,7 +16220,9 @@ def test_cached_python_authority_never_redirects_supervisor_build_layout(
         )
         assert binary == Path("real-admitted-image")
         assert telemetry["build_target_dir"] == "admitted-target"
-        result.write_text(json.dumps({"command_started": False, "model": True}))
+        result.write_text(
+            json.dumps({"command_started": False, "model": True}), encoding="utf-8"
+        )
         return 0
 
     monkeypatch.setattr(guarded_execution, "execute_guarded_request", execute)

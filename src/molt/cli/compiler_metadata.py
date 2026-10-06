@@ -206,7 +206,9 @@ def _compiler_clean_pathspec_source_state(
 def _compiler_metadata() -> tuple[str | None, str | None]:
     compiler_root = _compiler_root()
     try:
-        data = tomllib.loads((compiler_root / "pyproject.toml").read_text())
+        data = tomllib.loads(
+            (compiler_root / "pyproject.toml").read_text(encoding="utf-8")
+        )
     except (OSError, tomllib.TOMLDecodeError):
         data = {}
     project = data.get("project")

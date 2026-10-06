@@ -323,7 +323,9 @@ def test_partial_source_cache_retains_candidates_and_diagnostics(
             assert lexical not in paths
 
     check()
-    cache = json.loads(closure.python_source_closure_cache_path(tmp_path).read_text())
+    cache = json.loads(
+        closure.python_source_closure_cache_path(tmp_path).read_text(encoding="utf-8")
+    )
     variants = cache["entries"]["src/pkg/entry.py"]
     source_key = closure._analysis_policy_digest("pkg.entry", False, source)
     semantic_key = closure._analysis_policy_digest("pkg.entry", False, semantic)

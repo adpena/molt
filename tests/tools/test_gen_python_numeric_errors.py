@@ -59,7 +59,7 @@ def test_policy_coordinates_and_class_contract():
     ],
 )
 def test_schema_rejects_incomplete_or_unadmitted_policy(tmp_path, mutation):
-    source = policy.SOURCE.read_text()
+    source = policy.SOURCE.read_text(encoding="utf-8")
     if mutation == "missing_coordinate":
         source = source.replace('python_3_13 = "division by zero"', "", 1)
     elif mutation == "unknown_coordinate":
@@ -81,7 +81,7 @@ def test_schema_rejects_incomplete_or_unadmitted_policy(tmp_path, mutation):
     else:
         source += '\nunknown_field = "unexpected"\n'
     path = tmp_path / "invalid.toml"
-    path.write_text(source)
+    path.write_text(source, encoding="utf-8")
     with pytest.raises(policy.SchemaError):
         policy.load_policy(path)
 
@@ -90,7 +90,7 @@ def test_generated_consumers_are_semantically_identical_and_idempotent():
     expected = policy.render(policy.load_policy())
     assert policy.render(policy.load_policy()) == expected
     for path in policy.OUTPUTS:
-        assert path.read_text() == policy.render(
+        assert path.read_text(encoding="utf-8") == policy.render(
             policy.load_policy(),
             integer_helper="molt-backend-luau" not in path.parts,
         ), path
@@ -133,7 +133,8 @@ def test_compiled_policy_and_integer_sign_family(tmp_path):
         policy.render(policy.load_policy())
         + "\nfn main() {\n"
         + "\n".join(checks)
-        + "\n}\n"
+        + "\n}\n",
+        encoding="utf-8",
     )
     binary = tmp_path / (
         "numeric_policy.exe" if sys.platform == "win32" else "numeric_policy"
@@ -158,7 +159,9 @@ def test_standalone_rust_emitted_arithmetic_signed_and_bool_cases(tmp_path):
     compiler = shutil.which("rustc")
     if compiler is None:
         pytest.skip("rustc unavailable: emitted arithmetic is unverified")
-    emitter = (ROOT / "runtime/molt-backend-rust/src/rust/prelude.rs").read_text()
+    emitter = (ROOT / "runtime/molt-backend-rust/src/rust/prelude.rs").read_text(
+        encoding="utf-8"
+    )
     fragments = []
     for helper in ("floor_div", "mod", "div", "pow"):
         start = emitter.index(f'        if used("molt_{helper}(")')
@@ -220,7 +223,8 @@ fn molt_sys_version_state()->&'static std::sync::Mutex<Target> { static STATE:st
         + "\n".join(fragments)
         + "\nfn main() {\n"
         + "\n".join(checks)
-        + "\n}\n"
+        + "\n}\n",
+        encoding="utf-8",
     )
     binary = tmp_path / (
         "emitted_numeric.exe" if sys.platform == "win32" else "emitted_numeric"
@@ -244,7 +248,9 @@ def test_actual_timedelta_integer_normalizer_sign_range_and_overflow(tmp_path):
     compiler = shutil.which("rustc")
     if compiler is None:
         pytest.skip("rustc unavailable: exact timedelta normalization unverified")
-    source = (ROOT / "runtime/molt-runtime-serial/src/datetime.rs").read_text()
+    source = (ROOT / "runtime/molt-runtime-serial/src/datetime.rs").read_text(
+        encoding="utf-8"
+    )
     start = source.index("fn normalize_timedelta_us_exact(")
     # td_total_us float helper occurs between these; only the closed exact function.
     exact = source[start : source.index("\nfn td_total_us(", start)]
@@ -271,7 +277,9 @@ def test_actual_timedelta_integer_normalizer_sign_range_and_overflow(tmp_path):
         "assert_eq!(normalize_timedelta_us_exact(i128::MAX), None);",
     ]
     path = tmp_path / "td_normalizer.rs"
-    path.write_text(exact + "\nfn main() {\n" + "\n".join(checks) + "\n}\n")
+    path.write_text(
+        exact + "\nfn main() {\n" + "\n".join(checks) + "\n}\n", encoding="utf-8"
+    )
     binary = tmp_path / (
         "td_normalizer.exe" if sys.platform == "win32" else "td_normalizer"
     )
@@ -341,7 +349,7 @@ def test_compiled_float_divmod_against_host_cpython(tmp_path):
     scaffold += 'for &(a,b) in floats { match python_float_divmod(f64::from_bits(a),f64::from_bits(b)) { Some((q,r))=>println!("F:{}:{}",classify(q),classify(r)),None=>println!("F:ZERO") } }\n'
     scaffold += "}\n"
     source = tmp_path / "numeric_float_divmod.rs"
-    source.write_text(policy.render(policy.load_policy()) + scaffold)
+    source.write_text(policy.render(policy.load_policy()) + scaffold, encoding="utf-8")
     binary = tmp_path / (
         "numeric_float_divmod.exe"
         if sys.platform == "win32"

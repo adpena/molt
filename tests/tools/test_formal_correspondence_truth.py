@@ -19,7 +19,9 @@ def test_formal_correspondence_fails_when_zero_builtin_mappings_parse(
     lean, rust = _write_sources(tmp_path, "def unrelated := 1\n", "fn print() {}\n")
     backend = tmp_path / "backend"
     backend.mkdir()
-    (backend / "builtins.rs").write_text(rust.read_text(), encoding="utf-8")
+    (backend / "builtins.rs").write_text(
+        rust.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     monkeypatch.setattr(check_correspondence, "LUAU_EMIT_LEAN", lean)
     monkeypatch.setattr(check_correspondence, "LUAU_BACKEND_SRC", backend)
 

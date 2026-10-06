@@ -151,7 +151,7 @@ def test_initialization_seed_does_not_grant_dynamic_import_custody(
                 UnresolvedStaticImportError, match="runtime import custody"
             ):
                 module_import_scanner._collect_imports(
-                    ast.parse(entry.read_text()),
+                    ast.parse(entry.read_text(encoding="utf-8")),
                     module_name="pkg",
                     is_package=True,
                     import_scan_mode="full" if full else "module_init",

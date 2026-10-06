@@ -30,14 +30,16 @@ MODULE_PATHS = [
 
 def test_public_intrinsic_surface_batch_bb_avoids_globals_injection() -> None:
     for path in MODULE_PATHS:
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         for line in source.splitlines():
             if "require_intrinsic(" in line:
                 assert "globals()" not in line, path
 
 
 def test_importlib_import_module_uses_rust_intrinsic() -> None:
-    source = (ROOT / "src/molt/stdlib/importlib/__init__.py").read_text()
+    source = (ROOT / "src/molt/stdlib/importlib/__init__.py").read_text(
+        encoding="utf-8"
+    )
 
     assert "molt_importlib_import_module" in source
     assert "molt_importlib_import_module_resolve_name" not in source
@@ -66,6 +68,6 @@ def test_importlib_import_module_has_single_intrinsic_authority() -> None:
     ]
 
     for path, intrinsic_token in checked_paths:
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         assert intrinsic_token in source, path
         assert "molt_importlib_import_module_resolve_name" not in source, path

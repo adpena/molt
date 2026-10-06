@@ -17,7 +17,9 @@ STDLIB_INTRINSICS_PATH = ROOT / "src" / "molt" / "stdlib" / "_intrinsics.py"
 
 
 def test_builtins_facade_does_not_duplicate_runtime_namespace_publication() -> None:
-    tree = ast.parse((STDLIB_INTRINSICS_PATH.parent / "builtins.py").read_text())
+    tree = ast.parse(
+        (STDLIB_INTRINSICS_PATH.parent / "builtins.py").read_text(encoding="utf-8")
+    )
     assert not any(
         isinstance(node, (ast.FunctionDef, ast.Name))
         and getattr(node, "name", getattr(node, "id", None))
@@ -86,7 +88,7 @@ def test_builtins_facade_only_acquires_its_wrapper_dependencies(
     )
     path = STDLIB_INTRINSICS_PATH.parent / "builtins.py"
     namespace = dict(vars(builtins))
-    exec(compile(path.read_text(), str(path), "exec"), namespace)
+    exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), namespace)
     assert {fn.__name__ for fn in marked} == {
         "compile",
         "input",

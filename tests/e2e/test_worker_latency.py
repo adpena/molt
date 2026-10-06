@@ -243,7 +243,7 @@ def main() -> None:
         "ocr": ocr_report.summary(),
     }
     json_path = Path(__file__).parent / "test_images" / "latency_results.json"
-    json_path.write_text(json.dumps(combined, indent=2))
+    json_path.write_text(json.dumps(combined, indent=2), encoding="utf-8")
     print(f"\nJSON results written to {json_path}")
 
 

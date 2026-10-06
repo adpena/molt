@@ -86,7 +86,7 @@ def _compile_and_run_rust(
         rs_path = os.path.join(tmpdir, "output.rs")
         bin_path = os.path.join(tmpdir, "output")
 
-        with open(py_path, "w") as f:
+        with open(py_path, "w", encoding="utf-8") as f:
             f.write(python_source)
 
         root = Path(MOLT_DIR)

@@ -149,7 +149,9 @@ def daemon_socket(tmp_path: Path):
     if not ready:
         close_cli_test_process_group(proc)
         log_text = (
-            log_path.read_text(errors="replace") if log_path.exists() else "(no log)"
+            log_path.read_text(errors="replace", encoding="utf-8")
+            if log_path.exists()
+            else "(no log)"
         )
         pytest.skip(
             f"Daemon did not become ready within {_STARTUP_TIMEOUT_S}s. "
