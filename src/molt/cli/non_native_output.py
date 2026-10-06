@@ -39,6 +39,12 @@ from molt.browser_asset_closure import (
     wasm_loader_asset_closure,
 )
 from molt.cli import link_fingerprints
+from molt.cli.wasm_final_link_cache import (
+    final_link_cache_entry,
+    final_link_cache_key,
+    publish_final_link_result,
+    restore_final_link_result,
+)
 from molt.cli.link_selection_admission import link_selection_policy
 from molt.cli.wasm_deployment import (
     WasmDeploymentGeneration,
@@ -1410,15 +1416,55 @@ def _prepare_non_native_build_result_in_generation(
                         link_run_cmd.extend(
                             ["--phase-timings-file", str(link_timings_path)]
                         )
-                    # The standalone tool retains its direct publisher, but its
-                    # destinations here are private until deployment is complete.
-                    link_process = _run_completed_command(
-                        link_run_cmd,
-                        cwd=molt_root,
-                        env=None,
-                        capture_output=True,
-                        memory_guard_prefix="MOLT_WASM_LINK",
+                    # The link result is keyed by content, never by where it is
+                    # published: a fresh output directory reuses it by copy.
+                    link_result_outputs = {
+                        role: deployment.outputs[role] for role in link_outputs
+                    }
+                    link_result_entry = final_link_cache_entry(
+                        final_link_cache_key(
+                            link_run_cmd,
+                            cwd=molt_root,
+                            tool_facts=(
+                                {
+                                    "role": "wasm-link-source-closure",
+                                    "content_digest": link_tool_closure.content_digest,
+                                },
+                                *(
+                                    (optimizer_cache_fact,)
+                                    if optimizer_cache_fact is not None
+                                    else ()
+                                ),
+                                *(
+                                    (selection_policy,)
+                                    if selection_policy is not None
+                                    else ()
+                                ),
+                            ),
+                        )
                     )
+                    link_result_reused = restore_final_link_result(
+                        link_result_entry, link_result_outputs
+                    )
+                    if stage_timings_ms is not None:
+                        stage_timings_ms["wasm_link_result_cache_hits"] = float(
+                            link_result_reused
+                        )
+                    if link_result_reused:
+                        link_process = subprocess.CompletedProcess(
+                            link_run_cmd, 0, "", ""
+                        )
+                    else:
+                        # The standalone tool retains its direct publisher, but
+                        # its destinations here are private until deployment is
+                        # complete.
+                        link_process = _run_completed_command(
+                            link_run_cmd,
+                            cwd=molt_root,
+                            env=None,
+                            capture_output=True,
+                            memory_guard_prefix="MOLT_WASM_LINK",
+                        )
                     for identity in admitted_link_inputs:
                         verify_stable_regular_file_identity(
                             identity, label="WASM link input"
@@ -1448,6 +1494,18 @@ def _prepare_non_native_build_result_in_generation(
                             split=_split_runtime,
                             preserve_debug=profile == "dev",
                         )
+                    if not link_result_reused:
+                        # Only an admitted result (selection and optimizer
+                        # publication checked above) is recorded for reuse.
+                        try:
+                            publish_final_link_result(
+                                link_result_entry, link_result_outputs
+                            )
+                        except (OSError, ValueError) as exc:
+                            if warnings is not None:
+                                warnings.append(
+                                    f"WASM link result was not cached: {exc}"
+                                )
                     resolved_linked_output = deployment.outputs["linked"]
                 except (OSError, ValueError) as exc:
                     return None, _fail(

@@ -22094,6 +22094,7 @@ def _prepared_runtime_pair_state(
 
 
 def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
+    isolated_molt_cache: Path,
     runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -22290,7 +22291,9 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     assert touched_err is None and touched is not None
     assert len(link_calls) == 1
 
-    # A same-size, same-mtime replacement of a published output must relink.
+    # A same-size, same-mtime replacement of a published output fails the
+    # receipt; the content-addressed link result republishes the exact bytes
+    # without running the linker again.
     linked_stat = linked_wasm.stat()
     assert linked_wasm.read_bytes() == linked_bytes
     linked_wasm.write_bytes(linked_bytes[:-1] + b"B")
@@ -22302,7 +22305,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         **common_kwargs
     )
     assert tampered_err is None and tampered is not None
-    assert len(link_calls) == 2
+    assert len(link_calls) == 1
     assert linked_wasm.read_bytes() == linked_bytes
 
     # Byte-generation identity belongs to metadata, so unchanged binary inputs
@@ -22312,14 +22315,14 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         **common_kwargs
     )
     assert third_err is None and third is not None
-    assert len(link_calls) == 3
+    assert len(link_calls) == 2
     # Invocation-private transport never changes semantic input identity.
     assert fingerprints[0]["hash"] == fingerprints[-2]["hash"]
     assert fingerprints[-2]["meta_digest"] != fingerprints[-1]["meta_digest"]
     assert fingerprints[-2]["hash"] != fingerprints[-1]["hash"]
 
     # Both members are byte inputs even for a monolithic linked artifact.
-    for count, member in enumerate((runtime_wasm, runtime_reloc_wasm), start=4):
+    for count, member in enumerate((runtime_wasm, runtime_reloc_wasm), start=3):
         saved = member.stat()
         old_bytes = member.read_bytes()
         member.write_bytes(old_bytes[:-1] + bytes([old_bytes[-1] ^ 1]))
@@ -22330,11 +22333,27 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         assert changed_err is None and changed is not None
         assert len(link_calls) == count
 
+    # A fresh output directory with the same inputs reuses the same result.
+    relocated_output = tmp_path / "relocated" / "output.wasm"
+    relocated_output.parent.mkdir()
+    relocated_output.write_bytes(output_wasm.read_bytes())
+    relocated, relocated_err = cli_non_native_output._prepare_non_native_build_result(
+        **{
+            **common_kwargs,
+            "output_artifact": relocated_output,
+            "linked_output_path": relocated_output.with_name(linked_wasm.name),
+        }
+    )
+    assert relocated_err is None and relocated is not None
+    assert len(link_calls) == 4
+    assert relocated_output.with_name(linked_wasm.name).read_bytes() == linked_bytes
+
 
 @pytest.mark.parametrize(
     "fail_after_rival,change_source", [(False, False), (True, False), (False, True)]
 )
 def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
+    isolated_molt_cache: Path,
     runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -22395,6 +22414,10 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
         if not rival_published:
             rival_published = True
             with monkeypatch.context() as rival:
+                # The fake linker gives the rival different bytes for the same
+                # inputs, so the rival owns its own link result cache; a real
+                # link of equal inputs would share one result.
+                rival.setenv("MOLT_CACHE", str(tmp_path / "rival-molt-cache"))
                 _install_fake_wasm_link_runner(
                     rival,
                     fixture_root=runtime_fixture_root,
@@ -22470,6 +22493,7 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
 
 
 def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_linked_wasm(
+    isolated_molt_cache: Path,
     runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -22585,6 +22609,7 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
 
 
 def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_surface(
+    isolated_molt_cache: Path,
     runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -22960,6 +22985,7 @@ def test_external_package_bundle_is_independent_of_absolute_source_roots(
 
 
 def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
+    isolated_molt_cache: Path,
     runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -23129,6 +23155,7 @@ def test_split_runtime_deployment_attestation_rejects_hidden_active_table_slot(
 
 
 def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
+    isolated_molt_cache: Path,
     runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -23296,6 +23323,7 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
 
 
 def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
+    isolated_molt_cache: Path,
     runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -23615,6 +23643,7 @@ def test_browser_native_callable_manifest_is_import_driven(tmp_path: Path) -> No
 
 
 def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_import(
+    isolated_molt_cache: Path,
     runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -23700,6 +23729,7 @@ def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_i
 
 
 def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_table_refs(
+    isolated_molt_cache: Path,
     runtime_fixture_root: RuntimeFixtureRoot,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
