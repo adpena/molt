@@ -10,7 +10,7 @@ Modes (exactly one):
   --message-file PATH   check one message file (the git `commit-msg` hook)
   --range BASE..HEAD    check every commit in a revision range
   --github-event        check the commits of the current GitHub Actions event
-  --all                 audit every commit reachable from HEAD
+  --all                 audit every commit reachable from any branch or tag
 
 Standard library only, so CI can run it with any Python 3.10+ before the
 project environment exists.
@@ -152,7 +152,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.revision_range is not None:
         revisions = [args.revision_range]
     elif args.all:
-        revisions = ["HEAD"]
+        revisions = ["--branches", "--tags"]
     else:
         event_path = os.environ.get("GITHUB_EVENT_PATH", "")
         event_name = os.environ.get("GITHUB_EVENT_NAME", "")

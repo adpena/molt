@@ -134,3 +134,14 @@ def test_github_pull_request_and_merge_group_check_base_to_head(
     monkeypatch.setenv("GITHUB_EVENT_NAME", event_name)
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(_event(tmp_path, payload)))
     assert policy.main(["--repo", str(repo), "--github-event"]) == 1
+
+
+def test_all_mode_audits_commits_reachable_only_from_a_tag(repo: Path) -> None:
+    _commit(repo, "a", "Base")
+    _git(repo, "checkout", "-q", "--detach")
+    _commit(repo, "b", f"Tagged only\n\n{TRAILER}")
+    _git(repo, "tag", "archive/only-here")
+    _git(repo, "checkout", "-q", "main")
+
+    assert policy.main(["--repo", str(repo), "--range", "main"]) == 0
+    assert policy.main(["--repo", str(repo), "--all"]) == 1
