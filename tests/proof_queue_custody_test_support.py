@@ -281,8 +281,11 @@ def synthetic_receipt_custody(
             receipt_path.read_bytes(),
         )
 
-    def verify(command, *, check, capture_output, text):
+    def verify(command, *, check, capture_output, text, encoding):
+        # The runner decodes the verifier's exact-JSON response as UTF-8 on
+        # every console code page; the fake holds that contract explicitly.
         assert check is False and capture_output is True and text is True
+        assert encoding == "utf-8"
         assert len(command) == 6 and command[1:3] == ["verify", "--policy"]
         assert command[4] == "--receipt"
         expected = issued.get(command[5])
