@@ -143,8 +143,8 @@ MOLT_MEMORY_LIMIT=64M ./my_app
 ```
 
 Enforcement is two-layer: the precise in-VM tracker (deterministic, identical
-across native/WASM/LLVM/Luau) plus, on native, an OS-level `RLIMIT_AS` backstop
-that bounds anything the tracker cannot see. This protection is **opt-in** (no
+across native/WASM/LLVM/Luau) plus, on Linux, an OS-level committed-memory
+(`RLIMIT_DATA`) backstop that bounds anything the tracker cannot see. This protection is **opt-in** (no
 default limit unless configured); capability-tier (deployment-profile) defaults
 are deferred. A misconfigured limit fails loudly at init rather than being
 silently ignored.
