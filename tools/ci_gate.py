@@ -411,6 +411,19 @@ def _build_checks() -> list[Check]:
     )
     checks.append(
         Check(
+            # The environment-registry gate: every MOLT_* name the source reads
+            # is registered in src/molt/environment_registry.toml, no retired
+            # alias survives, and the generated projection/reference page is
+            # current. A misspelled or renamed variable is otherwise ignored
+            # silently (the reader sees "unset").
+            name="environment-registry",
+            tier=1,
+            cmd=_uv_run(str(TOOLS / "check_environment_registry.py"), "--check"),
+            timeout=120,
+        )
+    )
+    checks.append(
+        Check(
             # The semantic-fact-plane meta-gate (doc 59 Phases 1-3): every
             # generated authority is registered + --check-gated, no orphan
             # generated files, and no NEW silent-default `match` over a closed

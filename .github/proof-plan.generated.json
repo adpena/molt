@@ -165,6 +165,11 @@
     "src/molt/artifact_publication.py",
     "src/molt/portable_paths.py",
     "src/molt/dx.py",
+    "src/molt/environment_registry.py",
+    "src/molt/_environment_registry.py",
+    "src/molt/environment_registry.toml",
+    "tools/check_environment_registry.py",
+    "tools/gen_environment_registry.py",
     "src/molt/cargo_execution_policy.py",
     "src/molt/cargo_workspace.py",
     "src/molt/process_guard.py",
@@ -317,7 +322,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "57b3bc998b1bf3c9d74919738bf7473e89a14a268f792564fc37293070f659d2",
+  "authority_sha256": "69692a7e79f952479a9e2731c574981c6bb29a12953347904e88ead00d13a876",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -2496,6 +2501,56 @@
         "uv",
         "run",
         "python3",
+        "tools/check_environment_registry.py",
+        "--check"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.environment-registry",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/gen_environment_registry.py",
+        "--check"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.environment-registry.generated",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
         "tools/gen_proof_plan.py",
         "--check"
       ],
@@ -2717,7 +2772,9 @@
         "tests/tools/test_public_contract_gate.py",
         "tests/tools/test_gen_luau_support_matrix.py",
         "tests/tools/test_runtime_descendant_receipts.py",
-        "tests/tools/test_runtime_test_gate.py"
+        "tests/tools/test_runtime_test_gate.py",
+        "tests/test_environment_registry.py",
+        "tests/tools/test_check_environment_registry.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
@@ -4713,10 +4770,10 @@
       "repository_policy": {
         "budget_seconds": 3600,
         "critical_path_seconds": 1500,
-        "headroom_seconds": 180,
-        "projected_makespan_seconds": 3420,
+        "headroom_seconds": 60,
+        "projected_makespan_seconds": 3540,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 3180
+          "repository-policy": 3240
         }
       },
       "rust": {

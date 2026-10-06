@@ -548,160 +548,19 @@ falls back to the host process version when a target is selected.
 
 ## Environment Variables
 
-### Core
+Every `MOLT_*` environment variable is registered in
+`src/molt/environment_registry.toml`, and the reference page
+[environment-variables.generated.md](environment-variables.generated.md) is
+generated from it: name, kind, default, the module that reads it, and a
+one-line summary, grouped by audience (user, developer, CI, internal). Guard
+scopes and their `<STEM>_<SUFFIX>` families, and every retired name with its
+replacement, are listed there too.
 
-| Variable | Description |
-|----------|-------------|
-| `MOLT_HOME` | Root directory for Molt data (build artifacts, caches). Defaults to OS-specific app data. |
-| `MOLT_CACHE` | Override the build cache directory. |
-| `MOLT_BIN` | Directory for compiled binaries. |
-| `MOLT_PROJECT_ROOT` | Override project root detection. |
-| `MOLT_ENTRY_MODULE` | Override the entry module name. |
-
-### Build
-
-| Variable | Description |
-|----------|-------------|
-| `MOLT_HASH_SEED` | Override the hash seed for deterministic builds. |
-| `MOLT_STDLIB_PROFILE` | Default stdlib intent (`auto`, `micro`, `edge`, `standard`, `server`, or `full`). |
-| `MOLT_MODULE_ROOTS` | Colon-separated additional module search roots. |
-| `MOLT_EXTERNAL_STATIC_PACKAGES` | Comma/space-separated external package names admitted from external roots. Pure-Python packages may admit source closure; source-recompiled NumPy/SciPy roots require package-local native/static artifact candidates before graph discovery, WASM static-link artifact manifests must declare `python_exports` or `callable_exports`, required package-root imports such as `numpy` must be covered by matching `python_exports`, and package initializer sources do not seed broad source closure. Direct entry imports from external roots remain bounded when unset. |
-| `MOLT_STATIC_IMPORT_MODULES` | Comma/space-separated Python module names to admit as explicit static roots in the binary image closure. |
-| `MOLT_PORTABLE` | Target baseline by default (`1`); set `0` to explicitly specialize for the host CPU. Host specialization participates in native cache identity. |
-| `MOLT_SPLIT_RUNTIME` | Set to `1` to enable split-runtime WASM by default. |
-| `MOLT_DEAD_MODULE_ELIMINATION` | Set to `1` to narrow the import plan's compile module set to modules reachable from the entry and required support roots. This is part of wrapper-cache semantic identity. |
-| `MOLT_BUILD_STATE_DIR` | Override the build state directory. |
-| `MOLT_BUILD_LOCK_TIMEOUT` | Timeout in seconds for build lock acquisition. |
-| `MOLT_SYSROOT` | Sysroot path for native linking. |
-| `MOLT_CROSS_SYSROOT` | Sysroot path for cross-compilation. |
-| `MOLT_CROSS_CC` | Cross-compiler path for cross-compilation. |
-| `MOLT_WASM_CC` | WASM C/C++ compiler command for source-plan extension builds. It is preferred over `MOLT_CROSS_CC` for WASM source-extension custody and must compile a tiny WASI probe including `<errno.h>` before upstream package compilation starts. |
-| `WASI_SYSROOT` / `WASI_SDK_PATH` | WASI headers/libs for clang-based WASM source-extension builds. `zig cc` can satisfy this through its bundled sysroot. |
-| `MOLT_ARCH` | Override target architecture. |
-| `MOLT_MACOSX_DEPLOYMENT_TARGET` | macOS deployment target version. |
-
-### Backend / Codegen
-
-| Variable | Description |
-|----------|-------------|
-| `MOLT_BACKEND_OPT_LEVEL` | Backend optimization level. |
-| `MOLT_BACKEND_REGALLOC_ALGORITHM` | Register allocation algorithm. |
-| `MOLT_BACKEND_ENABLE_VERIFIER` | Enable backend IR verification. |
-| `MOLT_BACKEND_PROFILE` | Backend build profile override. |
-| `MOLT_BACKEND_DAEMON` | Set to `0` to disable the backend daemon. |
-| `MOLT_BACKEND_DAEMON_SOCKET` | Override the daemon socket path. |
-| `MOLT_BACKEND_DAEMON_START_TIMEOUT` | Timeout for daemon startup. |
-| `MOLT_BACKEND_DAEMON_REQUEST_LIMIT_BYTES` | Max daemon request payload bytes. |
-| `MOLT_BACKEND_DAEMON_MAX_JOBS` | Max jobs accepted in one daemon request. |
-| `MOLT_BACKEND_DAEMON_CACHE_MB` | Max in-daemon object cache size in MiB. |
-| `MOLT_DISABLE_STRUCT_ELIDE` | Set to `1` to disable struct elision optimization. |
-| `MOLT_DEV_LINKER` | Override the linker selection (`auto`, `mold`, `lld`). |
-| `MOLT_USE_SCCACHE` | sccache mode (`auto`, `0`, `1`). |
-
-### WASM
-
-| Variable | Description |
-|----------|-------------|
-| `MOLT_WASM_DATA_BASE` | WASM data segment base address. |
-| `MOLT_WASM_MIN_PAGES` | Minimum WASM memory pages. |
-| `MOLT_WASM_LINK` | Set to `1` to enable WASM linking. |
-| `MOLT_WASM_TABLE_BASE` | WASM table base index. |
-| `MOLT_WASM_RUNTIME_DIR` | Directory for WASM runtime artifacts. |
-| `MOLT_WASM_CARGO_PROFILE` | Cargo profile for WASM runtime build. |
-| `MOLT_WASM_LINKED` | Set to `0` to disable linked WASM output. |
-| `MOLT_EXT_ROOT` | Developer/DX artifact root used for caches, target dirs, diff roots, and benchmark scratch space. |
-
-### Frontend / Midend
-
-| Variable | Description |
-|----------|-------------|
-| `MOLT_FRONTEND_TIMINGS` | Enable frontend phase timing output. |
-| `MOLT_FRONTEND_PHASE_TIMEOUT` | Timeout for individual frontend phases. |
-| `MOLT_FRONTEND_PARALLEL_MODULES` | Maximum parallel module workers (`auto` by default; `0` disables, `1` selects auto, explicit counts start at `2`). Auto and numeric values are capped by CPU count and live available memory, including Linux container/cgroup limits; invalid values fail closed. |
-| `MOLT_FRONTEND_PARALLEL_MIN_MODULES` | Minimum module count to trigger parallelism. |
-| `MOLT_MIDEND_PROFILE` | Override midend optimization profile. |
-| `MOLT_MIDEND_BUDGET_MS` | Midend telemetry budget in milliseconds; never controls pass selection. |
-| `MOLT_MIDEND_WORK_BUDGET` | Deterministic midend work-unit budget override for pass degradation. |
-
-### Diagnostics
-
-| Variable | Description |
-|----------|-------------|
-| `MOLT_BUILD_DIAGNOSTICS` | Enable build diagnostics (`1` or `true`). |
-| `MOLT_BUILD_DIAGNOSTICS_FILE` | Path for diagnostics JSON output. |
-| `MOLT_BUILD_DIAGNOSTICS_VERBOSITY` | Diagnostics detail level. |
-| `MOLT_BUILD_ALLOCATIONS` | Enable allocation tracking. |
-
-Build diagnostics use timing_scope = "build_preamble_to_terminal_result".
-The monotonic interval starts in the build preamble and ends after the selected
-artifact's link checks, finalization, validation and publication, plus requested
-artifact analysis. Native object publication and an optional WASM snapshot header
-are included. A reused native link still has a link phase for planning and receipt
-checks; measured finalization appears as seal.
-
-The same terminal payload is embedded in build-result JSON and written to the
-diagnostics file. Link and finalization failures retain their original messages
-and return codes. Earlier failures that already emitted an error flush available
-diagnostics separately, without emitting another JSON error. Failures before the
-diagnostics context exists have no timing receipt.
-
-Diagnostic generation and publication are attempted once. If they fail after a
-build failure, the primary error and return code are preserved; the reporting
-failure appears as `data.diagnostics_error`, or on stderr when the original JSON
-error was already emitted. If artifact production succeeded but requested
-diagnostics fail, the command emits one error result and returns nonzero while
-retaining the published artifact. Success JSON is emitted only after diagnostic
-publication succeeds. No retry or second snapshot is performed.
-
-The interval excludes interpreter startup/imports, command parsing before the
-preamble, compiler-identity enrichment and diagnostic serialization/output after
-the cutoff, and cleanup after reporting. Use the outer process wall time for
-end-to-end command latency. phase_sec is a sequential partition;
-phase_attribution includes overlapping aggregates, aliases and nested WASM
-timings, so its shares must not be added. Diagnostics disabled skips both
-artifact analysis and compiler-identity probes used only for reporting.
-
-For linked WASM, `wasm_reloc_preflight` measures the relocatable runtime's
-metadata admission before the pipeline timer begins. Its operation count is
-`wasm_reloc_preflight_invocations`; an admitted relocatable input is checked
-once per link operation. This time is outside `wasm_link_total` and is retained
-when admission fails. `wasm_link_core` remains a residual pipeline bucket,
-including work other than the linker process itself.
-
-### Timeouts
-
-| Variable | Description |
-|----------|-------------|
-| `MOLT_CARGO_TIMEOUT` | Cargo build timeout. |
-| `MOLT_BACKEND_TIMEOUT` | Backend compilation timeout. |
-| `MOLT_LINK_TIMEOUT` | Linker timeout. |
-
-### Memory Guard
-
-| Variable | Description |
-|----------|-------------|
-| `MOLT_MEMORY_GUARD` | Legacy disable knob; ignored by mandatory harness custody. Use explicit `*_MAX_*` limits or timeouts for deliberate narrower investigations. |
-| `*_TIMEOUT_SEC` / `MOLT_TEST_PROCESS_TIMEOUT_SEC` | Guarded command wall-clock timeout. |
-| `*_KEEPALIVE_SEC` / `MOLT_SUBPROCESS_KEEPALIVE_SECS` | Interval for streamed guarded-command progress lines. |
-| `MOLT_MEMORY_GUARD_TERMINATION_WAIT_SEC` | Bounded wait after guard termination before reporting an un-settled process tree. |
-| `*_CHILD_RLIMIT_GB` / `MOLT_CHILD_RLIMIT_GB` | Direct-child `RLIMIT_RSS` backstop; use `0` only to disable that kernel layer while recursive RSS/tree/global telemetry remains authoritative. |
-
-### Registry / Publishing
-
-| Variable | Description |
-|----------|-------------|
-| `MOLT_REGISTRY_TOKEN` | Bearer token for registry authentication. |
-| `MOLT_REGISTRY_USER` | Username for basic auth to registry. |
-| `MOLT_REGISTRY_PASSWORD` | Password for basic auth to registry. |
-| `MOLT_REGISTRY_TIMEOUT` | Registry request timeout in seconds. |
-| `MOLT_CODESIGN_IDENTITY` | Code signing identity for macOS codesign. |
-| `MOLT_COSIGN_TLOG` | Enable transparency log upload for cosign. |
-
-### Testing
-
-| Variable | Description |
-|----------|-------------|
-| `MOLT_REGRTEST_CPYTHON_DIR` | Path to CPython source for regression tests. |
+The `molt` CLI inspects the process environment on start. An unknown `MOLT_*`
+name prints a warning with close matches; a retired name is an error that
+names the replacement, because Molt keeps no aliases. On Windows the
+inspection is case-insensitive, matching the platform; elsewhere a
+lower-case spelling is reported as unread.
 
 ---
 
