@@ -407,6 +407,12 @@ reconstructing host flags or admitting every installed linker. Receipts retain
 each unit's selection provenance and frozen images; verification rehashes those
 images without repeating compiler selection. Missing custody fails before the
 requested build rather than falling back to PATH changes or copied aliases.
+Each synthetic target and host proc-macro crate declares its own empty Cargo
+workspace. Owner-selected scratch can therefore live below an enclosing source
+workspace without joining or changing its members; Cargo still reads the
+original invocation's configuration. A failed capture reports the child's exit
+status and complete stderr in the surfaced error, and retains both streams and
+the exact command in the existing capture diagnostic.
 Rust command-debug output may prefix the quoted driver with quoted environment
 assignments (including Linux `LC_ALL` and `PATH`). Decode those assignments before
 selecting the driver argv in both target and host-unit probes; assignment-only,

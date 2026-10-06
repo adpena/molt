@@ -51,12 +51,19 @@ _COMMANDS = CommandExecutor.for_file(__file__)
 
 
 class RustLinkCaptureError(ValueError):
-    """Compact failure with full probe transcripts for the queue's existing CAS."""
+    """Child failure details with full probe transcripts for the existing CAS."""
 
     def __init__(self, message: str, *, unit: str, probes: list[dict[str, object]]):
         unit_probes = [probe for probe in probes if probe.get("unit") == unit]
         phase = str(unit_probes[-1]["phase"]) if unit_probes else "configuration"
-        super().__init__(f"Rust linker capture {unit}/{phase}: {message}")
+        last_probe = unit_probes[-1] if unit_probes else {}
+        self.returncode = last_probe.get("returncode")
+        self.stderr = str(last_probe.get("stderr", ""))
+        detail = f"Rust linker capture {unit}/{phase}: {message}"
+        if self.returncode not in (None, 0):
+            detail += f" (exit status {self.returncode})\nstderr:\n"
+            detail += self.stderr or "(empty)"
+        super().__init__(detail)
         self.diagnostic = {
             "schema": "molt.proof-rust-link-capture-failure.v1",
             "unit": unit,
@@ -900,6 +907,10 @@ def _capture_rust_link_unit(
             manifest.write_text(
                 '[package]\nname="molt_link_capture"\nversion="0.0.0"\n'
                 'edition="2024"\npublish=false\n\n'
+                # Owner-selected TMPDIR can be below another Cargo workspace.
+                # Each probe owns its workspace rather than becoming an
+                # unlisted member of the enclosing project's workspace.
+                + "[workspace]\n\n"
                 + target_table
                 + "\n[features]\n"
                 + feature_table
@@ -979,11 +990,7 @@ def _capture_rust_link_unit(
             probes=probes,
         )
         if metadata.returncode != 0:
-            tail = (metadata.stderr or metadata.stdout or "").strip().splitlines()[-6:]
-            raise ValueError(
-                "selected Rust sysroot metadata command failed "
-                f"(exit {metadata.returncode}): " + " | ".join(tail)
-            )
+            raise ValueError("selected Rust sysroot metadata command failed")
         if cargo is not None:
             reported = metadata.stdout.strip()
             if reported and not Path(reported).is_absolute():
