@@ -23,6 +23,7 @@ from tools.memory_guard_core import cargo_quarantine as cargo
 from tools.memory_guard_core.process_model import process_identity
 from tests.process_guard_common import (
     close_owned_test_process,
+    run_custody_subject_process,
     start_owned_test_process,
 )
 
@@ -425,6 +426,89 @@ def test_observed_profile_recovery_preserves_other_profiles_and_old_evidence(
     )
 
 
+def test_observed_profile_recovery_preserves_triple_profiles_and_dependencies(
+    tmp_path,
+):
+    target = tmp_path / "target"
+    owned = unit(target)
+    triple = unit(target / "aarch64-apple-darwin", "debug")
+    dependency = target / "dev-fast" / "deps" / "libmolt.rlib"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_text("dependency", encoding="utf-8")
+    receipt = recover(target, (observation(owned),))
+    assert receipt.errors == () and receipt.ownership_status == "quarantined"
+    assert not owned.exists() and triple.exists() and dependency.exists()
+    assert (
+        Path(receipt.quarantine_dir) / "dev-fast" / "incremental" / owned.name
+    ).is_dir()
+    payload = json.loads(Path(receipt.receipt_path).read_text(encoding="utf-8"))
+    assert payload["reason"] == "timeout"
+    assert payload["target_dir"] == str(target)
+    assert payload["command"] == ["cargo", "test", "--profile", "dev-fast"]
+    assert [move["original_path"] for move in payload["moved_paths"]] == [
+        str(owned.parent)
+    ]
+
+
+def test_target_root_recovery_preserves_session_targets_and_old_evidence(tmp_path):
+    target = tmp_path / "target"
+    owned = unit(target, "release-fast")
+    session = unit(target / "sessions" / "proof-rust", "debug")
+    session_triple = unit(
+        target / "sessions" / "proof-wasm" / "wasm32-wasip1", "release-output"
+    )
+    evidence = target / ".molt_state" / "quarantine" / "cargo_incremental" / "old"
+    old_root = unit(evidence, "debug")
+    old_session = unit(
+        target / "sessions" / "proof-wasm" / evidence.relative_to(target), "debug"
+    )
+    receipt = recover(target, (observation(owned),))
+    assert receipt.errors == () and receipt.ownership_status == "quarantined"
+    assert [Path(move.original_path) for move in receipt.moved_paths] == [owned.parent]
+    assert not owned.exists()
+    assert session.exists() and session_triple.exists()
+    assert old_root.exists() and old_session.exists()
+
+
+def test_explicit_session_target_recovery_preserves_sibling_sessions(tmp_path):
+    sessions = tmp_path / "target" / "sessions"
+    target = sessions / "proof-rust"
+    owned = unit(target, "debug")
+    sibling = unit(sessions / "proof-wasm", "debug")
+    receipt = recover(target, (observation(owned),))
+    assert receipt.errors == () and receipt.ownership_status == "quarantined"
+    assert [Path(move.original_path) for move in receipt.moved_paths] == [owned.parent]
+    assert not owned.exists() and sibling.exists()
+
+
+def test_recovery_never_prunes_older_quarantine_evidence(tmp_path):
+    target = tmp_path / "target"
+    parent = target / ".molt_state" / "quarantine" / "cargo_incremental"
+    stale_names = [f"stale-{index}" for index in range(3)]
+    for index, name in enumerate(stale_names):
+        (parent / name).mkdir(parents=True)
+        # Oldest first: a count-based pruner would choose these.
+        os.utime(parent / name, (600 + index, 600 + index))
+    owned = unit(target, "debug")
+    observed = (observation(owned),)
+    with patch.object(cargo, "_observed_compilers_closed", return_value=True):
+        receipt = cargo._quarantine_cargo_incremental_state(
+            reason="timeout",
+            target_dir=target,
+            command=["cargo", "build"],
+            cwd=tmp_path,
+            observations=observed,
+            eligible_observations=frozenset(observed),
+            descendants_closed=True,
+            retention_keep=2,
+        )
+    assert receipt.ownership_status == "quarantined"
+    assert receipt.pruned_quarantine_dirs == ()
+    assert sorted(path.name for path in parent.iterdir()) == sorted(
+        [*stale_names, Path(receipt.quarantine_dir).name]
+    )
+
+
 @pytest.mark.parametrize("lock_name", [".cargo-lock", ".cargo-build-lock"])
 def test_active_coordinate_defers_recovery_without_moving_any_units(
     tmp_path, lock_name
@@ -590,6 +674,32 @@ def test_live_or_unknown_compiler_birth_never_mutates_profile(tmp_path, monkeypa
         receipt = recover(target, (observation(owned),), assume_closed=False)
         assert owned.exists() and receipt.ownership_status == "deferred"
         assert receipt.moved_paths == ()
+
+
+def test_compiler_closure_observation_may_spawn_like_the_darwin_sampler(
+    tmp_path, monkeypatch
+):
+    # The Darwin process snapshot runs ps. File-lock custody rejects a fork
+    # inside a pinned mutation, so closure must be observed before any pin.
+    from tools.memory_guard_core import process_model
+
+    target = tmp_path / "target"
+    owned = unit(target)
+    spawned = []
+
+    def spawning_snapshot():
+        # The raw fork is the subject: it must be admissible where closure is
+        # observed, exactly as the Darwin sampler's ps launch must be.
+        child = run_custody_subject_process([sys.executable, "-c", "pass"], timeout=60)
+        spawned.append(child.returncode)
+        return {}
+
+    monkeypatch.setattr(process_model, "sample_processes", spawning_snapshot)
+    monkeypatch.setattr(cargo, "_observed_pid_is_definitely_closed", lambda pid: True)
+    receipt = recover(target, (observation(owned),), assume_closed=False)
+    assert spawned == [0]
+    assert receipt.errors == () and receipt.ownership_status == "quarantined"
+    assert not owned.exists()
 
 
 @pytest.mark.parametrize("profile", ["debug", "incremental"])

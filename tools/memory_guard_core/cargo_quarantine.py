@@ -833,6 +833,22 @@ def _quarantine_cargo_incremental_state(
                 raise ValueError("Cargo target coordinate is active; recovery deferred")
             handles.append((lock_path, handle))
         lock_phase_finished = time.monotonic()
+        # Compiler closure is admission, not mutation: observe it while the
+        # coordinate locks are held but before any handle is pinned. A process
+        # sampler may spawn (Darwin runs ps), and file-lock custody rejects a
+        # fork inside a pinned mutation, which would defer every recovery.
+        closure_attempts += 1
+        compilers_closed = _observed_compilers_closed(tuple(eligible_observations))
+        admission_finished = time.monotonic()
+        while not compilers_closed and time.monotonic() < lock_deadline:
+            time.sleep(min(0.025, max(0.0, lock_deadline - time.monotonic())))
+            closure_attempts += 1
+            compilers_closed = _observed_compilers_closed(tuple(eligible_observations))
+            admission_finished = time.monotonic()
+        if not compilers_closed:
+            raise ValueError(
+                "observed compiler remains live or unknown; recovery deferred"
+            )
         with contextlib.ExitStack() as pins:
             for lock_path, handle in handles:
                 pins.enter_context(
@@ -847,21 +863,6 @@ def _quarantine_cargo_incremental_state(
                     raise ValueError(
                         "Cargo lock path identity changed; recovery deferred"
                     )
-            closure_attempts += 1
-            compilers_closed = _observed_compilers_closed(tuple(eligible_observations))
-            admission_finished = time.monotonic()
-            while not compilers_closed and time.monotonic() < lock_deadline:
-                time.sleep(min(0.025, max(0.0, lock_deadline - time.monotonic())))
-                closure_attempts += 1
-                compilers_closed = _observed_compilers_closed(
-                    tuple(eligible_observations)
-                )
-                admission_finished = time.monotonic()
-            if not compilers_closed:
-                raise ValueError(
-                    "observed compiler remains live or unknown; recovery deferred"
-                )
-            validate_lock_paths()
             parent = _cargo_quarantine_parent(target_dir)
             if not parent.resolve().is_relative_to(target_dir.resolve()):
                 raise ValueError("quarantine destination escapes target authority")
