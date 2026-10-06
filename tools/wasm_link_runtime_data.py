@@ -57,15 +57,22 @@ class SplitRuntimeDataAliasPlan:
 
 
 def _canonical_split_runtime_required_exports(
-    runtime_data: bytes, *, facts_provider: WasmFactsProvider
+    runtime_data: bytes,
+    *,
+    runtime_imports: Sequence[str],
+    facts_provider: WasmFactsProvider,
 ) -> set[str]:
-    """Validate and return the complete generated split-runtime function ABI."""
+    """Validate and return the deploy runtime's complete generated function ABI.
+
+    ``runtime_imports`` is the generated ABI of the exact runtime build being
+    deployed (``RuntimeWasmGeneration.shared_runtime_import_names``): the full
+    registry narrowed only by that build's own feature gates and target.
+    """
 
     observed = set(facts_provider(runtime_data).function_exports)
-    required_imports = _runtime_exports.wasm_runtime_import_names()
     missing = _runtime_exports.wasm_split_runtime_missing_required_exports(
         observed,
-        required_imports,
+        runtime_imports,
     )
     if missing:
         raise ValueError(

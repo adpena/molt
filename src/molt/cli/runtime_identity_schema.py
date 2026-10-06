@@ -858,6 +858,14 @@ class RuntimeBuildIdentity(Mapping[str, object]):
         toolchain = cast(Mapping[str, object], compilation["toolchain"])
         return cast(str, toolchain["effective_target"])
 
+    @property
+    def runtime_features(self) -> tuple[str, ...]:
+        """The recorded Cargo feature request, including its default marker."""
+        family = cast(Mapping[str, object], self.payload["family"])
+        compilation = cast(Mapping[str, object], family["compile"])
+        configuration = cast(Mapping[str, object], compilation["common_config"])
+        return tuple(cast(Sequence[str], configuration["runtime_features"]))
+
     def __post_init__(self) -> None:
         frozen = _freeze_json(self.payload)
         _validated_runtime_build_payload(

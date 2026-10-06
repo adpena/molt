@@ -482,9 +482,8 @@ def runtime_identity_source_facts(
     """The feature set and recorded source tree of one runtime build identity."""
     family = cast(Mapping[str, object], identity.payload["family"])
     compilation = cast(Mapping[str, object], family["compile"])
-    configuration = cast(Mapping[str, object], compilation["common_config"])
     return (
-        tuple(cast(Sequence[str], configuration["runtime_features"])),
+        identity.runtime_features,
         cast(Mapping[str, object], compilation["sources"]),
     )
 

@@ -3,9 +3,13 @@ from __future__ import annotations
 import ast
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable
+from typing import Collection, Iterable
 
 from molt._intrinsic_symbols import intrinsic_runtime_symbol_name
+from molt._runtime_feature_gates import (
+    link_affecting_feature_gate_for_symbol,
+    runtime_symbol_available_on_target,
+)
 from molt.source_root import compiler_source_root
 from molt._wasm_abi_generated import (
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_BY_SPLIT_EXPORT_NAME,
@@ -240,6 +244,29 @@ def _runtime_import_fallback_exports() -> dict[str, tuple[str, ...]]:
 @lru_cache(maxsize=1)
 def wasm_runtime_import_names() -> tuple[str, ...]:
     return tuple(sorted(set(WASM_IMPORT_REGISTRY)))
+
+
+def wasm_runtime_import_names_for_features(
+    enabled_features: Collection[str], *, target_triple: str
+) -> tuple[str, ...]:
+    """The generated runtime imports one runtime build actually defines.
+
+    The registry is the complete ABI. A runtime built with a smaller stdlib
+    tier, or for a target without a provider, omits a gated intrinsic exactly
+    when its generated link-affecting feature gate is disabled or the target is
+    excluded; every other generated import remains a hard obligation.
+    """
+    enabled = frozenset(enabled_features)
+    selected: list[str] = []
+    for name in wasm_runtime_import_names():
+        symbol = _runtime_export_name_or_fail(name)
+        if not runtime_symbol_available_on_target(symbol, target_triple=target_triple):
+            continue
+        feature = link_affecting_feature_gate_for_symbol(symbol)
+        if feature is not None and feature not in enabled:
+            continue
+        selected.append(name)
+    return tuple(selected)
 
 
 def _runtime_owned_module_path(repo_root: Path, module_name: str) -> Path | None:

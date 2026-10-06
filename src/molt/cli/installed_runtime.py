@@ -449,9 +449,7 @@ def _common_config(identity: RuntimeBuildIdentity) -> Mapping[str, object]:
 def _require_features(
     cell: InstalledRuntimeCell, identity: RuntimeBuildIdentity
 ) -> None:
-    recorded = sorted(
-        set(cast(Sequence[str], _common_config(identity)["runtime_features"]))
-    )
+    recorded = sorted(set(identity.runtime_features))
     if recorded != list(cell.key["runtime_features"]):
         raise _runtime_contract.InstalledRuntimeError(
             f"installed runtime cell {cell.id} build features differ from its key"

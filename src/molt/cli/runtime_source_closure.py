@@ -4,10 +4,10 @@ import os
 from pathlib import Path
 
 from molt.cli.cargo_source_closure import _cargo_crate_source_closure
+from molt.cli.runtime_features import RUNTIME_DEFAULT_FEATURE_MARKERS
 
 
 _RUNTIME_FACADE_CRATE = Path("runtime/molt-runtime")
-_RUNTIME_SOURCE_FEATURE_MARKERS = frozenset({"default-features", "no-default-features"})
 
 
 def _runtime_source_features(runtime_features: tuple[str, ...]) -> tuple[str, ...]:
@@ -16,7 +16,7 @@ def _runtime_source_features(runtime_features: tuple[str, ...]) -> tuple[str, ..
             {
                 feature
                 for feature in runtime_features
-                if feature and feature not in _RUNTIME_SOURCE_FEATURE_MARKERS
+                if feature and feature not in RUNTIME_DEFAULT_FEATURE_MARKERS
             }
         )
     )

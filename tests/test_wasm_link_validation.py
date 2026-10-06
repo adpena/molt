@@ -975,23 +975,20 @@ def _run_wasm_ld_with_rust_facts(*args, **kwargs):  # type: ignore[no-untyped-de
                 ((planned_base, planned_base + 1),),
             ),
         )
-        runtime_import_names = tuple(
-            import_name
-            for export_name in wasm_link_format._collect_function_exports(
-                Path(args[1]).read_bytes()
-            )
-            if (
-                import_name
-                := wasm_link_runtime_data.wasm_split_runtime_import_name_for_export(
-                    export_name
-                )
-            )
-            is not None
+        # The synthetic runtime's own build ABI: every generated import whose
+        # split export it actually defines.
+        runtime_exports = set(
+            wasm_link_format._collect_function_exports(Path(args[1]).read_bytes())
         )
-        patch.setattr(
-            wasm_link_runtime_data._runtime_exports,
-            "wasm_runtime_import_names",
-            lambda: runtime_import_names,
+        registry = wasm_link_runtime_data._runtime_exports
+        kwargs.setdefault(
+            "deploy_runtime_imports",
+            tuple(
+                name
+                for name in registry.wasm_runtime_import_names()
+                if registry.wasm_split_runtime_export_name_for_import(name)
+                in runtime_exports
+            ),
         )
         return _REAL_RUN_WASM_LD(*args, **kwargs)
 
@@ -6649,9 +6646,7 @@ def test_run_wasm_ld_split_runtime_uses_linked_and_deploy_import_namespaces(
     assert "__trunctfdf2" not in allowlists[1]
 
 
-def test_canonical_split_runtime_required_exports_uses_generated_authority(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_canonical_split_runtime_required_exports_uses_generated_authority() -> None:
     module = _build_exported_runtime_module_many(
         [
             "molt_exception_pending",
@@ -6661,17 +6656,14 @@ def test_canonical_split_runtime_required_exports_uses_generated_authority(
         ]
     )
 
-    monkeypatch.setattr(
-        wasm_link_runtime_data._runtime_exports,
-        "wasm_runtime_import_names",
-        lambda: (
+    exports = wasm_link_runtime_data._canonical_split_runtime_required_exports(
+        module,
+        runtime_imports=(
             "object_field_get",
             "object_field_set",
             "guarded_field_get",
         ),
-    )
-    exports = wasm_link_runtime_data._canonical_split_runtime_required_exports(
-        module, facts_provider=_facts_provider
+        facts_provider=_facts_provider,
     )
 
     assert exports == {
@@ -6681,19 +6673,16 @@ def test_canonical_split_runtime_required_exports_uses_generated_authority(
     }
 
 
-def test_canonical_split_runtime_required_exports_rejects_missing_generated_export(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        wasm_link_runtime_data._runtime_exports,
-        "wasm_runtime_import_names",
-        lambda: ("object_field_get", "object_field_set"),
-    )
+def test_canonical_split_runtime_required_exports_rejects_missing_generated_export() -> (
+    None
+):
     module = _build_exported_runtime_module("molt_object_field_get")
 
     with pytest.raises(ValueError, match="molt_object_field_set"):
         wasm_link_runtime_data._canonical_split_runtime_required_exports(
-            module, facts_provider=_facts_provider
+            module,
+            runtime_imports=("object_field_get", "object_field_set"),
+            facts_provider=_facts_provider,
         )
 
 
@@ -11060,8 +11049,10 @@ def test_complete_generated_runtime_registry_is_validated_before_root_filtering(
     assert None not in generated
     assert generated & wasm_link_format._ESSENTIAL_EXPORTS
     module = _build_exported_runtime_module_many(sorted(generated))
+    runtime_imports = registry.wasm_runtime_import_names()
     roots = wasm_link_runtime_data._canonical_split_runtime_required_exports(
         module,
+        runtime_imports=runtime_imports,
         facts_provider=_facts_provider,
     )
     assert roots == generated - wasm_link_format._ESSENTIAL_EXPORTS - {
@@ -11071,6 +11062,7 @@ def test_complete_generated_runtime_registry_is_validated_before_root_filtering(
     with pytest.raises(ValueError, match=omitted):
         wasm_link_runtime_data._canonical_split_runtime_required_exports(
             _build_exported_runtime_module_many(sorted(generated - {omitted})),
+            runtime_imports=runtime_imports,
             facts_provider=_facts_provider,
         )
 
