@@ -17,6 +17,7 @@ from molt.capability_manifest import CapabilityManifest, resolve_runtime_policy_
 from molt.cli import backend_binary as cli_backend_binary
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
+from molt.cli.native_link_plan import resolve_native_target_spec
 from molt.exact_json import canonical_json_sha256
 from tests.cli.process_guard import run_cli_test_process
 from tests.cli.native_link_test_support import static_archive_bytes
@@ -1827,7 +1828,10 @@ def test_validate_shared_stdlib_cache_contract_preserves_matching_key_despite_ta
 ) -> None:
     project_root = tmp_path
     target_root = project_root / "target"
-    target_triple = "aarch64-apple-darwin"
+    # The host's own object format: every host's native symbol reader must be
+    # able to read the archive. A cross-format archive (Mach-O on a Linux host
+    # with only GNU nm) correctly fails closed in symbol inspection.
+    target_triple = resolve_native_target_spec(None).triple
     cache_root = project_root / ".molt_cache"
     (project_root / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
     cache_root.mkdir(parents=True)

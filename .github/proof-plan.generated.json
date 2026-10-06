@@ -317,7 +317,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "ecdf513720afd2cae1b23b2645eb26a02ce3ca415b5a7cd6029c6ef4417597cf",
+  "authority_sha256": "df6ebe44b5fc6704e523285f2f83bd810d2e2460ca5ea11d300db112330f7079",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -1524,6 +1524,31 @@
         "main"
       ],
       "timeout_seconds": 120,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/check_commit_attribution.py",
+        "--introduced"
+      ],
+      "cache_domain": "none",
+      "cell": "linux-x86_64-py312-repository-policy",
+      "dependencies": [],
+      "family": "repository_policy",
+      "id": "repository.commit-attribution",
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_seconds": 60,
       "toolchains": [
         "python",
         "uv"
@@ -4580,7 +4605,7 @@
         "headroom_seconds": 180,
         "projected_makespan_seconds": 3420,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 3165
+          "repository-policy": 3180
         }
       },
       "rust": {

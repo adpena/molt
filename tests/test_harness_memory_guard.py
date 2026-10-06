@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 import molt.dx as molt_dx
+from molt import custody_layout
 from molt.memory_guard_paths import harness_guard_artifact_dir
 from tools import harness_memory_guard
 
@@ -118,7 +119,9 @@ def test_harness_default_outputs_follow_guard_state_authority(
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(harness_memory_guard, "_REPO_ROOT", repo)
     env = {"MOLT_GUARD_PROFILE": "incident"}
-    expected = repo / "tmp" / "harness_memory_guard"
+    expected = (
+        custody_layout.unconfigured_state_root(repo) / "tmp" / "harness_memory_guard"
+    )
     if root_kind == "external":
         env["MOLT_EXT_ROOT"] = str(external)
         expected = external / "tmp" / "harness_memory_guard"
@@ -468,9 +471,16 @@ def test_limits_from_env_merges_parent_guard_controls(monkeypatch) -> None:
     monkeypatch.setenv("MOLT_MEMORY_GUARD", "0")
     monkeypatch.setenv("MOLT_MAX_PROCESS_RSS_GB", "6")
 
+    # Pin the host memory facts: the live clamp would otherwise cap the explicit
+    # 6 GB on a small host (a 12 GiB VM yielded 5.07).
     limits = harness_memory_guard.limits_from_env(
         "MOLT_BENCH",
-        {"PATH": "/usr/bin", "MOLT_BENCH_MEMORY_GUARD": "1"},
+        {
+            "PATH": "/usr/bin",
+            "MOLT_BENCH_MEMORY_GUARD": "1",
+            "MOLT_BENCH_TOTAL_MEMORY_GB": "64",
+            "MOLT_BENCH_MEM_AVAILABLE_GB": "48",
+        },
     )
 
     assert limits.enabled is True
@@ -638,7 +648,7 @@ def test_timeout_from_env_zero_disables_default(monkeypatch) -> None:
     )
 
 
-def test_canonical_harness_env_installs_repo_local_defaults(tmp_path: Path) -> None:
+def test_canonical_harness_env_installs_unconfigured_defaults(tmp_path: Path) -> None:
     env = harness_memory_guard.canonical_harness_env(
         {"PATH": "/usr/bin"},
         repo_root=tmp_path,
@@ -650,10 +660,12 @@ def test_canonical_harness_env_installs_repo_local_defaults(tmp_path: Path) -> N
     )
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     assert env["MOLT_CACHE"] == str(tmp_path / ".molt_cache")
-    assert env["MOLT_DIFF_ROOT"] == str(tmp_path / "tmp" / "diff")
-    assert env["MOLT_DIFF_TMPDIR"] == str(tmp_path / "tmp")
+    # Scratch never lands inside the checkout; a plain clone's goes out of tree.
+    scratch = custody_layout.scratch_root(tmp_path, tmp_path)
+    assert env["MOLT_DIFF_ROOT"] == str(scratch / "diff")
+    assert env["MOLT_DIFF_TMPDIR"] == str(scratch)
     assert env["UV_CACHE_DIR"] == str(tmp_path / ".uv-cache")
-    assert env["TMPDIR"] == str(tmp_path / "tmp")
+    assert env["TMPDIR"] == str(scratch)
     assert env["MOLT_SESSION_ID"].startswith("guard-")
 
 
@@ -741,7 +753,7 @@ def test_execution_context_owns_env_limits_and_batch_kwargs(
     )
 
     assert context.prefix == "MOLT_BENCH"
-    assert context.env["TMPDIR"] == str(tmp_path / "tmp")
+    assert context.env["TMPDIR"] == str(custody_layout.scratch_root(tmp_path, tmp_path))
     assert context.limits.enabled is True
     kwargs = context.process_group_kwargs()
     assert kwargs["start_new_session"] is True

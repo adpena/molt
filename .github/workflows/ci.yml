@@ -29,9 +29,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      # Full history: the commit-attribution policy reads every commit the
+      # event introduces, and perf freshness checks real ancestry against the
+      # fetched origin/main.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Setup repository policy toolchains
         uses: ./.github/actions/setup-project
@@ -49,13 +53,6 @@ jobs:
 
       - name: Provision browser asset parser
         run: uv run python3 tools/bootstrap_browser_asset_graph.py
-
-      - name: Fetch performance freshness reference
-        run: |
-          if ! git fetch --no-tags --depth=1 origin main; then
-            echo "::error title=baseline_fetch_failed::Required origin/main freshness reference could not be fetched"
-            exit 1
-          fi
 
       - name: Execute repository policy partitions
         # Explicit CI provisioning; the generator itself never installs tools.
@@ -103,9 +100,6 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-
-      - name: Reject Claude attribution in this event's commits
-        run: python3 tools/check_commit_attribution.py --github-event
 
       - name: Classify changed paths
         id: paths

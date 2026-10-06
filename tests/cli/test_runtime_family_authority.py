@@ -262,7 +262,10 @@ def test_runtime_plan_locks_compiler_dependencies_before_rustc_passthrough(
             "native-static-libs",
         ),
         target=target,
-        env={"MOLT_SKIP_CARGO_LOCK": "1"},
+        # Explicit C tool selectors keep the wasm32 plan independent of whether
+        # this host provisioned the pinned WASI SDK.
+        env={"MOLT_SKIP_CARGO_LOCK": "1"}
+        | {name: "selected-" + name.lower() for name in ("CC", "CXX", "AR", "RANLIB")},
     )
     separator = plan.command.index("--")
     assert plan.command[:separator].count("--locked") == 1

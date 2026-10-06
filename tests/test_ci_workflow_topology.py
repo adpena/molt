@@ -705,7 +705,20 @@ def test_ci_heavy_jobs_are_path_classified() -> None:
         "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131" in ci_text
     )
     assert "== 'success' && 1 || 0" not in ci_text
-    assert ci_text.count("fetch-depth: 0") == 1
+    # Full history exactly where a job reads it: the path classifier diffs
+    # against the event base, and docs-gates runs the commit-attribution
+    # policy over every commit the event introduces.
+    jobs = yaml.safe_load(ci_text)["jobs"]
+    full_history = {
+        name
+        for name, job in jobs.items()
+        for step in job.get("steps", [])
+        if step.get("uses", "").startswith("actions/checkout@")
+        and step.get("with", {}).get("fetch-depth") == 0
+    }
+    assert full_history == {"classify-changes", "docs-gates"}
+    assert ci_text.count("fetch-depth: 0") == 2
+    assert "--depth=1" not in ci_text
 
 
 def test_ci_proof_families_are_admitted_independently() -> None:

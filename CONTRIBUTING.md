@@ -109,7 +109,8 @@ Molt expects production-grade changes, not opportunistic patches.
   drift gate and the `commit-msg` attribution policy.
 - Commit messages and pull requests carry no AI attribution: no
   `Co-Authored-By: Claude` trailer and no "Generated with Claude Code" footer.
-  The `commit-msg` hook and CI (`tools/check_commit_attribution.py`) reject them.
+  The `commit-msg` hook and CI's `repository_policy` family
+  (`tools/check_commit_attribution.py`) reject them.
 - Keep pre-commit hooks read-only. Formatting and automatic fixes must be run
   explicitly before staging so commit hooks cannot rewrite files mid-commit.
 - Use the canonical CLI DX surface for repo-wide proof only when making a
