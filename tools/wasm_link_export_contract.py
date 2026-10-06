@@ -209,9 +209,16 @@ def _strip_app_export_identity_markers(
     preserve_exports: set[str],
     facts_provider: WasmFactsProvider,
 ) -> bytes:
-    """Remove optimizer identity roots and reject any publication leak."""
+    """Remove optimizer identity roots and reject any publication leak.
 
-    updated = _strip_internal_exports(data, preserve_exports=preserve_exports)
+    Identity roots are always removed, even when the caller's keep set still
+    names them: the split-app keep set must carry them through the optimizer,
+    and must not also publish them.
+    """
+
+    updated = _strip_internal_exports(
+        data, preserve_exports=set(preserve_exports) - set(identity_exports)
+    )
     stripped = data if updated is None else updated
     leaked = sorted(
         set(identity_exports) & set(facts_provider(stripped).function_exports)
