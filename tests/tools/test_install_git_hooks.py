@@ -1,4 +1,4 @@
-"""Tests for tools/install_git_hooks.py — the idempotent pre-push drift-gate installer.
+"""Tests for tools/install_git_hooks.py — the idempotent managed-hook installer.
 
 Pins the invariants that keep the gate deployable without breaking commits:
 idempotence, --check semantics, foreign-hook preservation+chaining, uninstall
@@ -9,6 +9,7 @@ enable the pre-existing pre-commit type-check and block every commit).
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,11 @@ import tools.install_git_hooks as ig
 from tests.process_guard_common import run_guarded_test_process
 
 
-HOOK = Path(__file__).resolve().parents[2] / ".githooks" / "pre-push"
+HOOKS_DIR = Path(__file__).resolve().parents[2] / ".githooks"
+HOOK = HOOKS_DIR / "pre-push"
+COMMIT_MSG_HOOK = HOOKS_DIR / "commit-msg"
+LAUNCH = HOOKS_DIR / "molt-hook-launch.sh"
+PRE_PUSH = ig.HOOKS[0]
 _HOOK_RUNNER = r"""
 case "$OSTYPE" in
   msys*|cygwin*)
@@ -42,7 +47,8 @@ export PATH="$fake_bin:$PATH"
 export PYTHONHOME="foreign-python-home"
 export PYTHONNOUSERSITE="0"
 export PYTHONPATH="foreign-python-path"
-exec "$selected_bash" "$hook"
+shift 6
+exec "$selected_bash" "$hook" "$@"
 """
 
 
@@ -50,14 +56,16 @@ def _git_init(path: Path) -> None:
     run_guarded_test_process(["git", "init", "-q", str(path)], check=True)
 
 
-def _fake_source(tmp_path: Path) -> Path:
-    src = tmp_path / ".githooks" / "pre-push"
-    src.parent.mkdir(parents=True, exist_ok=True)
-    src.write_text(
-        "#!/usr/bin/env bash\n# molt-drift-gate-hook v1\necho gate; exit 0\n",
-        encoding="utf-8",
-    )
-    return src
+def _fake_sources(tmp_path: Path) -> Path:
+    """One fake source per managed hook, carrying that hook's marker."""
+    directory = tmp_path / ".githooks"
+    directory.mkdir(parents=True, exist_ok=True)
+    for hook in ig.HOOKS:
+        (directory / hook.name).write_text(
+            f"#!/usr/bin/env bash\n# {hook.marker} v1\necho {hook.name}; exit 0\n",
+            encoding="utf-8",
+        )
+    return directory
 
 
 def _write_executable(path: Path, text: str) -> None:
@@ -72,9 +80,14 @@ def _hook_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     fake_bin = tmp_path / "fake bin"
     capture = tmp_path / "uv launch.txt"
     (worktree / "tools").mkdir(parents=True)
-    (worktree / "tools" / "drift_harvest.py").write_text(
-        "raise AssertionError('fake uv must not execute the gate')\n",
-        encoding="utf-8",
+    for tool in ("drift_harvest.py", "check_commit_attribution.py"):
+        (worktree / "tools" / tool).write_text(
+            "raise AssertionError('fake uv must not execute the tool')\n",
+            encoding="utf-8",
+        )
+    (worktree / ".githooks").mkdir()
+    (worktree / ".githooks" / LAUNCH.name).write_text(
+        LAUNCH.read_text(encoding="utf-8"), encoding="utf-8", newline="\n"
     )
     (main / ".git").mkdir(parents=True)
     _write_executable(
@@ -107,6 +120,8 @@ def _run_hook(
     main: Path,
     fake_bin: Path,
     capture: Path,
+    hook: Path = HOOK,
+    args: Sequence[str] = (),
 ):
     bash = choose_bash()
     if bash is None:
@@ -118,21 +133,22 @@ def _run_hook(
             _HOOK_RUNNER,
             "molt-hook-test",
             str(fake_bin),
-            str(HOOK),
+            str(hook),
             str(worktree),
             str(main / ".git"),
             str(capture),
             bash,
+            *args,
         ],
         check=False,
     )
 
 
 def test_is_molt_hook_and_chained_wrapper():
-    assert ig._is_molt_hook("# molt-drift-gate-hook v1\n")
-    assert not ig._is_molt_hook("#!/bin/sh\necho other\n")
+    assert ig._is_molt_hook("# molt-drift-gate-hook v1\n", PRE_PUSH)
+    assert not ig._is_molt_hook("#!/bin/sh\necho other\n", PRE_PUSH)
     wrapped = ig._chained_wrapper(
-        "#!/usr/bin/env bash\n# molt-drift-gate-hook v1\nbody\n"
+        "#!/usr/bin/env bash\n# molt-drift-gate-hook v1\nbody\n", PRE_PUSH
     )
     # shebang stays first; the preserved foreign hook is invoked before the gate body
     assert wrapped.startswith("#!/usr/bin/env bash\n")
@@ -144,14 +160,15 @@ def test_install_idempotent_and_check(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     _git_init(repo)
-    monkeypatch.setattr(ig, "SOURCE", _fake_source(tmp_path))
+    monkeypatch.setattr(ig, "HOOKS_SOURCE_DIR", _fake_sources(tmp_path))
 
-    target = repo / ".git" / "hooks" / "pre-push"
     # Not installed yet -> --check fails.
     assert ig.install(check=True, uninstall=False, repo_root=repo) == 1
-    # Install.
+    # Install every managed hook.
     assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
-    assert ig._is_molt_hook(target.read_text(encoding="utf-8"))
+    for hook in ig.HOOKS:
+        target = repo / ".git" / "hooks" / hook.name
+        assert ig._is_molt_hook(target.read_text(encoding="utf-8"), hook)
     # Idempotent: re-run is a no-op success, and --check now passes.
     assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
     assert ig.install(check=True, uninstall=False, repo_root=repo) == 0
@@ -161,7 +178,7 @@ def test_foreign_hook_preserved_and_chained_then_restored(tmp_path, monkeypatch)
     repo = tmp_path / "repo"
     repo.mkdir()
     _git_init(repo)
-    monkeypatch.setattr(ig, "SOURCE", _fake_source(tmp_path))
+    monkeypatch.setattr(ig, "HOOKS_SOURCE_DIR", _fake_sources(tmp_path))
 
     hooks = repo / ".git" / "hooks"
     hooks.mkdir(parents=True, exist_ok=True)
@@ -171,7 +188,7 @@ def test_foreign_hook_preserved_and_chained_then_restored(tmp_path, monkeypatch)
     # Installing over a foreign hook preserves it as pre-push.local and chains it.
     assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
     installed = (hooks / "pre-push").read_text(encoding="utf-8")
-    assert ig._is_molt_hook(installed)
+    assert ig._is_molt_hook(installed, PRE_PUSH)
     assert "pre-push.local" in installed
     preserved = (hooks / "pre-push.local").read_text(encoding="utf-8")
     assert "FOREIGN" in preserved
@@ -181,8 +198,9 @@ def test_foreign_hook_preserved_and_chained_then_restored(tmp_path, monkeypatch)
     assert ig.install(check=True, uninstall=False, repo_root=repo) == 0
     assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
     assert (hooks / "pre-push").read_text(encoding="utf-8") == installed
-    ig.SOURCE.write_text(
-        ig.SOURCE.read_text(encoding="utf-8") + "# revised gate\n", encoding="utf-8"
+    PRE_PUSH.source.write_text(
+        PRE_PUSH.source.read_text(encoding="utf-8") + "# revised gate\n",
+        encoding="utf-8",
     )
     assert ig.install(check=True, uninstall=False, repo_root=repo) == 1
     assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
@@ -200,35 +218,46 @@ def test_uninstall_noop_when_absent(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     _git_init(repo)
-    monkeypatch.setattr(ig, "SOURCE", _fake_source(tmp_path))
+    monkeypatch.setattr(ig, "HOOKS_SOURCE_DIR", _fake_sources(tmp_path))
     # Nothing installed -> uninstall is a clean no-op.
     assert ig.install(check=False, uninstall=True, repo_root=repo) == 0
     assert not (repo / ".git" / "hooks" / "pre-push").exists()
 
 
-def test_hook_binds_worktree_startup_before_uv_without_project_sync() -> None:
-    source = HOOK.read_text(encoding="utf-8")
-    assert source.index("export PYTHONPATH=") < source.index("run_gate()")
-    assert 'PYTHONPATH="$python_root/src;$python_root"' in source
-    assert 'PYTHONPATH="$repo_root/src:$repo_root"' in source
-    assert 'cygpath -m "$repo_root"' in source
-    assert "unset PYTHONHOME" in source
+def test_hooks_bind_worktree_startup_before_uv_without_project_sync() -> None:
+    launch = LAUNCH.read_text(encoding="utf-8")
+    # One launcher binds startup imports to the invoking worktree, then uv runs.
+    assert launch.index("export PYTHONPATH=") < launch.index("molt_hook_uv_python()")
+    assert 'PYTHONPATH="$python_root/src;$python_root"' in launch
+    assert 'PYTHONPATH="$repo_root/src:$repo_root"' in launch
+    assert 'cygpath -m "$repo_root"' in launch
+    assert "unset PYTHONHOME" in launch
     uv_calls = [
         line.strip()
-        for line in source.splitlines()
+        for line in launch.splitlines()
         if line.strip().startswith("uv run ")
     ]
-    assert len(uv_calls) == 1
-    assert all(
-        "--no-project --offline --no-config --python " in line for line in uv_calls
-    )
-    assert all('python "$gate" --gate --no-fetch' in line for line in uv_calls)
-    assert not any(
-        line.strip().startswith('python "$gate"') for line in source.splitlines()
-    )
-    assert 'vpy="$main_root/.venv/Scripts/python.exe"' in source
-    assert 'vpy="$main_root/.venv/bin/python"' in source
-    assert '"$repo_root/.venv/' not in source
+    assert uv_calls == [
+        'uv run --no-project --offline --no-config --python "$vpy" python "$@"'
+    ]
+    assert 'vpy="$main_root/.venv/Scripts/python.exe"' in launch
+    assert 'vpy="$main_root/.venv/bin/python"' in launch
+    assert '"$repo_root/.venv/' not in launch
+    # Each hook sources that launcher and starts no Python of its own.
+    for hook, call in (
+        (HOOK, 'molt_hook_uv_python pre-push "$gate" --gate --no-fetch'),
+        (
+            COMMIT_MSG_HOOK,
+            'molt_hook_uv_python commit-msg "$checker" --message-file "$1"',
+        ),
+    ):
+        source = hook.read_text(encoding="utf-8")
+        assert '. "$launch"' in source
+        assert call in source
+        assert not any(
+            line.strip().startswith(("uv run ", "python "))
+            for line in source.splitlines()
+        )
 
 
 def test_hook_executes_uv_with_selected_worktree_startup_authority(
@@ -305,3 +334,81 @@ def test_hook_rejects_wrong_platform_interpreter_without_uv_fallback(
         completed.stderr
     )
     assert not capture.exists()
+
+
+def test_commit_msg_hook_runs_the_attribution_checker_on_the_message(
+    tmp_path: Path,
+) -> None:
+    worktree, main, fake_bin, capture = _hook_fixture(tmp_path)
+    native_python = (
+        main / ".venv" / "Scripts" / "python.exe"
+        if os.name == "nt"
+        else main / ".venv" / "bin" / "python"
+    )
+    _write_executable(native_python, "#!/usr/bin/env bash\nexit 99\n")
+
+    completed = _run_hook(
+        worktree=worktree,
+        main=main,
+        fake_bin=fake_bin,
+        capture=capture,
+        hook=COMMIT_MSG_HOOK,
+        args=(".git/COMMIT_EDITMSG",),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    argv = capture.read_text(encoding="utf-8").splitlines()[3:]
+    expected_root = worktree.as_posix() if os.name == "nt" else str(worktree)
+    assert argv[:5] == ["run", "--no-project", "--offline", "--no-config", "--python"]
+    assert argv[6:] == [
+        "python",
+        f"{expected_root}/tools/check_commit_attribution.py",
+        "--message-file",
+        ".git/COMMIT_EDITMSG",
+    ]
+
+
+def test_hooks_path_warning_only_when_it_shadows_another_directory(
+    tmp_path, monkeypatch, capsys
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_init(repo)
+    monkeypatch.setattr(ig, "HOOKS_SOURCE_DIR", _fake_sources(tmp_path))
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(repo, target_is_directory=True)
+    except OSError as exc:  # Windows without the symlink privilege
+        pytest.skip(f"host cannot create directory symlinks: {exc}")
+
+    # Same hooks directory spelled through a symlink: nothing is shadowed.
+    run_guarded_test_process(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "config",
+            "core.hooksPath",
+            str(alias / ".git" / "hooks"),
+        ],
+        check=True,
+    )
+    assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
+    assert "WARNING" not in capsys.readouterr().out
+
+    # A different directory really shadows the managed hooks.
+    run_guarded_test_process(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "config",
+            "core.hooksPath",
+            str(tmp_path / "elsewhere"),
+        ],
+        check=True,
+    )
+    for hook in ig.HOOKS:
+        (repo / ".git" / "hooks" / hook.name).unlink()
+    assert ig.install(check=False, uninstall=False, repo_root=repo) == 0
+    assert "WARNING: core.hooksPath=" in capsys.readouterr().out

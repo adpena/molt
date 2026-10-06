@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# molt-commit-attribution-hook v1  (managed by tools/install_git_hooks.py — do not rename this marker)
+# Repository policy: no commit is attributed to Claude or Anthropic (no
+# Co-Authored-By: Claude trailer, no "Generated with Claude Code" footer). CI
+# enforces the same rule over every pushed range; this hook catches it before
+# the commit exists. Both run tools/check_commit_attribution.py.
+set -uo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+checker="$repo_root/tools/check_commit_attribution.py"
+launch="$repo_root/.githooks/molt-hook-launch.sh"
+[ -f "$checker" ] && [ -f "$launch" ] || exit 0
+# shellcheck source=molt-hook-launch.sh
+. "$launch" || exit 1
+
+molt_hook_uv_python commit-msg "$checker" --message-file "$1"

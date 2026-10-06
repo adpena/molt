@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# molt-drift-gate-hook v1  (managed by tools/install_git_hooks.py — do not rename this marker)
+# molt-drift-gate-hook v2  (managed by tools/install_git_hooks.py — do not rename this marker)
 # Drift enforcement gate (P0). Worktree/branch sprawl and aged unlanded SIGNAL are
 # POISON — a 165-branch OneDrive .git had to be retired 2026-07-08. This blocks a
 # push when drift has accumulated so it MUST be harvested onto main and pruned.
@@ -15,42 +15,14 @@ fi
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 gate="$repo_root/tools/drift_harvest.py"
-[ -f "$gate" ] || exit 0
-# An installed interpreter may be shared, but startup imports belong to the
-# invoking worktree. Bind before Python/sitecustomize or editable installs run.
-common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || exit 1
-main_root="$(cd "$(dirname "$common_dir")" 2>/dev/null && pwd)" || exit 1
-case "$OSTYPE" in
-  msys*|cygwin*)
-    python_root="$(cygpath -m "$repo_root")" || exit 1
-    export PYTHONPATH="$python_root/src;$python_root"
-    vpy="$main_root/.venv/Scripts/python.exe"
-    ;;
-  *)
-    export PYTHONPATH="$repo_root/src:$repo_root"
-    vpy="$main_root/.venv/bin/python"
-    ;;
-esac
-export PYTHONNOUSERSITE=1
-unset PYTHONHOME
+launch="$repo_root/.githooks/molt-hook-launch.sh"
+[ -f "$gate" ] && [ -f "$launch" ] || exit 0
+# shellcheck source=molt-hook-launch.sh
+. "$launch" || exit 1
 
-run_gate() {
-  # --no-fetch: the push already contacts origin; skip a redundant/hang-prone
-  # fetch inside the hook. A stale origin/main only risks a benign false positive.
-  # uv owns every launch. No project sync, dependency resolution, or editable
-  # installation is permitted in a Git hook.
-  if ! command -v uv >/dev/null 2>&1; then
-    echo "pre-push: uv is required for the drift gate" >&2
-    return 1
-  fi
-  if [ ! -x "$vpy" ]; then
-    echo "pre-push: provision the common checkout's platform-native uv environment: $vpy" >&2
-    return 1
-  fi
-  uv run --no-project --offline --no-config --python "$vpy" python "$gate" --gate --no-fetch
-}
-
-if ! run_gate; then
+# --no-fetch: the push already contacts origin; skip a redundant/hang-prone
+# fetch inside the hook. A stale origin/main only risks a benign false positive.
+if ! molt_hook_uv_python pre-push "$gate" --gate --no-fetch; then
   echo ""
   echo "pre-push BLOCKED by drift gate. Harvest SIGNAL onto origin/main (use 3-way"
   echo "git merge/merge-tree, not git cherry) and prune landed/superseded worktrees:"

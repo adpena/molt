@@ -171,6 +171,13 @@ ALLOWLIST: tuple[AllowedRawSubprocessUse, ...] = (
         expected_count=2,
     ),
     AllowedRawSubprocessUse(
+        "tools/check_commit_attribution.py",
+        "_git",
+        "run",
+        "bounded git rev-list/log message metadata for the commit-attribution "
+        "policy; runs before the project environment exists",
+    ),
+    AllowedRawSubprocessUse(
         "tools/proof_plan.py",
         "_run_git",
         "check_output",

@@ -104,6 +104,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Reject Claude attribution in this event's commits
+        run: python3 tools/check_commit_attribution.py --github-event
+
       - name: Classify changed paths
         id: paths
         run: python3 tools/proof_plan.py --github-output "$GITHUB_OUTPUT"

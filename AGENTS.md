@@ -167,6 +167,9 @@ tests, measurements, and explicit user direction over stale prose.
 - Preserve unrelated files, credentials, external systems, and people. Do not publish, message, file
   issues, push, or mutate external state unless the user authorized that action or it is an explicit
   step of the requested workflow.
+- Never add Claude or other AI attribution to a commit or pull request: no `Co-Authored-By: Claude`
+  trailer and no "Generated with Claude Code" footer. `tools/check_commit_attribution.py` enforces
+  this in the `commit-msg` hook and in CI.
 - Never use destructive Git operations or broad filesystem cleanup without explicit authorization
   and verified targets.
 - Molt process cleanup may target only a live-proved Molt-owned child or worker. Never target Codex,
