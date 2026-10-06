@@ -49,10 +49,28 @@ PROBES = (
     "object::gc::tests::repeated_reachable_collection_workspace_bench",
     "test_support::runtime_test_transaction_overhead_probe",
 )
+# A probe exists only where the runtime source compiles it. The extension
+# preemption bench pins the process to one CPU, which the source limits with
+# `cfg(any(windows, target_os = "linux"))`; its row is keyed by `sys.platform`.
+# A probe absent from this table exists on every host.
+PROBE_PLATFORMS: dict[str, frozenset[str]] = {
+    "cpython_abi_hooks::tests::single_thread_extension_call_preemption_bench": (
+        frozenset({"linux", "win32"})
+    ),
+}
+
+
+def probes_for(platform: str) -> tuple[str, ...]:
+    """Return the probes the runtime inventory must carry on ``platform``."""
+    return tuple(
+        name
+        for name in PROBES
+        if platform in PROBE_PLATFORMS.get(name, frozenset({platform}))
+    )
 
 
 def selections(
-    inventory: list[str], threads: int
+    inventory: list[str], threads: int, platform: str
 ) -> dict[str, tuple[list[str], set[str]]]:
     if threads < 2:
         raise RuntimeError(
@@ -60,7 +78,8 @@ def selections(
         )
     if len(inventory) != len(set(inventory)):
         raise RuntimeError("duplicate test discovery identity")
-    required = set(ISOLATED + PROBES)
+    probes = probes_for(platform)
+    required = set(ISOLATED + probes)
     if not required <= set(inventory):
         raise RuntimeError(
             f"missing required runtime cases: {sorted(required - set(inventory))}"
@@ -69,7 +88,7 @@ def selections(
     if not remainder:
         raise RuntimeError("empty parallel runtime remainder")
     parallel = [f"--test-threads={threads}", "--nocapture"]
-    for name in ISOLATED + PROBES:
+    for name in ISOLATED + probes:
         # libtest skip filters match substrings: final row-set validation ensures
         # no lateral test accidentally disappears through a matching name.
         parallel.extend(["--skip", name])
@@ -271,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
         "run_id": run_id,
         "status": "failed",
         "performance_probes": [
-            {"identity": name, "status": "unrun"} for name in PROBES
+            {"identity": name, "status": "unrun"} for name in probes_for(sys.platform)
         ],
         "children": {},
     }
@@ -380,7 +399,7 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError("runtime discovery failed")
         aggregate["discovery"] = discovery.receipt()
         aggregate["inventory"] = inventory
-        selection = selections(inventory, args.parallel_threads)
+        selection = selections(inventory, args.parallel_threads, sys.platform)
         children: dict[str, list[dict]] = {}
         failures = []
         for index, (name, (child_args, _)) in enumerate(selection.items()):
@@ -435,7 +454,9 @@ def main(argv: list[str] | None = None) -> int:
             or truth._file_identity(binary) != identity
         ):
             raise RuntimeError("source/binary changed during aggregate verification")
-        aggregate["semantic_pass_count"] = len(inventory) - len(PROBES)
+        aggregate["semantic_pass_count"] = len(inventory) - len(
+            probes_for(sys.platform)
+        )
         aggregate["status"] = "success"
     except Exception as exc:
         aggregate["error"] = f"{type(exc).__name__}: {exc}"

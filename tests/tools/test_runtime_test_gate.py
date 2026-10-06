@@ -16,7 +16,7 @@ REMAINDER = ["ordinary::parallel_case", support.TRAP, support.TRAP_CHILD, suppor
 def fixture_ledger(tmp_path):
     binary = support.make_image(tmp_path)
     inventory = [*gate.ISOLATED, *gate.PROBES, *REMAINDER]
-    selections = gate.selections(inventory, 4)
+    selections = gate.selections(inventory, 4, "linux")
     data = binary.read_bytes()
     identity = (len(data), support.sha256(data))
     children = {}
@@ -185,7 +185,26 @@ def test_inventory_and_parallel_witness_are_mandatory(problem):
     elif problem == "empty":
         inventory.remove("ordinary")
     with pytest.raises(RuntimeError):
-        gate.selections(inventory, threads)
+        gate.selections(inventory, threads, "linux")
+
+
+PINNED_BENCH = "cpython_abi_hooks::tests::single_thread_extension_call_preemption_bench"
+
+
+def test_probe_is_required_only_where_the_runtime_compiles_it():
+    # The bench pins a CPU; the runtime source compiles it only on Linux and
+    # Windows, so a macOS inventory must not be asked for it and must not
+    # declare it as an unrun probe.
+    assert PINNED_BENCH in gate.probes_for("linux")
+    assert PINNED_BENCH in gate.probes_for("win32")
+    assert PINNED_BENCH not in gate.probes_for("darwin")
+    assert set(gate.probes_for("darwin")) == set(gate.PROBES) - {PINNED_BENCH}
+    darwin_inventory = [*gate.ISOLATED, *gate.probes_for("darwin"), "ordinary"]
+    selection = gate.selections(darwin_inventory, 4, "darwin")
+    assert PINNED_BENCH not in selection["parallel"][0]
+    assert selection["parallel"][1] == {"ordinary"}
+    with pytest.raises(RuntimeError, match="missing required runtime cases"):
+        gate.selections(darwin_inventory, 4, "linux")
 
 
 def test_actual_cargo_rlib_artifact_authority():

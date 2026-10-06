@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 #[path = "../build_support/build_python.rs"]
 mod build_python;
+#[path = "../build_support/c_codegen.rs"]
+mod c_codegen;
 #[path = "../build_support/unicode_tables.rs"]
 mod unicode_tables;
 #[path = "../build_support/variadic_exports.rs"]
@@ -98,16 +100,10 @@ fn main() {
         .file(&layout_assert)
         .include(&abi_include)
         .include(&shared_abi_include)
-        .opt_level(3)
         // Auto-vectorisation hints for clang/gcc.
         .flag_if_supported("-fvectorize")
         .flag_if_supported("-fslp-vectorize");
-
-    // -fno-semantic-interposition is useful on GCC/Linux but triggers a
-    // warning on Apple clang; skip it on macOS.
-    if target_os != "macos" && target_arch != "wasm32" {
-        build.flag_if_supported("-fno-semantic-interposition");
-    }
+    c_codegen::apply_codegen_policy(&mut build, &target_os);
     if target_arch == "wasm32" {
         match target_os.as_str() {
             "wasi" => {
@@ -238,6 +234,7 @@ fn main() {
     println!("cargo:rerun-if-changed={}", shim.display());
     println!("cargo:rerun-if-changed={}", shim_exports.display());
     println!("cargo:rerun-if-changed=../build_support/variadic_exports.rs");
+    println!("cargo:rerun-if-changed=../build_support/c_codegen.rs");
     println!("cargo:rerun-if-changed=../build_support/unicode_tables.rs");
     println!("cargo:rerun-if-changed=src/api/strings.rs");
     // The layout-assertion TU is generated from the Rust repr(C) authority; rebuild
