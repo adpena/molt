@@ -207,6 +207,22 @@ def _parse_call_indirect_import_arity(name: str) -> int | None:
     return arity if str(arity) == suffix else None
 
 
+def reserved_runtime_callable_base(data: dict) -> int:
+    """First shared-table slot after the poll table: the reserved callable region.
+
+    Rust, Python and JavaScript hosts all render this one value; none of them
+    may restate the formula or a copy of its result.
+    """
+    return 1 + max(
+        (
+            entry["poll_table_slot"]
+            for entry in data["import"]
+            if "poll_table_slot" in entry
+        ),
+        default=0,
+    )
+
+
 def _call_indirect_imports(data: dict) -> list[tuple[int, str]]:
     imports: list[tuple[int, str]] = []
     for entry in data.get("link_allowed_import", []):

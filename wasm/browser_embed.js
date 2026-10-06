@@ -39,6 +39,7 @@ const {
   planReservedRuntimeDispatch,
   requireWasmCallableTable,
   remapDefaultAppRuntimeSharedTableIndex,
+  runtimeCallableTableLayoutFromAbi,
   runtimeExceptionPending,
   runtimeImportByteSpanOutNames,
   runtimeImportObjectArrayArgNames,
@@ -81,18 +82,6 @@ const makeTable = (limits, initial = null) => {
     descriptor.maximum = Math.max(limits.max, min);
   }
   return new WebAssembly.Table(descriptor);
-};
-
-const requireIntegerField = (
-  source,
-  name,
-  path = 'manifest.abi.browser_embed.table_layout',
-) => {
-  const value = source?.[name];
-  if (!Number.isInteger(value)) {
-    throw new Error(`${path}.${name} must be an integer`);
-  }
-  return value;
 };
 
 const requireNativeCallableSignature = (symbol, abi, rawSignature) => {
@@ -184,69 +173,13 @@ const browserAbiFromManifest = (manifest) => {
   if (!runtimeImportFallbacks || typeof runtimeImportFallbacks !== 'object') {
     throw new Error('manifest.abi.browser_embed.runtime_import_fallbacks must be an object');
   }
-  const tableLayout = abi.table_layout || {};
-  const defaultAppTableBase = requireIntegerField(tableLayout, 'default_app_table_base');
-  const reservedRuntimeCallableBase = requireIntegerField(
-    tableLayout,
-    'reserved_runtime_callable_base',
+  const runtimeCallableLayout = runtimeCallableTableLayoutFromAbi(
+    abi,
+    'manifest.abi.browser_embed',
   );
-  const reservedRuntimeCallableCount = requireIntegerField(
-    tableLayout,
-    'reserved_runtime_callable_count',
-  );
-  if (!Array.isArray(abi.reserved_runtime_callables)) {
-    throw new Error('manifest.abi.browser_embed.reserved_runtime_callables must be an array');
-  }
-  if (abi.reserved_runtime_callables.length !== reservedRuntimeCallableCount) {
-    throw new Error(
-      'manifest.abi.browser_embed.reserved_runtime_callables length must match ' +
-        'table_layout.reserved_runtime_callable_count',
-    );
-  }
-  const reservedRuntimeCallables = [];
-  const reservedIndices = new Set();
-  for (const entry of abi.reserved_runtime_callables) {
-    if (!entry || typeof entry !== 'object') {
-      throw new Error('manifest.abi.browser_embed.reserved_runtime_callables entries must be objects');
-    }
-    const entryPath = 'manifest.abi.browser_embed.reserved_runtime_callables entry';
-    const index = requireIntegerField(entry, 'index', entryPath);
-    if (index < 0 || index >= reservedRuntimeCallableCount || reservedIndices.has(index)) {
-      throw new Error(
-        `manifest.abi.browser_embed.reserved_runtime_callables has invalid index ${index}`,
-      );
-    }
-    reservedIndices.add(index);
-    if (typeof entry.runtime_export !== 'string' || !entry.runtime_export.startsWith('molt_')) {
-      throw new Error(
-        'manifest.abi.browser_embed.reserved_runtime_callables entry runtime_export must be a molt_ export name',
-      );
-    }
-    if (typeof entry.import_name !== 'string' || entry.import_name.length === 0) {
-      throw new Error(
-        'manifest.abi.browser_embed.reserved_runtime_callables entry import_name must be a string',
-      );
-    }
-    const arity = requireIntegerField(entry, 'arity', entryPath);
-    if (arity < 0) {
-      throw new Error(
-        'manifest.abi.browser_embed.reserved_runtime_callables entry arity must be non-negative',
-      );
-    }
-    const dispatch = entry.dispatch === undefined ? 'direct' : entry.dispatch;
-    if (dispatch !== 'direct' && dispatch !== 'trampoline') {
-      throw new Error(
-        'manifest.abi.browser_embed.reserved_runtime_callables entry dispatch must be direct or trampoline',
-      );
-    }
-    reservedRuntimeCallables.push({
-      index,
-      runtimeExport: entry.runtime_export,
-      importName: entry.import_name,
-      arity,
-      dispatch,
-    });
-  }
+  const { defaultAppTableBase, reservedRuntimeCallableBase, reservedRuntimeCallables } =
+    runtimeCallableLayout;
+  const reservedRuntimeCallableCount = reservedRuntimeCallables.length;
   return {
     callIndirectImports,
     runtimeImportFallbacks,

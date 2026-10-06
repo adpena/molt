@@ -64,34 +64,6 @@ const WASI_OFLAGS_TRUNC = 8;
 const WASI_WHENCE_SET = 0;
 const WASI_WHENCE_CUR = 1;
 const WASI_WHENCE_END = 2;
-const DEFAULT_WASM_APP_TABLE_BASE = 256;
-const RESERVED_RUNTIME_CALLABLE_BASE = 33;
-const reservedRuntimeCallables = [
-  { index: 0, runtimeExport: 'molt_type_call', arity: 1 },
-  { index: 1, runtimeExport: 'molt_type_new', arity: 5 },
-  { index: 2, runtimeExport: 'molt_type_init', arity: 5 },
-  { index: 3, runtimeExport: 'molt_object_new_bound', arity: 1 },
-  { index: 4, runtimeExport: 'molt_object_init', arity: 1 },
-  { index: 5, runtimeExport: 'molt_object_init_subclass', arity: 1 },
-  { index: 6, runtimeExport: 'molt_exception_new_bound', arity: 2 },
-  { index: 7, runtimeExport: 'molt_exception_init', arity: 2 },
-  { index: 8, runtimeExport: 'molt_exceptiongroup_init', arity: 2 },
-  { index: 9, runtimeExport: 'molt_types_mappingproxy_new', arity: 2 },
-  { index: 10, runtimeExport: 'molt_types_mappingproxy_init', arity: 2 },
-  { index: 11, runtimeExport: 'molt_types_method_new', arity: 3 },
-  { index: 12, runtimeExport: 'molt_types_method_init', arity: 3 },
-  { index: 13, runtimeExport: 'molt_types_simplenamespace_init', arity: 3 },
-  { index: 14, runtimeExport: 'molt_types_capsule_new', arity: 1 },
-  { index: 15, runtimeExport: 'molt_types_cell_new', arity: 1 },
-  { index: 16, runtimeExport: 'molt_types_dynamic_class_attr_init', arity: 3 },
-  { index: 17, runtimeExport: 'molt_types_coroutine', arity: 1 },
-  { index: 18, runtimeExport: 'molt_types_get_original_bases', arity: 1 },
-  { index: 19, runtimeExport: 'molt_types_prepare_class', arity: 2 },
-  { index: 20, runtimeExport: 'molt_types_resolve_bases', arity: 2 },
-  { index: 21, runtimeExport: 'molt_types_new_class', arity: 2 },
-  { index: 22, runtimeExport: 'molt_cpython_abi_cext_call_trampoline', arity: 3, trampolineAbi: 'call_frame' },
-  { index: 23, runtimeExport: 'molt_importlib_import_transaction', arity: 5, dispatch: 'trampoline' },
-];
 
 const { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, createRuntimeStream, withRuntimeOwnedValues, makeRuntimeIntList, combinedError } = globalThis.MoltRuntimeLifecycle;
 const runtimeLifetimes = new WeakMap();
@@ -182,8 +154,8 @@ const {
   planReservedRuntimeDispatch,
   requireWasmCallableTable,
   remapDefaultAppRuntimeSharedTableIndex,
-  reservedRuntimeCallablesFromManifest,
   resolveWasmTableBase,
+  runtimeCallableTableLayout,
   callableTableSignature,
   runtimeExceptionPending,
   runtimeImportByteSpanOutNames,
@@ -3847,8 +3819,8 @@ export const loadMoltWasm = async (options = {}) => {
       };
     }
 
-    const activeReservedRuntimeCallables =
-      reservedRuntimeCallablesFromManifest(runtimeManifest) || reservedRuntimeCallables;
+    const runtimeCallableLayout = runtimeCallableTableLayout(runtimeManifest);
+    const activeReservedRuntimeCallables = runtimeCallableLayout.reservedRuntimeCallables;
     const runtimeImportFallbacks =
       runtimeManifest?.abi?.browser_embed?.runtime_import_fallbacks || {};
     const wasmBytes = await tryFetch(wasmUrl);
@@ -3919,8 +3891,8 @@ export const loadMoltWasm = async (options = {}) => {
         const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
         const dispatchIdx = remapDefaultAppRuntimeSharedTableIndex(idx, {
           sharedTableBase: detectedWasmTableBase,
-          defaultAppTableBase: DEFAULT_WASM_APP_TABLE_BASE,
-          reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
+          defaultAppTableBase: runtimeCallableLayout.defaultAppTableBase,
+          reservedRuntimeCallableBase: runtimeCallableLayout.reservedRuntimeCallableBase,
           reservedRuntimeCallableCount: activeReservedRuntimeCallables.length,
           rawIndexHasInstalledEntry: (rawTableIdx) => {
             if (!table) {
@@ -3940,7 +3912,7 @@ export const loadMoltWasm = async (options = {}) => {
         const reservedDispatch = planReservedRuntimeDispatch({
           dispatchIdx,
           sharedTableBase: detectedWasmTableBase,
-          reservedRuntimeCallableBase: RESERVED_RUNTIME_CALLABLE_BASE,
+          reservedRuntimeCallableBase: runtimeCallableLayout.reservedRuntimeCallableBase,
           reservedRuntimeCallableCount: activeReservedRuntimeCallables.length,
           reservedRuntimeCallables: activeReservedRuntimeCallables,
         });

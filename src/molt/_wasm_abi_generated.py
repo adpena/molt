@@ -3162,7 +3162,7 @@ WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...] = (
     (29, "coroutine_wrapper_poll"),
 )
 
-WASM_RESERVED_RUNTIME_CALLABLE_BASE: int = 1 + max((slot for slot, _name in WASM_POLL_TABLE_IMPORTS), default=0)
+WASM_RESERVED_RUNTIME_CALLABLE_BASE: int = 30
 
 WASM_DEFAULT_APP_TABLE_BASE: int = 256
 
