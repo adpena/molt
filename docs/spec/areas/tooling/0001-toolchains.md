@@ -330,6 +330,12 @@ content, C build inputs and selected LLVM prefix are admitted before lookup.
 The Cargo plan owns the shared tool/resource projection. Runtime builds augment
 it with their required build-Python admission; Cargo-only compiler builds do not
 probe a runtime generator interpreter or inherit its runtime closure.
+Resource directories are traversed as graphs: a resolved directory already on
+the active ancestor path is a backedge, not a second resource subtree. This
+admits distro layouts such as LLVM's `build/Debug+Asserts -> ..` without infinite
+unfolding. Non-cyclic directory aliases retain their lexical file selections;
+file-content mutation, added resources and alias retargeting that changes the
+selected resources remain fenced by the same capture and verification authority.
 Compiler Cargo commands use `--locked` and execute that exact plan without
 changing wrappers on retry. One source-fingerprint operation owns reusable plan
 admission; subsequent operations recapture live inputs. A clean Git HEAD is

@@ -944,7 +944,7 @@ fn dynamic_calls_release_discarded_owned_results() {
             assert_eq!(
                 releases,
                 usize::from(!bound)
-                    + ["frame_invocation_exit", "callargs_push_pos"]
+                    + ["callargs_push_pos"]
                         .iter()
                         .map(|name| {
                             imports
@@ -954,6 +954,14 @@ fn dynamic_calls_release_discarded_owned_results() {
                         .sum::<usize>(),
                 "{kind} {target:?}, bound={bound}: {operators:?}"
             );
+            if let Some(index) = imports.get("frame_invocation_exit") {
+                let exit = format!("Call {{ function_index: {index} }}");
+                for (position, operator) in operators.iter().enumerate() {
+                    if operator == &exit {
+                        assert_eq!(operators[position + 1], "Drop");
+                    }
+                }
+            }
         }
     }
 }

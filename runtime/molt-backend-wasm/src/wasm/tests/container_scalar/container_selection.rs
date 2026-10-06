@@ -153,23 +153,66 @@ fn container_import_selection_uses_manifest_index_store_matrix() {
 
 #[test]
 fn container_import_selection_uses_flat_list_storage_proof() {
-    let make = wasm_test_op("list_int_new", Some("xs"), vec!["n"]);
+    let constants: Vec<_> = [("n", 4), ("i", 0), ("v", 7)]
+        .into_iter()
+        .map(|(name, value)| {
+            let mut op = wasm_test_op("const", Some(name), vec![]);
+            op.value = Some(value);
+            op
+        })
+        .collect();
+    let make = wasm_test_op("list_int_new", Some("xs"), vec!["n", "v"]);
     let index = wasm_test_op("index", Some("item"), vec!["xs", "i"]);
     let set = wasm_test_op("store_index", None, vec!["xs", "i", "v"]);
     let func = wasm_test_function(
         "flat_list_storage",
-        vec!["n", "i", "v"],
-        Some(vec!["int", "int", "int"]),
-        vec![make, index.clone(), set.clone()],
+        vec![],
+        None,
+        constants
+            .into_iter()
+            .chain([make, index.clone(), set.clone()])
+            .collect(),
     );
     let plan = wasm_representation_plan(&func);
 
     assert_eq!(
-        selected_container_runtime_import(&plan, 1, "index", &index),
+        selected_container_runtime_import(&plan, 4, "index", &index),
         Some(WasmRuntimeImport::ListIntGetitem)
     );
     assert_eq!(
-        selected_container_runtime_import(&plan, 2, "store_index", &set),
+        selected_container_runtime_import(&plan, 5, "store_index", &set),
         Some(WasmRuntimeImport::ListIntSetitem)
     );
+}
+
+#[test]
+fn container_import_selection_does_not_trust_annotated_index_protocols() {
+    for access in ["index", "store_index"] {
+        let mut count = wasm_test_op("const", Some("n"), vec![]);
+        count.value = Some(4);
+        let mut fill = wasm_test_op("const", Some("v"), vec![]);
+        fill.value = Some(7);
+        let args = if access == "index" {
+            vec!["xs", "i"]
+        } else {
+            vec!["xs", "i", "v"]
+        };
+        let op = wasm_test_op(access, Some("result"), args);
+        let func = wasm_test_function(
+            "annotated_index_protocol",
+            vec!["i"],
+            Some(vec!["int"]),
+            vec![
+                count,
+                fill,
+                wasm_test_op("list_int_new", Some("xs"), vec!["n", "v"]),
+                op.clone(),
+            ],
+        );
+        let plan = wasm_representation_plan(&func);
+        assert_eq!(
+            selected_container_runtime_import(&plan, 3, access, &op),
+            None
+        );
+    }
 }
