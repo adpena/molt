@@ -30,7 +30,7 @@ pub extern "C" fn molt_socket_clone(_sock_bits: u64) -> u64 {
         };
         let new_handle = unsafe { crate::molt_socket_clone_host(handle) };
         if new_handle < 0 {
-            return raise_os_error_errno::<u64>(_py, (-new_handle) as i64, "socket.clone");
+            return raise_os_error_errno::<u64>(_py, -new_handle, "socket.clone");
         }
         let meta = wasm_socket_meta_clone(handle);
         if let Some(meta) = meta {
@@ -92,7 +92,7 @@ pub extern "C" fn molt_socket_new(
         let timeout = socket_type_requests_nonblocking(sock_type).then_some(Duration::ZERO);
         let handle = unsafe { crate::molt_socket_new_host(family, base_type, proto, fileno) };
         if handle < 0 {
-            return raise_os_error_errno::<u64>(_py, (-handle) as i64, "socket");
+            return raise_os_error_errno::<u64>(_py, -handle, "socket");
         }
         wasm_socket_meta_insert(
             handle,
@@ -113,7 +113,7 @@ pub extern "C" fn molt_socket_close(_sock_bits: u64) -> u64 {
         let rc = unsafe { crate::molt_socket_close_host(handle) };
         wasm_socket_meta_remove(handle);
         if rc < 0 {
-            return raise_os_error_errno::<u64>(_py, (-rc) as i64, "close");
+            return raise_os_error_errno::<u64>(_py, i64::from(-rc), "close");
         }
         MoltObject::none().bits()
     })
@@ -1471,7 +1471,7 @@ pub extern "C" fn molt_socket_detach(_sock_bits: u64) -> u64 {
         let rc = unsafe { crate::molt_socket_detach_host(handle) };
         wasm_socket_meta_remove(handle);
         if rc < 0 {
-            return raise_os_error_errno::<u64>(_py, (-rc) as i64, "detach");
+            return raise_os_error_errno::<u64>(_py, -rc, "detach");
         }
         MoltObject::from_int(rc).bits()
     })

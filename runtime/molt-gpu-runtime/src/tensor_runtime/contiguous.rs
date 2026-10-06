@@ -418,12 +418,15 @@ pub extern "C" fn molt_gpu_linear_contiguous(
                 let grid = if total_threads == 0 {
                     0
                 } else {
-                    u32::try_from(
-                        (total_threads + workgroup_size as usize - 1) / workgroup_size as usize,
-                    )
-                    .map_err(|_| {
-                        raise_exception::<u64>(_py, "OverflowError", "gpu linear grid exceeds u32")
-                    })?
+                    u32::try_from(total_threads.div_ceil(workgroup_size as usize)).map_err(
+                        |_| {
+                            raise_exception::<u64>(
+                                _py,
+                                "OverflowError",
+                                "gpu linear grid exceeds u32",
+                            )
+                        },
+                    )?
                 };
                 let source =
                     render_webgpu_linear_source("linear_contiguous", element_ty, workgroup_size);
@@ -604,12 +607,15 @@ pub extern "C" fn molt_gpu_linear_split_last_dim_contiguous(
                 let grid = if total_threads == 0 {
                     0
                 } else {
-                    u32::try_from(
-                        (total_threads + workgroup_size as usize - 1) / workgroup_size as usize,
-                    )
-                    .map_err(|_| {
-                        raise_exception::<u64>(_py, "OverflowError", "gpu linear grid exceeds u32")
-                    })?
+                    u32::try_from(total_threads.div_ceil(workgroup_size as usize)).map_err(
+                        |_| {
+                            raise_exception::<u64>(
+                                _py,
+                                "OverflowError",
+                                "gpu linear grid exceeds u32",
+                            )
+                        },
+                    )?
                 };
                 let source = render_webgpu_linear_source(
                     "linear_split_last_dim",
@@ -852,12 +858,15 @@ pub extern "C" fn molt_gpu_linear_squared_relu_gate_interleaved_contiguous(
                 let grid = if total_threads == 0 {
                     0
                 } else {
-                    u32::try_from(
-                        (total_threads + workgroup_size as usize - 1) / workgroup_size as usize,
-                    )
-                    .map_err(|_| {
-                        raise_exception::<u64>(_py, "OverflowError", "gpu gate grid exceeds u32")
-                    })?
+                    u32::try_from(total_threads.div_ceil(workgroup_size as usize)).map_err(
+                        |_| {
+                            raise_exception::<u64>(
+                                _py,
+                                "OverflowError",
+                                "gpu gate grid exceeds u32",
+                            )
+                        },
+                    )?
                 };
                 let source = render_webgpu_linear_squared_relu_gate_source(
                     "linear_squared_relu_gate_interleaved",

@@ -26,6 +26,16 @@ pub(crate) struct GilGuard {
     _not_send_sync: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
+// Releasing the guard is part of its contract on every target: call sites
+// drop it at the exact point the GIL must be given up. On this single-threaded
+// target the release does nothing, but the drop stays the observable release
+// point so the same code lowers on wasm32 and on native.
+#[cfg(target_arch = "wasm32")]
+impl Drop for GilGuard {
+    #[inline(always)]
+    fn drop(&mut self) {}
+}
+
 pub(crate) struct PyToken<'gil> {
     _guard: &'gil GilGuard,
     core: molt_runtime_core::PyToken,
@@ -82,6 +92,14 @@ impl GilGuard {
 #[cfg(target_arch = "wasm32")]
 pub(crate) struct GilReleaseGuard {
     _not_send_sync: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+// Dropping the release guard re-acquires the GIL on native; here it is the
+// same no-op release point, kept so call sites stay target-independent.
+#[cfg(target_arch = "wasm32")]
+impl Drop for GilReleaseGuard {
+    #[inline(always)]
+    fn drop(&mut self) {}
 }
 
 #[cfg(target_arch = "wasm32")]

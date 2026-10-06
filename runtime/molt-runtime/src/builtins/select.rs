@@ -23,6 +23,13 @@ use std::thread;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
+/// Whether the host poll primitive blocks until an fd is ready or the timeout
+/// elapses, so a poll round may repeat until the deadline. On wasm32 one round
+/// only reports what is ready now: spinning would freeze the host event loop,
+/// so callers receive an empty result instead, matching Python when the
+/// timeout expires.
+const HOST_POLL_BLOCKS: bool = cfg!(not(target_arch = "wasm32"));
+
 /// Checks one exact polling capability and emits an audit event.
 #[inline]
 fn require_select_capability(
@@ -1223,11 +1230,9 @@ pub extern "C" fn molt_select_selector_poll(handle_bits: u64, timeout_bits: u64)
             {
                 break;
             }
-            // On WASM there is no real fd polling; spinning would freeze the host
-            // event loop. Break immediately so callers receive empty results when
-            // no fds are ready — matching Python's behavior when timeout expires.
-            #[cfg(target_arch = "wasm32")]
-            break;
+            if !HOST_POLL_BLOCKS {
+                break;
+            }
         }
 
         let ready_count = ready_masks.iter().filter(|mask| **mask != 0).count();
@@ -1475,11 +1480,9 @@ pub extern "C" fn molt_select_select(
             {
                 break;
             }
-            // On WASM there is no real fd polling; spinning would freeze the host
-            // event loop. Break immediately so callers receive empty fd lists when
-            // no fds are ready — matching Python's behavior when timeout expires.
-            #[cfg(target_arch = "wasm32")]
-            break;
+            if !HOST_POLL_BLOCKS {
+                break;
+            }
         }
 
         let r_ptr = alloc_list(_py, &ready_r);

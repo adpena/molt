@@ -65,7 +65,7 @@ pub fn set_io_mode(mode: IoMode) {
 pub fn io_mode() -> IoMode {
     #[cfg(target_arch = "wasm32")]
     {
-        return io_mode_decode(IO_MODE.load(Ordering::Relaxed));
+        io_mode_decode(IO_MODE.load(Ordering::Relaxed))
     }
     #[cfg(not(target_arch = "wasm32"))]
     {

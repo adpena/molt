@@ -196,10 +196,10 @@ fn parse_manifest() -> Option<std::collections::BTreeSet<&'static str>> {
     let bytes = manifest_bytes()?;
     let mut set = std::collections::BTreeSet::new();
     for chunk in bytes.split(|&b| b == 0) {
-        if let Ok(name) = core::str::from_utf8(chunk) {
-            if !name.is_empty() {
-                set.insert(name);
-            }
+        if let Ok(name) = core::str::from_utf8(chunk)
+            && !name.is_empty()
+        {
+            set.insert(name);
         }
     }
     Some(set)

@@ -332,20 +332,33 @@ fn host_getservbyport_name(
         .to_vec())
 }
 
+// `msghdr.msg_controllen` is `size_t` on Linux/Android and `socklen_t` (u32)
+// on the other Unix targets. Each alias carries its own two conversions, so
+// the real narrowing is spelled only where it exists.
 #[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
 type MsgControlLen = usize;
+
+#[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
+fn msg_controllen_from_usize(len: usize) -> Option<MsgControlLen> {
+    Some(len)
+}
+
+#[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
+fn msg_controllen_to_guest_len(len: MsgControlLen) -> Option<u32> {
+    u32::try_from(len).ok()
+}
 
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 type MsgControlLen = libc::socklen_t;
 
-#[cfg(unix)]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 fn msg_controllen_from_usize(len: usize) -> Option<MsgControlLen> {
     MsgControlLen::try_from(len).ok()
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 fn msg_controllen_to_guest_len(len: MsgControlLen) -> Option<u32> {
-    u32::try_from(len).ok()
+    Some(len)
 }
 
 fn socket_get_mut(state: &mut HostState, handle: i64) -> Result<&mut Socket, i32> {

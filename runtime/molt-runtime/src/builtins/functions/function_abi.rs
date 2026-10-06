@@ -178,7 +178,7 @@ pub(crate) fn normalize_runtime_trampoline_ptr(fn_ptr: u64, tramp_ptr: u64) -> u
     let _ = fn_ptr;
     #[cfg(target_arch = "wasm32")]
     {
-        return reserved_wasm_runtime_trampoline_ptr(fn_ptr).unwrap_or(tramp_ptr);
+        reserved_wasm_runtime_trampoline_ptr(fn_ptr).unwrap_or(tramp_ptr)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {

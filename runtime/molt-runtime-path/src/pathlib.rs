@@ -1049,7 +1049,7 @@ pub extern "C" fn molt_pathlib_glob(path_bits: u64, pattern_bits: u64) -> u64 {
                     );
                 }
             }
-            return list_of_strings(_py, &results);
+            list_of_strings(_py, &results)
         }
         #[cfg(not(feature = "stdlib_fs_extra"))]
         {
@@ -1103,7 +1103,7 @@ pub extern "C" fn molt_pathlib_rglob(path_bits: u64, pattern_bits: u64) -> u64 {
                     );
                 }
             }
-            return list_of_strings(_py, &results);
+            list_of_strings(_py, &results)
         }
         #[cfg(not(feature = "stdlib_fs_extra"))]
         {
