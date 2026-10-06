@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 import dataclasses
+import errno
 import io
 import json
 import os
@@ -258,12 +259,13 @@ def _patch_guard_popen_without_windows_job(
 ) -> None:
     """Install a synthetic child handle with no kernel presence.
 
-    The guard reads its child's process group, session and birth from the
-    kernel by PID. A synthetic PID can name an unrelated live host process
-    (on a busy Mac it often does), which binds the fake child to a foreign
-    birth and makes the result depend on the host. Those reads report the
-    synthetic child as unobservable on every host, exactly as when the PID
-    is free. No synthetic child receives a real Windows Job handle either.
+    The guard reads its child's birth, and cleanup reads a root's group and
+    session, from the kernel by PID. A synthetic PID can name an unrelated
+    live host process (on a busy Mac it often does), which binds the fake
+    child to a foreign birth and makes the result depend on the host. Those
+    reads report the synthetic child as unobservable on every host, exactly
+    as when the PID is free. No synthetic child receives a real Windows Job
+    handle either.
     """
 
     synthetic_pids: set[int] = set()
@@ -281,8 +283,6 @@ def _patch_guard_popen_without_windows_job(
     install_module_view(monkeypatch, "subprocess", subprocess, memory_guard)
     monkeypatch.setattr(memory_guard.subprocess, "Popen", spawn)
     for owner, name in (
-        (memory_guard, "_safe_getpgid"),
-        (memory_guard, "_safe_getsid"),
         (process_custody, "_safe_getpgid"),
         (process_custody, "_safe_getsid"),
         (process_model, "process_started_at_ns"),
@@ -7442,6 +7442,37 @@ def test_posix_launch_identity_survives_reap_before_clock_returns(
     assert closure["root_process_group_closed"] is True
     assert closure["remaining_tracked_pids"] == []
     assert closure["root_process_group_members"] == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX session-leader launch identity")
+def test_launch_identity_survives_a_child_the_kernel_no_longer_reports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Under load a fast child can exit before the guard records its launch
+    # identity, and macOS answers getpgid/getsid for an unreaped zombie with
+    # ESRCH. Model that kernel answer for every queried PID: the identity must
+    # come from the session-leader launch, and closure must still complete.
+    def esrch(pid: int) -> int:
+        raise ProcessLookupError(errno.ESRCH, "No such process")
+
+    monkeypatch.setattr(memory_guard.os, "getpgid", esrch)
+    monkeypatch.setattr(memory_guard.os, "getsid", esrch)
+
+    result = memory_guard.run_guarded(
+        [getattr(sys, "_base_executable", sys.executable), "-I", "-S", "-c", "pass"],
+        max_rss_kb=1024 * 1024,
+        max_total_rss_kb=2 * 1024 * 1024,
+        capture_output=True,
+        poll_interval=0.01,
+        child_rlimit_kb=None,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.infrastructure_failure is None
+    assert result.child_process is not None
+    assert result.child_process.pgid == result.child_process.pid
+    assert result.child_process.sid == result.child_process.pid
+    assert result.descendants_closed
 
 
 @pytest.mark.parametrize("delayed_boundary", ["sampler", "scratch"])
