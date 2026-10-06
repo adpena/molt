@@ -56,6 +56,7 @@ def _find_repo_root() -> Path:
             ["git", "rev-parse", "--show-toplevel"],
             stderr=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
         ).strip()
         if out:
             return Path(out)

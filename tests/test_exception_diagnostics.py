@@ -305,7 +305,9 @@ def test_exception_diagnostics_are_mandatory_harness_and_portability_proofs():
     from pathlib import Path
 
     plan = tomllib.loads(
-        (Path(__file__).resolve().parents[1] / "tools/proof_plan.toml").read_text()
+        (Path(__file__).resolve().parents[1] / "tools/proof_plan.toml").read_text(
+            encoding="utf-8"
+        )
     )
     commands = {command["id"]: command for command in plan["command"]}
     for identifier in (

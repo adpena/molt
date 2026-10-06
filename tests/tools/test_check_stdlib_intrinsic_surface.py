@@ -57,7 +57,7 @@ def test_detects_required_but_unregistered(
     (stdlib / "mod.py").write_text(f"x = {request_source}\n", encoding="utf-8")
     gen = tmp_path / "generated.rs"
     gen.write_text(
-        'IntrinsicSpec { name: "molt_other", ... }\n'
+        'IntrinsicSpec { name: "molt_other", ... }\n', encoding="utf-8"
     )  # molt_needed_symbol absent
     monkeypatch.setattr(gate, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(gate, "STDLIB_ROOT", stdlib)
@@ -89,9 +89,11 @@ def test_passes_when_registered(tmp_path, monkeypatch) -> None:
     gate = _load_gate()
     stdlib = tmp_path / "stdlib"
     stdlib.mkdir()
-    (stdlib / "mod.py").write_text('x = _require_intrinsic("molt_present")\n')
+    (stdlib / "mod.py").write_text(
+        'x = _require_intrinsic("molt_present")\n', encoding="utf-8"
+    )
     gen = tmp_path / "generated.rs"
-    gen.write_text('IntrinsicSpec { name: "molt_present", ... }\n')
+    gen.write_text('IntrinsicSpec { name: "molt_present", ... }\n', encoding="utf-8")
     monkeypatch.setattr(gate, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(gate, "STDLIB_ROOT", stdlib)
     monkeypatch.setattr(gate, "GENERATED_RS", gen)

@@ -147,7 +147,7 @@ def _local(tmp_path: Path) -> Path:
     (root / EVIDENCE).write_bytes(b"evidence")
     (root / "payload.bin").write_bytes(b"compiled payload")
     (root / "release_manifest.json").write_text(
-        json.dumps({"version": VERSION, "source_sha": SOURCE})
+        json.dumps({"version": VERSION, "source_sha": SOURCE}), encoding="utf-8"
     )
     return root
 
@@ -653,7 +653,7 @@ def test_promotion_rejects_wrong_local_source_before_remote_activity(
     github.release["draft"] = not published
     local = _local(tmp_path)
     (local / "release_manifest.json").write_text(
-        json.dumps({"version": VERSION, "source_sha": "b" * 40})
+        json.dumps({"version": VERSION, "source_sha": "b" * 40}), encoding="utf-8"
     )
     with pytest.raises(ValueError, match="pinned version/source"):
         _promote(local)

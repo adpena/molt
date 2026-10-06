@@ -51,7 +51,8 @@ def test_native_memoryview_build_and_run(tmp_path: Path) -> None:
         "mvc = memoryview(bytearray(b'abc')).cast('c')\n"
         "print(mvc[0])\n"
         "mvc[0] = b'z'\n"
-        "print(mvc[0])\n"
+        "print(mvc[0])\n",
+        encoding="utf-8",
     )
 
     output_root = tmp_path

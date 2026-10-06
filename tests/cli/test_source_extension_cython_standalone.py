@@ -421,7 +421,9 @@ def test_regeneration_replays_real_ninja_cython_directives(
     pyx.parent.mkdir(parents=True)
     build_root.mkdir()
     pyx.write_text("def probe():\n    return 1\n", encoding="utf-8")
-    (build_root / "build.ninja").write_text("# queried through ninja -t commands\n")
+    (build_root / "build.ninja").write_text(
+        "# queried through ninja -t commands\n", encoding="utf-8"
+    )
     ninja_command = subprocess.list2cmdline(
         [
             "/tools/cython",
@@ -541,7 +543,9 @@ def test_ninja_command_strips_separate_shared_and_replaced_paths(
     pyx.parent.mkdir(parents=True)
     build_root.mkdir()
     pyx.write_text("def probe():\n    return 1\n", encoding="utf-8")
-    (build_root / "build.ninja").write_text("# queried through ninja -t commands\n")
+    (build_root / "build.ninja").write_text(
+        "# queried through ninja -t commands\n", encoding="utf-8"
+    )
     command = subprocess.list2cmdline(
         [
             "/tools/cython",
@@ -588,7 +592,9 @@ def test_ninja_generator_command_ambiguity_fails_closed(
     pyx.parent.mkdir(parents=True)
     build_root.mkdir()
     pyx.write_text("def probe():\n    return 1\n", encoding="utf-8")
-    (build_root / "build.ninja").write_text("# queried through ninja -t commands\n")
+    (build_root / "build.ninja").write_text(
+        "# queried through ninja -t commands\n", encoding="utf-8"
+    )
     command = subprocess.list2cmdline(
         ["/tools/cython", "-3", str(pyx), "-o", str(original_c)]
     )

@@ -94,7 +94,7 @@ def main() -> int:
     local_total: list[tuple[str, int, str]] = []
 
     for rs_file in sorted(BACKEND_SRC.rglob("*.rs")):
-        content = rs_file.read_text()
+        content = rs_file.read_text(encoding="utf-8")
         lines = content.splitlines()
         rel = str(rs_file.relative_to(Path(".")))
 

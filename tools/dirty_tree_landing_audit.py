@@ -76,6 +76,7 @@ def _run_git(root: Path, args: Sequence[str]) -> str:
         capture_output=True,
         text=True,
         check=False,
+        encoding="utf-8",
     )
     if proc.returncode != 0:
         detail = proc.stderr.strip() or proc.stdout.strip()

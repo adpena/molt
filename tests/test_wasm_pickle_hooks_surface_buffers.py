@@ -100,7 +100,8 @@ def test_wasm_pickle_hooks_surface_buffers(tmp_path: Path) -> None:
             readonly = pickle.loads(readonly_blob, buffers=[memoryview(captured_readonly[0])])
             print("readonly", type(readonly).__name__, readonly.readonly, bytes(readonly))
             """
-        )
+        ),
+        encoding="utf-8",
     )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)

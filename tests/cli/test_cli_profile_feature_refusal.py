@@ -92,7 +92,9 @@ def test_full_profile_includes_sqlite() -> None:
 
 
 def test_full_profile_links_gpu_primitives_claimed_by_tinygrad_profile() -> None:
-    cargo = tomllib.loads((MOLT_ROOT / "runtime/molt-runtime/Cargo.toml").read_text())
+    cargo = tomllib.loads(
+        (MOLT_ROOT / "runtime/molt-runtime/Cargo.toml").read_text(encoding="utf-8")
+    )
 
     assert "molt_gpu_primitives" in _full_features()
     assert "molt_gpu_primitives" in cargo["features"]["stdlib_full"]
@@ -283,7 +285,9 @@ _PREVIOUSLY_DRIFTED_FULL_FEATURES = frozenset(
 
 def _cargo_feature_graph() -> dict[str, list[str]]:
     cargo = tomllib.loads(
-        (MOLT_ROOT / "runtime" / "molt-runtime" / "Cargo.toml").read_text()
+        (MOLT_ROOT / "runtime" / "molt-runtime" / "Cargo.toml").read_text(
+            encoding="utf-8"
+        )
     )
     return {
         name: list(entries)

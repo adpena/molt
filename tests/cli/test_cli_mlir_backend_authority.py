@@ -38,7 +38,7 @@ def test_find_mlir_backend_binary_prefers_crate_release_build(tmp_path: Path) ->
         / _backend_name()
     )
     backend.parent.mkdir(parents=True)
-    backend.write_text("")
+    backend.write_text("", encoding="utf-8")
 
     assert mlir_backend._find_mlir_backend_binary(tmp_path) == backend
 
@@ -52,8 +52,8 @@ def test_find_mlir_backend_binary_uses_session_target_before_default(
     default_backend = tmp_path / "target" / "release" / _backend_name()
     session_backend.parent.mkdir(parents=True)
     default_backend.parent.mkdir(parents=True)
-    session_backend.write_text("")
-    default_backend.write_text("")
+    session_backend.write_text("", encoding="utf-8")
+    default_backend.write_text("", encoding="utf-8")
 
     assert mlir_backend._find_mlir_backend_binary(tmp_path) == session_backend
 
@@ -64,7 +64,9 @@ def test_ensure_mlir_backend_builds_once_with_canonical_environment(
 ) -> None:
     manifest = tmp_path / "runtime" / "molt-backend-mlir" / "Cargo.toml"
     manifest.parent.mkdir(parents=True)
-    manifest.write_text("[workspace]\n[package]\nname='m'\nversion='0.0.0'\n")
+    manifest.write_text(
+        "[workspace]\n[package]\nname='m'\nversion='0.0.0'\n", encoding="utf-8"
+    )
     backend = manifest.parent / "target" / "release" / _backend_name()
     captured: dict[str, object] = {}
 
@@ -91,7 +93,7 @@ def test_ensure_mlir_backend_builds_once_with_canonical_environment(
         captured["command"] = command
         captured["kwargs"] = kwargs
         backend.parent.mkdir(parents=True)
-        backend.write_text("")
+        backend.write_text("", encoding="utf-8")
         return mlir_backend.subprocess.CompletedProcess(command, 0, b"", b"")
 
     monkeypatch.setattr(

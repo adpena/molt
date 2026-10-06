@@ -10,7 +10,7 @@ def _load_intrinsic_specs() -> list[tuple[str, str, int]]:
         / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
     )
     specs: list[tuple[str, str, int]] = []
-    text = manifest.read_text()
+    text = manifest.read_text(encoding="utf-8")
     for line in text.splitlines():
         line = line.strip()
         if not line.startswith("def "):
@@ -14838,6 +14838,7 @@ def write_wasm_runner(
 ) -> Path:
     runner = tmp_path / name
     runner.write_text(
-        wasm_runner_source(extra_js=extra_js, import_overrides=import_overrides)
+        wasm_runner_source(extra_js=extra_js, import_overrides=import_overrides),
+        encoding="utf-8",
     )
     return runner

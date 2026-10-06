@@ -42,7 +42,7 @@ def parse_expectation(filepath: Path) -> tuple[str, str]:
       'success'     - value is '' (assert-only, must exit 0)
       'refcount'    - value is the ref-count spec (informational, treated as success)
     """
-    text = filepath.read_text()
+    text = filepath.read_text(encoding="utf-8")
     lines = text.strip().splitlines()
 
     # Files marked '# call-external' depend on helpers not in the file

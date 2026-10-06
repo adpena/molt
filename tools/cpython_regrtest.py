@@ -581,6 +581,7 @@ def run_command(
         env=command_env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     if result.stdout:
         log_handle.write(result.stdout)
@@ -697,6 +698,7 @@ def ensure_cpython_checkout(
                 text=True,
                 timeout=30,
                 check=True,
+                encoding="utf-8",
             )
         except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
             raise RuntimeError(
@@ -740,7 +742,7 @@ def load_skip_list(path: Path | None) -> list[str]:
     if path is None:
         return []
     modules: list[str] = []
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
@@ -847,7 +849,7 @@ def parse_junit(path: Path) -> RegrtestSummary:
 def parse_markdown_tables(path: Path) -> list[tuple[list[str], list[dict[str, str]]]]:
     if not path.exists():
         return []
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     tables: list[tuple[list[str], list[dict[str, str]]]] = []
     idx = 0
     while idx < len(lines) - 1:
@@ -976,7 +978,9 @@ def write_type_semantics_report(config: RegrtestConfig) -> MatrixReport:
     }
     json_path = config.output_dir / "type_semantics_matrix.json"
     md_path = config.output_dir / "type_semantics_matrix.md"
-    json_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    json_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+    )
     md_lines = [
         "# Type + Semantics Matrix Summary",
         "",
@@ -1010,7 +1014,7 @@ def write_type_semantics_report(config: RegrtestConfig) -> MatrixReport:
     for status, count in sorted(summary["semantics"].items()):
         md_lines.append(f"| {status} | {count} |")
     md_lines.append("")
-    md_path.write_text("\n".join(md_lines))
+    md_path.write_text("\n".join(md_lines), encoding="utf-8")
     return MatrixReport(json_path=json_path, md_path=md_path, summary=summary)
 
 
@@ -1088,7 +1092,7 @@ def finalize_coverage(
     ]
     _ = run_command(cmd_json, cwd=None, env=None, log_handle=log_handle, dry_run=False)
     _ = run_command(cmd_html, cwd=None, env=None, log_handle=log_handle, dry_run=False)
-    data = json.loads(json_path.read_text())
+    data = json.loads(json_path.read_text(encoding="utf-8"))
     files = data.get("files", {})
     coverage_files: dict[str, float] = {}
     total_percent = 0.0
@@ -1157,6 +1161,7 @@ def run_rust_coverage(
         env=command_env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     if check.returncode != 0:
         message = (
@@ -1205,7 +1210,7 @@ def load_stdlib_modules(version: str, source: str) -> list[str]:
 def parse_stdlib_matrix(path: Path) -> dict[str, dict[str, str]]:
     if not path.exists():
         return {}
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     header_idx = None
     for idx, line in enumerate(lines):
         if line.strip().startswith("| Module | Tier | Status |"):
@@ -1262,7 +1267,9 @@ def write_stdlib_matrix(
     csv_path = None
     if config.matrix_format in {"json", "both"}:
         json_path = config.output_dir / "stdlib_matrix.json"
-        json_path.write_text(json.dumps(rows, indent=2, sort_keys=True))
+        json_path.write_text(
+            json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8"
+        )
     if config.matrix_format in {"csv", "both"}:
         csv_path = config.output_dir / "stdlib_matrix.csv"
         with csv_path.open("w", newline="") as handle:
@@ -1318,7 +1325,7 @@ def run_diff_suite(
         )
         if json_path.exists():
             try:
-                data = json.loads(json_path.read_text())
+                data = json.loads(json_path.read_text(encoding="utf-8"))
                 total += int(data.get("total", 0))
                 passed += int(data.get("passed", 0))
                 failed += int(data.get("failed", 0))
@@ -1336,7 +1343,9 @@ def run_diff_suite(
     }
     json_out = config.output_dir / "diff_summary.json"
     md_out = config.output_dir / "diff_summary.md"
-    json_out.write_text(json.dumps(diff_summary, indent=2, sort_keys=True))
+    json_out.write_text(
+        json.dumps(diff_summary, indent=2, sort_keys=True), encoding="utf-8"
+    )
     md_lines = [
         "# Molt differential summary",
         "",
@@ -1350,7 +1359,7 @@ def run_diff_suite(
         md_lines.extend(["", "## Failed files", ""])
         md_lines.extend(f"- {name}" for name in sorted(set(failed_files)))
     md_lines.append("")
-    md_out.write_text("\n".join(md_lines))
+    md_out.write_text("\n".join(md_lines), encoding="utf-8")
     return DiffSummary(
         total=total,
         passed=passed,
@@ -1463,7 +1472,9 @@ def write_summary(
             "command": rust_coverage.command,
         }
     summary_path = config.output_dir / "summary.json"
-    summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    summary_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+    )
     md_path = config.output_dir / "summary.md"
     lines = [
         "# CPython regrtest summary",
@@ -1512,7 +1523,7 @@ def write_summary(
             ]
         )
     lines.append("")
-    md_path.write_text("\n".join(lines))
+    md_path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def write_root_summary(output_root: Path, runs: list[dict]) -> None:
@@ -1521,7 +1532,9 @@ def write_root_summary(output_root: Path, runs: list[dict]) -> None:
         "item_results": runs[0].get("item_results", []) if len(runs) == 1 else [],
     }
     summary_path = output_root / "summary.json"
-    summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    summary_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+    )
     md_path = output_root / "summary.md"
     lines = [
         "# CPython regrtest summary (all runs)",
@@ -1558,7 +1571,7 @@ def write_root_summary(output_root: Path, runs: list[dict]) -> None:
             )
         )
     lines.append("")
-    md_path.write_text("\n".join(lines))
+    md_path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def canonical_regrtest_env(
@@ -1769,7 +1782,7 @@ def main(argv: list[str] | None = None) -> int:
         returncodes.append(rc)
         if summary_path.exists():
             try:
-                data = json.loads(summary_path.read_text())
+                data = json.loads(summary_path.read_text(encoding="utf-8"))
                 runs.append(data)
             except json.JSONDecodeError:
                 runs.append(

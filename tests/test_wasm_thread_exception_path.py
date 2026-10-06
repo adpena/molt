@@ -37,7 +37,8 @@ def test_wasm_thread_start_notimplemented_has_clean_exception_path(
                 print(str(exc))
                 print("caught")
             """
-        )
+        ),
+        encoding="utf-8",
     )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)

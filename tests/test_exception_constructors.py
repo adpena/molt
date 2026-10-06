@@ -33,7 +33,8 @@ def _write_exception_program(path: Path) -> None:
 
             main()
             """
-        )
+        ),
+        encoding="utf-8",
     )
 
 

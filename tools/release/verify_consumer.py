@@ -152,6 +152,7 @@ def _capture_python_execution(
         text=True,
         timeout=30,
         check=True,
+        encoding="utf-8",
     )
     observed = loads_exact(result.stdout)
     if (

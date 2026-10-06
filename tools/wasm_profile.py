@@ -181,7 +181,9 @@ def main() -> None:
         "memory_guard": harness_memory_guard.limits_summary(limits),
     }
     manifest_path = out_dir / "profile_manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
     if not ok:
         sys.exit(1)

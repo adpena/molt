@@ -65,7 +65,7 @@ def test_validate_bundle_contract_accepts_split_runtime_layout(
 
     bundle_root = tmp_path / "bundle"
     bundle_root.mkdir()
-    (bundle_root / "worker.js").write_text(WORKER_ABI_JS)
+    (bundle_root / "worker.js").write_text(WORKER_ABI_JS, encoding="utf-8")
     (bundle_root / "app.wasm").write_bytes(EMPTY_CALLABLE_WASM)
     (bundle_root / "molt_runtime.wasm").write_bytes(EMPTY_CALLABLE_WASM)
     (bundle_root / "manifest.json").write_text(
@@ -80,7 +80,8 @@ def test_validate_bundle_contract_accepts_split_runtime_layout(
                 },
             }
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     wrangler_config = bundle_root / "wrangler.jsonc"
     wrangler_config.write_text(
@@ -101,7 +102,8 @@ def test_validate_bundle_contract_accepts_split_runtime_layout(
                 ],
             }
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
 
     contract = verify.validate_bundle_contract(bundle_root, wrangler_config)
@@ -125,8 +127,10 @@ def test_validate_bundle_contract_accepts_precise_split_runtime_module_rules(
 
     bundle_root = tmp_path / "bundle"
     bundle_root.mkdir()
-    (bundle_root / "worker.js").write_text(WORKER_ABI_JS)
-    (bundle_root / "molt_vfs_browser.js").write_text("export class MoltVfs {}\n")
+    (bundle_root / "worker.js").write_text(WORKER_ABI_JS, encoding="utf-8")
+    (bundle_root / "molt_vfs_browser.js").write_text(
+        "export class MoltVfs {}\n", encoding="utf-8"
+    )
     (bundle_root / "app.wasm").write_bytes(EMPTY_CALLABLE_WASM)
     (bundle_root / "molt_runtime.wasm").write_bytes(EMPTY_CALLABLE_WASM)
     (bundle_root / "manifest.json").write_text(
@@ -141,7 +145,8 @@ def test_validate_bundle_contract_accepts_precise_split_runtime_module_rules(
                 },
             }
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     wrangler_config = bundle_root / "wrangler.jsonc"
     wrangler_config.write_text(
@@ -166,7 +171,8 @@ def test_validate_bundle_contract_accepts_precise_split_runtime_module_rules(
                 ],
             }
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
 
     contract = verify.validate_bundle_contract(bundle_root, wrangler_config)
@@ -182,7 +188,7 @@ def test_validate_bundle_contract_rejects_missing_split_runtime_abi(
 
     bundle_root = tmp_path / "bundle"
     bundle_root.mkdir()
-    (bundle_root / "worker.js").write_text(WORKER_ABI_JS)
+    (bundle_root / "worker.js").write_text(WORKER_ABI_JS, encoding="utf-8")
     (bundle_root / "app.wasm").write_bytes(EMPTY_CALLABLE_WASM)
     (bundle_root / "molt_runtime.wasm").write_bytes(EMPTY_CALLABLE_WASM)
     (bundle_root / "manifest.json").write_text(
@@ -196,7 +202,8 @@ def test_validate_bundle_contract_rejects_missing_split_runtime_abi(
                 },
             }
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     wrangler_config = bundle_root / "wrangler.jsonc"
     wrangler_config.write_text(
@@ -217,7 +224,8 @@ def test_validate_bundle_contract_rejects_missing_split_runtime_abi(
                 ],
             }
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
 
     with pytest.raises(RuntimeError, match="manifest missing split-runtime ABI"):
@@ -232,7 +240,7 @@ def test_validate_bundle_contract_rejects_worker_runtime_abi_drift(
     bundle_root = tmp_path / "bundle"
     bundle_root.mkdir()
     (bundle_root / "worker.js").write_text(
-        WORKER_ABI_JS.replace('"result": "i64"', '"result": "i32"')
+        WORKER_ABI_JS.replace('"result": "i64"', '"result": "i32"'), encoding="utf-8"
     )
     (bundle_root / "app.wasm").write_bytes(EMPTY_CALLABLE_WASM)
     (bundle_root / "molt_runtime.wasm").write_bytes(EMPTY_CALLABLE_WASM)
@@ -248,7 +256,8 @@ def test_validate_bundle_contract_rejects_worker_runtime_abi_drift(
                 },
             }
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     wrangler_config = bundle_root / "wrangler.jsonc"
     wrangler_config.write_text(
@@ -269,7 +278,8 @@ def test_validate_bundle_contract_rejects_worker_runtime_abi_drift(
                 ],
             }
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
 
     with pytest.raises(RuntimeError, match="worker runtime import signatures drifted"):
@@ -285,7 +295,7 @@ def test_run_wrangler_dry_run_uses_no_bundle_and_outdir(
     bundle_root = tmp_path / "bundle"
     bundle_root.mkdir()
     wrangler_config = bundle_root / "wrangler.jsonc"
-    wrangler_config.write_text("{}\n")
+    wrangler_config.write_text("{}\n", encoding="utf-8")
     captured: dict[str, object] = {}
 
     def fake_run(cmd, cwd, env, verbose):
@@ -331,7 +341,7 @@ def test_run_wrangler_deploy_uses_no_bundle(
     bundle_root = tmp_path / "bundle"
     bundle_root.mkdir()
     wrangler_config = bundle_root / "wrangler.jsonc"
-    wrangler_config.write_text("{}\n")
+    wrangler_config.write_text("{}\n", encoding="utf-8")
     captured: dict[str, object] = {}
 
     def fake_run(cmd, cwd, env, verbose):

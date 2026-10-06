@@ -209,7 +209,8 @@ if (!lastSocket || lastSocket.url !== 'ws://example.com:1234') {{
 }}
 
 console.log('ok');
-""".lstrip()
+""".lstrip(),
+        encoding="utf-8",
     )
 
     run = _run_wasm_test_process(

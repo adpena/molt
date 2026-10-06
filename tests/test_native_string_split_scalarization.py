@@ -28,7 +28,8 @@ def test_native_string_split_constant_field_scalarization_runs(tmp_path: Path) -
 
             main()
             """
-        )
+        ),
+        encoding="utf-8",
     )
 
     env = os.environ.copy()
@@ -73,7 +74,8 @@ def test_native_string_split_scalarization_preserves_split_point_exceptions(
 
             main()
             """
-        )
+        ),
+        encoding="utf-8",
     )
 
     env = os.environ.copy()
@@ -119,7 +121,8 @@ def test_native_string_split_scalarization_preserves_field_index_error(
 
             main()
             """
-        )
+        ),
+        encoding="utf-8",
     )
 
     env = os.environ.copy()

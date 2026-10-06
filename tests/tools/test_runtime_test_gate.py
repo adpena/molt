@@ -139,14 +139,16 @@ def test_aggregate_rederives_descendants_from_raw_child_evidence(
     exit_child = children[support.EXIT][0]
     parallel = children["parallel"][0]
     if mutation == "exit_lease_child_missing":
-        stderr = Path(exit_child["executions"][0]["stderr_evidence"]).read_text()
+        stderr = Path(exit_child["executions"][0]["stderr_evidence"]).read_text(
+            encoding="utf-8"
+        )
         kept = [line for line in stderr.splitlines() if '"mode": "lease"' not in line]
         support.republish(exit_child, "stderr", "\n".join(kept) + "\n")
     elif mutation == "parallel_children_removed":
         support.republish(parallel, "stderr", "")
     elif mutation == "descendant_stream_changed":
         artifacts = binding["binary"].parent / "molt-test-artifacts"
-        next(artifacts.glob("*/stdout.log")).write_text("mutated")
+        next(artifacts.glob("*/stdout.log")).write_text("mutated", encoding="utf-8")
     elif mutation == "saved_rows_hide_owner":
         parallel["test_results"] = [
             row for row in parallel["test_results"] if row["identity"] != support.COLD

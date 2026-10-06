@@ -47,7 +47,7 @@ def repo(tmp_path: Path) -> Path:
     _git(w, "config", "user.email", "t@t")
     _git(w, "config", "user.name", "t")
     _git(w, "remote", "add", "origin", str(bare))
-    (w / "docs" / "agent" / "CLAIMS.md").write_text(_claims_body(""))
+    (w / "docs" / "agent" / "CLAIMS.md").write_text(_claims_body(""), encoding="utf-8")
     _git(w, "add", "-A")
     _git(w, "commit", "-q", "-m", "init")
     _git(w, "push", "-q", "origin", "main")
@@ -55,7 +55,9 @@ def repo(tmp_path: Path) -> Path:
 
 
 def _set_claims(repo: Path, rows: str) -> None:
-    (repo / "docs" / "agent" / "CLAIMS.md").write_text(_claims_body(rows))
+    (repo / "docs" / "agent" / "CLAIMS.md").write_text(
+        _claims_body(rows), encoding="utf-8"
+    )
     _git(repo, "commit", "-q", "-m", "seed claims", "--", "docs/agent/CLAIMS.md")
     _git(repo, "push", "-q", "origin", "main")
 

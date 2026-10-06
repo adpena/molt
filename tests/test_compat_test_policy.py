@@ -294,7 +294,9 @@ def test_metadata_and_digest_use_captured_bytes_not_a_second_path_read(
         result = capture(path, **kwargs)
         assert result[0].sha256 == hashlib.sha256(original).hexdigest()
         reads.append(path)
-        source.write_text("# MOLT_META: backends=wasm\nprint('new')\n")
+        source.write_text(
+            "# MOLT_META: backends=wasm\nprint('new')\n", encoding="utf-8"
+        )
         return result
 
     monkeypatch.setattr(test_policy, "capture_stable_regular_file", capture_then_change)
@@ -322,7 +324,7 @@ def test_inventory_rejects_changes_and_fresh_capture_observes_them(
     elif mutation == "delete":
         source.unlink()
     elif mutation == "metadata":
-        source.write_text("# MOLT_META: backends=wasm\nprint('ok')\n")
+        source.write_text("# MOLT_META: backends=wasm\nprint('ok')\n", encoding="utf-8")
     else:
         raw = source.read_bytes()
         source.write_bytes(raw.replace(b"'ok'", b"'no'"))
@@ -382,7 +384,9 @@ def test_inventory_capture_fences_mutation_during_source_loading(
     def capture_then_change(path, **kwargs):
         result = capture(path, **kwargs)
         if mutation == "source":
-            source.write_text("# MOLT_META: backends=wasm\nprint('new')\n")
+            source.write_text(
+                "# MOLT_META: backends=wasm\nprint('new')\n", encoding="utf-8"
+            )
         elif mutation == "addition":
             _source(suite, "backends=wasm", name="added.py")
         else:
@@ -400,7 +404,9 @@ def test_inventory_uses_physical_membership_and_rejects_overlapping_suites(
     tmp_path: Path,
 ) -> None:
     root, suite, source = _inventory_fixture(tmp_path)
-    (suite / "TESTS.txt").write_text("# deliberately empty scheduling projection\n")
+    (suite / "TESTS.txt").write_text(
+        "# deliberately empty scheduling projection\n", encoding="utf-8"
+    )
     inventory = test_policy.load_test_inventory((("suite", False),), repo_root=root)
     assert inventory.files == (source,)
     with pytest.raises(ValueError, match="selected by multiple suites"):
@@ -609,7 +615,7 @@ def test_explicit_source_projection_fences_ancestor_replacement(
 @pytest.mark.parametrize("body", ["", '"""Package fixture."""\n'])
 def test_inert_fixture_is_source_bound_but_not_a_program(tmp_path, body):
     path = tmp_path / "fixture.py"
-    path.write_text("# MOLT_META: source_role=fixture\n" + body)
+    path.write_text("# MOLT_META: source_role=fixture\n" + body, encoding="utf-8")
     metadata = test_policy.parse_metadata(path)
     assert metadata.source_role == "fixture"
     assert metadata.python_exclusion_reason((3, 12)) == "inert fixture source"
@@ -635,7 +641,9 @@ def test_inert_fixture_is_source_bound_but_not_a_program(tmp_path, body):
 )
 def test_fixture_role_cannot_hide_executable_programs(tmp_path, body):
     path = tmp_path / "fixture.py"
-    path.write_text("# MOLT_META: source_role=fixture\n" + body + "\n")
+    path.write_text(
+        "# MOLT_META: source_role=fixture\n" + body + "\n", encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="executable programs cannot be excluded"):
         test_policy.parse_metadata(path)
 
@@ -649,6 +657,6 @@ def test_fixture_role_cannot_hide_executable_programs(tmp_path, body):
 )
 def test_invalid_fixture_role_or_policy_override_fails_closed(tmp_path, declaration):
     path = tmp_path / "fixture.py"
-    path.write_text("# MOLT_META: " + declaration + "\n")
+    path.write_text("# MOLT_META: " + declaration + "\n", encoding="utf-8")
     with pytest.raises(ValueError):
         test_policy.parse_metadata(path)

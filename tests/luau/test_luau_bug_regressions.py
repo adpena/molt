@@ -94,7 +94,7 @@ def _compile_to_luau(python_source: str) -> str:
         if result.returncode != 0:
             pytest.skip(f"Compilation failed: {result.stderr[:300]}")
 
-        with open(luau_path, "r") as f:
+        with open(luau_path, "r", encoding="utf-8") as f:
             return f.read()
     finally:
         for p in [py_path]:

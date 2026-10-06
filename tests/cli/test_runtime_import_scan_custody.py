@@ -445,11 +445,13 @@ def test_custody_seed_preserves_alias_names_for_one_shared_source(
     from molt.cli.module_graph_discovery import _discover_module_graph_from_paths
 
     owner = (tmp_path / "shared.py").resolve()
-    owner.write_text("__package__ = choose_package()\nfrom . import child\n")
+    owner.write_text(
+        "__package__ = choose_package()\nfrom . import child\n", encoding="utf-8"
+    )
     first_child = (tmp_path / "first_child.py").resolve()
     second_child = (tmp_path / "second_child.py").resolve()
-    first_child.write_text("pass\n")
-    second_child.write_text("pass\n")
+    first_child.write_text("pass\n", encoding="utf-8")
+    second_child.write_text("pass\n", encoding="utf-8")
     tree = ast.parse(owner.read_text(encoding="utf-8"))
     custody = _RuntimeImportScanCustody(
         owners=(("first.owner", owner), ("second.owner", owner)),
@@ -648,7 +650,7 @@ def test_source_claim_cannot_authorize_substituted_ast_or_cache_hit(
     cache = _ModuleResolutionCache()
     cache.collect_graph_imports(
         owner,
-        ast.parse(owner.read_text()),
+        ast.parse(owner.read_text(encoding="utf-8")),
         collector=_collect_imports_for_graph,
         module_name="pkg.entry",
         runtime_import_custody=custody,
@@ -759,7 +761,7 @@ def test_graph_import_plan_and_full_frontend_share_runtime_custody(
         module_roots=[tmp_path],
         stdlib_root=stdlib,
         project_root=None,
-        entry_tree=ast.parse(entry.read_text()),
+        entry_tree=ast.parse(entry.read_text(encoding="utf-8")),
         diagnostics_enabled=False,
         module_reasons=reasons,
         json_output=False,

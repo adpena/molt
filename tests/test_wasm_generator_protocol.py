@@ -134,7 +134,8 @@ def test_wasm_generator_protocol_parity(tmp_path: Path) -> None:
         "except RuntimeError as exc:\n"
         "    print(exc.__cause__ is None)\n"
         "    print(exc.__context__ is None)\n"
-        "    print(exc.__suppress_context__)\n"
+        "    print(exc.__suppress_context__)\n",
+        encoding="utf-8",
     )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)

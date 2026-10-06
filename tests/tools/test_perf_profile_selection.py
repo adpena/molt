@@ -287,7 +287,7 @@ def test_profile_regressions_and_producer_closure_are_mandatory_proofs():
     import tomllib
 
     root = Path(__file__).resolve().parents[2]
-    plan = tomllib.loads((root / "tools/proof_plan.toml").read_text())
+    plan = tomllib.loads((root / "tools/proof_plan.toml").read_text(encoding="utf-8"))
     commands = {command["id"]: command for command in plan["command"]}
     docs = commands["repository.docs-tests"]
     assert docs["tiers"] == ["pre-push", "pr", "main"]

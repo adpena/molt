@@ -434,7 +434,7 @@ def _write_fake_wasi_sysroot(root: Path) -> Path:
     sysroot = root / "wasi-sysroot"
     include_dir = sysroot / "include"
     include_dir.mkdir(parents=True)
-    (include_dir / "errno.h").write_text("#define EINVAL 28\n")
+    (include_dir / "errno.h").write_text("#define EINVAL 28\n", encoding="utf-8")
     return sysroot
 
 
@@ -543,7 +543,8 @@ def _write_extension_project(
         "};\n"
         "PyMODINIT_FUNC PyInit_demoext(void) {\n"
         "    return PyModule_Create(&demoext_module);\n"
-        "}\n"
+        "}\n",
+        encoding="utf-8",
     )
     (project_root / "pyproject.toml").write_text(
         "\n".join(
@@ -560,7 +561,8 @@ def _write_extension_project(
                 *(extension_extra_lines or []),
                 "",
             ]
-        )
+        ),
+        encoding="utf-8",
     )
 
 
@@ -585,7 +587,8 @@ def _write_meson_source_plan_project(
     (include_dir / "demoext.h").write_text(
         "#define NPY_HEADER_ONLY_MACRO 17\n"
         "#define NPY_GENERATED_DECL(name) int npy_generated_ ## name(void)\n"
-        "int helper_generated(void);\n"
+        "int helper_generated(void);\n",
+        encoding="utf-8",
     )
     (src_dir / "demoext.c").write_text(
         "#include <Python.h>\n"
@@ -633,7 +636,9 @@ def _write_meson_source_plan_project(
         "int helper_generated(void) { return (int)PyLong_AsLong(PyLong_FromLong(7)); }\n",
         encoding="utf-8",
     )
-    (generated_dir / "generated_only.h").write_text("#define GENERATED_ONLY 1\n")
+    (generated_dir / "generated_only.h").write_text(
+        "#define GENERATED_ONLY 1\n", encoding="utf-8"
+    )
     if linked_static_library:
         (src_dir / "unique.cpp").write_text(
             "int array__unique_hash(void) { return 1; }\n",
@@ -807,7 +812,7 @@ def _write_meson_source_plan_project(
 
     intro_targets = archive_names(intro_targets)
     intro_path = meson_info_dir / "intro-targets.json"
-    intro_path.write_text(json.dumps(intro_targets, indent=2) + "\n")
+    intro_path.write_text(json.dumps(intro_targets, indent=2) + "\n", encoding="utf-8")
     compile_commands = [
         {
             "directory": str(project_root),
@@ -977,7 +982,8 @@ def _write_extension_scan_project(project_root: Path) -> None:
                 "",
             ]
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     (project_root / "pyproject.toml").write_text(
         "\n".join(
@@ -993,7 +999,8 @@ def _write_extension_scan_project(project_root: Path) -> None:
                 f'molt_c_api_version = "{_default_molt_c_api_version(ROOT)}"',
                 "",
             ]
-        )
+        ),
+        encoding="utf-8",
     )
 
 
@@ -1068,7 +1075,8 @@ def _write_extension_numpy_project(project_root: Path) -> None:
                 "",
             ]
         )
-        + "\n"
+        + "\n",
+        encoding="utf-8",
     )
     (project_root / "pyproject.toml").write_text(
         "\n".join(
@@ -1084,7 +1092,8 @@ def _write_extension_numpy_project(project_root: Path) -> None:
                 f'molt_c_api_version = "{_default_molt_c_api_version(ROOT)}"',
                 "",
             ]
-        )
+        ),
+        encoding="utf-8",
     )
 
 
@@ -1193,7 +1202,7 @@ def _write_extension_wheel(
         manifest["wheel_sha256"] = hashlib.sha256(wheel_path.read_bytes()).hexdigest()
         manifest["extension_sha256"] = hashlib.sha256(extension_bytes).hexdigest()
     manifest_path = root / "extension_manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return manifest_path, wheel_path
 
 
@@ -1281,17 +1290,24 @@ def test_extension_scan_accepts_source_directories_deterministically(
     ignored = src / "build"
     nested.mkdir(parents=True)
     ignored.mkdir()
-    (project_root / "pyproject.toml").write_text("[project]\nname = 'scan-dir'\n")
+    (project_root / "pyproject.toml").write_text(
+        "[project]\nname = 'scan-dir'\n", encoding="utf-8"
+    )
     (src / "a.c").write_text(
-        "#include <Python.h>\nPyObject *a(void) { return PyLong_FromLong(1); }\n"
+        "#include <Python.h>\nPyObject *a(void) { return PyLong_FromLong(1); }\n",
+        encoding="utf-8",
     )
     (nested / "b.h").write_text(
-        "#include <Python.h>\nvoid *b(void) { return (void *)PyCode_NewWithPosOnlyArgs; }\n"
+        "#include <Python.h>\nvoid *b(void) { return (void *)PyCode_NewWithPosOnlyArgs; }\n",
+        encoding="utf-8",
     )
     (ignored / "ignored.c").write_text(
-        "#include <Python.h>\nvoid *ignored(void) { return (void *)PyObject_Str; }\n"
+        "#include <Python.h>\nvoid *ignored(void) { return (void *)PyObject_Str; }\n",
+        encoding="utf-8",
     )
-    (src / "not_a_source.txt").write_text("PyObject_Repr should not be scanned\n")
+    (src / "not_a_source.txt").write_text(
+        "PyObject_Repr should not be scanned\n", encoding="utf-8"
+    )
 
     rc = cli.extension_scan(
         project=str(project_root),
@@ -1323,13 +1339,17 @@ def test_extension_scan_excludes_non_build_source_directories(
     src = project_root / "src"
     tests_dir = src / "tests"
     tests_dir.mkdir(parents=True)
-    (project_root / "pyproject.toml").write_text("[project]\nname = 'scan-exclude'\n")
+    (project_root / "pyproject.toml").write_text(
+        "[project]\nname = 'scan-exclude'\n", encoding="utf-8"
+    )
     (src / "module.c").write_text(
-        "#include <Python.h>\nPyObject *ok(void) { return PyLong_FromLong(1); }\n"
+        "#include <Python.h>\nPyObject *ok(void) { return PyLong_FromLong(1); }\n",
+        encoding="utf-8",
     )
     (tests_dir / "fixture.c").write_text(
         "#include <Python.h>\n"
-        "void *fixture(void) { return (void *)PyCode_NewWithPosOnlyArgs; }\n"
+        "void *fixture(void) { return (void *)PyCode_NewWithPosOnlyArgs; }\n",
+        encoding="utf-8",
     )
 
     rc = cli.extension_scan(
@@ -1355,7 +1375,9 @@ def test_extension_scan_reads_non_utf8_source_deterministically(
     project_root = tmp_path / "scan_non_utf8_project"
     src = project_root / "src"
     src.mkdir(parents=True)
-    (project_root / "pyproject.toml").write_text("[project]\nname = 'scan-non-utf8'\n")
+    (project_root / "pyproject.toml").write_text(
+        "[project]\nname = 'scan-non-utf8'\n", encoding="utf-8"
+    )
     (src / "module.c").write_bytes(
         b"#include <Python.h>\n"
         b"// non-utf8 byte: \x90\n"
@@ -1382,7 +1404,9 @@ def test_extension_scan_resolves_package_defined_py_symbols(
     project_root = tmp_path / "scan_project_defined"
     src = project_root / "src"
     src.mkdir(parents=True)
-    (project_root / "pyproject.toml").write_text("[project]\nname = 'scan-local'\n")
+    (project_root / "pyproject.toml").write_text(
+        "[project]\nname = 'scan-local'\n", encoding="utf-8"
+    )
     (src / "defs.h").write_text(
         "\n".join(
             [
@@ -1393,7 +1417,8 @@ def test_extension_scan_resolves_package_defined_py_symbols(
                 "static const int NPY_LOCAL_STATIC_CONST = 5;",
                 "",
             ]
-        )
+        ),
+        encoding="utf-8",
     )
     (src / "defs.c").write_text(
         "\n".join(
@@ -1416,7 +1441,8 @@ def test_extension_scan_resolves_package_defined_py_symbols(
                 "}",
                 "",
             ]
-        )
+        ),
+        encoding="utf-8",
     )
     (src / "use.c").write_text(
         "\n".join(
@@ -1443,7 +1469,8 @@ def test_extension_scan_resolves_package_defined_py_symbols(
                 "}",
                 "",
             ]
-        )
+        ),
+        encoding="utf-8",
     )
 
     rc = cli.extension_scan(
@@ -1484,7 +1511,9 @@ def test_extension_scan_preserves_guarded_body_symbols(tmp_path: Path, capsys) -
     project_root = tmp_path / "scan_guarded_body"
     src = project_root / "src"
     src.mkdir(parents=True)
-    (project_root / "pyproject.toml").write_text("[project]\nname = 'scan-guard'\n")
+    (project_root / "pyproject.toml").write_text(
+        "[project]\nname = 'scan-guard'\n", encoding="utf-8"
+    )
     (src / "guarded.c").write_text(
         "\n".join(
             [
@@ -1497,7 +1526,8 @@ def test_extension_scan_preserves_guarded_body_symbols(tmp_path: Path, capsys) -
                 "}",
                 "",
             ]
-        )
+        ),
+        encoding="utf-8",
     )
 
     rc = cli.extension_scan(
@@ -1521,7 +1551,9 @@ def test_extension_scan_macro_bodies_do_not_define_called_apis(
     project_root = tmp_path / "scan_macro_body"
     src = project_root / "src"
     src.mkdir(parents=True)
-    (project_root / "pyproject.toml").write_text("[project]\nname = 'scan-macro'\n")
+    (project_root / "pyproject.toml").write_text(
+        "[project]\nname = 'scan-macro'\n", encoding="utf-8"
+    )
     (src / "macro.h").write_text(
         "\n".join(
             [
@@ -1529,7 +1561,8 @@ def test_extension_scan_macro_bodies_do_not_define_called_apis(
                 "    (PyMacroMissingAPI((npy_type)))",
                 "",
             ]
-        )
+        ),
+        encoding="utf-8",
     )
     (src / "use.c").write_text(
         "\n".join(
@@ -1540,7 +1573,8 @@ def test_extension_scan_macro_bodies_do_not_define_called_apis(
                 "}",
                 "",
             ]
-        )
+        ),
+        encoding="utf-8",
     )
 
     rc = cli.extension_scan(
@@ -1565,7 +1599,9 @@ def test_extension_scan_classifies_project_generated_c_api_symbols(
     project_root = tmp_path / "scan_generated_api"
     src = project_root / "src"
     src.mkdir(parents=True)
-    (project_root / "pyproject.toml").write_text("[project]\nname = 'scan-gen'\n")
+    (project_root / "pyproject.toml").write_text(
+        "[project]\nname = 'scan-gen'\n", encoding="utf-8"
+    )
     (src / "generated.c").write_text(
         "\n".join(
             [
@@ -1583,7 +1619,8 @@ def test_extension_scan_classifies_project_generated_c_api_symbols(
                 "}",
                 "",
             ]
-        )
+        ),
+        encoding="utf-8",
     )
 
     rc = cli.extension_scan(
@@ -1662,17 +1699,25 @@ def test_extension_scan_numpy_surface_fails_closed_without_package_headers(
 
 
 def test_cpython_abi_variadic_shim_owns_variadic_exports() -> None:
-    shim = (ROOT / "runtime/molt-cpython-abi/shims/pyarg_variadic.c").read_text()
-    platform = (ROOT / "runtime/molt-cpython-abi/src/platform.rs").read_text()
-    build_rs = (ROOT / "runtime/molt-cpython-abi/build.rs").read_text()
+    shim = (ROOT / "runtime/molt-cpython-abi/shims/pyarg_variadic.c").read_text(
+        encoding="utf-8"
+    )
+    platform = (ROOT / "runtime/molt-cpython-abi/src/platform.rs").read_text(
+        encoding="utf-8"
+    )
+    build_rs = (ROOT / "runtime/molt-cpython-abi/build.rs").read_text(encoding="utf-8")
     runtime_anchor = (
         ROOT / "runtime/molt-runtime/src/c_api/cpython_abi_wasm_exports.rs"
-    ).read_text()
-    runtime_c_api_mod = (ROOT / "runtime/molt-runtime/src/c_api/mod.rs").read_text()
-    runtime_build_rs = (ROOT / "runtime/molt-runtime/build.rs").read_text()
+    ).read_text(encoding="utf-8")
+    runtime_c_api_mod = (ROOT / "runtime/molt-runtime/src/c_api/mod.rs").read_text(
+        encoding="utf-8"
+    )
+    runtime_build_rs = (ROOT / "runtime/molt-runtime/build.rs").read_text(
+        encoding="utf-8"
+    )
     variadic_exports = set(
         (ROOT / "runtime/molt-cpython-abi/shims/pyarg_variadic.exports")
-        .read_text()
+        .read_text(encoding="utf-8")
         .splitlines()
     )
 
@@ -1726,8 +1771,12 @@ def test_cpython_abi_variadic_shim_owns_variadic_exports() -> None:
 
 
 def test_cpython_abi_pyarg_format_parity_masks() -> None:
-    shim = (ROOT / "runtime/molt-cpython-abi/shims/pyarg_variadic.c").read_text()
-    parser = (ROOT / "runtime/molt-cpython-abi/src/api/errors.rs").read_text()
+    shim = (ROOT / "runtime/molt-cpython-abi/shims/pyarg_variadic.c").read_text(
+        encoding="utf-8"
+    )
+    parser = (ROOT / "runtime/molt-cpython-abi/src/api/errors.rs").read_text(
+        encoding="utf-8"
+    )
 
     assert "MOLT_PYARG_MAX_OUTS" not in shim
     assert "void **outs = n == 0 ? NULL : (void **)malloc" in shim
@@ -1837,7 +1886,7 @@ def test_extension_build_emits_wheel_and_manifest(
 
     manifest_path = out_dir / "extension_manifest.json"
     assert manifest_path.exists()
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["wheel"] == wheel_path.name
     assert manifest["molt_c_api_version"] == _default_molt_c_api_version(ROOT)
     assert manifest["capabilities"] == ["fs.read"]
@@ -1937,7 +1986,9 @@ def test_extension_build_emits_public_exports_in_manifest(
     )
     source_path = project_root / "src" / "demoext.c"
     source_path.write_text(
-        source_path.read_text() + "\nstatic PyTypeObject PyLocal_Type = {0};\n"
+        source_path.read_text(encoding="utf-8")
+        + "\nstatic PyTypeObject PyLocal_Type = {0};\n",
+        encoding="utf-8",
     )
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -1971,7 +2022,7 @@ def test_extension_build_emits_public_exports_in_manifest(
 
     assert rc == 0
     manifest_path = out_dir / "extension_manifest.json"
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["python_exports"] == ["demoext.ndimage.distance_transform_edt"]
     expected_support_files = [
         {
@@ -2068,7 +2119,9 @@ def test_extension_build_infers_module_attr_callable_exports_from_pymethoddef(
     )
 
     assert rc == 0
-    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    manifest = json.loads(
+        (out_dir / "extension_manifest.json").read_text(encoding="utf-8")
+    )
     expected_callable_exports = [
         {
             "module": "demoext.ndimage",
@@ -2118,7 +2171,9 @@ def test_extension_build_compiles_iterator_mapping_surface_without_subprocess_mo
     assert rc == 0
     wheels = sorted(out_dir.glob("*.whl"))
     assert len(wheels) == 1
-    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    manifest = json.loads(
+        (out_dir / "extension_manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["module"] == "demoext_iter"
     assert manifest["capabilities"] == ["fs.read"]
     with zipfile.ZipFile(wheels[0]) as zf:
@@ -2200,7 +2255,9 @@ def test_extension_build_cross_target_uses_target_compiler_and_manifest(
     ]
     assert compile_command[: len(expected_compiler)] == expected_compiler
     assert any("rcsD" in command for command in commands)
-    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    manifest = json.loads(
+        (out_dir / "extension_manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["target_triple"] == target
     assert manifest["runtime_linkage"] == "static_link"
     assert manifest["artifact_kind"] == "static_archive"
@@ -2274,7 +2331,9 @@ def test_extension_build_consumes_meson_source_plan_object_closure(
     assert any(
         part.endswith("1_helper_generated" + object_suffix) for part in archive_cmd
     )
-    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    manifest = json.loads(
+        (out_dir / "extension_manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["source_plan"]["kind"] == "meson-intro-targets"
     assert manifest["source_plan"]["plan"] == str(intro_path.resolve())
     assert manifest["source_plan"]["compile_commands"] == str(
@@ -2359,7 +2418,7 @@ def test_direct_build_audits_and_reseals_extracted_wheel(
     project.mkdir()
     _write_meson_source_plan_project(project)
     compile_database = project / "build" / "compile_commands.json"
-    compile_rows = json.loads(compile_database.read_text())
+    compile_rows = json.loads(compile_database.read_text(encoding="utf-8"))
     for row in compile_rows:
         row["arguments"].append("--target=wasm32-wasip1")
     compile_database.write_text(json.dumps(compile_rows), encoding="utf-8")
@@ -2430,7 +2489,9 @@ def test_direct_build_audits_and_reseals_extracted_wheel(
         == 0
     )
     capsys.readouterr()
-    manifest = json.loads((output / "extension_manifest.json").read_text())
+    manifest = json.loads(
+        (output / "extension_manifest.json").read_text(encoding="utf-8")
+    )
     produced = producer._audit_extension_output(
         output_root=output,
         module="pkg.demoext",
@@ -2473,7 +2534,9 @@ def test_direct_build_audits_and_reseals_extracted_wheel(
         == 0
     )
     assert json.loads(capsys.readouterr().out)["status"] == "ok"
-    sealed = json.loads((resealed / "extension_manifest.json").read_text())
+    sealed = json.loads(
+        (resealed / "extension_manifest.json").read_text(encoding="utf-8")
+    )
     assert sealed["extension_sha256"] == embedded["extension_sha256"]
     assert (
         sealed["runtime_python_import_modules"]
@@ -2659,7 +2722,9 @@ def test_extension_build_threads_source_plan_roots_to_cython_regeneration(
         == 1
         for arg in profile_args
     )
-    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    manifest = json.loads(
+        (out_dir / "extension_manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["cython_standalone"][0]["cimport_pxd_roots"] == [
         str(project_root.resolve())
     ]
@@ -2745,7 +2810,9 @@ def test_extension_build_derives_module_attr_support_source_closure(
     )
 
     assert rc == 0
-    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    manifest = json.loads(
+        (out_dir / "extension_manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["support_files"] == [
         {
             "path": "pkg/ndimage/_filters.py",
@@ -2848,7 +2915,9 @@ def test_extension_build_follows_linked_static_library_source_closure(
     archive_cmd = next(cmd for cmd in commands if "rcsD" in cmd)
     object_suffix = ".obj" if cli_commands.sys.platform == "win32" else ".o"
     assert any(part.endswith("2_unique" + object_suffix) for part in archive_cmd)
-    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    manifest = json.loads(
+        (out_dir / "extension_manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["build"]["object_count"] == 3
     assert manifest["build"]["linked_object_count"] == 3
     assert manifest["source_plan"]["skipped_generated_sources"] == [
@@ -2941,7 +3010,9 @@ def test_extension_build_excludes_linked_static_library(
         ("-c" in cmd or "/c" in cmd) and any("unique.cpp" in part for part in cmd)
         for cmd in commands
     )
-    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    manifest = json.loads(
+        (out_dir / "extension_manifest.json").read_text(encoding="utf-8")
+    )
     object_sources = {
         (out_dir / obj["source"]).read_bytes()
         for obj in manifest["object_closure"]["objects"]
@@ -3024,7 +3095,9 @@ def test_extension_build_follows_meson_aggregate_static_library_members(
         ("-c" in cmd or "/c" in cmd) and any("simd.dispatch.c" in part for part in cmd)
         for cmd in commands
     )
-    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    manifest = json.loads(
+        (out_dir / "extension_manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["build"]["object_count"] == 3
     assert manifest["build"]["linked_object_count"] == 3
     assert (
@@ -3484,7 +3557,9 @@ def test_native_target_metadata_commands_drive_real_extension_build(
     archive_command = next(command for command in executed if "rcsD" in command)
     assert compile_command[: len(tool_commands["c"])] == list(tool_commands["c"])
     assert archive_command[: len(tool_commands["ar"])] == list(tool_commands["ar"])
-    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    manifest = json.loads(
+        (out_dir / "extension_manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["target_triple"] == target_plan.target_triple
     assert manifest["artifact_kind"] == "static_archive"
     assert manifest["build"]["tool_commands"] == {
@@ -3773,7 +3848,9 @@ def test_freestanding_metadata_commands_drive_compile_and_relocatable_link(
         for command in compile_commands
     )
     assert link_command[: len(tool_commands["ld"])] == list(tool_commands["ld"])
-    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    manifest = json.loads(
+        (out_dir / "extension_manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["target_triple"] == "wasm32-unknown-unknown"
     assert manifest["artifact_kind"] == "wasm_relocatable_object"
     assert manifest["build"]["wasi_sysroot"] is None
@@ -3899,7 +3976,7 @@ def test_source_extension_toolchain_accepts_target_specific_wasi_sysroot_layout(
     sysroot = tmp_path / "wasi-sysroot-33.0+m"
     include_dir = sysroot / "include" / "wasm32-wasip1"
     include_dir.mkdir(parents=True)
-    (include_dir / "errno.h").write_text("#define EINVAL 28\n")
+    (include_dir / "errno.h").write_text("#define EINVAL 28\n", encoding="utf-8")
     wasm_link_inputs._resolve_wasi_sysroot_cached.cache_clear()
     monkeypatch.setenv("WASI_SYSROOT", str(sysroot))
     monkeypatch.delenv("MOLT_WASM_CC", raising=False)
@@ -4133,7 +4210,9 @@ def test_extension_build_wasm_target_emits_static_link_artifact_and_manifest(
         for export in wasm_artifact.read_wasm_function_exports(artifact_path)
     ] == ["PyInit_demoext", native_symbol]
 
-    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    manifest = json.loads(
+        (out_dir / "extension_manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["target_triple"] == "wasm32-wasip1"
     assert manifest["runtime_linkage"] == "static_link"
     assert manifest["artifact_kind"] == "wasm_relocatable_object"
@@ -4233,7 +4312,9 @@ def test_extension_build_real_wasm_object_separates_import_and_data_relocation_c
     )
 
     assert rc == 0
-    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    manifest = json.loads(
+        (out_dir / "extension_manifest.json").read_text(encoding="utf-8")
+    )
     object_closure = manifest["object_closure"]
     raw_undefined = object_closure["objects"][0]["undefined_symbols"]
     wasm_import_names = {item["name"] for item in object_closure["wasm_imports"]}
@@ -4258,7 +4339,7 @@ def test_extension_build_wasm_source_recompiled_package_requires_export_custody(
     _write_extension_project(project_root)
     pyproject = project_root / "pyproject.toml"
     pyproject.write_text(
-        pyproject.read_text().replace(
+        pyproject.read_text(encoding="utf-8").replace(
             'module = "demoext"',
             'module = "numpy._core._multiarray_umath"',
         ),
@@ -4298,7 +4379,7 @@ def test_extension_build_wasm_source_recompiled_package_accepts_cli_python_expor
     _write_extension_project(project_root)
     pyproject = project_root / "pyproject.toml"
     pyproject.write_text(
-        pyproject.read_text().replace(
+        pyproject.read_text(encoding="utf-8").replace(
             'module = "demoext"',
             'module = "numpy._core._multiarray_umath"',
         ),
@@ -4341,7 +4422,9 @@ def test_extension_build_wasm_source_recompiled_package_accepts_cli_python_expor
     )
 
     assert rc == 0
-    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    manifest = json.loads(
+        (out_dir / "extension_manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["module"] == "numpy._core._multiarray_umath"
     assert manifest["python_exports"] == ["numpy"]
     assert manifest["runtime_linkage"] == "static_link"
@@ -4462,7 +4545,7 @@ def test_wasi_sysroot_resolver_accepts_target_specific_include_layout(
     sysroot = tmp_path / "wasi-sysroot-33.0+m"
     include_dir = sysroot / "include" / "wasm32-wasip1"
     include_dir.mkdir(parents=True)
-    (include_dir / "errno.h").write_text("#define EINVAL 28\n")
+    (include_dir / "errno.h").write_text("#define EINVAL 28\n", encoding="utf-8")
 
     assert wasm_link_inputs.normalize_wasi_sysroot(sysroot) == sysroot.resolve(
         strict=False
@@ -4542,7 +4625,9 @@ def test_extension_numpy_build_uses_compiled_link_closure_matrix(
     )
     assert rc == 0
     assert list(out_dir.glob("*.whl"))
-    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    manifest = json.loads(
+        (out_dir / "extension_manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["runtime_linkage"] == "static_link"
     assert manifest["artifact_kind"] == "static_archive"
     required_symbols = {
@@ -4580,7 +4665,7 @@ def test_extension_audit_reports_abi_mismatch(tmp_path: Path) -> None:
         "extension": "demoext.so",
     }
     (out_dir / "extension_manifest.json").write_text(
-        json.dumps(manifest, indent=2) + "\n"
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
 
     rc = cli.extension_audit(
@@ -5355,7 +5440,9 @@ def test_extension_seal_retains_all_inputs_for_reseal_after_source_deletion(
             )
             == 0
         )
-        resealed = json.loads((resealed_root / "extension_manifest.json").read_text())
+        resealed = json.loads(
+            (resealed_root / "extension_manifest.json").read_text(encoding="utf-8")
+        )
         assert resealed["runtime_python_import_modules"] == []
         assert set(resealed["sources"]) == {
             path.relative_to(sealed_root).as_posix() for path in expected_sources
@@ -6268,7 +6355,8 @@ def test_python_header_parse_tuple_and_keywords_smoke(tmp_path: Path) -> None:
                 "}",
                 "",
             ]
-        )
+        ),
+        encoding="utf-8",
     )
     result = run_cli_test_process(
         [
@@ -6449,7 +6537,8 @@ def test_python_header_buffer_descriptor_smoke(tmp_path: Path) -> None:
                 "}",
                 "",
             ]
-        )
+        ),
+        encoding="utf-8",
     )
     result = run_cli_test_process(
         [
@@ -6572,7 +6661,8 @@ def test_python_header_type_module_declarations_smoke(tmp_path: Path) -> None:
                 "}",
                 "",
             ]
-        )
+        ),
+        encoding="utf-8",
     )
     result = run_cli_test_process(
         [
@@ -6742,7 +6832,8 @@ def test_datetime_header_smoke(tmp_path: Path) -> None:
                 "}",
                 "",
             ]
-        )
+        ),
+        encoding="utf-8",
     )
     result = run_cli_test_process(
         [
@@ -7644,7 +7735,7 @@ def _adversarial_rooted_meson_plan(project_root: Path, root_kind: str) -> Path:
     intro_path = _write_meson_source_plan_project(
         project_root, linked_static_library=True
     )
-    targets: list[dict[str, Any]] = json.loads(intro_path.read_text())
+    targets: list[dict[str, Any]] = json.loads(intro_path.read_text(encoding="utf-8"))
     # Root custody is independent of the shared fixture's cleaned-source case.
     for target in targets[1:]:
         for group in target.get("target_sources", []):
@@ -7662,7 +7753,8 @@ def _adversarial_rooted_meson_plan(project_root: Path, root_kind: str) -> Path:
     elif root_kind == "direct-symbol":
         pyproject = project_root / "pyproject.toml"
         pyproject.write_text(
-            pyproject.read_text() + "\n[[tool.molt.extension.callable_exports]]\n"
+            pyproject.read_text(encoding="utf-8")
+            + "\n[[tool.molt.extension.callable_exports]]\n"
             'module = "pkg.demoext"\n'
             'name = "unique_hash"\n'
             'binding = "direct_symbol"\n'
@@ -7742,7 +7834,9 @@ def test_extension_build_keeps_primary_and_folded_members_not_reachable_from_ini
     )
     captured = capsys.readouterr()
     assert rc == 0, captured.err
-    manifest = json.loads((out_dir / "extension_manifest.json").read_text())
+    manifest = json.loads(
+        (out_dir / "extension_manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["build"]["linked_object_count"] == 3
     if external_operand is not None:
         assert manifest["link_requirements"]["items"]

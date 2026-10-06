@@ -583,7 +583,7 @@ def split_build_a(tmp_path_factory):
     """Build PROGRAM_A with --split-runtime and return the output directory."""
     base = tmp_path_factory.mktemp("split_a")
     src = base / "prog_a.py"
-    src.write_text(PROGRAM_A)
+    src.write_text(PROGRAM_A, encoding="utf-8")
     out_dir = base / "out"
     out_dir.mkdir()
     result = _build_split(src, out_dir)
@@ -595,7 +595,7 @@ def split_build_b(tmp_path_factory):
     """Build PROGRAM_B with --split-runtime and return the output directory."""
     base = tmp_path_factory.mktemp("split_b")
     src = base / "prog_b.py"
-    src.write_text(PROGRAM_B)
+    src.write_text(PROGRAM_B, encoding="utf-8")
     out_dir = base / "out"
     out_dir.mkdir()
     result = _build_split(src, out_dir)
@@ -758,7 +758,7 @@ class TestSplitRuntimeArtifacts:
         if not app_wasm.exists() or not worker_js.exists() or not manifest.exists():
             pytest.skip("split-runtime artifacts not produced")
 
-        manifest_data = json.loads(manifest.read_text())
+        manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
         wasm_table_base = manifest_data["wasm_table_base"]
         assert wasm_table_base is not None, (
             "split-runtime manifest must preserve the backend-emitted "
@@ -770,7 +770,7 @@ class TestSplitRuntimeArtifacts:
         if first_exported_ref is not None:
             assert first_exported_ref >= wasm_table_base
 
-        worker_content = worker_js.read_text()
+        worker_content = worker_js.read_text(encoding="utf-8")
         assert (
             f"molt_set_wasm_table_base(BigInt({wasm_table_base}))" in worker_content
         ), (
@@ -1447,6 +1447,7 @@ def test_split_runtime_bigint_operand_scalar_fast_path_parity(
         "print(nei(BIG, BIG), nei(BIG, BIG + 1))\n"
         "print(lti(BIG, BIG + 1), lti(5, BIG))\n"
         "print(eqi(True, 1))\n",
+        encoding="utf-8",
     )
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -1782,7 +1783,7 @@ class TestWorkerJsContent:
         worker = out_dir / "worker.js"
         if not worker.exists():
             pytest.skip("worker.js not produced")
-        return worker.read_text()
+        return worker.read_text(encoding="utf-8")
 
     def test_shared_table(self, split_build_a):
         content = self._read_worker(split_build_a)
@@ -1877,7 +1878,7 @@ class TestManifestJson:
         manifest = out_dir / "manifest.json"
         if not manifest.exists():
             pytest.skip("manifest.json not produced")
-        return json.loads(manifest.read_text())
+        return json.loads(manifest.read_text(encoding="utf-8"))
 
     def _read_worker(self, split_build_a):
         out_dir, result = split_build_a
@@ -1886,7 +1887,7 @@ class TestManifestJson:
         worker = out_dir / "worker.js"
         if not worker.exists():
             pytest.skip("worker.js not produced")
-        return worker.read_text()
+        return worker.read_text(encoding="utf-8")
 
     @staticmethod
     def _worker_json_const(worker_js: str, name: str):

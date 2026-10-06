@@ -945,7 +945,9 @@ def _issue_branch_name(issue: dict[str, Any]) -> str:
 
 
 def _git_run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, check=False, capture_output=True, text=True)
+    return subprocess.run(
+        cmd, check=False, capture_output=True, text=True, encoding="utf-8"
+    )
 
 
 def _git_branch_exists_local(branch: str) -> bool:

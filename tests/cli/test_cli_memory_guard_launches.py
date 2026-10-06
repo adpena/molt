@@ -24,8 +24,8 @@ def test_uv_lock_check_uses_build_memory_guard(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
-    (tmp_path / "uv.lock").write_text("# lock\n")
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    (tmp_path / "uv.lock").write_text("# lock\n", encoding="utf-8")
     captured: dict[str, Any] = {}
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -46,8 +46,8 @@ def test_cargo_lock_check_uses_build_memory_guard(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    (tmp_path / "Cargo.toml").write_text("[workspace]\nmembers=[]\n")
-    (tmp_path / "Cargo.lock").write_text("# lock\n")
+    (tmp_path / "Cargo.toml").write_text("[workspace]\nmembers=[]\n", encoding="utf-8")
+    (tmp_path / "Cargo.lock").write_text("# lock\n", encoding="utf-8")
     captured: dict[str, Any] = {}
 
     def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -110,7 +110,9 @@ def test_rust_target_readiness_is_source_bound_guarded_and_non_mutating(
     inputs = WASM_TOOLCHAIN.wasm_link_inputs
     source = tmp_path / "compiler source"
     source.mkdir()
-    (source / "rust-toolchain.toml").write_text('[toolchain]\nchannel="9.8.7"\n')
+    (source / "rust-toolchain.toml").write_text(
+        '[toolchain]\nchannel="9.8.7"\n', encoding="utf-8"
+    )
     guest = tmp_path / "guest"
     guest.mkdir()
     monkeypatch.chdir(guest)
@@ -186,7 +188,7 @@ def test_mlir_backend_pipeline_uses_tempfile_memory_guard(
     ) -> subprocess.CompletedProcess[bytes]:
         captured["cmd"] = cmd
         captured["kwargs"] = kwargs
-        output.write_text("module {}\n")
+        output.write_text("module {}\n", encoding="utf-8")
         return subprocess.CompletedProcess(cmd, 0, b"", b"")
 
     monkeypatch.setattr(
@@ -287,7 +289,7 @@ def test_backend_daemon_spawn_uses_guard_context_and_sentinel(
 ) -> None:
     COMPILER_METADATA._rustc_version.cache_clear()
     backend = tmp_path / "molt-backend"
-    backend.write_text("backend")
+    backend.write_text("backend", encoding="utf-8")
     socket_path = tmp_path / "daemon.sock"
     captured: dict[str, Any] = {}
     sentinel_events: list[str] = []
@@ -491,7 +493,7 @@ def test_git_source_commands_use_build_memory_guard(
             repo_dir = Path(cmd[-1])
             repo_dir.mkdir(parents=True)
             (repo_dir / "pkg").mkdir()
-            (repo_dir / "pkg" / "module.py").write_text("x = 1\n")
+            (repo_dir / "pkg" / "module.py").write_text("x = 1\n", encoding="utf-8")
         if cmd[:2] == ["git", "ls-remote"]:
             return subprocess.CompletedProcess(cmd, 0, "abc123\trefs/heads/main\n", "")
         if cmd[-1] == "HEAD":
@@ -522,7 +524,7 @@ def test_git_source_commands_use_build_memory_guard(
 
     assert commit == "abc123"
     assert tree == "tree123"
-    assert (dest / "module.py").read_text() == "x = 1\n"
+    assert (dest / "module.py").read_text(encoding="utf-8") == "x = 1\n"
     assert calls
     for _cmd, kwargs in calls:
         assert kwargs["memory_guard_prefix"] == "MOLT_BUILD"

@@ -78,8 +78,8 @@ def test_new_agent_task_scaffolds_canonical_agent_env() -> None:
         assert progress_log.exists()
         assert len(reports) == 1
 
-        env_text = env_sh.read_text()
-        ps_text = env_ps1.read_text()
+        env_text = env_sh.read_text(encoding="utf-8")
+        ps_text = env_ps1.read_text(encoding="utf-8")
         session_id = _export_value(env_text, "MOLT_SESSION_ID")
         assert session_id.startswith(f"agent-{task}-")
         assert Path(_export_value(env_text, "MOLT_EXT_ROOT")) == artifact_root
@@ -96,7 +96,7 @@ def test_new_agent_task_scaffolds_canonical_agent_env() -> None:
         assert "$env:MOLT_SESSION_ID = " in ps_text
         assert "$env:SCCACHE_DIR = " in ps_text
 
-        report_text = reports[0].read_text()
+        report_text = reports[0].read_text(encoding="utf-8")
         assert f"- Env: {env_sh}" in report_text
         assert f"- Env PowerShell: {env_ps1}" in report_text
         assert f"- MOLT_SESSION_ID: agent-{task}-" in report_text
@@ -106,6 +106,6 @@ def test_new_agent_task_scaffolds_canonical_agent_env() -> None:
         )
         assert "molt dx run -- <command>" in report_text
         assert f'source "{env_sh}"' in report_text
-        assert "initialized task=" in progress_log.read_text()
+        assert "initialized task=" in progress_log.read_text(encoding="utf-8")
     finally:
         shutil.rmtree(base, ignore_errors=True)

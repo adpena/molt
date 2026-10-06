@@ -369,7 +369,7 @@ def test_dev_py_gates_expand_pyproject_command_refs(monkeypatch, tmp_path) -> No
         "molt-backend",
     ]
     assert calls[5][1:4] == ["-m", "pytest", "tests/compliance/"]
-    payload = json.loads(summary_path.read_text())
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
     assert payload["status"] == "ok"
     assert payload["summary_path"] == str(summary_path)
     assert payload["allow_dirty"] is True
@@ -434,7 +434,7 @@ def test_dev_py_gates_writes_error_summary_on_failed_gate(
     with pytest.raises(module.subprocess.CalledProcessError):
         module._run_dx_gates(["--summary-out", str(summary_path)], tty=False)
 
-    payload = json.loads(summary_path.read_text())
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
     assert payload["status"] == "error"
     assert payload["git_status"] is None
     assert [step["returncode"] for step in payload["steps"]] == [0, 17]

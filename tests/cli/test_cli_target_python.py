@@ -34,7 +34,8 @@ def test_target_python_defaults_to_lowest_supported_project_floor(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "sample"\nrequires-python = ">=3.12,<3.15"\n'
+        '[project]\nname = "sample"\nrequires-python = ">=3.12,<3.15"\n',
+        encoding="utf-8",
     )
 
     target = cli._resolve_target_python_version(
@@ -48,7 +49,8 @@ def test_target_python_defaults_to_lowest_supported_project_floor(
 
 def test_target_python_uses_project_requires_python_floor(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "sample"\nrequires-python = ">=3.14,<3.15"\n'
+        '[project]\nname = "sample"\nrequires-python = ">=3.14,<3.15"\n',
+        encoding="utf-8",
     )
 
     target = cli._resolve_target_python_version(
@@ -64,7 +66,8 @@ def test_target_python_uses_intermediate_project_requires_python_floor(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "sample"\nrequires-python = ">=3.13,<3.15"\n'
+        '[project]\nname = "sample"\nrequires-python = ">=3.13,<3.15"\n',
+        encoding="utf-8",
     )
 
     target = cli._resolve_target_python_version(
@@ -78,7 +81,8 @@ def test_target_python_uses_intermediate_project_requires_python_floor(
 
 def test_target_python_cli_overrides_project_requires_python(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "sample"\nrequires-python = ">=3.12,<3.15"\n'
+        '[project]\nname = "sample"\nrequires-python = ">=3.12,<3.15"\n',
+        encoding="utf-8",
     )
 
     target = cli._resolve_target_python_version(
@@ -94,7 +98,8 @@ def test_target_python_build_config_overrides_project_requires_python(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "sample"\nrequires-python = ">=3.12,<3.15"\n'
+        '[project]\nname = "sample"\nrequires-python = ">=3.12,<3.15"\n',
+        encoding="utf-8",
     )
 
     target = cli._resolve_target_python_version(
@@ -108,7 +113,8 @@ def test_target_python_build_config_overrides_project_requires_python(
 
 def test_target_python_rejects_invalid_pyproject_toml(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "sample"\nrequires-python = ">=3.12"\nbroken =\n'
+        '[project]\nname = "sample"\nrequires-python = ">=3.12"\nbroken =\n',
+        encoding="utf-8",
     )
 
     with pytest.raises(ValueError, match="invalid pyproject.toml"):
@@ -123,7 +129,7 @@ def test_target_python_rejects_non_string_project_requires_python(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "sample"\nrequires-python = 3.12\n'
+        '[project]\nname = "sample"\nrequires-python = 3.12\n', encoding="utf-8"
     )
 
     with pytest.raises(ValueError, match="project.requires-python"):
@@ -162,7 +168,7 @@ def test_target_python_micro_release_selects_minor_line() -> None:
 
 def test_target_python_rejects_unsupported_project_floor(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "sample"\nrequires-python = ">=3.15"\n'
+        '[project]\nname = "sample"\nrequires-python = ">=3.15"\n', encoding="utf-8"
     )
 
     with pytest.raises(ValueError, match="does not admit"):
@@ -175,7 +181,7 @@ def test_target_python_rejects_unsupported_project_floor(tmp_path: Path) -> None
 
 def test_wrapper_build_entry_uses_python_version_build_arg(tmp_path: Path) -> None:
     source_path = tmp_path / "main.py"
-    source_path.write_text("print('ok')\n")
+    source_path.write_text("print('ok')\n", encoding="utf-8")
 
     entry, error = cli_build_inputs._resolve_wrapper_build_entry(
         file_path=str(source_path),
@@ -232,7 +238,7 @@ def test_wrapper_cache_manifest_input_changes_with_target_python(
     tmp_path: Path,
 ) -> None:
     source_path = tmp_path / "main.py"
-    source_path.write_text("print('ok')\n")
+    source_path.write_text("print('ok')\n", encoding="utf-8")
     captured_targets: list[str] = []
 
     def dependency_fingerprints(*, resolved_build_entry, **_kwargs):
@@ -303,7 +309,7 @@ def test_wrapper_cache_manifest_input_changes_with_target_python(
 
 def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) -> None:
     source_path = tmp_path / "main.py"
-    source_path.write_text("print('ok')\n")
+    source_path.write_text("print('ok')\n", encoding="utf-8")
     entry_init = cli.SimpleTIRGenerator.module_init_symbol("__main__")
     integration_state = cli._FrontendIntegrationState(
         functions=[

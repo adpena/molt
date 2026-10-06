@@ -76,7 +76,7 @@ def test_generate_worker_produces_valid_js(tmp_path):
 
     output = tmp_path / "worker.js"
     generate_worker(output, ["fs.bundle.read"], tmp_quota_mb=32)
-    content = output.read_text()
+    content = output.read_text(encoding="utf-8")
     assert "fetch" in content
     assert "WebAssembly" in content
 
@@ -86,7 +86,7 @@ def test_generate_worker_contains_tmpfs(tmp_path):
 
     output = tmp_path / "worker.js"
     generate_worker(output, ["fs.tmp.read", "fs.tmp.write"], tmp_quota_mb=64)
-    content = output.read_text()
+    content = output.read_text(encoding="utf-8")
     assert "class TmpFs" in content
     assert "TMP_QUOTA_MB = 64" in content
     assert "ENOSPC: quota exceeded" in content
@@ -97,7 +97,7 @@ def test_generate_worker_contains_host_imports(tmp_path):
 
     output = tmp_path / "worker.js"
     generate_worker(output, ["fs.bundle.read"], tmp_quota_mb=16)
-    content = output.read_text()
+    content = output.read_text(encoding="utf-8")
     assert "createHostImports" in content
     assert "molt_vfs_read" in content
     assert "molt_vfs_write" in content
@@ -109,7 +109,7 @@ def test_generate_worker_contains_fetch_handler(tmp_path):
 
     output = tmp_path / "worker.js"
     generate_worker(output, ["http.fetch"])
-    content = output.read_text()
+    content = output.read_text(encoding="utf-8")
     assert "async fetch(request, env, ctx)" in content
     assert "export default" in content
     assert "molt_main" in content
@@ -120,7 +120,7 @@ def test_generate_worker_contains_wasi_shim(tmp_path):
 
     output = tmp_path / "worker.js"
     generate_worker(output, [])
-    content = output.read_text()
+    content = output.read_text(encoding="utf-8")
     assert "buildWasiShim" in content
     assert "wasi_snapshot_preview1" in content
     assert "fd_write" in content
@@ -134,7 +134,7 @@ def test_generate_worker_capabilities_substituted(tmp_path):
 
     output = tmp_path / "worker.js"
     generate_worker(output, ["fs.bundle.read", "http.fetch"], tmp_quota_mb=32)
-    content = output.read_text()
+    content = output.read_text(encoding="utf-8")
     assert '"fs.bundle.read"' in content
     assert '"http.fetch"' in content
     assert "{{CAPABILITIES}}" not in content
@@ -147,7 +147,7 @@ def test_generate_worker_custom_wasm_filename(tmp_path):
 
     output = tmp_path / "worker.js"
     generate_worker(output, [], wasm_filename="custom.wasm")
-    content = output.read_text()
+    content = output.read_text(encoding="utf-8")
     assert "custom.wasm" in content
     assert "worker_linked.wasm" not in content
 
@@ -157,7 +157,7 @@ def test_generate_worker_no_scaffold_warning(tmp_path):
 
     output = tmp_path / "worker.js"
     generate_worker(output, [])
-    content = output.read_text()
+    content = output.read_text(encoding="utf-8")
     assert "SCAFFOLD" not in content
     assert "NOT PRODUCTION READY" not in content
 
@@ -167,7 +167,7 @@ def test_generate_worker_stdio_capture(tmp_path):
 
     output = tmp_path / "worker.js"
     generate_worker(output, [])
-    content = output.read_text()
+    content = output.read_text(encoding="utf-8")
     assert "class StdioCapture" in content
     assert "writeStdout" in content
     assert "writeStderr" in content

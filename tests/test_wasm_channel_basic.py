@@ -37,7 +37,8 @@ def test_wasm_channel_basic(tmp_path: Path) -> None:
             "ok, val = ch.try_recv()\n"
             'print("try_recv", ok, val)\n'
             "ok, val = ch.try_recv()\n"
-            'print("try_recv_empty", ok, val)\n'
+            'print("try_recv_empty", ok, val)\n',
+            encoding="utf-8",
         )
 
         output_wasm = build_wasm_linked(root, src, work_dir)
@@ -67,7 +68,8 @@ def test_wasm_channel_dynamic_intrinsic_require(tmp_path: Path) -> None:
             "send = _intrinsics.require('molt_chan_send', globals())\n"
             "recv = _intrinsics.require('molt_chan_try_recv', globals())\n"
             "print('send_res', send(ch._handle, 41))\n"
-            "print('try_recv', recv(ch._handle))\n"
+            "print('try_recv', recv(ch._handle))\n",
+            encoding="utf-8",
         )
 
         output_wasm = build_wasm_linked(root, src, work_dir)

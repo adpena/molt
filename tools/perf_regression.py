@@ -415,7 +415,7 @@ def _linear_regression(xs: list[float], ys: list[float]) -> tuple[float, float, 
 
 
 def _load_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _load_baselines_from_dir(dir_path: Path) -> list[tuple[Path, dict[str, Any]]]:
@@ -1078,7 +1078,8 @@ def main() -> None:
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(
-            json.dumps(report.to_dict(), indent=2, sort_keys=False) + "\n"
+            json.dumps(report.to_dict(), indent=2, sort_keys=False) + "\n",
+            encoding="utf-8",
         )
         if not args.quiet:
             print(f"\nJSON report written to: {args.json_out}")

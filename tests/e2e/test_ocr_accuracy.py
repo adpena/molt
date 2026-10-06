@@ -133,7 +133,7 @@ class SimpleTokenizer:
     """Minimal tokenizer that loads from tokenizer.json (HF format)."""
 
     def __init__(self, path: str):
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         # Build id -> token mapping from the vocabulary
@@ -549,7 +549,7 @@ def test_model_loads_and_has_correct_structure():
     """Verify the model weights load and have the expected structure."""
     _skip_if_no_weights()
 
-    with open(_CONFIG_PATH, "r") as f:
+    with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
         config = json.load(f)
 
     # Verify config has expected fields
@@ -587,7 +587,7 @@ def test_embedding_quality():
     """Verify embeddings are diverse and well-distributed."""
     _skip_if_no_weights()
 
-    with open(_CONFIG_PATH, "r") as f:
+    with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
         config = json.load(f)
 
     # Only load the embedding tensor (not the full model)
@@ -628,7 +628,7 @@ def test_output_projection_produces_valid_logits():
     """Verify the output projection head produces a valid distribution."""
     _skip_if_no_weights()
 
-    with open(_CONFIG_PATH, "r") as f:
+    with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
         config = json.load(f)
 
     tensors = read_safetensors(_MODEL_PATH)
@@ -672,7 +672,7 @@ def test_patch_extraction():
     _skip_if_no_weights()
     _skip_if_no_pillow()
 
-    with open(_CONFIG_PATH, "r") as f:
+    with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
         config = json.load(f)
 
     case = INVOICE_TEST_CASES[0]

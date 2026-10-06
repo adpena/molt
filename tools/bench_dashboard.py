@@ -29,7 +29,7 @@ from bench_evidence import native_molt_speedup, native_molt_time  # noqa: E402
 
 def load_benchmarks(path: Path) -> dict:
     """Load benchmark results from a JSON file, returning the benchmarks dict."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         data = json.load(f)
     return data.get("benchmarks", data)
 

@@ -77,7 +77,8 @@ def test_wasm_pickle_class_dataclass_roundtrip(tmp_path: Path) -> None:
             kw_out = pickle.loads(pickle.dumps(kw, protocol=5))
             print("kw_only_new", kw_out.value, type(kw_out) is KwOnlyNew)
             """
-        )
+        ),
+        encoding="utf-8",
     )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)

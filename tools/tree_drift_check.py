@@ -64,6 +64,7 @@ def _git(args: list[str], cwd: Path) -> str:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     ).stdout.strip()
 
 
@@ -84,6 +85,7 @@ def _porcelain(root: Path) -> dict[str, str]:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     ).stdout
     states: dict[str, str] = {}
     for line in out.split("\n"):

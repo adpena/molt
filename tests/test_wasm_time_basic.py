@@ -46,7 +46,8 @@ def test_wasm_time_intrinsics_basic() -> None:
             "print('gmtime_year', g0.tm_year)\n"
             "print('strftime', time.strftime('%Y', g0))\n"
             "print('timezone_type', isinstance(time.timezone, int))\n"
-            "print('tzname_len', len(time.tzname))\n"
+            "print('tzname_len', len(time.tzname))\n",
+            encoding="utf-8",
         )
 
         output_wasm = build_wasm_linked(root, src, work_dir)
@@ -80,7 +81,8 @@ def test_wasm_time_dynamic_intrinsic_require() -> None:
             "try:\n"
             "    _intrinsics.require('molt_time_not_real', globals())\n"
             "except RuntimeError as exc:\n"
-            "    print('missing_intrinsic_raises', 'intrinsic unavailable:' in str(exc))\n"
+            "    print('missing_intrinsic_raises', 'intrinsic unavailable:' in str(exc))\n",
+            encoding="utf-8",
         )
 
         output_wasm = build_wasm_linked(root, src, work_dir)

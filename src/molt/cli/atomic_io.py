@@ -21,7 +21,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 def _write_text_if_changed(path: Path, content: str) -> None:
     try:
-        existing = path.read_text()
+        existing = path.read_text(encoding="utf-8")
     except OSError:
         existing = None
     if existing == content:

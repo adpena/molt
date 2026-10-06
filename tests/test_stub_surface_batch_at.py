@@ -88,7 +88,7 @@ def _load_module(path: Path, index: int) -> types.ModuleType:
 
 def test_mixed_stub_batch_hides_raw_capability_intrinsic() -> None:
     for path in ALL_PATHS:
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         assert '_require_intrinsic("molt_capabilities_has", globals())' not in source
         assert (
             '_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")'

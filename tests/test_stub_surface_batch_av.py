@@ -41,7 +41,7 @@ SOCKET_SHIM_PATHS = [
 
 def test_asyncio_batch_hides_raw_capability_intrinsic() -> None:
     for path in MODULE_PATHS:
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         assert '_require_intrinsic("molt_capabilities_has", globals())' not in source
         assert (
             '_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")'
@@ -50,7 +50,7 @@ def test_asyncio_batch_hides_raw_capability_intrinsic() -> None:
 
 
 def test_asyncio_top_level_keeps_socket_import_lazy_and_module_shaped() -> None:
-    source = (ROOT / "src/molt/stdlib/asyncio/__init__.py").read_text()
+    source = (ROOT / "src/molt/stdlib/asyncio/__init__.py").read_text(encoding="utf-8")
 
     assert "import socket as _socket" not in source
     assert "class _LazySocketModule(_types.ModuleType):" in source
@@ -64,13 +64,15 @@ def test_asyncio_top_level_keeps_socket_import_lazy_and_module_shaped() -> None:
 
 def test_asyncio_submodule_shims_reuse_lazy_socket_surface() -> None:
     for path in SOCKET_SHIM_PATHS:
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         assert "import socket" not in source.splitlines()
         assert "from asyncio import socket as socket" in source
 
 
 def test_asyncio_unix_events_hides_child_watchers_on_py314_surface() -> None:
-    source = (ROOT / "src/molt/stdlib/asyncio/unix_events.py").read_text()
+    source = (ROOT / "src/molt/stdlib/asyncio/unix_events.py").read_text(
+        encoding="utf-8"
+    )
 
     assert "_UnixDefaultEventLoopPolicy as DefaultEventLoopPolicy" in source
     assert "if _VERSION_INFO < (3, 14):" in source

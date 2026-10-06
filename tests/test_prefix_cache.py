@@ -11,7 +11,7 @@ _kv_path = os.path.join(
 )
 _kv_path = os.path.abspath(_kv_path)
 
-with open(_kv_path) as f:
+with open(_kv_path, encoding="utf-8") as f:
     _full_source = f.read()
 
 # Extract from the prefix caching section to end of file.

@@ -162,7 +162,9 @@ def test_direct_extra_closure_checks_transitive_constraints_and_cycles(
     )
     metadata_path = tmp_path / "parser-2.1.dist-info/METADATA"
     metadata_path.write_text(
-        metadata_path.read_text() + 'Requires-Dist: missing>=1; extra == "speed"\n'
+        metadata_path.read_text(encoding="utf-8")
+        + 'Requires-Dist: missing>=1; extra == "speed"\n',
+        encoding="utf-8",
     )
     with pytest.raises(ValueError, match="missing>=1"):
         requirements.current_build_requirements(
@@ -290,6 +292,7 @@ def test_cython_execution_ignores_existing_bytecode_without_modifying_it(tmp_pat
         text=True,
         timeout=30,
         check=True,
+        encoding="utf-8",
     )
     assert result.stdout.strip() == "good"
     assert cache.read_bytes() == poisoned and not tool.bytecode_prefix.exists()

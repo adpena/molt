@@ -163,7 +163,7 @@ def run_reference(output_path: str) -> dict:
         )
 
     if output_path:
-        with open(output_path, "w") as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2)
         print(f"Reference output saved to {output_path}")
 
@@ -233,7 +233,7 @@ def run_molt(output_path: str) -> dict:
         )
 
     if output_path:
-        with open(output_path, "w") as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2)
         print(f"Molt output saved to {output_path}")
 
@@ -266,9 +266,9 @@ def _softmax(logits: list) -> list:
 
 def compare_results(ref_path: str, molt_path: str) -> bool:
     """Compare reference and molt outputs. Returns True if parity holds."""
-    with open(ref_path) as f:
+    with open(ref_path, encoding="utf-8") as f:
         ref = json.load(f)
-    with open(molt_path) as f:
+    with open(molt_path, encoding="utf-8") as f:
         molt = json.load(f)
 
     passed = True

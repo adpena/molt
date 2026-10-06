@@ -1026,6 +1026,7 @@ def regenerate_cython_c_standalone(
             text=True,
             timeout=600,
             check=False,
+            encoding="utf-8",
         )
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         return None, (

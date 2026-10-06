@@ -125,7 +125,7 @@ def _collect_ir_json(out_dir: Path) -> dict | None:
     """Try to find and parse the IR JSON from a build output directory."""
     for candidate in out_dir.rglob("*.json"):
         try:
-            data = json.loads(candidate.read_text())
+            data = json.loads(candidate.read_text(encoding="utf-8"))
             # Heuristic: IR JSON has known top-level keys.
             if isinstance(data, dict) and (
                 "instructions" in data
@@ -184,7 +184,7 @@ class TestBackendIRParity:
         module chunking, which produces structurally different IR.
         """
         src_file = tmp_path / f"{name}.py"
-        src_file.write_text(source)
+        src_file.write_text(source, encoding="utf-8")
 
         ir_outputs: dict[str, dict | None] = {}
         for backend in IR_PARITY_BACKENDS:
@@ -256,7 +256,7 @@ class TestBackendOptimizationParity:
         Reference: CrossBackend.lean, optimized_equiv_unoptimized_any_backend
         """
         src_file = tmp_path / f"{name}.py"
-        src_file.write_text(source)
+        src_file.write_text(source, encoding="utf-8")
 
         ir_outputs: dict[str, dict | None] = {}
         for backend in BACKENDS:
@@ -348,7 +348,7 @@ class TestBackendOutputParity:
         verifying that the stdout output is identical.
         """
         src_file = tmp_path / f"{name}.py"
-        src_file.write_text(source)
+        src_file.write_text(source, encoding="utf-8")
 
         outputs: dict[str, str] = {}
         for backend in BACKENDS:

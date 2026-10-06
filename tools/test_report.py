@@ -111,7 +111,7 @@ def load_runs(
         if not result_file.exists():
             continue
         try:
-            data = json.loads(result_file.read_text())
+            data = json.loads(result_file.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
         runs.append(RunSnapshot(date=d.name, path=d, data=data))

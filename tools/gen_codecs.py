@@ -245,6 +245,7 @@ def _rustfmt_rust_source(module_name: str, source: str) -> str:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
+            encoding="utf-8",
         )
     except FileNotFoundError as exc:
         raise RuntimeError(

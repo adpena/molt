@@ -43,7 +43,8 @@ def test_wasm_async_protocol_parity(tmp_path: Path) -> None:
         "    it2 = aiter(Counter(0))\n"
         "    print(await anext(it2, 7))\n"
         "\n"
-        "asyncio.run(main())\n"
+        "asyncio.run(main())\n",
+        encoding="utf-8",
     )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)

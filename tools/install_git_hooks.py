@@ -49,6 +49,7 @@ def _common_hooks_dir(repo_root: Path = REPO_ROOT) -> Path:
         cwd=str(repo_root),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     common = Path(out.stdout.strip() or ".git")
     if not common.is_absolute():
@@ -146,6 +147,7 @@ def install(*, check: bool, uninstall: bool, repo_root: Path = REPO_ROOT) -> int
         cwd=str(repo_root),
         capture_output=True,
         text=True,
+        encoding="utf-8",
     ).stdout.strip()
     note = ""
     if hp:

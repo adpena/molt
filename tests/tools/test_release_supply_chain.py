@@ -240,7 +240,10 @@ def test_pinned_tool_fetch_checks_size_and_digest(
     assert output.read_bytes() == payload
 
     manifest.write_text(
-        manifest.read_text().replace(f"size = {len(payload)}", "size = 1")
+        manifest.read_text(encoding="utf-8").replace(
+            f"size = {len(payload)}", "size = 1"
+        ),
+        encoding="utf-8",
     )
     with pytest.raises(ValueError, match="size mismatch"):
         fetch_pinned_tool.fetch("test", "host", output)
@@ -322,7 +325,8 @@ def test_stable_release_requires_green_h0_phase_exit(
                     "path": release_model.phase_exit_attestation_filename("a" * 40)
                 }
             }
-        )
+        ),
+        encoding="utf-8",
     )
     monkeypatch.setattr(
         pem,
@@ -401,7 +405,7 @@ def _prepare_release_source(
             ["git", *args], cwd=root, check=True, capture_output=True, timeout=30
         )
     commit = _COMMANDS.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=root, text=True
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True, encoding="utf-8"
     ).strip()
     snapshot = compiler_payload.source_snapshot(root, commit)
     # Synthetic transport identities are not semantic/release acceptance proof.
@@ -454,7 +458,7 @@ def test_guarded_git_snapshot_preserves_binary_blobs_beyond_capture_tail(tmp_pat
             [git, *args], cwd=root, capture_output=True, check=True, timeout=30
         )
     commit = _COMMANDS.check_output(
-        [git, "rev-parse", "HEAD"], cwd=root, text=True, timeout=30
+        [git, "rev-parse", "HEAD"], cwd=root, text=True, timeout=30, encoding="utf-8"
     ).strip()
     snapshot = git_source_snapshot.capture_git_source_snapshot(
         root,
@@ -563,7 +567,10 @@ def release_evidence_inputs(
         release_exit_gate,
         "verify_release_bundle",
         lambda manifest, **kwargs: release_exit_gate.ReleaseGateReport(
-            json.loads(manifest.read_text())["source_sha"], "PASS", True, ()
+            json.loads(manifest.read_text(encoding="utf-8"))["source_sha"],
+            "PASS",
+            True,
+            (),
         ),
     )
     monkeypatch.setattr(
@@ -574,7 +581,7 @@ def release_evidence_inputs(
     evidence_root = tmp_path / "evidence"
     evidence_root.mkdir()
     evidence = evidence_root / "release-exit.json"
-    evidence.write_text(json.dumps({"source_sha": "a" * 40}))
+    evidence.write_text(json.dumps({"source_sha": "a" * 40}), encoding="utf-8")
     archive = tmp_path / release_model.release_exit_archive_filename("a" * 40)
     release_evidence.archive_release_exit(
         manifest=evidence,
@@ -923,8 +930,8 @@ def test_candidate_matrix_builds_one_collision_free_signed_index(
     assert len(artifacts) == 19
     assert len({artifact["filename"] for artifact in artifacts}) == 19
     assert all((publish / artifact["filename"]).is_file() for artifact in artifacts)
-    assert len((publish / "SHA256SUMS").read_text().splitlines()) == 20
-    sbom = json.loads((publish / "release.spdx.json").read_text())
+    assert len((publish / "SHA256SUMS").read_text(encoding="utf-8").splitlines()) == 20
+    sbom = json.loads((publish / "release.spdx.json").read_text(encoding="utf-8"))
     assert sbom["spdxVersion"] == "SPDX-2.3"
     assert len(sbom["files"]) == 20
     assert (
@@ -945,7 +952,7 @@ def test_candidate_matrix_builds_one_collision_free_signed_index(
     receipt = (
         release_inputs["candidate_root"] / "linux-x86_64" / "consumer-verification.json"
     )
-    invalid = json.loads(receipt.read_text())
+    invalid = json.loads(receipt.read_text(encoding="utf-8"))
     invalid["passed"] = 0
     release_model.write_json(receipt, invalid)
     with pytest.raises(ValueError, match="release consumer proof header is invalid"):
@@ -973,7 +980,7 @@ def test_signed_release_uses_generated_spdx_predicate(
     publish = tmp_path / "publish"
     manifest = release_authority.assemble_index(**release_inputs, output=publish)
     for name in release_authority._RELEASE_SIDECARS:
-        (publish / name).write_text("{}")
+        (publish / name).write_text("{}", encoding="utf-8")
     calls = []
     monkeypatch.setattr(
         release_evidence,
@@ -1002,14 +1009,14 @@ def test_promotion_verifier_rejects_missing_or_changed_assets(
     remote = tmp_path / "remote"
     release_authority.assemble_index(**release_inputs, output=local)
     for name in release_authority._RELEASE_SIDECARS:
-        (local / name).write_text("{}")
+        (local / name).write_text("{}", encoding="utf-8")
     shutil.copytree(local, remote)
     release_authority.verify_promotion(local, remote, source_sha="a" * 40)
     (remote / "RELEASE_NOTES.md").write_bytes(b"different")
     with pytest.raises(ValueError, match="digest mismatch"):
         release_authority.verify_promotion(local, remote, source_sha="a" * 40)
-    (local / "stray").write_text("unexpected")
-    (remote / "stray").write_text("unexpected")
+    (local / "stray").write_text("unexpected", encoding="utf-8")
+    (remote / "stray").write_text("unexpected", encoding="utf-8")
     with pytest.raises(ValueError, match="asset set mismatch"):
         release_authority.verify_promotion(local, remote, source_sha="a" * 40)
 
@@ -1144,7 +1151,7 @@ def test_homebrew_projection_preserves_admissible_bundle_layout(tmp_path, monkey
     projections = tmp_path / "projections"
     monkeypatch.setattr(update_manifests, "OUTPUT", projections)
     update_manifests._render_homebrew(artifacts, "0.0.001")
-    formula = (projections / "homebrew/molt.rb").read_text()
+    formula = (projections / "homebrew/molt.rb").read_text(encoding="utf-8")
     # These are the actual arguments emitted to Homebrew's prefix.install.
     install = next(
         line.strip()
@@ -1352,7 +1359,7 @@ def test_manifest_consumers_reject_unbound_evidence_and_inexact_matrix(
         payload = copy.deepcopy(valid)
         payload[key] = invalid
         path = tmp_path / "invalid.json"
-        path.write_text(json.dumps(payload))
+        path.write_text(json.dumps(payload), encoding="utf-8")
         with pytest.raises(ValueError):
             update_manifests._load_manifest(path)
 
@@ -1363,7 +1370,7 @@ def test_candidate_admission_is_typed_and_never_publishes_malformed_proofs(
     candidate_path = (
         release_inputs["candidate_root"] / "linux-x86_64" / "candidate.json"
     )
-    valid = json.loads(candidate_path.read_text())
+    valid = json.loads(candidate_path.read_text(encoding="utf-8"))
     variants = []
     for key, invalid in (("target", []), ("reproducibility", []), ("artifacts", {})):
         payload = copy.deepcopy(valid)
@@ -1385,7 +1392,7 @@ def test_candidate_admission_is_typed_and_never_publishes_malformed_proofs(
     payload["native_build"]["artifacts"]["compiler"]["sha256"] = "d" * 64
     variants.append(payload)
     for i, payload in enumerate(variants):
-        candidate_path.write_text(json.dumps(payload))
+        candidate_path.write_text(json.dumps(payload), encoding="utf-8")
         output = tmp_path / f"invalid-{i}"
         with pytest.raises(ValueError):
             release_authority.assemble_index(**release_inputs, output=output)
@@ -1413,13 +1420,13 @@ def test_installed_consumer_rejects_extracted_native_receipt_substitution(
             binary.write_bytes(binary.read_bytes() + b"substituted worker")
         elif changed == "source" and destination.name == "bundle":
             manifest_path = next(destination.rglob(compiler_payload.MANIFEST_NAME))
-            manifest = json.loads(manifest_path.read_text())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             record = manifest["files"][0]
             source_file = manifest_path.parent / record["path"]
             data = source_file.read_bytes() + b"substituted source"
             source_file.write_bytes(data)
             record.update(sha256=hashlib.sha256(data).hexdigest(), size=len(data))
-            manifest_path.write_text(json.dumps(manifest))
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     monkeypatch.setattr(verify_consumer, "_extract", extract)
     monkeypatch.setattr(
@@ -1575,7 +1582,7 @@ def test_consumer_admission_requires_bound_target_profile_python_closure(
     candidate_dir = release_inputs["candidate_root"] / "linux-x86_64"
     candidate = release_authority._load_candidate(candidate_dir / "candidate.json")
     receipt_path = candidate_dir / "consumer-verification.json"
-    valid = json.loads(receipt_path.read_text())
+    valid = json.loads(receipt_path.read_text(encoding="utf-8"))
 
     def admit(payload):
         release_model.write_json(receipt_path, payload)
@@ -1813,7 +1820,7 @@ def test_provenance_checks_repository_workflow_source_and_hosted_signer(
     tmp_path, monkeypatch
 ):
     subject = tmp_path / "receipt.json"
-    subject.write_text("{}")
+    subject.write_text("{}", encoding="utf-8")
     calls = []
     monkeypatch.setattr(
         release_evidence,
@@ -1838,7 +1845,7 @@ def test_provenance_checks_repository_workflow_source_and_hosted_signer(
 
 def test_provenance_failure_is_not_a_digest_only_success(tmp_path, monkeypatch):
     subject = tmp_path / "subject.json"
-    subject.write_text("{}")
+    subject.write_text("{}", encoding="utf-8")
 
     def reject(command, **kwargs):
         raise subprocess.CalledProcessError(1, command)
@@ -1852,13 +1859,13 @@ def test_provenance_failure_is_not_a_digest_only_success(tmp_path, monkeypatch):
 
 def test_e3_provenance_cannot_succeed_with_an_empty_subject_glob(tmp_path):
     manifest = tmp_path / "release-exit.json"
-    manifest.write_text('{"evidence":[]}')
+    manifest.write_text('{"evidence":[]}', encoding="utf-8")
     with pytest.raises(ValueError, match="every exact E3"):
         release_evidence.verify_e3_provenance(manifest, source_sha="a" * 40)
 
 
 def test_release_workflow_binds_all_admission_and_publication_consumers():
-    workflow = (ROOT / ".github/workflows/release.yml").read_text()
+    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
     assert "push:" not in workflow
     assert "gh release create" not in workflow
     assert "--release-exit-sha256" in workflow

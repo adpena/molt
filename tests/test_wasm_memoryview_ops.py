@@ -46,7 +46,8 @@ def test_wasm_memoryview_ops_parity(tmp_path: Path) -> None:
             mvc[0] = b'z'
             print(mvc[0][0])
             """
-        )
+        ),
+        encoding="utf-8",
     )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)

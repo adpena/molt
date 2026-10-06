@@ -1199,7 +1199,9 @@ def _emit_output(report: MutationReport, args: argparse.Namespace) -> None:
         else:
             out_path = Path(args.json_out)
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(json.dumps(json_data, indent=2) + "\n")
+            out_path.write_text(
+                json.dumps(json_data, indent=2) + "\n", encoding="utf-8"
+            )
             print(f"JSON report written to {args.json_out}")
     else:
         print_report(report)

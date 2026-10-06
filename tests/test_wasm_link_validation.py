@@ -8960,7 +8960,7 @@ def test_post_link_optimization_preserves_user_data_segment_bytes() -> None:
 
 
 def _parse_allowlist(path: Path) -> set[str]:
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     return {
         line.strip()
         for line in lines
@@ -9673,7 +9673,7 @@ def test_relocatable_input_has_one_admission_and_retains_failure_timings(
     assert runtime.read_bytes() == runtime_data
     assert app.read_bytes() == app_data
     assert linked.read_bytes() == b"previous published deployment"
-    recorded = json.loads(timings.read_text())
+    recorded = json.loads(timings.read_text(encoding="utf-8"))
     assert recorded["wasm_reloc_preflight_invocations"] == 1
     assert recorded["wasm_reloc_preflight"] >= 0
     assert ("wasm_link_total" in recorded) == (failure_stage == "link")

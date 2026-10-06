@@ -1200,7 +1200,7 @@ def main(argv: list[str] | None = None) -> int:
             "memory_guard": harness_memory_guard.limits_summary(limits),
         }
         json_path = out_dir / "matrix_results.json"
-        json_path.write_text(json.dumps(payload, indent=2) + "\n")
+        json_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         print(f"[matrix] wrote {json_path}")
 
     if divergences:

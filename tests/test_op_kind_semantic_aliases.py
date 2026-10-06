@@ -18,7 +18,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def registry():
-    return tomllib.loads((ROOT / "runtime/molt-ir/src/tir/op_kinds.toml").read_text())
+    return tomllib.loads(
+        (ROOT / "runtime/molt-ir/src/tir/op_kinds.toml").read_text(encoding="utf-8")
+    )
 
 
 def test_every_canonical_runtime_requirement_dominates_its_aliases():

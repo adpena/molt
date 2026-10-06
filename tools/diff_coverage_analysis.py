@@ -1277,7 +1277,7 @@ def main() -> int:
 
     # Output.
     if args.output:
-        Path(args.output).write_text(report)
+        Path(args.output).write_text(report, encoding="utf-8")
         print(f"Report written to {args.output}")
     else:
         print(report)

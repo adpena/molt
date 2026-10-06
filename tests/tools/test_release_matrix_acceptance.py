@@ -328,7 +328,7 @@ def test_future_dependency_not_in_declared_tree_fails_closed(
     if tracked:
         git("add", path)
     if ignored:
-        (root / ".git/info/exclude").write_text("src/future.py\n")
+        (root / ".git/info/exclude").write_text("src/future.py\n", encoding="utf-8")
     assert source_admission_problems(root=root, source_sha=sha)
 
 

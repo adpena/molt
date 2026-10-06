@@ -88,7 +88,7 @@ class RegressionViolation:
 def _load_payload(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise SystemExit(f"missing benchmark JSON: {path}")
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _benchmark_map(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -461,7 +461,9 @@ def main() -> int:
             },
         }
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
-        args.json_out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        args.json_out.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         print(f"\nWrote diff JSON: {args.json_out}")
 
     if failure_reasons:

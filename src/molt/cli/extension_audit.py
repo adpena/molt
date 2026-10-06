@@ -81,7 +81,7 @@ def extension_audit(
 
     def load_manifest_json(source_path: Path) -> dict[str, Any] | None:
         try:
-            loaded = json.loads(source_path.read_text())
+            loaded = json.loads(source_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             errors.append(f"Failed to read extension manifest {source_path}: {exc}")
             return None

@@ -941,14 +941,14 @@ def main() -> None:
     if args.json_out:
         out_path = Path(args.json_out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(report, indent=2) + "\n")
+        out_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(f"Results written to {out_path}")
     else:
         # Also dump to a default location
         default_out = BENCH_RESULTS_DIR / (
             "bench_individual_" + datetime.now(UTC).strftime("%Y%m%d_%H%M%S") + ".json"
         )
-        default_out.write_text(json.dumps(report, indent=2) + "\n")
+        default_out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(f"Results written to {default_out}")
 
     if args.isolate_daemon:

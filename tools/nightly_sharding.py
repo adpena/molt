@@ -105,7 +105,7 @@ def _relative(root: Path, path: Path) -> str:
 
 def _git_commit(root: Path) -> str:
     value = EXECUTOR.check_output(
-        ["git", "-C", str(root), "rev-parse", "HEAD"], text=True
+        ["git", "-C", str(root), "rev-parse", "HEAD"], text=True, encoding="utf-8"
     )
     assert isinstance(value, str)
     commit = value.strip().lower()
@@ -869,6 +869,7 @@ def run_shard(
                 capture_tail_bytes=16_000,
                 text=True,
                 timeout=timeout,
+                encoding="utf-8",
             )
             returncode = int(completed.returncode)
             stdout_tail = str(completed.stdout or "")[-16_000:]

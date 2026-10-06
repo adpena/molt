@@ -513,7 +513,7 @@ def verify_tir(
     if data is None:
         if tir_json_path is None:
             raise ValueError("either tir_json_path or data must be provided")
-        with open(tir_json_path) as f:
+        with open(tir_json_path, encoding="utf-8") as f:
             data = json.load(f)
 
     functions = data.get("functions", [])
@@ -554,7 +554,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.stdin:
         data = json.load(sys.stdin)
     elif args.input:
-        with open(args.input) as f:
+        with open(args.input, encoding="utf-8") as f:
             data = json.load(f)
     else:
         parser.error("either provide an input file or use --stdin")

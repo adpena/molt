@@ -327,6 +327,7 @@ def _competing_build_count() -> int:
             text=True,
             timeout=5,
             check=True,
+            encoding="utf-8",
         ).stdout
     except (OSError, SubprocessError, ValueError):
         return -1

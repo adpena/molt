@@ -55,11 +55,15 @@ def sandbox(guard, tmp_path, monkeypatch):
     matrix = tmp_path / "matrix.generated.md"
 
     feat.write_text(
-        (REPO_ROOT / "tools" / "ecosystem" / "dynamism_features.json").read_text(),
+        (REPO_ROOT / "tools" / "ecosystem" / "dynamism_features.json").read_text(
+            encoding="utf-8"
+        ),
         encoding="utf-8",
     )
     triage.write_text(
-        (REPO_ROOT / "tools" / "ecosystem" / "package_triage.json").read_text(),
+        (REPO_ROOT / "tools" / "ecosystem" / "package_triage.json").read_text(
+            encoding="utf-8"
+        ),
         encoding="utf-8",
     )
 

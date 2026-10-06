@@ -161,7 +161,7 @@ def _verify_evidence(root: Path) -> None:
         p = root / fact.evidence_file
         try:
             fact.evidence_ok = p.is_file() and fact.evidence_symbol in p.read_text(
-                errors="replace"
+                errors="replace", encoding="utf-8"
             )
         except OSError:
             fact.evidence_ok = False
@@ -170,7 +170,7 @@ def _verify_evidence(root: Path) -> None:
 def _call_opcode_may_throw(root: Path) -> dict[str, bool]:
     """Per-opcode may_throw for the call opcodes, read from the authoritative
     registry (not hardcoded)."""
-    data = tomllib.loads((root / OP_KINDS_REL).read_text())
+    data = tomllib.loads((root / OP_KINDS_REL).read_text(encoding="utf-8"))
     out: dict[str, bool] = {}
     for o in data.get("opcode", []):
         name = o.get("name", "")
@@ -192,7 +192,7 @@ def _corpus_typed_return(json_paths: list[Path]) -> dict:
     funcs_seen = 0
     for jp in json_paths:
         try:
-            doc = json.loads(jp.read_text())
+            doc = json.loads(jp.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as e:
             print(f"WARN: skipping {jp}: {e}", file=sys.stderr)
             continue
@@ -311,7 +311,9 @@ def main(argv: list[str] | None = None) -> int:
         payload = {"attached": c["attached"], "transient": c["transient"]}
         if corpus and corpus["typed_return_pct"] is not None:
             payload["typed_return_pct"] = corpus["typed_return_pct"]
-        baseline_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        baseline_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         print(f"baseline updated: {baseline_path}")
         return 0
 
@@ -337,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        base = json.loads(baseline_path.read_text())
+        base = json.loads(baseline_path.read_text(encoding="utf-8"))
         if c["attached"] < base.get("attached", 0):
             print(
                 f"CALL-FACT REPRESENTATION REGRESSED: attached "

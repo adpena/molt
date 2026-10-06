@@ -29,8 +29,15 @@ def test_executor_routes_only_bounded_metadata_to_direct_probe(monkeypatch) -> N
     )
     executor = command_execution.CommandExecutor.for_file(__file__)
 
-    executor.run(["git", "status", "--porcelain"], capture_output=True, text=True)
-    executor.run(["python", "tool.py"], capture_output=True, text=True)
+    executor.run(
+        ["git", "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    executor.run(
+        ["python", "tool.py"], capture_output=True, text=True, encoding="utf-8"
+    )
 
     assert calls[0]["memory_guard_prefix"] is None
     assert calls[1]["memory_guard_prefix"] == executor.prefix
@@ -167,6 +174,7 @@ def test_executor_loads_process_guard_without_repo_package_importable(
         text=True,
         timeout=30,
         check=False,
+        encoding="utf-8",
     )
 
     assert completed.returncode == 0, completed.stderr

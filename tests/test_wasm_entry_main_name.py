@@ -23,7 +23,7 @@ def test_wasm_linked_entry_module_uses_main_name(tmp_path: Path) -> None:
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "entry_name.py"
-    src.write_text(ENTRY_MAIN_NAME_SRC)
+    src.write_text(ENTRY_MAIN_NAME_SRC, encoding="utf-8")
 
     output_wasm = build_wasm_linked(
         root,

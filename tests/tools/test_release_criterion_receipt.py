@@ -1131,7 +1131,7 @@ def test_structural_schema_matches_unpatched_producer_and_zero_proof_debt_baseli
     baseline = json.loads(
         (
             Path(__file__).resolve().parents[2] / "tools/structural_audit_baseline.json"
-        ).read_text()
+        ).read_text(encoding="utf-8")
     )
     assert set(metrics) == receipt.STRUCTURAL_AUDIT_METRICS
     assert set(baseline) == receipt.STRUCTURAL_AUDIT_METRICS

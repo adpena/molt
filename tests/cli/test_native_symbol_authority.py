@@ -622,8 +622,10 @@ def _shared_metadata(path, *, target_triple="x86_64-unknown-linux-gnu", payload=
             )
         )
     path.write_bytes(payload)
-    cache._stdlib_object_key_sidecar_path(path).write_text("key")
-    cache._stdlib_object_manifest_sidecar_path(path).write_text("manifest")
+    cache._stdlib_object_key_sidecar_path(path).write_text("key", encoding="utf-8")
+    cache._stdlib_object_manifest_sidecar_path(path).write_text(
+        "manifest", encoding="utf-8"
+    )
     cache._stdlib_object_partition_manifest_sidecar_path(path).write_text(
         json.dumps(
             {
@@ -631,10 +633,11 @@ def _shared_metadata(path, *, target_triple="x86_64-unknown-linux-gnu", payload=
                 "functions": ["molt_init_sys"],
                 "function_count": 1,
             }
-        )
+        ),
+        encoding="utf-8",
     )
     cache._stdlib_object_digest_sidecar_path(path).write_text(
-        hashlib.sha256(path.read_bytes()).hexdigest()
+        hashlib.sha256(path.read_bytes()).hexdigest(), encoding="utf-8"
     )
 
 
@@ -807,9 +810,9 @@ def test_old_or_cross_target_success_tokens_do_not_authorize(tmp_path, monkeypat
     )
     payload = cache._shared_stdlib_symbol_contract_payload(**args)
     path = cache._stdlib_object_symbol_contract_sidecar_path(artifact)
-    path.write_text(json.dumps({**payload, "schema": 1}))
+    path.write_text(json.dumps({**payload, "schema": 1}), encoding="utf-8")
     assert not cache._shared_stdlib_symbol_contract_matches(artifact, **args)
-    path.write_text(json.dumps(payload))
+    path.write_text(json.dumps(payload), encoding="utf-8")
     assert cache._shared_stdlib_symbol_contract_matches(artifact, **args)
     assert not cache._shared_stdlib_symbol_contract_matches(
         artifact, **{**args, "target_triple": "aarch64-unknown-linux-gnu"}
@@ -836,7 +839,7 @@ def test_old_symbol_facts_are_misses_and_new_weak_facts_roundtrip(tmp_path):
         reader_identity=("llvm-nm",),
     )
     path = native_symbol_inspection._native_object_symbol_facts_sidecar_path(artifact)
-    path.write_text(json.dumps({**payload, "schema": 3}))
+    path.write_text(json.dumps({**payload, "schema": 3}), encoding="utf-8")
     assert (
         native_symbol_inspection._read_native_object_symbol_facts(
             artifact,
@@ -846,7 +849,7 @@ def test_old_symbol_facts_are_misses_and_new_weak_facts_roundtrip(tmp_path):
         )
         is None
     )
-    path.write_text(json.dumps(payload))
+    path.write_text(json.dumps(payload), encoding="utf-8")
     assert (
         native_symbol_inspection._read_native_object_symbol_facts(
             artifact,
@@ -1168,14 +1171,14 @@ def test_backend_publication_rejects_swapped_source_before_copy(
     tmp_path, monkeypatch, stage
 ):
     source = tmp_path / "source.rs"
-    source.write_text("fn alpha() {}\n")
+    source.write_text("fn alpha() {}\n", encoding="utf-8")
     destination = tmp_path / "out.rs"
-    destination.write_text("prior output")
+    destination.write_text("prior output", encoding="utf-8")
     original_copy = cache._atomic_copy_file
     contract = BackendArtifactContract(BackendArtifactKind.RUST)
 
     def replace_before_copy(src, dst, **kwargs):
-        src.write_text("fn bravo() {}\n")
+        src.write_text("fn bravo() {}\n", encoding="utf-8")
         return original_copy(src, dst, **kwargs)
 
     monkeypatch.setattr(cache, "_atomic_copy_file", replace_before_copy)
@@ -1216,14 +1219,14 @@ def test_backend_publication_rejects_swapped_source_before_copy(
             artifact_contract=contract,
         )
         assert error and "source changed" in error
-    assert destination.read_text() == "prior output"
+    assert destination.read_text(encoding="utf-8") == "prior output"
 
 
 def test_immutable_cache_publication_rejects_conflicting_valid_peer(tmp_path):
     source = tmp_path / "source.rs"
     destination = tmp_path / "cache.rs"
-    source.write_text("fn alpha() {}\n")
-    destination.write_text("fn bravo() {}\n")
+    source.write_text("fn alpha() {}\n", encoding="utf-8")
+    destination.write_text("fn bravo() {}\n", encoding="utf-8")
     with pytest.raises(
         cache.BackendArtifactValidationError, match="conflicting content"
     ):
@@ -1233,7 +1236,7 @@ def test_immutable_cache_publication_rejects_conflicting_valid_peer(tmp_path):
             artifact_contract=BackendArtifactContract(BackendArtifactKind.RUST),
             warnings=[],
         )
-    assert destination.read_text() == "fn bravo() {}\n"
+    assert destination.read_text(encoding="utf-8") == "fn bravo() {}\n"
 
 
 def test_immutable_publication_returns_admitted_identity_without_source_alias(tmp_path):
@@ -1251,8 +1254,8 @@ def test_immutable_publication_returns_admitted_identity_without_source_alias(tm
     assert identity.sha256 == hashlib.sha256(payload.encode()).hexdigest()
     cache.verify_stable_regular_file_identity(identity, label="published cache")
     assert not source.samefile(destination)
-    source.write_text("fn bravo() {}\n")
-    assert destination.read_text() == payload
+    source.write_text("fn bravo() {}\n", encoding="utf-8")
+    assert destination.read_text(encoding="utf-8") == payload
 
 
 @pytest.mark.parametrize(
@@ -1660,6 +1663,7 @@ def _assert_real_archive_member_symbols(tmp_path, monkeypatch, target):
             capture_output=True,
             text=True,
             timeout=30,
+            encoding="utf-8",
         )
         assert result.returncode == 0, result.stderr
         objects.append(output)
@@ -1669,6 +1673,7 @@ def _assert_real_archive_member_symbols(tmp_path, monkeypatch, target):
         capture_output=True,
         text=True,
         timeout=30,
+        encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
     facts = native_symbol_inspection._native_archive_global_symbol_facts(

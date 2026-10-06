@@ -176,7 +176,7 @@ def parse_v8_cpuprofile(profile_path: Path) -> dict[str, FunctionSample]:
     - samples: array of node IDs (leaf of call stack at each sample tick)
     - timeDeltas: array of time deltas between samples
     """
-    raw = json.loads(profile_path.read_text())
+    raw = json.loads(profile_path.read_text(encoding="utf-8"))
     functions: dict[str, FunctionSample] = {}
 
     nodes = raw.get("nodes", [])
@@ -984,7 +984,7 @@ def main() -> None:
         report = build_baseline_report(results)
         out_path = args.out or (MOLT_ROOT / "bench" / "wasm_hotspot_baseline.json")
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_text(json.dumps(report, indent=2) + "\n")
+        out_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(f"\nBaseline written to {out_path}")
 
         if args.json_output:
@@ -1020,7 +1020,7 @@ def main() -> None:
         if args.out:
             report = build_baseline_report([result])
             args.out.parent.mkdir(parents=True, exist_ok=True)
-            args.out.write_text(json.dumps(report, indent=2) + "\n")
+            args.out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
             print(f"Report written to {args.out}")
 
         sys.exit(0 if result.ok else 1)

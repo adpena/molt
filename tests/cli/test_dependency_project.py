@@ -29,7 +29,9 @@ def test_unmarked_project_stays_in_the_selected_directory(tmp_path, monkeypatch,
 def test_invalid_override_is_not_replaced_with_a_valid_project(
     tmp_path, monkeypatch, capsys
 ):
-    (tmp_path / "pyproject.toml").write_text("[project]\nname='valid'\n")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='valid'\n", encoding="utf-8"
+    )
     missing = tmp_path / "missing"
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(missing))
@@ -41,8 +43,10 @@ def test_invalid_override_is_not_replaced_with_a_valid_project(
 def test_package_commands_cannot_mutate_a_sealed_compiler(
     tmp_path, monkeypatch, capsys, operation
 ):
-    (tmp_path / "release-compiler-source.json").write_text("{}")
-    (tmp_path / "pyproject.toml").write_text("[project]\nname='compiler'\n")
+    (tmp_path / "release-compiler-source.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='compiler'\n", encoding="utf-8"
+    )
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(tmp_path))
     if operation == "install":
         status = deps.install(["example"], json_output=True)
@@ -64,7 +68,9 @@ def test_dependency_environment_requires_a_real_interpreter(tmp_path):
 
 
 def test_failed_add_cannot_claim_installed_and_persisted(tmp_path, monkeypatch, capsys):
-    (tmp_path / "pyproject.toml").write_text("[project]\nname='guest'\n")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='guest'\n", encoding="utf-8"
+    )
     monkeypatch.setenv("MOLT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("UV_NO_SYNC", "1")
     monkeypatch.setenv("UV_FROZEN", "1")
@@ -90,8 +96,10 @@ def test_failed_add_cannot_claim_installed_and_persisted(tmp_path, monkeypatch, 
 def test_locks_follow_the_declared_project_not_the_compiler(
     tmp_path, monkeypatch, capsys, cargo
 ):
-    (tmp_path / "pyproject.toml").write_text("[project]\nname='guest'\n")
-    (tmp_path / "uv.lock").write_text("version=1\n")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='guest'\n", encoding="utf-8"
+    )
+    (tmp_path / "uv.lock").write_text("version=1\n", encoding="utf-8")
     monkeypatch.delenv("UV_NO_SYNC", raising=False)
     monkeypatch.delenv("MOLT_SKIP_CARGO_LOCK", raising=False)
     calls = []
@@ -102,7 +110,9 @@ def test_locks_follow_the_declared_project_not_the_compiler(
         lambda root: pytest.fail("unexpected compiler/Cargo dependency resolution"),
     )
     if cargo:
-        (tmp_path / "Cargo.toml").write_text("[package]\nname='guest'\n")
+        (tmp_path / "Cargo.toml").write_text(
+            "[package]\nname='guest'\n", encoding="utf-8"
+        )
     status = lockfiles._check_lockfiles(tmp_path, True, [], True, False, "vendor")
     if cargo:
         assert status == 2
@@ -141,14 +151,16 @@ def test_public_dependency_workflow_uses_only_the_user_project(tmp_path, monkeyp
     compiler_venv_exists = (compiler / ".molt-venv").exists()
     pyproject = project / "pyproject.toml"
     pyproject.write_text(
-        "[project]\nname='guest'\nversion='1.0'\nrequires-python='>=3.12'\ndependencies=['payload']\n"
+        "[project]\nname='guest'\nversion='1.0'\nrequires-python='>=3.12'\ndependencies=['payload']\n",
+        encoding="utf-8",
     )
     payload = project / "payload"
     payload.mkdir()
-    (payload / "value.py").write_text("VALUE=42\n")
+    (payload / "value.py").write_text("VALUE=42\n", encoding="utf-8")
     (project / "uv.lock").write_text(
         "version=1\n[[package]]\nname='payload'\nversion='1.0'\n"
-        "[package.source]\npath='payload'\n"
+        "[package.source]\npath='payload'\n",
+        encoding="utf-8",
     )
     env = os.environ.copy()
     env.update(
@@ -178,11 +190,14 @@ def test_public_dependency_workflow_uses_only_the_user_project(tmp_path, monkeyp
 
     assert cli("deps")["dependencies"][0]["name"] == "payload"
     cli("vendor", "--no-deterministic")
-    assert (project / "vendor/local/payload/value.py").read_text() == "VALUE=42\n"
+    assert (project / "vendor/local/payload/value.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE=42\n"
     assert not (nested / "vendor").exists()
 
     pyproject.write_text(
-        "[project]\nname='guest'\nversion='1.0'\nrequires-python='>=3.12'\ndependencies=[]\n"
+        "[project]\nname='guest'\nversion='1.0'\nrequires-python='>=3.12'\ndependencies=[]\n",
+        encoding="utf-8",
     )
     # The vendor fixture above is a source-plan lock, not a uv-generated lock.
     # The real add operation starts without it and must generate its own lock.
@@ -191,9 +206,10 @@ def test_public_dependency_workflow_uses_only_the_user_project(tmp_path, monkeyp
     demo = _wheel(project, "molt_project_demo", "molt_project_leaf==1.0")
     noise = _wheel(project, "molt_project_noise")
     requirements = project / "requirements.txt"
-    requirements.write_text("-r included.txt\n")
+    requirements.write_text("-r included.txt\n", encoding="utf-8")
     (project / "included.txt").write_text(
-        "--find-links " + project.as_uri() + "\n" + demo.as_uri() + "\n"
+        "--find-links " + project.as_uri() + "\n" + demo.as_uri() + "\n",
+        encoding="utf-8",
     )
     cli("install", "-r", str(requirements))
     cli("install", "../" + noise.name)
@@ -211,7 +227,7 @@ def test_public_dependency_workflow_uses_only_the_user_project(tmp_path, monkeyp
     assert not (site / "molt_project_noise.py").exists()
 
     cli("install", "add", "../" + noise.name)
-    data = tomllib.loads(pyproject.read_text())
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     assert any("molt-project-noise" in item for item in data["project"]["dependencies"])
     assert (site / "molt_project_noise.py").exists()
     assert (project / "uv.lock").exists()
@@ -225,9 +241,10 @@ def test_public_dependency_workflow_uses_only_the_user_project(tmp_path, monkeyp
     assert (compiler / ".molt-venv").exists() == compiler_venv_exists
     assert not (project / ".venv").exists()
 
-    requirements.write_text("")
+    requirements.write_text("", encoding="utf-8")
     pyproject.write_text(
-        "[project]\nname='guest'\nversion='1.0'\nrequires-python='>=3.12'\ndependencies=[]\n"
+        "[project]\nname='guest'\nversion='1.0'\nrequires-python='>=3.12'\ndependencies=[]\n",
+        encoding="utf-8",
     )
     cli("install", "--sync")
     assert not (site / "molt_project_demo.py").exists()

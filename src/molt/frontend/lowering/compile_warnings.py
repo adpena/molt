@@ -29,7 +29,7 @@ class CompileWarningMixin(GeneratorMixinBase):
         # Read the source line for context (matches CPython's warning format).
         src_line = ""
         try:
-            with open(source) as f:
+            with open(source, encoding="utf-8") as f:
                 for i, line in enumerate(f, 1):
                     if i == lineno:
                         src_line = line.rstrip()
@@ -54,7 +54,7 @@ class CompileWarningMixin(GeneratorMixinBase):
                     cached_source_lines = None
                 else:
                     try:
-                        with open(source) as f:
+                        with open(source, encoding="utf-8") as f:
                             cached_source_lines = [line.rstrip("\n") for line in f]
                     except (OSError, UnicodeDecodeError):
                         cached_source_lines = None

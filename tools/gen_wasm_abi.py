@@ -117,6 +117,7 @@ def _rustfmt(module_name: str, source: str) -> str:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
+            encoding="utf-8",
         )
     except FileNotFoundError as exc:
         raise RuntimeError(
@@ -165,6 +166,7 @@ def _rustfmt_many(modules: dict[str, str]) -> dict[str, str]:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 check=False,
+                encoding="utf-8",
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
@@ -202,6 +204,7 @@ def _rustfmt_version() -> str:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
+            encoding="utf-8",
         )
     except FileNotFoundError as exc:
         raise RuntimeError(

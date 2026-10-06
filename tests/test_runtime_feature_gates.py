@@ -64,12 +64,14 @@ def _feature_expands_to_dep(name: str, features: dict, seen: set[str]) -> bool:
 
 
 def _mechanically_derived_link_affecting() -> set[str]:
-    cargo = tomllib.loads((RUNTIME_CRATE / "Cargo.toml").read_text())
+    cargo = tomllib.loads((RUNTIME_CRATE / "Cargo.toml").read_text(encoding="utf-8"))
     features = cargo.get("features", {})
 
     mod_features = _cfg_gated_mod_features(
-        (RUNTIME_CRATE / "src" / "builtins" / "mod.rs").read_text()
-    ) | _cfg_gated_mod_features((RUNTIME_CRATE / "src" / "lib.rs").read_text())
+        (RUNTIME_CRATE / "src" / "builtins" / "mod.rs").read_text(encoding="utf-8")
+    ) | _cfg_gated_mod_features(
+        (RUNTIME_CRATE / "src" / "lib.rs").read_text(encoding="utf-8")
+    )
 
     dep_features = {
         feature
@@ -98,7 +100,9 @@ def test_link_affecting_is_subset_of_gate_table_features() -> None:
 
 def test_exact_builtin_authority_precedes_stdlib_prefix_gates() -> None:
     categories = tomllib.loads(
-        (RUNTIME_CRATE / "src" / "intrinsics" / "categories.toml").read_text()
+        (RUNTIME_CRATE / "src" / "intrinsics" / "categories.toml").read_text(
+            encoding="utf-8"
+        )
     )
     expected_builtins = {
         symbol for symbols in categories["builtin"].values() for symbol in symbols
@@ -256,7 +260,7 @@ def test_zero_stdlib_wasm_browser_profile_keeps_core_builtins() -> None:
     coverage gap this closes.
     """
 
-    cargo = tomllib.loads((RUNTIME_CRATE / "Cargo.toml").read_text())
+    cargo = tomllib.loads((RUNTIME_CRATE / "Cargo.toml").read_text(encoding="utf-8"))
     features = cargo.get("features", {})
 
     def _triggers_builtins(feature: str) -> bool:

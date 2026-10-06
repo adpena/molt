@@ -358,7 +358,7 @@ def test_cli_validate_check_json_writes_explicit_summary_out(tmp_path: Path) -> 
 
     assert res.returncode == 0, res.stderr
     stdout_payload = json.loads(res.stdout)
-    file_payload = json.loads(summary_path.read_text())
+    file_payload = json.loads(summary_path.read_text(encoding="utf-8"))
     assert file_payload == stdout_payload
     assert stdout_payload["data"]["check_only"] is True
     assert stdout_payload["data"]["summary_path"] == str(summary_path)
@@ -567,7 +567,7 @@ def test_cli_wrapper_build_uses_default_memory_guard(
     from molt import cli
 
     entry = tmp_path / "main.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
     output = tmp_path / "main_molt"
     calls: list[dict[str, object]] = []
 
@@ -780,10 +780,10 @@ def test_cli_compare_uses_diff_memory_guard_for_children(
     project = tmp_path / "project"
     project.mkdir()
     entry = project / "main.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
     built_binary = project / "build" / "main_molt"
     built_binary.parent.mkdir(parents=True, exist_ok=True)
-    built_binary.write_text("")
+    built_binary.write_text("", encoding="utf-8")
 
     prefixes: list[object] = []
     commands: list[list[str]] = []
@@ -850,11 +850,11 @@ def test_cli_cross_run_uses_cross_memory_guard(
     project = tmp_path / "project"
     project.mkdir()
     entry = project / "main.py"
-    entry.write_text("print('ok')\n")
+    entry.write_text("print('ok')\n", encoding="utf-8")
     artifact = project / "out.wasm"
-    artifact.write_text("")
+    artifact.write_text("", encoding="utf-8")
     manifest = project / "manifest.json"
-    manifest.write_text("{}")
+    manifest.write_text("{}", encoding="utf-8")
 
     class BuildEntry:
         source_path = entry
@@ -1050,7 +1050,7 @@ def test_cli_validate_uses_family_memory_guard_prefixes(
         == 0
     )
     payload = json.loads(capsys.readouterr().out)
-    assert json.loads(summary_path.read_text()) == payload
+    assert json.loads(summary_path.read_text(encoding="utf-8")) == payload
     assert payload["data"]["summary_path"] == str(summary_path)
     assert payload["data"]["check_only"] is False
     assert isinstance(payload["data"]["elapsed_s"], float)
@@ -1146,7 +1146,7 @@ def test_cli_validate_defaults_execution_summary_to_logs(
 
     summary_path = tmp_path / "logs" / "validate-smoke-native-dev.json"
     payload = json.loads(capsys.readouterr().out)
-    assert json.loads(summary_path.read_text()) == payload
+    assert json.loads(summary_path.read_text(encoding="utf-8")) == payload
     assert payload["data"]["summary_path"] == str(summary_path)
     assert payload["data"]["results"][0]["name"] == "correctness-step"
 
@@ -1442,7 +1442,7 @@ def test_windows_vsdevcmd_advice_uses_shared_installation_selection(
     installation = tmp_path / "Visual Studio"
     script = installation / "Common7/Tools/VsDevCmd.bat"
     script.parent.mkdir(parents=True)
-    script.write_text("")
+    script.write_text("", encoding="utf-8")
     selected = []
 
     def discover(component, env):

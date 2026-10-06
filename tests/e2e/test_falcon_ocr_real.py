@@ -208,7 +208,7 @@ class TestReferenceData:
         assert ref_path is not None
         assert ref_path.exists()
 
-        with open(ref_path) as f:
+        with open(ref_path, encoding="utf-8") as f:
             ref = json.load(f)
         assert ref["model_id"] == "tiiuae/Falcon-OCR"
         assert ref["num_tensors"] > 0

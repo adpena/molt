@@ -23,7 +23,8 @@ def test_wasm_db_host_poll_parity(tmp_path: Path) -> None:
         "        print('pending')\n"
         "\n"
         "if __name__ == '__main__':\n"
-        "    main()\n"
+        "    main()\n",
+        encoding="utf-8",
     )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)

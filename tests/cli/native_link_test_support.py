@@ -201,7 +201,7 @@ def native_codegen_binding(runtime_lib: Path, build_identity: RuntimeBuildIdenti
             symbols, label="test codegen symbols"
         ),
         semantic_digest=_runtime_callable_symbols_digest(
-            tuple(sorted(set(symbols.read_text().splitlines())))
+            tuple(sorted(set(symbols.read_text(encoding="utf-8").splitlines())))
         ),
     )
 

@@ -293,7 +293,9 @@ def test_static_loader_requests_preserve_target_and_conservative_branches(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(scanner, "_collect_static_source_execution_requests", collect)
-    result = load(source, target_python=target, tree=ast.parse(source.read_text()))
+    result = load(
+        source, target_python=target, tree=ast.parse(source.read_text(encoding="utf-8"))
+    )
     assert result.scan.source_executions == expected
     assert seen == [target]
     if minor <= sys.version_info.minor:

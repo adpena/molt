@@ -44,7 +44,7 @@ def test_wasm_call_arity_trampoline(tmp_path: Path) -> None:
 
     root = Path(__file__).resolve().parents[1]
     src = tmp_path / "call_arity_trampoline.py"
-    src.write_text(CALL_SRC)
+    src.write_text(CALL_SRC, encoding="utf-8")
 
     output_wasm = build_wasm_linked(
         root,

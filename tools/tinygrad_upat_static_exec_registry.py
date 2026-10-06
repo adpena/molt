@@ -258,8 +258,12 @@ def write_outputs(
     }
     manifest_output.parent.mkdir(parents=True, exist_ok=True)
     module_output.parent.mkdir(parents=True, exist_ok=True)
-    manifest_output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-    module_output.write_text(render_registry_module(list(unique.values())))
+    manifest_output.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    module_output.write_text(
+        render_registry_module(list(unique.values())), encoding="utf-8"
+    )
     return manifest
 
 

@@ -68,11 +68,14 @@ def write_compiler_lock(root):
     manifest = root / "runtime/molt-backend/Cargo.toml"
     if not manifest.exists():
         manifest.parent.mkdir(parents=True, exist_ok=True)
-        manifest.write_text('[package]\nname = "molt-backend"\nversion = "0.1.0"\n')
+        manifest.write_text(
+            '[package]\nname = "molt-backend"\nversion = "0.1.0"\n', encoding="utf-8"
+        )
     lock = root / "Cargo.lock"
     if not lock.exists():
         lock.write_text(
-            'version = 4\n[[package]]\nname = "molt-backend"\nversion = "0.1.0"\n'
+            'version = 4\n[[package]]\nname = "molt-backend"\nversion = "0.1.0"\n',
+            encoding="utf-8",
         )
 
 

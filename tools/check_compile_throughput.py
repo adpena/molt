@@ -107,9 +107,9 @@ def main() -> int:
             return 2
 
     try:
-        with open(args.baseline) as f:
+        with open(args.baseline, encoding="utf-8") as f:
             baseline_data = json.load(f)
-        with open(args.current) as f:
+        with open(args.current, encoding="utf-8") as f:
             current_data = json.load(f)
     except json.JSONDecodeError as e:
         print(f"ERROR: Invalid JSON: {e}", file=sys.stderr)

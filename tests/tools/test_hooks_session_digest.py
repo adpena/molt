@@ -52,7 +52,9 @@ def test_digest_writes_landing_baseline(tmp_path, monkeypatch, capsys):
     )
     monkeypatch.setattr(sd._common, "git_head", lambda root: "HEADSHA")
     _run_digest(monkeypatch, {"session_id": "sX", "cwd": str(tmp_path)}, capsys)
-    marker = json.loads((tmp_path / ".molt" / "state" / lg.MARKER_NAME).read_text())
+    marker = json.loads(
+        (tmp_path / ".molt" / "state" / lg.MARKER_NAME).read_text(encoding="utf-8")
+    )
     assert marker["session_id"] == "sX" and marker["start_head"] == "HEADSHA"
 
 

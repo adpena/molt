@@ -64,7 +64,8 @@ if (rawHandle !== 93 && rawHandle !== -93) {{
 }}
 
 console.log('ok');
-""".lstrip()
+""".lstrip(),
+        encoding="utf-8",
     )
 
     run = _run_wasm_test_process(
@@ -137,7 +138,8 @@ if (acceptRc !== -EWOULDBLOCK) {{
 }}
 
 console.log('ok');
-""".lstrip()
+""".lstrip(),
+        encoding="utf-8",
     )
 
     run = _run_wasm_test_process(
@@ -237,7 +239,8 @@ const addrOutLen = view.getUint32(outLenPtr, true);
 if (addrOutLen === 0) throw new Error('expected peer address in recvfrom');
 
 console.log('ok');
-""".lstrip()
+""".lstrip(),
+        encoding="utf-8",
     )
 
     run = _run_wasm_test_process(

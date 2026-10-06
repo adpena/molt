@@ -85,7 +85,7 @@ def test_guarded_result_transports_child_and_infrastructure_outcomes(
     stderr = result.stderr.decode() if tempfiles else result.stderr
     assert "fixture-repro" in stderr
     assert ("SIGKILL" in stderr) is (child_returncode == 137)
-    event = json.loads(profile.read_text())
+    event = json.loads(profile.read_text(encoding="utf-8"))
     assert event["status"] == "infrastructure_error"
     assert event["owned_process_identities"] == [{"pid": 321, "started_at_ns": 123456}]
     assert event["returncode"] == final_returncode

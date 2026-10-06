@@ -1332,7 +1332,9 @@ def main(argv: list[str] | None = None) -> int:
         / f"output_startup_size_audit_{report.get('recorded_at', _utc_stamp())}.json"
     )
     json_out.parent.mkdir(parents=True, exist_ok=True)
-    json_out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    json_out.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:

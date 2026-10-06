@@ -63,7 +63,8 @@ def main() -> int:
 
             path.unlink()
             """
-        )
+        ),
+        encoding="utf-8",
     )
 
     output_wasm = tmpdir / "output.wasm"

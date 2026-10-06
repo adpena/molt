@@ -84,7 +84,7 @@ def test_manifest_output_deduplicates_matcher_records(tmp_path: Path) -> None:
     assert manifest["record_count"] == 2
     assert manifest["unique_count"] == 1
     assert manifest["records"][0]["sha256"] == record.sha256
-    generated = (tmp_path / "_molt_static_exec_registry.py").read_text()
+    generated = (tmp_path / "_molt_static_exec_registry.py").read_text(encoding="utf-8")
     assert f"_factory_{record.sha256[:16]}" in generated
 
 

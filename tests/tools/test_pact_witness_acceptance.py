@@ -330,7 +330,9 @@ def test_pact_witness_acceptance_writes_static_extension_diagnostic(
     manifest_path = module_root / "_native.molt.wasm.extension_manifest.json"
     manifest_path.parent.mkdir(parents=True)
     source_path = tmp_path / "native.c"
-    source_path.write_text("int ready(void) { return import_array1(-1); }\n")
+    source_path.write_text(
+        "int ready(void) { return import_array1(-1); }\n", encoding="utf-8"
+    )
     manifest_path.write_text(
         json.dumps(
             {
@@ -725,7 +727,7 @@ def test_acceptance_publishes_exact_portable_closure_without_copy(tmp_path, targ
         path.relative_to(tmp_path) for path in tmp_path.rglob("*") if path.is_file()
     }
     assert after - before == {Path("acceptance-receipt.json")}
-    payload = json.loads(receipt.read_text())
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
     target_item = next(
         item for item in payload["artifacts"] if item["role"] == "target_artifact"
     )

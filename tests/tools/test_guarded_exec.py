@@ -76,7 +76,7 @@ def test_guarded_exec_metrics_preserve_child_and_infrastructure_outcomes(
     metrics = tmp_path / "metrics.json"
     rc = module.main(["--metrics-json", str(metrics), "--", "fixture"])
     assert rc == guard.INFRASTRUCTURE_RETURN_CODE
-    payload = json.loads(metrics.read_text())
+    payload = json.loads(metrics.read_text(encoding="utf-8"))
     assert payload["returncode"] == rc
     assert payload["child_returncode"] == 0
     assert payload["infrastructure_failure"] == guard.infrastructure_failure_payload(

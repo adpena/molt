@@ -27,6 +27,7 @@ def _git(root: Path, *args: str) -> str:
         text=True,
         capture_output=True,
         check=True,
+        encoding="utf-8",
     )
     return proc.stdout
 

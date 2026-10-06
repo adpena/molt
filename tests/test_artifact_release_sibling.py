@@ -219,7 +219,7 @@ def test_discard_stage_diagnostic_does_not_raise_formatter(monkeypatch, tmp_path
 
 def test_invalid_journal_diagnostic_retains_cause(monkeypatch, tmp_path):
     path = tmp_path / "journal.json"
-    path.write_text("{}")
+    path.write_text("{}", encoding="utf-8")
     failure = BrokenDiagnosticError()
 
     def fail_load(text):

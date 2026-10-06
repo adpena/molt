@@ -30,7 +30,7 @@ MODULE_PATHS = [
 
 def test_multiprocessing_batch_hides_raw_capability_intrinsic() -> None:
     for path in MODULE_PATHS:
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         assert '_require_intrinsic("molt_capabilities_has", globals())' not in source
         assert (
             '_MOLT_CAPABILITIES_HAS = _require_intrinsic("molt_capabilities_has")'

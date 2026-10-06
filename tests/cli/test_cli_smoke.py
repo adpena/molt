@@ -116,7 +116,8 @@ def _write_trust_policy(tmp_path: Path, key_sha: str) -> Path:
                 "]",
                 "",
             ]
-        )
+        ),
+        encoding="utf-8",
     )
     return policy_path
 
@@ -148,14 +149,14 @@ def _write_pgo_profile(tmp_path: Path, entrypoint: str = "script.py") -> Path:
         "events": [],
         "redactions": {},
     }
-    profile_path.write_text(json.dumps(payload))
+    profile_path.write_text(json.dumps(payload), encoding="utf-8")
     return profile_path
 
 
 def _write_runtime_feedback(tmp_path: Path) -> Path:
     feedback_path = tmp_path / "molt_runtime_feedback.json"
     payload = process_profile_payload()
-    feedback_path.write_text(json.dumps(payload))
+    feedback_path.write_text(json.dumps(payload), encoding="utf-8")
     return feedback_path
 
 
@@ -201,7 +202,7 @@ def _inject_signature_metadata(package_path: Path, key_sha: str) -> None:
         if tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
     sidecar = package_path.with_name(package_path.stem + ".sig.json")
-    sidecar.write_text(json.dumps(signature_meta))
+    sidecar.write_text(json.dumps(signature_meta), encoding="utf-8")
 
 
 def _start_registry_server() -> tuple[socketserver.TCPServer, list[dict[str, object]]]:
@@ -652,7 +653,7 @@ def test_planned_update_steps_bootstrap_cargo_edit_when_missing(
 
 def test_cli_run_json(tmp_path: Path) -> None:
     script = tmp_path / "hello.py"
-    script.write_text("print('ok')\n")
+    script.write_text("print('ok')\n", encoding="utf-8")
     res = _run_cli(["run", "--json", str(script)])
     assert res.returncode == 0
     payload = json.loads(res.stdout)
@@ -678,7 +679,7 @@ def test_cli_build_json_binary_executes_for_native_profiles(
     tmp_path: Path, profile: str
 ) -> None:
     script = tmp_path / "hello.py"
-    script.write_text("print('ok')\n")
+    script.write_text("print('ok')\n", encoding="utf-8")
 
     build = _run_cli(
         [
@@ -710,7 +711,7 @@ def test_cli_build_json_binary_executes_for_native_profiles(
 
 def test_cli_compare_json(tmp_path: Path) -> None:
     script = tmp_path / "hello.py"
-    script.write_text("print('ok')\n")
+    script.write_text("print('ok')\n", encoding="utf-8")
 
     res = _run_cli(["compare", "--json", str(script)])
     assert res.returncode == 0, res.stderr
@@ -727,7 +728,7 @@ def test_cli_compare_json(tmp_path: Path) -> None:
 
 def test_cli_parity_run_json(tmp_path: Path) -> None:
     script = tmp_path / "hello.py"
-    script.write_text("print('ok')\n")
+    script.write_text("print('ok')\n", encoding="utf-8")
     res = _run_cli(["parity-run", "--json", str(script)])
     assert res.returncode == 0
     payload = json.loads(res.stdout)
@@ -738,7 +739,7 @@ def test_cli_parity_run_json(tmp_path: Path) -> None:
 
 def test_cli_parity_run_timing_json(tmp_path: Path) -> None:
     script = tmp_path / "hello.py"
-    script.write_text("print('ok')\n")
+    script.write_text("print('ok')\n", encoding="utf-8")
     res = _run_cli(["parity-run", "--timing", "--json", str(script)])
     assert res.returncode == 0
     payload = json.loads(res.stdout)
@@ -784,7 +785,7 @@ def test_cli_vendor_dry_run_json() -> None:
 
 def test_cli_check_deterministic_warn_json(tmp_path: Path) -> None:
     script = tmp_path / "hello.py"
-    script.write_text("print('ok')\n")
+    script.write_text("print('ok')\n", encoding="utf-8")
     res = _run_cli(
         [
             "check",
@@ -831,7 +832,7 @@ def test_cli_package_verify_roundtrip(tmp_path: Path) -> None:
         "exports": ["entry"],
     }
     manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest))
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     capabilities_path = tmp_path / "caps.json"
     capabilities_path.write_text(
         json.dumps(
@@ -844,7 +845,8 @@ def test_cli_package_verify_roundtrip(tmp_path: Path) -> None:
                     "molt_test_pkg": {"allow": ["net"], "effects": ["nondet"]}
                 },
             }
-        )
+        ),
+        encoding="utf-8",
     )
     package_path = tmp_path / "pkg.moltpkg"
 
@@ -866,7 +868,7 @@ def test_cli_package_verify_roundtrip(tmp_path: Path) -> None:
     signature_meta_path = Path(payload["data"]["signature_metadata"])
     assert sbom_path.exists()
     assert signature_meta_path.exists()
-    signature_meta = json.loads(signature_meta_path.read_text())
+    signature_meta = json.loads(signature_meta_path.read_text(encoding="utf-8"))
     assert signature_meta["status"] == "unsigned"
     assert package_path.exists()
 
@@ -901,7 +903,7 @@ def test_cli_verify_requires_capabilities_allowlist(tmp_path: Path) -> None:
         "exports": ["entry"],
     }
     manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest))
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     package_path = tmp_path / "pkg.moltpkg"
 
     res = _run_cli(
@@ -944,7 +946,7 @@ def test_cli_package_emits_sbom_and_signature(tmp_path: Path) -> None:
         "exports": ["entry"],
     }
     manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest))
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     package_path = tmp_path / "pkg.moltpkg"
 
     res = _run_cli(
@@ -981,7 +983,7 @@ def test_cli_package_spdx_sbom(tmp_path: Path) -> None:
         "exports": ["entry"],
     }
     manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest))
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     package_path = tmp_path / "pkg.moltpkg"
 
     res = _run_cli(
@@ -999,7 +1001,7 @@ def test_cli_package_spdx_sbom(tmp_path: Path) -> None:
     assert res.returncode == 0
     payload = json.loads(res.stdout)
     sbom_path = Path(payload["data"]["sbom"])
-    sbom = json.loads(sbom_path.read_text())
+    sbom = json.loads(sbom_path.read_text(encoding="utf-8"))
     assert sbom["spdxVersion"] == "SPDX-2.3"
     assert sbom["dataLicense"] == "CC0-1.0"
     assert sbom["packages"]
@@ -1019,7 +1021,7 @@ def test_cli_publish_remote_with_auth(tmp_path: Path) -> None:
         "exports": ["entry"],
     }
     manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest))
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     package_path = tmp_path / "pkg.moltpkg"
     res = _run_cli(
         [
@@ -1113,7 +1115,7 @@ def test_cli_publish_remote_basic_auth(tmp_path: Path) -> None:
         "exports": ["entry"],
     }
     manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest))
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     package_path = tmp_path / "pkg.moltpkg"
     res = _run_cli(
         [
@@ -1237,9 +1239,11 @@ def test_cli_package_respects_denies(tmp_path: Path) -> None:
         "exports": ["entry"],
     }
     manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest))
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     capabilities_path = tmp_path / "caps.json"
-    capabilities_path.write_text(json.dumps({"allow": ["fs"], "deny": ["fs.write"]}))
+    capabilities_path.write_text(
+        json.dumps({"allow": ["fs"], "deny": ["fs.write"]}), encoding="utf-8"
+    )
     package_path = tmp_path / "pkg.moltpkg"
 
     res = _run_cli(
@@ -1274,7 +1278,7 @@ def test_cli_package_rejects_abi_mismatch(tmp_path: Path) -> None:
         "exports": ["entry"],
     }
     manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest))
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     package_path = tmp_path / "pkg.moltpkg"
 
     res = _run_cli(
@@ -1307,7 +1311,7 @@ def test_cli_verify_requires_signature(tmp_path: Path) -> None:
         "exports": ["entry"],
     }
     manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest))
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     package_path = tmp_path / "pkg.moltpkg"
 
     res = _run_cli(
@@ -1351,9 +1355,9 @@ def test_cli_verify_accepts_signature_file(tmp_path: Path) -> None:
         "exports": ["entry"],
     }
     manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest))
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     signature = tmp_path / "artifact.sig"
-    signature.write_text("signed")
+    signature.write_text("signed", encoding="utf-8")
     package_path = tmp_path / "pkg.moltpkg"
 
     res = _run_cli(
@@ -1401,9 +1405,9 @@ def test_cli_publish_remote_registry(tmp_path: Path) -> None:
         "exports": ["entry"],
     }
     manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest))
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     signature = tmp_path / "artifact.sig"
-    signature.write_text("signed")
+    signature.write_text("signed", encoding="utf-8")
     package_path = tmp_path / "pkg.moltpkg"
 
     res = _run_cli(
@@ -1472,7 +1476,7 @@ def test_cli_build_cross_target_with_zig(tmp_path: Path) -> None:
         pytest.skip("cargo is required for backend compilation.")
 
     script = tmp_path / "hello.py"
-    script.write_text("print('ok')\n")
+    script.write_text("print('ok')\n", encoding="utf-8")
     output = tmp_path / "hello_molt"
 
     try:
@@ -1508,7 +1512,7 @@ def test_cli_build_sysroot_json(tmp_path: Path) -> None:
         pytest.skip("cargo is required for backend compilation.")
 
     script = tmp_path / "hello.py"
-    script.write_text("print('ok')\n")
+    script.write_text("print('ok')\n", encoding="utf-8")
     sysroot = tmp_path / "sysroot"
     sysroot.mkdir()
     profile_path = _write_pgo_profile(tmp_path, entrypoint=str(script))
@@ -1543,7 +1547,9 @@ def test_cli_build_runtime_feedback_json(tmp_path: Path) -> None:
         pytest.skip("cargo is required for backend compilation.")
 
     script = tmp_path / "hello.py"
-    script.write_text("def helper():\n    return 1\n\nprint(helper())\n")
+    script.write_text(
+        "def helper():\n    return 1\n\nprint(helper())\n", encoding="utf-8"
+    )
     sysroot = tmp_path / "sysroot"
     sysroot.mkdir()
     feedback_path = _write_runtime_feedback(tmp_path)
@@ -1578,7 +1584,9 @@ def test_cli_build_diagnostics_summary_verbosity_trims_stderr(tmp_path: Path) ->
         pytest.skip("cargo is required for backend compilation.")
 
     script = tmp_path / "hello.py"
-    script.write_text("def helper():\n    return 1\n\nprint(helper())\n")
+    script.write_text(
+        "def helper():\n    return 1\n\nprint(helper())\n", encoding="utf-8"
+    )
     sysroot = tmp_path / "sysroot"
     sysroot.mkdir()
 
@@ -1611,7 +1619,9 @@ def test_cli_build_json_diagnostics_include_midend_policy_config(
         pytest.skip("cargo is required for backend compilation.")
 
     script = tmp_path / "hello.py"
-    script.write_text("def helper(x=1):\n    return x\n\nprint(helper())\n")
+    script.write_text(
+        "def helper(x=1):\n    return x\n\nprint(helper())\n", encoding="utf-8"
+    )
     sysroot = tmp_path / "sysroot"
     sysroot.mkdir()
 

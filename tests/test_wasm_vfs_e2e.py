@@ -27,8 +27,8 @@ def test_bundle_creation_produces_valid_tar(tmp_path):
     """Bundle tool should produce a valid tar with manifest."""
     src = tmp_path / "src"
     src.mkdir()
-    (src / "main.py").write_text("print('hello from bundle')\n")
-    (src / "mylib.py").write_text("VALUE = 42\n")
+    (src / "main.py").write_text("print('hello from bundle')\n", encoding="utf-8")
+    (src / "mylib.py").write_text("VALUE = 42\n", encoding="utf-8")
 
     bundle = tmp_path / "bundle.tar"
     _create_bundle(src, bundle)
@@ -51,7 +51,7 @@ def test_wasm_build_with_bundle(tmp_path):
     # Create source
     src = tmp_path / "src"
     src.mkdir()
-    (src / "app.py").write_text("x = 1 + 2\n")
+    (src / "app.py").write_text("x = 1 + 2\n", encoding="utf-8")
 
     # Create bundle
     bundle = tmp_path / "bundle.tar"
@@ -85,7 +85,7 @@ def test_wasm_build_with_profile_cloudflare(tmp_path):
     """--profile cloudflare should set optimization defaults."""
     src = tmp_path / "src"
     src.mkdir()
-    (src / "app.py").write_text("x = 1\n")
+    (src / "app.py").write_text("x = 1\n", encoding="utf-8")
 
     output = tmp_path / "output.wasm"
     result = _run_wasm_test_process(
@@ -114,7 +114,7 @@ def test_snapshot_generation(tmp_path):
     """--snapshot should produce a molt.snapshot.json."""
     src = tmp_path / "src"
     src.mkdir()
-    (src / "app.py").write_text("x = 1\n")
+    (src / "app.py").write_text("x = 1\n", encoding="utf-8")
 
     output = tmp_path / "output.wasm"
     result = _run_wasm_test_process(
@@ -139,7 +139,7 @@ def test_snapshot_generation(tmp_path):
     # Check snapshot was generated
     snapshot = output.with_name("molt.snapshot.json")
     assert snapshot.is_file(), f"Requested snapshot metadata missing: {snapshot}"
-    data = json.loads(snapshot.read_text())
+    data = json.loads(snapshot.read_text(encoding="utf-8"))
     assert data["snapshot_version"] == 2
     assert data["artifact_kind"] == "metadata-template"
     assert data["restorable"] is False
@@ -160,7 +160,7 @@ def test_wasm_default_build_emits_linked_artifact(tmp_path):
     so any silent-skip or silent-swallow regression fails immediately.
     """
     src = tmp_path / "app.py"
-    src.write_text('print("hello, wasm")\n')
+    src.write_text('print("hello, wasm")\n', encoding="utf-8")
 
     output = tmp_path / "output.wasm"
     result = _run_wasm_test_process(

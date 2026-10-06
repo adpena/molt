@@ -724,6 +724,7 @@ def _git_checkout_head(repo_root: Path) -> str | None:
             capture_output=True,
             text=True,
             timeout=30,
+            encoding="utf-8",
         )
     except (OSError, subprocess.SubprocessError):
         return None

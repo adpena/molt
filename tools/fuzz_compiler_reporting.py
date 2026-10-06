@@ -17,7 +17,7 @@ def _log(msg: str) -> None:
 def _save_failure(result: FuzzResult, output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     source_file = output_dir / f"fuzz_{result.program_id:06d}.py"
-    source_file.write_text(result.source)
+    source_file.write_text(result.source, encoding="utf-8")
     report_file = output_dir / f"fuzz_{result.program_id:06d}.report.txt"
     report_lines = [
         f"Fuzz ID: {result.program_id}",
@@ -36,7 +36,7 @@ def _save_failure(result: FuzzResult, output_dir: Path) -> Path:
     ]
     if result.error_detail:
         report_lines.extend(["", "=== Error Detail ===", result.error_detail])
-    report_file.write_text("\n".join(report_lines))
+    report_file.write_text("\n".join(report_lines), encoding="utf-8")
     return source_file
 
 

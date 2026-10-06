@@ -297,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
             text=True,
             timeout=300,
             check=True,
+            encoding="utf-8",
         )
         build = COMMANDS.run(
             command,
@@ -305,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
             text=True,
             timeout=args.build_timeout_seconds,
             check=False,
+            encoding="utf-8",
         )
         (run / "build.stdout.jsonl").write_text(build.stdout, encoding="utf-8")
         (run / "build.stderr.log").write_text(build.stderr, encoding="utf-8")
@@ -321,6 +323,7 @@ def main(argv: list[str] | None = None) -> int:
                 text=True,
                 timeout=30,
                 check=True,
+                encoding="utf-8",
             )
             toolchain[tool] = version.stdout.strip()
         aggregate["toolchain"] = toolchain
@@ -404,6 +407,7 @@ def main(argv: list[str] | None = None) -> int:
                 capture_output=True,
                 text=True,
                 timeout=args.child_timeout_seconds + 60,
+                encoding="utf-8",
             )
             (directory / "driver.stdout.log").write_text(child.stdout, encoding="utf-8")
             (directory / "driver.stderr.log").write_text(child.stderr, encoding="utf-8")

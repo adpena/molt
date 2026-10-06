@@ -191,6 +191,7 @@ def _probe_wasm_source_extension_compiler(
                 timeout=20,
                 check=False,
                 env=environment,
+                encoding="utf-8",
             )
         except (OSError, subprocess.SubprocessError) as exc:
             return str(exc)

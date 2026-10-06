@@ -305,6 +305,7 @@ def _tool_version(path: str, *, role: str) -> str:
             text=True,
             check=False,
             timeout=15,
+            encoding="utf-8",
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise SystemExit(f"Could not query {role} version at {path}: {exc}") from exc

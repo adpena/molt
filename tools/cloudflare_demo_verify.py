@@ -70,11 +70,11 @@ def _tmp_root(project_root: Path) -> Path:
 
 def _write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
 
 
 def _load_json_config(path: Path) -> dict[str, Any]:
-    raw = path.read_text()
+    raw = path.read_text(encoding="utf-8")
     return json.loads(raw)
 
 
@@ -282,7 +282,7 @@ def validate_bundle_contract(
             "rules covering every wasm bundle file"
         )
 
-    manifest_data = json.loads(manifest.read_text())
+    manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
     if manifest_data.get("mode") != "split-runtime":
         raise RuntimeError("Cloudflare manifest must be split-runtime")
     modules = manifest_data.get("modules")
@@ -345,6 +345,7 @@ def _run_command(
         env=guard_env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
 
 
@@ -849,6 +850,7 @@ def _run_source_case(entry: Path, case: EndpointCase) -> CaseResult:
         cwd=str(REPO_ROOT),
         env=env,
         text=True,
+        encoding="utf-8",
     )
     stdout = assert_clean_text_body(completed.stdout)
     stderr = assert_clean_text_body(completed.stderr)

@@ -206,7 +206,7 @@ def test_stdlib_staging_preserves_primary_error_and_cleanup_evidence(
         BACKEND_CACHE._stdlib_object_partition_manifest_sidecar_path,
         BACKEND_CACHE._stdlib_object_digest_sidecar_path,
     ):
-        sidecar(source).write_text("test metadata")
+        sidecar(source).write_text("test metadata", encoding="utf-8")
     artifacts_root = tmp_path / "staged"
     staged = artifacts_root / "shared-stdlib-link" / source.name
     paths = _shared_stdlib_cleanup_paths(staged)
@@ -983,11 +983,11 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
         (build_state_root / "backend_cache_stdlib_key_material").rglob("*.json")
     )
     assert len(paths) == 1
-    stored = json.loads(paths[0].read_text())
+    stored = json.loads(paths[0].read_text(encoding="utf-8"))
     assert "manifest" not in stored
     # A leftover memo projection cannot override the current archive contract.
     stored["manifest"] = "stale contract"
-    paths[0].write_text(json.dumps(stored))
+    paths[0].write_text(json.dumps(stored), encoding="utf-8")
     third = cli_backend_cache_setup._prepare_backend_cache_setup(
         backend_bin=tmp_path / "molt-backend", **common
     )
@@ -2107,7 +2107,7 @@ def test_stdlib_snapshot_pins_generation_until_after_publication_unlock(
         (BACKEND_CACHE._stdlib_object_partition_manifest_sidecar_path, "partition"),
         (BACKEND_CACHE._stdlib_object_digest_sidecar_path, "digest"),
     ):
-        path_function(source).write_text(payload)
+        path_function(source).write_text(payload, encoding="utf-8")
     locked = False
     validations = 0
     original_copy = BACKEND_CACHE._copy_verified_backend_artifact

@@ -297,8 +297,12 @@ def _run_case(
             timed_out = False
             stdout = ""
             elapsed = round(time.perf_counter() - started, 3)
-        (logs_root / f"{case.name}.{label}.stdout.log").write_text(stdout)
-        (logs_root / f"{case.name}.{label}.stderr.log").write_text(stderr)
+        (logs_root / f"{case.name}.{label}.stdout.log").write_text(
+            stdout, encoding="utf-8"
+        )
+        (logs_root / f"{case.name}.{label}.stderr.log").write_text(
+            stderr, encoding="utf-8"
+        )
         return returncode, timed_out, stdout, stderr, elapsed
 
     for warmup_idx in range(case.warmup_runs):
@@ -322,13 +326,13 @@ def _run_case(
         if retry_backoff_sec > 0:
             time.sleep(retry_backoff_sec * attempts)
 
-    (logs_root / f"{case.name}.stdout.log").write_text(stdout)
-    (logs_root / f"{case.name}.stderr.log").write_text(stderr)
+    (logs_root / f"{case.name}.stdout.log").write_text(stdout, encoding="utf-8")
+    (logs_root / f"{case.name}.stderr.log").write_text(stderr, encoding="utf-8")
     diagnostics_total_sec: float | None = None
     diagnostics_phase_sec: dict[str, float] | None = None
     if diagnostics_path is not None and diagnostics_path.exists():
         try:
-            payload = json.loads(diagnostics_path.read_text())
+            payload = json.loads(diagnostics_path.read_text(encoding="utf-8"))
             total = payload.get("total_sec")
             if isinstance(total, (int, float)):
                 diagnostics_total_sec = float(total)
@@ -641,7 +645,7 @@ def _write_snapshot(
         "results": [asdict(item) for item in results],
     }
     json_path = output_root / "compile_progress.json"
-    json_path.write_text(json.dumps(payload, indent=2) + "\n")
+    json_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
     markdown_path = output_root / "compile_progress.md"
     markdown_path.write_text(
@@ -653,7 +657,8 @@ def _write_snapshot(
             python_version=args.python_version,
             timeout_sec=args.timeout_sec,
             results=results,
-        )
+        ),
+        encoding="utf-8",
     )
     return json_path, markdown_path
 
@@ -702,7 +707,7 @@ def main() -> int:
         existing_json = output_root / "compile_progress.json"
         if existing_json.exists():
             try:
-                existing_payload = json.loads(existing_json.read_text())
+                existing_payload = json.loads(existing_json.read_text(encoding="utf-8"))
                 existing_results = existing_payload.get("results", [])
                 if isinstance(existing_results, list):
                     for item in existing_results:

@@ -859,7 +859,7 @@ def vendor(
 def _load_toml(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
-    return tomllib.loads(path.read_text())
+    return tomllib.loads(path.read_text(encoding="utf-8"))
 
 
 def _normalize_name(name: str) -> str:

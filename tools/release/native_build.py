@@ -467,6 +467,7 @@ def _tool_paths(
             env=env,
             text=True,
             timeout=30,
+            encoding="utf-8",
         ).strip()
         if not selected or "\n" in selected or "\r" in selected:
             raise ValueError("native linker must select one backend path")

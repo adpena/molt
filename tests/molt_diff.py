@@ -627,6 +627,7 @@ def _ps_supports_field(field: str) -> bool:
             text=True,
             check=False,
             timeout=2.0,
+            encoding="utf-8",
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -719,6 +720,7 @@ def _pid_rss_age(pid: int) -> tuple[int | None, int | None]:
             text=True,
             check=False,
             timeout=2.0,
+            encoding="utf-8",
         )
     except (OSError, subprocess.TimeoutExpired):
         return None, None
@@ -1389,7 +1391,7 @@ def _read_dyld_guard_marker() -> dict[str, object] | None:
     if not marker_path.exists():
         return None
     try:
-        raw = marker_path.read_text()
+        raw = marker_path.read_text(encoding="utf-8")
     except OSError:
         return None
     try:
@@ -1404,7 +1406,7 @@ def _read_dyld_guard_marker() -> dict[str, object] | None:
 def _write_dyld_guard_marker(data: dict[str, object]) -> None:
     marker_path = _global_dyld_guard_marker_path()
     marker_path.parent.mkdir(parents=True, exist_ok=True)
-    marker_path.write_text(json.dumps(data, sort_keys=True))
+    marker_path.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
 
 
 def _clear_dyld_guard_marker() -> None:
@@ -1536,6 +1538,7 @@ def _dyld_preflight_error(binary_path: Path) -> str | None:
             text=True,
             check=False,
             timeout=20,
+            encoding="utf-8",
         )
     except OSError:
         # Preflight is best-effort; host tool failures are not binary corruption.
@@ -2067,7 +2070,7 @@ def _time_tool() -> str | None:
 def _parse_time_metrics(path: Path) -> dict[str, int]:
     metrics: dict[str, int] = {}
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     except OSError:
         return metrics
     for line in text.splitlines():
@@ -3630,7 +3633,7 @@ def _aggregate_rss_metrics(run_id: str) -> dict[str, object]:
         return {}
     entries: list[dict[str, object]] = []
     try:
-        for line in summary_path.read_text().splitlines():
+        for line in summary_path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             try:
@@ -3738,7 +3741,7 @@ def _top_rss_entries(
         return []
     entries: list[dict[str, object]] = []
     try:
-        for line in summary_path.read_text().splitlines():
+        for line in summary_path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             try:
@@ -5095,7 +5098,7 @@ def run_diff(
 def _emit_json(payload: dict, output_path: str | None, stdout: bool) -> None:
     text = json.dumps(payload, indent=2, sort_keys=True)
     if output_path:
-        Path(output_path).write_text(text)
+        Path(output_path).write_text(text, encoding="utf-8")
     if stdout:
         print(text)
 
@@ -5241,7 +5244,7 @@ if __name__ == "__main__":
     target_paths: list[str] = list(args.file)
     for list_path in args.files_from:
         try:
-            entries = Path(list_path).read_text().splitlines()
+            entries = Path(list_path).read_text(encoding="utf-8").splitlines()
         except OSError as exc:
             print(f"Failed to read --files-from {list_path}: {exc}", file=sys.stderr)
             sys.exit(2)
@@ -5285,7 +5288,7 @@ if __name__ == "__main__":
         _emit_json(summary, args.json_output, args.json)
         sys.exit(0 if summary["failed"] == 0 else 1)
     # Default test
-    with open("temp_test.py", "w") as f:
+    with open("temp_test.py", "w", encoding="utf-8") as f:
         f.write("print(1 + 2)\n")
     try:
         summary = run_diff(

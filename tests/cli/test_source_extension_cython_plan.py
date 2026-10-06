@@ -187,7 +187,9 @@ def test_generated_unit_uses_own_ninja_command_not_file_presence_or_stem(
     if output_exists:
         generated_c.parent.mkdir(parents=True, exist_ok=True)
         generated_c.write_text("/* upstream shared utility output */", encoding="utf-8")
-    (build_root / "build.ninja").write_text("# expanded by the owned Ninja\n")
+    (build_root / "build.ninja").write_text(
+        "# expanded by the owned Ninja\n", encoding="utf-8"
+    )
     pyx = source_root / "pkg/probe.pyx"
     command_input = pyx if generator != "missing-input" else source_root / "missing.pyx"
     command = subprocess.list2cmdline(

@@ -27,7 +27,8 @@ def test_wasm_db_client_shim_msgpack(tmp_path: Path) -> None:
 
             asyncio.run(main())
             """
-        )
+        ),
+        encoding="utf-8",
     )
 
     output_wasm = build_wasm_linked(root, src, tmp_path)

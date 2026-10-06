@@ -123,7 +123,7 @@ int main(int argc, char **argv) {
 def unit(target, profile="dev-fast", name="owned-unit"):
     path = target / profile / "incremental" / name
     path.mkdir(parents=True)
-    (path / "work.o").write_text("owned")
+    (path / "work.o").write_text("owned", encoding="utf-8")
     return path
 
 
@@ -408,17 +408,19 @@ def test_observed_profile_recovery_preserves_other_profiles_and_old_evidence(
         / "receipt.json"
     )
     old.parent.mkdir(parents=True)
-    old.write_text("unique historical evidence")
+    old.write_text("unique historical evidence", encoding="utf-8")
     receipt = recover(target, (observation(owned),))
     assert receipt.errors == () and receipt.ownership_status == "quarantined"
     assert not owned.exists() and not sibling.exists() and debug.exists()
     assert (
         Path(receipt.quarantine_dir) / "dev-fast" / "incremental" / sibling.name
     ).exists()
-    assert old.read_text() == "unique historical evidence"
+    assert old.read_text(encoding="utf-8") == "unique historical evidence"
     assert len(receipt.moved_paths) == 1 and Path(receipt.receipt_path).is_file()
     assert (
-        json.loads(Path(receipt.receipt_path).read_text())["ownership_status"]
+        json.loads(Path(receipt.receipt_path).read_text(encoding="utf-8"))[
+            "ownership_status"
+        ]
         == "quarantined"
     )
 
@@ -459,10 +461,11 @@ def test_installed_cargo_artifact_lock_conflicts_with_recovery_exclusion(tmp_pat
 
     manifest = tmp_path / "Cargo.toml"
     manifest.write_text(
-        '[package]\nname="molt-custody-lock-probe"\nversion="0.0.0"\nedition="2021"\n\n[workspace]\n'
+        '[package]\nname="molt-custody-lock-probe"\nversion="0.0.0"\nedition="2021"\n\n[workspace]\n',
+        encoding="utf-8",
     )
     (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "lib.rs").write_text("pub fn unused() {}")
+    (tmp_path / "src" / "lib.rs").write_text("pub fn unused() {}", encoding="utf-8")
     target = tmp_path / "target"
     profile = target / "debug"
     profile.mkdir(parents=True)
@@ -525,7 +528,7 @@ def test_release_failure_attempts_all_coordinate_handles(tmp_path, monkeypatch):
         assert all(handle.file.closed for handle in acquired)
         assert receipt.ownership_status == "partial"
         assert len(receipt.moved_paths) == 1
-        stored = json.loads(Path(receipt.receipt_path).read_text())
+        stored = json.loads(Path(receipt.receipt_path).read_text(encoding="utf-8"))
         assert stored["ownership_status"] == "partial"
         assert stored["errors"] == list(receipt.errors)
         assert any(
@@ -553,7 +556,7 @@ def test_failed_final_publication_keeps_pending_receipt_fail_closed(
     receipt = recover(target, (observation(owned),))
     assert receipt.ownership_status == "partial"
     assert len(receipt.moved_paths) == 1
-    stored = json.loads(Path(receipt.receipt_path).read_text())
+    stored = json.loads(Path(receipt.receipt_path).read_text(encoding="utf-8"))
     assert stored["ownership_status"] == "cleanup_pending"
     assert any("injected final receipt failure" in error for error in receipt.errors)
 
@@ -635,7 +638,7 @@ def test_partial_profile_move_retains_complete_planned_receipt(tmp_path, monkeyp
     monkeypatch.setattr(Path, "rename", fail_second_profile)
     receipt = recover(target, (observation(first), observation(second)))
     assert receipt.ownership_status == "partial" and len(receipt.moved_paths) == 1
-    stored = json.loads(Path(receipt.receipt_path).read_text())
+    stored = json.loads(Path(receipt.receipt_path).read_text(encoding="utf-8"))
     assert stored["ownership_status"] == "partial"
     assert len(stored["planned_paths"]) == 2 and len(stored["moved_paths"]) == 1
     assert second.exists()
@@ -757,7 +760,8 @@ def test_release_interrupt_attempts_all_handles_then_propagates(tmp_path, monkey
         )
         assert len(receipts) == 1
         assert (
-            json.loads(receipts[0].read_text())["ownership_status"] == "cleanup_pending"
+            json.loads(receipts[0].read_text(encoding="utf-8"))["ownership_status"]
+            == "cleanup_pending"
         )
     finally:
         for handle in acquired:
@@ -783,7 +787,7 @@ def test_atomic_final_commit_failure_preserves_complete_pending_receipt(
     monkeypatch.setattr(publication, "durable_replace", fail_final)
     receipt = recover(target, (observation(owned),))
     assert receipt.ownership_status == "partial"
-    stored = json.loads(Path(receipt.receipt_path).read_text())
+    stored = json.loads(Path(receipt.receipt_path).read_text(encoding="utf-8"))
     assert stored["ownership_status"] == "cleanup_pending"
     assert len(stored["moved_paths"]) == 1
 
@@ -796,17 +800,19 @@ def test_actual_cargo_held_profile_locks_defer_recovery(tmp_path):
 
     manifest = tmp_path / "Cargo.toml"
     manifest.write_text(
-        '[package]\nname="molt-custody-held-lock"\nversion="0.0.0"\nedition="2021"\n\n[workspace]\n'
+        '[package]\nname="molt-custody-held-lock"\nversion="0.0.0"\nedition="2021"\n\n[workspace]\n',
+        encoding="utf-8",
     )
     (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "lib.rs").write_text("pub fn unused() {}")
+    (tmp_path / "src" / "lib.rs").write_text("pub fn unused() {}", encoding="utf-8")
     ready, release = tmp_path / "ready", tmp_path / "release"
     (tmp_path / "build.rs").write_text(
         'fn main() { let root=std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()); '
         'std::fs::write(root.join("ready"), b"ready").unwrap(); '
         "let start=std::time::Instant::now(); "
         'while !root.join("release").exists() && start.elapsed().as_secs()<25 {'
-        "std::thread::sleep(std::time::Duration::from_millis(10));} }"
+        "std::thread::sleep(std::time::Duration::from_millis(10));} }",
+        encoding="utf-8",
     )
     target = tmp_path / "target with spaces"
     outcome = []
@@ -882,7 +888,7 @@ def test_actual_cargo_held_profile_locks_defer_recovery(tmp_path):
         assert observed_root.is_dir()
         assert any("coordinate is active" in error for error in receipt.errors)
     finally:
-        release.write_text("release")
+        release.write_text("release", encoding="utf-8")
         worker.join(timeout=45)
     assert not worker.is_alive()
     assert len(outcome) == 1 and not isinstance(outcome[0], BaseException)
@@ -904,7 +910,7 @@ def test_actual_cargo_held_profile_locks_defer_recovery(tmp_path):
         ],
     }
     (tmp_path / "actual-cargo-observer-receipt.json").write_text(
-        json.dumps(stored, indent=2)
+        json.dumps(stored, indent=2), encoding="utf-8"
     )
 
 
@@ -1208,7 +1214,7 @@ def test_provisional_receipt_retains_complete_plan_on_final_write_failure(
 
     monkeypatch.setattr(cargo, "_write_cargo_quarantine_receipt", fail_final)
     receipt = recover(target, (observation(owned),))
-    stored = json.loads(Path(receipt.receipt_path).read_text())
+    stored = json.loads(Path(receipt.receipt_path).read_text(encoding="utf-8"))
     assert stored["ownership_status"] == "cleanup_pending"
     assert len(stored["planned_paths"]) == len(stored["moved_paths"]) == 1
     assert len(stored["recovery_observations"]) == 1
@@ -1313,11 +1319,15 @@ def test_actual_windows_job_cargo_observer_preserves_completed_cache_on_late_tim
 
     (tmp_path / "src").mkdir()
     (tmp_path / "Cargo.toml").write_text(
-        '[package]\nname="molt-job-custody-probe"\nversion="0.0.0"\nedition="2021"\n\n[workspace]\n'
+        '[package]\nname="molt-job-custody-probe"\nversion="0.0.0"\nedition="2021"\n\n[workspace]\n',
+        encoding="utf-8",
     )
-    (tmp_path / "src/lib.rs").write_text("pub fn answer() -> u32 { 42 }\n")
+    (tmp_path / "src/lib.rs").write_text(
+        "pub fn answer() -> u32 { 42 }\n", encoding="utf-8"
+    )
     (tmp_path / "build.rs").write_text(
-        'fn main() { std::fs::write("ready", "ready").unwrap(); std::thread::sleep(std::time::Duration::from_secs(30)); }\n'
+        'fn main() { std::fs::write("ready", "ready").unwrap(); std::thread::sleep(std::time::Duration::from_secs(30)); }\n',
+        encoding="utf-8",
     )
     target = tmp_path / "target with spaces"
     env = dict(os.environ)
@@ -1744,7 +1754,7 @@ def test_linux_native_sampler_preserves_argv_without_flattening(tmp_path):
     proc.mkdir()
     argv = (b"/toolchain with 'quotes'/rustc", b"-Cincremental=/cache with spaces", b"")
     (proc / "cmdline").write_bytes(b"\0".join(argv) + b"\0")
-    (proc / "status").write_text("VmRSS: 40 kB\n")
+    (proc / "status").write_text("VmRSS: 40 kB\n", encoding="utf-8")
     samples = model.sample_processes_linux_proc(
         tmp_path, stat_reader=lambda *args: (1, 123, 2000, "rustc"), uptime_sec=1
     )

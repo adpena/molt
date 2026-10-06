@@ -9,7 +9,7 @@ from typing import Mapping
 
 def read_source(path: Path) -> str:
     if path.exists():
-        return path.read_text(errors="replace")
+        return path.read_text(errors="replace", encoding="utf-8")
     return ""
 
 

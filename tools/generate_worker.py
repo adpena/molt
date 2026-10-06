@@ -15,7 +15,7 @@ def generate_worker(
     tmp_quota_mb: int = 32,
     wasm_filename: str = "worker_linked.wasm",
 ) -> None:
-    template = TEMPLATE_PATH.read_text()
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
     wasm_root = TEMPLATE_PATH.parent.parent / "wasm"
     lifetime = (wasm_root / "runtime_lifecycle.js").read_text(encoding="utf-8")
     abi = json.loads(
@@ -38,7 +38,7 @@ def generate_worker(
     template = template.replace("{{TMP_QUOTA_MB}}", str(int(tmp_quota_mb)))
     template = template.replace("{{CAPABILITIES}}", json.dumps(capabilities))
     template = template.replace("{{WASM_FILENAME}}", wasm_filename)
-    output.write_text(template)
+    output.write_text(template, encoding="utf-8")
 
 
 def main() -> int:

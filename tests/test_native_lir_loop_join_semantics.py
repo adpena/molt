@@ -21,7 +21,7 @@ def _compile_and_run(source: str, profile: str, *, backend: str | None = None) -
     ) as tmp_path:
         module_stem = f"loop_join_semantics_{tmp_path.name}"
         src_path = tmp_path / f"{module_stem}.py"
-        src_path.write_text(source)
+        src_path.write_text(source, encoding="utf-8")
         binary_path = tmp_path / f"{module_stem}_molt"
 
         env = development_artifact_env(

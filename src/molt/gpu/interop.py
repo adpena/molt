@@ -232,7 +232,7 @@ def load_json_weights(path: str) -> dict:
     """Load weights from a JSON file."""
     from .tensor import Tensor
 
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     tensors = {}
@@ -248,5 +248,5 @@ def save_json_weights(tensors: dict, path: str):
     for name, tensor in tensors.items():
         data[name] = tensor.to_list()
 
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f)

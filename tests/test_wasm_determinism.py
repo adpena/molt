@@ -223,7 +223,7 @@ class TestWasmBinaryDeterminism:
     ) -> None:
         """Compile the same program to WASM twice and compare hashes."""
         src_file = tmp_path / f"{name}.py"
-        src_file.write_text(source)
+        src_file.write_text(source, encoding="utf-8")
 
         hashes: list[str] = []
         for i in range(2):
@@ -259,7 +259,7 @@ class TestWasmModuleStructure:
     ) -> None:
         """Compile twice and verify the section ordering is identical."""
         src_file = tmp_path / f"{name}.py"
-        src_file.write_text(source)
+        src_file.write_text(source, encoding="utf-8")
 
         section_orders: list[list[int]] = []
         for i in range(2):
@@ -285,7 +285,7 @@ class TestWasmModuleStructure:
         WASM spec (section 5.5.2).
         """
         src_file = tmp_path / f"{name}.py"
-        src_file.write_text(source)
+        src_file.write_text(source, encoding="utf-8")
 
         out_dir = tmp_path / "asc"
         out_dir.mkdir()
@@ -331,7 +331,7 @@ class TestWasmNaNCanonicalization:
         Any NaN in the binary should have bits 48-62 matching this pattern.
         """
         src = tmp_path / "nan_test.py"
-        src.write_text("x = 1.0\ny = 0.0\nz = x / y\nprint(z)\n")
+        src.write_text("x = 1.0\ny = 0.0\nz = x / y\nprint(z)\n", encoding="utf-8")
 
         out_dir = tmp_path / "nan_out"
         out_dir.mkdir()

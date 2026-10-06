@@ -343,7 +343,9 @@ def _run_diff_matrix(
             }
             if summary_path.exists():
                 try:
-                    payload["summary"] = json.loads(summary_path.read_text())
+                    payload["summary"] = json.loads(
+                        summary_path.read_text(encoding="utf-8")
+                    )
                 except json.JSONDecodeError as exc:
                     payload["summary_read_error"] = str(exc)
             print(
@@ -707,7 +709,7 @@ def main() -> int:
     )
 
     out_path = output_root / "matrix_results.json"
-    out_path.write_text(json.dumps(results, indent=2) + "\n")
+    out_path.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
     print(f"wrote {out_path}", flush=True)
     if bool(results["gate_status"].get("passed", False)):
         print("gate_status=pass", flush=True)

@@ -371,6 +371,7 @@ def _metadata_probe(
             text=True,
             check=False,
             timeout=timeout_s,
+            encoding="utf-8",
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

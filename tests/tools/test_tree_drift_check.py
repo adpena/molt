@@ -34,12 +34,12 @@ def repo(tmp_path: Path) -> Path:
     _git(r, "init", "-q")
     _git(r, "config", "user.email", "t@t")
     _git(r, "config", "user.name", "t")
-    (r / "a.txt").write_text("v1\n")
-    (r / "b.txt").write_text("keep\n")
+    (r / "a.txt").write_text("v1\n", encoding="utf-8")
+    (r / "b.txt").write_text("keep\n", encoding="utf-8")
     _git(r, "add", "-A")
     _git(r, "commit", "-q", "-m", "c1")
     # advance the base one commit past HEAD so HEAD is STALE for a.txt
-    (r / "a.txt").write_text("v2\n")
+    (r / "a.txt").write_text("v2\n", encoding="utf-8")
     _git(r, "add", "-A")
     _git(r, "commit", "-q", "-m", "c2")
     _git(r, "branch", "base")
@@ -63,14 +63,14 @@ def test_clean_file_passes(repo: Path) -> None:
 
 
 def test_dirty_file_is_loud(repo: Path) -> None:
-    (repo / "b.txt").write_text("locally-edited\n")
+    (repo / "b.txt").write_text("locally-edited\n", encoding="utf-8")
     res = _run_tool(repo, "--base", "base", "--files", "b.txt")
     assert res.returncode == 1, res.stdout
     assert "DIRTY" in res.stdout
 
 
 def test_untracked_file_is_loud(repo: Path) -> None:
-    (repo / "c.txt").write_text("new\n")
+    (repo / "c.txt").write_text("new\n", encoding="utf-8")
     res = _run_tool(repo, "--base", "base", "--files", "c.txt")
     assert res.returncode == 1, res.stdout
     assert "UNTRACKED" in res.stdout

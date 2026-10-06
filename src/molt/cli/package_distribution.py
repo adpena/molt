@@ -714,7 +714,7 @@ def verify(
         if signature_meta is None:
             sidecar = pkg_path.with_name(pkg_path.stem + ".sig.json")
             if sidecar.exists():
-                signature_meta = json.loads(sidecar.read_text())
+                signature_meta = json.loads(sidecar.read_text(encoding="utf-8"))
         if signature_bytes is None:
             sidecar_sig = pkg_path.with_name(pkg_path.stem + ".sig")
             if sidecar_sig.exists():
@@ -739,7 +739,7 @@ def verify(
             artifact_bytes = artifact_file.read_bytes()
         sidecar = artifact_file.with_name(artifact_file.stem + ".sig.json")
         if sidecar.exists():
-            signature_meta = json.loads(sidecar.read_text())
+            signature_meta = json.loads(sidecar.read_text(encoding="utf-8"))
         sidecar_sig = artifact_file.with_name(artifact_file.stem + ".sig")
         if sidecar_sig.exists():
             signature_bytes = sidecar_sig.read_bytes()

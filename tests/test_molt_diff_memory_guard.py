@@ -607,7 +607,9 @@ def test_suite_trip_partial_births_preserve_identified_victims(
         {"pid": 14, "started_at_ns": False},
         None,
     ]
-    marker.write_text(json.dumps({"event": "guard_tripped", "trips": [entry]}))
+    marker.write_text(
+        json.dumps({"event": "guard_tripped", "trips": [entry]}), encoding="utf-8"
+    )
     evidence = module.harness_outcomes.read_suite_trip({}, path=marker)
     assert evidence is not None
     if not identified:
@@ -682,7 +684,7 @@ def test_batch_suite_trip_uses_request_custody_before_retry_or_fallback(
         def request(self, op, *, params, timeout):
             requests.append(op)
             if case == "malformed":
-                marker.write_text("invalid JSON")
+                marker.write_text("invalid JSON", encoding="utf-8")
             else:
                 module.harness_outcomes.publish_suite_trip(marker, entry)
             if case == "timeout":
@@ -873,7 +875,7 @@ def test_suite_trip_requires_recorded_rss_and_identity_evidence(
         if valid
         else {"event": "guard_tripped", "violation": None}
     )
-    marker.write_text(json.dumps(payload))
+    marker.write_text(json.dumps(payload), encoding="utf-8")
     result = module._memory_guard_trip_outcome()
     assert result is not None
     assert result.rss_limit_exceeded is valid

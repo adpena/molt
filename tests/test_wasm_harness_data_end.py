@@ -106,7 +106,8 @@ def test_wasm_harness_data_end_handles_global_get(tmp_path: Path) -> None:
         + "\n"
         + IMPORT_HELPERS
         + "\n"
-        + "console.log(`dataEnd=${wasmDataEnd}`);\n"
+        + "console.log(`dataEnd=${wasmDataEnd}`);\n",
+        encoding="utf-8",
     )
 
     run = _run_wasm_test_process(
@@ -132,7 +133,8 @@ def test_wasm_harness_data_end_handles_const_offset(tmp_path: Path) -> None:
         + "\n"
         + IMPORT_HELPERS
         + "\n"
-        + "console.log(`dataEnd=${wasmDataEnd}`);\n"
+        + "console.log(`dataEnd=${wasmDataEnd}`);\n",
+        encoding="utf-8",
     )
 
     run = _run_wasm_test_process(
@@ -160,7 +162,8 @@ def test_wasm_harness_import_parser_handles_tag_imports_before_memory(
         + "\n"
         + IMPORT_HELPERS
         + "\n"
-        + "console.log(JSON.stringify(wasmImports));\n"
+        + "console.log(JSON.stringify(wasmImports));\n",
+        encoding="utf-8",
     )
 
     run = _run_wasm_test_process(
@@ -177,7 +180,7 @@ def test_wasm_harness_exposes_class_merge_layout_import() -> None:
     source = Path(__file__).resolve().parent / "wasm_harness.py"
     assert (
         "class_merge_layout: (classBits, offsetsBits, sizeBits) => {"
-        in source.read_text()
+        in source.read_text(encoding="utf-8")
     )
 
 
@@ -222,7 +225,8 @@ assert.throws(() => baseImports.task_new(17n, 8n, TASK_KIND_GENERATOR), /closure
 assert.throws(() => baseImports.task_new(17n, 64n, 99n), /unknown task kind/);
 assert.equal(pendingFrameInvocations.length, 0);
 console.log('task-construction-ok');
-"""
+""",
+        encoding="utf-8",
     )
     run = _run_wasm_test_process(
         ["node", str(runner), str(wasm_path)],
@@ -270,7 +274,8 @@ for (const index of [12, 13]) {
 assert.equal(publish(metadata), boxNone());
 assert.equal(getFunction(fn).attrs.size, 11);
 console.log('lexical-metadata-ok');
-"""
+""",
+        encoding="utf-8",
     )
     run = _run_wasm_test_process(
         ["node", str(runner), str(wasm_path)], cwd=ROOT, env=os.environ, timeout=30
@@ -281,7 +286,7 @@ console.log('lexical-metadata-ok');
 
 def test_wasm_harness_exposes_string_split_field_imports() -> None:
     source = Path(__file__).resolve().parent / "wasm_harness.py"
-    text = source.read_text()
+    text = source.read_text(encoding="utf-8")
     assert "string_split_validate: (hayBits, needleBits) => {" in text
     assert "string_split_field: (hayBits, needleBits, indexBits) => {" in text
     assert "string_split_field_len: (hayBits, needleBits, indexBits) => {" in text
@@ -293,7 +298,7 @@ def test_wasm_harness_exposes_string_split_field_imports() -> None:
 
 def test_wasm_harness_exposes_ord_at_import() -> None:
     source = Path(__file__).resolve().parent / "wasm_harness.py"
-    text = source.read_text()
+    text = source.read_text(encoding="utf-8")
     assert "ord_at: (objBits, idxBits) => {" in text
     assert "return boxInt(BigInt(chars[pos].codePointAt(0)))" in text
 
@@ -363,7 +368,8 @@ def test_unlinked_guard_imports_instantiate_and_preserve_source(tmp_path: Path) 
         + "  if (instance.exports.guard_type(source, 1n) !== source) "
         + "throw Error('guard changed source');\n}\n"
         + "console.log('guard imports pass');\n"
-        + "}).catch(error => { console.error(error); process.exitCode = 1; });\n"
+        + "}).catch(error => { console.error(error); process.exitCode = 1; });\n",
+        encoding="utf-8",
     )
     run = _run_wasm_test_process(
         ["node", str(runner), str(wasm_path)],

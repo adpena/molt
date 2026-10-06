@@ -130,7 +130,9 @@ def test_both_database_admission_paths_freeze_disposition(tmp_path, insert):
             )
         )
         assert request_envelope == envelope
-        assert json.loads(request_path.read_text())["envelope"] == envelope
+        assert (
+            json.loads(request_path.read_text(encoding="utf-8"))["envelope"] == envelope
+        )
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(
                 "UPDATE proof_runs SET command_envelope_json = '{}' WHERE run_id = 'lifetime'"

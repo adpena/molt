@@ -114,7 +114,7 @@ json.dump(data, sys.stdout)
 
 @pytest.mark.parametrize("test_file", _get_test_files(), ids=lambda f: f.stem)
 def test_differential(test_file):
-    source = test_file.read_text()
+    source = test_file.read_text(encoding="utf-8")
 
     # Skip files with features not supported in simple IR Luau path
     skip_markers = [

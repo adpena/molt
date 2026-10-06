@@ -609,9 +609,9 @@ def main() -> int:
             return 2
 
     try:
-        with open(args.build_jsons[0]) as f:
+        with open(args.build_jsons[0], encoding="utf-8") as f:
             build1 = json.load(f)
-        with open(args.build_jsons[1]) as f:
+        with open(args.build_jsons[1], encoding="utf-8") as f:
             build2 = json.load(f)
     except json.JSONDecodeError as e:
         print(f"ERROR: Invalid JSON: {e}", file=sys.stderr)

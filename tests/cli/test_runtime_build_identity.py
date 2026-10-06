@@ -243,8 +243,12 @@ def identity_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
     sysroot = tmp_path / "wasi-sysroot"
     (sysroot / "include").mkdir(parents=True)
-    (sysroot / "include" / "errno.h").write_text("#define WASI_ERRNO 1\n")
-    (sysroot / "include" / "stddef.h").write_text("typedef int size_t;\n")
+    (sysroot / "include" / "errno.h").write_text(
+        "#define WASI_ERRNO 1\n", encoding="utf-8"
+    )
+    (sysroot / "include" / "stddef.h").write_text(
+        "typedef int size_t;\n", encoding="utf-8"
+    )
     (sysroot / "lib" / "wasm32-wasip1").mkdir(parents=True)
     (sysroot / "lib" / "wasm32-wasip1" / "libwasi-emulated-signal.a").write_bytes(
         b"signal"

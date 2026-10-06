@@ -450,7 +450,7 @@ class DataFrame:
             lines.append(",".join(row))
         text = "\n".join(lines) + "\n"
         if path:
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(text)
         return text
 
@@ -615,7 +615,7 @@ def col(name):
 
 def read_csv(path, has_header=True):
     """Read a CSV file into a DataFrame."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         lines = f.read().strip().split("\n")
 
     if has_header:

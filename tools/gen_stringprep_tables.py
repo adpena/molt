@@ -137,6 +137,7 @@ def _rustfmt_text(text: str) -> str:
             capture_output=True,
             text=True,
             timeout=60.0,
+            encoding="utf-8",
         )
         if result.returncode != 0:
             raise RuntimeError(

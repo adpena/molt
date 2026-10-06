@@ -1230,7 +1230,9 @@ def test_import_alias_contexts_share_bytes_not_analysis(
     assert child in local_python_import_closure(tmp_path, (seed,)).paths
     assert set(contexts) == {"pkg.helper", "tools.pkg.helper"}
     assert captures.count(helper) == 1
-    cache = json.loads((graph.python_source_closure_cache_path(tmp_path)).read_text())
+    cache = json.loads(
+        (graph.python_source_closure_cache_path(tmp_path)).read_text(encoding="utf-8")
+    )
     assert len(cache["entries"]["tools/pkg/helper.py"]) == 2
     contexts.clear()
     assert child in local_python_import_closure(tmp_path, (seed,)).paths
@@ -1258,7 +1260,9 @@ def test_source_discovery_cache_rows_cannot_be_reused_as_semantic_edges(
     for policy in (*policies, *policies):
         paths = set(local_python_import_closure(tmp_path, (seed,), policy=policy).paths)
         assert (child in paths) is (policy.purpose == "source_dependency")
-    cache = json.loads(graph.python_source_closure_cache_path(tmp_path).read_text())
+    cache = json.loads(
+        graph.python_source_closure_cache_path(tmp_path).read_text(encoding="utf-8")
+    )
     variants = cache["entries"]["src/pkg/entry.py"]
     source_key = graph._analysis_policy_digest("pkg.entry", False, source)
     semantic_key = graph._analysis_policy_digest("pkg.entry", False, semantic)
@@ -1314,15 +1318,21 @@ def test_unknown_relative_inventory_covers_failed_owner_execution(
     monkeypatch.delitem(sys.modules, "alternate", raising=False)
     try:
         with pytest.raises(ImportError):
-            exec(compile(seed.read_text(), str(seed), "exec"), namespace)
-        assert marker.read_text() == "executed"
+            exec(
+                compile(seed.read_text(encoding="utf-8"), str(seed), "exec"), namespace
+            )
+        assert marker.read_text(encoding="utf-8") == "executed"
     finally:
         sys.modules.pop("alternate", None)
     if statement.startswith("importlib"):
-        seed.write_text("import importlib\n" + seed.read_text(), encoding="utf-8")
+        seed.write_text(
+            "import importlib\n" + seed.read_text(encoding="utf-8"), encoding="utf-8"
+        )
     receipt = local_python_import_closure(tmp_path, (seed,))
     assert alternate in receipt.paths and receipt.topology_digest
-    cache = json.loads(graph.python_source_closure_cache_path(tmp_path).read_text())
+    cache = json.loads(
+        graph.python_source_closure_cache_path(tmp_path).read_text(encoding="utf-8")
+    )
     variants = cache["entries"]["entry.py"].values()
     assert any(row["relative_source_obligations"] for row in variants)
     assert all(not row["unresolved_dynamic_imports"] for row in variants)
@@ -1339,14 +1349,16 @@ def test_relative_inventory_uses_resolver_shadows_namespaces_and_new_topology(
     for root in (first, second):
         (root / "ns").mkdir(parents=True)
     seed = first / "entry.py"
-    seed.write_text("__package__ = unknown\nfrom .missing import value\n")
+    seed.write_text(
+        "__package__ = unknown\nfrom .missing import value\n", encoding="utf-8"
+    )
     left, right = first / "ns/left.py", second / "ns/right.py"
-    left.write_text("LEFT = 1\n")
-    right.write_text("RIGHT = 1\n")
-    (first / "blocked.py").write_text("BLOCK = 1\n")
+    left.write_text("LEFT = 1\n", encoding="utf-8")
+    right.write_text("RIGHT = 1\n", encoding="utf-8")
+    (first / "blocked.py").write_text("BLOCK = 1\n", encoding="utf-8")
     (second / "blocked").mkdir()
     hidden = second / "blocked/child.py"
-    hidden.write_text("HIDDEN = 1\n")
+    hidden.write_text("HIDDEN = 1\n", encoding="utf-8")
     roots = (first, second)
     inventory = LocalPythonModuleResolver(roots).source_inventory(
         allowed_prefix=None, include_parent_packages=True
@@ -1374,11 +1386,11 @@ def test_relative_inventory_uses_resolver_shadows_namespaces_and_new_topology(
     assert namespace.content_digest != before.content_digest
     # A regular package in the later root shadows both earlier namespace portions.
     initializer = second / "ns/__init__.py"
-    initializer.write_text("VALUE = 1\n")
+    initializer.write_text("VALUE = 1\n", encoding="utf-8")
     after = local_python_import_closure(tmp_path, (seed,), search_roots=roots)
     assert left not in after.paths and {right, initializer} <= set(after.paths)
     added = second / "ns/added.py"
-    added.write_text("VALUE = 2\n")
+    added.write_text("VALUE = 2\n", encoding="utf-8")
     newest = local_python_import_closure(tmp_path, (seed,), search_roots=roots)
     assert added in newest.paths and newest.content_digest != after.content_digest
 
@@ -1387,16 +1399,22 @@ def test_relative_inventory_keeps_manifest_and_invalid_operand_errors(tmp_path):
     seed = tmp_path / "entry.py"
     manifest = tmp_path / graph._DYNAMIC_IMPORT_MANIFEST
     manifest.parent.mkdir(parents=True)
-    seed.write_text("__package__ = unknown\nfrom . import child\n__import__(name)\n")
+    seed.write_text(
+        "__package__ = unknown\nfrom . import child\n__import__(name)\n",
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError, match="non-literal dynamic Python import"):
         local_python_import_closure(tmp_path, (seed,))
     manifest.write_text(
-        "schema_version = 1\n[[source]]\npath = 'entry.py'\nnonliteral_calls = 1\n"
+        "schema_version = 1\n[[source]]\npath = 'entry.py'\nnonliteral_calls = 1\n",
+        encoding="utf-8",
     )
     receipt = local_python_import_closure(tmp_path, (seed,))
     assert receipt.topology_digest
     # The exact dynamic count survives full local coverage, including cache hits.
-    seed.write_text(seed.read_text() + "__import__(other)\n")
+    seed.write_text(
+        seed.read_text(encoding="utf-8") + "__import__(other)\n", encoding="utf-8"
+    )
     with pytest.raises(ValueError, match="manifest drift"):
         local_python_import_closure(tmp_path, (seed,))
     manifest.unlink()
@@ -1409,7 +1427,7 @@ def test_relative_inventory_keeps_manifest_and_invalid_operand_errors(tmp_path):
             "invalid import package",
         ),
     ):
-        seed.write_text(source)
+        seed.write_text(source, encoding="utf-8")
         with pytest.raises(ValueError, match=message):
             local_python_import_closure(tmp_path, (seed,))
 
@@ -1420,7 +1438,7 @@ def test_inventory_failure_and_directory_cycle_never_publish_partial_coverage(
     from molt.cli import python_import_resolution as resolution
 
     seed = tmp_path / "entry.py"
-    seed.write_text("__package__ = unknown\nfrom . import child\n")
+    seed.write_text("__package__ = unknown\nfrom . import child\n", encoding="utf-8")
     real_scandir = resolution.os.scandir
 
     def denied(path):
@@ -1454,24 +1472,25 @@ def test_declared_source_domain_bounds_inventory_and_qualified_tool_aliases(
     package = tmp_path / "src" / "pkg"
     package.mkdir(parents=True)
     seed = tools / "entry.py"
-    seed.write_text("__package__ = unknown\nfrom . import child\n")
+    seed.write_text("__package__ = unknown\nfrom . import child\n", encoding="utf-8")
     helper = tools / "helper.py"
-    helper.write_text("VALUE = 1\n")
+    helper.write_text("VALUE = 1\n", encoding="utf-8")
     initializer = package / "__init__.py"
-    initializer.write_text("")
+    initializer.write_text("", encoding="utf-8")
     leaf = package / "leaf.py"
-    leaf.write_text("VALUE = 2\n")
+    leaf.write_text("VALUE = 2\n", encoding="utf-8")
     scratch = tmp_path / "tmp" / "pytest-current" / "package"
     scratch.mkdir(parents=True)
     noise = scratch / "child.py"
-    noise.write_text("scratch must never be a tooling dependency")
+    noise.write_text("scratch must never be a tooling dependency", encoding="utf-8")
     root_module = tmp_path / "unowned.py"
-    root_module.write_text("root namespace is not source ownership")
+    root_module.write_text("root namespace is not source ownership", encoding="utf-8")
     manifest = tmp_path / graph._DYNAMIC_IMPORT_MANIFEST
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
         'schema_version = 1\nsearch_roots = ["src", "tools", "."]\n'
-        'source_roots = ["src", "tools"]\nsource = []\n'
+        'source_roots = ["src", "tools"]\nsource = []\n',
+        encoding="utf-8",
     )
     real_scandir = resolution.os.scandir
 
@@ -1483,13 +1502,13 @@ def test_declared_source_domain_bounds_inventory_and_qualified_tool_aliases(
     before = local_python_import_closure(tmp_path, (seed,))
     assert set(before.paths) == {seed, helper, initializer, leaf, manifest}
     assert before.topology_digest
-    noise.write_text("changed scratch generation")
+    noise.write_text("changed scratch generation", encoding="utf-8")
     assert local_python_import_closure(tmp_path, (seed,)) == before
-    helper.write_text("VALUE = 3\n")
+    helper.write_text("VALUE = 3\n", encoding="utf-8")
     assert local_python_import_closure(tmp_path, (seed,)).content_digest != (
         before.content_digest
     )
-    seed.write_text("import tools.helper\nfrom pkg import leaf\n")
+    seed.write_text("import tools.helper\nfrom pkg import leaf\n", encoding="utf-8")
     qualified = local_python_import_closure(tmp_path, (seed,))
     assert set(qualified.paths) == {seed, helper, initializer, leaf, manifest}
     with pytest.raises(ValueError, match="outside local source roots"):
@@ -1504,32 +1523,35 @@ def test_manifest_search_order_and_domain_changes_invalidate_warm_closure(
     tools.mkdir()
     src.mkdir()
     seed = tools / "entry.py"
-    seed.write_text("import shared\n")
+    seed.write_text("import shared\n", encoding="utf-8")
     first = src / "shared.py"
     second = tools / "shared.py"
-    first.write_text("OWNER = 'src'\n")
-    second.write_text("OWNER = 'tools'\n")
+    first.write_text("OWNER = 'src'\n", encoding="utf-8")
+    second.write_text("OWNER = 'tools'\n", encoding="utf-8")
     manifest = tmp_path / graph._DYNAMIC_IMPORT_MANIFEST
     manifest.parent.mkdir(parents=True)
     manifest.write_text(
         'schema_version = 1\nsearch_roots = ["src", "tools", "."]\n'
-        'source_roots = ["src", "tools"]\nsource = []\n'
+        'source_roots = ["src", "tools"]\nsource = []\n',
+        encoding="utf-8",
     )
     before = local_python_import_closure(tmp_path, (seed,))
     assert set(before.paths) == {seed, first, manifest}
     manifest.write_text(
-        manifest.read_text().replace(
+        manifest.read_text(encoding="utf-8").replace(
             'search_roots = ["src", "tools", "."]',
             'search_roots = ["tools", "src", "."]',
-        )
+        ),
+        encoding="utf-8",
     )
     after = local_python_import_closure(tmp_path, (seed,))
     assert set(after.paths) == {seed, second, manifest}
     assert after.content_digest != before.content_digest
     manifest.write_text(
-        manifest.read_text().replace(
+        manifest.read_text(encoding="utf-8").replace(
             'source_roots = ["src", "tools"]', 'source_roots = ["tools"]'
-        )
+        ),
+        encoding="utf-8",
     )
     narrowed = local_python_import_closure(tmp_path, (seed,))
     assert narrowed.content_digest != after.content_digest
@@ -1553,9 +1575,11 @@ def test_manifest_root_contract_rejects_invalid_domains(
 ) -> None:
     seed = tmp_path / "src" / "entry.py"
     seed.parent.mkdir()
-    seed.write_text("VALUE = 1\n")
+    seed.write_text("VALUE = 1\n", encoding="utf-8")
     manifest = tmp_path / graph._DYNAMIC_IMPORT_MANIFEST
     manifest.parent.mkdir(parents=True)
-    manifest.write_text(f"schema_version = 1\n{field} = {value}\nsource = []\n")
+    manifest.write_text(
+        f"schema_version = 1\n{field} = {value}\nsource = []\n", encoding="utf-8"
+    )
     with pytest.raises(ValueError, match=message):
         local_python_import_closure(tmp_path, (seed,))

@@ -29,7 +29,10 @@ def test_native_bytes_build_and_run(tmp_path: Path) -> None:
             pytest.skip("runtime lib architecture mismatch")
 
     src = tmp_path / "bytes_demo.py"
-    src.write_text("print(b'hi' + b'!')\nprint(len(b'hi!'))\nprint(b'hello'[1:4])\n")
+    src.write_text(
+        "print(b'hi' + b'!')\nprint(len(b'hi!'))\nprint(b'hello'[1:4])\n",
+        encoding="utf-8",
+    )
 
     output_root = tmp_path
     output_binary = output_root / f"{src.stem}_molt"

@@ -30,7 +30,7 @@ MODULE_PATHS = [
 
 def test_public_intrinsic_surface_batch_az_avoids_globals_injection() -> None:
     for path in MODULE_PATHS:
-        source = path.read_text()
+        source = path.read_text(encoding="utf-8")
         for line in source.splitlines():
             if "require_intrinsic(" in line:
                 assert "globals()" not in line, path

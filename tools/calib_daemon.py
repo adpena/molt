@@ -61,7 +61,7 @@ def main(argv: list[str]) -> int:
                 break
             time.sleep(0.1)
         try:
-            real = open(pidfile).read().strip()
+            real = open(pidfile, encoding="utf-8").read().strip()
         except OSError:
             real = "?"
         print(f"daemon launched; run PID={real}; log={log_path}")
@@ -94,7 +94,7 @@ def main(argv: list[str]) -> int:
             sys.stderr.write(f"exec failed: {exc}\n")
             os._exit(127)
 
-    with open(pidfile, "w") as pf:
+    with open(pidfile, "w", encoding="utf-8") as pf:
         pf.write(str(child))
 
     _pid, status = os.waitpid(child, 0)
@@ -104,7 +104,7 @@ def main(argv: list[str]) -> int:
         code = 128 + os.WTERMSIG(status)
     else:
         code = -1
-    with open(donefile, "w") as df:
+    with open(donefile, "w", encoding="utf-8") as df:
         df.write(f"{code}\n")
     os._exit(0)
 

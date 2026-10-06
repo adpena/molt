@@ -2459,8 +2459,12 @@ def test_numpy_off_shelf_adapter_source_tree_audit(tmp_path: Path, capsys) -> No
     module = _load_numpy_adapter_module()
     suite_root = tmp_path / "numpy_src"
     (suite_root / "numpy" / "_core").mkdir(parents=True)
-    (suite_root / "numpy" / "__init__.py").write_text("__version__ = '2.4.2'\n")
-    (suite_root / "pyproject.toml").write_text("[project]\nname = 'numpy'\n")
+    (suite_root / "numpy" / "__init__.py").write_text(
+        "__version__ = '2.4.2'\n", encoding="utf-8"
+    )
+    (suite_root / "pyproject.toml").write_text(
+        "[project]\nname = 'numpy'\n", encoding="utf-8"
+    )
 
     rc = module.main(
         [

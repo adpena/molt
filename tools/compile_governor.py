@@ -125,6 +125,7 @@ def _count_active_compile_processes() -> int | None:
             capture_output=True,
             text=True,
             check=False,
+            encoding="utf-8",
         )
     except OSError:
         return None

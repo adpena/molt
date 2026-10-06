@@ -60,7 +60,7 @@ def _run_molt(source: str, tmp_path: Path, tag: str) -> tuple[str | None, str]:
     Returns ``(None, reason)`` when compilation or execution fails.
     """
     src_file = tmp_path / f"diff_{tag}.py"
-    src_file.write_text(source)
+    src_file.write_text(source, encoding="utf-8")
     build = run_native_test_process(
         [
             sys.executable,

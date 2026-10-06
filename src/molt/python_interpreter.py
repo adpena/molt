@@ -149,6 +149,7 @@ def _run_command(
             timeout=timeout,
             env=dict(env),
             cwd=str(cwd),
+            encoding="utf-8",
         )
     except FileNotFoundError as exc:
         return "", str(exc), 127

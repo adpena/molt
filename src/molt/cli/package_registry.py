@@ -51,7 +51,7 @@ def _read_secret_value(
         secret_path = Path(value[1:]).expanduser()
         if not secret_path.exists():
             raise RuntimeError(f"{label} file not found: {secret_path}")
-        value = secret_path.read_text()
+        value = secret_path.read_text(encoding="utf-8")
         source = "file"
     value = value.strip()
     if not value:

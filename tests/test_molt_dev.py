@@ -1145,11 +1145,11 @@ def test_detached_run_completes_and_records_rc(drv, tmp_path, capsys):
     state = state_root / "ok-run"
     assert _wait_done(drv, capsys, "ok-run", state_root)["rc"] == 0
     # Unbuffered log captured the child's stdout despite daemonization.
-    assert "MARKER-OUT" in (state / "run.log").read_text()
+    assert "MARKER-OUT" in (state / "run.log").read_text(encoding="utf-8")
     # cmd.json records the exact argv for postmortems.
     import json as _json
 
-    recorded = _json.loads((state / "cmd.json").read_text())
+    recorded = _json.loads((state / "cmd.json").read_text(encoding="utf-8"))
     assert recorded["argv"][0] == sys.executable
     vrc, verdict = _verify_json(drv, capsys, _dv_ns(drv, "ok-run", state_root))
     assert vrc == drv.EXIT_OK
@@ -1196,7 +1196,7 @@ def test_detached_daemon_survives_spawner_and_runs_in_new_session(
     assert rc == drv.EXIT_OK  # spawner returned while the daemon still runs
     state = state_root / "sleeper"
     assert not (state / "rc").exists()  # still running -> detachment is real
-    sid_text = (state / "sid").read_text().strip()
+    sid_text = (state / "sid").read_text(encoding="utf-8").strip()
     if os.name == "nt":
         assert sid_text.startswith("windows-process-group:")
     else:
@@ -1222,7 +1222,7 @@ def test_detached_run_refuses_live_duplicate_and_never_kills(drv, tmp_path, caps
         )
     )
     state = state_root / "dup"
-    live_pid = int((state / "pid").read_text().strip())
+    live_pid = int((state / "pid").read_text(encoding="utf-8").strip())
     # A second spawn under the same name must REFUSE (never kill), even
     # with --replace (replace only clears DEAD state).
     for replace in (False, True):
@@ -1256,7 +1256,7 @@ def test_detached_run_refuses_live_duplicate_and_never_kills(drv, tmp_path, caps
     )
     assert rc == drv.EXIT_OK
     assert _wait_done(drv, capsys, "dup", state_root)["rc"] == 0
-    assert "second" in (state / "run.log").read_text()
+    assert "second" in (state / "run.log").read_text(encoding="utf-8")
 
 
 def test_detached_verify_detects_died_silent(drv, tmp_path, capsys):
@@ -1264,8 +1264,8 @@ def test_detached_verify_detects_died_silent(drv, tmp_path, capsys):
     dead_pid = 999_999_999
     state = tmp_path / "detached" / "ghost"
     state.mkdir(parents=True)
-    (state / "pid").write_text(str(dead_pid))
-    (state / "run.log").write_text("")
+    (state / "pid").write_text(str(dead_pid), encoding="utf-8")
+    (state / "run.log").write_text("", encoding="utf-8")
     vrc, verdict = _verify_json(
         drv, capsys, _dv_ns(drv, "ghost", tmp_path / "detached")
     )
@@ -1309,7 +1309,7 @@ def test_detached_run_exec_failure_records_sentinel_rc(drv, tmp_path, capsys):
     )
     state = state_root / "noexec"
     assert _wait_done(drv, capsys, "noexec", state_root)["rc"] == 127
-    assert "exec failed" in (state / "run.log").read_text()
+    assert "exec failed" in (state / "run.log").read_text(encoding="utf-8")
     vrc, verdict = _verify_json(drv, capsys, _dv_ns(drv, "noexec", state_root))
     assert vrc == drv.EXIT_FAIL
     assert verdict["status"] == "done" and verdict["rc"] == 127

@@ -497,7 +497,7 @@ def main() -> None:
 
     if args.json_out is not None:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
-        with open(args.json_out, "w") as f:
+        with open(args.json_out, "w", encoding="utf-8") as f:
             json.dump(metrics.to_dict(), f, indent=2)
             f.write("\n")
         if not args.json_stdout:

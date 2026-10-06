@@ -33,7 +33,7 @@ def _compiler_source_files() -> list[Path]:
 def _read_lines(path: Path) -> list[tuple[int, str]]:
     """Return (1-based line number, line text) pairs, skipping comments."""
     lines = []
-    for i, raw in enumerate(path.read_text().splitlines(), 1):
+    for i, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         stripped = raw.strip()
         # Skip pure comment lines and blank lines
         if stripped.startswith("#") or not stripped:
@@ -204,7 +204,7 @@ class TestDictSetIterationSafety:
         if not FRONTEND_INIT.exists():
             pytest.skip("Frontend __init__.py not found")
 
-        content = FRONTEND_INIT.read_text()
+        content = FRONTEND_INIT.read_text(encoding="utf-8")
         lines = content.splitlines()
 
         # Pattern: for <var> in self.<something>.items() or self.<something>
@@ -248,7 +248,7 @@ class TestDictSetIterationSafety:
         if not FRONTEND_INIT.exists():
             pytest.skip("Frontend __init__.py not found")
 
-        content = FRONTEND_INIT.read_text()
+        content = FRONTEND_INIT.read_text(encoding="utf-8")
         lines = content.splitlines()
 
         set_iter_pattern = re.compile(r"for\s+\w+\s+in\s+(?:self\.\w+_set|set\()")

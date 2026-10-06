@@ -106,7 +106,9 @@ def test_wasm_profile_main_uses_current_bench_wasm_api(
     assert len(profile_calls) == 1
     assert profile_calls[0][1] == tmp_path
 
-    manifest = json.loads((tmp_path / "profile_manifest.json").read_text())
+    manifest = json.loads(
+        (tmp_path / "profile_manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["bench"] == "tests/benchmarks/bench_sum.py"
     assert manifest["execution_mode"] == "linked"
     assert manifest["linked_used"] is True

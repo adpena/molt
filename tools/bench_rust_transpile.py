@@ -518,7 +518,7 @@ def main():
     }
 
     if args.json:
-        with open(args.json, "w") as f:
+        with open(args.json, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2)
         print(f"\nJSON results written to {args.json}")
     else:

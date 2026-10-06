@@ -1956,7 +1956,9 @@ def test_windows_enumeration_requires_documented_complete_marker(monkeypatch, er
 def test_windows_sampler_family_is_in_mandatory_portability_proofs():
     import tomllib
 
-    plan = tomllib.loads((REPO_ROOT / "tools/proof_plan.toml").read_text())
+    plan = tomllib.loads(
+        (REPO_ROOT / "tools/proof_plan.toml").read_text(encoding="utf-8")
+    )
     commands = {command["id"]: command for command in plan["command"]}
     for identifier in (
         "python.unit.harness",

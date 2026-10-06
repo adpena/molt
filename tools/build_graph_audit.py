@@ -199,6 +199,7 @@ def run_cargo_metadata(root: Path) -> dict:
             text=True,
             check=False,
             env=cargo_subprocess_environment(command, None)[0],
+            encoding="utf-8",
         )
     except FileNotFoundError as exc:  # pragma: no cover - environment-specific
         raise BuildGraphError("cargo not found on PATH") from exc

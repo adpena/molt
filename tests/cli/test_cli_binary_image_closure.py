@@ -69,7 +69,9 @@ def _materialize_plan(
     *,
     image_scope=None,
 ):
-    entry_tree = ast.parse(entry_path.read_text(), filename=str(entry_path))
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
     module_reasons: dict[str, set[str]] = {}
     prepared, error = cli_module_graph._prepare_entry_module_graph(
         source_path=entry_path,
@@ -118,7 +120,7 @@ def _prepare_analysis_for_plan(project_root: Path, import_plan):
 
 def test_project_config_entry_file_defines_binary_image_scope(tmp_path: Path) -> None:
     entry = tmp_path / "app.py"
-    entry.write_text("value = 1\n")
+    entry.write_text("value = 1\n", encoding="utf-8")
 
     resolved, error = _resolve_entry(
         tmp_path,
@@ -139,8 +141,8 @@ def test_project_config_entry_module_package_defines_binary_image_scope(
 ) -> None:
     package = tmp_path / "pkg"
     package.mkdir()
-    (package / "__init__.py").write_text("value = 1\n")
-    (package / "__main__.py").write_text("from . import value\n")
+    (package / "__init__.py").write_text("value = 1\n", encoding="utf-8")
+    (package / "__main__.py").write_text("from . import value\n", encoding="utf-8")
 
     resolved, error = _resolve_entry(
         tmp_path,
@@ -158,8 +160,8 @@ def test_project_config_entry_module_package_defines_binary_image_scope(
 def test_cli_entry_overrides_project_config_entry(tmp_path: Path) -> None:
     config_entry = tmp_path / "configured.py"
     cli_entry = tmp_path / "chosen.py"
-    config_entry.write_text("value = 'config'\n")
-    cli_entry.write_text("value = 'cli'\n")
+    config_entry.write_text("value = 'config'\n", encoding="utf-8")
+    cli_entry.write_text("value = 'cli'\n", encoding="utf-8")
 
     resolved, error = _resolve_entry(
         tmp_path,
@@ -176,7 +178,7 @@ def test_cli_entry_overrides_project_config_entry(tmp_path: Path) -> None:
 
 
 def test_project_config_rejects_ambiguous_entry_selectors(tmp_path: Path) -> None:
-    (tmp_path / "app.py").write_text("value = 1\n")
+    (tmp_path / "app.py").write_text("value = 1\n", encoding="utf-8")
     selector, selector_error = cli_build_inputs._resolve_build_entry_selector(
         file_path=None,
         module=None,
@@ -199,8 +201,8 @@ def test_project_config_rejects_ambiguous_entry_selectors(tmp_path: Path) -> Non
 def test_import_plan_classifies_binary_image_closure(tmp_path: Path) -> None:
     entry = tmp_path / "app.py"
     helper = tmp_path / "helper.py"
-    entry.write_text("import helper\nvalue = helper.VALUE\n")
-    helper.write_text("VALUE = 7\n")
+    entry.write_text("import helper\nvalue = helper.VALUE\n", encoding="utf-8")
+    helper.write_text("VALUE = 7\n", encoding="utf-8")
 
     import_plan = _materialize_plan(tmp_path, entry, "app")
     payload = import_plan.closure_payload()
@@ -230,12 +232,14 @@ def test_project_config_static_import_dme_keeps_compile_scope_in_image_closure(
     package = tmp_path / "pkg"
     runtime = package / "runtime"
     runtime.mkdir(parents=True)
-    entry.write_text("import helper\nprint('APP', helper.VALUE)\n")
-    helper.write_text("VALUE = 42\n")
-    (package / "__init__.py").write_text("value = 'pkg'\n")
-    (runtime / "__init__.py").write_text("value = 'runtime'\n")
-    (runtime / "ops_cpu.py").write_text("import base64\nENCODE = base64.b64encode\n")
-    (tmp_path / "unreferenced.py").write_text("VALUE = 'dead'\n")
+    entry.write_text("import helper\nprint('APP', helper.VALUE)\n", encoding="utf-8")
+    helper.write_text("VALUE = 42\n", encoding="utf-8")
+    (package / "__init__.py").write_text("value = 'pkg'\n", encoding="utf-8")
+    (runtime / "__init__.py").write_text("value = 'runtime'\n", encoding="utf-8")
+    (runtime / "ops_cpu.py").write_text(
+        "import base64\nENCODE = base64.b64encode\n", encoding="utf-8"
+    )
+    (tmp_path / "unreferenced.py").write_text("VALUE = 'dead'\n", encoding="utf-8")
     monkeypatch.setenv(STATIC_IMPORT_MODULES_ENV, "pkg.runtime.ops_cpu")
 
     resolved, error = _resolve_entry(
@@ -301,10 +305,12 @@ def test_wrapper_build_cache_input_uses_static_import_closure_plan(
     package = tmp_path / "pkg"
     runtime = package / "runtime"
     runtime.mkdir(parents=True)
-    entry.write_text("value = 'entry'\n")
-    (package / "__init__.py").write_text("value = 'pkg'\n")
-    (runtime / "__init__.py").write_text("value = 'runtime'\n")
-    (runtime / "ops_cpu.py").write_text("import base64\nVALUE = base64.b64encode\n")
+    entry.write_text("value = 'entry'\n", encoding="utf-8")
+    (package / "__init__.py").write_text("value = 'pkg'\n", encoding="utf-8")
+    (runtime / "__init__.py").write_text("value = 'runtime'\n", encoding="utf-8")
+    (runtime / "ops_cpu.py").write_text(
+        "import base64\nVALUE = base64.b64encode\n", encoding="utf-8"
+    )
     resolved, error = _resolve_entry(tmp_path, file_path=str(entry))
     assert error is None
     assert resolved is not None
@@ -344,7 +350,7 @@ def test_wrapper_build_cache_identity_tracks_dead_module_elimination(
         cli_wrapper_build, "_cache_tooling_fingerprint", lambda: "tooling"
     )
     entry = tmp_path / "app.py"
-    entry.write_text("value = 'entry'\n")
+    entry.write_text("value = 'entry'\n", encoding="utf-8")
     resolved, error = _resolve_entry(tmp_path, file_path=str(entry))
     assert error is None
     assert resolved is not None
@@ -378,8 +384,8 @@ def test_build_diagnostics_emits_final_binary_image_closure(
 ) -> None:
     entry = tmp_path / "app.py"
     helper = tmp_path / "helper.py"
-    entry.write_text("import helper\nvalue = helper.VALUE\n")
-    helper.write_text("VALUE = 7\n")
+    entry.write_text("import helper\nvalue = helper.VALUE\n", encoding="utf-8")
+    helper.write_text("VALUE = 7\n", encoding="utf-8")
     import_plan = _materialize_plan(tmp_path, entry, "app")
     narrowed_plan = import_plan.with_compile_modules({"app"})
     callbacks = cli_frontend_pipeline._prepare_build_callbacks(
@@ -438,8 +444,10 @@ def test_frontend_binary_image_analysis_bridges_ast_schedule_and_lowering(
 ) -> None:
     entry = tmp_path / "app.py"
     helper = tmp_path / "helper.py"
-    entry.write_text("import helper\n\ndef run():\n    return helper.VALUE\n")
-    helper.write_text("VALUE = 7\n")
+    entry.write_text(
+        "import helper\n\ndef run():\n    return helper.VALUE\n", encoding="utf-8"
+    )
+    helper.write_text("VALUE = 7\n", encoding="utf-8")
     import_plan = _materialize_plan(tmp_path, entry, "app")
     analysis = _prepare_analysis_for_plan(tmp_path, import_plan)
     narrowed_plan = import_plan.with_compile_modules({"app"})
@@ -485,8 +493,10 @@ def test_frontend_binary_image_analysis_omits_source_sites_when_not_full(
 ) -> None:
     entry = tmp_path / "app.py"
     helper = tmp_path / "helper.py"
-    entry.write_text("import helper\n\ndef run():\n    return helper.VALUE\n")
-    helper.write_text("VALUE = 7\n")
+    entry.write_text(
+        "import helper\n\ndef run():\n    return helper.VALUE\n", encoding="utf-8"
+    )
+    helper.write_text("VALUE = 7\n", encoding="utf-8")
     import_plan = _materialize_plan(tmp_path, entry, "app")
     analysis = _prepare_analysis_for_plan(tmp_path, import_plan)
     narrowed_plan = import_plan.with_compile_modules({"app"})
@@ -519,7 +529,7 @@ def test_frontend_binary_image_analysis_labels_external_native_known_modules(
     tmp_path: Path,
 ) -> None:
     entry = tmp_path / "app.py"
-    entry.write_text("VALUE = 1\n")
+    entry.write_text("VALUE = 1\n", encoding="utf-8")
     import_plan = _materialize_plan(tmp_path, entry, "app")
     analysis = _prepare_analysis_for_plan(tmp_path, import_plan)
     native_plan = _ExternalPackageNativeArtifactPlan(

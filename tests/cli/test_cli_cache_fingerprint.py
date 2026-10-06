@@ -451,7 +451,11 @@ def test_source_graphs_follow_preserved_stat_transitive_manifest_replacements(
             root, "nested/" + name, f'[package]\nname="{name}"\nversion="0.1.0"\n'
         )
     hub = root / "runtime/molt-passes/Cargo.toml"
-    hub.write_text(hub.read_text() + '[dependencies]\nleaf={path="../nested/leaf_a"}\n')
+    hub.write_text(
+        hub.read_text(encoding="utf-8")
+        + '[dependencies]\nleaf={path="../nested/leaf_a"}\n',
+        encoding="utf-8",
+    )
     runtime_manifest = root / "runtime/molt-runtime/Cargo.toml"
     changed = {path: path.stat() for path in (hub, runtime_manifest)}
     real_stat = Path.stat
@@ -491,18 +495,21 @@ def test_source_graphs_follow_preserved_stat_transitive_manifest_replacements(
     assert all(old_leaf in paths and new_leaf not in paths for paths in before[:2])
     assert before[2] == frozenset({"leaf_a"})
     for path, metadata in changed.items():
-        original = path.read_text()
+        original = path.read_text(encoding="utf-8")
         replacement = original.replace('leaf_a"}', 'leaf_b"}').replace(
             'stdlib_micro=["leaf_a"]', 'stdlib_micro=["leaf_b"]'
         )
         assert len(replacement) == len(original) and replacement != original
-        path.write_text(replacement)
+        path.write_text(replacement, encoding="utf-8")
         os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
     after = observe()
     assert all(new_leaf in paths and old_leaf not in paths for paths in after[:2])
     assert after[2] == frozenset({"leaf_b"})
     source = new_leaf / "src/lib.rs"
-    source.write_text(source.read_text() + "pub const NEW: u8 = 1;\n")
+    source.write_text(
+        source.read_text(encoding="utf-8") + "pub const NEW: u8 = 1;\n",
+        encoding="utf-8",
+    )
     source_changed = observe()
     assert source_changed[3] != after[3] and source_changed[4] != after[4]
 
