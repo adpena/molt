@@ -317,7 +317,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "597813b3fa9de2d756c5f174707298c6ed99e29dbbd0ec49f13536595f82a749",
+  "authority_sha256": "7e3a8ec4e0a940f0e70b21f4dd6f3f1a3ef3ef789a8d4672b816056f78a3888e",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -3809,6 +3809,7 @@
       "argv": [
         "cargo",
         "test",
+        "--locked",
         "--timings",
         "--profile",
         "dev-fast",
@@ -3873,6 +3874,7 @@
       "argv": [
         "cargo",
         "test",
+        "--locked",
         "--timings",
         "--profile",
         "dev-fast",
@@ -4856,7 +4858,7 @@
       "local.apparatus-learning-protection.2": "python3 tools/venv_exec.py python tools/anti_recurrence_gate.py --check",
       "local.backend-llvm.0": "cargo test --locked --profile release-fast -p molt-backend-native --features llvm --lib",
       "local.backend-native.0": "cargo clippy --locked -p molt-backend -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
-      "local.backend-native.1": "cargo test --locked --profile release-fast -p molt-backend -p molt-artifact-publish --features molt-backend/native-backend --lib",
+      "local.backend-native.1": "cargo test --locked --profile release-fast -p molt-backend -p molt-artifact-publish --features molt-backend/native-backend --lib --no-fail-fast",
       "local.bootstrap-stdlib.0": "python3 tools/check_stdlib_intrinsics.py --fallback-intrinsic-backed-only",
       "local.bootstrap-stdlib.1": "python3 tools/check_stdlib_intrinsics.py --critical-allowlist",
       "local.ci-wiring.0": "python3 tools/venv_exec.py python tools/gen_proof_plan.py --check",
@@ -4948,7 +4950,7 @@
         "description": "Cranelift/native backend Rust: clippy + backend lib tests, fresh binary.",
         "gates": [
           "cargo clippy --locked -p molt-backend -p molt-artifact-publish --features molt-backend/native-backend -- -D warnings",
-          "cargo test --locked --profile release-fast -p molt-backend -p molt-artifact-publish --features molt-backend/native-backend --lib"
+          "cargo test --locked --profile release-fast -p molt-backend -p molt-artifact-publish --features molt-backend/native-backend --lib --no-fail-fast"
         ],
         "globs": [
           "runtime/molt-backend/**/*.rs",

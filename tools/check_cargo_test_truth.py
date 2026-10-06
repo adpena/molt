@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-import re
+import shlex
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 import sys
 import tomllib
@@ -11,33 +12,70 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 PROOF_PLAN = ROOT / "tools" / "proof_plan.toml"
 RUNNER = ROOT / "tools" / "run_cargo_test_truth.py"
-_CARGO_TEST = re.compile(r"cargo\s+test\b[^\n\"']*")
-_CARGO_COMPILE = re.compile(r"cargo\s+(?:build|check|clippy|test)\b[^\n\"']*")
 _CANONICAL = "cargo test --locked --workspace --tests --no-fail-fast"
 _RUNNER_ID = "rust.test.default-truth"
 _RUNNER_ARGV = ["uv", "run", "--frozen", "python3", "tools/run_cargo_test_truth.py"]
+_CARGO_EXECUTABLES = frozenset({"cargo", "cargo.exe"})
+_COMPILE_SUBCOMMANDS = frozenset({"build", "check", "clippy", "test"})
+# Each selects exactly one test executable when it appears once.
+_SINGLE_TARGET_SELECTORS = frozenset({"--lib", "--doc", "--bin", "--test", "--bench"})
+_MULTI_TARGET_SELECTORS = frozenset(
+    {"--workspace", "--all", "--all-targets", "--tests", "--bins", "--benches"}
+)
 
 
-def _commands(path: Path) -> list[tuple[int, str]]:
-    commands = []
-    for line_number, line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), 1
-    ):
-        match = _CARGO_TEST.search(line)
-        if match:
-            commands.append((line_number, match.group(0).strip()))
-    return commands
+def _cargo_arguments(argv: Sequence[str]) -> tuple[str, list[str]] | None:
+    """Return (subcommand, cargo's own arguments) for a Cargo compile invocation.
+
+    Arguments after `--` belong to the compiled binaries, not to Cargo.
+    """
+    for index, token in enumerate(argv):
+        if Path(token).name not in _CARGO_EXECUTABLES:
+            continue
+        rest = list(argv[index + 1 :])
+        while rest and rest[0].startswith("+"):
+            rest.pop(0)
+        if not rest or rest[0] not in _COMPILE_SUBCOMMANDS:
+            return None
+        subcommand, arguments = rest[0], rest[1:]
+        if "--" in arguments:
+            arguments = arguments[: arguments.index("--")]
+        return subcommand, arguments
+    return None
 
 
-def _compile_commands(path: Path) -> list[tuple[int, str]]:
-    commands = []
-    for line_number, line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), 1
-    ):
-        match = _CARGO_COMPILE.search(line)
-        if match:
-            commands.append((line_number, match.group(0).strip()))
-    return commands
+def _cargo_invocations(
+    plan: Mapping[str, object],
+) -> Iterator[tuple[str, str, list[str]]]:
+    """Yield (owner, subcommand, arguments) for every Cargo compile in the plan.
+
+    Commands carry `argv` lists; local rules carry shell `gates` strings. The
+    TOML is parsed, so comments and prose never count as commands.
+    """
+    for table_name, entries in plan.items():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            owner = f"{table_name} {entry.get('id') or entry.get('name')!r}"
+            argv = entry.get("argv")
+            if isinstance(argv, list):
+                found = _cargo_arguments([str(item) for item in argv])
+                if found is not None:
+                    yield owner, *found
+            for gate in entry.get("gates") or ():
+                found = _cargo_arguments(shlex.split(str(gate)))
+                if found is not None:
+                    yield owner, *found
+
+
+def _selects_one_executable(arguments: Sequence[str]) -> bool:
+    if any(argument in _MULTI_TARGET_SELECTORS for argument in arguments):
+        return False
+    packages = sum(argument in {"-p", "--package"} for argument in arguments)
+    selectors = sum(argument in _SINGLE_TARGET_SELECTORS for argument in arguments)
+    return packages <= 1 and selectors == 1
 
 
 def _display_path(path: Path) -> Path:
@@ -69,22 +107,20 @@ def violations() -> list[str]:
         failures.append(
             f"{RUNNER.relative_to(ROOT)} must execute exactly {_CANONICAL!r}"
         )
-    proof_plan_lines = PROOF_PLAN.read_text(encoding="utf-8").splitlines()
-    for line_number, command in _compile_commands(PROOF_PLAN):
-        source_line = proof_plan_lines[line_number - 1]
-        if "--locked" not in source_line:
+    for owner, subcommand, arguments in _cargo_invocations(plan):
+        command = " ".join(["cargo", subcommand, *arguments])
+        if "--locked" not in arguments:
             failures.append(
-                f"{_display_path(PROOF_PLAN)}:{line_number}: Cargo compilation "
+                f"{_display_path(PROOF_PLAN)}: {owner}: Cargo compilation "
                 f"command lacks --locked dependency authority: {command}"
             )
-    for line_number, command in _commands(PROOF_PLAN):
-        single_executable = any(
-            selector in command for selector in (" --lib", " --doc", " --test ")
-        )
-        source_line = proof_plan_lines[line_number - 1]
-        if not single_executable and "--no-fail-fast" not in source_line:
+        if (
+            subcommand == "test"
+            and not _selects_one_executable(arguments)
+            and "--no-fail-fast" not in arguments
+        ):
             failures.append(
-                f"{_display_path(PROOF_PLAN)}:{line_number}: multi-executable Cargo "
+                f"{_display_path(PROOF_PLAN)}: {owner}: multi-executable Cargo "
                 f"test command lacks --no-fail-fast: {command}"
             )
     return failures

@@ -149,6 +149,89 @@ gates = ["cargo check -p molt-ir"]
     assert any("lacks --locked" in failure for failure in MODULE.violations())
 
 
+def _plan_with(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> None:
+    plan = tmp_path / "proof_plan.toml"
+    plan.write_text(
+        """
+[[command]]
+id = "rust.test.default-truth"
+argv = ["uv", "run", "--frozen", "python3", "tools/run_cargo_test_truth.py"]
+
+""".lstrip()
+        + body,
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(MODULE, "PROOF_PLAN", plan)
+
+
+def test_comments_and_prose_are_not_cargo_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _plan_with(
+        tmp_path,
+        monkeypatch,
+        """
+# Clippy subsumes the former cargo check of molt-tir.
+[[command]]
+id = "rust.clippy.example"
+argv = ["cargo", "clippy", "--locked", "-p", "molt-tir", "--", "-D", "warnings"]
+""",
+    )
+    assert MODULE.violations() == []
+
+
+@pytest.mark.parametrize(
+    "argv,reason",
+    [
+        ('["cargo", "test", "-p", "molt-ir", "--lib"]', "lacks --locked"),
+        ('["cargo", "+1.96.1", "build", "-p", "molt-ir"]', "lacks --locked"),
+        (
+            '["cargo", "test", "-p", "molt-ir", "--lib", "--", "--locked"]',
+            "lacks --locked",
+        ),
+        (
+            '["cargo", "test", "--locked", "-p", "a", "-p", "b", "--lib"]',
+            "lacks --no-fail-fast",
+        ),
+        (
+            '["cargo", "test", "--locked", "--workspace", "--lib"]',
+            "lacks --no-fail-fast",
+        ),
+    ],
+)
+def test_command_argv_is_checked_as_cargo_parses_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: str, reason: str
+) -> None:
+    _plan_with(
+        tmp_path,
+        monkeypatch,
+        f"""
+[[command]]
+id = "rust.test.example"
+argv = {argv}
+""",
+    )
+    failures = MODULE.violations()
+    assert any(
+        reason in failure and "rust.test.example" in failure for failure in failures
+    )
+
+
+def test_single_executable_cargo_test_needs_no_fail_fast_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _plan_with(
+        tmp_path,
+        monkeypatch,
+        """
+[[command]]
+id = "rust.test.single"
+argv = ["cargo", "test", "--locked", "-p", "molt-ir", "--lib"]
+""",
+    )
+    assert MODULE.violations() == []
+
+
 def test_truth_runner_accepts_only_the_exact_registered_set() -> None:
     runner_path = ROOT / "tools" / "run_cargo_test_truth.py"
     spec = importlib.util.spec_from_file_location("run_cargo_test_truth", runner_path)
