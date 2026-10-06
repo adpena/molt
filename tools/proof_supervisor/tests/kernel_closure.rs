@@ -9,6 +9,7 @@ use molt_proof_supervisor::{ImageClass, ProcessEvent};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
@@ -504,12 +505,16 @@ fn supervise_with_fixture_args(mode: ClosureMode, fixture_args: &[&str]) -> Rece
 }
 
 fn unique_directory() -> PathBuf {
+    // Parallel tests can share one SystemTime tick (microsecond resolution on
+    // macOS); the counter keeps every fixture directory distinct in-process.
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     std::env::temp_dir().join(format!(
-        "molt-proof-supervisor-{}-{}",
+        "molt-proof-supervisor-{}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ))
 }
