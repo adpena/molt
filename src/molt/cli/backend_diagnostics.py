@@ -16,7 +16,6 @@ _BACKEND_DIAGNOSTIC_ENV_KNOBS = frozenset(
         "TIR_DUMP",
         "TIR_OPT_STATS",
         "MOLT_DUMP_CLIF",
-        "MOLT_DUMP_CLIF_ON_ERROR",
         "MOLT_DUMP_CLIF_ON_CFG_ERROR",
         "MOLT_DUMP_CLIF_FUNC",
         "MOLT_DUMP_CLIF_FILE",

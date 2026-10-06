@@ -4,8 +4,8 @@ set -euo pipefail
 REPO_OWNER="adpena"
 REPO_NAME="molt"
 
-MOLT_PREFIX_DEFAULT="${XDG_DATA_HOME:-$HOME/.local/share}/molt"
-MOLT_PREFIX="${MOLT_PREFIX:-$MOLT_PREFIX_DEFAULT}"
+default_prefix="${XDG_DATA_HOME:-$HOME/.local/share}/molt"
+MOLT_PREFIX="${MOLT_PREFIX:-$default_prefix}"
 VERSION=""
 UPDATE_PATH=0
 

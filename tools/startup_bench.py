@@ -42,7 +42,7 @@ PROBES = {
     "small_compute": "total = 0\nfor value in range(1_000_000):\n    total += value\nprint(total)\n",
 }
 TRACE_RE = re.compile(r"\[molt runtime_init\] \+(\d+)us \(d(\d+)us\) (\S+)")
-PHASE_MARKER = "MOLT_STARTUP_PHASES="
+PHASE_MARKER = "molt_startup_phases="
 
 
 def _stamp() -> str:

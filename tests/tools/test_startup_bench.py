@@ -27,7 +27,7 @@ def test_runtime_phase_parser_reports_median_deltas() -> None:
 
 def test_node_phase_parser_reads_marker() -> None:
     payload = startup_bench._parse_node_phases(
-        'noise\nMOLT_STARTUP_PHASES={"preload_to_exit_ms":1.5,"reads":[],"instantiations":[]}\n'
+        'noise\nmolt_startup_phases={"preload_to_exit_ms":1.5,"reads":[],"instantiations":[]}\n'
     )
     assert payload is not None
     assert payload["preload_to_exit_ms"] == 1.5
