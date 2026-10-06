@@ -132,6 +132,7 @@ def backend_build_admission(
     from molt.llvm_toolchain import (
         LlvmToolchainConfigError,
         project_llvm_toolchain_environment,
+        sdk_content_paths,
         verify_available_llvm_toolchain,
     )
 
@@ -172,8 +173,18 @@ def backend_build_admission(
             effective = project_llvm_toolchain_environment(
                 root, verification, environ=effective
             )
+            # llvm-sys reads llvm-config's answers, the headers behind --cflags,
+            # and the libraries --libnames/--system-libs name in --libdir: the
+            # verified toolchain's consumed content set, not the whole prefix.
             llvm_roots = (
-                CargoResourceRoot("compiler/llvm-sdk", verification.prefix),
+                *(
+                    CargoResourceRoot(
+                        "compiler/llvm-sdk/"
+                        + path.relative_to(verification.prefix).as_posix(),
+                        path,
+                    )
+                    for path in sdk_content_paths(verification)
+                ),
                 CargoResourceRoot("compiler/llvm-config", verification.llvm_config),
             )
             return effective
