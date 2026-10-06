@@ -490,7 +490,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "func_ptr",
                     )
                     .unwrap();
-                let trampoline = self.ensure_plain_trampoline(func_name, arity, false);
+                let trampoline = self.ensure_plain_trampoline(func_name, false);
                 let tramp_ptr = self
                     .backend
                     .builder
@@ -549,7 +549,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "closure_func_ptr",
                     )
                     .unwrap();
-                let trampoline = self.ensure_plain_trampoline(func_name, arity, true);
+                let trampoline = self.ensure_plain_trampoline(func_name, true);
                 let tramp_ptr = self
                     .backend
                     .builder
