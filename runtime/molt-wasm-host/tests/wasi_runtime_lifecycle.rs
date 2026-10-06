@@ -41,14 +41,11 @@ fn actual_wasi_runtime_lifecycle_cases_through_production_host() {
     // Compile once through the actual host producer, then execute its container
     // through the actual loader. This replaces the former JIT-only proof; it
     // does not add a second compilation of this large retained WASI module.
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let native = std::env::temp_dir().join(format!(
-        "molt-wasi-lifecycle-{}-{nonce}.molt.cwasm",
-        std::process::id()
-    ));
+    let owned = tempfile::Builder::new()
+        .prefix("molt-wasi-lifecycle-")
+        .tempdir()
+        .expect("create owned lifecycle directory");
+    let native = owned.path().join("lifecycle.molt.cwasm");
     let started = Instant::now();
     let precompiled = host()
         .env("MOLT_WASM_HOST_LOG", PHASE_LOG)
@@ -121,7 +118,7 @@ fn actual_wasi_runtime_lifecycle_cases_through_production_host() {
     for name in CASES {
         println!("wasi-lifecycle passed case={name} artifact_sha256={actual}");
     }
-    std::fs::remove_file(&native).expect("remove owned passed lifecycle container");
+    drop(owned);
     println!(
         "wasi-lifecycle shared-host cases={} precompile_s={:.3} total_s={:.3}",
         CASES.len(),
