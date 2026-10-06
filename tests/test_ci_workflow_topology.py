@@ -381,9 +381,14 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "matrix: ${{ fromJSON(needs.classify-changes.outputs.matrix) }}" in ci_text
     assert "Swatinem/rust-cache@" not in ci_text
     assert "uses: ./.github/actions/setup-project" in ci_text
-    # Three rust-bearing jobs configure adaptive parallelism: python-tooling-smoke,
-    # rust-build-unit-smoke, and the LLVM backend job.
-    assert ci_text.count("Configure adaptive Rust parallelism") == 3
+    # Four rust-bearing jobs configure adaptive parallelism: python-tooling-smoke,
+    # rust-build-unit-smoke, the LLVM backend job, and platform-portability
+    # (its macOS Rust cell). The portability matrix runs on Windows too, so its
+    # step spells the interpreter `python` rather than `python3`.
+    assert ci_text.count("Configure adaptive Rust parallelism") == 4
+    assert (
+        ci_text.count('python tools/ci_resource_env.py --github-env "$GITHUB_ENV"') == 1
+    )
     assert (
         ci_text.count('python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"')
         == 3
@@ -1218,7 +1223,19 @@ def test_platform_portability_is_one_generated_cross_os_authority() -> None:
         for command in plan["command"]
         if command["family"] == "platform_portability"
     ]
-    assert {command["cell"] for command in commands} == set(cells)
+    # Besides the three queue cells, the family carries the macOS Rust cell:
+    # the primary host's workspace clippy and runtime gate.
+    rust_cells = {
+        cell["id"]: cell
+        for cell in plan["matrix_cell"]
+        if cell["id"] in {command["cell"] for command in commands}
+        and cell["backend"] == "rust"
+    }
+    assert {
+        (cell["os"], cell["arch"], cell["runner"]) for cell in rust_cells.values()
+    } == {("macos", "aarch64", "macos-14")}
+    assert {command["cell"] for command in commands} == set(cells) | set(rust_cells)
+    commands = [command for command in commands if command["cell"] in cells]
     queue_commands = [command for command in commands if ".queue." in command["id"]]
     ir_commands = [command for command in commands if ".ir." in command["id"]]
     assert len({tuple(command["argv"]) for command in queue_commands}) == 1
