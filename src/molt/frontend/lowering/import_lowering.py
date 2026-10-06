@@ -469,7 +469,7 @@ class ImportLoweringMixin(GeneratorMixinBase):
         return bound_val
 
     def _emit_module_load(self, module_name: str) -> MoltValue:
-        # NOTE: Earlier versions cached loaded_val in _module_cache_values to
+        # NOTE: Earlier versions cached loaded_val per function to
         # avoid redundant MODULE_CACHE_GET + conditional-init sequences.  However,
         # the WASM state-machine backend (used for module init functions with
         # jumps/labels) can split the code into states where the cached local's

@@ -100,7 +100,6 @@ FUNCTION_TYPE_HINT_SCOPE_STATE_ATTRS = (
 FUNCTION_CACHE_STATE_ATTRS = (
     "const_ints",
     "_op_by_result",
-    "_module_cache_values",
     "in_generator",
     "async_context",
     "current_line",
@@ -261,8 +260,6 @@ class GeneratorStateMixin(GeneratorMixinBase):
         # Value names are globally unique (next_var), so no per-function reset is
         # needed beyond clearing the current function/chunk view.
         self._op_by_result = {}
-        # Per-function cache: module name -> cached MoltValue from MODULE_CACHE_GET.
-        self._module_cache_values = {}
         self.in_generator = False
         self.async_context = False
         self.current_line = None

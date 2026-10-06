@@ -56,7 +56,6 @@ class _GeneratorProtocolAttrs(Protocol):
     _midend_env_snapshot: Any
     _midend_stats_reported: Any
     _module_attr_type_hints: dict[str, str]
-    _module_cache_values: dict[str, MoltValue]
     _module_pressure_funcs_map_ref: Any
     _module_pressure_function_count: Any
     _module_pressure_total_ops: Any

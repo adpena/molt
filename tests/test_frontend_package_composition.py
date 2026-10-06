@@ -232,7 +232,6 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_known_module_function_type_hint")
     assert hasattr(SimpleTIRGenerator, "_emit_builtin_function")
     # module globals
-    assert hasattr(SimpleTIRGenerator, "_get_or_emit_module_cache")
     assert hasattr(SimpleTIRGenerator, "_emit_global_get")
     assert hasattr(SimpleTIRGenerator, "_emit_globals_dict")
     assert hasattr(SimpleTIRGenerator, "_emit_module_globals_dict")

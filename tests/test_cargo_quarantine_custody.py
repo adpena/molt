@@ -238,8 +238,15 @@ def test_restored_non_incremental_artifacts_remain_admitted_guard_inputs(tmp_pat
     dependency = target / "debug" / "deps" / "librestored.rlib"
     dependency.parent.mkdir(parents=True)
     dependency.write_bytes(b"restored non-incremental dependency")
+    # An explicit custody root keeps the test independent of where the checkout
+    # lives (GitHub's Windows runners check out on D:, which canonical custody
+    # rejects as a default durable authority).
     canonical = canonical_harness_env(
-        {"CARGO_TARGET_DIR": str(target), "CARGO_INCREMENTAL": "0"}
+        {
+            "CARGO_TARGET_DIR": str(target),
+            "CARGO_INCREMENTAL": "0",
+            "MOLT_EXT_ROOT": str(tmp_path / "canonical"),
+        }
     )
     assert canonical["CARGO_TARGET_DIR"] == str(target)
     assert canonical["CARGO_INCREMENTAL"] == "0"
