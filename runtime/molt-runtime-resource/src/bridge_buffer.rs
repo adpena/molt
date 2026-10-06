@@ -215,7 +215,7 @@ mod tests {
             ..Default::default()
         })));
         let _reset = TrackerReset;
-        let mut out_ptr: *const u64 = 1usize as *const u64;
+        let mut out_ptr: *const u64 = std::ptr::dangling::<u64>();
         let mut out_len = usize::MAX;
         assert_eq!(
             unsafe { export_u64_slice(&[7u64], &mut out_ptr, &mut out_len) },
@@ -235,7 +235,7 @@ mod tests {
             ..Default::default()
         })));
         let _reset = TrackerReset;
-        let mut out_ptr: *const u64 = 1usize as *const u64;
+        let mut out_ptr: *const u64 = std::ptr::dangling::<u64>();
         let mut out_len = usize::MAX;
         assert_eq!(
             unsafe { export_u64_slice(&[7u64], &mut out_ptr, &mut out_len) },
