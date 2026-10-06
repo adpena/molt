@@ -156,7 +156,19 @@ The lifecycle publishes a single ready-state pointer for the fast path:
 - Finalizing and permanently shut-down runtimes cannot be reinitialized;
   runtime restart is available only to serialized test fixtures.
 - Strict ordering: intern base names first, then builtin classes, then caches.
-- Fail fast if initialization fails; do not leave partial global state.
+- Initialization, shutdown, persistent-GIL setup, and executable exit run
+  their bodies under the shared FFI panic dispatch
+  (`molt_runtime_core::with_gil_entry_body!`), so no panic or `resume_unwind`
+  payload crosses these C entrypoints. Abort builds keep fail-stop semantics.
+  In unwind builds (tests, CI, dev), an invariant panic closes execution
+  admission, revokes the ready pointer and the TLS cache, wakes lifecycle
+  waiters, records terminal `Failed`, and writes
+  `molt runtime lifecycle failed: <panic message>` to stderr. Init and shutdown
+  return `0`; executable exit terminates with status `1`.
+- A failed lifecycle cannot restart, including through test reset. Its partially
+  initialized or retired allocation stays alive because native roots may still
+  borrow it; reclaiming unknown partial state would risk dangling pointers.
+  This quarantine is failure custody, not a retry or a cleanup success.
 
 ### Shutdown
 - Requires runtime quiescence (no running tasks/threads).

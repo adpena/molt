@@ -236,7 +236,9 @@ pub mod lifecycle {
     use crate::concurrency::RuntimeExecutionGuard;
     use crate::state::runtime_state::{molt_runtime_init, molt_runtime_shutdown, runtime_is_ready};
 
-    /// Initialize the runtime.  Returns 1 on success, 0 if already shut down.
+    /// Initialize the runtime. Returns 1 on success, 0 after shutdown or after a
+    /// lifecycle failure (an invariant panic in an unwind build). A failed
+    /// lifecycle never initializes again.
     /// Idempotent: repeated calls after the first return 1 immediately.
     ///
     /// # Safety
@@ -246,7 +248,9 @@ pub mod lifecycle {
         molt_runtime_init()
     }
 
-    /// Shut down the runtime. Returns 1 on success, 0 if not initialized.
+    /// Shut down the runtime. Returns 1 on success, 0 if not initialized or
+    /// after a lifecycle failure. A failed shutdown quarantines the partially
+    /// retired runtime; make no further runtime calls.
     ///
     /// # Safety
     /// No runtime calls may be made after this returns.

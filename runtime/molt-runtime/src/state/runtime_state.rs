@@ -872,6 +872,7 @@ enum RuntimeLifecyclePhase {
     Ready { ptr: usize },
     Finalizing { owner: thread::ThreadId, ptr: usize },
     Shutdown,
+    Failed,
 }
 
 struct RuntimeLifecycle {
@@ -890,6 +891,46 @@ impl RuntimeLifecycle {
 
 fn runtime_lifecycle() -> &'static RuntimeLifecycle {
     RUNTIME_LIFECYCLE.get_or_init(RuntimeLifecycle::new)
+}
+
+/// Run one lifecycle C entrypoint body under the shared FFI panic dispatch
+/// (`molt_runtime_core::with_gil_entry_body!`). `panic = "abort"` builds stop
+/// at an invariant panic. `panic = "unwind"` builds (tests, CI, dev) record a
+/// terminal lifecycle failure after the body's execution and GIL guards have
+/// unwound, then return the zero failure value through C.
+macro_rules! runtime_lifecycle_entry {
+    ($body:expr) => {
+        ::molt_runtime_core::with_gil_entry_body!(raise: |message| {
+            runtime_lifecycle_failed(message);
+        }, $body)
+    };
+}
+
+/// A lifecycle invariant failure is terminal: a partially initialized or
+/// retired runtime cannot restart or admit execution. Its allocation stays
+/// alive because published native roots may still borrow it; only process
+/// exit reclaims it.
+fn runtime_lifecycle_failed(message: &str) {
+    RUNTIME_READY_PTR.store(std::ptr::null_mut(), AtomicOrdering::Release);
+    RUNTIME_EXECUTION_ADMISSION
+        .fetch_or(RUNTIME_EXECUTION_ADMISSION_CLOSED, AtomicOrdering::AcqRel);
+    let lifecycle = runtime_lifecycle();
+    // The panic may have unwound through a held phase guard.
+    let mut phase = lifecycle
+        .phase
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *phase = RuntimeLifecyclePhase::Failed;
+    lifecycle.phase.clear_poison();
+    lifecycle.changed.notify_all();
+    drop(phase);
+    clear_thread_runtime_state();
+    // eprintln! panics when stderr is closed; nothing may unwind from here.
+    use std::io::Write;
+    let _ = writeln!(
+        std::io::stderr(),
+        "molt runtime lifecycle failed: {message}"
+    );
 }
 
 pub(crate) fn runtime_is_initialized() -> bool {
@@ -1083,6 +1124,7 @@ pub(crate) fn runtime_execution_is_admitted_for_current_thread(requires_runtime:
         RuntimeLifecyclePhase::Initializing { owner: active }
         | RuntimeLifecyclePhase::Finalizing { owner: active, .. } => active == owner,
         RuntimeLifecyclePhase::Uninitialized | RuntimeLifecyclePhase::Shutdown => !requires_runtime,
+        RuntimeLifecyclePhase::Failed => false,
     }
 }
 
@@ -1153,7 +1195,9 @@ pub(crate) fn owns_process_cpython_state(state: &RuntimeState) -> bool {
             std::ptr::eq(state, ptr as *const RuntimeState)
         }
         RuntimeLifecyclePhase::Initializing { owner } => owner == thread::current().id(),
-        RuntimeLifecyclePhase::Uninitialized | RuntimeLifecyclePhase::Shutdown => false,
+        RuntimeLifecyclePhase::Uninitialized
+        | RuntimeLifecyclePhase::Shutdown
+        | RuntimeLifecyclePhase::Failed => false,
     }
 }
 
@@ -1258,6 +1302,13 @@ fn trace_runtime_init(stage: &str) {
 /// `molt_runtime_shutdown()`.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_exit(code_bits: u64) -> u64 {
+    runtime_lifecycle_entry!(runtime_exit(code_bits));
+    // runtime_exit ends the process; returning here means its finalization
+    // panicked and the lifecycle is already Failed.
+    unsafe { libc::_exit(1) }
+}
+
+fn runtime_exit(code_bits: u64) -> u64 {
     // Process-exit attachment is governed by the same prepare -> runtime TLS
     // anchors -> arm sequence as ordinary execution and embedding teardown.
     touch_tls_guard();
@@ -1371,6 +1422,10 @@ fn initialize_runtime_state(gil: &GilGuard, state: &RuntimeState) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_init() -> u64 {
+    runtime_lifecycle_entry!(runtime_init())
+}
+
+fn runtime_init() -> u64 {
     #[cfg(target_arch = "wasm32")]
     ensure_wasm_ctors();
     // The GIL authority is process-lifetime state and must precede every
@@ -1408,7 +1463,7 @@ pub extern "C" fn molt_runtime_init() -> u64 {
                 trace_runtime_init("already_initialized");
                 return 1;
             }
-            RuntimeLifecyclePhase::Shutdown => {
+            RuntimeLifecyclePhase::Shutdown | RuntimeLifecyclePhase::Failed => {
                 trace_runtime_init("shutdown_complete");
                 return 0;
             }
@@ -1452,16 +1507,20 @@ pub extern "C" fn molt_runtime_init() -> u64 {
         }
         drop(phase);
 
-        // Initialization is a fail-closed publication transaction. No pointer
-        // becomes globally reachable until every initialization step succeeds.
-        // An invariant panic is intentionally not converted into a plausible
-        // retryable result: this extern-C boundary aborts rather than exposing
-        // unknown partial side effects to a second initialization attempt.
-        let mut state = Box::new(RuntimeState::new());
-        let state_ptr = (&mut *state) as *mut RuntimeState;
-        crate::object::gc::gc_bind_registry(&state);
+        // Retain custody even if initialization unwinds after installing private
+        // TLS/native roots. The terminal Failed boundary forbids reuse and
+        // deliberately leaves this allocation alive instead of dangling them.
+        let state_ptr = Box::into_raw(Box::new(RuntimeState::new()));
+        let state = unsafe { &*state_ptr };
+        crate::object::gc::gc_bind_registry(state);
         set_thread_runtime_state(state_ptr);
-        initialize_runtime_state(&gil, &state);
+        #[cfg(test)]
+        RUNTIME_INIT_TEST_PANIC.with(|pending| {
+            if pending.replace(false) {
+                std::panic::resume_unwind(Box::new("injected unpublished runtime init panic"));
+            }
+        });
+        initialize_runtime_state(&gil, state);
 
         #[cfg(test)]
         if let Some((entered, release)) = RUNTIME_INIT_TEST_GATE.lock().unwrap().clone() {
@@ -1469,7 +1528,7 @@ pub extern "C" fn molt_runtime_init() -> u64 {
             release.wait();
         }
 
-        let ptr = Box::into_raw(state);
+        let ptr = state_ptr;
         assert!(
             signal_runtime_state_publish(unsafe { &*ptr }),
             "runtime initialization could not publish its signal authority"
@@ -1492,11 +1551,15 @@ pub extern "C" fn molt_runtime_init() -> u64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_ensure_gil() {
-    crate::concurrency::ensure_persistent_runtime_execution();
+    runtime_lifecycle_entry!(crate::concurrency::ensure_persistent_runtime_execution())
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_shutdown() -> u64 {
+    runtime_lifecycle_entry!(runtime_shutdown())
+}
+
+fn runtime_shutdown() -> u64 {
     // Establish the canonical TLS destructor boundary before shutdown touches
     // any other runtime TLS on this embedding thread.
     touch_tls_guard();
@@ -1518,7 +1581,8 @@ pub extern "C" fn molt_runtime_shutdown() -> u64 {
         }
         RuntimeLifecyclePhase::Uninitialized
         | RuntimeLifecyclePhase::Initializing { .. }
-        | RuntimeLifecyclePhase::Shutdown => return 0,
+        | RuntimeLifecyclePhase::Shutdown
+        | RuntimeLifecyclePhase::Failed => return 0,
     };
     debug_assert_eq!(runtime_ready_ptr(), Some(ptr));
     let active_executions = close_runtime_execution_admission();
@@ -1616,6 +1680,10 @@ static PROCESS_EXIT_FINALIZED: AtomicBool = AtomicBool::new(false);
 static RUNTIME_INIT_TEST_GATE: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>> =
     Mutex::new(None);
 #[cfg(test)]
+thread_local! {
+    static RUNTIME_INIT_TEST_PANIC: Cell<bool> = const { Cell::new(false) };
+}
+#[cfg(test)]
 struct RuntimeFinalizeAtexitTestHook {
     results: std::sync::mpsc::Sender<(u64, u64)>,
     entered: std::sync::mpsc::Sender<()>,
@@ -1697,6 +1765,11 @@ pub(crate) fn molt_runtime_reset_for_testing() {
     );
     let lifecycle = runtime_lifecycle();
     let mut phase = lifecycle.phase.lock().unwrap();
+    assert_ne!(
+        *phase,
+        RuntimeLifecyclePhase::Failed,
+        "a failed runtime cannot be reset: partial native roots remain live"
+    );
     *phase = RuntimeLifecyclePhase::Uninitialized;
     lifecycle.changed.notify_all();
     drop(phase);
@@ -1716,6 +1789,80 @@ pub(crate) fn molt_runtime_reset_for_testing() {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Every lifecycle C entrypoint converts an invariant panic into a terminal
+    /// failure instead of unwinding through C (which aborts the process and
+    /// hides every later result). Each mode runs in a child process because the
+    /// failed lifecycle is process-terminal by design.
+    #[test]
+    fn lifecycle_ffi_panics_fail_closed_without_unwinding() {
+        const MODE: &str = "MOLT_TEST_LIFECYCLE_FFI_PANIC";
+        if let Ok(mode) = std::env::var(MODE) {
+            std::panic::set_hook(Box::new(|_| {}));
+            match mode.as_str() {
+                "init" => {
+                    RUNTIME_INIT_TEST_PANIC.with(|pending| pending.set(true));
+                    assert_eq!(molt_runtime_init(), 0);
+                }
+                "shutdown" => {
+                    assert_eq!(molt_runtime_init(), 1);
+                    crate::concurrency::execution::inject_shutdown_drain_drop_panic();
+                    assert_eq!(molt_runtime_shutdown(), 0);
+                }
+                "exit" => {
+                    assert_eq!(molt_runtime_init(), 1);
+                    crate::concurrency::execution::inject_shutdown_drain_drop_panic();
+                    molt_runtime_exit(0);
+                    unreachable!("process exit returned");
+                }
+                _ => panic!("unknown lifecycle panic mode"),
+            }
+            assert!(!runtime_is_ready());
+            assert!(!runtime_is_initialized());
+            assert!(!runtime_execution_is_admitted_for_current_thread(false));
+            assert_eq!(molt_runtime_init(), 0, "a failed lifecycle never restarts");
+            assert_eq!(molt_runtime_shutdown(), 0);
+            assert_eq!(
+                *runtime_lifecycle().phase.lock().unwrap(),
+                RuntimeLifecyclePhase::Failed
+            );
+            return;
+        }
+        for (mode, cause, exit_code) in [
+            ("init", "injected unpublished runtime init panic", 0),
+            (
+                "shutdown",
+                "injected shutdown drain C extension cleanup panic",
+                0,
+            ),
+            (
+                "exit",
+                "injected shutdown drain C extension cleanup panic",
+                1,
+            ),
+        ] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "state::runtime_state::tests::lifecycle_ffi_panics_fail_closed_without_unwinding",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(MODE, mode);
+            let output = crate::test_support::captured_runtime_children::capture(
+                &mut command,
+                "lifecycle-ffi",
+                mode,
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(exit_code), "{mode}: {stderr}");
+            assert!(
+                stderr.contains(&format!("molt runtime lifecycle failed: {cause}")),
+                "{mode}: the diagnostic names the original panic: {stderr}"
+            );
+        }
+    }
 
     static EXT_INIT_COUNT: AtomicUsize = AtomicUsize::new(0);
     static EXT_CLEAR_COUNT: AtomicUsize = AtomicUsize::new(0);
