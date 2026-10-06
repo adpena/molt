@@ -124,6 +124,7 @@ def _cargo_metadata(workspace: Path) -> Mapping[str, object]:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        timeout=300,
         check=True,
     )
     return json.loads(completed.stdout)

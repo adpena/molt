@@ -21,6 +21,10 @@ import pytest
 from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 from tools.memory_guard_core import cargo_quarantine as cargo
 from tools.memory_guard_core.process_model import process_identity
+from tests.process_guard_common import (
+    close_owned_test_process,
+    start_owned_test_process,
+)
 
 
 @pytest.mark.parametrize(
@@ -1591,7 +1595,7 @@ def test_actual_native_profile_lock_shared_budget_uses_other_process(
         assert receipt.ownership_status == "deferred" and owned.exists()
         return  # Native unsupported admission proved; no positive-platform credit.
     code = "from pathlib import Path; import sys; from molt.file_locks import _try_acquire_file_lock,_release_file_lock; h=_try_acquire_file_lock(Path(sys.argv[1])); assert h is not None; print('ready',flush=True); sys.stdin.readline(); _release_file_lock(h)"
-    proc = subprocess.Popen(
+    proc = start_owned_test_process(
         [sys.executable, "-c", code, str(owned.parent.parent / ".cargo-build-lock")],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -1631,9 +1635,7 @@ def test_actual_native_profile_lock_shared_budget_uses_other_process(
         assert receipt.admission_telemetry["lock_elapsed_s"] >= 0.15
         assert receipt.admission_telemetry["closure_elapsed_s"] <= 0.05 + 1e-10
     finally:
-        if proc.poll() is None:
-            proc.terminate()
-        proc.wait(timeout=10)
+        close_owned_test_process(proc)
         for stream in (proc.stdin, proc.stdout, proc.stderr):
             stream.close()
 

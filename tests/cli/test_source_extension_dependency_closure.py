@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import subprocess
 from dataclasses import replace
 from pathlib import Path
 
@@ -10,6 +9,7 @@ import pytest
 from molt.cli import native_symbol_inspection
 from molt.cli import dependency_files, source_extensions
 from molt.cli.source_extension_language import SourceExtensionLanguage
+from tests.process_guard_common import run_guarded_test_process
 
 
 def test_depfile_parser_preserves_escaped_paths_and_continuations(
@@ -380,7 +380,7 @@ def test_real_elf_eager_weak_closure_agrees_with_linker(
         )
         assert fact.defined_function_symbols == (() if is_data else (symbol,))
         facts.append(fact)
-    linked = subprocess.run(
+    linked = run_guarded_test_process(
         [
             linker,
             "-r",

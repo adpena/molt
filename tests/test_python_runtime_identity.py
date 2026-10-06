@@ -11,6 +11,7 @@ import pytest
 from molt import python_runtime_identity as runtime
 from molt.exact_json import canonical_json_sha256
 from molt.python_identity_common import PythonEnvironmentIdentityError
+from tests.process_guard_common import run_custody_subject_process
 
 
 @pytest.mark.parametrize(
@@ -819,7 +820,6 @@ def test_mapped_file_lookup_names_the_file_backing_an_address() -> None:
 def test_runtime_library_does_not_depend_on_the_invocation_name(tmp_path) -> None:
     # A PATH launch names the interpreter "python3" in argv[0]; glibc reports
     # a statically linked runtime by that name, which the cwd cannot resolve.
-    import subprocess
     import sys
 
     probe = (
@@ -827,7 +827,7 @@ def test_runtime_library_does_not_depend_on_the_invocation_name(tmp_path) -> Non
         "library = r._runtime_library(); "
         "print(json.dumps(None if library is None else str(library)))"
     )
-    result = subprocess.run(
+    result = run_custody_subject_process(
         ["python3", "-c", probe],
         executable=sys.executable,
         cwd=tmp_path,

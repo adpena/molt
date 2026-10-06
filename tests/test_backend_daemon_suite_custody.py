@@ -14,6 +14,8 @@ from molt.exact_json import write_exact
 from molt.file_locks import _try_acquire_file_lock, _release_file_lock
 from tools import memory_guard
 
+from tests.process_guard_common import run_custody_subject_process
+
 
 def sample(pid, parent, group, born, command="owned worker"):
     return memory_guard.ProcessSample(
@@ -151,7 +153,8 @@ def test_explicit_transfer_preserves_daemon_and_workers_but_keeps_unrelated_chil
         Path(record["daemon_root"]) / "molt-backend.test.identity.json", owned
     )
     before = {
-        1000: sample(1000, 10, 1000, 1000),
+        # Births must be ordered parent <= child or ancestry is refused.
+        1000: sample(1000, 10, 1000, 250),
         30: sample(30, 1000, 30, 300, owned.command),
         31: sample(31, 30, 30, 310),
         40: sample(40, 1000, 40, 400),
@@ -1221,7 +1224,6 @@ def test_transferred_groups_use_actual_command_root_projection(
 
 
 def test_owner_lock_contention_is_cross_process_os_proof(lease):
-    import subprocess
 
     path, _record, _handle = lease
     code = """import sys
@@ -1233,7 +1235,7 @@ if handle is not None:
     raise SystemExit(2)
 print("contended")
 """
-    result = subprocess.run(
+    result = run_custody_subject_process(
         [sys.executable, "-c", code, str(path.parent / "owner.lock")],
         capture_output=True,
         text=True,

@@ -6,12 +6,12 @@ import copy
 import importlib.util
 import json
 import sys
-import subprocess
 from pathlib import Path
 
 import pytest
 
 from molt import target_features as TF
+from tests.process_guard_common import run_guarded_test_process
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -282,7 +282,7 @@ def test_generated_python_is_formatter_stable(tmp_path: Path) -> None:
     gen = _load_generator()
     generated = tmp_path / "target_feature_manifest.py"
     generated.write_text(gen.render_python(gen.build_model()), encoding="utf-8")
-    result = subprocess.run(
+    result = run_guarded_test_process(
         [
             sys.executable,
             "-m",

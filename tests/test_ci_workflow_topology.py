@@ -1163,10 +1163,28 @@ def test_platform_portability_is_one_generated_cross_os_authority() -> None:
     assert family["job"] == "platform-portability"
     assert "fail-fast: false" in ci_text
     assert "runs-on: ${{ matrix.runner }}" in ci_text
-    assert "Configure verified ephemeral custody" in ci_text
-    assert "MOLT_CI_EPHEMERAL_CUSTODY_ROOT=$custodyRoot" in ci_text
-    assert "UV_PROJECT_ENVIRONMENT=$(Join-Path $custodyRoot 'venv')" in ci_text
+    custody_action = _read(".github/actions/ephemeral-custody/action.yml")
+    assert "Configure verified ephemeral custody" in custody_action
+    assert "MOLT_CI_EPHEMERAL_CUSTODY_ROOT=$custodyRoot" in custody_action
+    assert "UV_PROJECT_ENVIRONMENT=$(Join-Path $custodyRoot 'venv')" in custody_action
+    assert "$env:RUNNER_TEMP" in custody_action
     assert "$env:RUNNER_TEMP" in ci_text
+    jobs = yaml.safe_load(ci_text)["jobs"]
+    # Runtime fixtures and guard scratch must live outside the source tree in
+    # every job that runs the Python unit or real-queue suites.
+    for job_name in ("platform-portability", "python-unit"):
+        steps = jobs[job_name]["steps"]
+        custody = next(
+            index
+            for index, step in enumerate(steps)
+            if step.get("uses") == "./.github/actions/ephemeral-custody"
+        )
+        setup = next(
+            index
+            for index, step in enumerate(steps)
+            if step.get("uses") == "./.github/actions/setup-project"
+        )
+        assert custody < setup, job_name
     assert "${{ runner.temp }}" not in ci_text
     assert "--run-family platform_portability --receipt" in ci_text
     assert '--matrix-cell "${{ matrix.cell }}"' in ci_text
