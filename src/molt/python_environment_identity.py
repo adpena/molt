@@ -149,6 +149,8 @@ def python_capture_authority_paths(
         "memory_guard_paths",
         "process_spawn",
         "dx",
+        "environment_registry",
+        "_environment_registry",
         "path_custody",
         "python_environment_identity",
         "python_environment_location",
