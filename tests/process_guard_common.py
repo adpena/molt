@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+import threading
 from enum import Enum
 from contextlib import contextmanager
 from collections.abc import Mapping, Sequence
@@ -73,6 +74,26 @@ def install_module_os_view(
 
     overrides = {} if name is None else {"name": name}
     return install_module_view(monkeypatch, "os", os, *modules, **overrides)
+
+
+def current_thread_only(
+    replacement: Callable[..., Any], original: Callable[..., Any]
+) -> Callable[..., Any]:
+    """Apply a test double only on the installing thread.
+
+    Shared primitives such as file-lock acquire/release are also used by the
+    in-process session sentinel thread. A double that records or injects
+    failures must not count, fail or release that thread's handles.
+    """
+
+    owner = threading.get_ident()
+
+    def dispatch(*args: Any, **kwargs: Any) -> Any:
+        if threading.get_ident() == owner:
+            return replacement(*args, **kwargs)
+        return original(*args, **kwargs)
+
+    return dispatch
 
 
 class GuardedProcessRole(str, Enum):
