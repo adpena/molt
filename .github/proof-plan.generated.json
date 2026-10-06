@@ -316,7 +316,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "05fe005f90d116995eafe6158f03e8789393c4a847c62989dfb12b467a03d9f5",
+  "authority_sha256": "f8479e92c16f827c02f4e9063067b96d6fcd849909e1ea44a07504acae6b11ce",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
@@ -2727,7 +2727,7 @@
         "--target",
         "wasm",
         "--output",
-        "/tmp/test_hello.wasm"
+        "/tmp/molt-wasm-ci/hello/hello.wasm"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-wasm-dev",
@@ -2765,7 +2765,7 @@
     {
       "argv": [
         "target/sessions/wasm-ci/dev-fast/molt-wasm-host",
-        "/tmp/test_hello.wasm"
+        "/tmp/molt-wasm-ci/hello/manifest.json"
       ],
       "cache_domain": "none",
       "cell": "linux-x86_64-py312-wasm-dev",
@@ -2806,7 +2806,7 @@
         "--target",
         "wasm",
         "--output",
-        "/tmp/test_comprehension.wasm"
+        "/tmp/molt-wasm-ci/comprehension/comprehension.wasm"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-wasm-dev",
@@ -2844,7 +2844,7 @@
     {
       "argv": [
         "target/sessions/wasm-ci/dev-fast/molt-wasm-host",
-        "/tmp/test_comprehension.wasm"
+        "/tmp/molt-wasm-ci/comprehension/manifest.json"
       ],
       "cache_domain": "none",
       "cell": "linux-x86_64-py312-wasm-dev",
@@ -2972,7 +2972,7 @@
         "--target",
         "wasm",
         "--output",
-        "/tmp/test_sieve.wasm"
+        "/tmp/molt-wasm-ci/sieve/sieve.wasm"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-py312-wasm-dev",
@@ -3010,7 +3010,7 @@
     {
       "argv": [
         "target/sessions/wasm-ci/dev-fast/molt-wasm-host",
-        "/tmp/test_sieve.wasm"
+        "/tmp/molt-wasm-ci/sieve/manifest.json"
       ],
       "cache_domain": "none",
       "cell": "linux-x86_64-py312-wasm-dev",
