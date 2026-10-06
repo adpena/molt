@@ -8,10 +8,43 @@ comments/strings extend to EOF so their contents cannot become apparent code.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 import re
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, TypeVar, cast
+
+_T = TypeVar("_T")
+
+# A whole-repository scan queries the same file text from many probes. The
+# projections below are pure functions of the text, so inside scan_memo() they
+# are memoized by content: one lexical pass per file per scan, released when
+# the scan ends. A mutated file is a different key, never a stale hit.
+_SCAN_MEMO: dict[tuple[str, object, str], object] | None = None
+
+
+@contextmanager
+def scan_memo() -> Iterator[None]:
+    """Share lexical projections across every query within one scan."""
+    global _SCAN_MEMO
+    previous = _SCAN_MEMO
+    if previous is None:
+        _SCAN_MEMO = {}
+    try:
+        yield
+    finally:
+        _SCAN_MEMO = previous
+
+
+def _memoized(kind: str, option: object, text: str, compute: Callable[[], _T]) -> _T:
+    memo = _SCAN_MEMO
+    if memo is None:
+        return compute()
+    key = (kind, option, text)
+    if key not in memo:
+        memo[key] = compute()
+    return cast(_T, memo[key])
+
 
 # Python's Unicode \w is exactly the isalnum-or-underscore token boundary
 # used here. Search only potential non-code starts, not every ordinary code
@@ -137,18 +170,33 @@ def mask_rust_comments_and_strings(
 
     Pattern scanners may retain literals while using the same lexical boundaries.
     """
-    return _project_rust_source(
+    return _memoized(
+        "mask",
+        preserve_literals,
         text,
-        include_mask=True,
-        include_comments=False,
-        preserve_literals=preserve_literals,
-    ).masked_code
+        lambda: (
+            _project_rust_source(
+                text,
+                include_mask=True,
+                include_comments=False,
+                preserve_literals=preserve_literals,
+            ).masked_code
+        ),
+    )
 
 
 class RustSourceToken(NamedTuple):
     text: str
     start: int
     end: int
+
+
+def _rust_token_index(text: str) -> tuple[tuple[RustSourceToken, ...], tuple[str, ...]]:
+    def compute() -> tuple[tuple[RustSourceToken, ...], tuple[str, ...]]:
+        tokens = tuple(_rust_source_tokens(text, _non_code_spans(text)))
+        return tokens, tuple(token.text for token in tokens)
+
+    return _memoized("tokens", None, text, compute)
 
 
 def rust_source_tokens(text: str) -> list[RustSourceToken]:
@@ -158,7 +206,7 @@ def rust_source_tokens(text: str) -> list[RustSourceToken]:
     masker. Their interior whitespace, delimiters and quotes never become code
     tokens. No literal is decoded, normalized or rewritten by this projection.
     """
-    return _rust_source_tokens(text, _non_code_spans(text))
+    return list(_rust_token_index(text)[0])
 
 
 def _rust_source_tokens(
@@ -193,14 +241,16 @@ def rust_token_range(
     header cannot make its distinct outer sibling ambiguous, and a nested
     candidate can never stand in for a missing dominating outer statement.
     """
-    tokens = rust_source_tokens(text)
-    wanted = tuple(token.text for token in rust_source_tokens(fragment))
+    tokens, texts = _rust_token_index(text)
+    wanted = _rust_token_index(fragment)[1]
     if not wanted:
         return None
+    width = len(wanted)
+    first = wanted[0]
     matches = [
         index
-        for index in range(len(tokens) - len(wanted) + 1)
-        if tuple(token.text for token in tokens[index : index + len(wanted)]) == wanted
+        for index in range(len(texts) - width + 1)
+        if texts[index] == first and texts[index : index + width] == wanted
     ]
     if depth is not None:
         code = mask_rust_comments_and_strings(text)
@@ -521,7 +571,12 @@ def _rust_test_item_spans(projection: _RustItemProjection) -> list[tuple[int, in
 
 def mask_rust_test_items(text: str) -> str:
     """Blank test items while preserving offsets, literals and production."""
-    return _mask_rust_test_items(text, _rust_item_projection(text))
+    return _memoized(
+        "tests",
+        None,
+        text,
+        lambda: _mask_rust_test_items(text, _rust_item_projection(text)),
+    )
 
 
 def _mask_rust_test_items(text: str, projection: _RustItemProjection) -> str:

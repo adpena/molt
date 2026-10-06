@@ -353,6 +353,10 @@ def describe(outcome: str) -> str:
 
 
 def python_inventory(text: str, proved: bool) -> list[InventoryHit]:
+    # Every hit resolves through an import of _compatibility_errors, so a file
+    # that never names the module has none; skip parsing it.
+    if "_compatibility_errors" not in text:
+        return []
     try:
         tree = ast.parse(text)
     except SyntaxError:
