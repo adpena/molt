@@ -2840,7 +2840,9 @@ fn default_memory_cache_limit_bytes() -> usize {
     if let Some(mib) = env_cache_limit_bytes("MOLT_BACKEND_TIR_CACHE_MEMORY_MB") {
         return mib.saturating_mul(1024 * 1024);
     }
-    if let Some(bytes) = usable_memory_budget_bytes_from_env() {
+    if let Some(bytes) = crate::memory_budget::backend_memory_limit_bytes()
+        .map(|bytes| usize::try_from(bytes).unwrap_or(usize::MAX))
+    {
         return (bytes / DEFAULT_MEMORY_CACHE_AVAILABLE_DIVISOR).clamp(
             DEFAULT_MEMORY_CACHE_AVAILABLE_BYTES_MIN,
             DEFAULT_MEMORY_CACHE_BYTES_MAX,
@@ -2877,34 +2879,6 @@ fn env_cache_limit_u64(name: &str) -> Option<u64> {
     std::env::var(name)
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
-}
-
-fn usable_memory_budget_bytes_from_env() -> Option<usize> {
-    let available_gb = env_cache_limit_gb(&[
-        "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
-        "MOLT_CLI_MEMORY_AVAILABLE_GB",
-        "MOLT_MEMORY_AVAILABLE_GB",
-    ])?;
-    let reserve_gb = env_cache_limit_gb(&[
-        "MOLT_BACKEND_MEMORY_RESERVE_GB",
-        "MOLT_CLI_MEMORY_RESERVE_GB",
-        "MOLT_MEMORY_RESERVE_GB",
-    ])
-    .unwrap_or(0.0);
-    let usable_gb = (available_gb - reserve_gb).max(0.0);
-    if usable_gb <= 0.0 {
-        return Some(0);
-    }
-    Some((usable_gb * 1024.0 * 1024.0 * 1024.0) as usize)
-}
-
-fn env_cache_limit_gb(names: &[&str]) -> Option<f64> {
-    names.iter().find_map(|name| {
-        std::env::var(name)
-            .ok()
-            .and_then(|raw| raw.trim().parse::<f64>().ok())
-            .filter(|value| value.is_finite() && *value >= 0.0)
-    })
 }
 
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]

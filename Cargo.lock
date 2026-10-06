@@ -2864,6 +2864,7 @@ dependencies = [
  "molt-backend-wasm",
  "molt-codegen-abi",
  "molt-ir",
+ "molt-passes",
  "molt-tir",
  "molt-wasm-facts",
  "object 0.39.1",

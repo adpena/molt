@@ -1021,7 +1021,7 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "float",
       "name": "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
-      "owner": "runtime/molt-passes/src/tir/cache.rs",
+      "owner": "runtime/molt-passes/src/memory_budget.rs",
       "summary": "The memory guard sets it to the child's memory ceiling in GB (non-negative finite float); molt-backend and the TIR pipeline subtract MOLT_BACKEND_MEMORY_RESERVE_GB from it to size the in-memory TIR cache and the optimisation resource plan, reading MOLT_CLI_MEMORY_AVAILABLE_GB, MOLT_CLI_MEM_AVAILABLE_GB, MOLT_MEMORY_AVAILABLE_GB, and MOLT_MEM_AVAILABLE_GB as fallbacks when it is unset.",
       "values": []
     },
@@ -1030,7 +1030,7 @@ _REGISTRY_JSON = r"""{
       "default": "0",
       "kind": "float",
       "name": "MOLT_BACKEND_MEMORY_RESERVE_GB",
-      "owner": "runtime/molt-passes/src/tir/cache.rs",
+      "owner": "runtime/molt-passes/src/memory_budget.rs",
       "summary": "Memory in GB (non-negative finite float) the backend keeps out of its usable budget when sizing the TIR cache and optimisation plan; unset reads MOLT_CLI_MEMORY_RESERVE_GB, MOLT_CLI_MEM_RESERVE_GB, MOLT_MEMORY_RESERVE_GB, MOLT_MEM_RESERVE_GB, then 0.",
       "values": []
     },

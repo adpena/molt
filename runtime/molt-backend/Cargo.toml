@@ -9,6 +9,7 @@ license = "Apache-2.0"
 [dependencies]
 molt-artifact-publish = { path = "../molt-artifact-publish" }
 molt-ir = { path = "../molt-ir" }
+molt-passes = { path = "../molt-passes" }
 molt-tir = { path = "../molt-tir" }
 molt-backend-native = { path = "../molt-backend-native", optional = true, default-features = false }
 molt-backend-luau = { path = "../molt-backend-luau", optional = true, default-features = false }

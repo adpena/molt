@@ -9,6 +9,7 @@
 #![allow(clippy::type_complexity)] // complex return types in TIR CFG helpers
 #![allow(clippy::should_implement_trait)] // generated op_kind enum parsers are deliberate tables
 
+pub mod memory_budget;
 pub mod representation_facts;
 pub mod tir;
 

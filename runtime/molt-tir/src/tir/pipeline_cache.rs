@@ -24,7 +24,6 @@ pub const TIR_OPTIMIZATION_WORKER_MEMORY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 pub const TIR_OPTIMIZATION_WAVE_FUNCTIONS_PER_THREAD: usize = 1;
 pub const TIR_OPTIMIZATION_WAVE_OPS_PER_THREAD: usize = 1_000;
 
-const GIB_BYTES: u64 = 1024 * 1024 * 1024;
 const TIR_PIPELINE_SEMANTIC_EPOCH: &[u8] = b"molt-tir-pipeline-semantics-v1";
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -392,78 +391,6 @@ pub fn parse_positive_usize_env(name: &str) -> Option<usize> {
         .filter(|value| *value > 0)
 }
 
-/// Parse a non-negative, possibly fractional GB value (the memory guard writes
-/// six decimals) into bytes, saturating at `u64::MAX`.
-pub fn parse_nonnegative_gb(raw: &str) -> Option<u64> {
-    let gb = raw
-        .trim()
-        .parse::<f64>()
-        .ok()
-        .filter(|value| value.is_finite() && *value >= 0.0)?;
-    Some((gb * GIB_BYTES as f64).min(u64::MAX as f64) as u64)
-}
-
-pub fn parse_nonnegative_gb_env(name: &str) -> Option<u64> {
-    std::env::var(name)
-        .ok()
-        .and_then(|raw| parse_nonnegative_gb(&raw))
-}
-
-pub fn env_memory_limit_bytes() -> Option<u64> {
-    let available = [
-        "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
-        "MOLT_CLI_MEMORY_AVAILABLE_GB",
-        "MOLT_MEMORY_AVAILABLE_GB",
-        "MOLT_BACKEND_MAX_PROCESS_RSS_GB",
-    ]
-    .iter()
-    .find_map(|name| parse_nonnegative_gb_env(name))?;
-    let reserve = [
-        "MOLT_BACKEND_MEMORY_RESERVE_GB",
-        "MOLT_CLI_MEMORY_RESERVE_GB",
-        "MOLT_MEMORY_RESERVE_GB",
-    ]
-    .iter()
-    .find_map(|name| parse_nonnegative_gb_env(name))
-    .unwrap_or(0);
-    Some(available.saturating_sub(reserve))
-}
-
-/// The committed-memory rlimit the backend process guard installs
-/// (`RLIMIT_DATA` on Linux; other kernels have none).
-#[cfg(target_os = "linux")]
-pub fn rlimit_committed_memory_bytes() -> Option<u64> {
-    unsafe {
-        let mut limit = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        if libc::getrlimit(libc::RLIMIT_DATA, &mut limit) != 0 {
-            return None;
-        }
-        let raw = limit.rlim_cur;
-        if raw == libc::RLIM_INFINITY || raw == 0 {
-            return None;
-        }
-        let widened = u128::from(raw);
-        Some(widened.min(u128::from(u64::MAX)) as u64)
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn rlimit_committed_memory_bytes() -> Option<u64> {
-    None
-}
-
-pub fn backend_memory_limit_bytes() -> Option<u64> {
-    match (env_memory_limit_bytes(), rlimit_committed_memory_bytes()) {
-        (Some(env_limit), Some(rlimit)) => Some(env_limit.min(rlimit)),
-        (Some(env_limit), None) => Some(env_limit),
-        (None, Some(rlimit)) => Some(rlimit),
-        (None, None) => None,
-    }
-}
-
 pub fn tir_optimization_cpu_thread_limit() -> usize {
     parse_positive_usize_env("RAYON_NUM_THREADS")
         .or_else(|| std::thread::available_parallelism().ok().map(usize::from))
@@ -503,7 +430,7 @@ pub fn tir_optimization_resource_plan_from_limits(
 pub fn tir_optimization_resource_plan() -> TirOptimizationResourcePlan {
     tir_optimization_resource_plan_from_limits(
         tir_optimization_cpu_thread_limit(),
-        backend_memory_limit_bytes(),
+        molt_passes::memory_budget::backend_memory_limit_bytes(),
     )
 }
 
