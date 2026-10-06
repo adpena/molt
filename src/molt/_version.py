@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 _PROJECT_NAME = "molt"
-_SOURCE_TREE_VERSION = "0.0.001"
+_SOURCE_TREE_VERSION = "0.0.1"
 
 
 def _source_tree_pyproject() -> Path:
