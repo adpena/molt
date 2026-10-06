@@ -215,4 +215,28 @@ mod tests {
             assert_eq!(state.io.sys_stdout_handle_bits.load(Ordering::Acquire), 0);
         });
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn host_descriptor_state_releases_without_closing_the_descriptor() {
+        use crate::object::{MoltFileBackend, MoltFileState};
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::sync::Mutex;
+
+        let path = temp_path("host_descriptor");
+        let mut owner = File::create(&path).expect("create temp file");
+        let fd = owner.as_raw_fd();
+        // A second wrapper of one descriptor, as WASI standard streams hold.
+        let borrowed = unsafe { File::from_raw_fd(fd) };
+        drop(MoltFileState {
+            backend: Mutex::new(Some(MoltFileBackend::File(borrowed))),
+            host_descriptor: true,
+        });
+        assert!(unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0);
+        owner
+            .write_all(b"still open")
+            .expect("the host descriptor stays usable");
+        drop(owner);
+        let _ = remove_file(path);
+    }
 }
