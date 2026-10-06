@@ -22,6 +22,7 @@ from molt._wasm_abi_generated import (
     wasm_runtime_import_name,
 )
 from molt._intrinsic_symbols import intrinsic_runtime_symbol_name
+from molt._runtime_feature_gates import runtime_symbol_available_on_target
 from molt.cli.backend_execution import _backend_codegen_env_digest
 from molt.cli.required_features import reached_intrinsic_symbols
 from molt.wasm_artifact import parse_wasm_exports, transform_wasm_publication_file
@@ -582,3 +583,55 @@ def test_wasm_codegen_env_digest_tracks_split_runtime_app_table_base() -> None:
     assert _backend_codegen_env_digest(
         is_wasm=True, env=base_env
     ) != _backend_codegen_env_digest(is_wasm=True, env=split_env)
+
+
+def _import_for_runtime_symbol(symbol: str) -> str:
+    matches = [
+        name
+        for name in wasm_runtime_import_names()
+        if wasm_runtime_export_name_for_import(name) == symbol
+    ]
+    assert len(matches) == 1, (symbol, matches)
+    return matches[0]
+
+
+def test_runtime_build_abi_is_the_registry_narrowed_by_that_build_only() -> None:
+    """A tiered runtime exports its own tier, not the whole generated registry.
+
+    The split linker used to demand the full registry from every deploy
+    runtime, so the micro-tier runtime selected for small programs, and every
+    WASM runtime (tk is never built for WASM), failed the link.
+    """
+    from molt._wasm_runtime_exports import wasm_runtime_import_names_for_features
+    from molt.cli.runtime_features import (
+        profile_link_features,
+        runtime_enabled_cargo_features,
+    )
+
+    core = _import_for_runtime_symbol("molt_object_field_get")
+    decimal = _import_for_runtime_symbol("molt_decimal_add")
+    tk = _import_for_runtime_symbol("molt_tk_after")
+    micro = wasm_runtime_import_names_for_features(
+        runtime_enabled_cargo_features(("no-default-features", "stdlib_micro")),
+        target_triple="wasm32-wasip1",
+    )
+    full_wasm = wasm_runtime_import_names_for_features(
+        profile_link_features("full", target_triple="wasm32-wasip1"),
+        target_triple="wasm32-wasip1",
+    )
+    native_full = wasm_runtime_import_names_for_features(
+        runtime_enabled_cargo_features(("default-features",)),
+        target_triple="aarch64-apple-darwin",
+    )
+    assert core in micro and core in full_wasm
+    assert decimal not in micro and decimal in full_wasm
+    assert tk not in micro and tk not in full_wasm and tk in native_full
+    assert set(micro) < set(full_wasm) < set(wasm_runtime_import_names())
+    assert set(native_full) == set(wasm_runtime_import_names()) - {
+        name
+        for name in wasm_runtime_import_names()
+        if not runtime_symbol_available_on_target(
+            wasm_runtime_export_name_for_import(name) or name,
+            target_triple="aarch64-apple-darwin",
+        )
+    }

@@ -225,6 +225,7 @@ def _run_wasm_ld(
     split_runtime: bool = False,
     split_output_dir: Path | None = None,
     deploy_runtime_override: Path | None = None,
+    deploy_runtime_imports: Sequence[str] | None = None,
     native_link_requirements: SourceExtensionLinkRequirements | None = None,
     preserve_debug_sections: bool = False,
     phase_timings_file: Path | None = None,
@@ -453,6 +454,7 @@ def _run_wasm_ld(
                 split_runtime=split_runtime,
                 split_output_dir=split_output_dir,
                 deploy_runtime_override=deploy_runtime_snapshot,
+                deploy_runtime_imports=deploy_runtime_imports,
                 native_link_requirements=snapshot_requirements,
                 preserve_debug_sections=preserve_debug_sections,
                 phase_timings_ms=phase_timings_ms,
@@ -606,6 +608,16 @@ def main() -> int:
         expected_identity=args.runtime_expected_identity,
     )
     runtime = generation.reloc
+    deploy_runtime_imports: tuple[str, ...] | None = None
+    if args.split_runtime:
+        try:
+            deploy_runtime_imports = generation.shared_runtime_import_names()
+        except ValueError as exc:
+            print(
+                f"Runtime generation has no derivable shared-member ABI: {exc}",
+                file=sys.stderr,
+            )
+            return 1
     if args.deploy_runtime_override is not None and (
         args.deploy_runtime_override.resolve(strict=False)
         != generation.shared.resolve(strict=False)
@@ -660,6 +672,7 @@ def main() -> int:
             split_runtime=args.split_runtime,
             split_output_dir=args.split_output_dir,
             deploy_runtime_override=generation.shared if args.split_runtime else None,
+            deploy_runtime_imports=deploy_runtime_imports,
             native_link_requirements=native_link_requirements,
             preserve_debug_sections=args.preserve_debug_sections,
             phase_timings_file=args.phase_timings_file,

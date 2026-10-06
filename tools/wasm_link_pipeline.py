@@ -1646,6 +1646,7 @@ def _prepare_split_runtime_stage(
     destination: Path,
     app_artifact: WasmArtifactState,
     *,
+    runtime_imports: Sequence[str],
     size_attestation: dict[str, object],
     operation_counts: dict[str, int | float],
     facts_provider: _facts.WasmFactsProvider,
@@ -1658,7 +1659,9 @@ def _prepare_split_runtime_stage(
         size_attestation["runtime_before"] = wasm_metrics(deploy_runtime_data)
         canonical_required_exports = (
             _runtime_data._canonical_split_runtime_required_exports(
-                deploy_runtime_data, facts_provider=facts_provider
+                deploy_runtime_data,
+                runtime_imports=runtime_imports,
+                facts_provider=facts_provider,
             )
         )
         app_imports = app_artifact.facts().module_imports("molt_runtime")
@@ -1717,6 +1720,7 @@ def run_wasm_ld_with_custodied_inputs(
     split_runtime: bool = False,
     split_output_dir: Path | None = None,
     deploy_runtime_override: Path | None = None,
+    deploy_runtime_imports: Sequence[str] | None = None,
     native_link_requirements: SourceExtensionLinkRequirements | None = None,
     preserve_debug_sections: bool = False,
     phase_timings_ms: dict[str, float] | None = None,
@@ -1764,6 +1768,10 @@ def run_wasm_ld_with_custodied_inputs(
         if native_link_requirements.target_triple != expected_target:
             raise ValueError(
                 f"native WASM link requirements target mismatch: {native_link_requirements.target_triple} != {expected_target}"
+            )
+        if split_runtime and deploy_runtime_imports is None:
+            raise ValueError(
+                "split-runtime link requires the deploy runtime build's generated ABI"
             )
         link_outputs = wasm_link_output_paths(
             linked,
@@ -2062,10 +2070,12 @@ def run_wasm_ld_with_custodied_inputs(
             )
             if app_artifact_state is None:
                 return 1
+            assert deploy_runtime_imports is not None
             prepared_runtime = _prepare_split_runtime_stage(
                 split_link.deploy_runtime_data,
                 rt_stage,
                 app_artifact_state,
+                runtime_imports=deploy_runtime_imports,
                 size_attestation=size_attestation,
                 operation_counts=operation_counts,
                 facts_provider=facts_provider,

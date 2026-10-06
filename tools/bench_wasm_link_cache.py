@@ -21,6 +21,11 @@ if str(SRC_ROOT) not in sys.path:
 
 import harness_memory_guard  # noqa: E402
 from molt.cli.atomic_io import _atomic_write_json  # noqa: E402
+from molt.cli.runtime_wasm_generation import (  # noqa: E402
+    RuntimeWasmExpectedPair,
+    RuntimeWasmGeneration,
+    read_runtime_wasm_generation,
+)
 from wasm_link_fact_provider import make_rust_wasm_facts_provider  # noqa: E402
 from wasm_link_optimizer_policy import _tree_shake_runtime  # noqa: E402
 from wasm_link_runtime_data import (  # noqa: E402
@@ -54,15 +59,35 @@ def _rss_payload(value: object | None) -> dict[str, object] | None:
     return payload
 
 
+def _admitted_runtime_generation(args: argparse.Namespace) -> RuntimeWasmGeneration:
+    """The trusted runtime pair whose shared member and build ABI are measured."""
+    manifest = args.runtime_generation.expanduser().resolve()
+    try:
+        expected = RuntimeWasmExpectedPair.read(
+            args.runtime_expected_identity.expanduser().resolve()
+        )
+    except ValueError as exc:
+        raise SystemExit(f"trusted runtime pair identity is invalid: {exc}") from exc
+    generation = read_runtime_wasm_generation(
+        manifest,
+        expected_shared_identity=expected.shared,
+        expected_reloc_identity=expected.reloc,
+    )
+    if generation is None:
+        raise SystemExit(
+            f"runtime generation does not match its trusted pair identity: {manifest}"
+        )
+    return generation
+
+
 def _worker_main(args: argparse.Namespace) -> int:
-    runtime = args.runtime.expanduser().resolve()
+    generation = _admitted_runtime_generation(args)
+    runtime = generation.shared
     scanner = args.scanner.expanduser().resolve()
     cache_dir = args.cache_dir.expanduser().resolve()
     scratch = args.scratch_dir.expanduser().resolve()
     session_target = args.session_target.expanduser().resolve()
     output = args.output.expanduser().resolve()
-    if not runtime.is_file():
-        raise SystemExit(f"runtime artifact not found: {runtime}")
     if not scanner.is_file():
         raise SystemExit(f"WASM facts scanner not found: {scanner}")
     if scratch.exists() or session_target.exists():
@@ -77,9 +102,14 @@ def _worker_main(args: argparse.Namespace) -> int:
     facts_metrics: dict[str, float] = {}
     provider = make_rust_wasm_facts_provider(scanner, scratch, facts_metrics)
     required_exports = _canonical_split_runtime_required_exports(
-        runtime_data, facts_provider=provider
+        runtime_data,
+        runtime_imports=generation.shared_runtime_import_names(),
+        facts_provider=provider,
     )
     cache_metrics: dict[str, int | float] = {}
+    # ABI admission scans the deploy runtime once in every session; the cache
+    # contract is that the shake itself scans nothing when it hits.
+    scans_before_shake = facts_metrics["wasm_facts_scan_calls"]
     started = time.perf_counter()
     result = _tree_shake_runtime(
         runtime_data,
@@ -89,6 +119,9 @@ def _worker_main(args: argparse.Namespace) -> int:
     )
     wall_s = max(0.0, time.perf_counter() - started)
     cache_metrics.update(facts_metrics)
+    cache_metrics["tree_shake_facts_scan_calls"] = (
+        facts_metrics["wasm_facts_scan_calls"] - scans_before_shake
+    )
     exports = sorted(provider(result).exports)
     payload = {
         "schema_version": 1,
@@ -132,8 +165,10 @@ def _worker_command(
     return [
         sys.executable,
         os.fspath(Path(__file__).resolve()),
-        "--runtime",
-        os.fspath(args.runtime.expanduser().resolve()),
+        "--runtime-generation",
+        os.fspath(args.runtime_generation.expanduser().resolve()),
+        "--runtime-expected-identity",
+        os.fspath(args.runtime_expected_identity.expanduser().resolve()),
         "--scanner",
         os.fspath(args.scanner.expanduser().resolve()),
         "--cache-dir",
@@ -201,12 +236,10 @@ def _run_worker(
 
 
 def _controller_main(args: argparse.Namespace) -> int:
-    runtime = args.runtime.expanduser().resolve()
+    runtime = _admitted_runtime_generation(args).shared
     scanner = args.scanner.expanduser().resolve()
     cache_dir = args.cache_dir.expanduser().resolve()
     scratch_dir = args.scratch_dir.expanduser().resolve()
-    if not runtime.is_file():
-        raise SystemExit(f"runtime artifact not found: {runtime}")
     if not scanner.is_file():
         raise SystemExit(f"WASM facts scanner not found: {scanner}")
     if cache_dir.exists() or scratch_dir.exists():
@@ -272,7 +305,7 @@ def _controller_main(args: argparse.Namespace) -> int:
         raise SystemExit("fresh worker B did not record exactly one disk cache hit")
     if warm_telemetry.get("runtime_tree_shake_cache_misses", 0) != 0:
         raise SystemExit("fresh worker B unexpectedly missed the shared cache")
-    if warm_telemetry.get("wasm_facts_scan_calls", 0) != 0:
+    if warm_telemetry.get("tree_shake_facts_scan_calls") != 0:
         raise SystemExit("fresh worker B repeated WASM facts scanning before cache hit")
     output = args.output.expanduser().resolve()
     _atomic_write_json(output, evidence, indent=2, sort_keys=True)
@@ -302,7 +335,18 @@ def _parse_args() -> argparse.Namespace:
             "and attest byte, section, export, wall-time, and RSS parity."
         )
     )
-    parser.add_argument("--runtime", type=Path, required=True)
+    parser.add_argument(
+        "--runtime-generation",
+        type=Path,
+        required=True,
+        help="molt_runtime.generation.json selecting the measured shared runtime",
+    )
+    parser.add_argument(
+        "--runtime-expected-identity",
+        type=Path,
+        required=True,
+        help="trusted runtime pair identity written by the runtime build",
+    )
     parser.add_argument("--scanner", type=Path, required=True)
     parser.add_argument("--cache-dir", type=Path, required=True)
     parser.add_argument("--scratch-dir", type=Path, required=True)

@@ -182,6 +182,40 @@ def _expand_cargo_feature(feature: str) -> frozenset[str]:
     return frozenset(reached)
 
 
+# The marker each recorded runtime feature request carries, and the Cargo
+# feature it enables (``default`` or nothing). One vocabulary for every reader.
+RUNTIME_DEFAULT_FEATURE_MARKERS: dict[str, str | None] = {
+    "default-features": "default",
+    "no-default-features": None,
+}
+
+
+def runtime_enabled_cargo_features(requested: Collection[str]) -> frozenset[str]:
+    """Every ``molt-runtime`` feature Cargo enables for one recorded request.
+
+    ``requested`` is a runtime build identity's ``runtime_features``: explicit
+    features plus exactly one ``default-features``/``no-default-features``
+    marker. The closure follows the same Cargo ``[features]`` graph as
+    ``profile_link_features``, so a runtime's link-affecting ABI is derived from
+    what its build enabled, never from a parallel list.
+    """
+    markers = [item for item in requested if item in RUNTIME_DEFAULT_FEATURE_MARKERS]
+    if len(markers) != 1:
+        raise ValueError(
+            "runtime feature request must carry exactly one default-feature "
+            f"marker; got {sorted(markers)}"
+        )
+    seeds = {item for item in requested if item not in RUNTIME_DEFAULT_FEATURE_MARKERS}
+    default_seed = RUNTIME_DEFAULT_FEATURE_MARKERS[markers[0]]
+    if default_seed is not None:
+        seeds.add(default_seed)
+    enabled: set[str] = set(seeds)
+    for seed in seeds:
+        enabled.update(_expand_cargo_feature(seed))
+    enabled.discard("default")
+    return frozenset(enabled)
+
+
 def profile_link_features(
     profile: str | None,
     *,

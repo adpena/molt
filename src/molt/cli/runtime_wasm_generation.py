@@ -153,6 +153,19 @@ class RuntimeWasmGeneration:
                 raise ValueError(error)
         return True
 
+    def shared_runtime_import_names(self) -> tuple[str, ...]:
+        """Generated runtime ABI the shared member's own build must export."""
+        from molt._wasm_runtime_exports import wasm_runtime_import_names_for_features
+        from molt.cli.runtime_features import runtime_enabled_cargo_features
+
+        imports = wasm_runtime_import_names_for_features(
+            runtime_enabled_cargo_features(self.shared_identity.runtime_features),
+            target_triple=self.shared_identity.effective_target,
+        )
+        if not imports:
+            raise ValueError("runtime generation selects an empty generated ABI")
+        return imports
+
     def validate_structure(self) -> None:
         self.verify_members()
         if "_structurally_validated" in self.__dict__:

@@ -522,3 +522,34 @@ def test_backend_reachability_uses_resolved_cross_native_target_triple(
         is None
     )
     assert observed == [("profile", target_triple), ("refusal", target_triple)]
+
+
+def test_enabled_runtime_features_follow_the_cargo_feature_graph() -> None:
+    cargo = tomllib.loads(
+        (MOLT_ROOT / "runtime" / "molt-runtime" / "Cargo.toml").read_text(
+            encoding="utf-8"
+        )
+    )["features"]
+    micro = RUNTIME_FEATURES.runtime_enabled_cargo_features(
+        ("no-default-features", "stdlib_micro")
+    )
+    # Every direct Cargo member of stdlib_micro is enabled; nothing from a
+    # higher tier is, so a micro runtime's ABI cannot claim edge symbols.
+    assert {"stdlib_micro", *(f for f in cargo["stdlib_micro"] if "/" not in f)} <= (
+        micro
+    )
+    assert "stdlib_math" not in micro and "stdlib_decimal" not in micro
+    defaults = RUNTIME_FEATURES.runtime_enabled_cargo_features(("default-features",))
+    assert {"stdlib_full", "stdlib_micro", "stdlib_decimal"} <= defaults
+    assert "default" not in defaults
+
+
+@pytest.mark.parametrize(
+    "request_features",
+    [("stdlib_micro",), ("default-features", "no-default-features", "stdlib_micro")],
+)
+def test_enabled_runtime_features_require_one_default_marker(
+    request_features: tuple[str, ...],
+) -> None:
+    with pytest.raises(ValueError, match="exactly one default-feature marker"):
+        RUNTIME_FEATURES.runtime_enabled_cargo_features(request_features)
