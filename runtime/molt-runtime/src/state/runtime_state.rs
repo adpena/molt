@@ -865,13 +865,23 @@ fn clear_and_drop_extension_slots(slots: Vec<RuntimeExtensionStateSlot>) {
     }
 }
 
+// `Failed` is terminal after a lifecycle panic caught at a C entrypoint. Abort
+// builds stop at the panic, so that phase exists only in unwind builds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RuntimeLifecyclePhase {
     Uninitialized,
-    Initializing { owner: thread::ThreadId },
-    Ready { ptr: usize },
-    Finalizing { owner: thread::ThreadId, ptr: usize },
+    Initializing {
+        owner: thread::ThreadId,
+    },
+    Ready {
+        ptr: usize,
+    },
+    Finalizing {
+        owner: thread::ThreadId,
+        ptr: usize,
+    },
     Shutdown,
+    #[cfg(panic = "unwind")]
     Failed,
 }
 
@@ -906,6 +916,7 @@ macro_rules! runtime_lifecycle_entry {
     };
 }
 
+#[cfg(panic = "unwind")]
 /// A lifecycle invariant failure is terminal: a partially initialized or
 /// retired runtime cannot restart or admit execution. Its allocation stays
 /// alive because published native roots may still borrow it; only process
@@ -1124,6 +1135,7 @@ pub(crate) fn runtime_execution_is_admitted_for_current_thread(requires_runtime:
         RuntimeLifecyclePhase::Initializing { owner: active }
         | RuntimeLifecyclePhase::Finalizing { owner: active, .. } => active == owner,
         RuntimeLifecyclePhase::Uninitialized | RuntimeLifecyclePhase::Shutdown => !requires_runtime,
+        #[cfg(panic = "unwind")]
         RuntimeLifecyclePhase::Failed => false,
     }
 }
@@ -1195,9 +1207,9 @@ pub(crate) fn owns_process_cpython_state(state: &RuntimeState) -> bool {
             std::ptr::eq(state, ptr as *const RuntimeState)
         }
         RuntimeLifecyclePhase::Initializing { owner } => owner == thread::current().id(),
-        RuntimeLifecyclePhase::Uninitialized
-        | RuntimeLifecyclePhase::Shutdown
-        | RuntimeLifecyclePhase::Failed => false,
+        RuntimeLifecyclePhase::Uninitialized | RuntimeLifecyclePhase::Shutdown => false,
+        #[cfg(panic = "unwind")]
+        RuntimeLifecyclePhase::Failed => false,
     }
 }
 
@@ -1463,8 +1475,13 @@ fn runtime_init() -> u64 {
                 trace_runtime_init("already_initialized");
                 return 1;
             }
-            RuntimeLifecyclePhase::Shutdown | RuntimeLifecyclePhase::Failed => {
+            RuntimeLifecyclePhase::Shutdown => {
                 trace_runtime_init("shutdown_complete");
+                return 0;
+            }
+            #[cfg(panic = "unwind")]
+            RuntimeLifecyclePhase::Failed => {
+                trace_runtime_init("lifecycle_failed");
                 return 0;
             }
             RuntimeLifecyclePhase::Finalizing { owner: active, .. } if active == owner => {
@@ -1581,8 +1598,9 @@ fn runtime_shutdown() -> u64 {
         }
         RuntimeLifecyclePhase::Uninitialized
         | RuntimeLifecyclePhase::Initializing { .. }
-        | RuntimeLifecyclePhase::Shutdown
-        | RuntimeLifecyclePhase::Failed => return 0,
+        | RuntimeLifecyclePhase::Shutdown => return 0,
+        #[cfg(panic = "unwind")]
+        RuntimeLifecyclePhase::Failed => return 0,
     };
     debug_assert_eq!(runtime_ready_ptr(), Some(ptr));
     let active_executions = close_runtime_execution_admission();
@@ -1765,6 +1783,7 @@ pub(crate) fn molt_runtime_reset_for_testing() {
     );
     let lifecycle = runtime_lifecycle();
     let mut phase = lifecycle.phase.lock().unwrap();
+    #[cfg(panic = "unwind")]
     assert_ne!(
         *phase,
         RuntimeLifecyclePhase::Failed,
@@ -1794,6 +1813,7 @@ mod tests {
     /// failure instead of unwinding through C (which aborts the process and
     /// hides every later result). Each mode runs in a child process because the
     /// failed lifecycle is process-terminal by design.
+    #[cfg(panic = "unwind")]
     #[test]
     fn lifecycle_ffi_panics_fail_closed_without_unwinding() {
         const MODE: &str = "MOLT_TEST_LIFECYCLE_FFI_PANIC";

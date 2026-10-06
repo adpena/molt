@@ -741,7 +741,7 @@ pub(crate) fn ensure_persistent_runtime_execution() {
     });
 }
 
-#[cfg(test)]
+#[cfg(all(test, panic = "unwind"))]
 pub(crate) fn inject_shutdown_drain_drop_panic() {
     RUNTIME_EXECUTION_SHUTDOWN_DROP_TEST_PANIC.with(|pending| pending.set(true));
 }
