@@ -2446,6 +2446,7 @@ pub extern "C" fn molt_gpu_kernel_launch(
                     block_dim,
                     grid_dim: grid,
                 },
+                // molt_call_bind consumes the builder on every path.
                 || molt_call_bind(callable_bits, call_builder_bits),
             );
             if exception_pending(_py) {
@@ -2454,7 +2455,6 @@ pub extern "C" fn molt_gpu_kernel_launch(
                 let kind = string_obj_to_owned(obj_from_bits(kind_bits))
                     .unwrap_or_else(|| "<exc>".to_string());
                 dec_ref_bits(_py, kind_bits);
-                dec_ref_bits(_py, call_builder_bits);
                 if trace_launch {
                     eprintln!("[molt gpu launch] tid={} exception={}", tid, kind);
                 }
@@ -2467,7 +2467,6 @@ pub extern "C" fn molt_gpu_kernel_launch(
             if trace_launch {
                 eprintln!("[molt gpu launch] tid={} ok", tid);
             }
-            dec_ref_bits(_py, call_builder_bits);
             dec_ref_bits(_py, out_bits);
         }
         MoltObject::none().bits()
