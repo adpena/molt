@@ -880,7 +880,7 @@ pub fn install_memory_backstop(limit_bytes: usize) -> Option<usize> {
     let backstop = footprint.saturating_add(memory_backstop_budget(limit_bytes));
     // Clamp to the rlimit value type so the cast below cannot truncate.
     let rlim_value = backstop.min(libc::rlim_t::MAX as usize) as libc::rlim_t;
-    tighten_rlimit_data_soft(rlim_value).then_some(rlim_value as usize)
+    tighten_rlimit_data_soft(rlim_value).map(|soft| soft as usize)
 }
 
 /// No committed-memory rlimit exists on this target; the in-VM tracker
@@ -909,10 +909,9 @@ pub fn linux_data_footprint_bytes() -> Option<usize> {
 /// Tighten the `RLIMIT_DATA` soft limit to `requested`, never loosening it.
 ///
 /// The soft limit is clamped to the inherited hard limit, and a host-imposed
-/// tighter soft bound is left untouched. Returns whether the soft limit ends up
-/// at (or already below) the requested value.
+/// tighter soft bound is left untouched. Returns the soft limit now in force.
 #[cfg(target_os = "linux")]
-fn tighten_rlimit_data_soft(requested: libc::rlim_t) -> bool {
+fn tighten_rlimit_data_soft(requested: libc::rlim_t) -> Option<libc::rlim_t> {
     let mut current = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
@@ -920,7 +919,7 @@ fn tighten_rlimit_data_soft(requested: libc::rlim_t) -> bool {
     // SAFETY: getrlimit/setrlimit with a valid resource id and an initialized
     // rlimit are sound.
     if unsafe { libc::getrlimit(libc::RLIMIT_DATA, &mut current) } != 0 {
-        return false;
+        return None;
     }
     let effective = if current.rlim_max == libc::RLIM_INFINITY {
         requested
@@ -928,13 +927,13 @@ fn tighten_rlimit_data_soft(requested: libc::rlim_t) -> bool {
         requested.min(current.rlim_max)
     };
     if current.rlim_cur != libc::RLIM_INFINITY && current.rlim_cur <= effective {
-        return true;
+        return Some(current.rlim_cur);
     }
     let tightened = libc::rlimit {
         rlim_cur: effective,
         rlim_max: current.rlim_max,
     };
-    unsafe { libc::setrlimit(libc::RLIMIT_DATA, &tightened) == 0 }
+    (unsafe { libc::setrlimit(libc::RLIMIT_DATA, &tightened) } == 0).then_some(effective)
 }
 
 // ---------------------------------------------------------------------------
@@ -1317,17 +1316,20 @@ mod tests {
         // tests/resource_enforcement.rs. The budget is measured from the live
         // footprint, so sanitizer shadow or allocator arenas reserved before
         // the call never make the install refuse.
+        // Sibling test threads allocate and free concurrently, so the
+        // footprint the helper measures is not reproducible here; the
+        // installed limit must still exceed the budget and be the one in force.
         let tracker_limit = 1usize << 40;
-        let footprint = linux_data_footprint_bytes().expect("VmData is readable on Linux");
+        assert!(linux_data_footprint_bytes().is_some_and(|bytes| bytes > 0));
         let installed = install_memory_backstop(tracker_limit)
             .expect("RLIMIT_DATA backstop installs above the live footprint");
-        assert!(installed >= footprint + memory_backstop_budget(tracker_limit));
+        assert!(installed > memory_backstop_budget(tracker_limit));
         let mut now = libc::rlimit {
             rlim_cur: 0,
             rlim_max: 0,
         };
         assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_DATA, &mut now) }, 0);
-        assert!(now.rlim_cur != libc::RLIM_INFINITY && now.rlim_cur as usize <= installed);
+        assert_eq!(now.rlim_cur as usize, installed);
     }
 
     #[cfg(not(target_os = "linux"))]
