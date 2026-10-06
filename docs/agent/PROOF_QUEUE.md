@@ -972,7 +972,12 @@ environment names. Ambient pytest injection, package-index controls,
 unclassified overrides, URL credentials, and secret-bearing names are rejected
 or omitted. Queue-owned `PYTHONDONTWRITEBYTECODE`, `PYTHONNOUSERSITE`, and the
 Node global-search-path policy are canonical inputs; `uv --no-config` prevents
-user or host configuration from silently changing resolution. Receipts store
+user or host configuration from silently changing resolution. The Python
+bootstrap argv also carries `-B`, because an admitted `-E`/`-I` payload makes
+the interpreter ignore that variable while site still imports the repository
+startup adapter from custody-inventoried source; without it an isolated
+child rewrote bytecode caches beside the admitted sources and turned its own
+row into `toolchain-frozen-manifest-changed` non-evidence. Receipts store
 names, classes, and keyed fingerprints for every
 passed value, never plaintext values; queued logs and notebooks expose override
 names only.
