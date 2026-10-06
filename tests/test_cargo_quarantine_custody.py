@@ -1677,8 +1677,18 @@ def test_darwin_native_argv_decoder_preserves_boundaries_and_raw_bytes():
             ctypes.memmove(buffer, raw, len(raw))
         return 0
 
+    def unused(*_args: object) -> int:
+        raise AssertionError("argv decoding must not enumerate or size processes")
+
     authority = model._DarwinProcessAuthority(
-        ctypes, None, None, object, lambda *args: 0, sysctl
+        ctypes=ctypes,
+        libproc=None,
+        libsystem=None,
+        proc_bsd_info_type=object,
+        proc_task_info_type=object,
+        proc_pidinfo=lambda *_args: 0,
+        proc_listallpids=unused,
+        sysctl=sysctl,
     )
     assert authority.argv(7) == tuple(
         arg.decode(errors="surrogateescape") for arg in wanted
@@ -1718,16 +1728,7 @@ def test_darwin_sampler_to_cargo_observer_preserves_native_authority(
     monkeypatch.setattr(model.sys, "platform", "darwin")
     monkeypatch.setattr(model, "_darwin_process_authority_cache", Authority())
     monkeypatch.setattr(model, "_darwin_proc_metadata", birth)
-    monkeypatch.setattr(
-        model.subprocess,
-        "run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(
-            [],
-            0,
-            "100 1 100 64 Thu Jul 17 07:15:01 2026 cargo\n101 100 101 64 Thu Jul 17 07:15:01 2026 rustc\n",
-            "",
-        ),
-    )
+    monkeypatch.setattr(model, "_darwin_proc_table", lambda: {100: 64, 101: 64})
     samples = model.sample_processes_posix()
     identities = {pid: model.ProcessIdentity(row[2]) for pid, row in metadata.items()}
     observed = cargo.observe_owned_incremental_state(samples, set(samples), identities)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping, Sequence
-import contextlib
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
@@ -626,11 +625,16 @@ def parse_process_table_with_start(text: str) -> dict[int, ProcessSample]:
     return samples
 
 
-def _linux_proc_stat_identity(
+def _linux_proc_stat_row(
     pid: int,
     proc_root: Path = Path("/proc"),
-) -> tuple[int, int, int, str] | None:
-    """Read parent, group, start marker, and comm from one `/proc` stat row."""
+) -> tuple[tuple[int, int, int, str], int] | None:
+    """Read one `/proc` stat row: the instance identity plus resident kB.
+
+    The identity is (parent, group, start marker, comm). Field 24 carries the
+    same resident-set counter that `status` reports as `VmRSS`, so one read
+    serves both the ancestry sample and the memory accounting.
+    """
 
     if pid <= 0 or (
         not sys.platform.startswith("linux") and proc_root == Path("/proc")
@@ -645,6 +649,7 @@ def _linux_proc_stat_identity(
         ppid = int(tail[1])
         pgid = int(tail[2])
         start_ticks = int(tail[19])
+        rss_pages = int(tail[21])
         ticks_per_second = (
             int(os.sysconf("SC_CLK_TCK")) if hasattr(os, "sysconf") else 100
         )
@@ -652,12 +657,28 @@ def _linux_proc_stat_identity(
         return None
     if start_ticks < 0 or ticks_per_second <= 0:
         return None
-    return (
+    identity = (
         max(0, ppid),
         pgid,
         start_ticks * 1_000_000_000 // ticks_per_second,
         command,
     )
+    return identity, max(0, rss_pages) * _LINUX_PAGE_KB
+
+
+_LINUX_PAGE_KB = max(
+    1, (os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096) // 1024
+)
+
+
+def _linux_proc_stat_identity(
+    pid: int,
+    proc_root: Path = Path("/proc"),
+) -> tuple[int, int, int, str] | None:
+    """Read parent, group, start marker, and comm from one `/proc` stat row."""
+
+    row = _linux_proc_stat_row(pid, proc_root)
+    return None if row is None else row[0]
 
 
 def _linux_proc_started_at_ns(pid: int) -> int | None:
@@ -689,20 +710,8 @@ def _linux_proc_command(
 
 
 def _linux_proc_rss_kb(pid: int, proc_root: Path = Path("/proc")) -> int:
-    try:
-        lines = (
-            (proc_root / str(pid) / "status").read_text(encoding="utf-8").splitlines()
-        )
-    except OSError:
-        return 0
-    for line in lines:
-        if not line.startswith("VmRSS:"):
-            continue
-        fields = line.split()
-        if len(fields) >= 2:
-            with contextlib.suppress(ValueError):
-                return max(0, int(fields[1]))
-    return 0
+    row = _linux_proc_stat_row(pid, proc_root)
+    return 0 if row is None else row[1]
 
 
 def sample_processes_linux_proc(
@@ -713,8 +722,6 @@ def sample_processes_linux_proc(
 ) -> dict[int, ProcessSample]:
     """Sample Linux processes with instance-bound ancestry and identity."""
 
-    if stat_reader is None:
-        stat_reader = _linux_proc_stat_identity
     samples: dict[int, ProcessSample] = {}
     try:
         pids = [
@@ -734,14 +741,21 @@ def sample_processes_linux_proc(
                 raise ProcessSnapshotError(
                     f"Linux boot-time clock is unavailable: {exc}"
                 ) from exc
+    injected_reader = stat_reader is not None
+    if stat_reader is None:
+        stat_reader = _linux_proc_stat_identity
     for pid in pids:
-        before = stat_reader(pid, proc_root)
+        if injected_reader:
+            before = stat_reader(pid, proc_root)
+            rss_kb = _linux_proc_rss_kb(pid, proc_root)
+        else:
+            row = _linux_proc_stat_row(pid, proc_root)
+            before, rss_kb = (None, 0) if row is None else row
         if before is None:
             continue
         ppid, pgid, started_at_ns, comm = before
         argv = _linux_proc_argv(pid, proc_root)
         command = shlex.join(argv) if argv is not None else comm
-        rss_kb = _linux_proc_rss_kb(pid, proc_root)
         after = stat_reader(pid, proc_root)
         if after != before:
             continue
@@ -768,8 +782,30 @@ class _DarwinProcessAuthority:
     libproc: Any
     libsystem: Any
     proc_bsd_info_type: type[Any]
+    proc_task_info_type: type[Any]
     proc_pidinfo: Callable[..., int]
+    proc_listallpids: Callable[..., int]
     sysctl: Callable[..., int]
+
+    def pids(self) -> list[int]:
+        """Enumerate every live pid in one libproc call."""
+        count = self.proc_listallpids(None, 0)
+        if count <= 0:
+            raise OSError("proc_listallpids reported no processes")
+        buffer = (self.ctypes.c_int * (count + 64))()
+        returned = self.proc_listallpids(buffer, self.ctypes.sizeof(buffer))
+        if returned <= 0:
+            raise OSError("proc_listallpids failed")
+        return [int(buffer[index]) for index in range(returned) if buffer[index] > 0]
+
+    def resident_kb(self, pid: int) -> int | None:
+        """Resident set in kB; None when the kernel withholds task info."""
+        info = self.proc_task_info_type()
+        size = self.ctypes.sizeof(info)
+        returned = self.proc_pidinfo(pid, 4, 0, self.ctypes.byref(info), size)
+        if returned != size:
+            return None
+        return int(info.pti_resident_size) // 1024
 
     def metadata(self, pid: int) -> tuple[int, int, int, str] | None:
         info = self.proc_bsd_info_type()
@@ -867,6 +903,28 @@ def _load_darwin_process_authority() -> _DarwinProcessAuthority:
             ("pbi_start_tvusec", ctypes.c_uint64),
         ]
 
+    class ProcTaskInfo(ctypes.Structure):
+        _fields_ = [
+            ("pti_virtual_size", ctypes.c_uint64),
+            ("pti_resident_size", ctypes.c_uint64),
+            ("pti_total_user", ctypes.c_uint64),
+            ("pti_total_system", ctypes.c_uint64),
+            ("pti_threads_user", ctypes.c_uint64),
+            ("pti_threads_system", ctypes.c_uint64),
+            ("pti_policy", ctypes.c_int32),
+            ("pti_faults", ctypes.c_int32),
+            ("pti_pageins", ctypes.c_int32),
+            ("pti_cow_faults", ctypes.c_int32),
+            ("pti_messages_sent", ctypes.c_int32),
+            ("pti_messages_received", ctypes.c_int32),
+            ("pti_syscalls_mach", ctypes.c_int32),
+            ("pti_syscalls_unix", ctypes.c_int32),
+            ("pti_csw", ctypes.c_int32),
+            ("pti_threadnum", ctypes.c_int32),
+            ("pti_numrunning", ctypes.c_int32),
+            ("pti_priority", ctypes.c_int32),
+        ]
+
     libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
     proc_pidinfo = libproc.proc_pidinfo
     proc_pidinfo.argtypes = [
@@ -877,6 +935,9 @@ def _load_darwin_process_authority() -> _DarwinProcessAuthority:
         ctypes.c_int,
     ]
     proc_pidinfo.restype = ctypes.c_int
+    proc_listallpids = libproc.proc_listallpids
+    proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    proc_listallpids.restype = ctypes.c_int
 
     libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
     sysctl = libsystem.sysctl
@@ -894,7 +955,9 @@ def _load_darwin_process_authority() -> _DarwinProcessAuthority:
         libproc=libproc,
         libsystem=libsystem,
         proc_bsd_info_type=ProcBsdInfo,
+        proc_task_info_type=ProcTaskInfo,
         proc_pidinfo=proc_pidinfo,
+        proc_listallpids=proc_listallpids,
         sysctl=sysctl,
     )
 
@@ -921,6 +984,36 @@ def _darwin_process_authority() -> _DarwinProcessAuthority | None:
                     cached = None
                 _darwin_process_authority_cache = cached
     return None if cached is None else cast(_DarwinProcessAuthority, cached)
+
+
+def _darwin_proc_table() -> dict[int, int]:
+    """Enumerate every live pid with its resident kB through libproc.
+
+    One ``proc_listallpids`` call replaces the ``ps`` subprocess and its hard
+    timeout. ``PROC_PIDTASKINFO`` is uid-restricted, so another user's
+    process carries zero resident kB; the guard never sizes those, because
+    global RSS sums only Molt-owned process groups.
+    """
+
+    authority = _darwin_process_authority()
+    if authority is None:
+        raise ProcessSnapshotError("Darwin process authority is unavailable")
+    try:
+        pids = authority.pids()
+    except (AttributeError, OSError, TypeError, ValueError) as exc:
+        raise ProcessSnapshotError(f"Darwin process enumeration failed: {exc}") from exc
+    table: dict[int, int] = {}
+    for pid in pids:
+        if type(pid) is not int or pid <= 0:
+            continue
+        try:
+            resident_kb = authority.resident_kb(pid)
+        except (AttributeError, OSError, TypeError, ValueError):
+            resident_kb = None
+        table[pid] = 0 if resident_kb is None else max(0, int(resident_kb))
+    if not table:
+        raise ProcessSnapshotError("Darwin process enumeration contained no rows")
+    return table
 
 
 def _darwin_proc_metadata(pid: int) -> tuple[int, int, int, str] | None:
@@ -1025,6 +1118,8 @@ def parse_windows_process_snapshot_rows(
 def sample_processes_posix() -> dict[int, ProcessSample]:
     if sys.platform.startswith("linux"):
         return sample_processes_linux_proc()
+    if sys.platform == "darwin":
+        return _sample_processes_darwin()
     try:
         result = subprocess.run(
             ["ps", "-axo", "pid=,ppid=,pgid=,rss=,lstart=,command="],
@@ -1041,54 +1136,62 @@ def sample_processes_posix() -> dict[int, ProcessSample]:
         raise ProcessSnapshotError(
             f"POSIX process snapshot failed with exit code {result.returncode}"
         )
-    samples = parse_process_table_with_start(result.stdout)
-    if sys.platform == "darwin":
-        bound_samples: dict[int, ProcessSample] = {}
-        for pid, sample in samples.items():
-            before = _darwin_proc_metadata(pid)
-            argv = _darwin_proc_argv(pid)
-            after = _darwin_proc_metadata(pid)
-            if before is None or before != after or argv is None:
-                bound_samples[pid] = ProcessSample(
-                    pid=pid,
-                    ppid=0,
-                    rss_kb=sample.rss_kb,
-                    command=sample.command,
-                    pgid=sample.pgid,
-                    elapsed_sec=sample.elapsed_sec,
-                    started_at_ns=None,
-                    argv=(),
-                )
-                continue
-            ppid, pgid, started_at_ns, _native_name = before
-            bound_samples[pid] = ProcessSample(
-                pid=pid,
-                ppid=max(0, ppid),
-                rss_kb=sample.rss_kb,
-                command=shlex.join(argv),
-                pgid=pgid,
-                elapsed_sec=sample.elapsed_sec,
-                started_at_ns=started_at_ns,
-                argv=argv,
-            )
-        samples = bound_samples
-    else:
-        # Other BSDs retain observability but not signal authority until a
-        # native subsecond creation marker is implemented for that kernel.
-        samples = {
-            pid: ProcessSample(
-                pid=sample.pid,
-                ppid=sample.ppid,
-                rss_kb=sample.rss_kb,
-                command=sample.command,
-                pgid=sample.pgid,
-                elapsed_sec=sample.elapsed_sec,
-                started_at_ns=None,
-            )
-            for pid, sample in samples.items()
-        }
+    # Other BSDs retain observability but not signal authority until a
+    # native subsecond creation marker is implemented for that kernel.
+    samples = {
+        pid: ProcessSample(
+            pid=sample.pid,
+            ppid=sample.ppid,
+            rss_kb=sample.rss_kb,
+            command=sample.command,
+            pgid=sample.pgid,
+            elapsed_sec=sample.elapsed_sec,
+            started_at_ns=None,
+        )
+        for pid, sample in parse_process_table_with_start(result.stdout).items()
+    }
     if not samples:
         raise ProcessSnapshotError("POSIX process snapshot contained no usable rows")
+    return samples
+
+
+def _sample_processes_darwin() -> dict[int, ProcessSample]:
+    """Instance-bound Darwin samples without a `ps` subprocess.
+
+    Each row reads its BSD metadata before and after argv so a pid recycled
+    mid-read cannot bind a stale instance; such rows keep their resident kB
+    but carry no ancestry or creation marker, exactly as before.
+    """
+
+    now_ns = time.time_ns()
+    samples: dict[int, ProcessSample] = {}
+    for pid, rss_kb in _darwin_proc_table().items():
+        before = _darwin_proc_metadata(pid)
+        argv = _darwin_proc_argv(pid)
+        after = _darwin_proc_metadata(pid)
+        if before is None or before != after or argv is None:
+            samples[pid] = ProcessSample(
+                pid=pid,
+                ppid=0,
+                rss_kb=rss_kb,
+                command=f"pid:{pid}" if before is None else before[3],
+                pgid=None if before is None else before[1],
+                elapsed_sec=None,
+                started_at_ns=None,
+                argv=(),
+            )
+            continue
+        ppid, pgid, started_at_ns, _native_name = before
+        samples[pid] = ProcessSample(
+            pid=pid,
+            ppid=max(0, ppid),
+            rss_kb=rss_kb,
+            command=shlex.join(argv),
+            pgid=pgid,
+            elapsed_sec=max(0, (now_ns - started_at_ns) // 1_000_000_000),
+            started_at_ns=started_at_ns,
+            argv=argv,
+        )
     return samples
 
 

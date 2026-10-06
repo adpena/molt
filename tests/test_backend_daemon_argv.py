@@ -84,8 +84,18 @@ def test_darwin_kernel_argv_preserves_spaces_quotes_and_empty_arguments():
             ctypes.memmove(output, raw, len(raw))
         return 0
 
+    def unused(*_args: object) -> int:
+        raise AssertionError("argv decoding must not enumerate or size processes")
+
     authority = model._DarwinProcessAuthority(
-        ctypes, None, None, object, lambda *_: 0, sysctl
+        ctypes=ctypes,
+        libproc=None,
+        libsystem=None,
+        proc_bsd_info_type=object,
+        proc_task_info_type=object,
+        proc_pidinfo=lambda *_args: 0,
+        proc_listallpids=unused,
+        sysctl=sysctl,
     )
     assert authority.argv(12) == argv
     assert tuple(shlex.split(authority.command(12))) == argv

@@ -103,22 +103,80 @@ def test_sample_processes_uses_windows_sampler_on_nt(monkeypatch) -> None:
     assert module.sample_processes() == {7: sample}
 
 
-@pytest.mark.skipif(
-    sys.platform.startswith("linux"),
-    reason="Linux process sampling uses native /proc rather than ps",
-)
 def test_sample_processes_posix_missing_ps_is_typed_failure(monkeypatch) -> None:
+    """Other BSDs still shell out to ps; its absence is a typed snapshot failure."""
     module = process_custody
 
     def missing_ps(*args, **kwargs):  # noqa: ANN002, ANN003
         raise FileNotFoundError("ps")
 
-    monkeypatch.setattr(module.subprocess, "run", missing_ps)
+    monkeypatch.setattr(process_model.sys, "platform", "freebsd14")
+    monkeypatch.setattr(process_model.subprocess, "run", missing_ps)
 
     with pytest.raises(
         windows_snapshot.ProcessSnapshotError, match="POSIX process snapshot"
     ):
         module.sample_processes_posix()
+
+
+def test_darwin_sampler_never_shells_out_and_types_enumeration_failure(
+    monkeypatch,
+) -> None:
+    class FakeAuthority:
+        def pids(self) -> list[int]:
+            raise OSError("proc_listallpids failed")
+
+    def forbidden_run(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("Darwin sampler must not shell out to ps")
+
+    monkeypatch.setattr(process_model.sys, "platform", "darwin")
+    monkeypatch.setattr(process_model.subprocess, "run", forbidden_run)
+    monkeypatch.setattr(
+        process_model,
+        "_darwin_process_authority_cache",
+        process_model._DARWIN_PROCESS_AUTHORITY_UNSET,
+    )
+    monkeypatch.setattr(process_model, "_load_darwin_process_authority", FakeAuthority)
+
+    with pytest.raises(
+        windows_snapshot.ProcessSnapshotError, match="Darwin process enumeration failed"
+    ):
+        process_custody.sample_processes_posix()
+
+
+def test_darwin_sampler_sizes_every_listed_pid_and_withholds_foreign_rss(
+    monkeypatch,
+) -> None:
+    class FakeAuthority:
+        def pids(self) -> list[int]:
+            return [200, 300]
+
+        def resident_kb(self, pid: int) -> int | None:
+            return 64 if pid == 200 else None
+
+        def metadata(self, pid: int) -> tuple[int, int, int, str] | None:
+            return (100, pid, 1_000, "node") if pid == 200 else None
+
+        def argv(self, pid: int) -> tuple[str, ...] | None:
+            return ("node", "worker.js") if pid == 200 else None
+
+    monkeypatch.setattr(process_model.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        process_model,
+        "_darwin_process_authority_cache",
+        process_model._DARWIN_PROCESS_AUTHORITY_UNSET,
+    )
+    monkeypatch.setattr(process_model, "_load_darwin_process_authority", FakeAuthority)
+
+    samples = process_custody.sample_processes_posix()
+
+    assert samples[200].rss_kb == 64
+    assert samples[200].ppid == 100
+    assert samples[200].command == "node worker.js"
+    assert samples[300].rss_kb == 0
+    assert samples[300].ppid == 0
+    assert samples[300].command == "pid:300"
+    assert samples[300].started_at_ns is None
 
 
 def test_darwin_process_authority_binds_once_for_all_pid_reads(monkeypatch) -> None:
@@ -159,7 +217,9 @@ def test_darwin_process_authority_retains_one_library_binding_set(
         argtypes = None
         restype = None
 
-    libproc = SimpleNamespace(proc_pidinfo=FakeFunction())
+    libproc = SimpleNamespace(
+        proc_pidinfo=FakeFunction(), proc_listallpids=FakeFunction()
+    )
     libsystem = SimpleNamespace(sysctl=FakeFunction())
     loads: list[str] = []
 
@@ -218,14 +278,7 @@ def test_darwin_cached_authority_preserves_bound_command_and_identity(
         "_load_darwin_process_authority",
         lambda: authority,
     )
-    monkeypatch.setattr(
-        process_model.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0,
-            stdout=("200 1 200 64 Thu Jul 17 07:15:01 2026 node placeholder.js\n"),
-        ),
-    )
+    monkeypatch.setattr(process_model, "_darwin_proc_table", lambda: {200: 64})
 
     sample = process_model.sample_processes_posix()[200]
 
@@ -266,14 +319,7 @@ def test_darwin_cached_authority_keeps_reuse_fail_closed(monkeypatch) -> None:
         "_load_darwin_process_authority",
         FakeAuthority,
     )
-    monkeypatch.setattr(
-        process_model.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0,
-            stdout="200 1 200 64 Thu Jul 17 07:15:01 2026 node codex.js\n",
-        ),
-    )
+    monkeypatch.setattr(process_model, "_darwin_proc_table", lambda: {200: 64})
 
     sample = process_model.sample_processes_posix()[200]
 
