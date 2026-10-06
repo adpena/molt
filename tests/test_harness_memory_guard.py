@@ -242,6 +242,10 @@ def test_limits_from_env_prefers_harness_prefix(monkeypatch) -> None:
     monkeypatch.setenv("MOLT_BENCH_GLOBAL_RSS_LIMIT_GB", "7")
     monkeypatch.setenv("MOLT_BENCH_CHILD_RLIMIT_GB", "6")
     monkeypatch.setenv("MOLT_BENCH_MEMORY_GUARD_POLL_SEC", "0.05")
+    # Pin the host model: explicit limits are clamped to plausible host
+    # memory, so an unpinned oracle fails on small hosts (an 8 GiB VM).
+    monkeypatch.setenv("MOLT_BENCH_TOTAL_MEMORY_GB", "128")
+    monkeypatch.setenv("MOLT_BENCH_MEM_AVAILABLE_GB", "96")
 
     limits = harness_memory_guard.limits_from_env("MOLT_BENCH")
 
@@ -473,15 +477,14 @@ def test_limits_from_env_merges_parent_guard_controls(monkeypatch) -> None:
     monkeypatch.setenv("MOLT_MEMORY_GUARD", "0")
     monkeypatch.setenv("MOLT_MAX_PROCESS_RSS_GB", "6")
 
-    # Pin the host memory facts: the live clamp would otherwise cap the explicit
-    # 6 GB on a small host (a 12 GiB VM yielded 5.07).
     limits = harness_memory_guard.limits_from_env(
         "MOLT_BENCH",
         {
             "PATH": "/usr/bin",
             "MOLT_BENCH_MEMORY_GUARD": "1",
-            "MOLT_BENCH_TOTAL_MEMORY_GB": "64",
-            "MOLT_BENCH_MEM_AVAILABLE_GB": "48",
+            # Pinned host model: see test_limits_from_env_prefers_harness_prefix.
+            "MOLT_BENCH_TOTAL_MEMORY_GB": "128",
+            "MOLT_BENCH_MEM_AVAILABLE_GB": "96",
         },
     )
 

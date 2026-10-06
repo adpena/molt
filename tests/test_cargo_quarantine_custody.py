@@ -23,6 +23,7 @@ from tools.memory_guard_core import cargo_quarantine as cargo
 from tools.memory_guard_core.process_model import process_identity
 from tests.process_guard_common import (
     close_owned_test_process,
+    install_module_os_view,
     run_custody_subject_process,
     start_owned_test_process,
 )
@@ -132,6 +133,14 @@ def observation(path):
     return cargo.CargoIncrementalObservation(
         90051, 300, str(path if path.name == "incremental" else path.parent), 90050, 200
     )
+
+
+@pytest.fixture(autouse=True)
+def quarantine_uses_a_private_os(monkeypatch):
+    """Every ``os`` patch in this file stays inside the custody modules."""
+    from tools.memory_guard_core import process_model, windows_snapshot
+
+    install_module_os_view(monkeypatch, cargo, process_model, windows_snapshot)
 
 
 @pytest.fixture(autouse=True)

@@ -304,3 +304,32 @@ def test_cleanup_failure_is_attached_without_replacing_primary() -> None:
         }
     else:  # pragma: no cover - assertion clarity
         raise AssertionError("expected TimeoutExpired")
+
+
+def test_module_os_view_keeps_patches_out_of_the_process_wide_os(monkeypatch):
+    import os
+    from pathlib import Path
+
+    from molt import file_locks
+    from tests.process_guard_common import install_module_os_view
+    from tools.memory_guard_core import process_custody
+
+    real_pid = os.getpid()
+    real_name = os.name
+    other_name = "posix" if real_name == "nt" else "nt"
+    view = install_module_os_view(monkeypatch, process_custody, name=other_name)
+    monkeypatch.setattr(process_custody.os, "getpid", lambda: 999)
+    monkeypatch.delattr(process_custody.os, "killpg", raising=False)
+
+    assert process_custody.os is view
+    assert process_custody.os.getpid() == 999
+    assert process_custody.os.name == other_name
+    assert not hasattr(process_custody.os, "killpg")
+    assert process_custody.os.environ is os.environ
+    # Host consumers keep the real module: pathlib still builds host paths
+    # and file-lock ownership still reads the real process id.
+    assert os.name == real_name and os.getpid() == real_pid
+    assert file_locks.os.getpid() == real_pid
+    assert Path(".").resolve().is_absolute()
+    monkeypatch.undo()
+    assert process_custody.os is os

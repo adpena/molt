@@ -20,6 +20,61 @@ from molt.cargo_execution_policy import (
 )
 
 
+class ModuleView:
+    """One test's view of a shared module, installed only in modules under test.
+
+    Process-custody tests replace ``os.getpid``, ``os.kill``, ``os.name`` and
+    ``subprocess.Popen``, and remove ``os.killpg``. Those modules are
+    process-wide: pytest and pathlib read ``os.name`` while a test runs (a
+    spoofed name makes ``Path()`` raise and aborts the session), and the
+    session sentinel's thread launches ``ps`` and records file-lock ownership
+    with ``os.getpid()``. A patch or deletion on this view reaches only the
+    modules it is installed in; every other reader sees the real module.
+    """
+
+    def __init__(self, real: object, **overrides: Any) -> None:
+        object.__setattr__(self, "_real", real)
+        object.__setattr__(self, "_hidden", set())
+        for attr, value in overrides.items():
+            object.__setattr__(self, attr, value)
+
+    def __getattr__(self, attr: str) -> Any:
+        if attr in self._hidden:
+            raise AttributeError(attr)
+        return getattr(self._real, attr)
+
+    def __setattr__(self, attr: str, value: Any) -> None:
+        self._hidden.discard(attr)
+        object.__setattr__(self, attr, value)
+
+    def __delattr__(self, attr: str) -> None:
+        if attr in self.__dict__:
+            object.__delattr__(self, attr)
+        elif attr in self._hidden or not hasattr(self._real, attr):
+            raise AttributeError(attr)
+        self._hidden.add(attr)
+
+
+def install_module_view(
+    monkeypatch: Any, attribute: str, real: object, *modules: object, **overrides: Any
+) -> ModuleView:
+    """Give ``modules`` one shared private view of ``real`` for the current test."""
+
+    view = ModuleView(real, **overrides)
+    for module in modules:
+        monkeypatch.setattr(module, attribute, view)
+    return view
+
+
+def install_module_os_view(
+    monkeypatch: Any, *modules: object, name: str | None = None
+) -> ModuleView:
+    """Give ``modules`` one shared private ``os`` view for the current test."""
+
+    overrides = {} if name is None else {"name": name}
+    return install_module_view(monkeypatch, "os", os, *modules, **overrides)
+
+
 class GuardedProcessRole(str, Enum):
     """Orthogonal operation role for a suite-family process guard."""
 

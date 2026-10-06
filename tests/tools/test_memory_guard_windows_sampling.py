@@ -15,6 +15,9 @@ from tools.memory_guard_core import process_custody
 from tools.memory_guard_core import windows_snapshot
 from tools.memory_guard_core import process_model
 
+import molt.pytest_memory_guard_bootstrap as pytest_memory_guard_bootstrap
+from tests.process_guard_common import install_module_os_view
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "tools" / "memory_guard.py"
@@ -32,10 +35,15 @@ def _load_memory_guard():
     return module
 
 
-def _set_module_os_name(monkeypatch, module, name: str = "nt") -> None:
-    # pathlib and other host consumers must keep the real os module unchanged.
-    monkeypatch.setattr(
-        module, "os", SimpleNamespace(**{**vars(module.os), "name": name})
+@pytest.fixture(autouse=True)
+def custody_modules_use_a_private_os(monkeypatch) -> None:
+    """Every ``os`` patch in this file stays inside the custody modules."""
+    install_module_os_view(
+        monkeypatch,
+        process_custody,
+        process_model,
+        windows_snapshot,
+        pytest_memory_guard_bootstrap,
     )
 
 
@@ -49,7 +57,7 @@ def test_module_platform_simulation_preserves_host_paths(
     witness.write_text("host filesystem", encoding="utf-8")
 
     with monkeypatch.context() as local_patch:
-        _set_module_os_name(local_patch, windows_snapshot, name)
+        install_module_os_view(local_patch, windows_snapshot, name=name)
         assert windows_snapshot.os is not host_os
         assert windows_snapshot.os.name == name
         assert windows_snapshot.os.environ is os.environ
@@ -393,7 +401,7 @@ def test_windows_snapshot_reuses_one_immutable_api_binding() -> None:
 
 
 def test_windows_process_snapshot_hard_timeout_kills_helper(monkeypatch) -> None:
-    _set_module_os_name(monkeypatch, windows_snapshot)
+    install_module_os_view(monkeypatch, windows_snapshot, name="nt")
     monkeypatch.setattr(
         windows_snapshot,
         "_windows_process_snapshot_timeout_sec",
@@ -412,7 +420,7 @@ def test_windows_process_snapshot_hard_timeout_kills_helper(monkeypatch) -> None
 def test_windows_process_snapshot_hard_timeout_decodes_complete_rows(
     monkeypatch,
 ) -> None:
-    _set_module_os_name(monkeypatch, windows_snapshot)
+    install_module_os_view(monkeypatch, windows_snapshot, name="nt")
     monkeypatch.setattr(
         windows_snapshot,
         "_windows_process_snapshot_timeout_sec",
@@ -441,7 +449,7 @@ def test_windows_process_snapshot_hard_timeout_decodes_complete_rows(
 def test_windows_process_snapshot_hard_timeout_rejects_partial_payload(
     monkeypatch,
 ) -> None:
-    _set_module_os_name(monkeypatch, windows_snapshot)
+    install_module_os_view(monkeypatch, windows_snapshot, name="nt")
     monkeypatch.setattr(
         windows_snapshot,
         "_windows_process_snapshot_timeout_sec",
@@ -475,7 +483,7 @@ def test_windows_process_snapshot_hard_timeout_preserves_failure_authority(
     stderr: str,
     message: str,
 ) -> None:
-    _set_module_os_name(monkeypatch, windows_snapshot)
+    install_module_os_view(monkeypatch, windows_snapshot, name="nt")
     monkeypatch.setattr(
         windows_snapshot.subprocess,
         "run",
@@ -526,7 +534,7 @@ def test_windows_process_handle_rss_fails_closed_when_psapi_unavailable(
 ) -> None:
     import ctypes
 
-    _set_module_os_name(monkeypatch, windows_snapshot)
+    install_module_os_view(monkeypatch, windows_snapshot, name="nt")
 
     def missing_psapi(*_args, **_kwargs):
         raise OSError("psapi unavailable")
@@ -539,7 +547,7 @@ def test_windows_process_handle_rss_fails_closed_when_psapi_unavailable(
 def test_windows_process_handle_rss_rejects_invalid_handle_values(
     monkeypatch,
 ) -> None:
-    _set_module_os_name(monkeypatch, windows_snapshot)
+    install_module_os_view(monkeypatch, windows_snapshot, name="nt")
 
     assert windows_snapshot.windows_process_handle_rss_kb(None) is None
     assert windows_snapshot.windows_process_handle_rss_kb("not-a-handle") is None
@@ -639,7 +647,7 @@ def test_windows_wrapper_terminalizes_worker_exit_running_summary(
 def test_harness_batch_process_group_kwargs_hide_windows_console(monkeypatch) -> None:
     import tools.harness_memory_guard as harness_memory_guard
 
-    _set_module_os_name(monkeypatch, harness_memory_guard)
+    install_module_os_view(monkeypatch, harness_memory_guard, name="nt")
     monkeypatch.setattr(
         harness_memory_guard.subprocess,
         "CREATE_NEW_PROCESS_GROUP",
@@ -1402,6 +1410,9 @@ def test_pid_signal_windows_refuses_external_codex_lineage_without_group_net(
     monkeypatch.setattr(
         module, "_current_protected_process_group_ids", lambda _s, **_kw: set()
     )
+    # The loaded guard copy re-exports process_custody's functions; one view
+    # keeps these patches out of the process-wide os module.
+    install_module_os_view(monkeypatch, module, process_custody)
     monkeypatch.setattr(module.os, "getpid", lambda: 99999)
     monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
 
@@ -1569,7 +1580,7 @@ def test_windows_current_guard_child_custody(
         ),
     }
     sent: list[tuple[int, int]] = []
-    _set_module_os_name(monkeypatch, module)
+    install_module_os_view(monkeypatch, module, name="nt")
     monkeypatch.setattr(module.os, "getpid", lambda: 999)
     monkeypatch.setattr(module.os, "kill", lambda pid, sig: sent.append((pid, sig)))
 
@@ -1843,7 +1854,7 @@ def test_all_default_windows_sampling_uses_isolated_authority(monkeypatch, modul
 
 
 def test_windows_native_av_helper_is_typed_failure(monkeypatch):
-    _set_module_os_name(monkeypatch, windows_snapshot)
+    install_module_os_view(monkeypatch, windows_snapshot, name="nt")
     monkeypatch.setattr(
         windows_snapshot.subprocess,
         "run",
@@ -1986,7 +1997,7 @@ def test_windows_enumeration_requires_documented_complete_marker(monkeypatch, er
         invalid_handle_value=-1,
         ProcessEntry32W=Entry,
     )
-    _set_module_os_name(monkeypatch, windows_snapshot)
+    install_module_os_view(monkeypatch, windows_snapshot, name="nt")
     monkeypatch.setattr(windows_snapshot, "_windows_snapshot_api", lambda: api)
     if error == 18:
         rows = windows_snapshot._windows_process_snapshot_rows()
