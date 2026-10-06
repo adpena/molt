@@ -417,6 +417,23 @@ stripping, requests Binaryen debug output, and partitions optimizer caches.
 Final publication removes any remaining debug/name sections under the default
 policy; optimization without preservation may discard them earlier.
 
+**Final link results are content-addressed.** A final link (`tools/wasm_link.py`:
+wasm-ld, post-link transforms, wasm-opt and split-runtime processing) is keyed by
+the bytes of every file it reads, its options, the published linked module name,
+the link tool's source closure, the optimizer identity and
+`MOLT_WASM_DYNAMIC_REQUIRED_EXPORTS` (`src/molt/cli/wasm_final_link_cache.py`).
+Its complete output family is a `final_link` bundle in the shared WASM link cache
+(`$MOLT_CACHE/wasm_link`), so a build into a fresh output directory restores the
+result instead of relinking. The per-output link receipt still skips republishing
+an unchanged deployment in place.
+
+Dev builds keep `wasm-opt -O1 -g`. Measured on `examples/hello.py` (macOS
+arm64, 2026-10-06): the dev link took 24.7-26.2 s with O1 and 22.7 s without it;
+O1 saves 1.66 MB (26.25 MB to 24.59 MB) and the Node run time did not change
+(0.49-0.75 s either way). The cost is the link of the whole 24 MB runtime, which
+the result cache removes for repeat builds (fresh output directory: 38.9-41.4 s
+to 15.2-17.2 s).
+
 This document intentionally does not copy the pass sequences. Consumers obtain
 the exact command-line tuple through `wasm_opt_pipeline()` or
 `wasm_link_policy()` in that module. `WASM_OPT_DEV_DEFAULT` and

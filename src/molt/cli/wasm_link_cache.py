@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import re
 import time
-from typing import Iterator, Mapping
+from typing import Collection, Iterator, Mapping
 
 from molt.cli.atomic_io import _atomic_write_bytes, _atomic_write_json
 from molt.file_locks import _acquire_file_lock, _release_file_lock
@@ -17,8 +17,14 @@ from molt.exact_json import loads_exact
 
 
 WASM_LINK_CACHE_DIRECTORY = "wasm_link"
-WASM_LINK_CACHE_FAMILIES = frozenset({"runtime_tree_shake", "split_app_optimize"})
+WASM_LINK_CACHE_FAMILIES = frozenset(
+    {"runtime_tree_shake", "split_app_optimize", "final_link"}
+)
 WASM_LINK_CACHE_ENTRY_SCHEMA = "molt.wasm-link-cache-entry.v4"
+# A bundle entry holds every output role of one transform (for example the
+# complete private output family of one final link) under one content key.
+WASM_LINK_CACHE_BUNDLE_SCHEMA = "molt.wasm-link-cache-bundle.v1"
+_ROLE_RE = re.compile(r"[a-z][a-z0-9_]*")
 _WASM_LINK_CACHE_ROOT_KEYS = frozenset({"schema", "cache", "payload"})
 _WASM_LINK_CACHE_RECORD_KEYS = frozenset(
     {"family", "transform_schema", "key", "artifact_bytes", "artifact_sha256"}
@@ -36,6 +42,13 @@ class WasmLinkCacheEntry:
     family: str
     schema: str
     key: str
+
+
+@dataclass(frozen=True)
+class WasmLinkCacheBundleRead:
+    files: dict[str, bytes] | None
+    status: str
+    bytes_read: int
 
 
 @dataclass(frozen=True)
@@ -175,5 +188,101 @@ def _invalidate_wasm_link_cache_entry(entry: WasmLinkCacheEntry) -> None:
     for path in (entry.artifact, entry.metadata):
         with contextlib.suppress(OSError):
             path.unlink()
+    with contextlib.suppress(OSError):
+        entry.root.rmdir()
+
+
+def _bundle_role_path(entry: WasmLinkCacheEntry, role: str) -> Path:
+    if _ROLE_RE.fullmatch(role) is None:
+        raise ValueError(f"invalid wasm linker cache bundle role: {role!r}")
+    return entry.root / "roles" / role
+
+
+def _read_wasm_link_cache_bundle(
+    entry: WasmLinkCacheEntry, roles: Collection[str]
+) -> WasmLinkCacheBundleRead:
+    """Read one complete bundle; any missing, extra or changed role is corrupt."""
+
+    if not entry.metadata.is_file():
+        return WasmLinkCacheBundleRead(None, "missing", 0)
+    try:
+        metadata = loads_exact(entry.metadata.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return WasmLinkCacheBundleRead(None, "corrupt", 0)
+    expected_cache = {
+        "family": entry.family,
+        "transform_schema": entry.schema,
+        "key": entry.key,
+    }
+    if (
+        not isinstance(metadata, dict)
+        or set(metadata) != {"schema", "cache", "roles"}
+        or metadata.get("schema") != WASM_LINK_CACHE_BUNDLE_SCHEMA
+        or metadata.get("cache") != expected_cache
+        or not isinstance(metadata.get("roles"), dict)
+        or set(metadata["roles"]) != set(roles)
+    ):
+        return WasmLinkCacheBundleRead(None, "corrupt", 0)
+    files: dict[str, bytes] = {}
+    bytes_read = 0
+    for role, record in metadata["roles"].items():
+        if not isinstance(record, dict) or set(record) != {"bytes", "sha256"}:
+            return WasmLinkCacheBundleRead(None, "corrupt", bytes_read)
+        try:
+            data = _bundle_role_path(entry, role).read_bytes()
+        except (OSError, ValueError):
+            return WasmLinkCacheBundleRead(None, "corrupt", bytes_read)
+        bytes_read += len(data)
+        if (
+            record["bytes"] != len(data)
+            or record["sha256"] != hashlib.sha256(data).hexdigest()
+        ):
+            return WasmLinkCacheBundleRead(None, "corrupt", bytes_read)
+        files[role] = data
+    now = time.time()
+    with contextlib.suppress(OSError):
+        os.utime(entry.root, (now, now))
+    return WasmLinkCacheBundleRead(files, "hit", bytes_read)
+
+
+def _publish_wasm_link_cache_bundle(
+    entry: WasmLinkCacheEntry, files: Mapping[str, bytes]
+) -> None:
+    """Publish role files first and the metadata last, which commits the entry."""
+
+    if not files:
+        raise ValueError("refusing to cache an empty wasm linker bundle")
+    roles = {}
+    for role, data in files.items():
+        path = _bundle_role_path(entry, role)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_bytes(path, data)
+        roles[role] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+    _atomic_write_json(
+        entry.metadata,
+        {
+            "schema": WASM_LINK_CACHE_BUNDLE_SCHEMA,
+            "cache": {
+                "family": entry.family,
+                "transform_schema": entry.schema,
+                "key": entry.key,
+            },
+            "roles": roles,
+        },
+        indent=2,
+        sort_keys=True,
+    )
+
+
+def _invalidate_wasm_link_cache_bundle(entry: WasmLinkCacheEntry) -> None:
+    with contextlib.suppress(OSError):
+        entry.metadata.unlink()
+    roles_root = entry.root / "roles"
+    if roles_root.is_dir():
+        for child in roles_root.iterdir():
+            with contextlib.suppress(OSError):
+                child.unlink()
+        with contextlib.suppress(OSError):
+            roles_root.rmdir()
     with contextlib.suppress(OSError):
         entry.root.rmdir()

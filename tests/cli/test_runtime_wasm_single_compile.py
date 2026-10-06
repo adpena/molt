@@ -1422,7 +1422,7 @@ def test_app_path_freestanding_also_requires_atomic_pair(
 
 
 def test_unlinked_app_path_builds_atomic_runtime_pair_before_staging(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    isolated_molt_cache: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
         nno, "_collect_wasm_module_import_names", lambda *a, **k: {"molt_PyA"}
@@ -1684,6 +1684,7 @@ def _prepare_host_precompile_routing(
 
 
 def test_precompile_build_routes_linked_manifest_to_host_and_consumes_receipt(
+    isolated_molt_cache: Path,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     runtime_fixture_root: RuntimeFixtureRoot,
@@ -1709,6 +1710,7 @@ def test_precompile_build_routes_linked_manifest_to_host_and_consumes_receipt(
 
 
 def test_precompile_deployment_cache_covers_host_outputs_without_rewriting(
+    isolated_molt_cache: Path,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     runtime_fixture_root: RuntimeFixtureRoot,
@@ -1744,6 +1746,7 @@ def test_precompile_deployment_cache_covers_host_outputs_without_rewriting(
     ],
 )
 def test_precompile_build_failures_reach_exact_routing_boundary(
+    isolated_molt_cache: Path,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     runtime_fixture_root: RuntimeFixtureRoot,
