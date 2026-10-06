@@ -559,13 +559,13 @@ unsafe fn molt_guarded_call_dispatch(
         if let Some(result) = unsafe { molt_guarded_call_dispatch_wasm(call_target, args_ptr, n) } {
             return result;
         }
-        return crate::with_gil_entry_nopanic!(_py, {
+        crate::with_gil_entry_nopanic!(_py, {
             raise_exception::<u64>(
                 _py,
                 "RuntimeError",
                 "WASM indirect function call arity exceeds manifest call_indirect max",
             )
-        });
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1103,7 +1103,7 @@ fn missing_direct_call_target(_py: &crate::concurrency::PyToken<'_>, fn_ptr: u64
 unsafe fn direct_call_0(call_target: *const ()) -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        return unsafe { molt_call_indirect0(call_target as usize as u64) as u64 };
+        unsafe { molt_call_indirect0(call_target as usize as u64) as u64 }
     }
     #[cfg(not(target_arch = "wasm32"))]
     unsafe {
@@ -1123,7 +1123,7 @@ unsafe fn direct_call_0(call_target: *const ()) -> u64 {
 unsafe fn direct_call_1(call_target: *const (), a0: u64) -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        return unsafe { molt_call_indirect1(call_target as usize as u64, a0) as u64 };
+        unsafe { molt_call_indirect1(call_target as usize as u64, a0) as u64 }
     }
     #[cfg(not(target_arch = "wasm32"))]
     unsafe {
@@ -1143,7 +1143,7 @@ unsafe fn direct_call_1(call_target: *const (), a0: u64) -> u64 {
 unsafe fn direct_call_2(call_target: *const (), a0: u64, a1: u64) -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        return unsafe { molt_call_indirect2(call_target as usize as u64, a0, a1) as u64 };
+        unsafe { molt_call_indirect2(call_target as usize as u64, a0, a1) as u64 }
     }
     #[cfg(not(target_arch = "wasm32"))]
     unsafe {
@@ -1163,7 +1163,7 @@ unsafe fn direct_call_2(call_target: *const (), a0: u64, a1: u64) -> u64 {
 unsafe fn direct_call_3(call_target: *const (), a0: u64, a1: u64, a2: u64) -> u64 {
     #[cfg(target_arch = "wasm32")]
     {
-        return unsafe { molt_call_indirect3(call_target as usize as u64, a0, a1, a2) as u64 };
+        unsafe { molt_call_indirect3(call_target as usize as u64, a0, a1, a2) as u64 }
     }
     #[cfg(not(target_arch = "wasm32"))]
     unsafe {

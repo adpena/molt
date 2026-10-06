@@ -486,7 +486,7 @@ pub(super) fn http_server_format_gmt_timestamp(timestamp: i64) -> String {
         // Weekday: epoch (1970-01-01) was Thursday (4)
         let total_days = secs / 86400;
         let wday = ((total_days % 7 + 4) % 7) as usize;
-        let month_idx = if m >= 1 && m <= 12 {
+        let month_idx = if (1..=12).contains(&m) {
             (m - 1) as usize
         } else {
             0

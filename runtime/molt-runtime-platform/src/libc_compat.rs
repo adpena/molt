@@ -139,6 +139,14 @@ pub static _CLOCK_PROCESS_CPUTIME_ID: u32 = 2;
 #[unsafe(no_mangle)]
 pub static _CLOCK_THREAD_CPUTIME_ID: u32 = 3;
 
+/// WASI stand-in for C `_exit`: stop the instance at once by trapping.
+///
+/// # Safety
+///
+/// The signature mirrors `libc::_exit` so the runtime calls one spelling on
+/// every target. Like the C function it never returns and never unwinds, so
+/// no destructor or buffered I/O flush runs after it; the caller must have
+/// finished every write it needs before calling it.
 #[cfg(target_arch = "wasm32")]
 pub unsafe fn _exit(_code: c_int) -> ! {
     core::arch::wasm32::unreachable()

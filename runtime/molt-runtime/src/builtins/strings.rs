@@ -295,10 +295,8 @@ fn memchr_simd128(needle: u8, hay: &[u8]) -> (bool, Option<usize>) {
             }
             idx += 16;
         }
-        if idx < hay.len() {
-            if let Some(tail_idx) = memchr(needle, &hay[idx..]) {
-                return (true, Some(idx + tail_idx));
-            }
+        if let Some(tail_idx) = memchr(needle, &hay[idx..]) {
+            return (true, Some(idx + tail_idx));
         }
     }
     (true, None)

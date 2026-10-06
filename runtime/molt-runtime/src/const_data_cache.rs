@@ -95,7 +95,7 @@ fn with_cache<R>(kind: ConstDataLiteralKind, f: impl FnOnce(&mut ConstDataCache)
             }
         };
         let mut guard = cache.lock().unwrap();
-        return f(&mut guard);
+        f(&mut guard)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {

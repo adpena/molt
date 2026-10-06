@@ -121,19 +121,20 @@ fn emit_cpython_abi_requested_export_anchors(out_dir: &Path, target_arch: &str) 
     source.push_str(
         "    core::hint::black_box(MOLT_CPYTHON_ABI_REQUESTED_FUNCTION_EXPORT_ANCHORS.as_ptr());\n",
     );
-    source.push_str(
-        "    let mut count = MOLT_CPYTHON_ABI_REQUESTED_FUNCTION_EXPORT_ANCHORS.len();\n",
-    );
     if !data_symbols.is_empty() {
         source.push_str("    unsafe {\n");
         for symbol in &data_symbols {
             source.push_str(&format!(
-                "        core::hint::black_box(&raw mut {symbol});\n        count += 1;\n"
+                "        core::hint::black_box(&raw mut {symbol});\n"
             ));
         }
         source.push_str("    }\n");
     }
-    source.push_str("    count\n");
+    source.push_str("    MOLT_CPYTHON_ABI_REQUESTED_FUNCTION_EXPORT_ANCHORS.len()");
+    if !data_symbols.is_empty() {
+        source.push_str(&format!(" + {}", data_symbols.len()));
+    }
+    source.push('\n');
     source.push_str("}\n");
     fs::write(output, source).expect("failed to write CPython ABI WASM export anchors");
 }

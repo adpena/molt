@@ -118,23 +118,23 @@ const HOST_SHUT_WR: i32 = libc::SHUT_WR;
 const HOST_SHUT_WR: i32 = winsock::SD_SEND;
 
 #[cfg(unix)]
-const HOST_POLLIN: i16 = libc::POLLIN as i16;
+const HOST_POLLIN: i16 = libc::POLLIN;
 #[cfg(windows)]
 const HOST_POLLIN: i16 = winsock::POLLIN;
 #[cfg(unix)]
-const HOST_POLLOUT: i16 = libc::POLLOUT as i16;
+const HOST_POLLOUT: i16 = libc::POLLOUT;
 #[cfg(windows)]
 const HOST_POLLOUT: i16 = winsock::POLLOUT;
 #[cfg(unix)]
-const HOST_POLLERR: i16 = libc::POLLERR as i16;
+const HOST_POLLERR: i16 = libc::POLLERR;
 #[cfg(windows)]
 const HOST_POLLERR: i16 = winsock::POLLERR;
 #[cfg(unix)]
-const HOST_POLLHUP: i16 = libc::POLLHUP as i16;
+const HOST_POLLHUP: i16 = libc::POLLHUP;
 #[cfg(windows)]
 const HOST_POLLHUP: i16 = winsock::POLLHUP;
 #[cfg(unix)]
-const HOST_POLLNVAL: i16 = libc::POLLNVAL as i16;
+const HOST_POLLNVAL: i16 = libc::POLLNVAL;
 #[cfg(windows)]
 const HOST_POLLNVAL: i16 = winsock::POLLNVAL;
 
