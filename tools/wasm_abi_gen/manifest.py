@@ -701,6 +701,40 @@ def runtime_export_name(entry: dict) -> str | None:
     return f"molt_{name}"
 
 
+def runtime_callable_abi_specs(data: dict) -> list[dict]:
+    """Normalize explicit Python-callable contracts, never raw i64 signatures.
+
+    Invoke before target filtering so native-only intrinsic providers retain
+    their callable ABI. Reserved rows own their trampoline transport contract.
+    """
+    imports = {entry["name"]: entry for entry in data["import"]}
+    specs: dict[str, dict] = {}
+    for entry in [*data["import"], *data.get("reserved_runtime_callable", [])]:
+        if "callable_arity" not in entry:
+            continue
+        symbol = entry["runtime_name"]
+        if symbol in specs:
+            raise WasmAbiManifestError(f"duplicate runtime callable ABI {symbol!r}")
+        transport = imports[entry.get("import_name", entry.get("name"))]
+        signature = data["static_type"][transport["type"]]
+        expected_params, expected_results = _runtime_callable_signature(
+            entry["callable_arity"]
+        )
+        if (
+            tuple(signature["params"]) != expected_params
+            or tuple(signature["results"]) != expected_results
+        ):
+            raise WasmAbiManifestError(
+                f"runtime callable {symbol!r} shape disagrees with its import ABI"
+            )
+        specs[symbol] = {
+            "runtime_name": symbol,
+            "arity": entry["callable_arity"],
+            "trampoline_abi": entry.get("trampoline_abi", "unpack_args"),
+        }
+    return [specs[symbol] for symbol in sorted(specs)]
+
+
 def runtime_boxed_call_specs(data: dict) -> list[dict]:
     """Project explicit value semantics, never infer them from an i64 carrier.
 
@@ -1521,14 +1555,13 @@ def _materialize_reserved_runtime_callable_imports(
         )
 
 
-def _validate_intrinsic_runtime_callable_export_abi(imports: list[dict]) -> None:
-    intrinsic_names = _intrinsic_manifest_names()
+def _validate_runtime_callable_export_abi(imports: list[dict]) -> None:
     rust_exports = _rust_export_signatures(include_native=True)
     mismatches: list[str] = []
     missing: list[str] = []
     for entry in imports:
         runtime_name = entry.get("runtime_name")
-        if runtime_name not in intrinsic_names or "callable_arity" not in entry:
+        if "callable_arity" not in entry:
             continue
         signatures = rust_exports.get(runtime_name)
         if not signatures:
@@ -1550,12 +1583,11 @@ def _validate_intrinsic_runtime_callable_export_abi(imports: list[dict]) -> None
             )
     if missing:
         raise WasmAbiManifestError(
-            "intrinsic runtime callables missing Rust exports: "
-            + ", ".join(sorted(missing))
+            "runtime callables missing Rust exports: " + ", ".join(sorted(missing))
         )
     if mismatches:
         raise WasmAbiManifestError(
-            "intrinsic runtime callable ABI mismatches: " + "; ".join(mismatches)
+            "runtime callable ABI mismatches: " + "; ".join(mismatches)
         )
 
 
@@ -1905,7 +1937,6 @@ def validate_loaded_manifest(
             {entry["runtime_name"] for entry in reserved_callables},
         )
     )
-    _remove_target_unavailable_wasm_imports(imports)
     _annotate_runtime_callable_features(
         imports,
         reject_existing=reject_manual_runtime_features,
@@ -1998,7 +2029,12 @@ def validate_loaded_manifest(
             raise WasmAbiManifestError(
                 f"poll_table_slot values must be contiguous from 1; missing {missing}"
             )
-    _validate_intrinsic_runtime_callable_export_abi(imports)
+    _validate_runtime_callable_export_abi(imports)
+    # Callable signatures are target-neutral; retain native-only providers before
+    # the WASM provider manifest applies its target availability projection.
+    data["runtime_callable_abi"] = runtime_callable_abi_specs(data)
+    _remove_target_unavailable_wasm_imports(imports)
+    seen_imports = {entry["name"] for entry in imports}
 
     lir_runtime_calls = data.get("lir_runtime_call", [])
     if not isinstance(lir_runtime_calls, list) or not lir_runtime_calls:

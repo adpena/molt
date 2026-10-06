@@ -50,6 +50,7 @@ from wasm_abi_gen.paths import (
     OUT_RS_DIR,
     OUT_RS_FILES,
     OUT_RUNTIME_CALLABLES_RS,
+    OUT_RUNTIME_CALLABLE_ABI_RS,
     OUT_RUNTIME_BOXED_ABI_RS,
     OUT_TABLE_LAYOUT_INC,
     OUT_WASM_FACTS_CALLABLE_TABLE_RS,
@@ -67,6 +68,7 @@ RENDER_CACHE_FIELDS = (
     "rendered_rs_modules",
     "rendered_native_exception_observer_abi_rs",
     "rendered_runtime_callables_rs",
+    "rendered_runtime_callable_abi_rs",
     "rendered_runtime_boxed_abi_rs",
     "rendered_python_builtin_callables_rs",
     "rendered_wasm_facts_callable_table_rs",
@@ -479,7 +481,7 @@ def _render_rs_mod() -> str:
             "pub(crate) use runtime_callables::{\n",
             "    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,\n",
             "    RUNTIME_CALLABLE_IMPORTS, ReservedRuntimeCallableDispatch,\n",
-            "    poll_table_import_slot, runtime_callable_arity, runtime_callable_import,\n",
+            "    poll_table_import_slot, runtime_callable_import,\n",
             "};\n",
             "pub(crate) use static_types::{\n",
             "    STATIC_FUNC_TYPES, STATIC_TYPE_COUNT,\n",
@@ -1648,6 +1650,45 @@ def render_runtime_boxed_abi_rs(data: dict) -> str:
     return "".join(lines)
 
 
+def render_runtime_callable_abi_rs(data: dict) -> str:
+    lines = [
+        _header("//"),
+        "//! Target-neutral ABI for runtime functions exposed as Python callables.\n",
+        "//! Arguments and results use the boxed i64 machine carrier.\n",
+        "//! Ownership and poll-result refinements remain in runtime_boxed_abi_generated.\n",
+        "//! Raw i64 entrypoints are not Python callables.\n\n",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+        "pub enum RuntimeCallableTrampolineAbi { UnpackArgs, CallFrame }\n\n",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+        "pub struct RuntimeCallableAbi {\n",
+        "    pub symbol: &'static str,\n",
+        "    pub arity: usize,\n",
+        "    pub trampoline_abi: RuntimeCallableTrampolineAbi,\n",
+        "}\n\n",
+        "pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[\n",
+    ]
+    for spec in data["runtime_callable_abi"]:
+        trampoline = (
+            "CallFrame" if spec["trampoline_abi"] == "call_frame" else "UnpackArgs"
+        )
+        lines.append(
+            "    RuntimeCallableAbi { "
+            f'symbol: "{spec["runtime_name"]}", arity: {spec["arity"]}, '
+            f"trampoline_abi: RuntimeCallableTrampolineAbi::{trampoline}"
+            " },\n"
+        )
+    lines.extend(
+        [
+            "];\n\n",
+            "pub fn runtime_callable_abi(symbol: &str) -> Option<&'static RuntimeCallableAbi> {\n",
+            "    let index = RUNTIME_CALLABLE_ABIS.binary_search_by_key(&symbol, |abi| abi.symbol).ok()?;\n",
+            "    Some(&RUNTIME_CALLABLE_ABIS[index])\n",
+            "}\n",
+        ]
+    )
+    return "".join(lines)
+
+
 def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str]) -> str:
     lines: list[str] = [_runtime_callables_header("//")]
     poll_imports = sorted(
@@ -1659,12 +1700,13 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
         key=lambda item: item[0],
     )
     reserved_callables = _shared_runtime_callables(data)
-    boxed_specs = {
-        spec["runtime_name"]: spec for spec in runtime_boxed_call_specs(data)
+    callable_specs = {
+        spec["runtime_name"]: spec for spec in data["runtime_callable_abi"]
     }
     lines.extend(
         [
             "use super::import_tokens::WasmRuntimeImport;\n\n",
+            "use molt_ir::runtime_callable_abi_generated::RuntimeCallableTrampolineAbi;\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct PollTableImportSpec {\n",
             "    pub(crate) table_slot: u32,\n",
@@ -1711,10 +1753,7 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
     for entry in data["import"]:
         if "callable_arity" not in entry:
             continue
-        # The native and WASM direct-call projections share normalized value
-        # semantics. Trampoline dispatch retains its separate transport ABI.
-        spec = boxed_specs.get(entry["runtime_name"])
-        arity = spec["arity"] if spec is not None else entry["callable_arity"]
+        arity = callable_specs[entry["runtime_name"]]["arity"]
         lines.extend(
             [
                 "    RuntimeCallableImportSpec {\n",
@@ -1733,19 +1772,6 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
             "    Trampoline,\n",
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) enum ReservedRuntimeCallableTrampolineAbi {\n",
-            "    UnpackArgs,\n",
-            "    CallFrame,\n",
-            "}\n\n",
-            "impl ReservedRuntimeCallableTrampolineAbi {\n",
-            "    pub(crate) const fn trampoline_kind(self) -> crate::TrampolineKind {\n",
-            "        match self {\n",
-            "            Self::UnpackArgs => crate::TrampolineKind::Plain,\n",
-            "            Self::CallFrame => crate::TrampolineKind::CallFrame,\n",
-            "        }\n",
-            "    }\n",
-            "}\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) struct ReservedRuntimeCallableSpec {\n",
             "    pub(crate) index: u32,\n",
             "    pub(crate) runtime_name: &'static str,\n",
@@ -1753,13 +1779,14 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
             "    pub(crate) import: WasmRuntimeImport,\n",
             "    pub(crate) arity: usize,\n",
             "    pub(crate) dispatch: ReservedRuntimeCallableDispatch,\n",
-            "    pub(crate) trampoline_abi: ReservedRuntimeCallableTrampolineAbi,\n",
+            "    pub(crate) trampoline_abi: RuntimeCallableTrampolineAbi,\n",
             "}\n\n",
             "pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec] = &[\n",
         ]
     )
     for entry in reserved_callables:
         import_token = _rust_runtime_import(import_variants, entry["import_name"])
+        spec = callable_specs[entry["runtime_name"]]
         lines.extend(
             [
                 "    ReservedRuntimeCallableSpec {\n",
@@ -1767,11 +1794,11 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
                 f'        runtime_name: "{entry["runtime_name"]}",\n',
                 f'        import_name: "{entry["import_name"]}",\n',
                 f"        import: {import_token},\n",
-                f"        arity: {entry['callable_arity']},\n",
+                f"        arity: {spec['arity']},\n",
                 "        dispatch: ReservedRuntimeCallableDispatch::"
                 f"{_rust_callable_dispatch(entry.get('callable_dispatch'))},\n",
-                "        trampoline_abi: ReservedRuntimeCallableTrampolineAbi::"
-                f"{'CallFrame' if entry.get('trampoline_abi') == 'call_frame' else 'UnpackArgs'},\n",
+                "        trampoline_abi: RuntimeCallableTrampolineAbi::"
+                f"{'CallFrame' if spec['trampoline_abi'] == 'call_frame' else 'UnpackArgs'},\n",
                 "    },\n",
             ]
         )
@@ -1798,30 +1825,6 @@ def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str])
         lines.append(
             f'        "{runtime_name}" => Some('
             f"{_rust_runtime_import(import_variants, import_name)}),\n"
-        )
-    lines.extend(
-        [
-            "        _ => None,\n",
-            "    }\n",
-            "}\n\n",
-            "#[inline]\n",
-            "pub(crate) fn runtime_callable_arity(runtime_name: &str) -> Option<usize> {\n",
-            "    match runtime_name {\n",
-        ]
-    )
-    arity_runtime_names: set[str] = set()
-    for entry in data["import"]:
-        if "callable_arity" not in entry:
-            continue
-        lines.append(
-            f'        "{entry["runtime_name"]}" => Some({entry["callable_arity"]}),\n'
-        )
-        arity_runtime_names.add(entry["runtime_name"])
-    for entry in reserved_callables:
-        if entry["runtime_name"] in arity_runtime_names:
-            continue
-        lines.append(
-            f'        "{entry["runtime_name"]}" => Some({entry["callable_arity"]}),\n'
         )
     lines.extend(
         [
@@ -2600,6 +2603,13 @@ def main(argv: list[str]) -> int:
         rendered_runtime_callables_rs = timed(
             "render_runtime_callables_rs", lambda: render_runtime_callables_rs(data)
         )
+        rendered_runtime_callable_abi_rs = timed(
+            "render_runtime_callable_abi_rs",
+            lambda: _rustfmt(
+                "runtime_callable_abi_generated.rs",
+                render_runtime_callable_abi_rs(data),
+            ),
+        )
         rendered_runtime_boxed_abi_rs = timed(
             "render_runtime_boxed_abi_rs",
             lambda: _rustfmt(
@@ -2638,6 +2648,7 @@ def main(argv: list[str]) -> int:
                 rendered_native_exception_observer_abi_rs
             ),
             "rendered_runtime_callables_rs": rendered_runtime_callables_rs,
+            "rendered_runtime_callable_abi_rs": rendered_runtime_callable_abi_rs,
             "rendered_runtime_boxed_abi_rs": rendered_runtime_boxed_abi_rs,
             "rendered_python_builtin_callables_rs": rendered_python_builtin_callables_rs,
             "rendered_wasm_facts_callable_table_rs": rendered_wasm_facts_callable_table_rs,
@@ -2654,6 +2665,7 @@ def main(argv: list[str]) -> int:
         bundle["rendered_native_exception_observer_abi_rs"]
     )
     rendered_runtime_callables_rs = str(bundle["rendered_runtime_callables_rs"])
+    rendered_runtime_callable_abi_rs = str(bundle["rendered_runtime_callable_abi_rs"])
     rendered_runtime_boxed_abi_rs = str(bundle["rendered_runtime_boxed_abi_rs"])
     rendered_python_builtin_callables_rs = str(
         bundle["rendered_python_builtin_callables_rs"]
@@ -2675,6 +2687,7 @@ def main(argv: list[str]) -> int:
                 rendered_native_exception_observer_abi_rs,
             )
             and _check(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
+            and _check(OUT_RUNTIME_CALLABLE_ABI_RS, rendered_runtime_callable_abi_rs)
             and _check(OUT_RUNTIME_BOXED_ABI_RS, rendered_runtime_boxed_abi_rs)
             and _check(
                 OUT_PYTHON_BUILTIN_CALLABLES_RS, rendered_python_builtin_callables_rs
@@ -2704,6 +2717,7 @@ def main(argv: list[str]) -> int:
         rendered_native_exception_observer_abi_rs,
     )
     _write_if_changed(OUT_RUNTIME_CALLABLES_RS, rendered_runtime_callables_rs)
+    _write_if_changed(OUT_RUNTIME_CALLABLE_ABI_RS, rendered_runtime_callable_abi_rs)
     _write_if_changed(OUT_RUNTIME_BOXED_ABI_RS, rendered_runtime_boxed_abi_rs)
     _write_if_changed(
         OUT_PYTHON_BUILTIN_CALLABLES_RS, rendered_python_builtin_callables_rs

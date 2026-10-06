@@ -180,6 +180,124 @@ fn lower_preserved_passthrough_class_routes_to_runtime() {
     }
 }
 
+fn builtin_callable_function(symbol: &str, arity: i64, named: bool) -> TirFunction {
+    let mut function = runtime_call_shape_function(
+        OpCode::Copy,
+        "builtin_func",
+        symbol,
+        usize::from(named),
+        true,
+        false,
+    );
+    let operation = function
+        .blocks
+        .get_mut(&function.entry_block)
+        .unwrap()
+        .ops
+        .last_mut()
+        .unwrap();
+    operation
+        .attrs
+        .insert("value".into(), AttrValue::Int(arity));
+    function
+}
+
+#[test]
+fn runtime_builtin_callable_uses_manifest_without_compiled_linkage() {
+    // Independent signatures of runtime exports, including the five-word
+    // __import__ entry that failed in a real shared-stdlib batch.
+    for (symbol, arity) in [
+        ("molt_sys_version", 0),
+        ("molt_abs_builtin", 1),
+        ("molt_socket_drop", 1),
+        ("molt_importlib_import_transaction", 5),
+    ] {
+        for named in [false, true] {
+            let ctx = Context::create();
+            let backend = make_backend(&ctx);
+            assert!(backend.function_linkage_abis.is_empty());
+            let function = builtin_callable_function(symbol, arity, named);
+            try_lower_tir_to_llvm(&function, &backend).unwrap();
+            backend.module.verify().unwrap();
+            let target = backend.module.get_function(symbol).unwrap();
+            assert_eq!(target.count_params(), arity as u32);
+            assert_eq!(
+                target.get_type().get_return_type(),
+                Some(ctx.i64_type().into())
+            );
+            let trampoline = backend
+                .module
+                .get_function(&format!("{symbol}__molt_llvm_trampoline_{arity}"))
+                .unwrap()
+                .print_to_string()
+                .to_string();
+            assert_eq!(
+                trampoline.matches("load i64,").count(),
+                arity as usize,
+                "{trampoline}"
+            );
+            assert!(
+                trampoline.contains(&format!("call i64 @{symbol}(")),
+                "{trampoline}"
+            );
+            assert!(
+                !trampoline.contains("molt_int_as_i64"),
+                "boxed integer arguments must retain all bits: {trampoline}"
+            );
+            assert!(
+                !trampoline.contains("molt_dec_ref"),
+                "runtime entries borrow the boxed arguments: {trampoline}"
+            );
+        }
+    }
+}
+
+#[test]
+fn runtime_builtin_callable_rejects_unknown_raw_and_wrong_arity() {
+    for (symbol, arity, diagnostic) in [
+        ("user_function", 0, "has no runtime callable ABI"),
+        ("molt_int_from_i64", 1, "has no runtime callable ABI"),
+        (
+            "molt_dict_getitem_borrowed",
+            2,
+            "has no runtime callable ABI",
+        ),
+        ("molt_importlib_import_transaction", 4, "arity mismatch"),
+    ] {
+        let ctx = Context::create();
+        let mut backend = make_backend(&ctx);
+        // Neither machine signature nor a compiled linkage row authorizes
+        // publication as a runtime builtin.
+        backend.function_linkage_abis.insert(
+            symbol.into(),
+            test_native_linkage_abi(vec![TirType::DynBox; arity as usize], Some(TirType::DynBox)),
+        );
+        let function = builtin_callable_function(symbol, arity, false);
+        let error = try_lower_tir_to_llvm(&function, &backend).unwrap_err();
+        assert_lowering_error_contains(&error, diagnostic);
+        assert_lowering_error_contains(&error, symbol);
+    }
+}
+
+#[test]
+fn runtime_builtin_call_frame_uses_provider_as_trampoline() {
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let symbol = "molt_cpython_abi_cext_call_trampoline";
+    let function = builtin_callable_function(symbol, 3, false);
+    let lowered = try_lower_tir_to_llvm(&function, &backend).unwrap();
+    backend.module.verify().unwrap();
+    let ir = lowered.print_to_string().to_string();
+    assert_eq!(ir.matches(&format!("ptr @{symbol}")).count(), 2, "{ir}");
+    assert!(
+        backend
+            .module
+            .get_function(&format!("{symbol}__molt_llvm_trampoline_3"))
+            .is_none(),
+        "call frame must not be unpacked as Python positional arguments"
+    );
+}
+
 #[test]
 fn callable_constructors_release_only_discarded_owned_results() {
     for (kind, argc) in [
@@ -212,11 +330,16 @@ fn callable_constructors_release_only_discarded_owned_results() {
             );
             // A closure constructor's target takes the closure transport first.
             target_abi.source_signature.has_closure = kind == "func_new_closure";
-            backend
-                .function_linkage_abis
-                .insert("callable_result_target".into(), target_abi);
-            let symbol_target = matches!(kind, "func_new" | "func_new_closure" | "builtin_func")
-                .then_some("callable_result_target");
+            if kind != "builtin_func" {
+                backend
+                    .function_linkage_abis
+                    .insert("callable_result_target".into(), target_abi);
+            }
+            let symbol_target = match kind {
+                "builtin_func" => Some("molt_sys_version"),
+                "func_new" | "func_new_closure" => Some("callable_result_target"),
+                _ => None,
+            };
             let ir = lower_preserved_kind_ir(&backend, kind, argc, bound, symbol_target)
                 .unwrap_or_else(|error| panic!("{kind}: {:?}", error.diagnostics()));
             backend

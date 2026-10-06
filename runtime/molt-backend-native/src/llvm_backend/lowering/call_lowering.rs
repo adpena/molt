@@ -47,23 +47,69 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         arity: usize,
         has_closure: bool,
     ) -> FunctionValue<'ctx> {
-        let callable_arity = self
-            .backend
-            .function_linkage_abis
-            .get(name)
-            .map(|abi| {
-                abi.param_types
-                    .len()
-                    .saturating_sub(usize::from(has_closure))
-            })
-            .unwrap_or(arity);
-        let target_fn = self.ensure_function_symbol(name, callable_arity, has_closure);
-        let target_return_tir_ty = self
-            .backend
-            .function_linkage_abis
-            .get(name)
-            .and_then(|abi| abi.return_type.clone())
-            .unwrap_or(TirType::DynBox);
+        let target_fn = self.ensure_function_symbol(name, arity, has_closure);
+        let abi = &self.backend.function_linkage_abis[name];
+        self.ensure_typed_trampoline(
+            name,
+            target_fn,
+            has_closure,
+            &abi.param_types,
+            abi.return_type.as_ref(),
+            &abi.parameter_custody,
+        )
+    }
+
+    /// Runtime function objects use the manifest's callable ABI, never a
+    /// compiled Python function's representation or parameter-custody plan.
+    /// The target is declared through the one runtime declaration path, which
+    /// classifies the symbol from the same generated callable ABI.
+    pub(super) fn ensure_builtin_callable(
+        &mut self,
+        name: &str,
+        arity: usize,
+    ) -> Option<(FunctionValue<'ctx>, FunctionValue<'ctx>)> {
+        use molt_ir::runtime_callable_abi_generated::{
+            RuntimeCallableTrampolineAbi, runtime_callable_abi,
+        };
+        let Some(abi) = runtime_callable_abi(name) else {
+            self.record_fatal(format!(
+                "builtin_func target `{name}` has no runtime callable ABI; use func_new for compiled functions"
+            ));
+            return None;
+        };
+        if abi.arity != arity {
+            self.record_fatal(format!(
+                "builtin_func arity mismatch for `{name}`: manifest requires {}, got {arity}",
+                abi.arity
+            ));
+            return None;
+        }
+        let target_fn = self.ensure_runtime_i64_fn(name, abi.arity);
+        let trampoline = match abi.trampoline_abi {
+            // This runtime entry already consumes (closure, argv, argc).
+            RuntimeCallableTrampolineAbi::CallFrame => target_fn,
+            RuntimeCallableTrampolineAbi::UnpackArgs => self.ensure_typed_trampoline(
+                name,
+                target_fn,
+                false,
+                &vec![TirType::DynBox; abi.arity],
+                Some(&TirType::DynBox),
+                &vec![crate::ir::ParameterCustody::Borrowed; abi.arity],
+            ),
+        };
+        Some((target_fn, trampoline))
+    }
+
+    fn ensure_typed_trampoline(
+        &self,
+        name: &str,
+        target_fn: FunctionValue<'ctx>,
+        has_closure: bool,
+        param_tir_types: &[TirType],
+        return_tir_type: Option<&TirType>,
+        parameter_custody: &[crate::ir::ParameterCustody],
+    ) -> FunctionValue<'ctx> {
+        let callable_arity = param_tir_types.len() - usize::from(has_closure);
         let closure_suffix = if has_closure { "_closure" } else { "" };
         let trampoline_name =
             format!("{name}__molt_llvm_trampoline_{callable_arity}{closure_suffix}");
@@ -113,11 +159,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // trusted-unbox truncation bug-class for a heap-BigInt argument. This is
         // the dynamic-dispatch dual of the direct-call arg coercion
         // (`coerce_to_tir_type`).
-        let param_tir_types = self
-            .backend
-            .function_linkage_abis
-            .get(name)
-            .map(|abi| abi.param_types.as_slice());
         let coerce_trampoline_arg = |bits: inkwell::values::IntValue<'ctx>,
                                      target_ty: inkwell::types::BasicTypeEnum<'ctx>,
                                      name: &str|
@@ -158,12 +199,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // that reference once the entry returns (raw entry extraction); the
         // representation plan chooses a raw entry only where the object's
         // identity and frame visibility are unobservable.
-        let parameter_custody = self
-            .backend
-            .function_linkage_abis
-            .get(name)
-            .map(|abi| abi.parameter_custody.as_slice())
-            .unwrap_or(&[]);
         let mut extracted_owners: Vec<inkwell::values::IntValue<'ctx>> = Vec::new();
         let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
             Vec::with_capacity(callable_arity + usize::from(has_closure));
@@ -200,22 +235,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // low payload bit. `F64`/reference params are already the raw bits.
             let param_index = idx + usize::from(has_closure);
             if parameter_custody.get(param_index) == Some(&crate::ir::ParameterCustody::Transferred)
-                && param_tir_types
-                    .and_then(|tys| tys.get(param_index))
-                    .is_some_and(|param_ty| !Self::tir_type_is_dynbox_like(param_ty))
+                && !Self::tir_type_is_dynbox_like(&param_tir_types[param_index])
             {
                 extracted_owners.push(arg);
             }
-            let arg = match param_tir_types.and_then(|tys| tys.get(param_index)) {
-                Some(param_ty) => unbox_dynbox_to_param_ty_with_builder(
-                    &builder,
-                    self.backend.context,
-                    &self.backend.module,
-                    arg,
-                    param_ty,
-                ),
-                None => arg,
-            };
+            let arg = unbox_dynbox_to_param_ty_with_builder(
+                &builder,
+                self.backend.context,
+                &self.backend.module,
+                arg,
+                &param_tir_types[param_index],
+            );
             let target_ty = target_fn
                 .get_nth_param(param_index as u32)
                 .map(|param| param.get_type())
@@ -244,7 +274,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             &self.backend.module,
             trampoline_fn,
             result,
-            &target_return_tir_ty,
+            return_tir_type.unwrap_or(&TirType::DynBox),
         );
         builder.build_return(Some(&ret_bits)).unwrap();
         trampoline_fn

@@ -416,7 +416,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         _ => None,
                     })
                     .unwrap_or(0);
-                let func = self.ensure_function_symbol(func_name, arity, false);
+                let Some((func, trampoline)) = self.ensure_builtin_callable(func_name, arity)
+                else {
+                    return true;
+                };
                 let fn_ptr = self
                     .backend
                     .builder
@@ -426,7 +429,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "builtin_func_ptr",
                     )
                     .unwrap();
-                let trampoline = self.ensure_plain_trampoline(func_name, arity, false);
                 let tramp_ptr = self
                     .backend
                     .builder

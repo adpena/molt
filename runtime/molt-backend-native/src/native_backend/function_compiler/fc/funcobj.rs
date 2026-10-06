@@ -293,7 +293,20 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let Some(func_name) = op.s_value.as_ref() else {
                 return OpFlow::Continue;
             };
-            let arity = op.value.unwrap_or(0);
+            let abi = molt_ir::runtime_callable_abi_generated::runtime_callable_abi(func_name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "builtin_func target `{func_name}` has no runtime callable ABI; use func_new for compiled functions"
+                    )
+                });
+            let claimed_arity = op.value.unwrap_or(0);
+            assert_eq!(
+                usize::try_from(claimed_arity).ok(),
+                Some(abi.arity),
+                "builtin_func arity mismatch for `{func_name}`: manifest requires {}",
+                abi.arity,
+            );
+            let arity = abi.arity;
             let mut func_sig = module.make_signature();
             for _ in 0..arity {
                 func_sig.params.push(AbiParam::new(types::I64));
@@ -306,7 +319,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 Linkage::Import,
                 &func_sig,
             );
-            declared_func_arities.insert(func_name.clone(), arity as usize);
+            declared_func_arities.insert(func_name.clone(), arity);
             let func_ref = module.declare_func_in_func(func_id, builder.func);
             let func_addr = builder.ins().func_addr(types::I64, func_ref);
             let tramp_id = SimpleBackend::ensure_trampoline(
@@ -316,16 +329,16 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 func_name,
                 Linkage::Import,
                 TrampolineSpec {
-                    arity: arity as usize,
+                    arity,
                     has_closure: false,
-                    kind: TrampolineKind::Plain,
+                    kind: TrampolineKind::from(abi.trampoline_abi),
                     closure_size: 0,
                     target_has_ret: true,
                 },
             );
             let tramp_ref = module.declare_func_in_func(tramp_id, builder.func);
             let tramp_addr = builder.ins().func_addr(types::I64, tramp_ref);
-            let arity_val = builder.ins().iconst(types::I64, arity);
+            let arity_val = builder.ins().iconst(types::I64, arity as i64);
 
             let call = if let Some(name_var) = op.args.as_ref().and_then(|args| args.first())
                 && let Some(name_bits) = var_get_boxed_overflow_safe(

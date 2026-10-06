@@ -143,8 +143,8 @@ fn compile_caller_with_incompatible_predeclared_helper(caller: FunctionIR) {
 }
 
 #[test]
-#[should_panic(expected = "builtin_func declaration mismatch for `helper`")]
-fn builtin_func_signature_mismatch_fails_closed_at_codegen() {
+#[should_panic(expected = "builtin_func target `helper` has no runtime callable ABI")]
+fn builtin_func_rejects_compiled_target_even_with_declared_machine_signature() {
     compile_caller_with_incompatible_predeclared_helper(FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "caller".to_string(),
