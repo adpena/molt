@@ -3451,6 +3451,7 @@ dependencies = [
  "log",
  "molt-artifact-publish",
  "molt-codegen-abi",
+ "molt-runtime-platform",
  "molt-runtime-resource",
  "molt-wasm-facts",
  "num-format",

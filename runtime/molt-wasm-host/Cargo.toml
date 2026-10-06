@@ -25,6 +25,7 @@ molt-runtime-resource = { path = "../molt-runtime-resource" }
 molt-wasm-facts = { path = "../molt-wasm-facts" }
 molt-artifact-publish = { path = "../molt-artifact-publish" }
 molt-codegen-abi = { path = "../molt-codegen-abi" }
+molt-runtime-platform = { path = "../molt-runtime-platform" }
 sha2 = "0.11"
 same-file = "1.0.6"
 unicode-casefold = "0.2.0"

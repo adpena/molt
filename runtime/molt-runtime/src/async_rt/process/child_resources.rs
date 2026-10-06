@@ -182,7 +182,8 @@ fn apply_child_committed_memory_rlimit(cmd: &mut Command, limit_bytes: u64) {
     use std::os::unix::process::CommandExt;
     unsafe {
         cmd.pre_exec(move || {
-            let hard_limit = limit_bytes.min(libc::rlim_t::MAX as u64) as libc::rlim_t;
+            let hard_limit: libc::rlim_t =
+                molt_codegen_abi::c_width::c_ulong_from_u64_saturating(limit_bytes);
             let limit = libc::rlimit {
                 rlim_cur: hard_limit,
                 rlim_max: hard_limit,

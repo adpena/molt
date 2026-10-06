@@ -2673,7 +2673,10 @@ pub unsafe extern "C" fn molt_socket_sendmsg_afalg(
         msghdr.msg_iov = &mut iov;
         msghdr.msg_iovlen = 1;
         msghdr.msg_control = anc_buf.as_mut_ptr() as *mut c_void;
-        msghdr.msg_controllen = ancdata_size as _;
+        msghdr.msg_controllen = match molt_runtime_platform::msghdr::msg_controllen(ancdata_size) {
+            Some(len) => len,
+            None => return raise_exception::<u64>(_py, "OSError", "ancillary data too large"),
+        };
 
         // Fill in the cmsg entries
         unsafe {
@@ -2689,24 +2692,24 @@ pub unsafe extern "C" fn molt_socket_sendmsg_afalg(
             }
 
             // ALG_SET_IV (optional)
-            if let Some(ref iv) = iv_data {
-                if !cmsg.is_null() {
-                    (*cmsg).cmsg_level = SOL_ALG;
-                    (*cmsg).cmsg_type = ALG_SET_IV;
-                    (*cmsg).cmsg_len = libc::CMSG_LEN(iv.len() as u32) as _;
-                    std::ptr::copy_nonoverlapping(iv.as_ptr(), libc::CMSG_DATA(cmsg), iv.len());
-                    cmsg = libc::CMSG_NXTHDR(&msghdr, cmsg);
-                }
+            if let Some(ref iv) = iv_data
+                && !cmsg.is_null()
+            {
+                (*cmsg).cmsg_level = SOL_ALG;
+                (*cmsg).cmsg_type = ALG_SET_IV;
+                (*cmsg).cmsg_len = libc::CMSG_LEN(iv.len() as u32) as _;
+                std::ptr::copy_nonoverlapping(iv.as_ptr(), libc::CMSG_DATA(cmsg), iv.len());
+                cmsg = libc::CMSG_NXTHDR(&msghdr, cmsg);
             }
 
             // ALG_SET_AEAD_ASSOCLEN (optional)
-            if let Some(ref assoc) = assoclen_bytes {
-                if !cmsg.is_null() {
-                    (*cmsg).cmsg_level = SOL_ALG;
-                    (*cmsg).cmsg_type = ALG_SET_AEAD_ASSOCLEN;
-                    (*cmsg).cmsg_len = libc::CMSG_LEN(4) as _;
-                    std::ptr::copy_nonoverlapping(assoc.as_ptr(), libc::CMSG_DATA(cmsg), 4);
-                }
+            if let Some(ref assoc) = assoclen_bytes
+                && !cmsg.is_null()
+            {
+                (*cmsg).cmsg_level = SOL_ALG;
+                (*cmsg).cmsg_type = ALG_SET_AEAD_ASSOCLEN;
+                (*cmsg).cmsg_len = libc::CMSG_LEN(4) as _;
+                std::ptr::copy_nonoverlapping(assoc.as_ptr(), libc::CMSG_DATA(cmsg), 4);
             }
         }
 

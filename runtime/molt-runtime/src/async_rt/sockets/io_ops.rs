@@ -735,22 +735,26 @@ pub unsafe extern "C" fn molt_socket_sendmsg(
                             msg.msg_iovlen = 0;
                         } else {
                             msg.msg_iov = iovecs.as_mut_ptr();
-                            msg.msg_iovlen = iovecs.len().try_into().map_err(|_| {
-                                std::io::Error::new(ErrorKind::InvalidInput, "too many iovecs")
-                            })?;
+                            msg.msg_iovlen =
+                                molt_runtime_platform::msghdr::msg_iovlen(iovecs.len())
+                                    .ok_or_else(|| {
+                                        std::io::Error::new(
+                                            ErrorKind::InvalidInput,
+                                            "too many iovecs",
+                                        )
+                                    })?;
                         }
                         if ancillary_control.is_empty() {
                             msg.msg_control = std::ptr::null_mut();
                             msg.msg_controllen = 0;
                         } else {
                             msg.msg_control = ancillary_control.as_mut_ptr() as *mut c_void;
-                            msg.msg_controllen =
-                                ancillary_control.len().try_into().map_err(|_| {
-                                    std::io::Error::new(
-                                        ErrorKind::InvalidInput,
-                                        "ancillary too large",
-                                    )
-                                })?;
+                            msg.msg_controllen = molt_runtime_platform::msghdr::msg_controllen(
+                                ancillary_control.len(),
+                            )
+                            .ok_or_else(|| {
+                                std::io::Error::new(ErrorKind::InvalidInput, "ancillary too large")
+                            })?;
                         }
                         let ret = libc::sendmsg(libc_socket(fd), &msg as *const _, flags);
                         if ret >= 0 {
@@ -914,9 +918,14 @@ pub unsafe extern "C" fn molt_socket_recvmsg(
                         msg.msg_controllen = 0;
                     } else {
                         msg.msg_control = control.as_mut_ptr() as *mut c_void;
-                        msg.msg_controllen = control.len().try_into().map_err(|_| {
-                            std::io::Error::new(ErrorKind::InvalidInput, "ancillary too large")
-                        })?;
+                        msg.msg_controllen =
+                            molt_runtime_platform::msghdr::msg_controllen(control.len())
+                                .ok_or_else(|| {
+                                    std::io::Error::new(
+                                        ErrorKind::InvalidInput,
+                                        "ancillary too large",
+                                    )
+                                })?;
                     }
                     let ret = unsafe { libc::recvmsg(libc_socket(fd), &mut msg as *mut _, flags) };
                     if ret >= 0 {
@@ -1095,9 +1104,14 @@ pub unsafe extern "C" fn molt_socket_recvmsg_into(
                         msg.msg_controllen = 0;
                     } else {
                         msg.msg_control = control.as_mut_ptr() as *mut c_void;
-                        msg.msg_controllen = control.len().try_into().map_err(|_| {
-                            std::io::Error::new(ErrorKind::InvalidInput, "ancillary too large")
-                        })?;
+                        msg.msg_controllen =
+                            molt_runtime_platform::msghdr::msg_controllen(control.len())
+                                .ok_or_else(|| {
+                                    std::io::Error::new(
+                                        ErrorKind::InvalidInput,
+                                        "ancillary too large",
+                                    )
+                                })?;
                     }
                     let ret = unsafe { libc::recvmsg(libc_socket(fd), &mut msg as *mut _, flags) };
                     if ret >= 0 {

@@ -332,35 +332,6 @@ fn host_getservbyport_name(
         .to_vec())
 }
 
-// `msghdr.msg_controllen` is `size_t` on Linux/Android and `socklen_t` (u32)
-// on the other Unix targets. Each alias carries its own two conversions, so
-// the real narrowing is spelled only where it exists.
-#[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
-type MsgControlLen = usize;
-
-#[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
-fn msg_controllen_from_usize(len: usize) -> Option<MsgControlLen> {
-    Some(len)
-}
-
-#[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
-fn msg_controllen_to_guest_len(len: MsgControlLen) -> Option<u32> {
-    u32::try_from(len).ok()
-}
-
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
-type MsgControlLen = libc::socklen_t;
-
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
-fn msg_controllen_from_usize(len: usize) -> Option<MsgControlLen> {
-    MsgControlLen::try_from(len).ok()
-}
-
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
-fn msg_controllen_to_guest_len(len: MsgControlLen) -> Option<u32> {
-    Some(len)
-}
-
 fn socket_get_mut(state: &mut HostState, handle: i64) -> Result<&mut Socket, i32> {
     if handle <= 0 {
         return Err(libc::EBADF);
@@ -807,10 +778,11 @@ pub(super) fn define_socket_host(
                     }
                     if !ancillary.is_empty() {
                         msg.msg_control = ancillary.as_mut_ptr() as *mut libc::c_void;
-                        msg.msg_controllen = match msg_controllen_from_usize(ancillary.len()) {
-                            Some(len) => len,
-                            None => return -libc::EOVERFLOW,
-                        };
+                        msg.msg_controllen =
+                            match molt_runtime_platform::msghdr::msg_controllen(ancillary.len()) {
+                                Some(len) => len,
+                                None => return -libc::EOVERFLOW,
+                            };
                     }
                     unsafe { libc::sendmsg(fd, &msg as *const libc::msghdr, flags) }
                 };
@@ -930,10 +902,11 @@ pub(super) fn define_socket_host(
                     msg.msg_iovlen = 1;
                     if !ancillary.is_empty() {
                         msg.msg_control = ancillary.as_mut_ptr() as *mut libc::c_void;
-                        msg.msg_controllen = match msg_controllen_from_usize(ancillary.len()) {
-                            Some(len) => len,
-                            None => return -libc::EOVERFLOW,
-                        };
+                        msg.msg_controllen =
+                            match molt_runtime_platform::msghdr::msg_controllen(ancillary.len()) {
+                                Some(len) => len,
+                                None => return -libc::EOVERFLOW,
+                            };
                     }
                     let rc = unsafe { libc::recvmsg(fd, &mut msg as *mut libc::msghdr, flags) };
                     name_len = msg.msg_namelen;
@@ -946,7 +919,8 @@ pub(super) fn define_socket_host(
                         );
                     }
                     if out_anc_len_ptr != 0 {
-                        let Some(guest_anc_len) = msg_controllen_to_guest_len(msg.msg_controllen)
+                        let Some(guest_anc_len) =
+                            molt_runtime_platform::msghdr::control_len_u32(msg.msg_controllen)
                         else {
                             return -libc::EOVERFLOW;
                         };

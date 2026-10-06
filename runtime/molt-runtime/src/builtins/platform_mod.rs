@@ -88,7 +88,7 @@ fn get_uname() -> &'static UnameInfo {
                         let bytes: Vec<u8> = arr
                             .iter()
                             .take_while(|&&c| c != 0)
-                            .map(|&c| c as u8)
+                            .map(|&c| molt_codegen_abi::c_width::c_char_to_u8(c))
                             .collect();
                         String::from_utf8_lossy(&bytes).to_string()
                     };
