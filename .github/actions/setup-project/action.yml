@@ -134,7 +134,7 @@ runs:
 
     - name: Cache uv downloads
       if: steps.inputs.outputs.cache-uv == 'true'
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.cache/uv
         key: >-
@@ -145,32 +145,45 @@ runs:
       id: cargo-cache
       if: steps.inputs.outputs.cache-cargo == 'true'
       shell: bash
-      run: python3 tools/ci_cargo_cache.py
+      run: python3 tools/ci_cargo_cache.py configure
 
     # actions/cache is GitHub-owned, so the repository's Actions policy allows
     # it; third-party cache actions are rejected before any job step runs.
-    - name: Cache Cargo builds and source downloads
+    # Restore only: every caller ends with ./.github/actions/save-cargo-cache,
+    # which saves even when proofs fail (actions/cache saves only on success,
+    # so red jobs never warmed their own cache). The per-run key never goes
+    # stale; restore-keys pick the newest cache for the same lockfile first.
+    - name: Restore Cargo dependency cache
+      id: cargo-restore
       if: steps.inputs.outputs.cache-cargo == 'true'
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/git/db
-          ${{ steps.cargo-cache.outputs.target-dir }}
+          ${{ env.MOLT_CARGO_CACHE_TARGET }}
         key: >-
           cargo-${{ steps.inputs.outputs.cache-namespace }}-${{ runner.os }}-${{
           runner.arch }}-${{ steps.inputs.outputs.rust-cache-token }}-${{
-          hashFiles('rust-toolchain.toml',
-          'Cargo.lock', '**/Cargo.toml', '.cargo/config.toml', 'tools/proof_plan.toml',
-          'config/llvm_toolchain_releases.toml', 'config/llvm_toolchain_arches.toml') }}
-        restore-keys: >-
-          cargo-${{ steps.inputs.outputs.cache-namespace }}-${{ runner.os }}-${{
-          runner.arch }}-${{ steps.inputs.outputs.rust-cache-token }}-
+          hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml',
+          '.cargo/config.toml', 'config/llvm_toolchain_releases.toml',
+          'config/llvm_toolchain_arches.toml') }}-${{ github.run_id }}-${{
+          github.run_attempt }}
+        restore-keys: |
+          cargo-${{ steps.inputs.outputs.cache-namespace }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.inputs.outputs.rust-cache-token }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml', '.cargo/config.toml', 'config/llvm_toolchain_releases.toml', 'config/llvm_toolchain_arches.toml') }}-
+          cargo-${{ steps.inputs.outputs.cache-namespace }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.inputs.outputs.rust-cache-token }}-
+
+    - name: Record Cargo cache save key
+      if: steps.inputs.outputs.cache-cargo == 'true'
+      shell: bash
+      env:
+        CARGO_CACHE_KEY: ${{ steps.cargo-restore.outputs.cache-primary-key }}
+      run: printf 'MOLT_CARGO_CACHE_KEY=%s\n' "$CARGO_CACHE_KEY" >> "$GITHUB_ENV"
 
     - name: Cache Lean lake artifacts
       if: steps.inputs.outputs.cache-lean == 'true'
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
           ~/.elan/toolchains
@@ -183,7 +196,7 @@ runs:
 
     - name: Cache actionlint toolchain
       if: steps.inputs.outputs.actionlint == 'true'
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.cache/molt/toolchains
         key: >-

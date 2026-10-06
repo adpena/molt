@@ -92,3 +92,6 @@ jobs:
           name: proof-receipt-rust-security
           path: proof-receipts/rust_security.json
           if-no-files-found: error
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache

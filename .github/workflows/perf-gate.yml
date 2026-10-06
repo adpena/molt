@@ -165,3 +165,6 @@ jobs:
             bench/scoreboard/cpython_ci_${{ matrix.backend }}.json
             bench/scoreboard/plane_${{ matrix.backend }}/
             bench/scoreboard/logs_*/
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache

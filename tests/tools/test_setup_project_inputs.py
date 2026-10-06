@@ -29,6 +29,7 @@ def _normalize(
     sync_frozen: str = "false",
     sync_dev: str = "false",
     sync_groups: str = "",
+    job: str = "fixture-job",
 ) -> dict[str, str]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     output = tmp_path / "github-output"
@@ -48,6 +49,7 @@ def _normalize(
         "INPUT_SYNC_FROZEN": sync_frozen,
         "INPUT_SYNC_DEV": sync_dev,
         "INPUT_SYNC_GROUPS": sync_groups,
+        "GITHUB_JOB": job,
     }
     completed = run_guarded_test_process(
         [str(BASH), str(NORMALIZER), str(output)],
@@ -114,11 +116,23 @@ def test_list_order_and_whitespace_do_not_change_cache_identity(tmp_path: Path) 
     assert first["rust-cache-token"] == second["rust-cache-token"]
 
 
+def test_cache_identity_separates_jobs(tmp_path: Path) -> None:
+    # Jobs build different crate sets into different target directories; a
+    # shared key would let one job's cache shadow every other job's.
+    first = _normalize(tmp_path / "first", toolchain="1.96.1", job="rust-build")
+    second = _normalize(tmp_path / "second", toolchain="1.96.1", job="llvm-backend")
+    again = _normalize(tmp_path / "again", toolchain="1.96.1", job="rust-build")
+
+    assert first["rust-cache-token"] != second["rust-cache-token"]
+    assert first["rust-cache-token"] == again["rust-cache-token"]
+
+
 def test_control_characters_and_empty_atoms_fail_closed(tmp_path: Path) -> None:
     for components in ("rustfmt,,clippy", "rustfmt\nclippy", "rustfmt\tclippy"):
         output = tmp_path / components.encode().hex()
         env = {
             **os.environ,
+            "GITHUB_JOB": "fixture-job",
             "INPUT_PYTHON": "true",
             "INPUT_UV": "true",
             "INPUT_CACHE_UV": "true",
@@ -163,6 +177,7 @@ def test_sync_argv_is_typed_normalized_and_requires_sync(tmp_path: Path) -> None
     output.parent.mkdir()
     env = {
         **os.environ,
+        "GITHUB_JOB": "fixture-job",
         "INPUT_PYTHON": "true",
         "INPUT_UV": "true",
         "INPUT_CACHE_UV": "true",
@@ -197,6 +212,7 @@ def test_shell_metacharacters_never_execute_before_validation(tmp_path: Path) ->
     output = tmp_path / "github-output"
     env = {
         **os.environ,
+        "GITHUB_JOB": "fixture-job",
         "INPUT_PYTHON": "true",
         "INPUT_UV": "true",
         "INPUT_CACHE_UV": "true",

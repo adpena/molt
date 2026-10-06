@@ -119,3 +119,6 @@ jobs:
           name: kani-advisory-compatibility
           path: kani-compatibility.json
           if-no-files-found: error
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache

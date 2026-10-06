@@ -253,6 +253,9 @@ jobs:
           path: dist/candidate
           if-no-files-found: error
           retention-days: 14
+      - name: Save Cargo dependency cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/save-cargo-cache
 
   attest:
     needs: [plan, wheel, candidates]

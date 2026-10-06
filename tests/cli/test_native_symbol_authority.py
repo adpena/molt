@@ -232,7 +232,7 @@ def isolated_symbol_cache(monkeypatch: pytest.MonkeyPatch, request):
         yield
         return
     identity = cache.stable_regular_file_identity(
-        Path(sys.executable), label="test symbol reader"
+        Path(sys.executable).resolve(strict=True), label="test symbol reader"
     )
 
     @contextmanager
