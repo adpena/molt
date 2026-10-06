@@ -3201,6 +3201,38 @@ mod tests {
         MoltObject::none().bits()
     }
 
+    /// An instance owns one strong edge to its heap class and releases it
+    /// with the instance. Allocation takes the class's sealed layout size: an
+    /// extent smaller than the sealed layout is a SystemError.
+    #[test]
+    fn alloc_class_owns_one_heap_class_edge_released_with_the_instance() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            let name = crate::builtins::attr::attr_name_bits_from_bytes(py, b"HeapClassRef")
+                .expect("class name");
+            let class = crate::molt_class_new(name);
+            dec_ref_bits(py, name);
+            let class_ptr = MoltObject::from_bits(class).as_ptr().expect("heap class");
+            unsafe { crate::object::class_finish_definition(py, class_ptr) }.expect("seal class");
+            let size = unsafe { crate::object::layout::class_cached_layout_size(class_ptr) }
+                .expect("sealed layout size");
+            let refs = || unsafe { (*crate::header_from_obj_ptr(class_ptr)).ref_count_snapshot() };
+            let before = refs();
+
+            let object = super::molt_alloc_class(size as u64, class);
+            assert_ne!(object, MoltObject::none().bits());
+            assert_eq!(refs(), before + 1);
+            let actual_type = crate::molt_type_of(object);
+            assert_eq!(actual_type, class);
+            dec_ref_bits(py, actual_type);
+            assert_eq!(refs(), before + 1);
+
+            dec_ref_bits(py, object);
+            assert_eq!(refs(), before);
+            dec_ref_bits(py, class);
+        });
+    }
+
     #[test]
     fn pointer_guard_adopts_once_and_releases_only_at_scope_exit() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();

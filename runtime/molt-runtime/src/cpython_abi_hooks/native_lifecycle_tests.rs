@@ -592,8 +592,9 @@ fn spec_member_storage_bases_and_allocator_failures_share_one_transaction() {
                 (*type_).tp_members.cast::<u8>(),
                 class.as_ptr().cast::<u8>().offset(metaclass.tp_basicsize)
             );
-            assert_eq!((*(*type_).tp_members).flags & Py_RELATIVE_OFFSET, 0);
-            assert!((*(*type_).tp_members).offset >= std::mem::size_of::<PyObject>() as isize);
+            let member = &*(*type_).tp_members;
+            assert_eq!(member.flags & Py_RELATIVE_OFFSET, 0);
+            assert!(member.offset >= std::mem::size_of::<PyObject>() as isize);
             assert!((*(*type_).tp_members.add(1)).name.is_null());
             let instance =
                 refcount::OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(type_, 0));

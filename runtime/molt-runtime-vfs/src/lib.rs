@@ -641,6 +641,7 @@ mod tests {
 
     #[test]
     fn read_dir_recursive_collects_files() {
+        let _guard = vfs_global_test_lock();
         let dir = std::env::temp_dir().join("molt_vfs_test_readdir");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("a/b")).unwrap();
@@ -662,6 +663,7 @@ mod tests {
 
     #[test]
     fn read_dir_recursive_enforces_entry_count_quota() {
+        let _guard = vfs_global_test_lock();
         let dir = std::env::temp_dir().join("molt_vfs_test_readdir_quota");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
