@@ -1182,6 +1182,12 @@ name = "gpu_barrier"
 return_contract = "owned_object"
 type = 0
 
+# `kernel[grid, threads](*args)` lowers to a direct call of the launcher.
+[[import]]
+name = "gpu_kernel_launch"
+return_contract = "owned_object"
+type = 7
+
 [[import]]
 name = "require_intrinsic_runtime"
 type = 3

@@ -3015,7 +3015,14 @@ def test_pure_profile_keeps_every_intrinsic_core_stdlib_modules_require() -> Non
     table, so every ``--wasm-profile pure`` (and Cloudflare) program died in
     ``import sys`` with "intrinsic unavailable: molt_asyncgen_hooks_get".
     """
-    from molt._wasm_abi_generated import pure_profile_skips_import, wasm_import_name
+    from molt._wasm_abi_generated import (
+        WASM_RUNTIME_IMPORT_EXPORT_NAMES,
+        pure_profile_skips_import,
+    )
+
+    import_by_runtime_name = {
+        export: import_name for import_name, export in WASM_RUNTIME_IMPORT_EXPORT_NAMES
+    }
 
     stdlib = ROOT / "src" / "molt" / "stdlib"
     core_modules = ("builtins", "sys", "__future__", "_sitebuiltins", "_intrinsics")
@@ -3026,13 +3033,56 @@ def test_pure_profile_keeps_every_intrinsic_core_stdlib_modules_require() -> Non
             re.findall(r"""_require_intrinsic\(\s*["'](molt_\w+)["']""", source)
         )
     assert {"molt_asyncgen_hooks_get", "molt_future_features"} <= required
+    assert required <= import_by_runtime_name.keys()
     stripped = sorted(
         name
         for name in required
-        if (import_name := wasm_import_name(name)) is not None
-        and pure_profile_skips_import(import_name)
+        if pure_profile_skips_import(import_by_runtime_name[name])
     )
     assert stripped == []
     # The async execution families themselves stay out of Pure guests.
     for name in ("asyncgen_new", "asyncgen_poll", "future_poll", "future_cancel"):
         assert pure_profile_skips_import(name)
+
+
+def test_every_frontend_direct_runtime_call_has_a_wasm_import() -> None:
+    """A literal ``CALL molt_*`` the frontend emits must exist in the WASM ABI.
+
+    The WASM backend panics on a direct runtime call without a manifest import
+    ("direct runtime call missing WASM ABI manifest import"). GPU kernel launch
+    (``kernel[grid, threads](...)``) lowered to ``molt_gpu_kernel_launch``,
+    which had no import, so every WASM program that launched a kernel crashed
+    the backend.
+    """
+    import ast
+
+    from molt._wasm_abi_generated import WASM_RUNTIME_IMPORT_EXPORT_NAMES
+
+    runtime_exports = {
+        export for _import_name, export in WASM_RUNTIME_IMPORT_EXPORT_NAMES
+    }
+    frontend = ROOT / "src" / "molt" / "frontend"
+    direct_calls: set[str] = set()
+    for path in frontend.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "MoltOp"
+            ):
+                continue
+            keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+            kind = keywords.get("kind")
+            args = keywords.get("args")
+            if (
+                isinstance(kind, ast.Constant)
+                and kind.value == "CALL"
+                and isinstance(args, ast.List)
+                and args.elts
+                and isinstance(args.elts[0], ast.Constant)
+                and isinstance(args.elts[0].value, str)
+                and args.elts[0].value.startswith("molt_")
+            ):
+                direct_calls.add(args.elts[0].value)
+    assert "molt_gpu_kernel_launch" in direct_calls
+    assert sorted(direct_calls - runtime_exports) == []
