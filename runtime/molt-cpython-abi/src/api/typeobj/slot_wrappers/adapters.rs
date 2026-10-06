@@ -145,7 +145,7 @@ pub(super) unsafe extern "C" fn inquiry(
     if result == -1 && pending() {
         return ptr::null_mut();
     }
-    unsafe { numbers::PyBool_FromLong(result.into()) }
+    unsafe { numbers::PyBool_FromLong((result != 0).into()) }
 }
 
 pub(super) unsafe extern "C" fn contains(
@@ -162,7 +162,7 @@ pub(super) unsafe extern "C" fn contains(
     if result == -1 && pending() {
         return ptr::null_mut();
     }
-    unsafe { numbers::PyBool_FromLong(result.into()) }
+    unsafe { numbers::PyBool_FromLong((result != 0).into()) }
 }
 
 unsafe fn index(self_: *mut PyObject, object: *mut PyObject, adjust: bool) -> Option<Py_ssize_t> {

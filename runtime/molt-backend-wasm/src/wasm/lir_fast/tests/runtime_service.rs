@@ -141,10 +141,7 @@ fn fixed_runtime_service_and_module_ops_stay_lir_fast_runtime_calls() {
             output.runtime_calls
         );
         assert_eq!(
-            output
-                .runtime_calls
-                .iter()
-                .any(|call| *call == "dec_ref_obj"),
+            output.runtime_calls.contains(&"dec_ref_obj"),
             !has_result,
             "{name} must release the owned runtime result exactly when TIR has no result"
         );

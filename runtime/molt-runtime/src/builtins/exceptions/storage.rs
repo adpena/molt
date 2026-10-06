@@ -113,16 +113,15 @@ impl ExceptionStorage {
                 "exception initializer requires compatible physical storage",
             );
         }
-        if let Self::Managed(ptr) = self {
-            if owner_root != ExceptionLayoutRoot::Base
-                && unsafe { exception_layout_kind(ptr) } != owner_root.kind()
-            {
-                return fail(
-                    py,
-                    "TypeError",
-                    "exception initializer requires compatible physical storage",
-                );
-            }
+        if let Self::Managed(ptr) = self
+            && owner_root != ExceptionLayoutRoot::Base
+            && unsafe { exception_layout_kind(ptr) } != owner_root.kind()
+        {
+            return fail(
+                py,
+                "TypeError",
+                "exception initializer requires compatible physical storage",
+            );
         }
         if matches!(
             owner_root,

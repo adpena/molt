@@ -1885,7 +1885,7 @@ fn truthy_from_special(_py: &PyToken<'_>, obj: MoltObject) -> bool {
                 return length.is_some_and(|length| length != 0);
             }
         }
-        return !exception_pending(_py);
+        !exception_pending(_py)
     }
 }
 

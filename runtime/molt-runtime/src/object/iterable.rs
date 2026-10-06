@@ -129,7 +129,7 @@ impl<'a, 'py> OwnedIterator<'a, 'py> {
     }
 
     /// An item carries one owned reference; None means clean exhaustion only.
-    pub(crate) fn next(&mut self) -> Result<Option<u64>, ()> {
+    pub(crate) fn next(&mut self) -> Result<Option<u64>, molt_runtime_core::ErrorIndicatorSet> {
         // Both in-tree consumers and satellites use the same owned transport.
         molt_runtime_core::iter_next_owned(self.py.core_token(), &self.owner)
             .map(|item| item.map(molt_runtime_core::OwnedRuntimeValue::into_bits))
@@ -208,7 +208,7 @@ pub(crate) fn collect_from_owned_iterator(
                 values.push(item);
             }
             Ok(None) => return Some(values),
-            Err(()) => {
+            Err(molt_runtime_core::ErrorIndicatorSet) => {
                 for value in values {
                     dec_ref_bits(py, value);
                 }

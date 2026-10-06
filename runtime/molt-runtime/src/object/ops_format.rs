@@ -382,10 +382,9 @@ fn format_qualified_type_name_in_context(
             let dict_bits = class_dict_bits(type_ptr);
             if let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr()
                 && object_type_id(dict_ptr) == TYPE_ID_DICT
+                && let Some(val) = dict_get_attr_string(_py, dict_ptr, b"__module__")
             {
-                if let Some(val) = dict_get_attr_string(_py, dict_ptr, b"__module__") {
-                    module_name = Some(val);
-                }
+                module_name = Some(val);
             }
         }
         if let Some(module) = module_name
@@ -1480,13 +1479,10 @@ pub(crate) fn format_obj_output(_py: &PyToken<'_>, obj: MoltObject) -> FormatOut
                 let mut out = FormatBuffer::from("{");
                 let mut idx = 0;
                 let mut first = true;
-                loop {
-                    let Some((key, value)) = ({
-                        let pairs = dict_order(ptr);
-                        pairs.get(idx + 1).map(|value| (pairs[idx], *value))
-                    }) else {
-                        break;
-                    };
+                while let Some((key, value)) = {
+                    let pairs = dict_order(ptr);
+                    pairs.get(idx + 1).map(|value| (pairs[idx], *value))
+                } {
                     inc_ref_bits(_py, key);
                     inc_ref_bits(_py, value);
                     let _key_owner = PtrDropGuard::new(

@@ -1235,7 +1235,7 @@ pub unsafe extern "C" fn molt_callargs_expand_star(builder_bits: u64, iterable_b
                         (*args_ptr).pos.push(item);
                     }
                     Ok(None) => break,
-                    Err(()) => return MoltObject::none().bits(),
+                    Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
                 }
             }
             MoltObject::none().bits()

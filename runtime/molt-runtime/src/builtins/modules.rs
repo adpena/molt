@@ -1973,9 +1973,9 @@ pub(crate) fn sys_modules_dict_bits(py: &PyToken<'_>, sys_bits: u64) -> Option<u
                 bits
             }
         };
-        if !obj_from_bits(modules)
+        if obj_from_bits(modules)
             .as_ptr()
-            .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_DICT)
+            .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_DICT)
         {
             dec_ref_bits(py, modules);
             return raise_exception::<_>(py, "TypeError", "sys.modules must be dict");
@@ -3004,9 +3004,9 @@ pub extern "C" fn molt_module_get_global(module_bits: u64, name_bits: u64) -> u6
                 );
             }
             let globals = module_dict_bits(module_ptr);
-            if !obj_from_bits(globals)
+            if obj_from_bits(globals)
                 .as_ptr()
-                .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_DICT)
+                .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_DICT)
             {
                 return raise_exception::<_>(_py, "TypeError", "module dict missing");
             }

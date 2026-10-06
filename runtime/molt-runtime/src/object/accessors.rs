@@ -53,7 +53,7 @@ unsafe fn object_field_slot_ptr(
         if object_type_id(obj_ptr) == TYPE_ID_DATACLASS {
             let fields = super::dataclass_fields_ptr(obj_ptr);
             let index = offset / std::mem::size_of::<u64>();
-            if offset % std::mem::size_of::<u64>() != 0
+            if !offset.is_multiple_of(std::mem::size_of::<u64>())
                 || fields.is_null()
                 || index >= (*fields).len()
             {

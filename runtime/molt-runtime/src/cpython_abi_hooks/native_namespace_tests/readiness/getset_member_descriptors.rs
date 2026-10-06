@@ -684,7 +684,7 @@ fn native_annotation_reads_bind_owned_descriptors_and_reject_static_types() {
             name: c"annotation.Heap".as_ptr(),
             basicsize: std::mem::size_of::<PyObject>() as c_int,
             itemsize: 0,
-            flags: Py_TPFLAGS_DEFAULT as u32,
+            flags: Py_TPFLAGS_DEFAULT,
             slots: slots.as_mut_ptr(),
         };
         let heap = OwnedPyObject::from_owned(typeobj::PyType_FromSpec(&raw mut spec));

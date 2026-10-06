@@ -168,7 +168,7 @@ pub(crate) unsafe fn apply(
             let key = match iter.next() {
                 Ok(Some(key)) => key,
                 Ok(None) => return MergeOutcome::Complete,
-                Err(()) => return MergeOutcome::Error,
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MergeOutcome::Error,
             };
             if !accept_key(key, None) {
                 dec_ref_bits(py, key);

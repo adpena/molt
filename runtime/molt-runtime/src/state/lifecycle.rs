@@ -281,7 +281,6 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
         // domain's callbacks can repopulate the other. This includes native
         // isolates and WASM instances; no absent C record is fabricated by draining.
         molt_cpython_abi::api::object::clear_current_thread_state_for_runtime_shutdown(&mut drain);
-        drop(drain);
         // Forced C-view retirement must not run inside the TLS cleanup callback:
         // the C error/context/dict owners are still live there, and error
         // preservation temporarily moves those owners off the visible record.

@@ -1640,7 +1640,7 @@ impl ObjectBridge {
                 };
                 let field = unsafe { self.owned_handle_to_pyobj(handle_bits) };
                 if field.is_null() {
-                    return Err(());
+                    return Err(crate::ErrorIndicatorSet);
                 }
                 *slot = field;
                 Ok(())
@@ -2191,7 +2191,7 @@ pub unsafe fn molt_foreign_descriptor_get(
     match unsafe { crate::api::descriptor::has_get(descriptor) } {
         Ok(true) => {}
         Ok(false) => return crate::hooks::OwnedHandleResult::missing(),
-        Err(()) => return crate::hooks::OwnedHandleResult::error(),
+        Err(crate::ErrorIndicatorSet) => return crate::hooks::OwnedHandleResult::error(),
     }
     let Some(operands) = (unsafe { NativeDescriptorOperands::capture([instance, owner]) }) else {
         return crate::hooks::OwnedHandleResult::error();
@@ -2213,7 +2213,7 @@ pub unsafe fn molt_foreign_descriptor_set(
     match unsafe { crate::api::descriptor::is_data(descriptor) } {
         Ok(true) => {}
         Ok(false) => return crate::hooks::OwnedHandleResult::missing(),
-        Err(()) => return crate::hooks::OwnedHandleResult::error(),
+        Err(crate::ErrorIndicatorSet) => return crate::hooks::OwnedHandleResult::error(),
     }
     let Some(operands) = (unsafe { NativeDescriptorOperands::capture([Some(instance), value]) })
     else {
@@ -2364,7 +2364,7 @@ impl RuntimeTypeMutation {
     ///
     /// # Safety
     /// `class` and `name` must remain live under the GIL through publication.
-    pub unsafe fn prepare(class: u64, name: u64) -> Result<Self, ()> {
+    pub unsafe fn prepare(class: u64, name: u64) -> Result<Self, crate::ErrorIndicatorSet> {
         let mut result = Self {
             class,
             name,
@@ -2379,7 +2379,7 @@ impl RuntimeTypeMutation {
     /// Return the current binding cohort's prepared indices. Keep displaced
     /// roots pinned too: callback-capable commit can add, unbind, or rebind an
     /// alias, but must not retire a captured owner before publication finishes.
-    unsafe fn prepare_existing(&mut self) -> Result<Vec<usize>, ()> {
+    unsafe fn prepare_existing(&mut self) -> Result<Vec<usize>, crate::ErrorIndicatorSet> {
         unsafe {
             let roots = GLOBAL_BRIDGE.existing_type_projections(self.class)?;
             let mut current = Vec::with_capacity(roots.len());
@@ -2402,7 +2402,7 @@ impl RuntimeTypeMutation {
                             -1,
                             "managed type mutation name bytes",
                         );
-                        return Err(());
+                        return Err(crate::ErrorIndicatorSet);
                     }
                     // Pinned canonical string bytes; no Python callback and no
                     // C string view for a non-slot metadata/namespace name.
@@ -2414,7 +2414,7 @@ impl RuntimeTypeMutation {
                             GLOBAL_BRIDGE.borrowed_handle_to_new_pyobj(self.name),
                         );
                         if projected.as_ptr().is_null() {
-                            return Err(());
+                            return Err(crate::ErrorIndicatorSet);
                         }
                         Some(projected)
                     } else {
@@ -2448,7 +2448,7 @@ impl RuntimeTypeMutation {
             loop {
                 let current = match self.prepare_existing() {
                     Ok(current) => current,
-                    Err(()) => return -1,
+                    Err(crate::ErrorIndicatorSet) => return -1,
                 };
                 let mut advanced = false;
                 for index in current {

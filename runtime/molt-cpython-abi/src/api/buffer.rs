@@ -172,7 +172,7 @@ unsafe fn export_internal_release(
 pub unsafe fn with_buffer_descriptor<T>(
     object: *mut PyObject,
     consume: impl FnOnce(&MoltBufferView) -> T,
-) -> Result<T, ()> {
+) -> Result<T, crate::ErrorIndicatorSet> {
     struct Release(*mut Py_buffer);
     impl Drop for Release {
         fn drop(&mut self) {
@@ -186,34 +186,40 @@ pub unsafe fn with_buffer_descriptor<T>(
     // its callback incorrectly returned success with an exception pending.
     let _release = (status >= 0).then(|| Release(&raw mut view));
     if unsafe { crate::api::errors::check_native_status(status, "native buffer callback") } < 0 {
-        return Err(());
+        return Err(crate::ErrorIndicatorSet);
     }
     match unsafe { descriptor_from_pybuffer(&raw const view) } {
         Ok(descriptor) => Ok(consume(&descriptor)),
-        Err(()) => {
+        Err(InvalidBufferDescriptor) => {
             unsafe { set_buffer_error(b"invalid or indirect buffer descriptor for bytes\0") };
-            Err(())
+            Err(crate::ErrorIndicatorSet)
         }
     }
 }
 
-pub unsafe fn descriptor_from_pybuffer(info: *const Py_buffer) -> Result<MoltBufferView, ()> {
+/// Buffer geometry cannot be normalized; the consumer chooses the Python error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidBufferDescriptor;
+
+pub unsafe fn descriptor_from_pybuffer(
+    info: *const Py_buffer,
+) -> Result<MoltBufferView, InvalidBufferDescriptor> {
     if info.is_null() {
-        return Err(());
+        return Err(InvalidBufferDescriptor);
     }
     let info = unsafe { &*info };
     if info.len < 0 || info.itemsize <= 0 || info.ndim < 0 {
-        return Err(());
+        return Err(InvalidBufferDescriptor);
     }
     if info.buf.is_null() && info.len != 0 {
-        return Err(());
+        return Err(InvalidBufferDescriptor);
     }
     if !info.suboffsets.is_null() {
-        return Err(());
+        return Err(InvalidBufferDescriptor);
     }
     let ndim = info.ndim as usize;
     if ndim > MOLT_BUFFER_MAX_NDIM {
-        return Err(());
+        return Err(InvalidBufferDescriptor);
     }
 
     // NOTE: `view.internal` is NEVER consulted, let alone dereferenced — for a
@@ -250,14 +256,14 @@ pub unsafe fn descriptor_from_pybuffer(info: *const Py_buffer) -> Result<MoltBuf
         // Scalar buffers preserve CPython's zero-rank descriptor shape.
     } else if shape_is_self {
         if ndim != 1 {
-            return Err(());
+            return Err(InvalidBufferDescriptor);
         }
         descriptor.shape[0] = info.len;
     } else if !info.shape.is_null() {
         for i in 0..ndim {
             let dim = unsafe { *info.shape.add(i) };
             if dim < 0 {
-                return Err(());
+                return Err(InvalidBufferDescriptor);
             }
             descriptor.shape[i] = dim;
         }
@@ -272,7 +278,7 @@ pub unsafe fn descriptor_from_pybuffer(info: *const Py_buffer) -> Result<MoltBuf
         // Scalar buffers have no stride entries.
     } else if strides_is_self {
         if ndim != 1 {
-            return Err(());
+            return Err(InvalidBufferDescriptor);
         }
         descriptor.strides[0] = info.itemsize;
     } else if !info.strides.is_null() {
@@ -284,7 +290,7 @@ pub unsafe fn descriptor_from_pybuffer(info: *const Py_buffer) -> Result<MoltBuf
         for i in (0..ndim).rev() {
             descriptor.strides[i] = stride;
             let dim = descriptor.shape[i].max(1);
-            stride = stride.checked_mul(dim).ok_or(())?;
+            stride = stride.checked_mul(dim).ok_or(InvalidBufferDescriptor)?;
         }
     }
     // NOTE: no C-contiguity requirement — CPython's PyMemoryView_FromBuffer

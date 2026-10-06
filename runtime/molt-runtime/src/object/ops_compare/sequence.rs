@@ -33,13 +33,16 @@ struct ManagedSequence<'a, 'py> {
 impl<'a, 'py> SequenceCompareContext for ManagedSequence<'a, 'py> {
     type Item = Item<'a, 'py>;
     type Value = u64;
-    type Error = ();
+    type Error = molt_runtime_core::ErrorIndicatorSet;
 
-    fn lengths(&self) -> Result<(usize, usize), ()> {
+    fn lengths(&self) -> Result<(usize, usize), molt_runtime_core::ErrorIndicatorSet> {
         Ok(unsafe { (locked_len(self.left), locked_len(self.right)) })
     }
 
-    fn pin_pair(&self, index: usize) -> Result<Option<(Self::Item, Self::Item)>, ()> {
+    fn pin_pair(
+        &self,
+        index: usize,
+    ) -> Result<Option<(Self::Item, Self::Item)>, molt_runtime_core::ErrorIndicatorSet> {
         unsafe {
             if matches!(self.kind, SequenceKind::Tuple) {
                 let pair = with_immutable_tuple_slice(self.left, |left| {
@@ -60,7 +63,7 @@ impl<'a, 'py> SequenceCompareContext for ManagedSequence<'a, 'py> {
                             "SystemError",
                             "invalid tuple comparison storage",
                         );
-                        Err(())
+                        Err(molt_runtime_core::ErrorIndicatorSet)
                     }
                 };
             }
@@ -74,7 +77,11 @@ impl<'a, 'py> SequenceCompareContext for ManagedSequence<'a, 'py> {
         }
     }
 
-    fn equal(&self, left: &Self::Item, right: &Self::Item) -> Result<bool, ()> {
+    fn equal(
+        &self,
+        left: &Self::Item,
+        right: &Self::Item,
+    ) -> Result<bool, molt_runtime_core::ErrorIndicatorSet> {
         match compare_object_eq_bool(
             self.py,
             obj_from_bits(left.bits()),
@@ -82,11 +89,16 @@ impl<'a, 'py> SequenceCompareContext for ManagedSequence<'a, 'py> {
         ) {
             CompareBoolOutcome::True => Ok(true),
             CompareBoolOutcome::False | CompareBoolOutcome::NotComparable => Ok(false),
-            CompareBoolOutcome::Error => Err(()),
+            CompareBoolOutcome::Error => Err(molt_runtime_core::ErrorIndicatorSet),
         }
     }
 
-    fn order(&self, left: &Self::Item, right: &Self::Item, op: RichCompareOp) -> Result<u64, ()> {
+    fn order(
+        &self,
+        left: &Self::Item,
+        right: &Self::Item,
+        op: RichCompareOp,
+    ) -> Result<u64, molt_runtime_core::ErrorIndicatorSet> {
         let op = ordering_op(op);
         match compare_object_value_for_op(
             self.py,
@@ -95,7 +107,9 @@ impl<'a, 'py> SequenceCompareContext for ManagedSequence<'a, 'py> {
             op,
         ) {
             CompareValueOutcome::Value(bits) => Ok(bits),
-            CompareValueOutcome::Error | CompareValueOutcome::NotComparable => Err(()),
+            CompareValueOutcome::Error | CompareValueOutcome::NotComparable => {
+                Err(molt_runtime_core::ErrorIndicatorSet)
+            }
         }
     }
 
@@ -103,7 +117,7 @@ impl<'a, 'py> SequenceCompareContext for ManagedSequence<'a, 'py> {
         MoltObject::from_bool(value).bits()
     }
 
-    fn equal_prefix(&self) -> Result<usize, ()> {
+    fn equal_prefix(&self) -> Result<usize, molt_runtime_core::ErrorIndicatorSet> {
         unsafe {
             if matches!(self.kind, SequenceKind::Tuple) {
                 return with_immutable_tuple_slice(self.left, |left| {
@@ -112,7 +126,7 @@ impl<'a, 'py> SequenceCompareContext for ManagedSequence<'a, 'py> {
                     })
                 })
                 .flatten()
-                .ok_or(());
+                .ok_or(molt_runtime_core::ErrorIndicatorSet);
             }
         }
         Ok(0)
@@ -147,6 +161,6 @@ pub(super) unsafe fn compare(
         op,
     ) {
         Ok(value) => CompareValueOutcome::Value(value),
-        Err(()) => CompareValueOutcome::Error,
+        Err(molt_runtime_core::ErrorIndicatorSet) => CompareValueOutcome::Error,
     }
 }

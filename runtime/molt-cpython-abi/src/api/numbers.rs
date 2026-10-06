@@ -2918,7 +2918,7 @@ pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
         }
     }
     match unsafe { crate::api::object::call_optional_special_noargs(op, c"__complex__".as_ptr()) } {
-        Err(()) => {
+        Err(crate::ErrorIndicatorSet) => {
             return Py_complex {
                 real: -1.0,
                 imag: 0.0,

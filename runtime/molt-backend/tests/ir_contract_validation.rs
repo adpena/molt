@@ -322,8 +322,7 @@ fn isolated_lowering_rejects_shapes_without_requiring_program_slot_closure() {
     let error = std::panic::catch_unwind(|| {
         molt_backend::tir::lower_from_simple::lower_to_tir(&malformed.functions[0])
     })
-    .err()
-    .expect("direct function lowering must reject old one-operand slots");
+    .expect_err("direct function lowering must reject old one-operand slots");
     let message = error
         .downcast_ref::<String>()
         .map(String::as_str)

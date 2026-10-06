@@ -185,65 +185,6 @@ pub(crate) fn pending_exception_diagnostic(_py: &PyToken<'_>) -> Option<(String,
     Some((kind, message))
 }
 
-#[cfg(test)]
-mod diagnostic_tests {
-    use super::*;
-
-    #[test]
-    fn pending_trace_diagnostics_preserve_identity_custody_and_stored_fields() {
-        let _transaction = crate::test_support::RuntimeTestTransaction::new();
-        crate::with_gil_entry_nopanic!(py, {
-            assert!(pending_exception_diagnostic(py).is_none());
-            for missing in [false, true] {
-                let exception = if missing {
-                    molt_exception_new_builtin_one(5, MoltObject::from_int(42).bits())
-                } else {
-                    MoltObject::from_ptr(alloc_exception(py, "ValueError", "already stored")).bits()
-                };
-                let ptr = obj_from_bits(exception).as_ptr().expect("exception object");
-                let constructor_missing =
-                    exception_field_is_missing(unsafe { exception_msg_bits(ptr) });
-                molt_raise(exception);
-                let message = unsafe { exception_msg_bits(ptr) };
-                let args = unsafe { exception_args_bits(ptr) };
-                assert_eq!(
-                    exception_field_is_missing(message),
-                    missing,
-                    "constructor_missing={constructor_missing}",
-                );
-                let kind = unsafe { exception_kind_bits(ptr) };
-                let kind_ptr = obj_from_bits(kind).as_ptr().expect("stored class name");
-                let refcount = |ptr| unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() };
-                let before = (refcount(ptr), refcount(kind_ptr));
-                for _ in 0..3 {
-                    assert_eq!(
-                        pending_exception_diagnostic(py),
-                        Some((
-                            "ValueError".into(),
-                            if missing {
-                                "<no stored text>".into()
-                            } else {
-                                "already stored".into()
-                            }
-                        ))
-                    );
-                    // The guarded proof enables MOLT_TRACE_LINE_PENDING before
-                    // process startup, exercising the actual trace consumer too.
-                    crate::object::ops_builtins::molt_trace_set_line(41);
-                    assert!(exception_pending(py));
-                    assert_eq!(pending_exception_slot(py).unwrap().0, ptr);
-                    assert_eq!(unsafe { exception_msg_bits(ptr) }, message);
-                    assert_eq!(unsafe { exception_args_bits(ptr) }, args);
-                    assert_eq!((refcount(ptr), refcount(kind_ptr)), before);
-                }
-                clear_exception(py);
-                assert!(pending_exception_diagnostic(py).is_none());
-                dec_ref_bits(py, exception);
-            }
-        });
-    }
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_exception_last() -> u64 {
     crate::with_gil_entry_nopanic!(_py, { exception_last_public_bits(_py) })
@@ -664,4 +605,63 @@ pub extern "C" fn molt_exception_report_uncaught(exc_bits: u64) -> u64 {
         }
         1
     })
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn pending_trace_diagnostics_preserve_identity_custody_and_stored_fields() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            assert!(pending_exception_diagnostic(py).is_none());
+            for missing in [false, true] {
+                let exception = if missing {
+                    molt_exception_new_builtin_one(5, MoltObject::from_int(42).bits())
+                } else {
+                    MoltObject::from_ptr(alloc_exception(py, "ValueError", "already stored")).bits()
+                };
+                let ptr = obj_from_bits(exception).as_ptr().expect("exception object");
+                let constructor_missing =
+                    exception_field_is_missing(unsafe { exception_msg_bits(ptr) });
+                molt_raise(exception);
+                let message = unsafe { exception_msg_bits(ptr) };
+                let args = unsafe { exception_args_bits(ptr) };
+                assert_eq!(
+                    exception_field_is_missing(message),
+                    missing,
+                    "constructor_missing={constructor_missing}",
+                );
+                let kind = unsafe { exception_kind_bits(ptr) };
+                let kind_ptr = obj_from_bits(kind).as_ptr().expect("stored class name");
+                let refcount = |ptr| unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() };
+                let before = (refcount(ptr), refcount(kind_ptr));
+                for _ in 0..3 {
+                    assert_eq!(
+                        pending_exception_diagnostic(py),
+                        Some((
+                            "ValueError".into(),
+                            if missing {
+                                "<no stored text>".into()
+                            } else {
+                                "already stored".into()
+                            }
+                        ))
+                    );
+                    // The guarded proof enables MOLT_TRACE_LINE_PENDING before
+                    // process startup, exercising the actual trace consumer too.
+                    crate::object::ops_builtins::molt_trace_set_line(41);
+                    assert!(exception_pending(py));
+                    assert_eq!(pending_exception_slot(py).unwrap().0, ptr);
+                    assert_eq!(unsafe { exception_msg_bits(ptr) }, message);
+                    assert_eq!(unsafe { exception_args_bits(ptr) }, args);
+                    assert_eq!((refcount(ptr), refcount(kind_ptr)), before);
+                }
+                clear_exception(py);
+                assert!(pending_exception_diagnostic(py).is_none());
+                dec_ref_bits(py, exception);
+            }
+        });
+    }
 }

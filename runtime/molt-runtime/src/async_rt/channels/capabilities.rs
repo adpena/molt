@@ -141,20 +141,6 @@ pub(crate) fn require_operation<T: crate::builtins::exceptions::ExceptionSentine
     ))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn generated_operation_target_gates_apply_to_boolean_checks() {
-        assert!(OperationId::SelectPoll.supports_target("native", "windows", "x86_64", 3, 12));
-        assert!(OperationId::SelectEpoll.supports_target("native", "linux", "x86_64", 3, 14));
-        assert!(!OperationId::SelectEpoll.supports_target("browser", "linux", "x86_64", 3, 12));
-        assert!(!OperationId::SelectPoll.supports_target("unknown", "linux", "x86_64", 3, 12));
-        assert!(!OperationId::SelectPoll.supports_target("native", "linux", "x86_64", 3, 15));
-    }
-}
-
 /// Suggest the minimum tier or env var needed to grant a missing capability.
 /// Raise a PermissionError with an actionable message including the
 /// capability name and a finite generated tier suggestion.
@@ -176,4 +162,18 @@ pub(crate) fn capability_fix_hint(name: &str) -> String {
         return format!("Grant MOLT_CAPABILITIES={name} or select MOLT_CAPABILITY_TIER={tier}");
     }
     format!("Grant MOLT_CAPABILITIES={name}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_operation_target_gates_apply_to_boolean_checks() {
+        assert!(OperationId::SelectPoll.supports_target("native", "windows", "x86_64", 3, 12));
+        assert!(OperationId::SelectEpoll.supports_target("native", "linux", "x86_64", 3, 14));
+        assert!(!OperationId::SelectEpoll.supports_target("browser", "linux", "x86_64", 3, 12));
+        assert!(!OperationId::SelectPoll.supports_target("unknown", "linux", "x86_64", 3, 12));
+        assert!(!OperationId::SelectPoll.supports_target("native", "linux", "x86_64", 3, 15));
+    }
 }

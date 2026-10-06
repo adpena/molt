@@ -1060,16 +1060,20 @@ struct AbiSequenceComparison {
 }
 
 impl AbiSequenceComparison {
-    fn pin(&self, object: *mut PyObject, index: usize) -> Result<Option<ComparisonItem>, ()> {
+    fn pin(
+        &self,
+        object: *mut PyObject,
+        index: usize,
+    ) -> Result<Option<ComparisonItem>, crate::ErrorIndicatorSet> {
         let item = match self.kind {
             SequenceKind::List => {
-                let view = unsafe { ListRead::acquire(object) }.ok_or(())?;
+                let view = unsafe { ListRead::acquire(object) }.ok_or(crate::ErrorIndicatorSet)?;
                 if index >= unsafe { view.len() } {
                     return Ok(None);
                 }
                 let item = unsafe { view.item(index) };
                 if item.is_null() {
-                    return Err(());
+                    return Err(crate::ErrorIndicatorSet);
                 }
                 unsafe { crate::api::refcount::Py_INCREF(item) };
                 return Ok(Some(ComparisonItem(item)));
@@ -1085,7 +1089,7 @@ impl AbiSequenceComparison {
                     )
                 };
             }
-            return Err(());
+            return Err(crate::ErrorIndicatorSet);
         }
         unsafe { crate::api::refcount::Py_INCREF(item) };
         Ok(Some(ComparisonItem(item)))
@@ -1095,25 +1099,28 @@ impl AbiSequenceComparison {
 impl SequenceCompareContext for AbiSequenceComparison {
     type Item = ComparisonItem;
     type Value = *mut PyObject;
-    type Error = ();
+    type Error = crate::ErrorIndicatorSet;
 
-    fn lengths(&self) -> Result<(usize, usize), ()> {
+    fn lengths(&self) -> Result<(usize, usize), crate::ErrorIndicatorSet> {
         let size = match self.kind {
             SequenceKind::List => PyList_Size,
             SequenceKind::Tuple => PyTuple_Size,
         };
         let left = unsafe { size(self.left) };
         if left < 0 {
-            return Err(());
+            return Err(crate::ErrorIndicatorSet);
         }
         let right = unsafe { size(self.right) };
         if right < 0 {
-            return Err(());
+            return Err(crate::ErrorIndicatorSet);
         }
         Ok((left as usize, right as usize))
     }
 
-    fn pin_pair(&self, index: usize) -> Result<Option<(ComparisonItem, ComparisonItem)>, ()> {
+    fn pin_pair(
+        &self,
+        index: usize,
+    ) -> Result<Option<(ComparisonItem, ComparisonItem)>, crate::ErrorIndicatorSet> {
         let Some(left) = self.pin(self.left, index)? else {
             return Ok(None);
         };
@@ -1123,7 +1130,11 @@ impl SequenceCompareContext for AbiSequenceComparison {
         Ok(Some((left, right)))
     }
 
-    fn equal(&self, left: &ComparisonItem, right: &ComparisonItem) -> Result<bool, ()> {
+    fn equal(
+        &self,
+        left: &ComparisonItem,
+        right: &ComparisonItem,
+    ) -> Result<bool, crate::ErrorIndicatorSet> {
         match unsafe {
             crate::api::typeobj::PyObject_RichCompareBool(
                 left.0,
@@ -1131,7 +1142,7 @@ impl SequenceCompareContext for AbiSequenceComparison {
                 RichCompareOp::Eq as c_int,
             )
         } {
-            -1 => Err(()),
+            -1 => Err(crate::ErrorIndicatorSet),
             0 => Ok(false),
             _ => Ok(true),
         }
@@ -1142,11 +1153,11 @@ impl SequenceCompareContext for AbiSequenceComparison {
         left: &ComparisonItem,
         right: &ComparisonItem,
         op: RichCompareOp,
-    ) -> Result<*mut PyObject, ()> {
+    ) -> Result<*mut PyObject, crate::ErrorIndicatorSet> {
         let result =
             unsafe { crate::api::typeobj::PyObject_RichCompare(left.0, right.0, op as c_int) };
         if result.is_null() {
-            Err(())
+            Err(crate::ErrorIndicatorSet)
         } else {
             Ok(result)
         }

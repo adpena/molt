@@ -1143,7 +1143,7 @@ pub extern "C" fn molt_itertools_chain_next(self_bits: u64) -> u64 {
                 let iterable = match iter_next_owned(_py, &iterables) {
                     Ok(Some(value)) => value,
                     Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
-                    Err(()) => return MoltObject::none().bits(),
+                    Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
                 };
                 let next_bits = molt_iter(_py, iterable.bits());
                 let next = unsafe { OwnedRuntimeValue::from_owned_bits(_py, next_bits) };
@@ -1161,7 +1161,7 @@ pub extern "C" fn molt_itertools_chain_next(self_bits: u64) -> u64 {
             let current = OwnedRuntimeValue::retain(_py, current_bits);
             match iter_next_owned(_py, &current) {
                 Ok(Some(value)) => return value.into_bits(),
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
                 Ok(None) => {
                     // Only retire the edge that this advance exhausted. A
                     // reentrant callback may already have replaced it.
@@ -1327,7 +1327,7 @@ pub extern "C" fn molt_itertools_islice_next(self_bits: u64) -> u64 {
             let value = match iter_next_owned(_py, &iterator) {
                 Ok(Some(value)) => value,
                 Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             let selected = idx == next_idx;
             idx = islice_advance_idx(idx);
@@ -1477,7 +1477,7 @@ pub extern "C" fn molt_itertools_cycle(iterable_bits: u64) -> u64 {
             match iter_next_owned(_py, &iterator) {
                 Ok(Some(value)) => values.push(value),
                 Ok(None) => break,
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             }
         }
         let list_ptr = alloc_list(_py, OwnedRuntimeValue::as_bits_slice(&values));
@@ -1607,7 +1607,7 @@ pub extern "C" fn molt_itertools_accumulate_next(self_bits: u64) -> u64 {
         let value = match iter_next_owned(_py, &iterator) {
             Ok(Some(value)) => value,
             Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
-            Err(()) => return MoltObject::none().bits(),
+            Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
         };
         // Read the phase after input callbacks: a reentrant next may have
         // installed the first total while this input was being produced.
@@ -1699,7 +1699,7 @@ pub extern "C" fn molt_itertools_batched_next(self_bits: u64) -> u64 {
         let mut chunk = Vec::with_capacity(n);
         for _ in 0..n {
             match iter_next_owned(_py, &iterator) {
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
                 Ok(Some(value)) => chunk.push(value),
                 Ok(None) => {
                     let displaced = unsafe { batched_iter_bits(self_ptr) };
@@ -1775,12 +1775,12 @@ pub extern "C" fn molt_itertools_compress_next(self_bits: u64) -> u64 {
             let value = match iter_next_owned(_py, &data_iterator) {
                 Ok(Some(value)) => value,
                 Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             let selector = match iter_next_owned(_py, &selectors_iterator) {
                 Ok(Some(value)) => value,
                 Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             let selected = is_truthy(_py, obj_from_bits(selector.bits()));
             if exception_pending(_py) {
@@ -1833,7 +1833,7 @@ pub extern "C" fn molt_itertools_dropwhile_next(self_bits: u64) -> u64 {
             let value = match iter_next_owned(_py, &iterator) {
                 Ok(Some(value)) => value,
                 Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             if unsafe { dropwhile_dropping(self_ptr) } == 0 {
                 return value.into_bits();
@@ -1904,7 +1904,7 @@ pub extern "C" fn molt_itertools_filterfalse_next(self_bits: u64) -> u64 {
             let value = match iter_next_owned(_py, &iterator) {
                 Ok(Some(value)) => value,
                 Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             let predicate = if use_identity {
                 OwnedRuntimeValue::retain(_py, value.bits())
@@ -1963,7 +1963,7 @@ pub extern "C" fn molt_itertools_pairwise_next(self_bits: u64) -> u64 {
             let first = match iter_next_owned(_py, &iterator) {
                 Ok(Some(value)) => value,
                 Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             let displaced = unsafe { pairwise_prev_bits(self_ptr) };
             unsafe {
@@ -1976,7 +1976,7 @@ pub extern "C" fn molt_itertools_pairwise_next(self_bits: u64) -> u64 {
         let value = match iter_next_owned(_py, &iterator) {
             Ok(Some(value)) => value,
             Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
-            Err(()) => return MoltObject::none().bits(),
+            Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
         };
         let tuple_ptr = alloc_tuple(_py, &[prev.bits(), value.bits()]);
         if tuple_ptr.is_null() {
@@ -2527,7 +2527,7 @@ pub extern "C" fn molt_itertools_groupby(iterable_bits: u64, key_bits: u64) -> u
 fn groupby_advance(_py: &PyToken, ptr: *mut u8, iterator: &OwnedRuntimeValue<'_>) -> bool {
     let keyfunc_bits = unsafe { groupby_keyfunc_bits(ptr) };
     let value = match iter_next_owned(_py, iterator) {
-        Err(()) => return false,
+        Err(molt_runtime_core::ErrorIndicatorSet) => return false,
         Ok(Some(value)) => value,
         Ok(None) => {
             let old_key = unsafe { groupby_curr_key_bits(ptr) };
@@ -2665,10 +2665,10 @@ pub extern "C" fn molt_itertools_groupby_iter_next(self_bits: u64) -> u64 {
             return raise_exception::<u64>(_py, "StopIteration", "");
         }
         let iterator = OwnedRuntimeValue::retain(_py, unsafe { groupby_iter_bits(parent_ptr) });
-        if unsafe { groupby_state(parent_ptr) } & GROUPBY_HAS_CURRENT == 0 {
-            if !groupby_advance(_py, parent_ptr, &iterator) {
-                return MoltObject::none().bits();
-            }
+        if unsafe { groupby_state(parent_ptr) } & GROUPBY_HAS_CURRENT == 0
+            && !groupby_advance(_py, parent_ptr, &iterator)
+        {
+            return MoltObject::none().bits();
         }
         let state = unsafe { groupby_state(parent_ptr) };
         if unsafe { groupby_active_grouper(parent_ptr) } != self_bits
@@ -2754,7 +2754,7 @@ pub extern "C" fn molt_itertools_starmap_next(self_bits: u64) -> u64 {
         let args = match iter_next_owned(_py, &iterator) {
             Ok(Some(value)) => value,
             Ok(None) => return raise_exception::<u64>(_py, "StopIteration", ""),
-            Err(()) => return MoltObject::none().bits(),
+            Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
         };
         let builder_bits = bridge_callargs_new(0, 0);
         if obj_from_bits(builder_bits).is_none() {
@@ -2827,7 +2827,7 @@ pub extern "C" fn molt_itertools_takewhile_next(self_bits: u64) -> u64 {
         let value = match iter_next_owned(_py, &iterator) {
             Ok(Some(value)) => value,
             Ok(None) => return finish(),
-            Err(()) => return MoltObject::none().bits(),
+            Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
         };
         let pred_bits = call_callable1(_py, predicate.bits(), value.bits());
         let pred = unsafe { OwnedRuntimeValue::from_owned_bits(_py, pred_bits) };
@@ -2929,7 +2929,7 @@ pub extern "C" fn molt_itertools_zip_longest_next(self_bits: u64) -> u64 {
             }
             let iterator = OwnedRuntimeValue::retain(_py, iter_bits);
             match iter_next_owned(_py, &iterator) {
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
                 Ok(Some(value)) => {
                     produced = true;
                     out.push(value);
@@ -3060,7 +3060,7 @@ pub extern "C" fn molt_itertools_tee_next(self_bits: u64) -> u64 {
         let step = iter_next_owned(_py, &iterator);
         unsafe { (*data_ptr).running = false };
         let value = match step {
-            Err(()) => return MoltObject::none().bits(),
+            Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             Ok(None) => {
                 unsafe { (*data_ptr).done = true };
                 return raise_exception::<u64>(_py, "StopIteration", "");

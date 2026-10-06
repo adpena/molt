@@ -248,19 +248,19 @@ pub(crate) fn normalize_throw_argument(py: &PyToken<'_>, carrier: u64) -> Option
     // the single-instance form preserves its existing traceback when omitted.
     let normalized = ExceptionValue::adopt(py, normalized);
     let restored_traceback = traceback.or_else(|| is_class.then(|| MoltObject::none().bits()));
-    if let Some(traceback) = restored_traceback {
-        if let Err(message) = crate::builtins::exceptions::exception_replace_field_bits(
+    if let Some(traceback) = restored_traceback
+        && let Err(message) = crate::builtins::exceptions::exception_replace_field_bits(
             py,
             normalized.bits(),
             crate::builtins::exceptions::ExceptionFieldSlot::Traceback,
             traceback,
-        ) {
-            return if exception_pending(py) {
-                None
-            } else {
-                raise_exception::<_>(py, "TypeError", message)
-            };
-        }
+        )
+    {
+        return if exception_pending(py) {
+            None
+        } else {
+            raise_exception::<_>(py, "TypeError", message)
+        };
     }
     Some(normalized.into_bits())
 }

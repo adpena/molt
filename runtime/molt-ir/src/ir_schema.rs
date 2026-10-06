@@ -283,57 +283,6 @@ pub fn validate_simple_ir_op_shapes(ir: &crate::SimpleIR) -> Result<(), Function
     Ok(())
 }
 
-#[cfg(test)]
-mod op_shape_tests {
-    use super::*;
-    use crate::tir::op_kinds_generated::SIMPLEIR_OP_SHAPES;
-
-    #[test]
-    fn generated_shapes_reject_incomplete_and_excess_payloads_without_defaults() {
-        for shape in SIMPLEIR_OP_SHAPES {
-            let value = (shape.value_rule == SimpleIrOpValueRule::NonNegative).then_some(0);
-            assert!(validate_op_shape(shape.kind, Some(shape.operands), value).is_ok());
-            assert!(matches!(
-                validate_op_shape(shape.kind, Some(shape.operands + 1), value),
-                Err(OpShapeDiagnostic {
-                    violation: OpShapeViolation::OperandCount { .. },
-                    ..
-                })
-            ));
-            if shape.operands > 0 {
-                for actual in [None, Some(shape.operands - 1)] {
-                    assert!(matches!(
-                        validate_op_shape(shape.kind, actual, value),
-                        Err(OpShapeDiagnostic {
-                            violation: OpShapeViolation::OperandCount { .. },
-                            ..
-                        })
-                    ));
-                }
-            } else {
-                assert!(validate_op_shape(shape.kind, None, value).is_ok());
-            }
-            if shape.value_rule == SimpleIrOpValueRule::NonNegative {
-                for value in [None, Some(-1), Some(i64::MIN)] {
-                    assert!(matches!(
-                        validate_op_shape(shape.kind, Some(shape.operands), value),
-                        Err(OpShapeDiagnostic {
-                            violation: OpShapeViolation::NonNegativeValue { .. },
-                            ..
-                        })
-                    ));
-                }
-                assert!(
-                    validate_op_shape(shape.kind, Some(shape.operands), Some(i64::MAX)).is_ok()
-                );
-            }
-        }
-        // Source lines are not code-slot identities and retain their distinct policy.
-        assert!(validate_op_shape("line", None, None).is_ok());
-        assert!(validate_op_shape("code_new", Some(9), None).is_ok());
-    }
-}
-
 /// Validate the control-label transport of the typed StateDispatch terminator.
 /// Source IR without a map is lifted before terminal activation lowering.
 /// Explicit maps must cover the saved state of each executable suspension;
@@ -791,4 +740,55 @@ fn validate_clean_symbol(value: &str, label: &str) -> Result<(), String> {
         return Err(format!("{label} must not contain control characters"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod op_shape_tests {
+    use super::*;
+    use crate::tir::op_kinds_generated::SIMPLEIR_OP_SHAPES;
+
+    #[test]
+    fn generated_shapes_reject_incomplete_and_excess_payloads_without_defaults() {
+        for shape in SIMPLEIR_OP_SHAPES {
+            let value = (shape.value_rule == SimpleIrOpValueRule::NonNegative).then_some(0);
+            assert!(validate_op_shape(shape.kind, Some(shape.operands), value).is_ok());
+            assert!(matches!(
+                validate_op_shape(shape.kind, Some(shape.operands + 1), value),
+                Err(OpShapeDiagnostic {
+                    violation: OpShapeViolation::OperandCount { .. },
+                    ..
+                })
+            ));
+            if shape.operands > 0 {
+                for actual in [None, Some(shape.operands - 1)] {
+                    assert!(matches!(
+                        validate_op_shape(shape.kind, actual, value),
+                        Err(OpShapeDiagnostic {
+                            violation: OpShapeViolation::OperandCount { .. },
+                            ..
+                        })
+                    ));
+                }
+            } else {
+                assert!(validate_op_shape(shape.kind, None, value).is_ok());
+            }
+            if shape.value_rule == SimpleIrOpValueRule::NonNegative {
+                for value in [None, Some(-1), Some(i64::MIN)] {
+                    assert!(matches!(
+                        validate_op_shape(shape.kind, Some(shape.operands), value),
+                        Err(OpShapeDiagnostic {
+                            violation: OpShapeViolation::NonNegativeValue { .. },
+                            ..
+                        })
+                    ));
+                }
+                assert!(
+                    validate_op_shape(shape.kind, Some(shape.operands), Some(i64::MAX)).is_ok()
+                );
+            }
+        }
+        // Source lines are not code-slot identities and retain their distinct policy.
+        assert!(validate_op_shape("line", None, None).is_ok());
+        assert!(validate_op_shape("code_new", Some(9), None).is_ok());
+    }
 }

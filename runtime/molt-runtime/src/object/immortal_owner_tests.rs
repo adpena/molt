@@ -152,7 +152,7 @@ impl LiteralFixture {
         }
     }
 
-    fn from_intrinsic(self) -> u64 {
+    fn construct_from_intrinsic(self) -> u64 {
         let bytes: &[u8] = match self {
             Self::String => b"literal ownership: non-interned string!",
             Self::Bytes => b"literal ownership bytes",
@@ -204,14 +204,14 @@ fn literal_intrinsics_keep_cache_and_returned_owners_mortal() {
             LiteralFixture::Bytes,
             LiteralFixture::BigInt,
         ] {
-            let first = fixture.from_intrinsic();
+            let first = fixture.construct_from_intrinsic();
             assert!(!crate::exception_pending(py));
             assert_eq!(
                 header_for_owned(first).metadata_flags & HEADER_FLAG_IMMORTAL,
                 0
             );
             assert_eq!(header_for_owned(first).ref_count, 2, "creator plus cache");
-            let second = fixture.from_intrinsic();
+            let second = fixture.construct_from_intrinsic();
             assert_eq!(second, first);
             assert_eq!(
                 header_for_owned(first).ref_count,
@@ -315,7 +315,7 @@ fn module_roots_and_literal_caches_survive_repeated_runtime_retirement() {
                 .into_iter()
                 .enumerate()
                 {
-                    let bits = fixture.from_intrinsic();
+                    let bits = fixture.construct_from_intrinsic();
                     assert_eq!(
                         header_for_owned(bits).metadata_flags & HEADER_FLAG_IMMORTAL,
                         0

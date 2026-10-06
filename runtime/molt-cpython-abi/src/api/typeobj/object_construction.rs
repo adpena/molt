@@ -4,11 +4,14 @@ use super::*;
 use crate::abi_types::*;
 use crate::api::{abstract_sequence, mapping, object, refcount::OwnedPyObject, sequences, strings};
 
-unsafe fn excess_args(args: *mut PyObject, kwds: *mut PyObject) -> Result<bool, ()> {
+unsafe fn excess_args(
+    args: *mut PyObject,
+    kwds: *mut PyObject,
+) -> Result<bool, crate::ErrorIndicatorSet> {
     unsafe {
         let positional = sequences::PyTuple_Size(args);
         if positional < 0 {
-            return Err(());
+            return Err(crate::ErrorIndicatorSet);
         }
         let keywords = if kwds.is_null() {
             0
@@ -16,7 +19,7 @@ unsafe fn excess_args(args: *mut PyObject, kwds: *mut PyObject) -> Result<bool, 
             mapping::PyDict_Size(kwds)
         };
         if keywords < 0 {
-            return Err(());
+            return Err(crate::ErrorIndicatorSet);
         }
         Ok(positional != 0 || keywords != 0)
     }
@@ -33,7 +36,7 @@ pub(crate) unsafe extern "C" fn object_init(
             return -1;
         }
         match excess_args(args, kwds) {
-            Err(()) => return -1,
+            Err(crate::ErrorIndicatorSet) => return -1,
             Ok(false) => return 0,
             Ok(true) => {}
         }
@@ -105,7 +108,7 @@ pub(crate) unsafe extern "C" fn object_new(
     unsafe {
         let _owner = OwnedPyObject::from_borrowed(tp.cast());
         match excess_args(args, kwds) {
-            Err(()) => return ptr::null_mut(),
+            Err(crate::ErrorIndicatorSet) => return ptr::null_mut(),
             Ok(false) => {}
             Ok(true) => {
                 if (*tp).tp_new.map(|f| f as *const ()) != Some(object_new as *const ()) {

@@ -576,10 +576,9 @@ pub extern "C" fn molt_event_loop_call_soon(loop_handle: u64, callback_bits: u64
 }
 
 /// Return a callback timer's id, signalling a parked loop whose wait it shortens.
-fn timer_registration_result(
-    py: &crate::PyToken<'_>,
-    timer: Option<Result<(u64, Option<Arc<LoopParker>>), ()>>,
-) -> u64 {
+type TimerRegistrationResult = Option<Result<(u64, Option<Arc<LoopParker>>), ()>>;
+
+fn timer_registration_result(py: &crate::PyToken<'_>, timer: TimerRegistrationResult) -> u64 {
     match timer {
         Some(Ok((id, parked))) => {
             signal_claimed(parked);

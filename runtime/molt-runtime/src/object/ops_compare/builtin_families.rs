@@ -133,7 +133,7 @@ impl BuiltinComparison {
         match containers::view_contains(py, self, view, item) {
             Ok(found) if !exception_pending(py) => MoltObject::from_bool(found).bits(),
             Ok(_) => MoltObject::none().bits(),
-            Err(()) => MoltObject::none().bits(),
+            Err(molt_runtime_core::ErrorIndicatorSet) => MoltObject::none().bits(),
         }
     }
 
@@ -196,22 +196,31 @@ fn boolean(value: bool) -> CompareValueOutcome {
     CompareValueOutcome::Value(MoltObject::from_bool(value).bits())
 }
 
-fn equality(value: Result<bool, ()>, op: RichCompareOp) -> CompareValueOutcome {
+fn equality(
+    value: Result<bool, molt_runtime_core::ErrorIndicatorSet>,
+    op: RichCompareOp,
+) -> CompareValueOutcome {
     match value {
         Ok(value) => boolean(if op == RichCompareOp::Ne {
             !value
         } else {
             value
         }),
-        Err(()) => CompareValueOutcome::Error,
+        Err(molt_runtime_core::ErrorIndicatorSet) => CompareValueOutcome::Error,
     }
 }
 
-fn element_equal(py: &PyToken<'_>, left: u64, right: u64) -> Result<bool, ()> {
+fn element_equal(
+    py: &PyToken<'_>,
+    left: u64,
+    right: u64,
+) -> Result<bool, molt_runtime_core::ErrorIndicatorSet> {
     match compare_object_eq_bool(py, obj_from_bits(left), obj_from_bits(right)) {
         CompareBoolOutcome::True => Ok(true),
         CompareBoolOutcome::False => Ok(false),
-        CompareBoolOutcome::Error | CompareBoolOutcome::NotComparable => Err(()),
+        CompareBoolOutcome::Error | CompareBoolOutcome::NotComparable => {
+            Err(molt_runtime_core::ErrorIndicatorSet)
+        }
     }
 }
 

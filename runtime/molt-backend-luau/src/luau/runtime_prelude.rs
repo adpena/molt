@@ -58,7 +58,7 @@ fn code_identifiers(source: &str) -> BTreeSet<String> {
                 // Member names and assignment/table keys are not references.
                 if !before.ends_with('.')
                     && !before.ends_with(':')
-                    && !(after.starts_with('=') && !after.starts_with("=="))
+                    && (!after.starts_with('=') || after.starts_with("=="))
                 {
                     names.push(name.to_string());
                 }

@@ -254,8 +254,10 @@ fn format_string_impl(
             format_field(
                 py,
                 field,
-                args,
-                kwargs_bits,
+                FormatArguments {
+                    values: args,
+                    keywords: kwargs_bits,
+                },
                 state,
                 recursion_depth,
                 &mut out,
@@ -390,16 +392,24 @@ fn resolve_format_field(
     Some(current_bits)
 }
 
+struct FormatArguments<'a> {
+    values: &'a [u64],
+    keywords: u64,
+}
+
 fn format_field(
     py: &PyToken<'_>,
     field: FormatField<'_>,
-    args: &[u64],
-    kwargs_bits: u64,
+    arguments: FormatArguments<'_>,
     state: &mut FormatState,
     recursion_depth: usize,
     out: &mut FormatWriter<'_, '_>,
     final_piece: bool,
 ) -> Option<()> {
+    let FormatArguments {
+        values: args,
+        keywords: kwargs_bits,
+    } = arguments;
     let mut value_bits = resolve_format_field(py, field.field_name, args, kwargs_bits, state)?;
     let mut value_owner = PtrDropGuard::preserving(
         obj_from_bits(value_bits)

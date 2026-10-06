@@ -1693,7 +1693,7 @@ mod tuple_hash_policy_tests {
                         0
                     );
                 }
-                let hash = (*(&raw const PyTuple_Type)).tp_hash.unwrap()(tuple);
+                let hash = PyTuple_Type.tp_hash.unwrap()(tuple);
                 let expected = if Py_hash_t::BITS == 32 {
                     expected32
                 } else {

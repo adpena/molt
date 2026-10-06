@@ -156,14 +156,14 @@ pub extern "C" fn molt_string_split(hay_bits: u64, needle_bits: u64) -> u64 {
 
 unsafe fn validate_string_split_separator(_py: &PyToken<'_>, needle_bits: u64) -> Option<*mut u8> {
     let needle = obj_from_bits(needle_bits);
-    if let Some(ptr) = needle.as_ptr() {
-        if unsafe { object_type_id(ptr) } == TYPE_ID_STRING {
-            if unsafe { string_len(ptr) } != 0 {
-                return Some(ptr);
-            }
-            raise_exception::<()>(_py, "ValueError", "empty separator");
-            return None;
+    if let Some(ptr) = needle.as_ptr()
+        && unsafe { object_type_id(ptr) } == TYPE_ID_STRING
+    {
+        if unsafe { string_len(ptr) } != 0 {
+            return Some(ptr);
         }
+        raise_exception::<()>(_py, "ValueError", "empty separator");
+        return None;
     }
     let msg = format!("must be str or None, not {}", type_name(_py, needle));
     raise_exception::<()>(_py, "TypeError", &msg);
@@ -1030,7 +1030,7 @@ mod split_contract_tests {
                     let result = split(hay, view, index);
                     match expected {
                         None => assert_error(py, result, "BufferError"),
-                        Some(bytes) if bytes.is_empty() => assert_error(py, result, "ValueError"),
+                        Some([]) => assert_error(py, result, "ValueError"),
                         Some(_) => {
                             assert!(!exception_pending(py));
                             assert!(obj_from_bits(result).as_ptr().is_some());

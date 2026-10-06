@@ -237,14 +237,16 @@ fn partial_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &functools.partial_class,
         "partial",
-        ClassSemanticPolicy::heap(true, true),
-        32,
-        Some(crate::object::ObjectShapeId::FunctoolsPartial),
-        Some(crate::object::class_storage::ClassSlotPolicy {
-            allows_dict: true,
-            allows_weakref: true,
-            variable_sized: false,
-        }),
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::heap(true, true),
+            layout_size: 32,
+            instance_shape: Some(crate::object::ObjectShapeId::FunctoolsPartial),
+            native_slots: Some(crate::object::class_storage::ClassSlotPolicy {
+                allows_dict: true,
+                allows_weakref: true,
+                variable_sized: false,
+            }),
+        },
         &methods,
     )
 }
@@ -293,10 +295,12 @@ fn cmpkey_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &functools.cmpkey_class,
         "_CmpKey",
-        ClassSemanticPolicy::heap(true, false),
-        24,
-        Some(crate::object::ObjectShapeId::FunctoolsCmpKey),
-        Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::heap(true, false),
+            layout_size: 24,
+            instance_shape: Some(crate::object::ObjectShapeId::FunctoolsCmpKey),
+            native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        },
         &methods,
     )
 }
@@ -340,14 +344,16 @@ fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &functools.lru_wrapper_class,
         "_lru_cache_wrapper",
-        ClassSemanticPolicy::heap(true, false),
-        64,
-        Some(crate::object::ObjectShapeId::FunctoolsLruWrapper),
-        Some(crate::object::class_storage::ClassSlotPolicy {
-            allows_dict: true,
-            allows_weakref: true,
-            variable_sized: false,
-        }),
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::heap(true, false),
+            layout_size: 64,
+            instance_shape: Some(crate::object::ObjectShapeId::FunctoolsLruWrapper),
+            native_slots: Some(crate::object::class_storage::ClassSlotPolicy {
+                allows_dict: true,
+                allows_weakref: true,
+                variable_sized: false,
+            }),
+        },
         &methods,
     )
 }
@@ -364,10 +370,12 @@ fn lru_factory_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &functools.lru_factory_class,
         "_LruCacheFactory",
-        ClassSemanticPolicy::heap(false, true),
-        24,
-        Some(crate::object::ObjectShapeId::FunctoolsLruFactory),
-        None,
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::heap(false, true),
+            layout_size: 24,
+            instance_shape: Some(crate::object::ObjectShapeId::FunctoolsLruFactory),
+            native_slots: None,
+        },
         &methods,
     )
 }
@@ -398,14 +406,16 @@ fn cacheinfo_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &functools.cacheinfo_class,
         "CacheInfo",
-        ClassSemanticPolicy::heap(false, true),
-        40,
-        Some(crate::object::ObjectShapeId::FunctoolsCacheInfo),
-        Some(crate::object::class_storage::ClassSlotPolicy {
-            allows_dict: false,
-            allows_weakref: false,
-            variable_sized: true,
-        }),
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::heap(false, true),
+            layout_size: 40,
+            instance_shape: Some(crate::object::ObjectShapeId::FunctoolsCacheInfo),
+            native_slots: Some(crate::object::class_storage::ClassSlotPolicy {
+                allows_dict: false,
+                allows_weakref: false,
+                variable_sized: true,
+            }),
+        },
         &methods,
     )
 }
@@ -769,7 +779,7 @@ pub extern "C" fn molt_functools_reduce(
                         "reduce() of empty sequence with no initial value",
                     );
                 }
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             }
         } else {
             OwnedRuntimeValue::retain(core_py, initializer_bits)
@@ -778,7 +788,7 @@ pub extern "C" fn molt_functools_reduce(
             let item = match iterator.next() {
                 Ok(Some(bits)) => unsafe { OwnedRuntimeValue::from_owned_bits(core_py, bits) },
                 Ok(None) => return value.into_bits(),
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             let next_bits = unsafe { call_callable2(_py, func_bits, value.bits(), item.bits()) };
             let next = unsafe { OwnedRuntimeValue::from_owned_bits(core_py, next_bits) };
@@ -797,8 +807,9 @@ fn update_wrapper_members(
     wrapped: u64,
     names: u64,
     update: bool,
-) -> Result<(), ()> {
-    let mut iterator = crate::object::iterable::OwnedIterator::new(py, names).ok_or(())?;
+) -> Result<(), molt_runtime_core::ErrorIndicatorSet> {
+    let mut iterator = crate::object::iterable::OwnedIterator::new(py, names)
+        .ok_or(molt_runtime_core::ErrorIndicatorSet)?;
     let outcome = (|| {
         while let Some(name) = iterator.next()? {
             let outcome = (|| {
@@ -811,7 +822,7 @@ fn update_wrapper_members(
                         if crate::builtins::attr::clear_attribute_error_if_pending(py) {
                             return Ok(());
                         }
-                        return Err(());
+                        return Err(molt_runtime_core::ErrorIndicatorSet);
                     }
                     let result = molt_set_attr_name(wrapper, name, value);
                     molt_cpython_abi::api::errors::with_preserved_error(|| {
@@ -824,11 +835,11 @@ fn update_wrapper_members(
                         molt_cpython_abi::api::errors::with_preserved_error(|| {
                             dec_ref_bits(py, target)
                         });
-                        return Err(());
+                        return Err(molt_runtime_core::ErrorIndicatorSet);
                     }
                     let Some(update_name) = attr_name_bits_from_bytes(py, b"update") else {
                         dec_ref_bits(py, target);
-                        return Err(());
+                        return Err(molt_runtime_core::ErrorIndicatorSet);
                     };
                     let method = crate::molt_get_attr_name(target, update_name);
                     molt_cpython_abi::api::errors::with_preserved_error(|| {
@@ -839,7 +850,7 @@ fn update_wrapper_members(
                         molt_cpython_abi::api::errors::with_preserved_error(|| {
                             dec_ref_bits(py, method)
                         });
-                        return Err(());
+                        return Err(molt_runtime_core::ErrorIndicatorSet);
                     }
                     let missing = crate::missing_bits(py);
                     let mut source = crate::molt_getattr_builtin(wrapped, name, missing);
@@ -858,7 +869,7 @@ fn update_wrapper_members(
                     });
                 }
                 if exception_pending(py) {
-                    Err(())
+                    Err(molt_runtime_core::ErrorIndicatorSet)
                 } else {
                     Ok(())
                 }

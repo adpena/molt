@@ -510,27 +510,31 @@ pub(crate) unsafe fn construct_regular_class(
                 crate::PtrDropGuard::new(ptr)
             })
         });
-        let instance = if resolved_new_is_default_object_new(new) || new.is_none() {
-            let init = class_attr_lookup_raw_mro(py, class, init_name);
-            if resolved_constructor_init_policy(new, init) == InitArgPolicy::RejectConstructorArgs
-                && (!positional.is_empty() || !names.is_empty())
-            {
-                return raise_exception::<_>(
+        let instance = match new {
+            Some(new) if !resolved_new_is_default_object_new(Some(new)) => {
+                crate::call::bind::call_bind_borrowed(
                     py,
-                    "TypeError",
-                    &format!("{}() takes no arguments", class_name_for_error(class_bits)),
-                );
+                    new,
+                    Some(class_bits),
+                    positional,
+                    names,
+                    values,
+                )
             }
-            alloc_instance_for_default_object_new(py, class)
-        } else {
-            crate::call::bind::call_bind_borrowed(
-                py,
-                new.unwrap(),
-                Some(class_bits),
-                positional,
-                names,
-                values,
-            )
+            _ => {
+                let init = class_attr_lookup_raw_mro(py, class, init_name);
+                if resolved_constructor_init_policy(new, init)
+                    == InitArgPolicy::RejectConstructorArgs
+                    && (!positional.is_empty() || !names.is_empty())
+                {
+                    return raise_exception::<_>(
+                        py,
+                        "TypeError",
+                        &format!("{}() takes no arguments", class_name_for_error(class_bits)),
+                    );
+                }
+                alloc_instance_for_default_object_new(py, class)
+            }
         };
         if exception_pending(py) {
             crate::call::discard_owned_call_result(py, instance);
@@ -727,9 +731,9 @@ pub(crate) unsafe fn function_set_attr_bits_deferred<'a, 'py>(
         if exception_pending(_py) {
             return Err(());
         }
-        if !obj_from_bits(attr_bits)
+        if obj_from_bits(attr_bits)
             .as_ptr()
-            .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_STRING)
+            .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_STRING)
         {
             raise_exception::<u64>(_py, "TypeError", "function attribute name must be a string");
             return Err(());

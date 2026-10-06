@@ -918,7 +918,7 @@ impl ObjectBridge {
     pub unsafe fn existing_type_projections(
         &self,
         bits: AbiHandle,
-    ) -> Result<Vec<crate::api::refcount::OwnedPyObject>, ()> {
+    ) -> Result<Vec<crate::api::refcount::OwnedPyObject>, crate::ErrorIndicatorSet> {
         unsafe {
             let mut roots = Vec::new();
             if let Some(pointer) = self.published_pyobj(bits, true) {
@@ -926,7 +926,7 @@ impl ObjectBridge {
                 // Its original error must survive every observer of the cohort.
                 if pointer.is_null() {
                     ensure_result_error(c"managed type projection is retiring");
-                    return Err(());
+                    return Err(crate::ErrorIndicatorSet);
                 }
                 roots.push(crate::api::refcount::OwnedPyObject::from_owned(pointer));
             }
@@ -981,7 +981,7 @@ impl ObjectBridge {
         bits: AbiHandle,
         mask: std::os::raw::c_ulong,
         flags: std::os::raw::c_ulong,
-    ) -> Result<(), ()> {
+    ) -> Result<(), crate::ErrorIndicatorSet> {
         unsafe {
             assert_eq!(
                 (crate::hooks::hooks_or_stubs().classify_heap)(bits),
@@ -1044,7 +1044,7 @@ impl ObjectBridge {
     pub(crate) unsafe fn expose_runtime_type_dictionary(
         &self,
         pointer: *mut PyTypeObject,
-    ) -> Result<Option<RuntimeTypeProjection>, ()> {
+    ) -> Result<Option<RuntimeTypeProjection>, crate::ErrorIndicatorSet> {
         let _gil = crate::hooks::RuntimeGilGuard::ensure();
         let Some(value) = self.molt_handle_for_pyobj(pointer.cast()) else {
             return Ok(None);
@@ -1069,7 +1069,7 @@ impl ObjectBridge {
                 RuntimeTypeProjection::Native
             }))
         } else {
-            Err(())
+            Err(crate::ErrorIndicatorSet)
         }
     }
 
@@ -1715,7 +1715,10 @@ impl ObjectBridge {
 
     /// The receiver belongs to the C method/context, never to a second public
     /// function-dictionary edge. The returned runtime handle is owned.
-    pub fn cfunction_self(&self, bits: AbiHandle) -> Option<Result<AbiHandle, ()>> {
+    pub fn cfunction_self(
+        &self,
+        bits: AbiHandle,
+    ) -> Option<Result<AbiHandle, crate::ErrorIndicatorSet>> {
         let _gil = crate::hooks::RuntimeGilGuard::ensure();
         let receiver = {
             let handle = self.handle_shard(bits).lock();
@@ -1730,14 +1733,17 @@ impl ObjectBridge {
         } else {
             unsafe { RuntimeValue::acquire(receiver) }
                 .map(RuntimeValue::into_owned_bits)
-                .ok_or(())
+                .ok_or(crate::ErrorIndicatorSet)
         })
     }
 
     /// The physical C member is the sole module-metadata authority for these
     /// callables. None means this value has no CFunction view; an error keeps
     /// the C exception intact for the runtime boundary to transfer.
-    pub fn cfunction_module(&self, bits: AbiHandle) -> Option<Result<AbiHandle, ()>> {
+    pub fn cfunction_module(
+        &self,
+        bits: AbiHandle,
+    ) -> Option<Result<AbiHandle, crate::ErrorIndicatorSet>> {
         let _gil = crate::hooks::RuntimeGilGuard::ensure();
         let module = {
             let handle = self.handle_shard(bits).lock();
@@ -1752,7 +1758,7 @@ impl ObjectBridge {
         } else {
             unsafe { RuntimeValue::acquire(module) }
                 .map(RuntimeValue::into_owned_bits)
-                .ok_or(())
+                .ok_or(crate::ErrorIndicatorSet)
         })
     }
 
@@ -1885,8 +1891,8 @@ impl ObjectBridge {
                 let dependency = stack.frames.len();
                 stack.frames.push(PublicationFrame {
                     bridge: self,
-                    bits: bits,
-                    pointer: pointer,
+                    bits,
+                    pointer,
                     dependency,
                     complete: false,
                     physical_type_pending: false,

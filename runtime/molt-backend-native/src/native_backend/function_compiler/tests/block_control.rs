@@ -108,9 +108,11 @@ fn empty_ssa_values() -> NativeSsaValues {
 
 #[test]
 fn unique_dominating_definition_still_requires_earlier_emission() {
-    let mut initializer = OpIR::default();
-    initializer.kind = "const".into();
-    initializer.out = Some("immutable".into());
+    let initializer = OpIR {
+        kind: "const".into(),
+        out: Some("immutable".into()),
+        ..Default::default()
+    };
     let ops = vec![
         OpIR {
             kind: "jump".into(),

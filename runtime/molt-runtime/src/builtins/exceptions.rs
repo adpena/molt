@@ -4452,9 +4452,9 @@ pub extern "C" fn molt_exception_add_note(self_bits: u64, note_bits: u64) -> u64
             return raise_exception::<u64>(_py, "TypeError", "add_note expects exception instance");
         }
         let note_obj = obj_from_bits(note_bits);
-        if !note_obj
+        if note_obj
             .as_ptr()
-            .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_STRING)
+            .is_none_or(|ptr| unsafe { object_type_id(ptr) } != TYPE_ID_STRING)
         {
             let note_type = type_name(_py, note_obj);
             let msg = if crate::object::ops_sys::runtime_target_at_least(_py, 3, 13) {
@@ -4494,9 +4494,9 @@ pub extern "C" fn molt_exception_add_note(self_bits: u64, note_bits: u64) -> u64
             }
         };
         dec_ref_bits(_py, name);
-        if !obj_from_bits(list_bits)
+        if obj_from_bits(list_bits)
             .as_ptr()
-            .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_LIST)
+            .is_none_or(|ptr| unsafe { object_type_id(ptr) } != TYPE_ID_LIST)
         {
             dec_ref_bits(_py, list_bits);
             return raise_exception::<u64>(

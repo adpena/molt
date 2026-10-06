@@ -316,11 +316,14 @@ fn normalize_builtins_value(bits: u64) -> u64 {
         return bits;
     }
     let dict_bits = unsafe { module_dict_bits(ptr) };
-    obj_from_bits(dict_bits)
+    if obj_from_bits(dict_bits)
         .as_ptr()
         .is_some_and(|dict_ptr| unsafe { object_type_id(dict_ptr) } == TYPE_ID_DICT)
-        .then_some(dict_bits)
-        .unwrap_or(bits)
+    {
+        dict_bits
+    } else {
+        bits
+    }
 }
 
 pub(crate) fn frame_effective_builtins_bits(_py: &PyToken<'_>, globals_bits: u64) -> u64 {
@@ -1354,14 +1357,14 @@ pub extern "C" fn molt_locals_builtin() -> u64 {
             }
         }
         // Fallback: for module frames, CPython uses f_locals == f_globals.
-        if let Some(entry) = entry {
-            if let Some(field) = frame_globals_field(_py, entry) {
-                let bits = field.bits;
-                if !field.owned && !obj_from_bits(bits).is_none() {
-                    inc_ref_bits(_py, bits);
-                }
-                return bits;
+        if let Some(entry) = entry
+            && let Some(field) = frame_globals_field(_py, entry)
+        {
+            let bits = field.bits;
+            if !field.owned && !obj_from_bits(bits).is_none() {
+                inc_ref_bits(_py, bits);
             }
+            return bits;
         }
         empty_dict_bits(_py)
     })

@@ -91,10 +91,7 @@ pub(super) fn float_subtype_binary_result(
     let integer = |value: MoltObject| {
         crate::builtins::numbers::index_bigint_integral_bits(value.bits()).is_some()
     };
-    if !(left_float || right_float)
-        || !(left_float || integer(lhs))
-        || !(right_float || integer(rhs))
-    {
+    if !((left_float && (right_float || integer(rhs))) || (right_float && integer(lhs))) {
         return None;
     }
     let Some(method) = attr_name_bits_from_bytes(py, method) else {
@@ -609,7 +606,7 @@ pub extern "C" fn molt_inplace_sub(a: u64, b: u64) -> u64 {
 
 /// The sequence-repeat index protocol and target Py_ssize_t boundary.
 /// This also admits negative counts before the caller clamps them to empty.
-
+///
 /// Exact builtin sequences have sequence-repeat slots, not numeric multiply
 /// slots. Defer their repetition until the other operand's numeric method.
 fn exact_repeat_sequence(py: &PyToken<'_>, value: MoltObject) -> Option<*mut u8> {
@@ -1722,7 +1719,7 @@ fn mod_py_i128(value: i128, modulus: i128) -> i128 {
 fn mod_pow_i128(_py: &PyToken<'_>, mut base: i128, exp: u64, modulus: i128) -> i128 {
     let mut result: i128 = 1;
     base = mod_py_i128(base, modulus);
-    let mut exp_val = exp as u64;
+    let mut exp_val = exp;
     while exp_val > 0 {
         if (exp_val & 1) != 0 {
             result = mod_py_i128(result * base, modulus);

@@ -345,7 +345,7 @@ fn spec_construction_and_repeated_abi_bootstrap_preserve_live_builtin_shells() {
             name: c"lifecycle.BootstrapOwner".as_ptr(),
             basicsize: 0,
             itemsize: 0,
-            flags: Py_TPFLAGS_DEFAULT as u32,
+            flags: Py_TPFLAGS_DEFAULT,
             slots: slots.as_mut_ptr(),
         };
         for _ in 0..2 {
@@ -417,7 +417,7 @@ fn generic_object_and_spec_type_retire_through_their_real_allocation_owners() {
             name: c"native_lifecycle.SpecOwner".as_ptr(),
             basicsize: std::mem::size_of::<PyObject>() as i32,
             itemsize: 0,
-            flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE) as u32,
+            flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE),
             slots: slots.as_mut_ptr(),
         };
         let class = refcount::OwnedPyObject::from_owned(typeobj::PyType_FromMetaclass(
@@ -531,7 +531,7 @@ fn spec_member_storage_bases_and_allocator_failures_share_one_transaction() {
             name: c"lifecycle.BasesOwner".as_ptr(),
             basicsize: std::mem::size_of::<PyObject>() as i32,
             itemsize: 0,
-            flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE) as u32,
+            flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE),
             slots: base_slots.as_mut_ptr(),
         };
         let base = refcount::OwnedPyObject::from_owned(typeobj::PyType_FromMetaclass(
@@ -575,7 +575,7 @@ fn spec_member_storage_bases_and_allocator_failures_share_one_transaction() {
             name: c"lifecycle.RelativeMember".as_ptr(),
             basicsize: -(std::mem::size_of::<Py_ssize_t>() as i32),
             itemsize: 0,
-            flags: Py_TPFLAGS_DEFAULT as u32,
+            flags: Py_TPFLAGS_DEFAULT,
             slots: slots.as_mut_ptr(),
         };
         for input in [ptr::null_mut(), base.as_ptr()] {
@@ -720,7 +720,7 @@ fn heap_subtype_owns_members_finalization_and_foreign_base_type_release() {
             name: c"lifecycle.ForeignDerived".as_ptr(),
             basicsize: 0,
             itemsize: 0,
-            flags: Py_TPFLAGS_DEFAULT as u32,
+            flags: Py_TPFLAGS_DEFAULT,
             slots: slots.as_mut_ptr(),
         };
         let class = refcount::OwnedPyObject::from_owned(typeobj::PyType_FromSpecWithBases(
@@ -759,7 +759,7 @@ fn heap_subtype_owns_members_finalization_and_foreign_base_type_release() {
         spec.name = c"lifecycle.OwnedMember".as_ptr();
         spec.basicsize =
             (std::mem::size_of::<PyObject>() + std::mem::size_of::<*mut PyObject>()) as i32;
-        spec.flags |= Py_TPFLAGS_HAVE_GC as u32;
+        spec.flags |= Py_TPFLAGS_HAVE_GC;
         let class = refcount::OwnedPyObject::from_owned(typeobj::PyType_FromSpecWithBases(
             &raw mut spec,
             ptr::null_mut(),
@@ -845,7 +845,7 @@ fn terminal_type_change_retires_the_old_class_and_uses_the_new_free() {
             name: c"lifecycle.TerminalOld".as_ptr(),
             basicsize: std::mem::size_of::<PyObject>() as i32,
             itemsize: 0,
-            flags: Py_TPFLAGS_DEFAULT as u32,
+            flags: Py_TPFLAGS_DEFAULT,
             slots: slots.as_mut_ptr(),
         };
         let old = refcount::OwnedPyObject::from_owned(typeobj::PyType_FromSpecWithBases(
@@ -912,7 +912,7 @@ fn spec_offsets_are_checked_and_negative_dict_owners_are_collected() {
             name: c"lifecycle.InvalidOffset".as_ptr(),
             basicsize: std::mem::size_of::<PyObject>() as i32,
             itemsize: 0,
-            flags: Py_TPFLAGS_DEFAULT as u32,
+            flags: Py_TPFLAGS_DEFAULT,
             slots: slots.as_mut_ptr(),
         };
         assert!(typeobj::PyType_FromSpecWithBases(&raw mut spec, ptr::null_mut()).is_null());
@@ -1014,7 +1014,7 @@ fn non_gc_resurrection_and_type_change_reread_the_terminal_storage_owner() {
             name: c"lifecycle.BeforeFinalization".as_ptr(),
             basicsize: std::mem::size_of::<PyObject>() as i32,
             itemsize: 0,
-            flags: Py_TPFLAGS_DEFAULT as u32,
+            flags: Py_TPFLAGS_DEFAULT,
             slots: slots.as_mut_ptr(),
         };
         let old_class = refcount::OwnedPyObject::from_owned(typeobj::PyType_FromSpecWithBases(
@@ -1085,7 +1085,7 @@ fn native_numeric_tuple_and_bytearray_subclasses_use_their_own_allocator() {
             name: c"lifecycle.NativeBuiltinDerived".as_ptr(),
             basicsize: 0,
             itemsize: 0,
-            flags: Py_TPFLAGS_DEFAULT as u32,
+            flags: Py_TPFLAGS_DEFAULT,
             slots: slots.as_mut_ptr(),
         };
         for base in [
@@ -1128,7 +1128,7 @@ fn heap_metaclass_cycle_exposes_its_actual_class_owner_to_the_collector() {
             name: c"lifecycle.HeapMetaclass".as_ptr(),
             basicsize: 0,
             itemsize: 0,
-            flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE) as u32,
+            flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE),
             slots: slots.as_mut_ptr(),
         };
         let metaclass = refcount::OwnedPyObject::from_owned(typeobj::PyType_FromSpecWithBases(
@@ -1315,7 +1315,7 @@ fn rejected_custom_type_allocation_revokes_custody_before_raw_free() {
                 name: c"storage.RejectedType".as_ptr(),
                 basicsize: std::mem::size_of::<PyObject>() as i32,
                 itemsize: 0,
-                flags: Py_TPFLAGS_DEFAULT as u32,
+                flags: Py_TPFLAGS_DEFAULT,
                 slots: ptr::null_mut(),
             };
             let class = typeobj::PyType_FromMetaclass(
@@ -1391,7 +1391,7 @@ fn raw_custom_type_allocator_preserves_captured_member_extent_and_heap_ownership
             name: c"storage.Raw-AllocatedType".as_ptr(),
             basicsize: (std::mem::size_of::<PyObject>() + std::mem::size_of::<Py_ssize_t>()) as i32,
             itemsize: 0,
-            flags: Py_TPFLAGS_DEFAULT as u32,
+            flags: Py_TPFLAGS_DEFAULT,
             slots: slots.as_mut_ptr(),
         };
         let class = refcount::OwnedPyObject::from_owned(typeobj::PyType_FromMetaclass(

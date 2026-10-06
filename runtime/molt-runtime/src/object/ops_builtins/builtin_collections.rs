@@ -535,7 +535,7 @@ fn sum_items<'a, 'py>(
                 drop(iter);
                 return Some(sum.finish(_py));
             }
-            Err(()) => {
+            Err(molt_runtime_core::ErrorIndicatorSet) => {
                 sum.release(_py);
                 return None;
             }
@@ -613,7 +613,7 @@ fn molt_minmax_builtin(
         let item = match iter.next() {
             Ok(Some(item)) => item,
             Ok(None) => break true,
-            Err(()) => break false,
+            Err(molt_runtime_core::ErrorIndicatorSet) => break false,
         };
         let value = if use_key {
             let value = unsafe { call_callable1(_py, key_bits, item) };

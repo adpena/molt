@@ -164,12 +164,8 @@ pub extern "C" fn molt_code_slot_set(code_id: u64, code_bits: u64, globals_bits:
 }
 
 fn code_slot_acquire(_py: &PyToken<'_>, code_id: u64) -> Option<CodeNamespace> {
-    let Some(slots) = runtime_state(_py).code_slots.get() else {
-        return None;
-    };
-    let Some(idx) = usize::try_from(code_id).ok() else {
-        return None;
-    };
+    let slots = runtime_state(_py).code_slots.get()?;
+    let idx = usize::try_from(code_id).ok()?;
     let binding = slots.get(idx)?.acquire(_py);
     if binding.code_bits == 0 {
         binding.release(_py);
@@ -2593,10 +2589,7 @@ mod print_stream_tests {
                 let name = MoltObject::from_ptr(name_ptr).bits();
                 let stdout = MoltObject::from_ptr(stdout_ptr).bits();
                 let module = match molt_module_cache_get(name) {
-                    bits if obj_from_bits(bits).is_none() => {
-                        let module = molt_module_new(name);
-                        module
-                    }
+                    bits if obj_from_bits(bits).is_none() => molt_module_new(name),
                     module => module,
                 };
                 crate::builtins::module_table::publish_interpreter_sys_for_test(_py, module);
