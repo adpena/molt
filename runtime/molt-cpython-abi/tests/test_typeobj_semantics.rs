@@ -64,7 +64,7 @@ fn install() {
     hooks.classify_heap = fake_classify_heap;
     hooks.inc_ref = noop_ref;
     hooks.dec_ref = noop_ref;
-    support::prepare_abi_test_thread(hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 unsafe fn read_str(py: *mut PyObject) -> Vec<u8> {
     let bits = molt_cpython_abi::bridge::GLOBAL_BRIDGE
@@ -199,9 +199,9 @@ fn hash_of_native_int_is_its_value() {
 fn hash_of_unhashable_foreign_raises_typeerror() {
     install();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
-    // Foreign type with tp_hash == NULL — CPython raises "unhashable type".
     let mut ty = new_type();
     ty.tp_name = c"Unhashable".as_ptr();
+    ty.tp_hash = Some(molt_cpython_abi::api::typeobj::PyObject_HashNotImplemented);
     let ty = leak_type(ty);
     let inst = make_instance(ty);
     let h = unsafe { molt_cpython_abi::api::typeobj::PyObject_Hash(inst) };
@@ -458,7 +458,12 @@ fn heap_names_use_distinct_live_unicode_fields() {
     use molt_cpython_abi::abi_types::{Py_TPFLAGS_HEAPTYPE, PyHeapTypeObject};
     use molt_cpython_abi::api::{refcount, strings, typeobj};
     install();
-    let mut heap: Box<PyHeapTypeObject> = Box::new(unsafe { std::mem::zeroed() });
+    let heap = unsafe {
+        typeobj::PyType_GenericAlloc(&raw mut molt_cpython_abi::abi_types::PyType_Type, 0)
+    }
+    .cast::<PyHeapTypeObject>();
+    assert!(!heap.is_null());
+    let heap = unsafe { &mut *heap };
     heap.ht_type.tp_flags = Py_TPFLAGS_HEAPTYPE;
     heap.ht_type.tp_name = c"cached.Unrelated".as_ptr();
     unsafe {
@@ -475,11 +480,13 @@ fn heap_names_use_distinct_live_unicode_fields() {
         refcount::Py_DECREF(qualified);
         refcount::Py_DECREF(heap.ht_name);
         let raw_name = [0xed, 0xa0, 0x80];
-        heap.ht_name = strings::PyUnicode_FromStringAndSize(raw_name.as_ptr().cast(), 3);
+        let surrogate = 0xd800_u16;
+        heap.ht_name = strings::PyUnicode_FromKindAndData(2, (&raw const surrogate).cast(), 1);
         let renamed = typeobj::PyType_GetName(tp);
         assert_eq!(read_str(renamed), raw_name);
         refcount::Py_DECREF(renamed);
         refcount::Py_DECREF(heap.ht_name);
         refcount::Py_DECREF(heap.ht_qualname);
+        molt_cpython_abi::api::memory::PyObject_GC_Del((heap as *mut PyHeapTypeObject).cast());
     }
 }

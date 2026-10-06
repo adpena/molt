@@ -387,7 +387,7 @@ fn init() {
     hooks.tuple_len = tuple_len;
     hooks.tuple_item = tuple_item;
     hooks.tuple_set = tuple_set;
-    support::prepare_abi_test_thread(hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 fn proxy(value: i128) -> *mut PyObject {

@@ -16,7 +16,7 @@ static LOCK: Mutex<()> = Mutex::new(());
 fn setup() {
     let mut hooks = support::stub_runtime_hooks();
     support::fake_runtime::wire(&mut hooks);
-    support::prepare_abi_test_thread(hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
     unsafe { errors::PyErr_Clear() };
     *REC.lock().unwrap() = Record::default();
 }

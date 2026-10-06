@@ -25,7 +25,7 @@ use std::ffi::CStr;
 fn install_hooks() {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire(&mut hooks);
-    support::prepare_abi_test_thread(hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 /// Build a module named `name` and set its `__name__` in its own dict via the

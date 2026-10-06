@@ -56,7 +56,7 @@ fn init_hooks() {
     hooks.list_item = list_item_hook;
     hooks.object_length = object_length_hook;
     hooks.object_is_true = object_truth_hook;
-    support::prepare_abi_test_thread(hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 fn native_list(nonempty: bool) -> *mut PyObject {

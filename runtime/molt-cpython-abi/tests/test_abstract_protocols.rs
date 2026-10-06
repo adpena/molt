@@ -12,7 +12,9 @@ use molt_lang_obj_model::MoltObject;
 fn install() -> support::AbiTestThreadStateTransaction {
     let mut hooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire_sequences(&mut hooks);
-    support::AbiTestThreadStateTransaction::new(hooks)
+    let transaction = support::AbiTestThreadStateTransaction::new(hooks);
+    support::fake_runtime::prepare_class_bindings();
+    transaction
 }
 fn register(bits: u64) -> OwnedPyObject {
     let value = unsafe { OwnedPyObject::from_owned(GLOBAL_BRIDGE.owned_handle_to_pyobj(bits)) };
