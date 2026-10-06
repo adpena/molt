@@ -135,6 +135,10 @@ fn parse_child_rlimit_gb_env(name: &str) -> Option<Option<u64>> {
     Some(Some(bytes as u64))
 }
 
+/// OS memory cap for a spawned child. The parent's Layer-1 tracker limit maps
+/// to the same backstop budget runtime init installs (limit plus headroom, so a
+/// Molt child's own tracker fires first); an explicit `MOLT_CHILD_RLIMIT_*`
+/// operator cap applies exactly and may only tighten it.
 #[cfg(unix)]
 fn child_memory_rlimit_bytes() -> Option<u64> {
     for candidate in [
@@ -147,7 +151,9 @@ fn child_memory_rlimit_bytes() -> Option<u64> {
     }
 
     let mut limit = active_parent_resource_limit("MOLT_RESOURCE_MAX_MEMORY")
-        .and_then(|value| u64::try_from(value).ok());
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .and_then(|value| u64::try_from(crate::resource::memory_backstop_budget(value)).ok());
     for candidate in [
         parse_child_rlimit_bytes_env("MOLT_CHILD_RLIMIT_BYTES"),
         parse_child_rlimit_gb_env("MOLT_CHILD_RLIMIT_GB"),
@@ -164,6 +170,15 @@ pub(super) fn apply_child_memory_rlimit(cmd: &mut Command) {
     let Some(limit_bytes) = child_memory_rlimit_bytes() else {
         return;
     };
+    apply_child_committed_memory_rlimit(cmd, limit_bytes);
+}
+
+/// Linux charges `RLIMIT_DATA` for every writable private mapping, so it caps
+/// what the child can commit. `RLIMIT_AS` would also charge sparse
+/// reservations (allocator arenas, the mapped executable, guard regions) and
+/// break healthy children before they allocate anything.
+#[cfg(target_os = "linux")]
+fn apply_child_committed_memory_rlimit(cmd: &mut Command, limit_bytes: u64) {
     use std::os::unix::process::CommandExt;
     unsafe {
         cmd.pre_exec(move || {
@@ -172,13 +187,19 @@ pub(super) fn apply_child_memory_rlimit(cmd: &mut Command) {
                 rlim_cur: hard_limit,
                 rlim_max: hard_limit,
             };
-            if libc::setrlimit(libc::RLIMIT_AS, &limit) < 0 {
+            if libc::setrlimit(libc::RLIMIT_DATA, &limit) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
         });
     }
 }
+
+/// Other Unix kernels have no committed-memory rlimit (macOS's `RLIMIT_DATA`
+/// governs only `brk`); the child's own tracker and the parent's guard remain
+/// the enforcement.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn apply_child_committed_memory_rlimit(_cmd: &mut Command, _limit_bytes: u64) {}
 
 #[cfg(unix)]
 pub(super) fn configure_unix_owned_process_group(
@@ -289,6 +310,24 @@ mod tests {
             ],
             || {
                 assert_eq!(child_memory_rlimit_bytes(), Some(4096));
+            },
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_memory_rlimit_keeps_backstop_headroom_over_runtime_limit() {
+        with_env(
+            &[
+                ("MOLT_RESOURCE_MAX_MEMORY", Some("8192")),
+                ("MOLT_CHILD_RLIMIT_BYTES", None),
+                ("MOLT_CHILD_RLIMIT_GB", None),
+            ],
+            || {
+                assert_eq!(
+                    child_memory_rlimit_bytes(),
+                    Some(crate::resource::memory_backstop_budget(8192) as u64)
+                );
             },
         );
     }

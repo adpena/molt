@@ -581,8 +581,8 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   `MOLT_RESOURCE_MAX_MEMORY`, installed via the global tracker factory so worker
   threads inherit it. Enforcement is two-layer: the precise in-VM
   `LimitedTracker` (Layer 1, cross-target, deterministic, uncatchable
-  `MemoryError`) plus an OS-level `RLIMIT_AS`/`RLIMIT_DATA` backstop (Layer 2,
-  native; effective on Linux, best-effort on macOS, n/a on WASM). The
+  `MemoryError`) plus an OS-level committed-memory backstop (Layer 2: Linux
+  `RLIMIT_DATA` above the startup footprint; n/a on macOS, Windows, and WASM). The
   capability-manifest per-operation result caps (`max_pow_result`,
   `max_repeat_result`, `max_shift_result`, `max_string_result`) now reach the
   Rust tracker without being dropped at the env boundary. Default is unchanged

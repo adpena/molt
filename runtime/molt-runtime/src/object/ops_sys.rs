@@ -694,21 +694,22 @@ fn resource_limits_from_env() -> Result<Option<crate::resource::ResourceLimits>,
 ///
 /// Two-layer enforcement: the parsed limits install the precise in-VM
 /// [`LimitedTracker`] (Layer 1, cross-target, deterministic) via the global
-/// factory, and — when a memory cap is set — an OS-level `RLIMIT_AS` backstop
-/// (Layer 2, native only) bounds anything that bypasses the tracker. The
+/// factory, and — when a memory cap is set — an OS-level committed-memory
+/// backstop (Layer 2, Linux `RLIMIT_DATA` above the startup footprint) bounds
+/// anything that bypasses the tracker. The
 /// backstop never replaces the tracker; it only converts a runaway into a clean
 /// failure instead of an OOM-kill of the host.
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_runtime_init_resources() {
-    use crate::resource::{install_address_space_backstop, install_global_limited_tracker};
+    use crate::resource::{install_global_limited_tracker, install_memory_backstop};
 
     match resource_limits_from_env() {
         Ok(Some(limits)) => {
-            // Layer 2 (OS backstop) FIRST so the address-space ceiling is in
-            // place before any tracker-allocated structures grow. Layer 1
+            // Layer 2 (OS backstop) FIRST so the committed-memory ceiling is
+            // in place before any tracker-allocated structures grow. Layer 1
             // remains the deterministic contract.
             if let Some(max_memory) = limits.max_memory {
-                install_address_space_backstop(max_memory);
+                install_memory_backstop(max_memory);
             }
             install_global_limited_tracker(limits);
         }
