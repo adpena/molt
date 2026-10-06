@@ -11,13 +11,15 @@ from tools import memory_guard
 
 
 def _run(command: list[str], *, on_spawn=None):
+    # Default orphan cleanup: on POSIX it is the scratch-closure authority, so
+    # disabling it makes every successful child an infrastructure failure.
+    # A Windows Job supersedes it inside the guard.
     return memory_guard.run_guarded(
         command,
         max_rss_kb=512 * 1024,
         max_total_rss_kb=768 * 1024,
         poll_interval=0.02,
         capture_output=True,
-        cleanup_orphans=False,
         on_spawn=on_spawn,
     )
 
@@ -181,7 +183,6 @@ def test_owner_cancellation_uses_guard_custody_and_proves_child_closure(tmp_path
         max_total_rss_kb=768 * 1024,
         poll_interval=0.02,
         capture_output=True,
-        cleanup_orphans=False,
         on_spawn=lambda _pid: cancellation.touch(),
         cancellation_requested=cancellation.exists,
     )

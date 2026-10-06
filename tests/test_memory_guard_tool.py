@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 import dataclasses
 import io
 import json
@@ -12,12 +12,14 @@ import subprocess
 import sys
 import time
 import types
+from typing import Any
 
 import pytest
 
 from tools.memory_guard_core import process_custody, process_model
 
 import tools.memory_guard as memory_guard
+from molt.backend_daemon_suite_custody import LEASE_ENV
 from molt.custody_layout import unconfigured_state_root
 from molt.memory_guard_paths import (
     active_guard_marker_dir,
@@ -82,6 +84,19 @@ def fake_popen_without_windows_job(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda: None,
     )
     _patch_temporary_artifact_closure_closed(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def no_inherited_daemon_suite_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep guards under test out of the session's backend-daemon suite lease.
+
+    The pytest session sentinel exports its live lease through os.environ so
+    compiled test programs share one daemon. A guard under test inherits that
+    environment and would sample the tree for, and transfer into, the live
+    session lease after its child exits, so its result would depend on
+    whether the file runs under the session sentinel.
+    """
+    monkeypatch.delenv(LEASE_ENV, raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -213,11 +228,39 @@ def _windows_job_cleanup(*, active_processes: int) -> memory_guard.WindowsJobCle
 
 def _patch_guard_popen_without_windows_job(
     monkeypatch: pytest.MonkeyPatch,
-    popen_factory: object,
+    popen_factory: Callable[..., Any],
 ) -> None:
-    """Keep synthetic Popen tests isolated from real kernel Job handles."""
+    """Install a synthetic child handle with no kernel presence.
 
-    monkeypatch.setattr(memory_guard.subprocess, "Popen", popen_factory)
+    The guard reads its child's process group, session and birth from the
+    kernel by PID. A synthetic PID can name an unrelated live host process
+    (on a busy Mac it often does), which binds the fake child to a foreign
+    birth and makes the result depend on the host. Those reads report the
+    synthetic child as unobservable on every host, exactly as when the PID
+    is free. No synthetic child receives a real Windows Job handle either.
+    """
+
+    synthetic_pids: set[int] = set()
+
+    def spawn(*args: object, **kwargs: object) -> Any:
+        proc = popen_factory(*args, **kwargs)
+        synthetic_pids.add(proc.pid)
+        return proc
+
+    def unobservable_if_synthetic(read: Callable[[int], Any]) -> Callable[[int], Any]:
+        return lambda pid: None if pid in synthetic_pids else read(pid)
+
+    monkeypatch.setattr(memory_guard.subprocess, "Popen", spawn)
+    for owner, name in (
+        (memory_guard, "_safe_getpgid"),
+        (memory_guard, "_safe_getsid"),
+        (process_custody, "_safe_getpgid"),
+        (process_custody, "_safe_getsid"),
+        (process_model, "process_started_at_ns"),
+    ):
+        monkeypatch.setattr(
+            owner, name, unobservable_if_synthetic(getattr(owner, name))
+        )
     monkeypatch.setattr(
         memory_guard._win_job,
         "create_kill_on_close_job",
@@ -1754,9 +1797,15 @@ def test_terminate_watched_processes_kills_only_root_group_and_tracked_pids(
     if process_custody.os.name != "posix":
         pytest.skip("requires POSIX process custody")
     samples = {
-        100: process_custody.ProcessSample(100, 1, 10, "root", pgid=100),
-        101: process_custody.ProcessSample(101, 1, 20, "child", pgid=101),
-        102: process_custody.ProcessSample(102, 1, 30, "grandchild", pgid=102),
+        100: process_custody.ProcessSample(
+            100, 1, 10, "root", pgid=100, started_at_ns=100
+        ),
+        101: process_custody.ProcessSample(
+            101, 1, 20, "child", pgid=101, started_at_ns=101
+        ),
+        102: process_custody.ProcessSample(
+            102, 1, 30, "grandchild", pgid=102, started_at_ns=102
+        ),
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
@@ -1802,6 +1851,7 @@ def test_terminate_watched_processes_skips_host_control_plane_root_group(
             500_000,
             "/Applications/Codex.app/Contents/MacOS/Codex",
             pgid=100,
+            started_at_ns=100,
         ),
         101: process_custody.ProcessSample(
             101,
@@ -1809,6 +1859,7 @@ def test_terminate_watched_processes_skips_host_control_plane_root_group(
             250_000,
             "/Users/adpena/Projects/molt/target/debug/molt-backend",
             pgid=100,
+            started_at_ns=101,
         ),
     }
     sent_groups: list[tuple[int, int]] = []
@@ -1968,6 +2019,7 @@ def test_terminate_single_process_group_refuses_protected_group(monkeypatch) -> 
             500_000,
             "/Applications/Codex.app/Contents/MacOS/Codex",
             pgid=100,
+            started_at_ns=100,
         ),
         101: memory_guard.ProcessSample(
             101,
@@ -1975,6 +2027,7 @@ def test_terminate_single_process_group_refuses_protected_group(monkeypatch) -> 
             250_000,
             "/Users/adpena/Projects/molt/target/debug/molt-backend",
             pgid=100,
+            started_at_ns=101,
         ),
     }
     sent_groups: list[tuple[int, int]] = []
@@ -2000,6 +2053,7 @@ def test_escalation_pid_signal_revalidates_identity(monkeypatch) -> None:
         20,
         "/Users/adpena/Projects/molt/target/debug/molt-backend --owned",
         pgid=101,
+        started_at_ns=101,
     )
     reused = memory_guard.ProcessSample(
         101,
@@ -2007,6 +2061,7 @@ def test_escalation_pid_signal_revalidates_identity(monkeypatch) -> None:
         20,
         "/Applications/Codex.app/Contents/MacOS/Codex",
         pgid=101,
+        started_at_ns=9101,
     )
     sent_pids: list[tuple[int, int]] = []
     monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
@@ -2037,6 +2092,7 @@ def test_escalation_group_signal_rechecks_protected_group(monkeypatch) -> None:
         20,
         "/Users/adpena/Projects/molt/target/debug/molt-backend --owned",
         pgid=101,
+        started_at_ns=101,
     )
     protected = memory_guard.ProcessSample(
         101,
@@ -2044,6 +2100,7 @@ def test_escalation_group_signal_rechecks_protected_group(monkeypatch) -> None:
         20,
         "/Applications/Codex.app/Contents/MacOS/Codex",
         pgid=101,
+        started_at_ns=101,
     )
     sent_groups: list[tuple[int, int]] = []
     monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
@@ -2074,6 +2131,7 @@ def test_sigterm_pid_helper_revalidates_identity_before_signal(monkeypatch) -> N
         20,
         "/Users/adpena/Projects/molt/target/debug/molt-backend --owned",
         pgid=101,
+        started_at_ns=101,
     )
     reused = memory_guard.ProcessSample(
         101,
@@ -2081,6 +2139,7 @@ def test_sigterm_pid_helper_revalidates_identity_before_signal(monkeypatch) -> N
         20,
         "/Applications/Codex.app/Contents/MacOS/Codex",
         pgid=101,
+        started_at_ns=9101,
     )
     sent_pids: list[tuple[int, int]] = []
     monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
@@ -2108,13 +2167,16 @@ def test_terminate_watched_processes_revalidates_escaped_pid_before_sigterm(
     if process_custody.os.name != "posix":
         pytest.skip("requires POSIX process custody")
     observed = {
-        100: process_custody.ProcessSample(100, 1, 10, "root", pgid=100),
+        100: process_custody.ProcessSample(
+            100, 1, 10, "root", pgid=100, started_at_ns=100
+        ),
         101: process_custody.ProcessSample(
             101,
             100,
             20,
             "/Users/adpena/Projects/molt/target/debug/molt-backend --owned",
             pgid=777,
+            started_at_ns=101,
         ),
     }
     reused = {
@@ -2124,6 +2186,7 @@ def test_terminate_watched_processes_revalidates_escaped_pid_before_sigterm(
             20,
             "/Applications/Codex.app/Contents/MacOS/Codex",
             pgid=777,
+            started_at_ns=9101,
         ),
     }
     sent_groups: list[tuple[int, int]] = []
@@ -2165,13 +2228,16 @@ def test_terminate_watched_processes_revalidates_root_group_before_sigterm(
     if process_custody.os.name != "posix":
         pytest.skip("requires POSIX process custody")
     observed = {
-        100: process_custody.ProcessSample(100, 1, 10, "root", pgid=100),
+        100: process_custody.ProcessSample(
+            100, 1, 10, "root", pgid=100, started_at_ns=100
+        ),
         101: process_custody.ProcessSample(
             101,
             100,
             20,
             "/Users/adpena/Projects/molt/target/debug/molt-backend --owned",
             pgid=100,
+            started_at_ns=101,
         ),
     }
     protected = {
@@ -2181,6 +2247,7 @@ def test_terminate_watched_processes_revalidates_root_group_before_sigterm(
             500_000,
             "/Applications/Codex.app/Contents/MacOS/Codex",
             pgid=100,
+            started_at_ns=100,
         ),
         101: process_custody.ProcessSample(
             101,
@@ -2188,6 +2255,7 @@ def test_terminate_watched_processes_revalidates_root_group_before_sigterm(
             250_000,
             "/Users/adpena/Projects/molt/target/debug/molt-backend --owned",
             pgid=100,
+            started_at_ns=101,
         ),
     }
     sent_groups: list[tuple[int, int]] = []
@@ -2229,13 +2297,16 @@ def test_terminate_watched_processes_filters_protected_escaped_pid(
     if process_custody.os.name != "posix":
         pytest.skip("requires POSIX process custody")
     samples = {
-        100: process_custody.ProcessSample(100, 1, 10, "root", pgid=100),
+        100: process_custody.ProcessSample(
+            100, 1, 10, "root", pgid=100, started_at_ns=100
+        ),
         101: process_custody.ProcessSample(
             101,
             100,
             500_000,
             "/Applications/Codex.app/Contents/Resources/codex app-server",
             pgid=777,
+            started_at_ns=101,
         ),
     }
     sent_groups: list[tuple[int, int]] = []
@@ -2272,9 +2343,15 @@ def test_terminate_watched_processes_never_killpgs_shared_child_group(
     if process_custody.os.name != "posix":
         pytest.skip("requires POSIX process custody")
     samples = {
-        100: process_custody.ProcessSample(100, 1, 10, "root", pgid=100),
-        101: process_custody.ProcessSample(101, 100, 20, "child", pgid=777),
-        200: process_custody.ProcessSample(200, 1, 999, "unrelated", pgid=777),
+        100: process_custody.ProcessSample(
+            100, 1, 10, "root", pgid=100, started_at_ns=100
+        ),
+        101: process_custody.ProcessSample(
+            101, 100, 20, "child", pgid=777, started_at_ns=101
+        ),
+        200: process_custody.ProcessSample(
+            200, 1, 999, "unrelated", pgid=777, started_at_ns=200
+        ),
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
@@ -2359,9 +2436,15 @@ def test_terminate_watched_processes_never_killpgs_mixed_root_group(
     if process_custody.os.name != "posix":
         pytest.skip("requires POSIX process custody")
     samples = {
-        100: process_custody.ProcessSample(100, 1, 10, "root", pgid=100),
-        101: process_custody.ProcessSample(101, 100, 20, "child", pgid=100),
-        200: process_custody.ProcessSample(200, 1, 999, "unrelated", pgid=100),
+        100: process_custody.ProcessSample(
+            100, 1, 10, "root", pgid=100, started_at_ns=100
+        ),
+        101: process_custody.ProcessSample(
+            101, 100, 20, "child", pgid=100, started_at_ns=101
+        ),
+        200: process_custody.ProcessSample(
+            200, 1, 999, "unrelated", pgid=100, started_at_ns=200
+        ),
     }
     sent_groups: list[tuple[int, int]] = []
     sent_pids: list[tuple[int, int]] = []
@@ -2404,6 +2487,7 @@ def test_terminate_watched_processes_never_kills_host_control_plane_group(
             20,
             "uv run python tests/molt_diff.py --jobs 1",
             pgid=700,
+            started_at_ns=100,
         ),
         27404: process_custody.ProcessSample(
             27404,
@@ -2411,6 +2495,7 @@ def test_terminate_watched_processes_never_kills_host_control_plane_group(
             500_000,
             "/Applications/Codex.app/Contents/Resources/codex app-server",
             pgid=700,
+            started_at_ns=50,
         ),
     }
     sent_groups: list[tuple[int, int]] = []
@@ -2744,7 +2829,7 @@ def test_child_rss_backstop_preserves_sparse_virtual_address_reservations(
 
 def test_run_command_passes_through_success() -> None:
     result = memory_guard.run_guarded(
-        [sys.executable, "-c", "import time; print('ok'); time.sleep(0.2)"],
+        [sys.executable, "-c", "print('ok')"],
         max_rss_kb=1_000_000,
         poll_interval=0.01,
     )
@@ -3077,11 +3162,13 @@ def test_run_guarded_windows_snapshot_timeout_preserves_healthy_child(
     assert result.returncode == 0
     assert result.violation is None
     assert result.sampling_telemetry is not None
-    # Baseline, live enforcement, and post-exit orphan custody all degrade
-    # through the same authority without rewriting the healthy child result.
-    assert result.sampling_telemetry.attempts == 3
+    # The first observation (orphan baseline and first enforcement sample)
+    # and post-exit orphan custody both degrade through the same authority
+    # without rewriting the healthy child result. The child exits during the
+    # first bounded wait, so no second live sample is taken.
+    assert result.sampling_telemetry.attempts == 2
     assert result.sampling_telemetry.successes == 0
-    assert result.sampling_telemetry.transient_failures == 3
+    assert result.sampling_telemetry.transient_failures == 2
     assert not result.sampling_telemetry.enforcement_complete
     assert "RSS enforcement was unobserved" in result.stderr
 
@@ -4291,8 +4378,19 @@ def test_cleanup_repo_scoped_orphans_revalidates_identity_before_signal(
         return owned_orphan if sampler_calls <= 2 else reused_pid
 
     terminated: list[tuple[int, float]] = []
+    # Synthetic PIDs may name live host processes; a regressed identity gate
+    # must fail here, never reach a real signal.
+    signals: list[tuple[str, int, int]] = []
     monkeypatch.setattr(memory_guard.os, "getpid", lambda: 999)
     monkeypatch.setattr(memory_guard.os, "getpgrp", lambda: 999)
+    monkeypatch.setattr(
+        memory_guard.os,
+        "killpg",
+        lambda pgid, sig: signals.append(("killpg", pgid, sig)),
+    )
+    monkeypatch.setattr(
+        memory_guard.os, "kill", lambda pid, sig: signals.append(("kill", pid, sig))
+    )
     monkeypatch.setattr(
         memory_guard,
         "_terminate_single_pid",
@@ -4312,6 +4410,7 @@ def test_cleanup_repo_scoped_orphans_revalidates_identity_before_signal(
         "skipped_identity_mismatch"
     )
     assert terminated == []
+    assert signals == []
 
 
 def test_terminate_verified_pid_revalidates_identity_before_fallback(
@@ -4617,8 +4716,20 @@ def test_run_command_timeout_reports_post_baseline_repo_orphan_cleanup(
         root_pgid=222,
     )
 
+    spawned: list[int] = []
+
+    def child_only_sampler() -> Mapping[int, memory_guard.ProcessSample]:
+        # The host table, narrowed to the guarded child: the launch baseline
+        # is exactly the child's own group, and the timeout terminates the
+        # child through ordinary identity-checked custody.
+        return {
+            pid: sample
+            for pid, sample in memory_guard.sample_processes().items()
+            if pid in spawned
+        }
+
     def fake_cleanup(**kwargs):
-        assert kwargs["baseline_pgids"] == frozenset()
+        assert spawned and kwargs["baseline_pgids"] == frozenset(spawned)
         return memory_guard.GuardOrphanCleanupResult(
             process_groups=(222,),
             termination_reports=(report,),
@@ -4636,7 +4747,8 @@ def test_run_command_timeout_reports_post_baseline_repo_orphan_cleanup(
         max_rss_kb=1_000_000,
         poll_interval=0.01,
         timeout=0.01,
-        sampler=lambda: {},
+        sampler=child_only_sampler,
+        on_spawn=spawned.append,
     )
 
     assert result.returncode == memory_guard.TIMEOUT_RETURN_CODE
@@ -4685,7 +4797,6 @@ def test_run_guarded_observes_child_exit_before_timeout_race(
                 self.returncode = 0
             return self.returncode
 
-    monkeypatch.setattr(memory_guard.os, "name", "nt", raising=False)
     _patch_guard_popen_without_windows_job(monkeypatch, FakePopen)
 
     result = memory_guard.run_guarded(
@@ -4781,15 +4892,15 @@ def test_run_command_returns_guard_code_on_real_low_limit() -> None:
 
 
 def test_run_command_fast_start_poll_catches_allocator_before_slow_poll() -> None:
-    # Hold the allocation beyond the configured slow poll; otherwise Windows
-    # full-table sampling under load can turn this into a scheduler race.
+    # The allocation outlives the 5 s slow poll by far, and exit rusage cannot
+    # report it before 10 s. Only a live sample taken in the fast-start window
+    # can trip the limit before the slow poll interval elapses.
     script = (
         "import time; "
         "buf = bytearray(192 * 1024 * 1024); "
         "time.sleep(10.0); "
         "print(len(buf))"
     )
-    sampler = memory_guard.sample_processes if os.name == "nt" else (lambda: {})
 
     result = memory_guard.run_guarded(
         [sys.executable, "-c", script],
@@ -4797,11 +4908,11 @@ def test_run_command_fast_start_poll_catches_allocator_before_slow_poll() -> Non
         max_total_rss_kb=160 * 1024,
         poll_interval=5.0,
         child_rlimit_kb=None,
-        sampler=sampler,
     )
 
     assert result.returncode == memory_guard.GUARD_RETURN_CODE
     assert result.violation is not None
+    assert result.violation.scope in {"process", "process_tree"}
     assert result.elapsed_s is not None
     assert result.elapsed_s < 5.0
 
@@ -6653,7 +6764,7 @@ def test_main_writes_summary_json(tmp_path) -> None:
             "--",
             sys.executable,
             "-c",
-            "import time; print('ok'); time.sleep(0.2)",
+            "print('ok')",
         ]
     )
 
@@ -7125,13 +7236,14 @@ def test_sample_jsonl_rotation_bounds_artifacts(tmp_path) -> None:
     peak = memory_guard.RssViolation(pid=100, rss_kb=10, command="root")
 
     for _ in range(8):
-        memory_guard._append_sample_jsonl(
-            str(samples_path),
+        memory_guard._record_sample(
             root_pid=100,
             peak=peak,
             total=peak,
             violation=None,
-            max_bytes=1024,
+            samples_jsonl=str(samples_path),
+            samples_jsonl_max_bytes=1024,
+            stream="",
         )
 
     assert samples_path.exists()
@@ -7158,7 +7270,7 @@ def test_main_streams_samples_without_sample_artifact(
             "--",
             sys.executable,
             "-c",
-            "import time; time.sleep(0.05)",
+            "pass",
         ]
     )
 
@@ -7225,19 +7337,26 @@ def test_child_clock_is_independent_of_guard_setup_and_sampler(
         )
         sampler = memory_guard.sample_processes
     else:
+        # One slow observation suffices: the child exits while the guard's
+        # first sample is still running, so any clock that included sampler
+        # latency would report at least the delay. Later samples are fast.
         original = memory_guard.sample_processes
+        sampler_delays = [0.3]
 
         def sampler():
-            time.sleep(0.3)
+            if sampler_delays:
+                time.sleep(sampler_delays.pop())
             return original()
 
         # Windows uses its job-owned sampler; delaying that kernel-owned query
         # must not influence the process-handle clock either.
         if os.name == "nt":
             original_memory = memory_guard._win_job.process_memory
+            memory_delays = [0.3]
 
             def slow_memory(*args, **kwargs):
-                time.sleep(0.3)
+                if memory_delays:
+                    time.sleep(memory_delays.pop())
                 return original_memory(*args, **kwargs)
 
             monkeypatch.setattr(memory_guard._win_job, "process_memory", slow_memory)
@@ -7282,10 +7401,9 @@ def test_posix_child_clock_has_one_reaper_independent_of_sampling(monkeypatch):
     clock = process_custody.ChildExecutionClock(proc, time.perf_counter())
     assert proc.wait(timeout=1) == 0
     exited = clock.finished
-    time.sleep(0.05)
     assert proc.poll() == 0
-    assert process_custody._poll_wait4_child(proc).max_rss_kb > 0
-    assert process_custody._poll_wait4_child(proc) is None
+    assert process_custody._take_child_exit_usage(proc).max_rss_kb > 0
+    assert process_custody._take_child_exit_usage(proc) is None
     assert clock.finished == exited
     assert calls == [(123456, process_custody.os.WNOHANG)]
 

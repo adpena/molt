@@ -784,29 +784,25 @@ class ChildExecutionClock:
         return self.poll()
 
 
-def _poll_wait4_child(
+def _take_child_exit_usage(
     proc: subprocess.Popen[str] | subprocess.Popen[bytes],
 ) -> ChildExitResourceUsage | None:
+    """Return the owned child's exit rusage once, from its sole reaper.
+
+    Exit itself is observed through the handle (``poll``/``wait``) on every
+    platform. Only ChildExecutionClock reaps with ``wait4``; a second raw
+    ``wait4`` by PID would race it for the same exit status. A handle without
+    a clock, or a platform without ``wait4`` rusage, has no usage evidence.
+    """
     clock = getattr(proc, "_molt_child_clock", None)
-    if clock is not None:
-        if clock.error is not None:
-            raise clock.error
-        if clock.done.is_set() and not clock.usage_consumed:
-            clock.usage_consumed = True
-            return clock.usage
+    if clock is None:
         return None
-    if os.name != "posix" or not hasattr(os, "wait4"):
-        return None
-    if proc.returncode is not None:
-        return None
-    try:
-        pid, status, rusage = os.wait4(proc.pid, os.WNOHANG)
-    except ChildProcessError:
-        return None
-    if pid == 0:
-        return None
-    proc.returncode = os.waitstatus_to_exitcode(status)
-    return ChildExitResourceUsage(max_rss_kb=_rusage_maxrss_kb(rusage))
+    if clock.error is not None:
+        raise clock.error
+    if clock.done.is_set() and not clock.usage_consumed:
+        clock.usage_consumed = True
+        return clock.usage
+    return None
 
 
 def _set_env_gb_ceiling(env: dict[str, str], name: str, limit_kb: int) -> None:

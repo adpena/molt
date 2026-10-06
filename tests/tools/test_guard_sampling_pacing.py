@@ -80,12 +80,13 @@ def test_run_guarded_paces_waits_by_sampler_cost(
 
     monkeypatch.setattr(memory_guard, "paced_poll_interval", recording_paced)
 
+    # Every poll wait, including the first after launch, is paced. Orphan
+    # cleanup stays on: on POSIX it is the scratch-closure authority.
     result = memory_guard.run_guarded(
-        [sys.executable, "-c", "import time; time.sleep(0.3)"],
+        [sys.executable, "-c", "pass"],
         max_rss_kb=10 * 1024 * 1024,
         poll_interval=0.05,
         sampler=lambda: {},
-        cleanup_orphans=False,
     )
 
     assert result.returncode == 0
