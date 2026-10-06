@@ -26,15 +26,8 @@ mod support;
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::hooks::RuntimeHooks;
 use std::ffi::{CStr, c_void};
-use std::os::raw::{c_int, c_uint, c_ulong};
+use std::os::raw::c_int;
 use std::ptr;
-
-fn pytype_spec_flags(flags: c_ulong) -> c_uint {
-    #[allow(clippy::useless_conversion)]
-    flags
-        .try_into()
-        .expect("CPython PyType_Spec.flags accepts only its unsigned-int flag domain")
-}
 
 // Shared dictionary/string/foreign ownership capability model.
 
@@ -144,7 +137,7 @@ fn fromspec_installs_all_slot_families() {
         name: c"molt.SpecType".as_ptr(),
         basicsize: std::mem::size_of::<PyObject>() as c_int,
         itemsize: 0,
-        flags: pytype_spec_flags(Py_TPFLAGS_BASETYPE),
+        flags: PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_BASETYPE),
         slots: slots.as_mut_ptr(),
     };
 
@@ -324,7 +317,7 @@ fn fromspec_type_is_heaptype_with_inbounds_ht_module_and_name() {
         name: c"mymod.MyHeapType".as_ptr(),
         basicsize: std::mem::size_of::<PyObject>() as c_int,
         itemsize: 0,
-        flags: pytype_spec_flags(Py_TPFLAGS_BASETYPE),
+        flags: PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_BASETYPE),
         slots: term.as_mut_ptr(),
     };
     let obj = unsafe {

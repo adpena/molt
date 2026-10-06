@@ -31,7 +31,7 @@ fn local_noon_epoch(year: i32, month_zero_based: i32, day: i32) -> Option<i64> {
 #[cfg(unix)]
 fn local_offset_west_seconds_for(secs: i64) -> Option<i64> {
     let tm = local_tm_for_secs(secs)?;
-    Some(-(tm.tm_gmtoff as i64))
+    Some(-molt_codegen_abi::c_width::c_long_to_i64(tm.tm_gmtoff))
 }
 
 #[cfg(unix)]

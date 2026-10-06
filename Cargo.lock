@@ -3516,6 +3516,7 @@ dependencies = [
  "libc",
  "log",
  "molt-artifact-publish",
+ "molt-codegen-abi",
  "molt-runtime-resource",
  "molt-wasm-facts",
  "num-format",

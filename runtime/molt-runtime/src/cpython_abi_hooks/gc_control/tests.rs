@@ -106,7 +106,7 @@ fn builtin_gc_slots_share_runtime_edges_and_keep_raw_carriers_unadmitted() {
             name: c"gc.NativeListSubtype".as_ptr(),
             basicsize: std::mem::size_of::<PyListObject>() as c_int,
             itemsize: 0,
-            flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC),
+            flags: PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC),
             slots: slots.as_mut_ptr(),
         };
         let subtype = molt_cpython_abi::api::typeobj::PyType_FromSpec(&raw mut spec);

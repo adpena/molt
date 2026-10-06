@@ -6,7 +6,7 @@ use super::{NativeType, init};
 use molt_cpython_abi::abi_types::*;
 use molt_cpython_abi::api::{errors, memory, numbers, refcount, sequences, typeobj};
 use std::cell::Cell;
-use std::ffi::{c_int, c_void};
+use std::ffi::{c_int, c_long, c_void};
 use std::ptr;
 
 thread_local! { static CALLS: Cell<usize> = const { Cell::new(0) }; }
@@ -141,7 +141,7 @@ struct Payload {
 
 unsafe extern "C" fn getter(object: *mut PyObject, _: *mut c_void) -> *mut PyObject {
     CALLS.with(|calls| calls.set(calls.get() + 1));
-    unsafe { numbers::PyLong_FromLong((*object.cast::<Payload>()).value) }
+    unsafe { numbers::PyLong_FromLong(c_long::from((*object.cast::<Payload>()).value)) }
 }
 unsafe extern "C" fn setter(_: *mut PyObject, value: *mut PyObject, _: *mut c_void) -> c_int {
     CALLS.with(|calls| calls.set(calls.get() + 1));

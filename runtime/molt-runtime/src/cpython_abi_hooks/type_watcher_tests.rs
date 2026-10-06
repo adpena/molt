@@ -22,7 +22,7 @@ unsafe fn subject() -> OwnedPyObject {
         name: c"watcher_test.Subject".as_ptr(),
         basicsize: std::mem::size_of::<PyObject>() as i32,
         itemsize: 0,
-        flags: Py_TPFLAGS_BASETYPE,
+        flags: PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_BASETYPE),
         slots: slots.as_mut_ptr(),
     };
     let object = unsafe { typeobj::PyType_FromSpec(&raw mut spec) };

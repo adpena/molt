@@ -299,7 +299,7 @@ fn native_tuple_base_descriptors_bypass_subclass_overrides() {
             name: c"tuple_storage.OverriddenTuple".as_ptr(),
             basicsize: 0,
             itemsize: 0,
-            flags: Py_TPFLAGS_DEFAULT,
+            flags: PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_DEFAULT),
             slots: slots.as_mut_ptr(),
         };
         let class = OwnedPyObject::from_owned(typeobj::PyType_FromSpecWithBases(
