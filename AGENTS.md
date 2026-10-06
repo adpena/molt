@@ -180,6 +180,8 @@ tests, measurements, and explicit user direction over stale prose.
 ## Useful authorities
 
 - Live multi-agent/Pact state: `docs/agent/ORCHESTRATION.md`
+- Open findings from the 2026-10-05 machine handoff (start here for v1.0 work):
+  `docs/agent/V1_HANDOFF_FINDINGS.md`
 - Canonical architecture and documentation map: `docs/CANONICALS.md`, `docs/INDEX.md`,
   `docs/spec/README.md`
 - Proof-queue operations: `docs/agent/PROOF_QUEUE.md`
