@@ -741,7 +741,21 @@ mod runtime_resource_env_tests {
 
         clear_resource_env();
         assert!(err.contains("MOLT_RESOURCE_MAX_MEMORY"));
-        assert!(err.contains("positive integer"));
+        assert!(err.contains("invalid memory size"), "{err}");
+    }
+
+    #[test]
+    fn resource_limits_from_env_accepts_human_memory_sizes() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        for (raw, bytes) in [("512M", 512 << 20), ("2G", 2 << 30), ("1048576", 1 << 20)] {
+            clear_resource_env();
+            unsafe { std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", raw) };
+            let limits = resource_limits_from_env()
+                .expect("a human size is a valid memory limit")
+                .expect("a memory limit is configured");
+            clear_resource_env();
+            assert_eq!(limits.max_memory, Some(bytes), "{raw}");
+        }
     }
 
     #[test]
