@@ -1060,6 +1060,9 @@ def test_rust_capture_failure_retains_complete_phase_transcript_without_environm
     assert "raw-start" not in str(caught.value)
     if failed["returncode"] != 0:
         assert f"exit status {failed['returncode']}" in str(caught.value)
+        # The owning error carries the child's complete stderr exactly once;
+        # a phase-local excerpt in the reason would repeat it.
+        assert str(caught.value).count("stderr-start") == 1
         assert raw_stderr in str(caught.value)
     else:
         assert len(str(caught.value)) < 300
