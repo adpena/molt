@@ -19,6 +19,7 @@ const ENOSYS = 38;
 const { createRuntimeLifetime, createRuntimeDisposer, boxRuntimeInt, withRuntimeOwnedValues, makeRuntimeIntList, combinedError } = globalThis.MoltRuntimeLifecycle;
 const EINVAL = 22;
 const ENOMEM = 12;
+const WASI_ERRNO_BADF = 8;
 const WASI_ERRNO_NOSYS = 52;
 const WASI_ERRNO_INVAL = 28;
 const TYPE_TAG_BYTES = 6;
@@ -343,7 +344,7 @@ const readRuntimeStringBits = (runtime, memory, stringBits) => {
   }
   const temp = allocRuntimeTempBytes(runtime, memory, new Uint8Array(8));
   try {
-    const ptr = runtime.exports.molt_string_as_ptr(stringBits, temp.payloadPtr);
+    const ptr = runtime.exports.molt_string_as_ptr(stringBits, Number(temp.payloadPtr));
     if (!ptr || ptr === 0n) {
       return null;
     }
@@ -853,6 +854,10 @@ const buildMinimalWasi = (state, logFn) => {
       return 0;
     },
     sched_yield: () => 0,
+    // The embed exposes no preopened directories. EBADF ends wasi-libc's
+    // preopen scan; any other errno (ENOSYS) makes it _Exit(71) on the first
+    // descriptor operation, such as closing a file handle at shutdown.
+    fd_prestat_get: () => WASI_ERRNO_BADF,
   };
   return new Proxy(wasi, {
     get(target, name) {

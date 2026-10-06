@@ -14,6 +14,8 @@ import pytest
 
 from molt._wasm_abi_generated import (
     WASM_IMPORT_SIGNATURE_BY_NAME,
+    WASM_RESERVED_RUNTIME_CALLABLE_BASE,
+    WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME,
     WASM_RESERVED_RUNTIME_CALLABLES,
     WASM_RUNTIME_EXPORT_BY_IMPORT,
 )
@@ -1194,6 +1196,10 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
         f"molt_call_indirect{arity}" for arity in range(14)
     ]
     assert browser_abi["table_layout"]["default_app_table_base"] == 256
+    assert (
+        browser_abi["table_layout"]["reserved_runtime_callable_base"]
+        == WASM_RESERVED_RUNTIME_CALLABLE_BASE
+    )
     assert browser_abi["reserved_runtime_callables"] == [
         {
             "index": index,
@@ -1201,6 +1207,9 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
             "import_name": import_name,
             "arity": arity,
             "dispatch": dispatch,
+            "trampoline_abi": WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME[
+                runtime_name
+            ],
         }
         for (
             index,
@@ -1218,8 +1227,13 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
         out_dir / "app.wasm",
         "molt_runtime",
     )
+    from molt.cli.non_native_output import _runtime_host_abi_import_names
+
     assert runtime_imports["module"] == "molt_runtime"
-    assert runtime_imports["names"] == sorted(app_runtime_import_names)
+    # The runtime ABI covers the app's imports plus the generated host roots.
+    assert runtime_imports["names"] == sorted(
+        set(app_runtime_import_names) | _runtime_host_abi_import_names()
+    )
     runtime_import_name_set = set(runtime_imports["names"])
     assert runtime_import_name_set
     assert set(runtime_imports["export_names"]).issubset(runtime_import_name_set)

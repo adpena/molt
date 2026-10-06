@@ -56,7 +56,7 @@
         "runtime_lifecycle.js"
       ],
       "role": "browser",
-      "sha256": "6ca1ee5d0b9ce01f0957e69541b4becfd93443627931a1fe64e49dfc14ba8463",
+      "sha256": "10369c9216bfc1d819e46905f0341250067d3d46c5b498c4d4cad24ea126316a",
       "source_type": "module"
     },
     "browser_gpu_dispatch.js": {
