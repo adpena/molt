@@ -24,7 +24,7 @@ import os
 import re
 import subprocess
 import sys
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,18 +74,16 @@ def _git(args: Sequence[str], *, cwd: Path) -> str:
     return result.stdout
 
 
-def commits_in(revisions: Sequence[str], *, cwd: Path) -> list[str]:
-    """Return the commits selected by `git rev-list <revisions>`."""
-    return _git(["rev-list", *revisions], cwd=cwd).split()
-
-
-def check_commits(commits: Iterable[str], *, cwd: Path) -> list[Violation]:
+def check_revisions(revisions: Sequence[str], *, cwd: Path) -> list[Violation]:
+    """Check every commit `git log <revisions>` selects, in one git process."""
     violations: list[Violation] = []
-    for commit in commits:
-        message = _git(["log", "-1", "--format=%B", commit], cwd=cwd)
-        violations.extend(
-            Violation(commit, line) for line in attribution_lines(message)
-        )
+    output = _git(["log", "--format=%H%n%B%x00", *revisions], cwd=cwd)
+    for record in output.split("\x00"):
+        commit, _, message = record.strip("\n").partition("\n")
+        if commit:
+            violations.extend(
+                Violation(commit, line) for line in attribution_lines(message)
+            )
     return violations
 
 
@@ -165,7 +163,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         event = json.loads(Path(event_path).read_text(encoding="utf-8"))
         revisions = github_event_revisions(event_name, event, cwd=args.repo)
-    return _report(check_commits(commits_in(revisions, cwd=args.repo), cwd=args.repo))
+    return _report(check_revisions(revisions, cwd=args.repo))
 
 
 if __name__ == "__main__":
