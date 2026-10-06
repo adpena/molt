@@ -38,7 +38,7 @@ jobs:
       release_id: ${{ steps.draft.outputs.release_id }}
       evidence_asset_id: ${{ steps.draft.outputs.evidence_asset_id }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -105,7 +105,7 @@ jobs:
     env:
       SOURCE_DATE_EPOCH: ${{ needs.plan.outputs.source_date_epoch }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -156,7 +156,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
       SOURCE_DATE_EPOCH: ${{ needs.plan.outputs.source_date_epoch }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -190,7 +190,7 @@ jobs:
           test -f "$MOLT_WASI_SYSROOT/lib/wasm32-wasip1/libc.a"
 
       - name: Download the one canonical wheel
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-wheel-${{ needs.plan.outputs.source_sha }}
           path: dist/wheel
@@ -267,7 +267,7 @@ jobs:
       attestations: write
       artifact-metadata: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -281,7 +281,7 @@ jobs:
           sync-frozen: "true"
 
       - name: Download the original admitted evidence ZIP
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-exit-${{ needs.plan.outputs.source_sha }}
           path: dist/staged-evidence
@@ -311,7 +311,7 @@ jobs:
       - name: Sign the stable H0 subject
         id: phase
         if: ${{ needs.plan.outputs.phase_exit_manifest != '' }}
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: dist/phase/subject.json
 
@@ -330,13 +330,13 @@ jobs:
             --output "dist/phase/$PHASE_MANIFEST"
 
       - name: Download verified candidates
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: release-candidate-*-${{ needs.plan.outputs.source_sha }}
           path: dist/candidates
 
       - name: Download canonical wheel
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-wheel-${{ needs.plan.outputs.source_sha }}
           path: dist/wheel
@@ -368,13 +368,13 @@ jobs:
 
       - name: Sign SLSA provenance with GitHub Sigstore identity
         id: provenance
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: dist/publish/*
 
       - name: Sign SPDX SBOM with GitHub Sigstore identity
         id: sbom
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
             dist/publish/*.whl
@@ -412,7 +412,7 @@ jobs:
       contents: write
       attestations: read
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -426,7 +426,7 @@ jobs:
           sync-frozen: "true"
 
       - name: Download the signed verified payload
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-promotion-${{ needs.plan.outputs.source_sha }}
           path: dist/publish

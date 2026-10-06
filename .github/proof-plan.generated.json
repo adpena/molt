@@ -322,7 +322,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "449517a7bf3a81fcb446d82c61acb4f4602b6ce64a6febb9a67bc5c306e8358a",
+  "authority_sha256": "33b22f6b508e53517b7f6cbe02c6239bad15abbec9f8479be4036390fa9b2b14",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -6789,7 +6789,7 @@
       "name": "node",
       "setup_evidence": [
         "config/tool_releases.toml::version = \"24.16.0\"",
-        ".github/actions/setup-project/action.yml::actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+        ".github/actions/setup-project/action.yml::uses: actions/setup-node@",
         ".github/workflows/formal.yml::node-version: \"24.16.0\""
       ],
       "setup_value": "24.16.0",
@@ -6876,7 +6876,7 @@
         ]
       ],
       "setup_evidence": [
-        ".github/workflows/ci.yml::actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
+        ".github/workflows/ci.yml::uses: actions/checkout@"
       ],
       "setup_value": "2.x",
       "version_args": [
