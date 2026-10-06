@@ -74,6 +74,9 @@ pub enum SequenceKind {
     Tuple,
 }
 
+/// Both occupants at one index, or `None` when a list changed under the probe.
+pub type PinnedPair<T> = Option<(T, T)>;
+
 /// Storage and callback custody for one admitted pair of sequences.
 ///
 /// An item pins its value across callbacks; a tuple may borrow from its owned
@@ -89,7 +92,7 @@ pub trait SequenceCompareContext {
     /// Pin both current occupants. `None` means a list changed between length
     /// observation and pinning; the loop rereads its lengths and tries again.
     /// Missing/uninitialized tuple storage and callback errors are `Err`.
-    fn pin_pair(&self, index: usize) -> Result<Option<(Self::Item, Self::Item)>, Self::Error>;
+    fn pin_pair(&self, index: usize) -> Result<PinnedPair<Self::Item>, Self::Error>;
 
     /// Identity-or-rich-equality, consuming truth only at this element boundary.
     fn equal(&self, left: &Self::Item, right: &Self::Item) -> Result<bool, Self::Error>;
