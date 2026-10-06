@@ -103,7 +103,7 @@ fn init() {
     hooks.classify_heap = classify_heap;
     hooks.inc_ref = noop_ref;
     hooks.dec_ref = noop_ref;
-    support::prepare_abi_test_thread(hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 #[test]

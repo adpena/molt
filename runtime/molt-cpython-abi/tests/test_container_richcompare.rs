@@ -172,7 +172,7 @@ fn install() {
     hooks.list_len = fx_list_len;
     hooks.list_item = fx_list_item;
     hooks.classify_heap = fx_classify_heap;
-    support::prepare_abi_test_thread(hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 /// Mint a `*mut PyObject` for a runtime handle (ob_type set from classify_heap).

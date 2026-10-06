@@ -11,6 +11,8 @@ pub mod fake_complex;
 #[allow(dead_code)]
 pub mod fake_foreign;
 #[allow(dead_code)]
+pub mod fake_numbers;
+#[allow(dead_code)]
 pub mod fake_runtime;
 pub mod fake_strings;
 
@@ -259,6 +261,13 @@ pub fn prepare_abi_test_thread(hooks: RuntimeHooks) {
         );
         *slot = Some(transaction);
     });
+}
+
+#[allow(dead_code)]
+pub fn prepare_runtime_class_abi_test_thread(mut hooks: RuntimeHooks) {
+    fake_runtime::wire_class_identity(&mut hooks);
+    prepare_abi_test_thread(hooks);
+    fake_runtime::prepare_class_bindings();
 }
 
 /// Consume the exact pending exception and render its normalized instance.

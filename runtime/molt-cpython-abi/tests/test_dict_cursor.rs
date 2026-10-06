@@ -214,7 +214,7 @@ fn install() {
     hooks.dict_len = fx_dict_len;
     hooks.dict_op = fx_dict_op;
     hooks.foreign_new = fx_foreign_new;
-    support::prepare_abi_test_thread(hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 // Only these explicit probes use the scripted cursor model. Native type and
