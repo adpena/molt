@@ -951,17 +951,35 @@ def _terminate_single_pid(pid: int, *, grace: float) -> bool:
     }
 
 
-def _pid_exited_or_unobservable(pid: int, *, grace: float) -> bool:
-    deadline = time.monotonic() + max(0.0, grace)
-    while time.monotonic() < deadline:
+_EXIT_PROBE_INTERVAL_S = 0.02
+
+
+def _signal_probe_reports_absence(probe: Callable[[], None], *, grace: float) -> bool:
+    """Probe with signal 0 until ESRCH or the end of a positive grace window.
+
+    ESRCH proves absence; any other OSError leaves the target unknown. A
+    window ends with an observation, so an exit at the deadline (an owned
+    child's reap racing the window) is seen. A zero window observes nothing
+    and reports not-proven, so the caller escalates.
+    """
+    if grace <= 0:
+        return False
+    deadline = time.monotonic() + grace
+    while True:
         try:
-            os.kill(pid, 0)
+            probe()
         except ProcessLookupError:
             return True
         except OSError:
             return False
-        time.sleep(0.02)
-    return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(_EXIT_PROBE_INTERVAL_S, remaining))
+
+
+def _pid_exited_or_unobservable(pid: int, *, grace: float) -> bool:
+    return _signal_probe_reports_absence(lambda: os.kill(pid, 0), grace=grace)
 
 
 def _process_group_exited_or_unobservable(pgid: int, *, grace: float) -> bool:
@@ -970,16 +988,7 @@ def _process_group_exited_or_unobservable(pgid: int, *, grace: float) -> bool:
     killpg = getattr(os, "killpg", None)
     if killpg is None:
         return False
-    deadline = time.monotonic() + max(0.0, grace)
-    while time.monotonic() < deadline:
-        try:
-            killpg(pgid, 0)
-        except ProcessLookupError:
-            return True
-        except OSError:
-            return False
-        time.sleep(0.02)
-    return False
+    return _signal_probe_reports_absence(lambda: killpg(pgid, 0), grace=grace)
 
 
 def process_group_exited_or_unobservable(pgid: int, *, grace: float) -> bool:

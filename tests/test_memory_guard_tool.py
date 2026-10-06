@@ -4663,6 +4663,37 @@ def test_pid_permission_error_is_live_unknown_not_completed(
     assert sent == [(300, memory_guard.signal.SIGTERM)]
 
 
+@pytest.mark.parametrize("exit_at", [0.0, 0.01, 0.02])
+def test_process_group_exit_probe_observes_at_the_end_of_its_window(
+    monkeypatch: pytest.MonkeyPatch, exit_at: float
+) -> None:
+    # An exit anywhere in the window, including at the deadline (the owned
+    # child's reap racing the window), must be observed.
+    grace = 0.02
+    now = [0.0]
+    monkeypatch.setattr(
+        process_custody,
+        "time",
+        types.SimpleNamespace(
+            monotonic=lambda: now[0],
+            sleep=lambda seconds: now.__setitem__(0, now[0] + seconds),
+        ),
+    )
+    probes: list[float] = []
+
+    def killpg(pgid: int, sig: int) -> None:
+        assert (pgid, sig) == (300, 0)
+        probes.append(now[0])
+        if now[0] >= exit_at:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(process_custody, "_is_windows_process_model", lambda: False)
+    monkeypatch.setattr(process_custody.os, "killpg", killpg, raising=False)
+
+    assert process_custody.process_group_exited_or_unobservable(300, grace=grace)
+    assert probes[-1] >= exit_at and probes[-1] <= grace
+
+
 def test_process_group_permission_error_is_live_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
