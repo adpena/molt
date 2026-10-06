@@ -36,14 +36,14 @@ lane. Orchestrator owns build-throughput + coordinates the E1-adjacent ABI items
 | 26 | P2 | CODEX-METABUG/DX | metabug | `tools/check_perf_gate_wiring.py:60` | **perf-gate-wiring audit certifies the gate 'fires' without checking it is blocking (continue-on-error / always-false if blind spot)** — Parse the scoreboard step and assert it has no `continue-on-error: true`, no trivially-false `if:`, and lives in a job that is required/blocking on the main/PR path; fail closed if the invoking step is non-blocking. |
 
 ## Landing status (orchestrator)
-- **#2 rust-lld linker: LANDED** (`858c6a306`). The review's "`-C linker-features=+lld`
+- **#2 rust-lld linker: LANDED** (`7703de4a4`). The review's "`-C linker-features=+lld`
   is stable" claim was WRONG (unstable on 1.96.1 — verify build failed). Correct
   stable+portable fix: `_maybe_enable_lld_link` auto-detects LLVM `lld-link` and
   sets `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER` (env, non-RUSTFLAGS; no-op where
   absent). Verified: lld-link LINKS the daemon (queue LINK_OK). 4 teeth.
-- **#4 walrus scope-analysis: LANDED** (`8883a352c`). `_collect_assigned_names` now
+- **#4 walrus scope-analysis: LANDED** (`3b505fb3e`). `_collect_assigned_names` now
   collects `NamedExpr` targets (was dropping them; nested scopes don't leak).
-- **#9 parity gate Molt-only ImportError fail-closed: LANDED** (`e00d69a98d`).
+- **#9 parity gate Molt-only ImportError fail-closed: LANDED** (`d695403891`).
   STRICT Molt-only import failures now fail instead of skipping; only a same
   import failure on both CPython and Molt downgrades to skip. Re-verified
   2026-07-08 with `pytest tests/tools/test_parity_gate.py -q` (`5 passed`).
@@ -56,7 +56,7 @@ lane. Orchestrator owns build-throughput + coordinates the E1-adjacent ABI items
   scrubber tooth, and prevents auto-janitor orphaning during pytest runs.
   Verified with `uv run --active --project . --python 3.12 pytest
   tests/tools/test_ci_gate.py tests/test_dx_run_context.py -q` (`59 passed`).
-- **#11 release-fast debug=0: LANDED** (`f21cf71aa`).
+- **#11 release-fast debug=0: LANDED** (`d43270029`).
 - **#13 specialized-list primitive GIL fast paths: LANDED**. Regular
   `STORE_SUBSCR_LIST_INT`, raw-index list store, and unchecked list getitem now
   share an explicit primitive-vs-heap-ref gate: inline primitives bypass
@@ -69,7 +69,7 @@ lane. Orchestrator owns build-throughput + coordinates the E1-adjacent ABI items
   and `molt_list_int_new` use the same specialized-list allocation primitive
   instead of hand-allocating storage/object pairs. Verified with `cargo test -p
   molt-runtime specialized_list --lib` (`5 passed`, `484 filtered out`).
-- **#16 SCCP float/repr constant-fold parity: LANDED** (`af7fe19820` +
+- **#16 SCCP float/repr constant-fold parity: LANDED** (`2269389c78` +
   corrective landing). The single SCCP concrete-eval authority now defers all
   `str()`/`repr()` of floats to the runtime-owned CPython formatter; Rust
   `Display` is not byte-for-byte CPython even in the finite non-scientific
@@ -92,9 +92,9 @@ lane. Orchestrator owns build-throughput + coordinates the E1-adjacent ABI items
   runtime-wasm-cache diagnostics tests in
   `tests/cli/test_cli_import_collection.py` (`15 passed`).
 - NOTE: not in the review but landed same arc — the biggest build-throughput win was
-  `ad0cafb82` **adaptive cargo jobs (2→14)**: a hardcoded CARGO_BUILD_JOBS=2 defeated
-  the memory-bounded ceiling (~7x under-parallelism). Plus `bdd42535e` persistent
-  target dir + `aa15340aa` incremental-when-sccache-off.
+  `228567891` **adaptive cargo jobs (2→14)**: a hardcoded CARGO_BUILD_JOBS=2 defeated
+  the memory-bounded ceiling (~7x under-parallelism). Plus `597706d0b` persistent
+  target dir + `3d47353c6` incremental-when-sccache-off.
 - All others: OPEN — Codex lanes claim via docs/agent/CLAIMS.md, land per the NEW PROTOCOL.
   Highest-value OPEN: #1 (P0 PyType_FromMetaclass fail-open, E1-critical),
   #7/#8 (frontend-timeout → serial degradation, witness-throughput),

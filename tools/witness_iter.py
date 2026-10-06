@@ -96,11 +96,11 @@ DEFAULT_BASELINES: dict[str, dict] = {
         # symbol loss trips the runtime frontier gate regardless.
         "symbol_gap": 20,
         # Known-good far frontier: numpy's C init has cleared module + type setup
-        # and the datetime CAPI capsule (B.1, landed 09c8d2337), and now hits the
+        # and the datetime CAPI capsule (B.1, landed fc454b04f), and now hits the
         # AOT import wall importing its pure-Python sibling `numpy.exceptions`.
         "required": [r"numpy\.exceptions"],
         # Each forbidden marker is the signature of a REVERTED landed fix:
-        #  * datetime CAPI capsule (09c8d2337): PyCapsule_Import silent failure.
+        #  * datetime CAPI capsule (fc454b04f): PyCapsule_Import silent failure.
         "forbidden": [r"silent-failure\s+PyCapsule_Import\(datetime\.datetime_CAPI\)"],
         "note": (
             "reaches the numpy.exceptions AOT import wall (past singletons, "

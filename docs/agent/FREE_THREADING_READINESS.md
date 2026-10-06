@@ -4,7 +4,7 @@ Status: Phase 1 (audit + design) and Phase 2 (non-conflicting landings) COMPLETE
 Phase 3 (bridge concurrency redesign) SPECCED below, blocked on the
 CLASS2-DECODE newtype boundary landing in `bridge.rs`.
 
-Lane: GILFREE-READY. Anchored at origin/main 9a25b62b44 (worktree
+Lane: GILFREE-READY. Anchored at origin/main 2d09166d35 (worktree
 C:\Molt\wt-gilfree). Phase 2 landed as 21046db556.
 
 Charter: make the molt↔C boundary and the molt refcount model ready for a

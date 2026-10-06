@@ -20,7 +20,7 @@ Operator directive (2026-06-25): zero fakes, zero no-op stubs; molt's object mod
   `str.isprintable()`. Focused runtime coverage now pins NBSP, zero-width,
   private-use, unassigned, and printable Unicode behavior.
 
-- **decimal Emin/Emax P0** — commit `2c3935ddb`. Root-cause discovery: the named `decimal_without_mpdec.rs`
+- **decimal Emin/Emax P0** — commit `4939bbad5`. Root-cause discovery: the named `decimal_without_mpdec.rs`
   is NOT the shipping authority — `molt-runtime-serial/src/decimal.rs` is (stdlib_serial is default-on),
   plus a third `with_mpdec` copy. All three fixed in lockstep: added `Emin`/`Emax`/`clamp` to
   `DecimalContextHandle`, ported CPython 3.12 `_fix`, re-derived every exponent-sensitive method from the

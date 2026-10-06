@@ -3,7 +3,7 @@
   "claim": "PERF-GOAL-R4",
   "rung": "seal/validation isolated instrumentation",
   "machine": "same Windows workstation and Python 3.12 environment",
-  "git_base": "ddc00f12f19006e53986dccdd291e3a7e0935d27",
+  "git_base": "56639ff296a17fb2d7e7c96ba9c4da171db08fe4",
   "scenario": "fresh-process tools/verify_numpy_seal.py against effective NumPy 2.5.1 witness seal; five before and five after runs",
   "profile": {
     "object_sources": 132,

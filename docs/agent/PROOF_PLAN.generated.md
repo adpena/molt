@@ -124,7 +124,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 
 Cargo wrapper and incremental policy is applied at the canonical subprocess boundary, including metadata and toolchain probes. Compiler build partitions select a named timeout budget derived from the shared receipt-calibrated CI Cargo policy. Nested native/WASM test guards inherit that envelope through `MOLT_PROOF_COMMAND_TIMEOUT_SEC` so a private default cannot terminate progressing work first.
 
-The wrapper conflict was reconfirmed by native CI run `30211145633` job `89817499999` at commit `66c042c7ba51bc8606f34b27cfc6af90783cec61`.
+The wrapper conflict was reconfirmed by native CI run `30211145633` job `89817499999` at commit `20b046b79bd4ca64a8c859f737f6e330377bcc4e`.
 
 | Budget | Timeout |
 |---|---:|

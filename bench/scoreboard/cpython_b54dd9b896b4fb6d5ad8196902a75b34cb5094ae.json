@@ -14,9 +14,9 @@
     "git_rev": "b2216555553a5e2d8cf72689f3f08c1a3b49f4d4"
   },
   "provenance": {
-    "origin_sha": "2c10e20a5a79c9ed949fc1759858ca9a199c096b",
+    "origin_sha": "6f5f717e071085422afbeaee6eb02efd6f1e9a33",
     "local_head_sha": "b54dd9b896b4fb6d5ad8196902a75b34cb5094ae",
-    "merge_base_sha": "2c10e20a5a79c9ed949fc1759858ca9a199c096b",
+    "merge_base_sha": "6f5f717e071085422afbeaee6eb02efd6f1e9a33",
     "dirty_tree": true,
     "diverges_from_origin": true,
     "benchmark_tool_sha": "f307f60e0cc0feda365933eac4417bea534daf8b",

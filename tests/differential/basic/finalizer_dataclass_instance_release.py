@@ -11,12 +11,12 @@ The historical gap: the owned ``DATACLASS_NEW_VALUES`` result bound to a
 never-read local (``n = Node(Leaf())``) was absent from the last-use drop scan,
 so the parent instance was never released and the field-finalizer cascade never
 started (``dealloc_object=0`` — a drop-placement gap on the dataclass owner).
-Fixed by the round-12 native finalizer-drop arc merged via ``df8f080d0``
-(fin58-recovery): ``fe951364d`` adds the §1b dead-result scan that DecRefs an
-owned, zero-use result at its defining op, and ``08a8cf5a0`` keeps a
+Fixed by the round-12 native finalizer-drop arc merged via ``5ebf77791``
+(fin58-recovery): ``3955a28d4`` adds the §1b dead-result scan that DecRefs an
+owned, zero-use result at its defining op, and ``30a8010b5`` keeps a
 ``__del__``-bearing instance (the ``Leaf``) heap-allocated with a live refcount
 so the release reaches the finalizer. Distinct from #58 (ordering of placed
-drops) and #86 (field release once the parent IS freed — closed, ac73ab954).
+drops) and #86 (field release once the parent IS freed — closed, 3f67507ef).
 """
 
 from dataclasses import dataclass

@@ -55,8 +55,8 @@ against the worktree on 2026-06-27 (`tools/structural_audit.py --check` GREEN). 
 fact-migration rows — `hand_classified_matches`, `handset_classifications`,
 `critical_hand_classifications` — have all **reached the end-state target 0**: the Phase 4
 ladder (§8) landed every opcode-fact classifier into `op_kinds.toml` (git trail:
-`2891edfc4` raw-i64 lowering facts, `98e189a30` refcount balance roles, `659cc2732` TIR
-state-machine facts, `b9c19fa42` generator fusion poll roles, `7b92eeb6f` residual TIR
+`fbcb98642` raw-i64 lowering facts, `5fd8ddce4` refcount balance roles, `da7c5002c` TIR
+state-machine facts, `549abebdf` generator fusion poll roles, `de691f20a` residual TIR
 semantic roles, and siblings). The zero is "clean code," not "blind gate": the probe is
 proven to still *find* debt — a synthetic silent-default `match` over 4 opcodes and a
 synthetic ≥3-opcode `matches!` set both trip `probe_semantic_fallthroughs`.

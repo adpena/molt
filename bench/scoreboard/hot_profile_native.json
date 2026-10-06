@@ -2,7 +2,7 @@
   "schema_version": 3,
   "kind": "hot_only_cycle_profile",
   "generated_at": "2026-06-09T00:25:44.377380+00:00",
-  "git_rev": "794e325aafbe344533ddcde4aebda2e8ef0a2dcb",
+  "git_rev": "74bd61801c1072bc9d080d8011fbbe185c2fb554",
   "backend": "native",
   "target": "native",
   "profile": "release-fast",

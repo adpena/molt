@@ -2,7 +2,7 @@
 
 Date: 2026-07-11  
 Lane: `E1-FRONTIER-MAP`  
-Authority: current `origin/main` at `08cd807242` plus native Linux probes from this worktree.
+Authority: current `origin/main` at `712e7263bb` plus native Linux probes from this worktree.
 
 ## Executive result
 

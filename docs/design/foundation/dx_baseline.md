@@ -17,7 +17,7 @@
 | Host | Apple M5 Max, 18 cores, 128 GB RAM |
 | OS | Darwin 25.4.0 (macOS) |
 | cargo / rustc | 1.96.0 (ac68faa20 2026-05-25) |
-| Worktree base commit | `9e93503bb` |
+| Worktree base commit | `9e8428e2e` |
 | Session target dir | `target-agent-dx/` (isolated; genuine cold) |
 | Daemon build command | `cargo build --profile release-fast -p molt-backend --features native-backend` |
 | Concurrency during measurement | OTHER AGENTS WERE BUILDING (load avg 14-22). Absolute cold/inc numbers carry contention noise; RELATIVE deltas between scenarios measured back-to-back are the load-bearing signal. |
@@ -56,7 +56,7 @@
 4. **sccache is NOT installed** on this host (`which sccache` → not found). The wiring (`_maybe_enable_sccache`, retry-on-wrapper-failure) already exists in cli.py and silently no-ops when sccache is absent. Phase 1b's "shared sccache dir" requires installing sccache first.
 5. **`ld64.lld` location differs.** Blueprint tied the linker to a specific LLVM backend keg; actual measured hosts used `/opt/homebrew/bin/ld64.lld` (Homebrew `lld` formula). The linker path is separate from the manifest-derived LLVM backend pin.
 
-## §4. THE answer to "why didn't the lib.rs split (34e3bddbf) speed builds up?"
+## §4. THE answer to "why didn't the lib.rs split (fd58a0a93) speed builds up?"
 
 Two independent reasons, both confirmed statically and (below) by measurement:
 
@@ -65,7 +65,7 @@ Two independent reasons, both confirmed statically and (below) by measurement:
 
 This is why the designed follow-up — extracting `molt-backend-native` as a real CRATE — is the structurally correct lever: it makes a tir-pass edit (the most common optimizer-foundation edit) stop dragging the 34K-line native function through recompilation.
 
-## §5. Measured numbers (BASELINE, base commit `9e93503bb`)
+## §5. Measured numbers (BASELINE, base commit `9e8428e2e`)
 
 Command under test: `cargo build --profile release-fast -p molt-backend --features native-backend`
 (this is exactly the daemon build cli.py issues at line 25081). Target dir: isolated

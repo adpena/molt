@@ -249,7 +249,7 @@ panic = "abort"
 # opt-3 inherited from `release`.
 #
 # panic = "abort" (matches `release-output`): the cfg(panic) FFI-boundary
-# unification landed in 242595bc1 ("unify FFI panic boundary under cfg(panic)"),
+# unification landed in 4ec86cfb7 ("unify FFI panic boundary under cfg(panic)"),
 # which was the gate this comment previously waited on. Adversarial re-diagnosis
 # there established that the ~1121 catching `with_gil_entry!`/`with_core_gil!`
 # stdlib FFI sites (`runtime/molt-runtime/src/concurrency/mod.rs`,

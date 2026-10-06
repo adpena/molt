@@ -69,7 +69,7 @@ That file now owns quota parsing, native directory/tar loading, WASM injected
 entries, and shared `/tmp` + `/dev` runtime mount construction; `lib.rs`
 keeps only the root VFS API and public re-exports.
 
-Rebased proof on `origin/main` `fbb1eae15`:
+Rebased proof on `origin/main` `3ad5a4c00`:
 
 - `20260707T200553-c1-vfs-load-split-allfeatures-test-20260707e-74e66eaaa60f4b49`
   passed `cargo test -p molt-runtime-vfs --all-features`.

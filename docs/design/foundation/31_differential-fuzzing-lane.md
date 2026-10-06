@@ -164,7 +164,7 @@ Set `MOLT_ASSERT_NO_LEAK=1` in the env for every molt binary execution. A non-ze
 
 **Oracle 4 — Compile-determinism**:
 
-Build the same program twice with cold caches (different `MOLT_CACHE` roots, same `PYTHONHASHSEED=0`). Compare the binary hashes. This exercises the build-cache keying substrate (aaad21122). Determinism failures are miscompiles of the worst kind: the program produces different outputs on different runs. Run this oracle at 10% sampling rate on generated programs (full rate on corpus programs at promotion time).
+Build the same program twice with cold caches (different `MOLT_CACHE` roots, same `PYTHONHASHSEED=0`). Compare the binary hashes. This exercises the build-cache keying substrate (f5be6e8f0). Determinism failures are miscompiles of the worst kind: the program produces different outputs on different runs. Run this oracle at 10% sampling rate on generated programs (full rate on corpus programs at promotion time).
 
 **Oracle 5 — TIR_OPT_STATS pass-fire audit**:
 

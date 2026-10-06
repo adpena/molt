@@ -1,5 +1,5 @@
 <!-- Foundation plan 04b. Architect: read-only agent, 2026-06-06, verified against the
-current tree (post fae639e94 counted-loop contract, post S6 SCEV, post E1 activation,
+current tree (post d5e51900c counted-loop contract, post S6 SCEV, post E1 activation,
 post overflow_peel). Supersedes the stale Arc-1 gate-flip framing of 04_L4-loops.md.
 Saved verbatim from the architect's final report per the full-text-artifact policy. -->
 
@@ -16,14 +16,14 @@ The pipeline runs 30 passes in this order (verified against `runtime/molt-passes
 | 1 | `range_devirt` | `passes/range_devirt.rs` | Devirtualizes `range()` iterator loops. Matches `IterNextUnboxed` + `GetIter` + `CallBuiltin("range")` chain | NEVER on real code (see §1.2) |
 | 2 | `iter_devirt` | `passes/iter_devirt.rs` | Devirtualizes list/iterator loops to index-based loops | Fires on list-iteration shapes |
 | 3 | `tuple_scalarize` | `passes/deforestation.rs` | No loop role | — |
-| 4 | `loop_unroll` | `passes/loop_unroll.rs` | Fully unrolls constant-trip counted loops. Uses `counted_loop::recognize_counted_loop` | FIRES on small constant-trip loops (verified `fae639e94`) |
+| 4 | `loop_unroll` | `passes/loop_unroll.rs` | Fully unrolls constant-trip counted loops. Uses `counted_loop::recognize_counted_loop` | FIRES on small constant-trip loops (verified `d5e51900c`) |
 | 5-8 | `canonicalize` (×2), `unboxing` | — | No loop role | — |
 | 9 | `block_versioning` | `passes/block_versioning.rs` | Specializes blocks with `TypeGuard` ops | NEVER — no `TypeGuard` producer exists (see §1.3) |
 | 10 | `gvn` | `passes/gvn.rs` | Cross-block CSE | Fires on invariant loop expressions when dominator structure present |
 | 11 | `licm` | `passes/licm.rs` | Loop-invariant code motion | FIRES — does NOT bail on `has_exception_handling`, per-op `is_hoistable` predicate (see §1.4) |
 | 18 | `type_guard_hoist` | `passes/type_guard_hoist.rs` | Hoists `TypeGuard` ops to preheaders | NEVER — no `TypeGuard` producer (see §1.3). ALSO bails at line 90 on `has_exception_handling` |
 | 25 | `check_exception_elim` | `passes/check_exception_elim.rs` | Eliminates redundant `CheckException` ops | Fires on observation-only functions |
-| 26 | `overflow_peel` | `passes/overflow_peel.rs` | Dual-loop peel for unbounded int accumulators. Gates on `has_exception_handlers()` | FIRES — landed `e267a4f5a`, 14× faster than CPython on `bench_sum` |
+| 26 | `overflow_peel` | `passes/overflow_peel.rs` | Dual-loop peel for unbounded int accumulators. Gates on `has_exception_handlers()` | FIRES — landed `04f6b146a`, 14× faster than CPython on `bench_sum` |
 | 19 | `strength_reduction` | `passes/strength_reduction.rs` | `x*2^k → x<<k`, `x**2 → x*x`. FloorDiv/Mod deferred | Fires on power-of-two mul/pow patterns |
 | 28 | `dce` | `passes/dce.rs` | Dead code elimination, block removal | Fires after unroll removes loop region |
 | — | `counted_loop` | `passes/counted_loop.rs` | Support module: loop recognition contract | Not a pipeline pass; called by `loop_unroll` |
@@ -37,7 +37,7 @@ if func.has_exception_handlers() {
 }
 ```
 
-This uses `has_exception_handlers()` (the narrow predicate from `function.rs`:153-166), NOT `has_exception_handling`. The gate fix from the original design doc was ALREADY APPLIED to the current tree (confirmed reading line 170 — it says `has_exception_handlers()`, not `has_exception_handling`). This means loop_unroll's gate was fixed as part of `fae639e94` (the canonical counted-loop contract commit).
+This uses `has_exception_handlers()` (the narrow predicate from `function.rs`:153-166), NOT `has_exception_handling`. The gate fix from the original design doc was ALREADY APPLIED to the current tree (confirmed reading line 170 — it says `has_exception_handlers()`, not `has_exception_handling`). This means loop_unroll's gate was fixed as part of `d5e51900c` (the canonical counted-loop contract commit).
 
 Shape recognition: `loop_unroll.rs`:8-65 documents the recognized shape — the multi-arg header + separate cond block (`counted_loop.rs` Route B). This is NOT the old 1-arg header shape. The recognizer (`counted_loop::recognize_counted_loop`) handles the real frontend shape.
 
@@ -86,7 +86,7 @@ The frontend does not emit `TypeGuard` ops for `isinstance` checks or polymorphi
 
 ### 1.5 overflow_peel: The Fast Accumulator Path
 
-`overflow_peel.rs`:145 gates on `func.has_exception_handlers()` (the narrow predicate — correct). Verified fire status: landed `e267a4f5a`, `bench_sum` went from 2.2× slower to 14× faster than CPython on native. The fast lane uses `CheckedAdd` with hardware overflow detection and a boxed slow-path continuation.
+`overflow_peel.rs`:145 gates on `func.has_exception_handlers()` (the narrow predicate — correct). Verified fire status: landed `04f6b146a`, `bench_sum` went from 2.2× slower to 14× faster than CPython on native. The fast lane uses `CheckedAdd` with hardware overflow detection and a boxed slow-path continuation.
 
 ### 1.6 strength_reduction: FloorDiv/Mod Deferred
 
@@ -138,7 +138,7 @@ def main() -> None:
         total += obj.compute(i)  # polymorphic dispatch
 ```
 
-Today: dispatch-IC (`798f9b136`) improved this to 0.32× CPython (still slower). Each iteration does a CHA/IC lookup for `obj.compute`. With TypeGuard generation, `isinstance`-based type tests AND CHA-proven method identity could emit a `TypeGuard(%obj, Leaf)` before the loop, which `type_guard_hoist` could hoist to the preheader, and `block_versioning` could use to emit a specialized block where the dispatch is devirtualized to a direct `Call`. Expected win: eliminate the IC lookup overhead, which is the dominant remaining cost. Order-of-magnitude estimate: 2-5× on top of the current 0.32×, potentially reaching 1×+ CPython. The dispatch-IC already landed a 7× improvement; TypeGuard hoisting gives the compiler-driven specialization where the IC provides runtime specialization.
+Today: dispatch-IC (`aa411595b`) improved this to 0.32× CPython (still slower). Each iteration does a CHA/IC lookup for `obj.compute`. With TypeGuard generation, `isinstance`-based type tests AND CHA-proven method identity could emit a `TypeGuard(%obj, Leaf)` before the loop, which `type_guard_hoist` could hoist to the preheader, and `block_versioning` could use to emit a specialized block where the dispatch is devirtualized to a direct `Call`. Expected win: eliminate the IC lookup overhead, which is the dominant remaining cost. Order-of-magnitude estimate: 2-5× on top of the current 0.32×, potentially reaching 1×+ CPython. The dispatch-IC already landed a 7× improvement; TypeGuard hoisting gives the compiler-driven specialization where the IC provides runtime specialization.
 
 ### 2.2 Shape B: Type-Polymorphic Accumulation (block_versioning/type_guard_hoist)
 
@@ -236,7 +236,7 @@ This is NOT a trivial add — it requires:
 
 **Pattern B: CHA-proven method dispatch**
 
-When CHA (`dispatch_ic.rs`, commit `798f9b136`) proves that a method call `obj.compute(i)` always resolves to a specific method given `type(obj) == Leaf`, emit a `TypeGuard(%obj, Leaf)` before the loop. This guard is then hoistable (obj is loop-invariant), enabling the specialized block to contain a direct `Call(Leaf_compute, obj, i)` instead of a dynamic dispatch.
+When CHA (`dispatch_ic.rs`, commit `aa411595b`) proves that a method call `obj.compute(i)` always resolves to a specific method given `type(obj) == Leaf`, emit a `TypeGuard(%obj, Leaf)` before the loop. This guard is then hoistable (obj is loop-invariant), enabling the specialized block to contain a direct `Call(Leaf_compute, obj, i)` instead of a dynamic dispatch.
 
 Architecture decision: TypeGuard generation belongs as a mid-pipeline TIR pass placed AFTER `type_refine` (which propagates type facts) but BEFORE `block_versioning` and `type_guard_hoist` (which consume them). Current pipeline order has `block_versioning` at position 9 and `type_guard_hoist` at position 18. A TypeGuard generation pass should run at position 8.5 — after `canonicalize_post` (position 8, so type-narrowed values are visible) and before `block_versioning` (position 9).
 
@@ -457,9 +457,9 @@ Phase 2 (TypeGuard generation):
   Unblocks: real CHA devirt (TypeGuard is the hook); type_guard_hoist providing value
 
 Phase 3 (IV-SR):
-  Requires: S6 SCEV (LANDED, cd66f365e)
-  Requires: S1 LoopForest + DefMap (LANDED, ef284d182)
-  Requires: counted_loop contract (LANDED, fae639e94)
+  Requires: S6 SCEV (LANDED, 3ffb5b686)
+  Requires: S1 LoopForest + DefMap (LANDED, 4dbdfcdd9)
+  Requires: counted_loop contract (LANDED, d5e51900c)
   Independent of: Phase 1, Phase 2 (different optimization axis)
   Unblocks: L2 vectorization (stride-uniform IV is the SIMD precondition)
 
@@ -472,7 +472,7 @@ Phase 4 (FloorDiv/Mod SR):
 ### Blocked arcs (what L4 does NOT unblock directly)
 
 - **RC-1 DropInsertion** (design 20): independent, #1 correctness blocker. L4 phases must not introduce new lifetime hazards (see Risk 4; the Repr filter handles this correctly).
-- **E1-e LLVM/Luau activation**: independent of loop passes (LLVM activation LANDED 0e55aff9a).
+- **E1-e LLVM/Luau activation**: independent of loop passes (LLVM activation LANDED 16c0f35f6).
 - **L2 real SIMD**: blocked on IV-SR landing (Phase 3) AND on vectorize.rs being upgraded from `ReadOnly` marking to actual emission. L4 Phase 3 is the prerequisite but not sufficient.
 - **D1 generator fusion**: independent; requires E1 active (DONE) and SROA (DONE).
 
@@ -480,10 +480,10 @@ Phase 4 (FloorDiv/Mod SR):
 
 ## Summary of Verified Facts vs. Stale Design Doc Claims
 
-1. `loop_unroll` gate: already on `has_exception_handlers()` (loop_unroll.rs:170, part of `fae639e94`). DONE.
+1. `loop_unroll` gate: already on `has_exception_handlers()` (loop_unroll.rs:170, part of `d5e51900c`). DONE.
 2. `block_versioning` (line 378) and `type_guard_hoist` (line 90) gates: still on the wide `has_exception_handling` flag. Phase 1 fixes them.
-3. Loop shape: the real fix was `counted_loop.rs` (Route B recognizer) wired into `loop_unroll` — DONE in `fae639e94`. `loop_unroll` fires on real counted loops within the trip cap.
+3. Loop shape: the real fix was `counted_loop.rs` (Route B recognizer) wired into `loop_unroll` — DONE in `d5e51900c`. `loop_unroll` fires on real counted loops within the trip cap.
 4. TypeGuard generation gap: confirmed — no producer exists anywhere. The actual prerequisite for block_versioning/type_guard_hoist.
 5. `range_devirt` fires 0 on real `for i in range(n)` loops (frontend emits counted shape, no iterator protocol). Confirmed.
-6. SCEV/ValueRange: LANDED (`cd66f365e` + precision `9e93503bb`). IV-SR can consume it.
-7. overflow_peel: LANDED (`e267a4f5a`), bench_sum 14× faster. The simple `total += i` accumulator shape is DONE.
+6. SCEV/ValueRange: LANDED (`3ffb5b686` + precision `9e8428e2e`). IV-SR can consume it.
+7. overflow_peel: LANDED (`04f6b146a`), bench_sum 14× faster. The simple `total += i` accumulator shape is DONE.

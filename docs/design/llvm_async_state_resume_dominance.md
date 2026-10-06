@@ -57,7 +57,7 @@ repro, original TIR): `^bb22` uses `%phi_60` (defined in `^bb9`), but the
 without passing through `bb9`, so `bb9` does not dominate `bb22`.
 
 This is the **exact analogue of the exception-handler-edge problem** that
-`2a450ecfe` solved by folding `cfg.exception_edges` into the SSA pass's augmented
+`1acae7267` solved by folding `cfg.exception_edges` into the SSA pass's augmented
 predecessor relation (`ssa.rs::build_augmented_cfg`). A suspend op `ret`s, so its
 resume continuation has no *regular* predecessor — exactly like an exception
 handler block — and the dispatch edge is the implicit re-entry that must be

@@ -5,7 +5,7 @@ Standing P0 profiling/benchmarking sweep of the molt stack. Ranked by impact on
 (M03 native-wasm/simd128; M46/M47 numeric loops; M09 build-time).
 
 - Host: Windows 11, canonical volume `C:\Molt`, checkout `C:\Molt\molt-src` @
-  `dd631d8f79` (= `origin/main`).
+  `3c31dfabd8` (= `origin/main`).
 - Method: **measure-only** from the shared checkout + on-disk caches + the
   proof-queue run logs. No competing heavy build was launched — a live witness
   E2E (E1 lane, run `20260710T025647`) held the build slot for the whole sweep
@@ -171,14 +171,14 @@ still be produced with the shipped `release-output` runtime.
 - On-disk `module_lowering` cache: **4.2 GB, 5449 entries**. `field_solve`
   alone has 30 entries (one content-hash × 14 config-digests). The lowering key
   is `{stem}.{content_key}.{context_digest}` (`module_frontend_cache.py:116–139`).
-- **Context:** `CODEX-B-CACHE-KEY` **already landed** (`b9d6963fb`, 2026-07-08):
+- **Context:** `CODEX-B-CACHE-KEY` **already landed** (`e09c3b43e`, 2026-07-08):
   the lowering cache now keys on a *semantic* tooling fingerprint
   (`_frontend_semantic_tooling_fingerprint`, 33 post-lowering cli files
   excluded) so unrelated cli/runtime/link edits no longer cold-start it. The
   disk multiplicity therefore mostly reflects a day of many-lane commits and
   the pre-fix churn, **not** proven per-run thrash. But the *persistence across
   fresh-session witness runs* is still tagged **unverified** (commits
-  `960671a224`/`dd08e8a015`), and M55 flags a session-scoped
+  `d09a49ebef`/`784bf35ff4`), and M55 flags a session-scoped
   effect-attestation gap.
 
 **Open measurement (the one that matters for the loop):** does the persistent
@@ -245,8 +245,8 @@ run tonight.
 ## Deferred (honest — not measured tonight)
 
 - **Native steady-state regression check** for tonight's hot-path changes
-  (kw-call trampoline `58928854b0`; container-anchor INCREFs / PyObject_Call
-  authority `6013b845be`/`dd631d8f79`). These touch hot call paths; a kw-call-heavy
+  (kw-call trampoline `8ed013a6bb`; container-anchor INCREFs / PyObject_Call
+  authority `7e2faec686`/`3c31dfabd8`). These touch hot call paths; a kw-call-heavy
   loop + a dict-store loop should be A/B'd. Requires a **quiescent native
   release build** (`molt build --release`, M28) which the live witness lane's
   cargo/rustc held all sweep. Not fabricated. Reproduce with the perf authority:

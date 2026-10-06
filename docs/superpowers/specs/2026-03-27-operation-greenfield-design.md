@@ -22,15 +22,15 @@ strict order, parallelized within each wave for maximum throughput.
 
 | ID | Blocker | Severity | Status | Resolution |
 |----|---------|----------|--------|------------|
-| B1 | stdlib `import sys/os` AttributeError | P0 | **FIXED** | Attribute lookup + stdlib cache invalidation (`ef6e8f540`, `2951c165f`) |
-| B2 | Nested indexed loops miscompiled | P0 | **FIXED** | Loop IR restructured, TIR nested loop emission (`d6b3692ac`, `e8f0c7c42`) |
+| B1 | stdlib `import sys/os` AttributeError | P0 | **FIXED** | Attribute lookup + stdlib cache invalidation (`9c18d6535`, `fb5a3f220`) |
+| B2 | Nested indexed loops miscompiled | P0 | **FIXED** | Loop IR restructured, TIR nested loop emission (`14c9622ae`, `24b0673ba`) |
 | B3 | Backend daemon lock contention | P1 | **FIXED** | Lock/state ownership resolved |
 | B4 | `importlib.machinery` missing in WASM | P1 | **FIXED** | Import resolution boundary fixed |
-| B5 | TIR globally disabled | P1 | **FIXED (but new issue)** | TIR default-ON (`d6b3692ac`). **NEW:** TIR strips exception labels → try/except broken (WIP `a2c6be8e0`) |
+| B5 | TIR globally disabled | P1 | **FIXED (but new issue)** | TIR default-ON (`14c9622ae`). **NEW:** TIR strips exception labels → try/except broken (WIP `0b4a4a77e`) |
 | B6 | `six`/`click` compilation failures | P2 | **PARTIAL** | `six` test exists but MOLT_SKIP'd (runtime crash); `click` test absent |
 | B7 | Tuple subclass MRO | P2 | **FIXED** | MRO lookup corrected |
 | B8 | Genexpr enumerate tuple unpacking | P2 | **FIXED** | Generator state machine + tuple unpacking fixed |
-| B9 | TIR exception handling | P0 | **MITIGATED** | Functions with check_exception bypass TIR (guard at lib.rs:2974). Exception handler type eval restored (`76cf5a071`). |
+| B9 | TIR exception handling | P0 | **MITIGATED** | Functions with check_exception bypass TIR (guard at lib.rs:2974). Exception handler type eval restored (`db3f30752`). |
 
 **In flight (uncommitted):** ~1,562 lines across 20 files — CLI enhancements,
 WASM artifact validation tests, importlib machinery tests, wasm link validation,

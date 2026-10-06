@@ -3,7 +3,7 @@
   "claim": "PERF-GOAL-R2",
   "rung": "backend prepare/codegen",
   "verdict": "DOCUMENTED-BLOCKED",
-  "git_sha": "c5b1d8bb283f11f01ec45e6869565f3b6f001ff8",
+  "git_sha": "f2e1fe1ac18e9ce611c45e34343628c4b5eddb78",
   "profile": {
     "hot_path": "pact-witness-acceptance backend prepare/codegen after frontend IR construction and before final split-WASM output",
     "expected_complexity": "O(changed functions) with function/object-cache reuse; a full-IR handoff remains required only after the daemon cache probe misses",

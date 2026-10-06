@@ -154,7 +154,7 @@ op-local closures reconstructed with identical captures (template: `list_ops.rs:
    handler can't also take `&mut self`). Same reason `import_func_id_split` exists.
 2. **Reachability without widening:** Cranelift/std + sibling private items via
    `use super::super::*` → `function_compiler`'s `mod scalar_carriers; use scalar_carriers::*; mod fc; use super::*;` → `native_backend/mod.rs`'s
-   `use super::*;` (module-ancestry privacy, lib.rs precedent 34e3bddbf). Cross-`fc`-file shared
+   `use super::*;` (module-ancestry privacy, lib.rs precedent fd58a0a93). Cross-`fc`-file shared
    items (`OpFlow`, `var_get_boxed_overflow_safe_fn`) are `pub(in crate::native_backend::function_compiler)`
    — narrower than pub(crate), zero external-API change. `function_compiler.rs` bare-private
    helpers are reachable by `fc` descendants via the glob (ancestry privacy).
@@ -211,7 +211,7 @@ sequence/iterator families plus complete dict mutation, exception control, value
 from the next foundation routing doc or a fresh residual-inline contract rather than
 reopening these landed family moves.
 
-## 5. Verification gates (per commit — 34e3bddbf / dx_baseline §9; isolated CARGO_TARGET_DIR)
+## 5. Verification gates (per commit — fd58a0a93 / dx_baseline §9; isolated CARGO_TARGET_DIR)
 - **G1 0-warning builds, both feature sets:** `cargo build -p molt-backend --features native-backend --profile dev-fast` (0 warns); `--features wasm-backend` (fc is `#[cfg(feature="native-backend")]` → compiles out under wasm-only; diff warning set vs pre-split, no NEW warns); `cargo clippy -p molt-backend --features native-backend -- -D warnings`; `cargo clippy --features "native-backend llvm" --lib -- -D warnings`.
 - **G2 lib tests:** `cargo test -p molt-backend --features native-backend --lib` all pass (baseline ~983; 61 in-file tests stay).
 - **G3 byte-identical artifacts (the move-only proof):** before/after, compile a fixed `.py` corpus to native `.o` (`python -m molt build --target native --rebuild`) + capture stderr diagnostics; `diff` `.o` + diagnostics → must be byte-identical. Any diff ⇒ a body changed ⇒ reject.

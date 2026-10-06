@@ -2,7 +2,7 @@
 
 Status: COMPLETE (wave 1). Two agents (predecessor + continuation) ran the
 three-lens sweep — PROFILE / WIRING AUDIT / GAP CENSUS — against
-`worktree-agent-a0c76397aae710ddd` (base `9ca6ffe8f`, secured HEAD `f92bef4a4`).
+`worktree-agent-a0c76397aae710ddd` (base `e28e5f335`, secured HEAD `af7569c8a`).
 
 This document is the authoritative record: every finding, every landed fix
 (with verification), every baton. Numbers were re-measured at the secured HEAD
@@ -20,17 +20,17 @@ this artifact). Unbounded/raw-binary execution still goes through `safe_run.py`.
 
 | Commit | What | Lane | Verification |
 |---|---|---|---|
-| `443c7e8a8` | Structural guard pinning WASM static type indices to `STATIC_TYPE_COUNT` (=51); fixes stale `>=39` assertion in `tests/wasm_type_section.rs` | backend/wasm | `wasm::tests::static_type_section_signatures_are_pinned_to_static_type_count` GREEN; 1034 backend lib tests pass |
-| `cff84d393` | Cache 3 uncached `env::var` debug flags on exception/dispatch hot paths (`MOLT_DEBUG_EXCEPTION_MATCH`, `MOLT_DEBUG_EXCEPTIONS`, dispatch) | runtime | env-size-invariance test (below) — getenv off the hot path |
-| `6f1304233` | Cache 6 more uncached `env::var`/`var_os` flags on attr/dispatch/call hot paths — **broadest = `MOLT_TRACE_ATTR_LOOKUP` in `attr_lookup_ptr` (every attribute access)** | runtime | same; etl/exception timing now invariant to env size |
-| `f92bef4a4` | Version-gate `TextIOWrapper.reconfigure()` invalid-kwarg `TypeError` (3.13+ "got an unexpected keyword argument" vs 3.12 "is an invalid keyword argument for reconfigure()") | runtime | **byte-identical to CPython at both 3.12 and 3.14 targets** (below) |
+| `5fc11ae6e` | Structural guard pinning WASM static type indices to `STATIC_TYPE_COUNT` (=51); fixes stale `>=39` assertion in `tests/wasm_type_section.rs` | backend/wasm | `wasm::tests::static_type_section_signatures_are_pinned_to_static_type_count` GREEN; 1034 backend lib tests pass |
+| `5d686316d` | Cache 3 uncached `env::var` debug flags on exception/dispatch hot paths (`MOLT_DEBUG_EXCEPTION_MATCH`, `MOLT_DEBUG_EXCEPTIONS`, dispatch) | runtime | env-size-invariance test (below) — getenv off the hot path |
+| `695a08c91` | Cache 6 more uncached `env::var`/`var_os` flags on attr/dispatch/call hot paths — **broadest = `MOLT_TRACE_ATTR_LOOKUP` in `attr_lookup_ptr` (every attribute access)** | runtime | same; etl/exception timing now invariant to env size |
+| `af7569c8a` | Version-gate `TextIOWrapper.reconfigure()` invalid-kwarg `TypeError` (3.13+ "got an unexpected keyword argument" vs 3.12 "is an invalid keyword argument for reconfigure()") | runtime | **byte-identical to CPython at both 3.12 and 3.14 targets** (below) |
 | `<this doc + guard>` | `name_neq_symbol_specs_resolve_in_core` structural guard (registry.rs) for the async_sleep bug class | runtime | new test GREEN; 497 runtime lib tests pass; 0 new clippy |
 
 ### Verification detail
 
-- **`443c7e8a8`**: `cargo test -p molt-backend --features "native-backend wasm-backend" --lib` → 1034 passed / 0 failed; the pinning test is present at `wasm.rs:17476`, `STATIC_TYPE_COUNT = 51` at `wasm.rs:298`.
+- **`5fc11ae6e`**: `cargo test -p molt-backend --features "native-backend wasm-backend" --lib` → 1034 passed / 0 failed; the pinning test is present at `wasm.rs:17476`, `STATIC_TYPE_COUNT = 51` at `wasm.rs:298`.
 
-- **`cff84d393` + `6f1304233`** (env-var caching): the structural proof that
+- **`5d686316d` + `695a08c91`** (env-var caching): the structural proof that
   getenv is OFF the hot path is **timing invariance to environment size**.
   `bench_exception_heavy` (20M iters, ~667K raises) timed with a small env vs an
   env padded with 800 extra vars:
@@ -41,7 +41,7 @@ this artifact). Unbounded/raw-binary execution still goes through `safe_run.py`.
   Invariance ⇒ the fix is effective. (Predecessor also measured a direct
   before/after on a smaller bench: 0.23 s → 0.19 s, ~17%.)
 
-- **`f92bef4a4`** (reconfigure): verified with the **correct knob** —
+- **`af7569c8a`** (reconfigure): verified with the **correct knob** —
   `--python-version=N` build flag (NOT `MOLT_PYTHON_VERSION`, which does not set
   the runtime target; default target is **3.12**). Repro `f.reconfigure(foo=1)`:
   - `--python-version=3.14`: molt → `reconfigure() got an unexpected keyword argument 'foo'` == CPython 3.14 ✓
@@ -87,7 +87,7 @@ all of them** (ratios 0.06×–0.81×). The continuation re-confirmed the two P0
   catch (`tmp/bh_exc_big.py`). molt 3.19 s vs CPython 2.53 s best-of-3.
   (Predecessor: ~1.36× post-fix on a smaller iter count — same residual.)
 - Root cause: exception-object allocation + refcount churn per raise +
-  `_tlv_get_addr` TLS per GIL entry. getenv eliminated by `cff84d393`.
+  `_tlv_get_addr` TLS per GIL entry. getenv eliminated by `5d686316d`.
 - Class: **architectural** — same allocation/TLS family as P0-1.
 
 ### PROFILE baton (→ separate perf arc, NOT this sweep)
@@ -246,8 +246,8 @@ function is cfg'd out → unresolved import. The break is **masked whenever
 native/llvm/wasm is also on** (cbor+native compiles clean), which is exactly why
 CI (always native) never sees it.
 
-- **Pre-existing**: introduced by `002c3e6ae` (RC drop-insertion substrate,
-  design 20) + `37149fbfc` — both ancestors of the worktree base `9ca6ffe8f`.
+- **Pre-existing**: introduced by `073f2ccc6` (RC drop-insertion substrate,
+  design 20) + `828c30593` — both ancestors of the worktree base `e28e5f335`.
   NOT introduced by this sweep.
 - **EXCLUDED lane**: `liveness.rs` is the "RC drop-insertion substrate, design 20,
   Phase 2" (its module doc) consumed by `drop_insertion.rs`. The DropInsertion
@@ -325,7 +325,7 @@ break, not a known-fail.
   lone name≠symbol spec is `molt_async_sleep`.
 - Pre-existing: the bug is in `simple_backend.rs` reachability + cli.py manifest,
   untouched by this sweep (only backend change this sweep is the wasm.rs test
-  guard `443c7e8a8` + the registry.rs runtime guard).
+  guard `5fc11ae6e` + the registry.rs runtime guard).
 - **Severity: P0-class** (all native asyncio programs broken) but **loud**
   (RuntimeError, not silent-wrong-answer). EXCLUDED lane (frontend/backend
   app-resolver gen) → batoned in §2a with the precise fix.
@@ -388,7 +388,7 @@ correctly through `round(float("-inf"), 2)` then dies on the first
 The predecessor's clean serial slices: arith / assignment / args / and a 20-file
 mixed slice = **17/20 PASS**, with the 3 fails being exactly P1-4
 (`float_ops.py`, `float //`), P2-5 (`float_round_trunc_format.py`), and the
-reconfigure message (now FIXED, `f92bef4a4`, `file_reconfigure.py`). Non-async,
+reconfigure message (now FIXED, `af7569c8a`, `file_reconfigure.py`). Non-async,
 non-float `basic/` tests pass. No NEW silent-wrong-answer (miscompile) class was
 found in the census — the gaps are loud failures (async MissingSymbol, float //
 build error, float-format TypeError) plus the two allocation-bound perf P0s.

@@ -1,11 +1,11 @@
 """Regression for #45 item 3 — comprehension walrus target also bound outside the
-comprehension, at MODULE scope (the sibling of the function-scope fix d19dfa588).
+comprehension, at MODULE scope (the sibling of the function-scope fix a8381b5c8).
 
 A walrus (``:=``) inside a comprehension leaks its binding to the enclosing scope
 (PEP 572).  At module scope the single storage authority for a name is the module
 dict (MODULE_SET_ATTR / MODULE_GET_ATTR / MODULE_GET_GLOBAL), not a boxed function
 cell: other functions read the global through the module dict, and module-scope SSA
-refs dangle across chunk boundaries (3f5aa1135).  The inline list/set/dict
+refs dangle across chunk boundaries (cda828498).  The inline list/set/dict
 comprehension lowering used to box the walrus target into a transient cell and
 read/write that cell, while a *separate* binding of the same name (a ``while``/``if``
 test walrus, a plain assignment, a ``for`` target) writes through the module dict.
@@ -177,7 +177,7 @@ print("M", trace_m, acc_m)
 
 # --- chunk-split section: op-dense so the shared comp-walrus name crosses ----
 # module chunk boundaries.  The module-dict route is the chunk-safe one; a
-# boxed-cell/SSA route would dangle here (3f5aa1135).
+# boxed-cell/SSA route would dangle here (cda828498).
 z0 = 0
 z1 = z0 + 1
 z2 = z1 + 1

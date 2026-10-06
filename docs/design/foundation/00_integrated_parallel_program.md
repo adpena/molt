@@ -26,50 +26,50 @@ The substrate and correctness foundation is largely built. Completed arcs:
 
 | Arc | Commit | What landed |
 |-----|--------|-------------|
-| S1 AnalysisManager + PassManager | `ef284d182` + current LoopForest convergence | `TirPass::run(func, am)`, 7 analyses (PredMap/ImmediateDoms/DomChildren/ExecReachable/StrictReachable/LoopForest/DefMap); LoopForest owns explicit loop roles plus dominator-proven backedge headers for LICM/BCE/vectorize/polyhedral; deleted duplicate dominator impls; `MOLT_VERIFY_ANALYSIS=1` guard |
-| S2 TargetInfo / cost model (TTI) | `9ff5d2e00` | `run(func, am, tti)`; deleted magic profitability constants |
-| S3 effects oracle | `8b6b88286` | `effects.rs` single source of truth; licm/gvn deleted their dup lists; Div/Mod/Pow CSE-safe-but-not-movable asymmetry encoded |
-| S4 call-graph + module phase | `7915b29a0` | `call_graph` + `ip_summary` + `module_phase`; replaced SimpleIR leaf-detection with TIR call-graph (byte-identical) |
-| S6 SCEV + ValueRange | `cd66f365e` | SCEV + value-range as S1 analyses; rewrote BCE on range queries; deleted ~550 lines of ad-hoc RangeFact/GuardFact/KnownLength/prove_guard_bound; **fixed a latent silent-OOB** (old BCE elided length checks on non-negative const indices) |
-| S5-ph1 alias analysis | `fb574b289` | First-class alias oracle; deleted the 4 ad-hoc barrier lists; conservative superset |
-| S5-ph1 precision (CheckException) | `5d6274e04` | `CheckException` is not a memory clobber in the alias oracle |
-| S5-ph1.5 TypedField regions | `d8275ed8a` | Class-aware TypedField alias regions from guarded-field ops' own runtime guards |
-| S5-ph2a MemorySSA | `4e3c7ca7d`, `9f1097147` | Standalone analysis (types + `compute_standalone` + unit tests); registered with the AnalysisManager |
-| S5-ph2b MemGVN | `081bda9e8` | Store-to-load forwarding + redundant-load elimination over MemorySSA |
-| S5-ph2d SROA | `55b35d870` | Dead-object field promotion over MemorySSA |
+| S1 AnalysisManager + PassManager | `4dbdfcdd9` + current LoopForest convergence | `TirPass::run(func, am)`, 7 analyses (PredMap/ImmediateDoms/DomChildren/ExecReachable/StrictReachable/LoopForest/DefMap); LoopForest owns explicit loop roles plus dominator-proven backedge headers for LICM/BCE/vectorize/polyhedral; deleted duplicate dominator impls; `MOLT_VERIFY_ANALYSIS=1` guard |
+| S2 TargetInfo / cost model (TTI) | `6dc287a3f` | `run(func, am, tti)`; deleted magic profitability constants |
+| S3 effects oracle | `9a6eeffac` | `effects.rs` single source of truth; licm/gvn deleted their dup lists; Div/Mod/Pow CSE-safe-but-not-movable asymmetry encoded |
+| S4 call-graph + module phase | `cd5acdb7d` | `call_graph` + `ip_summary` + `module_phase`; replaced SimpleIR leaf-detection with TIR call-graph (byte-identical) |
+| S6 SCEV + ValueRange | `3ffb5b686` | SCEV + value-range as S1 analyses; rewrote BCE on range queries; deleted ~550 lines of ad-hoc RangeFact/GuardFact/KnownLength/prove_guard_bound; **fixed a latent silent-OOB** (old BCE elided length checks on non-negative const indices) |
+| S5-ph1 alias analysis | `5895238b5` | First-class alias oracle; deleted the 4 ad-hoc barrier lists; conservative superset |
+| S5-ph1 precision (CheckException) | `3a4039630` | `CheckException` is not a memory clobber in the alias oracle |
+| S5-ph1.5 TypedField regions | `553122d1b` | Class-aware TypedField alias regions from guarded-field ops' own runtime guards |
+| S5-ph2a MemorySSA | `c43aa2715`, `7b175a01a` | Standalone analysis (types + `compute_standalone` + unit tests); registered with the AnalysisManager |
+| S5-ph2b MemGVN | `d20600c0b` | Store-to-load forwarding + redundant-load elimination over MemorySSA |
+| S5-ph2d SROA | `bd6ac6405` | Dead-object field promotion over MemorySSA |
 
 ### Tier-1 correctness
 
 | Arc | Commit | What landed |
 |-----|--------|-------------|
-| C1 BCE natural loops | `850077e7f` | Dominator-based natural-loop collection (fixed unsound `collect_loop_body`) |
-| C2 needs_exception_stack | `430e09793` | Polarity trap fixed — exception observation now universal; depth-bookkeeping gated on try/with; byte-identical CPython |
-| C3 async _poll panic | `29cd7765b` | Loop-region external-reentry guard fixed the "invalid labels" panic |
-| Import-error parity | `2cecc1415`, `f9afd99d3` | `ModuleNotFoundError` for missing modules; `ImportError` (not AttributeError) for `from M import missing` via dedicated `OpCode::ModuleImportFrom` (wired through every pass + all 5 backends) |
+| C1 BCE natural loops | `da2edbf36` | Dominator-based natural-loop collection (fixed unsound `collect_loop_body`) |
+| C2 needs_exception_stack | `ab323ec10` | Polarity trap fixed — exception observation now universal; depth-bookkeeping gated on try/with; byte-identical CPython |
+| C3 async _poll panic | `a0964a646` | Loop-region external-reentry guard fixed the "invalid labels" panic |
+| Import-error parity | `4bb99849e`, `9a86a5841` | `ModuleNotFoundError` for missing modules; `ImportError` (not AttributeError) for `from M import missing` via dedicated `OpCode::ModuleImportFrom` (wired through every pass + all 5 backends) |
 
 ### Tier-2 / perf engine
 
 | Arc | Commit | What landed |
 |-----|--------|-------------|
-| E1 inliner core (phases a/b) | `f14b196ce` (hardened `951938075`) | `tir/passes/inliner.rs`: clone/remap/splice/is_inlineable; refcount arg-IncRef guard; SSA verify; all-4-loop-metadata transfer |
-| E1 phase-c (obs-only EH inlining) | `6d9962a98` | Inlines observation-only callees; `has_exception_handlers()` handler⟂observation split; fresh exception-label remap |
-| **E1 ACTIVATION (native+WASM)** | `7512919fa` | **Routed native+WASM codegen through the `run_module_pipeline`-inlined `TirModule`; DELETED `passes::inline_functions` + the dead needs_inlining gate.** Later work also routed LLVM and Luau through the same module-phase authority (see section 4.2 for remaining proof gaps) |
-| module_slot_promotion | `b9188ab1c` | mem2reg of module-dict slots across loops — the bench_sum 16× fix (design 10) |
-| dispatch-IC (fused method/super) | `798f9b136` | Allocation-free fused method/super dispatch — class_hierarchy 7× |
-| CheckedAdd primitive (peel phase A) | `c2a373a3a` | `OpCode::CheckedAdd` exact signed-overflow add, all 4 backends |
-| overflow_peel dual-loop peel (bug #15) | `e267a4f5a` | Dual-loop accumulator peel; bench 2.2× slower → **14× faster than CPython** |
-| canonical counted-loop contract | `fae639e94` | Route B counted-loop contract; unlocks `loop_unroll` (L4 producer) |
-| RawI64 carrier unification | `2639d490b` | Full-range value-keyed seeds, overflow-safe boxing, proof-gated triple, LIR naming unified |
+| E1 inliner core (phases a/b) | `e9af31a03` (hardened `fef48ecb0`) | `tir/passes/inliner.rs`: clone/remap/splice/is_inlineable; refcount arg-IncRef guard; SSA verify; all-4-loop-metadata transfer |
+| E1 phase-c (obs-only EH inlining) | `e0646373d` | Inlines observation-only callees; `has_exception_handlers()` handler⟂observation split; fresh exception-label remap |
+| **E1 ACTIVATION (native+WASM)** | `b9ca25e38` | **Routed native+WASM codegen through the `run_module_pipeline`-inlined `TirModule`; DELETED `passes::inline_functions` + the dead needs_inlining gate.** Later work also routed LLVM and Luau through the same module-phase authority (see section 4.2 for remaining proof gaps) |
+| module_slot_promotion | `a0f9eaed5` | mem2reg of module-dict slots across loops — the bench_sum 16× fix (design 10) |
+| dispatch-IC (fused method/super) | `aa411595b` | Allocation-free fused method/super dispatch — class_hierarchy 7× |
+| CheckedAdd primitive (peel phase A) | `29e000c82` | `OpCode::CheckedAdd` exact signed-overflow add, all 4 backends |
+| overflow_peel dual-loop peel (bug #15) | `04f6b146a` | Dual-loop accumulator peel; bench 2.2× slower → **14× faster than CPython** |
+| canonical counted-loop contract | `d5e51900c` | Route B counted-loop contract; unlocks `loop_unroll` (L4 producer) |
+| RawI64 carrier unification | `454ba667d` | Full-range value-keyed seeds, overflow-safe boxing, proof-gated triple, LIR naming unified |
 
 ### Backend correctness / parity / DX
 
 | Arc | Commit | What landed |
 |-----|--------|-------------|
-| 3 LLVM-lane miscompile fixes | `0fd0e9794` | call-ABI boxing + first-class `ConstBigInt` + dead-edge phi dataflow; peel matrix 5/9 → 9/9 on LLVM |
-| dir_fd `*at` intrinsics | `ca2c57ff1` | readlink/symlink/stat/lstat/rename/replace/link/utime dir_fd variants (design 19, 13 differential tests) |
-| god-file split | `34e3bddbf` | `molt-backend/src/lib.rs` 6,928 → 264 lines (move-only, 0 behavior change); thin facade + focused submodules |
-| LLVM toolchain unblock | `f91711944`, `02e5e9cc0` | host-triple staging + per-app intrinsic resolver; extern functions not lifted/inlined as shared-stdlib externals |
-| WASM gc-proposal parse fix | `ab82ca479` | "rec group requires gc proposal" parse failure on linked modules |
+| 3 LLVM-lane miscompile fixes | `efbe9c483` | call-ABI boxing + first-class `ConstBigInt` + dead-edge phi dataflow; peel matrix 5/9 → 9/9 on LLVM |
+| dir_fd `*at` intrinsics | `06b67dad3` | readlink/symlink/stat/lstat/rename/replace/link/utime dir_fd variants (design 19, 13 differential tests) |
+| god-file split | `fd58a0a93` | `molt-backend/src/lib.rs` 6,928 → 264 lines (move-only, 0 behavior change); thin facade + focused submodules |
+| LLVM toolchain unblock | `229421f4e`, `58fe71aae` | host-triple staging + per-app intrinsic resolver; extern functions not lifted/inlined as shared-stdlib externals |
+| WASM gc-proposal parse fix | `19db5830d` | "rec group requires gc proposal" parse failure on linked modules |
 
 The performance evidence (STATUS.md `bench-summary`, last full run 2026-05-23,
 predates several of the above wins): top speedups class_hierarchy 6.94×,
@@ -184,7 +184,7 @@ TIER 1 (correctness — open)
 
 TIER 2 (engine)
   E1-e  inliner activation
-    native + WASM                  DONE  7512919fa
+    native + WASM                  DONE  b9ca25e38
     LLVM                           DONE          (direct TIR module pipeline)
     Luau                           DONE          (source target runs TIR module pipeline)
   E3  IP escape + purity summaries OUTSTANDING  (design 03/12; requires S4 DONE)
@@ -200,7 +200,7 @@ TIER 3 (consequences)
 
 TIER 4 (loops / SIMD)
   L4  range_devirt ordering + IV strength reduction  OUTSTANDING (design 04)
-        loop_unroll producer unlocked by fae639e94 (counted-loop contract)
+        loop_unroll producer unlocked by d5e51900c (counted-loop contract)
   L2  real SIMD codegen            OUTSTANDING  (design 05; requires S2/S5-ph1/S6 DONE, L4)
   L1  IV canonical + FloorDiv/Mod SR  OUTSTANDING (requires L4)
 
@@ -230,7 +230,7 @@ in the production pipeline, and range-loops carry no iterator ops, so the three
 passes have nothing to fire on even with the exception gate opened. The real L4
 arc is the producer chain: **TypeGuard generation → loop-shape canonicalization
 → the gate** — i.e. you must first emit the loop shapes and type guards those
-passes consume. The counted-loop contract (`fae639e94`, "Route B") landed the
+passes consume. The counted-loop contract (`d5e51900c`, "Route B") landed the
 first half of this (a canonical counted-loop shape that unlocks `loop_unroll` as
 a producer); `range_devirt` ordering and IV strength reduction (design 04)
 remain. Do not schedule a bare gate-flip as if it were a perf unlock.
@@ -258,7 +258,7 @@ the touched path.
 ### 4.2 Perf keystone
 
 **E1-e module-phase activation is now structurally present across native, WASM,
-LLVM, and Luau.** Native/WASM landed in `7512919fa`; LLVM lowers its inlined
+LLVM, and Luau.** Native/WASM landed in `b9ca25e38`; LLVM lowers its inlined
 `TirModule` directly; Luau now lifts source-emission IR once to a `TirModule`,
 runs every local function through the per-function TIR pipeline, then runs
 `run_module_pipeline` (E1 inliner, generator fusion, module-slot promotion, and
@@ -298,7 +298,7 @@ lets those live as pure Python and the intrinsics be deleted — including the
 os.walk rewrite that closes the still-open os.walk OOM/SIGSEGV (the native
 implementation is deleted from the tree at HEAD; the OOM/recursion bugs stay
 open until fusion lands). Requires E1 active (DONE native/WASM) + SROA (DONE,
-`55b35d870`) for frame-slot promotion.
+`bd6ac6405`) for frame-slot promotion.
 
 ### 4.5 Parity arcs
 
@@ -435,7 +435,7 @@ Per CLAUDE.md, unchanged:
 
 | Doc | Arc |
 |-----|-----|
-| `01`, `01b` | E1 inliner activation (native+WASM landed `7512919fa`; LLVM/Luau now active) |
+| `01`, `01b` | E1 inliner activation (native+WASM landed `b9ca25e38`; LLVM/Luau now active) |
 | `02` | S5 MemorySSA + SROA + MemGVN + cross-block DSE (ph2a/2b/2d landed; 2c/2e open) |
 | `03`, `12` | E3 IP escape/purity summaries + E5 monomorphization |
 | `04` | L4 loop transforms (corrected arc — producer chain, not gate-flip) |
@@ -444,12 +444,12 @@ Per CLAUDE.md, unchanged:
 | `07` | D1 generator fusion / CoroElide → os.walk-as-Python |
 | `08` | DX build-speed |
 | `09`, `13` | W3 per-attribute DCE (the `<2 MB` lever) |
-| `10` | module-global loop promotion (bench_sum 16× — landed `b9188ab1c`) |
-| `11` | bug-#15 dual-loop overflow peel (landed `e267a4f5a`, `c2a373a3a`) |
+| `10` | module-global loop promotion (bench_sum 16× — landed `a0f9eaed5`) |
+| `11` | bug-#15 dual-loop overflow peel (landed `04f6b146a`, `29e000c82`) |
 | `14` | target × profile parity audit (post-E1 LLVM/Luau proof gaps) |
 | `15` | Luau CheckedAdd lowering plan |
 | `16` | CPython surface / stdlib / GPU gap audit |
 | `17` | ecosystem / third-party compat gap audit |
 | `18` | asyncio-wasm event-loop fix plan |
-| `19` | os dir_fd `*at` intrinsic design (landed `ca2c57ff1`) |
+| `19` | os dir_fd `*at` intrinsic design (landed `06b67dad3`) |
 | `20` | **RC ownership & drop insertion** (the #1 correctness blocker) |

@@ -6,7 +6,7 @@
 
 ### The Production Regression
 
-Commit `430e09793` (C2) made `CheckException` universal: every real function now carries at least one `CheckException` op. The `has_exception_handling` flag is set by `lower_from_simple.rs:319-330` on any function containing `TryStart | TryEnd | StateBlockStart | StateBlockEnd | CheckException`. This means `has_exception_handling == true` on virtually every non-trivial function.
+Commit `ab323ec10` (C2) made `CheckException` universal: every real function now carries at least one `CheckException` op. The `has_exception_handling` flag is set by `lower_from_simple.rs:319-330` on any function containing `TryStart | TryEnd | StateBlockStart | StateBlockEnd | CheckException`. This means `has_exception_handling == true` on virtually every non-trivial function.
 
 Three loop optimization passes bail at the top on `has_exception_handling`:
 - `loop_unroll.rs:250` — `find_unroll_candidates` returns empty

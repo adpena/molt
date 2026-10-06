@@ -1,7 +1,7 @@
 <!-- Foundation design 46. Supervisor-authored from the structural-sweep tooling
 (tools/structural_audit.py, tools/call_fact_coverage.py) + council directives
 2026-06-08 ("structural sweep" → "alien compiler laboratory"). HEAD-anchored at
-origin/main caa4d6e62. Tools are the living artifacts; this note is the map. -->
+origin/main f987f9072. Tools are the living artifacts; this note is the map. -->
 
 # The Molt Semantic Control Plane — structural sweep + the instruments it seeds
 
@@ -57,7 +57,7 @@ reviewer's vigilance.
 
 ## 3. The sweep answers the council's 10 questions (with tool data)
 
-Measured against origin/main `caa4d6e62` by the two built tools.
+Measured against origin/main `f987f9072` by the two built tools.
 
 1. **Top duplicate semantic authorities.** `purity` decided in 3 files;
    `side_effecting` in 3 files (`effects.rs` ×2, `escape_analysis.rs`,

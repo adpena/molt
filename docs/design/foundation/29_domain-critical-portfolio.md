@@ -10,7 +10,7 @@ after/with #49; 36 mmap after 34; 35 web after docs 26/28 land. -->
 
 ## Codebase Inventory Summary
 
-The audit covers molt at commit `951938075` (branch `main`). The runtime crate tree is `runtime/molt-runtime/` with its satellite crates (`molt-runtime-net`, `molt-runtime-regex`, `molt-runtime-zoneinfo`, `molt-runtime-http`, `molt-cpython-abi`, etc.). The stdlib tree is `src/molt/stdlib/` (~280 Python files, full CPython 3.12+ mirror structure). Feature gates live in `/Users/adpena/Projects/molt/runtime/molt-runtime/Cargo.toml`.
+The audit covers molt at commit `fef48ecb0` (branch `main`). The runtime crate tree is `runtime/molt-runtime/` with its satellite crates (`molt-runtime-net`, `molt-runtime-regex`, `molt-runtime-zoneinfo`, `molt-runtime-http`, `molt-cpython-abi`, etc.). The stdlib tree is `src/molt/stdlib/` (~280 Python files, full CPython 3.12+ mirror structure). Feature gates live in `/Users/adpena/Projects/molt/runtime/molt-runtime/Cargo.toml`.
 
 ---
 

@@ -244,7 +244,7 @@ converts sunk, already-landed capability into a default-path win.
 
 ## 7. Landed-state verification (read this session; do not duplicate)
 
-Verified against the worktree tree at `origin/main` HEAD `18ed35b063`:
+Verified against the worktree tree at `origin/main` HEAD `d4888f7103`:
 
 - **Fast-iteration Cargo profiles — LANDED.** `Cargo.toml` `[profile.dev-fast]`
   `inherits="dev"`, `codegen-units=256`, `lto="off"`; `[profile.release-fast]`
@@ -258,9 +258,9 @@ Verified against the worktree tree at `origin/main` HEAD `18ed35b063`:
   [Cargo workspace truth custody](../../spec/areas/tooling/0001-toolchains.md#cargo-workspace-truth-custody)
   for the current authority and the separate shipped-runtime policies.
 - **Config-lattice reuse + stable dep-cache — LANDED (opt-in).** V1
-  (018d83e104/8bc067ee27 single combined compile, now the sole split-runtime
-  `both` producer with no dual-compile kill switch/retry), V2 (7e248d384b stable dep-cache
-  default-on for iteration profiles), V3 (4644a2c4d1 `MOLT_BUILD_REUSE_COMPATIBLE`
+  (c1ff76bd7d/f21164c7e6 single combined compile, now the sole split-runtime
+  `both` producer with no dual-compile kill switch/retry), V2 (c13e2e216f stable dep-cache
+  default-on for iteration profiles), V3 (0ac15702df `MOLT_BUILD_REUSE_COMPATIBLE`
   config-lattice reuse) per CLAIMS BUILD-DEDUP-B rows.
 - **Runtime wasm profile resolver — LANDED.** `src/molt/cli/runtime_build.py`
   `_resolve_wasm_cargo_profile`: precedence = explicit `MOLT_WASM_CARGO_PROFILE`

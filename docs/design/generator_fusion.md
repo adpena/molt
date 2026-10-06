@@ -5,7 +5,7 @@ Origin: user reframe "What would Chris Lattner do / what does Codon do" — reje
 native stdlib iterators (the CPython C-extension treadmill); make the COMPILER good enough that
 idiomatic Python generators compile to tight native loops, exactly as Codon ships its whole
 stdlib in Python. User chose "Deep fix only": discard the native os.walk iterator (done — tree at
-HEAD 934938665); build generator fusion; rewrite os.walk as the CPython-verbatim Python generator.
+HEAD 8c7d7b36d); build generator fusion; rewrite os.walk as the CPython-verbatim Python generator.
 
 ## The principle
 An AOT Python compiler must not escape Python's perf problems by hand-coding native objects per

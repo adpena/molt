@@ -2,7 +2,7 @@
 design for the user mandate: async/generators must be REAL and extreme-performant,
 not janky analogues. Saved verbatim per the full-text-artifact policy.
 SUPERVISOR CORRECTION (2026-06-06): Phase 0 cites a stale MEMORY.md line claiming the
-E1 inliner is dormant. E1 is ACTIVE on native+WASM (7512919fa) and LLVM (0e55aff9a);
+E1 inliner is dormant. E1 is ACTIVE on native+WASM (b9ca25e38) and LLVM (16c0f35f6);
 the Phase-0 prerequisite is therefore ALREADY MET on all three RC backends (verify the
 module-phase path per backend remains the only open check). -->
 
@@ -115,7 +115,7 @@ The "janky analogue" characterization is precise and evidenced:
 
 6. **Await inlining is absent.** `async def f(): x = await g()` compiles `g()` to a separate `AllocTask(coroutine)` and then polls it in a loop. There is no mechanism to inline the callee coroutine's poll body into the caller's state machine — the await becomes an `AllocTask` + `STATE_TRANSITION(next_state)` + return pair check + resume on the next `STATE_SWITCH` entry. Each `await` is an indirection through the event loop even when the callee is provably always-ready.
 
-7. **os.walk is deleted from the tree.** The native implementation was reverted at HEAD 934938665 because it was both eagerly allocating all entries (OOM on deep trees) and using native recursion (SIGSEGV on deep trees). The CPython-faithful generator-based os.walk cannot yet be compiled efficiently. This is the single most user-visible symptom.
+7. **os.walk is deleted from the tree.** The native implementation was reverted at HEAD 8c7d7b36d because it was both eagerly allocating all entries (OOM on deep trees) and using native recursion (SIGSEGV on deep trees). The CPython-faithful generator-based os.walk cannot yet be compiled efficiently. This is the single most user-visible symptom.
 
 ---
 
@@ -340,7 +340,7 @@ Priority order: `chain` (simplest), `islice`, `takewhile`, `dropwhile`, `repeat`
 
 ### Phase 5 — os.walk Python Rewrite
 
-**Precondition:** Phase 1 (Tier B) verified. The CPython-faithful os.walk generator implementation (reverted at HEAD 934938665, but the CPython source is known) must compile via Tier B.
+**Precondition:** Phase 1 (Tier B) verified. The CPython-faithful os.walk generator implementation (reverted at HEAD 8c7d7b36d, but the CPython source is known) must compile via Tier B.
 
 **What changes:** Restore os.walk as a Python generator in `src/molt/stdlib/os.py`. The CPython 3.12 implementation:
 ```python

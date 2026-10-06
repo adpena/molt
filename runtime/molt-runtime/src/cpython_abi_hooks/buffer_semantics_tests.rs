@@ -218,7 +218,7 @@ fn build_memoryview_from_memory(data: *mut c_char, len: isize) -> *mut PyObject 
 
 /// Same for the FromBuffer path: the source `Py_buffer` is a FillInfo'd STACK
 /// view that is released and dies with this frame — exactly the shape of the
-/// reverted `7da58cff8f` field-trick UAF (a self-referential `shape =
+/// reverted `2d287ebb17` field-trick UAF (a self-referential `shape =
 /// &view.len` on a stack view that the memoryview then outlived).
 #[inline(never)]
 fn build_memoryview_from_stack_buffer(data: *mut c_void, len: isize) -> *mut PyObject {

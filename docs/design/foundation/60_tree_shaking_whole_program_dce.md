@@ -8,7 +8,7 @@ retiring the class "reachability is re-derived per tier and the copies drift."
 Author: portfolio-architect. Date: 2026-06-24. Status: DESIGN ONLY / EXECUTABLE
 PLAN — no code written in the session that produced it; the lead integrates.
 Every load-bearing file:line claim was verified read-only against the worktree
-snapshot on 2026-06-24 (HEAD 1d92bc5cf). Code beats this doc when it drifts —
+snapshot on 2026-06-24 (HEAD 2f7c40cf7). Code beats this doc when it drifts —
 re-verify against current files and executable tests before acting.
 
 NUMBERING (authoritative as of 2026-06-24): this doc is 60. The perf-measurement
@@ -178,7 +178,7 @@ board (§7).
 
 ---
 
-## 2. Current state (what exists — verified read-only against `main`, HEAD 1d92bc5cf)
+## 2. Current state (what exists — verified read-only against `main`, HEAD 2f7c40cf7)
 
 The substrate is real but **fragmented into four+ hand-mirrored reachability traversals
 plus three backend-local keep policies**. This arc is *unification + completion*, not

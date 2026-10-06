@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "created_at": "2026-05-19T22:07:33.915711+00:00",
-  "git_rev": "1306ac0236131fa48f149b8936234ab41e0a3a81",
+  "git_rev": "ae2b1b1580be710467db1370d4ae1185c62124f5",
   "super_run": false,
   "samples": 1,
   "warmup": 0,
@@ -53,6 +53,6 @@
     "authoritative_reason": "historical perf snapshot; the only citable perf source is `tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent --quiescence-wait-s 180 --quiescence-poll-s 15`",
     "canonical_gate": "tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent --quiescence-wait-s 180 --quiescence-poll-s 15",
     "generated_at": "2026-05-19T22:07:33.915711+00:00",
-    "git_rev": "1306ac0236131fa48f149b8936234ab41e0a3a81"
+    "git_rev": "ae2b1b1580be710467db1370d4ae1185c62124f5"
   }
 }

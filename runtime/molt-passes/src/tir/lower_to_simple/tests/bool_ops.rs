@@ -35,7 +35,7 @@ fn op_ret(arg: &str) -> OpIR {
 /// `TypeError: __bool__ should return bool, returned int`.
 ///
 /// This test exercises the exact `__bool__`-method shape: `const_bool;
-/// ret`.  After the fix in commit 8662b45f and the matching
+/// ret`.  After the fix in commit 28a6ba51 and the matching
 /// `ensure_boxed_primitive_safe` bool-aware repath, the const_bool's
 /// `value` attribute must arrive at lower_to_simple_ir as
 /// `AttrValue::Bool(false)`/`AttrValue::Bool(true)` and the resulting

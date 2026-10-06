@@ -29,13 +29,13 @@ The cost per-element is: one indirect call + one heap round-trip on the pair + t
 
 **The strategic prize is not merely perf.** The treadmill problem is: every stdlib function (os.walk, itertools.chain, itertools.islice, ...) that needs to be fast currently requires a hand-written Cranelift intrinsic. Each intrinsic is ~300-800 lines of unsafe Rust, binds to exactly one backend, and decouples stdlib semantics from CPython. Generator fusion makes a compiler that is good enough to compile idiomatic Python generators to machine-code equivalent to the hand-written version. Then os.walk, itertools, and the entire itertools family can live as pure Python generators, and the intrinsics can be deleted.
 
-The specific open correctness bug: os.walk's current implementation is DELETED from the tree (reverted at HEAD 934938665). The OOM (eager materialization) and SIGSEGV (native recursion on deep trees) are open. Generator fusion and a rewrite of os.walk as a Python generator is the only structurally correct fix.
+The specific open correctness bug: os.walk's current implementation is DELETED from the tree (reverted at HEAD 8c7d7b36d). The OOM (eager materialization) and SIGSEGV (native recursion on deep trees) are open. Generator fusion and a rewrite of os.walk as a Python generator is the only structurally correct fix.
 
 ## 2. Key Open Question Resolved
 
 **Are genexprs lowered through the same coroutine repr as def-yield?**
 
-YES. From `docs/design/generator_fusion.md` line 19-21 (verified against the design doc committed at 1ad199725): "genexpr and `def`-yield generators share ONE representation: both → a `poll_func` + `ALLOC_TASK(task_kind="generator")`. Frontend: `visit_FunctionDef` frontend/__init__.py:30765-31043 (def-yield), `visit_GeneratorExp` :14198-14347 (genexpr — builds `ast.Yield` and uses the SAME `visit_Yield` path :32478)."
+YES. From `docs/design/generator_fusion.md` line 19-21 (verified against the design doc committed at e6239bd17): "genexpr and `def`-yield generators share ONE representation: both → a `poll_func` + `ALLOC_TASK(task_kind="generator")`. Frontend: `visit_FunctionDef` frontend/__init__.py:30765-31043 (def-yield), `visit_GeneratorExp` :14198-14347 (genexpr — builds `ast.Yield` and uses the SAME `visit_Yield` path :32478)."
 
 However, the existing `deforestation.rs` pass already fuses the `sum/any/all/list(genexpr)` shapes by operating at the `CallBuiltin` + `ForIter` level BEFORE the coroutine frame appears — the frontend's `_try_emit_inline_sum_genexpr` inlines these before the coroutine is emitted, and `deforestation.run()` covers the leftover `ForIter`-carried shapes for pure bodies.
 
@@ -304,7 +304,7 @@ No change needed for phase A. The generator_fusion pass is a MODULE-level pass i
 
 **Conservative-correct by construction.** The bail conditions enumerate every case where the splice could produce incorrect code. Each bail leaves the IR unchanged — the coroutine frame remains, the generator executes correctly via the runtime, and the only cost is a foregone optimization.
 
-**SSA validity after splice.** The clone uses the same `clone_function_body_with_fresh_ids` infrastructure as the E1 inliner (already proven sound at commit `f14b196ce`). The promoted frame slots are well-formed SSA: each read copies its reaching definition, and each join a slot's stores reach takes a block argument that every incoming edge supplies (`generator_fusion/slots.rs`). Verified by `verify_function` called inside `run_pipeline` after the splice.
+**SSA validity after splice.** The clone uses the same `clone_function_body_with_fresh_ids` infrastructure as the E1 inliner (already proven sound at commit `e9af31a03`). The promoted frame slots are well-formed SSA: each read copies its reaching definition, and each join a slot's stores reach takes a block argument that every incoming edge supplies (`generator_fusion/slots.rs`). Verified by `verify_function` called inside `run_pipeline` after the splice.
 
 **Refcount balance.** Fusion runs in the module phase, before the terminal drop plane, and places no reference operation: DropInsertion owns every reference of the fused body (design 20 §1.2). The cloned `StateYield` is replaced by a direct branch to the consumer body, with `elem_val` bound to `Index(pair, 0)`. The runtime returns that element owned (the native subscript path publishes an owned index result, and `index_impl` retains a tuple element), as the eliminated `IterNext` pair's element was, so the drop plane releases it once, after the consumer body's last read. The pair is the generator's own fresh tuple, released once its element is extracted. Each promoted frame-slot read replaces a `ClosureLoad`, whose result was owned, and keeps that reference through the replacement authority (`ownership_lattice_min::Replacements`): an owned alias of its reaching definition, unless that value is a raw carrier or the read is unread. Each promoted store keeps the elided frame's reference to the value it stored the same way, and so does each parameter slot to its argument. A join argument owns what its edges move or retain into it.
 
@@ -569,11 +569,11 @@ Perf gate: molt must be **strictly faster** on the simple generator benchmark on
 
 ### Blocked-by
 
-**E1 inliner (DONE, commit `f14b196ce`):** The `clone_function_body_with_fresh_ids` primitive is reused verbatim. The generator_fusion pass must import it from `inliner.rs` or extract it to a shared `tir/util/clone.rs`. Prefer extracting: the clone primitive is independently useful and reduces coupling.
+**E1 inliner (DONE, commit `e9af31a03`):** The `clone_function_body_with_fresh_ids` primitive is reused verbatim. The generator_fusion pass must import it from `inliner.rs` or extract it to a shared `tir/util/clone.rs`. Prefer extracting: the clone primitive is independently useful and reduces coupling.
 
-**S4 module_phase (DONE, commit `7915b29a0`):** `run_module_pipeline` already exists and runs the E1 inliner. Generator fusion slots in after E1 in the same function.
+**S4 module_phase (DONE, commit `cd5acdb7d`):** `run_module_pipeline` already exists and runs the E1 inliner. Generator fusion slots in after E1 in the same function.
 
-**E1 dormancy issue (ACTIVE):** The inliner is dormant on real code because `CheckException` sets `has_exception_handling` → `is_inlineable` returns false. Generator fusion has the SAME issue in a different form: the poll function will almost certainly have `CheckException` ops (from the universal exception-observation change `430e09793`). The fusion pass must use `has_exception_handlers()` (the narrow check for real TryStart/TryEnd regions), NOT `has_exception_handling` (which is set by any CheckException and is almost always true).
+**E1 dormancy issue (ACTIVE):** The inliner is dormant on real code because `CheckException` sets `has_exception_handling` → `is_inlineable` returns false. Generator fusion has the SAME issue in a different form: the poll function will almost certainly have `CheckException` ops (from the universal exception-observation change `ab323ec10`). The fusion pass must use `has_exception_handlers()` (the narrow check for real TryStart/TryEnd regions), NOT `has_exception_handling` (which is set by any CheckException and is almost always true).
 
 This is NOT a blocker for correctness — the bail is conservative. But it IS a blocker for the performance win on real code. The fusion pass will need to handle observation-only CheckException callees the same way the E1 inliner phase-c designs handle them: clone the callee's CheckException ops verbatim (they reference the callee's own exception-exit label, which gets a fresh id in the caller via `build_label_remap`). The phase-c design in `inliner.rs` (line 36-40 of the file) is the exact template for this.
 

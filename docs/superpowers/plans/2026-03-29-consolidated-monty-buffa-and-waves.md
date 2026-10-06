@@ -72,9 +72,9 @@ Scope folded from the old Wave A residual plan.
 
 Done:
 - ✅ Cranelift 0.130.0 pinned across all targets in `molt-backend/Cargo.toml`
-- ✅ TIR default-ON (`d6b3692ac`) with structured CondBranch, nested loop emission, type specializations
+- ✅ TIR default-ON (`14c9622ae`) with structured CondBranch, nested loop emission, type specializations
 - ✅ Test files exist and are NOT skipped: `nested_indexed_loops.py`, `triple_nested_loops.py`, `stdlib_attr_access.py`, `tuple_subclass_mro.py`, `genexpr_enumerate_unpack.py`
-- ✅ SSA fixes landed: two-pass dominator walk (`db42ea341`), sealed blocks, loop phi fix
+- ✅ SSA fixes landed: two-pass dominator walk (`2ae7b5037`), sealed blocks, loop phi fix
 
 Remaining work:
 - record Cranelift 0.130.0 as the intended pinned baseline (decision doc, not just Cargo.toml);

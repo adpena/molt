@@ -497,7 +497,7 @@
     "ram_gb": 128,
     "python_version": "3.14.3",
     "date": "2026-03-25T23:20:53Z",
-    "commit": "d60af842",
+    "commit": "42872380",
     "backend": "cranelift",
     "profile": "release",
     "notes": "Native binary benchmarks. dict_1m and calls_1m hang due to while-loop bug with dict access and function calls in loop body. While loops with only simple arithmetic (2+ assignments) work correctly.",

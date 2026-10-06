@@ -14,13 +14,13 @@
     "git_rev": "441eb2a4d3ed20b530589264038cbc00e7985fa6"
   },
   "provenance": {
-    "origin_sha": "1fa7448a2706325126f2555a3f76f05a85aa710b",
-    "local_head_sha": "f5b44bd54756af786c51ab65715f96ab1b1660bc",
-    "merge_base_sha": "f5b44bd54756af786c51ab65715f96ab1b1660bc",
+    "origin_sha": "f7f7a5992f62837019fa8c05efd2d1502031117b",
+    "local_head_sha": "7aba98e4df15826d75f0552e4cb508d62c814ae2",
+    "merge_base_sha": "7aba98e4df15826d75f0552e4cb508d62c814ae2",
     "dirty_tree": true,
     "diverges_from_origin": true,
     "benchmark_tool_sha": "70f16aff3ebf69765ea53465e043327f010c021c",
-    "benchmark_tool_last_commit": "a050ec341dd97a4bacb6cc8ce6878c8fffe96ab4",
+    "benchmark_tool_last_commit": "0695fffeb821b4bfe62554fa67a1d3601220b870",
     "benchmark_tool_modified": true,
     "backend_binary_identity": {
       "native/release-fast": "/private/tmp/wt_hygiene/target/release-fast/molt-backend|1780960371024551583|10072720"

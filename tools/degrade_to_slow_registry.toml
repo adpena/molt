@@ -92,7 +92,7 @@ to a single SERIAL scheduling unit (policy_reason = "cyclic_scc_serial_unit").
 This is CORRECTNESS, not a perf degrade: splitting a cycle's members across
 parallel workers would lower each member against a frozen snapshot that omits
 its cyclic peers, changing results. Independent modules and the acyclic
-condensation stay parallel -- the SCC-condensation landing (522b7fe04 / the
+condensation stay parallel -- the SCC-condensation landing (7cc0cea4a / the
 scc_serial_modules plumbing) removed the OLD has_back_edges whole-frontend
 serial bail, which WAS a metabug; only the per-cycle serial unit remains and it
 is sound. Do not classify as a degrade.

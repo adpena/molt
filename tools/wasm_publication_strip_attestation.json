@@ -2,7 +2,7 @@
   "schema_version": 1,
   "attestation_id": "wasm-publication-strip-20260711",
   "measured_at_utc": "2026-07-11T17:30:00Z",
-  "base_revision": "d36658a1ce",
+  "base_revision": "a3c3344a14",
   "authority": "src/molt/wasm_artifact.py",
   "publication_order": [
     "contract_exports",

@@ -647,7 +647,7 @@ requirement remains a cross-layer contract (§2.6).
 
 ### 2.6 Exception Edges
 
-C2 (commit `430e09793`) made exception observation universal: every
+C2 (commit `ab323ec10`) made exception observation universal: every
 potentially-throwing op is followed by `CheckException(→ handler_label)`. The
 exceptional edge leaves at the observation, not at the block terminator.
 Liveness therefore enters handler demand at that operation
@@ -1095,7 +1095,7 @@ generated wrappers.
 > proof. Current regressions are in `test_cli_shared_stdlib_cache.py` and
 > `test_cli_backend_binary_materialization.py`.
 >
-> **(B) WITH THE CONFOUND DEAD, RE-ESTABLISHED THE FAILING SET CLEANLY — IT WAS EMPTY (of real failures).** Native gate flipped ON locally (`target_uses_tir_drop_insertion` → `true`, the ONLY change activation needs — the restack `f2b2d1b32` already did the pipeline append + pinned-name entries + `stats.len()==30`). Then, on a clean drops-wired build:
+> **(B) WITH THE CONFOUND DEAD, RE-ESTABLISHED THE FAILING SET CLEANLY — IT WAS EMPTY (of real failures).** Native gate flipped ON locally (`target_uses_tir_drop_insertion` → `true`, the ONLY change activation needs — the restack `5d4e265d5` already did the pipeline append + pinned-name entries + `stats.len()==30`). Then, on a clean drops-wired build:
 > * **Finding #4(C)'s headline cases ALL PASS:** `import typing`/`re`/`collections`/`warnings` → byte-identical CPython, exit 0 (the `'object' object is not subscriptable` garbage-`type_id` error is GONE — it was the stale `.o`).
 > * **Drops provably FIRE and CLOSE THE LEAK** (proof they are not silently skipped): `bigint_accumulator` n=1000 → `dealloc_bigint=3001` (every per-iter BigInt freed), `peak_rss=8 MB` (was the 297 MB leak). **30M-iter** bigint → `alloc=60000636 dealloc=60000007 dealloc_bigint=60000001`, `peak_rss=8 MB`, 3.35 s, exit 0 under `--rss-mb 64` + `MOLT_ASSERT_NO_LEAK=1`. `string_concat` → `dealloc_string=10001`, RSS-bounded (the 30M form is O(n²)-SLOW but RSS stays 14 MB — bounded, NOT leaking; not a drop issue). Memory corpus **14/14** (incl. every adversarial over-release regression: `alias_reassign_bigint`/`slice`/`conditional_del`, `generator_consumer_*`, `rc_sites_*`) under `--rss-mb 64`+`MOLT_ASSERT_NO_LEAK=1`.
 > * **Compliance `pytest -n 4`: 46/46** byte-identical (curated CPython-semantic parity).

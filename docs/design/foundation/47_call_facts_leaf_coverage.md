@@ -1,6 +1,6 @@
 <!-- Foundation design 47. Supervisor-authored from tools/call_fact_coverage.py's
 28.6% finding + council directive 2026-06-08 ("CallFacts is the missing primitive").
-Implementation spec, not a survey. HEAD-anchored at origin/main c05a4aff0.
+Implementation spec, not a survey. HEAD-anchored at origin/main 404c7cb3a.
 The IR-fact half of doc 46 §4.1 (FactGraph); the perf-root companion to doc 45. -->
 
 # CallFacts — the call-site fact record (the 28.6% perf root)

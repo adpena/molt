@@ -174,7 +174,7 @@ Driven ON this engine (tertiary macOS arm64). Each fix re-verified by re-running
 `tools/native_numpy_discovery.sh _multiarray_umath` and reading the frontier +
 the static symbol-gap count.
 
-### FIXED — B.1 datetime CAPI capsule  (landed `09c8d2337`)
+### FIXED — B.1 datetime CAPI capsule  (landed `fc454b04f`)
 `molt_cpython_abi_init` now registers the `datetime.datetime_CAPI` capsule with
 the exact CPython 3.12 `PyDateTime_CAPI` layout (5 type objects + UTC singleton
 + 9 constructors; `Include/datetime.h` field order/count). numpy's
@@ -187,7 +187,7 @@ the exact CPython 3.12 `PyDateTime_CAPI` layout (5 type objects + UTC singleton
 ===MOLT_DISCOVERY_EXC: "import of 'numpy.exceptions' failed (runtime import error pending)"
 ```
 
-### FIXED — A.4/A.2 symbol-gap batch  (landed `61093cb4a` + `e30c35b81`)
+### FIXED — A.4/A.2 symbol-gap batch  (landed `aa75c1ea7` + `607358e46`)
 Real ABI impls (harness stubs deleted): `PyObject_Malloc/Calloc/Realloc`,
 `PyThreadState_GetDict` (real thread-local dict), `PyOS_setsig` (real
 `signal(2)`), `_Py_ascii_whitespace[128]`, `_Py_Dealloc` (real finalizer),
@@ -233,7 +233,7 @@ to duplicate objects.
 > enumerate EVERY remaining witness frontier in ONE native sweep, so they batch-
 > fix in coherent lanes instead of one-per-30-min-wasm-cycle. Driven on
 > `tertiary` (macOS arm64), worktree `~/molt-disc` rebased onto `origin/main`
-> `556ff0bb9` (single-authority long-double + ABI fixes landed). numpy `1.26.4`
+> `9d098a3ed` (single-authority long-double + ABI fixes landed). numpy `1.26.4`
 > + scipy `1.13.1` cp312 wheels unpacked; `field_solve.py` is the compute target.
 
 ### Engine extensions landed this lane
@@ -491,7 +491,7 @@ could not surface):
    x86_64 Linux — and returned **PASS**. Warm inner-loop wall-time:
    **12.66 s** (vs ~1800 s for one full wasm witness cycle → **~142×**).
 2. **Injected regression → RED.** Reverting the datetime CAPI capsule fix
-   (`09c8d2337`) in the ABI, the runner rebuilt only `molt-cpython-abi`
+   (`fc454b04f`) in the ABI, the runner rebuilt only `molt-cpython-abi`
    (incremental relink), re-drove PyInit, and turned **RED**: `PyCapsule_Import`
    silent-failure reappeared and the `numpy.exceptions` frontier was no longer
    reached — exactly the two-sided gate firing (forbidden marker present AND

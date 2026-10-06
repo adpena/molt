@@ -32,7 +32,7 @@ fn compile_standalone(ir: SimpleIR) -> molt_backend::CompileOutput {
 /// `output.trap_stub_names.is_empty()` check.
 ///
 /// The native backend no longer has a trap-stub fallback (removed in
-/// `8649b923b` "native: fail closed on codegen failures"). It now *fails
+/// `e067fbf5f` "native: fail closed on codegen failures"). It now *fails
 /// closed*: if a function cannot be compiled, `SimpleBackend::compile` panics
 /// ("Cranelift compilation failed for `…`" or "native backend left … exported
 /// function declaration(s) undefined") rather than emitting an object with a

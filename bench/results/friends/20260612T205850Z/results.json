@@ -1,7 +1,7 @@
 {
   "dry_run": false,
   "generated_at": "2026-06-12T20:58:50.928573+00:00",
-  "git_rev": "feb06faf27c26c29391972b97d5e7021603178d7",
+  "git_rev": "79ba50ebae8347faf93bc6b1110742b88d3740c0",
   "host": {
     "cpu_count": 18,
     "machine": "arm64",
@@ -39,7 +39,7 @@
     "authoritative": false,
     "authoritative_reason": "non-canonical lane (tools/bench_friends.py); the only citable perf source is `tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent --quiescence-wait-s 180 --quiescence-poll-s 15`",
     "canonical_gate": "tools/perf_scoreboard.py --set core --backend native --backend llvm --profile release-fast --samples 5 --warmup 2 --repeat 5 --classify --require-quiescent --quiescence-wait-s 180 --quiescence-poll-s 15",
-    "git_rev": "feb06faf27c26c29391972b97d5e7021603178d7",
+    "git_rev": "79ba50ebae8347faf93bc6b1110742b88d3740c0",
     "lane": "tools/bench_friends.py",
     "profile": "manifest-defined",
     "source": "non-canonical"

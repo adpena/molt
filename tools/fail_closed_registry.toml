@@ -93,7 +93,7 @@ fail_open_backend_dispatch = 0
 
 # --- abstract_number.rs: arbitrary-precision int silently truncated -----------
 
-# F5_sequences_drops_op RIPPED by lane F2 (e47205c64f): PyList_Sort/PyList_Reverse
+# F5_sequences_drops_op RIPPED by lane F2 (f8f651c7c5): PyList_Sort/PyList_Reverse
 # now route the runtime in-place sort/reverse authorities (list_sort/list_reverse
 # hooks) with BadInternalCall on a non-list — no argument is dropped and no
 # fabricated success remains. Baseline lowered 1 -> 0 (ratchet).
@@ -179,7 +179,7 @@ is) and retire this row. No wrong answer today; pure layout drift-risk.
 #     3-argument modular pow via the runtime numeric authority (molt_pow_mod);
 #     the "ignore for now" `let _ = o3;` shortcut is gone
 #     (runtime/molt-cpython-abi/src/api/abstract_number.rs). Same fix as
-#     fail_open_stub F3. Landed by task#9 (062fb5301).
+#     fail_open_stub F3. Landed by task#9 (bb2d808f9).
 #   * F8_multiprocessing_fork_maps_to_spawn — get_all_start_methods() no longer
 #     advertises fork/forkserver (Molt has no os.fork()/HAVE_SEND_HANDLE), and
 #     get_context()/set_start_method() now fail closed with CPython's
@@ -201,7 +201,7 @@ resolution_row = "task#10"
 justification = """
 structmember.h lives at both include/structmember.h (source-compat overlay tier)
 and runtime/molt-cpython-abi/include/structmember.h (the ABI authority added by
-the header-custody arc 410ada3ad to make the cpython-abi tier self-complete) --
+the header-custody arc 4a4308b88 to make the cpython-abi tier self-complete) --
 two hand-synced copies of the CPython legacy T_*/READONLY aliases. Retire under
 task #10's remaining surface (generate/collapse to one authority).
 """

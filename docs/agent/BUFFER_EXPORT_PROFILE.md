@@ -16,7 +16,7 @@
 >   `internal = NULL`); memoryviews embed the descriptor in the
 >   `PyMemoryViewObject` itself (CPython's `ob_array` model) and are filled
 >   **in place** (never filled on the stack and moved — the field-trick UAF
->   class from the reverted `7da58cff8f`); molt-native `PyObject_GetBuffer`
+>   class from the reverted `2d287ebb17`); molt-native `PyObject_GetBuffer`
 >   installs a right-sized `ExportInternal` (32 B + 16 B/dim, raw-projection
 >   provenance, Miri SB+TB clean) whose header carries `owner` for the runtime
 >   pin release.
@@ -30,7 +30,7 @@ numbers below are measured, machine-checkable, and reproducible; the
 optimization is scoped by what the profile *proves* hot, not by feel.
 
 - Host: Windows 11, AMD Ryzen 9 3900X (12C/24T), canonical volume `C:\Molt`.
-- Checkout: `perf/buffer-export-profile` worktree @ base `ce6fc4d234` (= `origin/main`).
+- Checkout: `perf/buffer-export-profile` worktree @ base `2184bd39d8` (= `origin/main`).
 - Toolchain: `rustc 1.96.1`, `--release` profile (`opt-level` + debuginfo).
 - Method: in-crate `#[cfg(test)]` bench module
   `runtime/molt-cpython-abi/src/buffer_export_bench.rs` with a **counting global
@@ -76,7 +76,7 @@ O(ndim) copy loop in `descriptor_from_pybuffer` (bounded `ndim ≤ 64`), measure
 below to be ~2–3 ns/dim (negligible). Space per export: **exactly 1 allocation
 of 1112 B**, dtype- and ndim-independent.
 
-## Measured breakdown (baseline @ `ce6fc4d234`)
+## Measured breakdown (baseline @ `2184bd39d8`)
 
 | variant | ns/export | allocs/export | bytes/export |
 |---|---:|---:|---:|
@@ -103,7 +103,7 @@ The profile **redirects** the optimization:
   **dtype-independent** (142–145 ns across all 12 numpy scalar dtypes). The
   format code for numpy scalars is ≤2 chars; the `CStr` walk/copy is lost in the
   noise. A `'static` format table would save ~0 ns. (This also sidesteps the
-  Miri-C constraint from `56e1c97d4b` — no format-table change is warranted at
+  Miri-C constraint from `c651275256` — no format-table change is warranted at
   all.)
 - **shape/strides inline small-vec — REJECTED by the numbers.** ndim is
   near-flat (144→152 ns, 1-D→4-D). shape/strides are *already* inline fixed
@@ -144,8 +144,8 @@ ns/export here.
 
 ## Phase-2 status: UNBLOCKED (interlock landed; buffer.rs untouched)
 
-The array-buffer-export-interlock lane **landed on `main` at `8fe41579af`**
-(`02c6d7f952` + `ca7eb56e54`) while this profile was being landed. It wired the
+The array-buffer-export-interlock lane **landed on `main` at `20b1d3471b`**
+(`8cd1afd762` + `1fd4e7278d`) while this profile was being landed. It wired the
 resize-while-exported lease into **`molt-runtime`** (`molt_buffer_export` /
 `molt_buffer_acquire` / `molt_buffer_release` + `ArrayBufferLease`) and left
 `runtime/molt-cpython-abi/src/api/buffer.rs` **UNTOUCHED**. So the Phase-2 levers
@@ -182,11 +182,11 @@ keep `cargo test` + the Miri finding-C repros green under Stacked + Tree Borrows
 ## LANDED addendum — BUFFER-DISTILL-55 measured before→after (2026-07-10)
 
 Same machine, same session, `--release`, N = 200 000/variant. "Before" is
-`origin/main` @ `3c82e4539d` re-profiled in a clean worktree immediately before
+`origin/main` @ `279892f03f` re-profiled in a clean worktree immediately before
 landing (the absolute ns numbers differ from the older table above — different
 day/load — which is why the baseline was re-measured in-session).
 
-| path | before (@3c82e4539d) | after | delta |
+| path | before (@279892f03f) | after | delta |
 |---|---:|---:|---:|
 | `PyBuffer_FillInfo` cycle | **179.9 ns**, 1 alloc / 1112 B | **6.6 ns**, **0 allocs** | **−96% ns, −100% allocs** |
 | memoryview copy: OLD sub-cycle (`copy_pybuffer_for_memoryview`, box+registry, **no** object) | 274.9–285.4 ns, 1 alloc / 1112 B | — | — |
@@ -212,7 +212,7 @@ Gates (machine-checkable):
 - `test_memoryview_descriptor_outlives_constructing_frame`
   (`tests/test_object_protocol.rs`) — the anti-dangle gate: reads
   shape/strides/format AFTER the constructing frame returned (with a stack
-  clobber), the exact UAF shape of the reverted `7da58cff8f` field-trick.
+  clobber), the exact UAF shape of the reverted `2d287ebb17` field-trick.
 - Miri: lib + `test_object_protocol` + `test_modules` under **Stacked Borrows
   AND Tree Borrows** (`-Zmiri-ignore-leaks` for the documented immortal-global
   exception), 0 UB.

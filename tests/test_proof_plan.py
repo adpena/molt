@@ -260,7 +260,7 @@ def test_generated_local_dx_projection_has_stable_command_ids() -> None:
         ],
         "incident_run_id": 30_211_145_633,
         "incident_job_id": 89_817_499_999,
-        "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
+        "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
         "incident_command": "cargo metadata --locked --format-version 1",
     }
     assert projection["executor"]["max_workers"] == 4
