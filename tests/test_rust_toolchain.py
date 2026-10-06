@@ -87,6 +87,98 @@ def test_rust_explicit_linker_path_is_not_replaced_by_bundled_name(tmp_path, rel
     assert evidence["origin"] == "explicit-path"
 
 
+def _executable(path, content=None):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content if content is not None else path.name.encode())
+    path.chmod(0o755)
+    return path
+
+
+@pytest.mark.parametrize(
+    "host,suffix",
+    [
+        ("x86_64-unknown-linux-gnu", ""),
+        ("aarch64-apple-darwin", ""),
+        ("x86_64-pc-windows-gnu", ".exe"),
+    ],
+)
+@pytest.mark.parametrize("flavor", ["ld.lld", "ld64.lld", "lld-link", "wasm-ld"])
+def test_rust_gcc_ld_wrapper_selects_the_sysroot_rust_lld(
+    tmp_path, host, suffix, flavor
+):
+    # Layout of a rustup toolchain: lib/rustlib/<host>/bin/{rust-lld,gcc-ld/*}.
+    bin_dir = tmp_path / "sysroot" / "lib" / "rustlib" / host / "bin"
+    wrapper = _executable(bin_dir / "gcc-ld" / (flavor + suffix))
+    rust_lld = _executable(bin_dir / ("rust-lld" + suffix))
+    search = RustToolSearch(host, tmp_path / "sysroot", tmp_path / "sysroot")
+
+    selected, evidence = search.bundled_lld(wrapper)
+
+    assert selected == rust_lld.resolve()
+    assert evidence["origin"] == "rust-lld-wrapper"
+    assert evidence["requested"] == str(wrapper)
+    assert evidence["content_path"] == str(rust_lld.resolve())
+
+
+def test_rust_gcc_ld_wrapper_rule_ignores_other_linkers(tmp_path):
+    host = "x86_64-unknown-linux-gnu"
+    bin_dir = tmp_path / "sysroot" / "lib" / "rustlib" / host / "bin"
+    _executable(bin_dir / "rust-lld")
+    search = RustToolSearch(host, tmp_path / "sysroot", tmp_path / "sysroot")
+    # A system lld, an lld outside any selected sysroot's host tool directory,
+    # and an unknown gcc-ld entry are not the Rust wrapper.
+    assert search.bundled_lld(_executable(tmp_path / "usr" / "bin" / "ld.lld")) is None
+    assert (
+        search.bundled_lld(_executable(tmp_path / "other" / "gcc-ld" / "ld.lld"))
+        is None
+    )
+    assert search.bundled_lld(_executable(bin_dir / "gcc-ld" / "ld.gold")) is None
+    assert search.bundled_lld(bin_dir / "rust-lld") is None
+
+
+def test_rust_gcc_ld_entry_linked_to_a_system_lld_is_not_the_wrapper(tmp_path):
+    host = "x86_64-unknown-linux-gnu"
+    bin_dir = tmp_path / "sysroot" / "lib" / "rustlib" / host / "bin"
+    _executable(bin_dir / "rust-lld")
+    system_lld = _executable(tmp_path / "usr" / "bin" / "ld.lld")
+    entry = bin_dir / "gcc-ld" / "ld.lld"
+    entry.parent.mkdir(parents=True)
+    try:
+        entry.symlink_to(system_lld)
+    except OSError as exc:
+        pytest.skip(f"executable symlinks unavailable: {exc}")
+    search = RustToolSearch(host, tmp_path / "sysroot", tmp_path / "sysroot")
+    assert search.bundled_lld(entry) is None
+
+
+def test_rust_gcc_ld_wrapper_without_rust_lld_fails_closed(tmp_path):
+    host = "x86_64-unknown-linux-gnu"
+    bin_dir = tmp_path / "sysroot" / "lib" / "rustlib" / host / "bin"
+    wrapper = _executable(bin_dir / "gcc-ld" / "ld.lld")
+    search = RustToolSearch(host, tmp_path / "sysroot", tmp_path / "sysroot")
+    with pytest.raises(ValueError, match="has no rust-lld beside its directory"):
+        search.bundled_lld(wrapper)
+
+
+def test_rust_gcc_ld_wrapper_with_host_dependent_child_fails_closed(tmp_path):
+    host = "x86_64-unknown-linux-gnu"
+    bin_dir = tmp_path / "sysroot" / "lib" / "rustlib" / host / "bin"
+    wrapper = _executable(bin_dir / "gcc-ld" / "ld.lld")
+    _executable(bin_dir / "rust-lld")
+    # A linked wrapper elsewhere: Linux execs the sysroot rust-lld, macOS and
+    # Windows exec the rust-lld beside the invoked spelling.
+    elsewhere = tmp_path / "elsewhere" / "bin" / "gcc-ld" / "ld.lld"
+    elsewhere.parent.mkdir(parents=True)
+    _executable(tmp_path / "elsewhere" / "bin" / "rust-lld", b"another rust-lld")
+    try:
+        elsewhere.symlink_to(wrapper)
+    except OSError as exc:
+        pytest.skip(f"executable symlinks unavailable: {exc}")
+    search = RustToolSearch(host, tmp_path / "sysroot", tmp_path / "sysroot")
+    with pytest.raises(ValueError, match="through its invoked path"):
+        search.bundled_lld(elsewhere)
+
+
 def test_rust_tool_metadata_and_missing_image_fail_closed(tmp_path):
     with pytest.raises(ValueError, match="compiler host"):
         rustc_host("rustc version without host")

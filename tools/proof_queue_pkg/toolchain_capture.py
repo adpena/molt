@@ -47,6 +47,8 @@ _COMMAND_CWD_PREFIX = re.compile(r'cd (?=")')
 _COMMAND_ENVIRONMENT_EDIT = re.compile(r'env(?: -i| -u [^\s"]+)+ ')
 _COMMAND_ENVIRONMENT_ASSIGNMENT = re.compile(r'[A-Za-z_][A-Za-z0-9_]*=(?=")')
 _COMMAND_PROGRAM_OVERRIDE = re.compile(r'\[(?=")')
+# gcc collect2.cc under -debug: fprintf (stderr, "ld_file_name        = %s\n").
+_COLLECT2_LINKER_REPORT = re.compile(r"ld_file_name +=\x20(.*)")
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 
@@ -463,6 +465,67 @@ def _driver_command_lines(output: str) -> list[list[str]]:
         if tokens:
             commands.append(tokens)
     return commands
+
+
+def _is_gcc_collect2(path: Path) -> bool:
+    return path.name.casefold() in {"collect2", "collect2.exe"}
+
+
+def _collect2_selected_linker(
+    driver: Path,
+    link_argv: Sequence[str],
+    *,
+    unit: str,
+    cwd: Path,
+    env: Mapping[str, str],
+    probes: list[dict[str, object]],
+) -> tuple[Path, dict[str, object]]:
+    """Ask GCC's collect2 which linker it executes for this exact link.
+
+    `-###` stops at collect2, which picks the real linker itself (gcc
+    collect2.cc main: real-ld, collect-ld, then the `-fuse-ld` name in the
+    driver's COMPILER_PATH, then PATH). Its `-debug` report prints that
+    `ld_file_name` before the exec, so relink the synthetic inputs through the
+    same driver argv instead of re-deriving GCC's search. The driver's
+    `-print-prog-name=ld` follows a different search and can name another
+    file than the one collect2 runs.
+    """
+    report = _run_rust_link_probe(
+        [str(driver), *link_argv, "-Wl,-debug"],
+        phase="collect2-linker",
+        unit=unit,
+        cwd=cwd,
+        compiler_cwd=cwd,
+        env=env,
+        timeout=120.0,
+        probes=probes,
+    )
+    reported = [
+        match.group(1)
+        for line in report.stderr.splitlines()
+        if (match := _COLLECT2_LINKER_REPORT.fullmatch(line.rstrip("\r")))
+    ]
+    if len(reported) != 1:
+        raise ValueError(f"GCC collect2 reported {len(reported)} linker selections")
+    if reported[0] == "not found":
+        raise ValueError(
+            "GCC collect2 found no linker for the selected link arguments; install "
+            "the linker that -fuse-ld/-B select or put it on the driver's PATH"
+        )
+    if report.returncode != 0:
+        raise ValueError("GCC collect2 linker report link failed")
+    selected = find_executable(reported[0], cwd=cwd, environment=env)
+    if selected is None:
+        raise ValueError(
+            f"GCC collect2 selected linker is unavailable: {reported[0]!r}"
+        )
+    path = Path(selected).absolute()
+    return path, {
+        "requested": reported[0],
+        "path": str(path),
+        "content_path": str(path.resolve(strict=True)),
+        "origin": "collect2-report",
+    }
 
 
 def _selected_rust_link_command(stdout: str, stderr: str) -> list[str]:
@@ -1036,6 +1099,7 @@ def _capture_rust_link_unit(
         )
         resolutions = [resolution]
         selected_paths = [primary]
+        collect2_probe_count = 0
         driver_name = primary.name.casefold()
         if any(token in driver_name for token in ("clang", "gcc", "cc", "c++")):
             dry_run = _run_rust_link_probe(
@@ -1061,6 +1125,25 @@ def _capture_rust_link_unit(
                 )
                 selected_paths.append(selected_path)
                 resolutions.append(resolution)
+                if _is_gcc_collect2(selected_path):
+                    collect2_probe_count += 1
+                    selected_path, resolution = _collect2_selected_linker(
+                        primary,
+                        selected[1:],
+                        unit=unit,
+                        cwd=compiler_cwd,
+                        env=probe_env,
+                        probes=probes,
+                    )
+                    selected_paths.append(selected_path)
+                    resolutions.append(resolution)
+        # A Rust gcc-ld wrapper selected by any driver, collect2 or rustc
+        # itself execs the sysroot's rust-lld.
+        for selected_path in list(selected_paths):
+            bundled = search.bundled_lld(selected_path)
+            if bundled is not None:
+                selected_paths.append(bundled[0])
+                resolutions.append(bundled[1])
         helper_policy = {
             str(linker).casefold(): tuple(str(helper) for helper in helpers)
             for linker, helpers in (linker_process_helpers or {}).items()
@@ -1138,6 +1221,7 @@ def _capture_rust_link_unit(
             "selected_process_count": len(images),
             "selection_probe_count": 1,
             "metadata_probe_count": 1,
+            "collect2_probe_count": collect2_probe_count,
             "declared_helper_count": len(declared_helpers),
             "selected_helper_count": len(selected_helpers),
             "declared_build_tool_count": len(declared_build_tools),
