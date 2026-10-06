@@ -276,7 +276,10 @@ def test_windows_measurement_fails_closed_without_job_commit(
         returncode=0,
         timed_out=False,
     )
-    monkeypatch.setattr(benchmark.os, "name", "nt")
+    # Simulate Windows for the module under test only. Setting the process-wide
+    # os.name would make pathlib (and pytest's own failure reporting) build
+    # WindowsPath objects, which cannot be instantiated on a POSIX host.
+    monkeypatch.setattr(benchmark, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(
         benchmark.harness_memory_guard,
         "guarded_completed_process",
@@ -287,6 +290,7 @@ def test_windows_measurement_fails_closed_without_job_commit(
         "limits_from_env",
         lambda *_args, **_kwargs: object(),
     )
+    assert type(Path(str(tmp_path))) is type(tmp_path)
 
     with pytest.raises(benchmark.LinkBenchmarkError, match="Job commit"):
         benchmark.measure_command(["linker"], cwd=tmp_path, timeout=1.0)
@@ -303,7 +307,7 @@ def test_non_windows_measurement_records_unavailable_job_commit(
         returncode=0,
         timed_out=False,
     )
-    monkeypatch.setattr(benchmark.os, "name", "posix")
+    monkeypatch.setattr(benchmark, "os", SimpleNamespace(name="posix"))
     monkeypatch.setattr(
         benchmark.harness_memory_guard,
         "guarded_completed_process",
