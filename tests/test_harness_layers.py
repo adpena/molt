@@ -104,6 +104,10 @@ def test_run_cmd_uses_harness_memory_guard(monkeypatch, tmp_path: Path):
         "guarded_completed_process",
         fake_guarded_completed_process,
     )
+    # The DX authority keeps an explicit caller TMPDIR; this test proves the
+    # canonical default, so the caller must not supply one.
+    for name in ("TMPDIR", "TMP", "TEMP"):
+        monkeypatch.delenv(name, raising=False)
 
     proc = harness_layers._run_cmd(
         ["python3", "--version"],

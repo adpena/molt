@@ -36,6 +36,10 @@ from tests.executable_test_support import (
 from tests.rustc_test_support import rustc_target_metadata_output
 
 
+# Fake host triple shared by every resolved test plan and its environment.
+_TEST_HOST_TARGET = "test-host"
+
+
 @pytest.fixture(scope="module")
 def runtime_receipt() -> dict[str, object]:
     return runtime_identity_manifest()
@@ -63,7 +67,7 @@ def _test_plan(
             *link_args,
         ),
         requested_target=target_triple,
-        host_target="test-host",
+        host_target=_TEST_HOST_TARGET,
     )
 
 
@@ -120,7 +124,19 @@ def _resolve(
         archive_root / "libc-printscan-long-double.a",
         archive_root / "libclang_rt.builtins-wasm32.a",
     ]
-    env = dict(os.environ)
+    target = None if kind == "native" else "wasm32-wasip1"
+    ambient = cargo_plans._CargoEnvironment(os.environ)
+    # Ambient cc-rs inputs (the RunContext exports CFLAGS_<wasm target>, and
+    # Xcode shells export SDKROOT) would enter every identity resolved here.
+    # Each test supplies the exact C environment it asserts through extra_env.
+    for name in (
+        *cargo_plans.runtime_c_flag_environment_names(
+            target or _TEST_HOST_TARGET, _TEST_HOST_TARGET
+        ),
+        *cargo_plans._C_SEARCH_ENVIRONMENTS,
+    ):
+        ambient.pop(name, None)
+    env = dict(ambient)
     env.pop("PYTHONPATH", None)
     env.update(
         {
@@ -139,13 +155,12 @@ def _resolve(
     if kind == "native":
         env.update(
             {
-                f"{name}_test-host": sys.executable
+                f"{name}_{_TEST_HOST_TARGET}": sys.executable
                 for name in ("CC", "CXX", "AR", "RANLIB")
             }
         )
     env.update(extra_env or {})
     env["RUSTFLAGS"] = base_rustflags
-    target = None if kind == "native" else "wasm32-wasip1"
     plan = _test_plan(root, env, response_path=response_path, target_triple=target)
     if kind == "native":
         return runtime_native_build._runtime_build_identity_for_plan(
@@ -282,7 +297,7 @@ def identity_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         cargo_plans.RuntimeCargoPlan,
         "rust_resource_identity",
         lambda cargo_plan: {
-            "host_triple": "test-host",
+            "host_triple": _TEST_HOST_TARGET,
             "selected_target": cargo_plan.target,
             "content": {
                 "digest": "0" * 64,
