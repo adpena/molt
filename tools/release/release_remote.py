@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from molt.temporary_artifacts import OwnedTemporaryDirectory
+
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import re
 import subprocess
-import tempfile
 from typing import Any
 from urllib.parse import quote
 
@@ -255,7 +256,7 @@ def _reconcile_assets(
         ):
             raise ValueError(f"pinned release asset digest differs: {name}")
         if scratch is not None and old.sha256 != new.sha256:
-            with tempfile.TemporaryDirectory(dir=scratch) as temporary:
+            with OwnedTemporaryDirectory(dir=scratch) as temporary:
                 downloaded = _download_asset(new, Path(temporary) / name)
                 if downloaded.sha256 != expected.sha256:
                     raise ValueError(f"pinned release asset digest differs: {name}")
@@ -358,7 +359,7 @@ def _download_release(
             raise ValueError("expected release requires authenticated identities")
         _reconcile_assets(expected_release.assets, release.assets, expected_identities)
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
+    with OwnedTemporaryDirectory(
         prefix=".release-download-", dir=output.parent
     ) as temporary:
         stage = Path(temporary) / "assets"
@@ -477,7 +478,7 @@ def _signed_snapshot(
     """Authenticate one immutable local tree for the entire remote transaction."""
     require_git_object_id(source_sha, label="planned release source")
     local = resolve_owned_path(local)
-    with tempfile.TemporaryDirectory(
+    with OwnedTemporaryDirectory(
         prefix=".release-upload-", dir=local.parent
     ) as temporary:
         root = Path(temporary)

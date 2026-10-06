@@ -6,8 +6,9 @@ This module binds their verified bytes to the archive that will be published.
 
 from __future__ import annotations
 
+from molt.temporary_artifacts import OwnedTemporaryDirectory
+
 from pathlib import Path
-import tempfile
 
 from molt.exact_json import read_exact
 from molt.file_publication import (
@@ -186,7 +187,7 @@ def verify_evidence(
         ):
             raise ValueError("H0 attestation must use its source-named release asset")
         if authenticate:
-            with tempfile.TemporaryDirectory(
+            with OwnedTemporaryDirectory(
                 prefix=".phase-subject-", dir=phase_manifest.parent
             ) as temporary:
                 subject = Path(temporary) / "subject.json"
@@ -222,7 +223,7 @@ def archive_release_exit(
             f"release-exit archive must be named {expected_name}; manifest must be release-exit.json"
         )
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
+    with OwnedTemporaryDirectory(
         prefix=".release-evidence-", dir=output.parent
     ) as temporary:
         stage = Path(temporary)
@@ -265,7 +266,7 @@ def extract_release_exit(
         raise ValueError(f"release-exit archive must be named {expected_name}")
     identity = stable_regular_file_identity(archive, label="staged release evidence")
     output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
+    with OwnedTemporaryDirectory(
         prefix=".release-extract-", dir=output.parent
     ) as temporary:
         stage = Path(temporary)

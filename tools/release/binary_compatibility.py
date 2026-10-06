@@ -24,6 +24,8 @@ place for repair.
 
 from __future__ import annotations
 
+from molt.temporary_artifacts import OwnedTemporaryDirectory
+
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 import importlib.metadata
@@ -31,7 +33,6 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
-import tempfile
 import zipfile
 
 from packaging.utils import parse_wheel_filename
@@ -255,7 +256,7 @@ def _audit(
         if root is not None:
             tag, evidence = _audit_macos(root, arch)
         else:
-            with tempfile.TemporaryDirectory(prefix="molt-wheel-audit-") as temporary:
+            with OwnedTemporaryDirectory(prefix="molt-wheel-audit-") as temporary:
                 extracted = Path(temporary)
                 with zipfile.ZipFile(wheel) as archive:
                     archive.extractall(extracted)
@@ -294,7 +295,7 @@ def derive_bundle_wheel_compatibility(
             "the bundle carries no native binaries to derive a tag from",
             {"bundle": str(bundle_root)},
         )
-    with tempfile.TemporaryDirectory(prefix="molt-wheel-audit-") as temporary:
+    with OwnedTemporaryDirectory(prefix="molt-wheel-audit-") as temporary:
         audit = _write_audit_wheel(
             members, Path(temporary), _provisional_tag(platform, arch)
         )
@@ -317,7 +318,7 @@ def audit_linked_executable(
     """
     if platform == "windows":
         return _audit(executable, platform=platform, arch=arch)
-    with tempfile.TemporaryDirectory(prefix="molt-link-audit-") as temporary:
+    with OwnedTemporaryDirectory(prefix="molt-link-audit-") as temporary:
         root = Path(temporary) / "tree"
         root.mkdir()
         copy = root / executable.name

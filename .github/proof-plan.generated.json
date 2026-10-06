@@ -194,6 +194,9 @@
     "tools/proof_plan.toml",
     "tools/gen_proof_plan.py",
     "tools/generator_io.py",
+    "tools/release/git_source_snapshot.py",
+    "src/molt/compiler_distribution.py",
+    "src/molt/verified_subset.py",
     "tools/toolchain_probe.py",
     "tools/proof_queue_pkg/command_admission.py",
     "tools/proof_queue_pkg/cli.py",
@@ -322,7 +325,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "cc1645c8d2350418173952bff438f5ffabe08828fd6902c6e9fd20d8f06363bb",
+  "authority_sha256": "0192de92d1f684bc00fefc6d9ec8e0a4dc20719e32bff482eaf3e1a3cd52ccec",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -4730,9 +4733,7 @@
       "argv": [
         "uv",
         "run",
-        "pip-audit",
-        "--ignore-vuln",
-        "CVE-2025-69872"
+        "pip-audit"
       ],
       "cache_domain": "uv",
       "cell": "linux-x86_64-py312-python-audit",

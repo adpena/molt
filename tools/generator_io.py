@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Mapping
 
 
 def canonical_generated_bytes(payload: bytes) -> bytes:
@@ -27,6 +28,30 @@ def generated_file_matches(path: Path, expected: bytes | str) -> bool:
 def write_generated_text(path: Path, text: str) -> None:
     """Publish generated UTF-8 text with the repository-canonical LF encoding."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    canonical = canonical_generated_bytes(text.encode("utf-8")).decode("utf-8")
-    path.write_text(canonical, encoding="utf-8", newline="\n")
+    from molt.file_publication import atomic_write_bytes
+
+    atomic_write_bytes(path, canonical_generated_bytes(text.encode("utf-8")))
+
+
+def write_generated_texts(outputs: Mapping[Path, str]) -> tuple[Path, ...]:
+    """Publish one complete generated family through the artifact transaction.
+
+    Returned journals retain custody of any cleanup residue after commit.
+    """
+    from molt.artifact_publication import (
+        discard_staged_output,
+        publish_validated_outputs,
+        staged_output_path,
+    )
+
+    pairs: list[tuple[Path, Path]] = []
+    try:
+        for final, text in outputs.items():
+            staged = staged_output_path(final)
+            pairs.append((staged, final))
+            with staged.open("xb") as stream:
+                stream.write(canonical_generated_bytes(text.encode("utf-8")))
+        return publish_validated_outputs(pairs)
+    finally:
+        for staged, _final in pairs:
+            discard_staged_output(staged)

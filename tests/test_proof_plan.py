@@ -44,6 +44,8 @@ def test_execution_authority_covers_its_transitive_python_imports() -> None:
         "tools/proof_executor.py",
         "tools/guarded_exec.py",
         "tools/memory_guard.py",
+        "tools/gen_proof_plan.py",
+        "tools/generator_io.py",
     ]
     seen: set[str] = set()
     while pending:
@@ -117,6 +119,8 @@ def test_python_capture_source_closure_is_proof_authority(
                     assert node.level == 1
                     module = f"molt.{module}".rstrip(".")
                 modules = [module]
+                if module == "molt":
+                    modules.extend(f"molt.{alias.name}" for alias in node.names)
             for module in modules:
                 if module == "molt":
                     dependency = root / "src/molt/__init__.py"

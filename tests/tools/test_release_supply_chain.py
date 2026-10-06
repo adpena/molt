@@ -506,6 +506,209 @@ def test_guarded_git_snapshot_preserves_binary_blobs_beyond_capture_tail(tmp_pat
     assert not list(tmp_path.glob(".source-*"))
 
 
+@pytest.fixture
+def staged_source_repository(tmp_path: Path):
+    root = tmp_path / "repository"
+    root.mkdir()
+    git = shutil.which("git")
+    assert git is not None
+
+    def run(*arguments: str, environment=None, **options):
+        return _COMMANDS.run(
+            [git, *arguments],
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            check=True,
+            timeout=30,
+            **options,
+        )
+
+    run("init")
+    (root / "source.py").write_bytes(b"staged source\n")
+    run("add", "source.py")
+    return root, Path(git), run
+
+
+def _capture_staged_fixture(root: Path, git: Path, environment=None):
+    return git_source_snapshot.capture_git_index_source_snapshot(
+        root,
+        git=git,
+        environment=os.environ if environment is None else environment,
+        max_files=10,
+        max_bytes=1024,
+    )
+
+
+def test_staged_snapshot_preserves_index_and_uses_git_semantics(
+    staged_source_repository, tmp_path: Path
+) -> None:
+    root, git, run = staged_source_repository
+    (root / "intent.py").write_bytes(b"not staged\n")
+    run("add", "--intent-to-add", "intent.py")
+    run("update-index", "--split-index")
+    before = (root / ".git" / "index").read_bytes()
+    head = (root / ".git" / "HEAD").read_bytes()
+    (root / "source.py").write_bytes(b"unstaged source\n")
+    snapshot = _capture_staged_fixture(root, git)
+    snapshot.verify_index(repo_root=root, git=git, environment=os.environ)
+    assert [item.relative.as_posix() for item in snapshot.files] == ["source.py"]
+    destination = tmp_path / "captured"
+    git_source_snapshot.materialize_git_source_snapshot(
+        snapshot, destination, repo_root=root, git=git, environment=os.environ
+    )
+    assert (destination / "source.py").read_bytes() == b"staged source\n"
+    assert (root / ".git" / "index").read_bytes() == before
+    assert (root / ".git" / "HEAD").read_bytes() == head
+
+
+def test_staged_snapshot_preserves_external_index_path_whitespace(
+    staged_source_repository, tmp_path: Path
+) -> None:
+    root, git, run = staged_source_repository
+    plain = tmp_path / "selected-index"
+    selected = tmp_path / "selected-index "
+    original = (root / ".git" / "index").read_bytes()
+    plain.write_bytes(original)
+    selected.write_bytes(original)
+    environment = {**os.environ, "GIT_INDEX_FILE": str(selected)}
+    (root / "other.py").write_bytes(b"other staged source\n")
+    run("add", "other.py", environment=environment)
+    before = selected.read_bytes()
+    snapshot = _capture_staged_fixture(root, git, environment)
+    assert {item.relative.as_posix() for item in snapshot.files} == {
+        "source.py",
+        "other.py",
+    }
+    snapshot.verify_index(repo_root=root, git=git, environment=environment)
+    assert selected.read_bytes() == before
+    assert plain.read_bytes() == (root / ".git" / "index").read_bytes() == original
+    with pytest.raises(ValueError, match="selection changed"):
+        snapshot.verify_index(
+            repo_root=root,
+            git=git,
+            environment={**environment, "GIT_INDEX_FILE": str(plain)},
+        )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="executable POSIX hook negative control")
+def test_staged_snapshot_does_not_execute_repository_hooks(
+    staged_source_repository,
+) -> None:
+    import shlex
+
+    root, git, run = staged_source_repository
+    sentinel = root / "hook-executed"
+    hooks = root / "configured-hooks"
+    hooks.mkdir()
+    for name in ("post-index-change", "fsmonitor"):
+        hook = hooks / name
+        hook.write_text(
+            "#!/bin/sh\nprintf invoked >> " + shlex.quote(str(sentinel)) + "\n",
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+    run("config", "core.hooksPath", str(hooks))
+    run("config", "core.fsmonitor", str(hooks / "fsmonitor"))
+    before = (root / ".git" / "index").read_bytes()
+    snapshot = _capture_staged_fixture(root, git)
+    snapshot.verify_index(repo_root=root, git=git, environment=os.environ)
+    assert not sentinel.exists()
+    assert (root / ".git" / "index").read_bytes() == before
+    # Demonstrate that the configured hook really executes without admission.
+    run("write-tree")
+    assert sentinel.read_bytes()
+
+
+def test_staged_publication_fence_excludes_real_git_writer(
+    staged_source_repository,
+) -> None:
+    root, git, run = staged_source_repository
+    snapshot = _capture_staged_fixture(root, git)
+    index = root / ".git" / "index"
+    before = index.read_bytes()
+    lock = index.with_name("index.lock")
+    with git_source_snapshot.fenced_git_index(
+        snapshot, repo_root=root, git=git, environment=os.environ
+    ):
+        with pytest.raises(subprocess.CalledProcessError):
+            run("update-index", "--assume-unchanged", "source.py")
+        assert lock.is_file()
+        assert index.read_bytes() == before
+    assert not lock.exists()
+    run("update-index", "--assume-unchanged", "source.py")
+    assert b"h source.py" in run("ls-files", "-v").stdout
+
+
+def test_staged_publication_fence_preserves_existing_lock_and_rejects_drift(
+    staged_source_repository,
+) -> None:
+    root, git, run = staged_source_repository
+    snapshot = _capture_staged_fixture(root, git)
+    lock = root / ".git" / "index.lock"
+    lock.write_bytes(b"operator lock")
+    with pytest.raises(FileExistsError):
+        with git_source_snapshot.fenced_git_index(
+            snapshot, repo_root=root, git=git, environment=os.environ
+        ):
+            pytest.fail("existing lock must prevent publication")
+    assert lock.read_bytes() == b"operator lock"
+    lock.unlink()
+    (root / "source.py").write_bytes(b"new staged source\n")
+    run("add", "source.py")
+    with pytest.raises(ValueError, match="staged source changed"):
+        with git_source_snapshot.fenced_git_index(
+            snapshot, repo_root=root, git=git, environment=os.environ
+        ):
+            pytest.fail("drift must prevent publication")
+    assert not lock.exists()
+
+
+@pytest.mark.parametrize("object_format", ["sha1", "sha256"])
+def test_git_snapshot_rejects_valid_loose_blob_under_wrong_object_id(
+    tmp_path: Path, object_format: str
+) -> None:
+    import zlib
+
+    root = tmp_path / "repository"
+    root.mkdir()
+    git = shutil.which("git")
+    assert git is not None
+
+    def run(*arguments: str):
+        return _COMMANDS.run(
+            [git, *arguments], cwd=root, capture_output=True, check=True, timeout=30
+        )
+
+    run("init", f"--object-format={object_format}")
+    (root / "source.py").write_bytes(b"staged source\n")
+    run("add", "source.py")
+    snapshot = _capture_staged_fixture(root, Path(git))
+    entry = snapshot.files[0]
+    replacement = b"forged source\n"
+    assert len(replacement) == entry.size
+    loose_object = root / ".git" / "objects" / entry.blob_oid[:2] / entry.blob_oid[2:]
+    loose_object.chmod(0o644)
+    loose_object.write_bytes(
+        zlib.compress(f"blob {len(replacement)}\0".encode("ascii") + replacement)
+    )
+    # Git can frame and return this valid object body under the wrong pathname.
+    assert run("cat-file", "blob", entry.blob_oid).stdout == replacement
+    for read in (
+        lambda: _capture_staged_fixture(root, Path(git)),
+        lambda: git_source_snapshot.read_git_source_file(
+            snapshot,
+            "source.py",
+            repo_root=root,
+            git=Path(git),
+            environment=os.environ,
+            max_bytes=1024,
+        ),
+    ):
+        with pytest.raises(ValueError, match="does not match its object ID"):
+            read()
+
+
 @pytest.mark.parametrize("platform", ["linux", "windows"])
 def test_bundle_archives_are_byte_reproducible(
     tmp_path: Path, platform: str, release_source
