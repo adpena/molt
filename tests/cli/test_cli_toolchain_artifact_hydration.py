@@ -42,6 +42,10 @@ _TEST_RUNTIME_HASH_DIGEST = "cd" * 32
 _TEST_RUNTIME_INPUTS_DIGEST = "ef" * 32
 
 
+# Every Cargo run here is a fake; host free space must not gate it.
+pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
+
+
 @pytest.fixture(autouse=True)
 def _native_cargo_plan_authority(
     runtime_fixture_root: RuntimeFixtureRoot, monkeypatch: pytest.MonkeyPatch

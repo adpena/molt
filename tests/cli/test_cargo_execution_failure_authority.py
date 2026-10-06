@@ -21,13 +21,7 @@ RUNTIME = importlib.import_module("molt.cli.runtime_native_build")
 RUNTIME_WASM_SUPPORT = importlib.import_module("molt.cli.runtime_wasm_build_support")
 
 
-@pytest.fixture(autouse=True)
-def _admit_test_cargo_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        DISK_CAPACITY,
-        "_default_measure_free_bytes",
-        lambda _path: DEFAULT_MINIMUM_HEADROOM_BYTES + 1,
-    )
+pytestmark = pytest.mark.usefixtures("admitted_build_capacity")
 
 
 def _cargo_env(target_root: Path, **values: str) -> dict[str, str]:
