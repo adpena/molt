@@ -94,6 +94,15 @@ pub(crate) fn runtime_import_return_abi(
                 }
             })
         })
+        .or_else(|| {
+            // Runtime functions published as Python callables take and return
+            // the boxed i64 carrier at their manifest arity. The generated
+            // callable ABI is target-neutral, so native-only providers that the
+            // WASM import table filters out still classify here.
+            molt_ir::runtime_callable_abi_generated::runtime_callable_abi(name)
+                .filter(|abi| abi.arity == param_count)
+                .map(|_| RuntimeReturnAbi::I64)
+        })
 }
 
 #[cfg(feature = "llvm")]

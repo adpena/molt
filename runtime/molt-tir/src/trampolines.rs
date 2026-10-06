@@ -229,6 +229,20 @@ trampoline_kinds! {
     AsyncGen => ("_asyncgen", TrampolineBehavior::Task(TrampolineTaskKind::AsyncGen)),
 }
 
+/// A runtime callable's manifest transport selects its trampoline kind once;
+/// Cranelift, LLVM and WASM consume this one mapping.
+impl From<molt_ir::runtime_callable_abi_generated::RuntimeCallableTrampolineAbi>
+    for TrampolineKind
+{
+    fn from(abi: molt_ir::runtime_callable_abi_generated::RuntimeCallableTrampolineAbi) -> Self {
+        use molt_ir::runtime_callable_abi_generated::RuntimeCallableTrampolineAbi;
+        match abi {
+            RuntimeCallableTrampolineAbi::UnpackArgs => Self::Plain,
+            RuntimeCallableTrampolineAbi::CallFrame => Self::CallFrame,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct TrampolineSpec {
     pub arity: usize,

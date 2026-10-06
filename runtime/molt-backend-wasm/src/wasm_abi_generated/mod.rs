@@ -52,6 +52,6 @@ pub(crate) use pure_profile::pure_profile_skips_import;
 pub(crate) use runtime_callables::{
     POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_COUNT, RESERVED_RUNTIME_CALLABLE_SPECS,
     RUNTIME_CALLABLE_IMPORTS, ReservedRuntimeCallableDispatch, poll_table_import_slot,
-    runtime_callable_arity, runtime_callable_import,
+    runtime_callable_import,
 };
 pub(crate) use static_types::{STATIC_FUNC_TYPES, STATIC_TYPE_COUNT};

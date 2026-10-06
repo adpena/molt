@@ -455,7 +455,14 @@ fn callable_constructors_release_only_discarded_owned_results() {
                 ..OpIR::default()
             };
             if matches!(kind, "func_new" | "func_new_closure" | "builtin_func") {
-                constructor.s_value = Some("callable_result_target".into());
+                constructor.s_value = Some(
+                    if kind == "builtin_func" {
+                        "molt_sys_version"
+                    } else {
+                        "callable_result_target"
+                    }
+                    .into(),
+                );
                 constructor.value = Some(0);
             }
             let compiled = compile_function_to_clif_with_imports(
@@ -2094,4 +2101,53 @@ fn native_backend_compiles_tir_roundtripped_nested_loops() {
         clif.contains("return"),
         "TIR-roundtripped nested-loop function must compile to CLIF:\n{clif}"
     );
+}
+
+#[test]
+fn runtime_builtin_callable_admits_exact_manifest_contracts() {
+    for (symbol, arity, admitted) in [
+        ("molt_importlib_import_transaction", 5, true),
+        ("molt_abs_builtin", 1, true),
+        ("molt_sys_version", 0, true),
+        ("molt_socket_drop", 1, true),
+        ("molt_cpython_abi_cext_call_trampoline", 3, true),
+        ("molt_importlib_import_transaction", 4, false),
+        ("molt_abs_builtin", -1, false),
+        ("molt_int_from_i64", 1, false),
+        ("molt_dict_getitem_borrowed", 2, false),
+        ("molt_unregistered_callable", 1, false),
+    ] {
+        let outcome = std::panic::catch_unwind(|| {
+            compile_function_to_clif_with_imports(
+                vec![FunctionIR {
+                    name: "builtin_callable_probe".into(),
+                    return_abi: molt_ir::FunctionReturnAbi::Value,
+                    ops: vec![
+                        OpIR {
+                            kind: "builtin_func".into(),
+                            s_value: Some(symbol.into()),
+                            value: Some(arity),
+                            out: Some("callable".into()),
+                            ..OpIR::default()
+                        },
+                        OpIR {
+                            kind: "ret".into(),
+                            args: Some(vec!["callable".into()]),
+                            ..OpIR::default()
+                        },
+                    ],
+                    ..FunctionIR::default()
+                }],
+                "builtin_callable_probe",
+            )
+        });
+        assert_eq!(outcome.is_ok(), admitted, "{symbol}, arity={arity}");
+        if let Ok(compiled) = outcome {
+            let constructor = compiled.import_ids["molt_func_new_builtin"];
+            assert_eq!(
+                call_sites_for_import(&compiled.function, constructor).len(),
+                1
+            );
+        }
+    }
 }

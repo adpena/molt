@@ -22,6 +22,7 @@ from wasm_abi_gen import manifest  # noqa: E402
 from wasm_abi_gen.paths import (  # noqa: E402
     OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
     OUT_RUNTIME_BOXED_ABI_RS,
+    OUT_RUNTIME_CALLABLE_ABI_RS,
     OUT_RUNTIME_CALLABLES_RS,
 )
 
@@ -56,6 +57,7 @@ def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
     assert (ROOT / "src/molt/rust_source_scan.py").resolve() in input_files
     assert OUT_RUNTIME_CALLABLES_RS.resolve() not in input_files
     assert OUT_RUNTIME_BOXED_ABI_RS.resolve() not in input_files
+    assert OUT_RUNTIME_CALLABLE_ABI_RS.resolve() not in input_files
     assert (ROOT / "src/molt/frontend/_types.py").resolve() in input_files
     assert not any(
         path.match("runtime/molt-runtime/src/call/function.rs") for path in input_files
@@ -109,6 +111,61 @@ def test_wasm_abi_generator_cache_identity_uses_runtime_abi_surface() -> None:
         "_PyLong_UnsignedLongLong_Converter",
         "PyLong_GetInfo",
     } <= set(cpython_abi_imports)
+
+
+def test_runtime_callable_abi_preserves_target_neutral_callable_contracts() -> None:
+    gen = _load_gen_wasm_abi()
+    data = gen.load_manifest()
+    specs = data["runtime_callable_abi"]
+    symbols = {spec["runtime_name"]: spec for spec in specs}
+    assert len(symbols) == len(specs)
+    assert list(symbols) == sorted(symbols)
+    for symbol, arity, trampoline in (
+        ("molt_abs_builtin", 1, "unpack_args"),
+        ("molt_importlib_import_transaction", 5, "unpack_args"),
+        ("molt_cpython_abi_cext_call_trampoline", 3, "call_frame"),
+        ("molt_sqlite3_connect", 1, "unpack_args"),
+    ):
+        assert symbols[symbol] == {
+            "runtime_name": symbol,
+            "arity": arity,
+            "trampoline_abi": trampoline,
+        }
+    # A native provider's ABI survives the separate WASM availability projection.
+    assert "sqlite3_connect" not in {entry["name"] for entry in data["import"]}
+    assert (
+        not {
+            "molt_int_from_i64",
+            "molt_int_as_i64",
+            "molt_json_parse_scalar",
+            "molt_dict_getitem_borrowed",
+            "molt_list_getitem_borrowed",
+            "molt_tuple_getitem_borrowed",
+        }
+        & symbols.keys()
+    )
+    # Check against actual Rust declarations, independently of manifest arities.
+    exports = manifest._rust_export_signatures(include_native=True)
+    for symbol, spec in symbols.items():
+        assert exports[symbol] == {(("i64",) * spec["arity"], "i64")}, symbol
+    rendered = gen.render_runtime_callable_abi_rs(data)
+    assert "pub fn runtime_callable_abi(symbol: &str)" in rendered
+    assert "RuntimeCallableTrampolineAbi::CallFrame" in rendered
+    wasm_rendered = gen.render_rs_modules(data)["runtime_callables.rs"]
+    assert "fn runtime_callable_arity" not in wasm_rendered
+    assert "enum ReservedRuntimeCallableTrampolineAbi" not in wasm_rendered
+
+
+def test_runtime_callable_abi_rejects_transport_arity_drift() -> None:
+    data = copy.deepcopy(_load_gen_wasm_abi().load_manifest())
+    entry = next(
+        row for row in data["import"] if row.get("runtime_name") == "molt_abs_builtin"
+    )
+    entry["callable_arity"] = 2
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="molt_abs_builtin.*import ABI"
+    ):
+        manifest.runtime_callable_abi_specs(data)
 
 
 def test_runtime_boxed_abi_projects_semantics_not_integer_carriers() -> None:
@@ -781,6 +838,13 @@ def test_wasm_abi_generated_files_are_in_sync() -> None:
         gen.OUT_RUNTIME_CALLABLES_RS, gen.render_runtime_callables_rs(data)
     )
     assert gen._check(
+        gen.OUT_RUNTIME_CALLABLE_ABI_RS,
+        gen._rustfmt(
+            "runtime_callable_abi_generated.rs",
+            gen.render_runtime_callable_abi_rs(data),
+        ),
+    )
+    assert gen._check(
         gen.OUT_PYTHON_BUILTIN_CALLABLES_RS,
         gen._rustfmt(
             "python_builtin_callables_generated.rs",
@@ -1446,7 +1510,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "pub(crate) fn runtime_callable_import" in rendered_rs
     callable_import_match = rendered_reserved_rs.split(
         "pub(crate) fn runtime_callable_import", 1
-    )[1].split("pub(crate) fn runtime_callable_arity", 1)[0]
+    )[1]
     for entry in gen._shared_runtime_callables(data):
         assert callable_import_match.count(f'"{entry["runtime_name"]}" =>') == 1
     assert '"molt_type_call" => Some(WasmRuntimeImport::TypeCall)' in rendered_rs
@@ -1476,7 +1540,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "ReservedRuntimeCallableSpec" in rendered_rs
     assert "RUNTIME_CALLABLE_IMPORTS" in rendered_rs
     assert "ReservedRuntimeCallableDispatch" in rendered_rs
-    assert "ReservedRuntimeCallableTrampolineAbi" in rendered_rs
+    assert "RuntimeCallableTrampolineAbi" in rendered_rs
     assert "RuntimeCallableResult" not in rendered_rs
     assert "RESERVED_RUNTIME_CALLABLE_SPECS" in rendered_rs
     assert "RESERVED_RUNTIME_CALLABLE_COUNT" in rendered_rs
@@ -1953,7 +2017,7 @@ def test_python_callable_abi_and_cache_include_native_only_providers(
             manifest.generator_runtime_export_signature_rows()
         )
         with pytest.raises(manifest.WasmAbiManifestError, match="ABI mismatches"):
-            manifest._validate_intrinsic_runtime_callable_export_abi(
+            manifest._validate_runtime_callable_export_abi(
                 [{"runtime_name": "molt_process_drop", "callable_arity": 1}]
             )
     finally:

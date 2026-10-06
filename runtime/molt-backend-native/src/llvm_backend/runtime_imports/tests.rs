@@ -195,6 +195,62 @@ fn generated_boxed_contracts_supply_machine_abis_without_native_whitelists() {
 }
 
 #[test]
+fn generated_callable_contracts_supply_machine_abis_without_native_whitelists() {
+    use molt_ir::runtime_callable_abi_generated::RUNTIME_CALLABLE_ABIS;
+
+    for abi in RUNTIME_CALLABLE_ABIS {
+        assert_eq!(
+            runtime_import_return_abi(abi.symbol, abi.arity),
+            Some(RuntimeReturnAbi::I64),
+            "{}",
+            abi.symbol
+        );
+        assert!(
+            !CONSERVATIVE_RUNTIME_IMPORTS
+                .iter()
+                .any(|sig| sig.name == abi.symbol),
+            "{} duplicates the generated callable ABI authority",
+            abi.symbol
+        );
+    }
+    // The five-word `__import__` entry is a native-only Python callable: the
+    // WASM import table filters it out and the boxed-call table never carries
+    // it, yet it classifies at its exact manifest arity and at no other.
+    let symbol = "molt_importlib_import_transaction";
+    assert_eq!(
+        runtime_import_return_abi(symbol, 5),
+        Some(RuntimeReturnAbi::I64)
+    );
+    assert_eq!(runtime_import_return_abi(symbol, 4), None);
+    assert!(molt_ir::runtime_boxed_abi_generated::runtime_boxed_abi(symbol, 5).is_none());
+    // Some callables also own a fixed declaration with stronger attributes.
+    // Its hand-written signature must agree with the generated callable ABI,
+    // or the shared declaration path would reject the builtin at build time.
+    let ctx = Context::create();
+    let module = ctx.create_module("callable_abi_fixed_agreement");
+    for abi in RUNTIME_CALLABLE_ABIS {
+        let Some(function) = fixed::declare_fixed_runtime_function(&ctx, &module, abi.symbol)
+        else {
+            continue;
+        };
+        let expected = runtime_function_type(
+            &ctx,
+            RuntimeImportSignature {
+                name: abi.symbol,
+                param_count: abi.arity,
+                return_abi: RuntimeReturnAbi::I64,
+            },
+        );
+        assert_eq!(
+            function.get_type().print_to_string().to_string(),
+            expected.print_to_string().to_string(),
+            "{} fixed declaration disagrees with the callable ABI",
+            abi.symbol
+        );
+    }
+}
+
+#[test]
 fn raw_integer_carriers_do_not_authorize_boxed_calls() {
     use molt_ir::runtime_boxed_abi_generated::runtime_boxed_abi;
 

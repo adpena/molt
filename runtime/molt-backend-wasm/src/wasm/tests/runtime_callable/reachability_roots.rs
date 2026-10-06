@@ -199,8 +199,11 @@ fn resolver_candidates_are_admitted_by_profile_without_requiring_capabilities() 
 fn required_builtin_materialization_is_not_weakened_by_candidate_admission() {
     let mut builtin = wasm_test_op("builtin_func", Some("value"), vec![]);
     builtin.s_value = Some("molt_open_builtin".into());
-    builtin.value =
-        Some(crate::wasm_abi::runtime_callable_arity("molt_open_builtin").unwrap() as i64);
+    builtin.value = Some(
+        molt_ir::runtime_callable_abi_generated::runtime_callable_abi("molt_open_builtin")
+            .unwrap()
+            .arity as i64,
+    );
     let function = wasm_test_function(
         "required_open",
         vec![],

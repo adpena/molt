@@ -108,6 +108,20 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
 - **Conversions**: `Box`, `Unbox`, `Cast`, `Widen`, `StrFromObj`.
 
 ## Invariants
+- **Callable ABI authority**: `func_new` and `func_new_closure` use the compiled
+  function's exact linkage and representation plan. `builtin_func` instead uses
+  the runtime callable ABI (symbol, arity, trampoline transport) that
+  `tools/gen_wasm_abi.py` generates into
+  `runtime/molt-ir/src/runtime_callable_abi_generated.rs` from the intrinsic and
+  WASM ABI manifests; neither an integer carrier nor an operation's claimed
+  arity authorizes a runtime signature. LLVM and Cranelift validate that
+  contract before declaring the target, and LLVM classifies the declaration from
+  the same table. WASM applies its target availability filter to the same arity
+  authority. `molt-tir` maps the transport to one `TrampolineKind` for every
+  backend: ordinary runtime trampolines unpack boxed arguments unchanged;
+  call-frame entries receive `(closure, argv, argc)` directly. Native-only
+  providers retain their ABI without becoming WASM imports. Raw/borrowed helpers
+  excluded from Python callable publication remain excluded.
 - **SSA**: every value is defined once; all uses are dominated by the definition (loop index carried via block params).
 - **Executable edges**: typed block-argument meets and LIR branch parameters are
   computed only from blocks reachable from the function entry through explicit

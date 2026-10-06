@@ -2,13 +2,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::super::class_def_layout::ClassDefLayout;
 use crate::wasm_abi::{
-    IMPORT_REGISTRY, RESERVED_RUNTIME_CALLABLE_SPECS, WasmRuntimeImport, runtime_callable_arity,
-    runtime_callable_import, wasm_runtime_import,
+    IMPORT_REGISTRY, RESERVED_RUNTIME_CALLABLE_SPECS, WasmRuntimeImport, runtime_callable_import,
+    wasm_runtime_import,
 };
 use crate::wasm_abi_generated::op_loop_runtime_call;
 use crate::wasm_import_tracking::TrackedImportIds;
 use crate::wasm_options::WasmProfile;
 use crate::{FunctionIR, OpIR, SimpleIR};
+use molt_ir::runtime_callable_abi_generated::runtime_callable_abi;
 use molt_tir::passes::collect_app_callable_requirements;
 
 pub(super) struct WasmRuntimeSurfacePlan {
@@ -161,9 +162,12 @@ impl WasmRuntimeSurfacePlan {
         if kind == "builtin_func"
             && let Some(name) = op.s_value.as_ref()
         {
-            let manifest_arity = runtime_callable_arity(name).unwrap_or_else(|| {
-                panic!("builtin runtime callable missing from WASM ABI manifest: {name}")
-            });
+            if runtime_callable_import(name).is_none() {
+                panic!("builtin runtime callable missing from WASM ABI manifest: {name}");
+            }
+            let manifest_arity = runtime_callable_abi(name)
+                .unwrap_or_else(|| panic!("builtin runtime callable missing ABI: {name}"))
+                .arity;
             if let Some(observed_arity) = op.value.map(|value| value as usize)
                 && observed_arity != manifest_arity
             {
@@ -193,12 +197,13 @@ impl WasmRuntimeSurfacePlan {
 
     fn record_arity(&mut self, name: &str, arity: usize, plan: RuntimeArityPlan) {
         if let RuntimeArityPlan::BuiltinTrampoline = plan
-            && let Some(manifest_arity) = runtime_callable_arity(name)
-            && manifest_arity != arity
+            && let Some(abi) = runtime_callable_abi(name)
+            && abi.arity != arity
         {
             panic!(
-                "{} arity mismatch for {name}: manifest {manifest_arity} vs observed {arity}",
-                plan.diagnostic_name()
+                "{} arity mismatch for {name}: manifest {} vs observed {arity}",
+                plan.diagnostic_name(),
+                abi.arity
             );
         }
         let specs = match plan {
@@ -297,6 +302,25 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(
+        expected = "builtin runtime callable missing from WASM ABI manifest: molt_sqlite3_connect"
+    )]
+    fn target_neutral_callable_abi_does_not_admit_native_only_providers() {
+        assert_eq!(
+            runtime_callable_abi("molt_sqlite3_connect").unwrap().arity,
+            1
+        );
+        let ir = builtin_publication_ir(vec![OpIR {
+            kind: "builtin_func".into(),
+            s_value: Some("molt_sqlite3_connect".into()),
+            value: Some(1),
+            out: Some("value".into()),
+            ..Default::default()
+        }]);
+        WasmRuntimeSurfacePlan::build(&ir, WasmProfile::Full);
+    }
+
+    #[test]
     fn foreign_provider_publication_preserves_profile_admission() {
         let mut ir = builtin_publication_ir(vec![]);
         ir.functions[0].ops[0].s_value = Some("_io".into());
@@ -342,7 +366,7 @@ mod tests {
         let ir = builtin_publication_ir(vec![OpIR {
             kind: "builtin_func".into(),
             s_value: Some("molt_open_builtin".into()),
-            value: Some(runtime_callable_arity("molt_open_builtin").unwrap() as i64),
+            value: Some(runtime_callable_abi("molt_open_builtin").unwrap().arity as i64),
             out: Some("value".into()),
             ..Default::default()
         }]);
@@ -359,7 +383,7 @@ mod tests {
             s_value: Some("molt_open_builtin".into()),
             args: Some(vec![
                 "module".into();
-                runtime_callable_arity("molt_open_builtin").unwrap()
+                runtime_callable_abi("molt_open_builtin").unwrap().arity
             ]),
             out: Some("value".into()),
             ..Default::default()

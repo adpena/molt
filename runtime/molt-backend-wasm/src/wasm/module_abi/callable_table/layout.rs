@@ -507,7 +507,7 @@ impl WasmBackend {
                     spec: TrampolineSpec {
                         arity: spec.arity,
                         has_closure: false,
-                        kind: spec.trampoline_abi.trampoline_kind(),
+                        kind: TrampolineKind::from(spec.trampoline_abi),
                         closure_size: 0,
                         target_has_ret: true,
                     },
