@@ -12,6 +12,7 @@ from wasm_abi_gen.manifest import (
     generator_cpython_abi_link_import_signatures,
     generator_external_native_artifact_function_signatures,
     generator_external_native_artifact_import_shapes,
+    reserved_runtime_callable_base,
 )
 
 
@@ -74,7 +75,7 @@ def render_py(
     lines.append(")\n\n")
     lines.append(
         "WASM_RESERVED_RUNTIME_CALLABLE_BASE: int = "
-        "1 + max((slot for slot, _name in WASM_POLL_TABLE_IMPORTS), default=0)\n\n"
+        f"{reserved_runtime_callable_base(data)}\n\n"
     )
     lines.append(
         f"WASM_DEFAULT_APP_TABLE_BASE: int = {data['table_layout']['default_app_table_base']}\n\n"

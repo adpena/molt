@@ -56,7 +56,7 @@ pub(crate) fn runtime_callable_symbol_is_non_callable(symbol_name: &str) -> bool
 pub(crate) const WASM_POLL_SLOT_MAX_OFFSET: u64 = 29;
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = 1 + 29;
+pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = 30;
 #[cfg(target_arch = "wasm32")]
 pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = 37;
 #[cfg(target_arch = "wasm32")]

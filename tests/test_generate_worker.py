@@ -5,6 +5,8 @@ import shutil
 from pathlib import Path
 
 from molt._wasm_abi_generated import (
+    WASM_DEFAULT_APP_TABLE_BASE,
+    WASM_RESERVED_RUNTIME_CALLABLE_BASE,
     WASM_RESERVED_RUNTIME_CALLABLES,
     WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME,
 )
@@ -39,36 +41,6 @@ def _reserved_runtime_callable_manifest_entries() -> list[dict[str, object]]:
             dispatch,
         ) in WASM_RESERVED_RUNTIME_CALLABLES
     ]
-
-
-def _reserved_runtime_callable_js_entries(content: str) -> list[dict[str, object]]:
-    match = re.search(
-        r"const reservedRuntimeCallables = \[(?P<body>.*?)\];",
-        content,
-        re.DOTALL,
-    )
-    assert match is not None
-    entries = []
-    for item in re.finditer(
-        (
-            r"\{\s*index:\s*(?P<index>\d+),\s*"
-            r"runtimeExport:\s*'(?P<runtime>[^']+)',\s*"
-            r"arity:\s*(?P<arity>\d+)"
-            r"(?:,\s*dispatch:\s*'(?P<dispatch>[^']+)')?"
-            r"(?:,\s*trampolineAbi:\s*'(?P<trampoline_abi>[^']+)')?\s*\}"
-        ),
-        match.group("body"),
-    ):
-        entries.append(
-            {
-                "index": int(item.group("index")),
-                "runtime_export": item.group("runtime"),
-                "arity": int(item.group("arity")),
-                "dispatch": item.group("dispatch") or "direct",
-                "trampoline_abi": item.group("trampoline_abi") or "unpack_args",
-            }
-        )
-    return entries
 
 
 def test_generate_worker_produces_valid_js(tmp_path):
@@ -392,33 +364,48 @@ def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
     )
 
 
-def test_static_browser_runners_reserved_runtime_callable_tables_track_generated_abi() -> (
-    None
-):
-    from pathlib import Path
+def test_static_browser_runners_use_the_generated_reserved_callable_layout() -> None:
+    """Every JS host dispatches reserved runtime callables by the generated layout.
 
+    run_wasm.js and browser_host.js used to carry their own base (33) and a
+    24-entry list while the ABI moved to base 30 and 37 entries, so split-runtime
+    calls landed on the wrong runtime callable (``new_class() expects positional
+    arguments tuple`` while constructing a ModuleSpec).
+    """
     root = Path(__file__).resolve().parents[1]
-    expected = [
+    result = run_guarded_test_process(
+        [
+            "node",
+            "-e",
+            "const b = require('./wasm/loader_bridge.js');"
+            "const l = b.runtimeCallableTableLayout(null);"
+            "process.stdout.write(JSON.stringify(l));",
+        ],
+        prefix="MOLT_WASM_TEST",
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    layout = json.loads(result.stdout)
+    assert layout["defaultAppTableBase"] == WASM_DEFAULT_APP_TABLE_BASE
+    assert layout["reservedRuntimeCallableBase"] == WASM_RESERVED_RUNTIME_CALLABLE_BASE
+    assert layout["reservedRuntimeCallables"] == [
         {
             "index": index,
-            "runtime_export": runtime_name,
+            "runtimeExport": runtime_name,
+            "importName": import_name,
             "arity": arity,
             "dispatch": dispatch,
-            "trampoline_abi": WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME[
+            "trampolineAbi": WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME[
                 runtime_name
             ],
         }
-        for (
-            index,
-            runtime_name,
-            _import_name,
-            arity,
-            dispatch,
-        ) in WASM_RESERVED_RUNTIME_CALLABLES
+        for index, runtime_name, import_name, arity, dispatch in (
+            WASM_RESERVED_RUNTIME_CALLABLES
+        )
     ]
-    for rel in ("wasm/run_wasm.js", "wasm/browser_host.js"):
-        content = (root / rel).read_text(encoding="utf-8")
-        assert _reserved_runtime_callable_js_entries(content) == expected
 
 
 def test_loader_bridge_enforces_manifest_reserved_callable_dispatch(tmp_path) -> None:
@@ -792,13 +779,17 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
         "wasm/browser_host.js": (
             "globalThis.MoltWasmLoaderBridge",
             "extractWasmTableBase,",
-            "reservedRuntimeCallablesFromManifest,",
+            "runtimeCallableTableLayout,",
         ),
         "wasm/run_wasm.js": (
             "require('./loader_bridge.js')",
             "parseWasmMetadata,",
             "parseWasmExportFunctionSignatures: parseWasmExportFunctionSignaturesFromBridge",
-            "reservedRuntimeCallablesFromManifest,",
+            "runtimeCallableTableLayout,",
+        ),
+        "wasm/browser_embed.js": (
+            "globalThis.MoltWasmLoaderBridge",
+            "runtimeCallableTableLayoutFromAbi,",
         ),
     }
     forbidden_local_authority = (
@@ -812,6 +803,11 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
         "const readWasmValTypeVec =",
         "const reservedRuntimeCallablesFromManifest =",
         "manifest?.abi?.browser_embed?.reserved_runtime_callables",
+        # The reserved-callable layout is generated; a host copy drifted to a
+        # stale base (33 vs 30) and misdispatched every split-runtime call.
+        "const RESERVED_RUNTIME_CALLABLE_BASE =",
+        "const DEFAULT_WASM_APP_TABLE_BASE =",
+        "reserved_runtime_callable_base",
     )
     for rel, required in consumers.items():
         content = (root / rel).read_text(encoding="utf-8")

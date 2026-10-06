@@ -56,7 +56,7 @@
         "runtime_lifecycle.js"
       ],
       "role": "browser",
-      "sha256": "3dd8a93589948705d8cd245be573c3a2f69cb29d62554530cb9295a9e9ebf5a2",
+      "sha256": "6ca1ee5d0b9ce01f0957e69541b4becfd93443627931a1fe64e49dfc14ba8463",
       "source_type": "module"
     },
     "browser_gpu_dispatch.js": {
@@ -129,7 +129,7 @@
         {
           "column": 31,
           "kind": "dynamic-import",
-          "line": 139,
+          "line": 111,
           "request": "./molt_vfs_browser.js",
           "target": "molt_vfs_browser.js"
         },
@@ -151,7 +151,7 @@
         "runtime_lifecycle.js"
       ],
       "role": "browser",
-      "sha256": "ca693b3d0e67eda8cc56713636ba076575231f83c2437bf4dd556d37d8e78707",
+      "sha256": "234d2375be5441bbeb9cf679fd29fad38fc3f522350b3387aee600ccb8404206",
       "source_type": "module"
     },
     "browser_target_features.js": {
@@ -179,7 +179,7 @@
       "reference_facts": [],
       "references": [],
       "role": "shared",
-      "sha256": "7e0c94edc9861ac1e6be19140bf543e5b16bfc38be34828132008693f73e625e",
+      "sha256": "746f10cddec6e648e446baa5b611b3a69f354e998e51e14e1fcd679321f14574",
       "source_type": "script"
     },
     "host_capabilities_generated.js": {
@@ -207,7 +207,7 @@
         "callable_table_abi_generated.js"
       ],
       "role": "shared",
-      "sha256": "9f596e82009997f749d743b24f27b767dc40bb17c9c74eb4853d5546a4395ecf",
+      "sha256": "b3f5c5d147079fac92692ec243423aaeeef15a610e437f8c89dcb61745547b82",
       "source_type": "script"
     },
     "molt_vfs_browser.js": {
@@ -365,7 +365,7 @@
         "wasm_abi_generated.json"
       ],
       "role": "node",
-      "sha256": "7c90e1aaf0d899354eb614411029976cb0a95dfb6276beef1eaff0b56a29fed7",
+      "sha256": "2122af25b55afcd5908426763f49ec41cf7339ca2eccfe50a63c66872ee73e43",
       "source_type": "script"
     },
     "runtime_lifecycle.js": {

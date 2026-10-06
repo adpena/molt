@@ -967,6 +967,63 @@
     if (!Array.isArray(entries)) {
       return null;
     }
+    return parseReservedRuntimeCallables(entries);
+  };
+
+  // One reserved-runtime-callable table layout per execution: the artifact's
+  // manifest ABI when it declares one, else the generated ABI this host was
+  // built with. Hosts never keep their own copy of the base, count or list.
+  const runtimeCallableTableLayoutFromAbi = (abi, label) => {
+    const layout = abi?.table_layout;
+    if (!layout || typeof layout !== 'object') {
+      throw new Error(`${label}.table_layout is missing`);
+    }
+    const field = (name) => {
+      const value = layout[name];
+      if (!Number.isInteger(value) || value < 0) {
+        throw new Error(`${label}.table_layout.${name} must be a non-negative integer`);
+      }
+      return value;
+    };
+    if (!Array.isArray(abi.reserved_runtime_callables)) {
+      throw new Error(`${label}.reserved_runtime_callables must be an array`);
+    }
+    const reservedRuntimeCallables = parseReservedRuntimeCallables(
+      abi.reserved_runtime_callables,
+    );
+    const count = field('reserved_runtime_callable_count');
+    if (reservedRuntimeCallables.length !== count) {
+      throw new Error(
+        `${label}.reserved_runtime_callables has ${reservedRuntimeCallables.length} ` +
+          `entries; table_layout.reserved_runtime_callable_count is ${count}`,
+      );
+    }
+    const indices = new Set(reservedRuntimeCallables.map((entry) => entry.index));
+    if (
+      indices.size !== count ||
+      reservedRuntimeCallables.some((entry) => entry.index >= count)
+    ) {
+      throw new Error(`${label}.reserved_runtime_callables indices must be exactly 0..${count - 1}`);
+    }
+    return Object.freeze({
+      defaultAppTableBase: field('default_app_table_base'),
+      reservedRuntimeCallableBase: field('reserved_runtime_callable_base'),
+      reservedRuntimeCallables,
+    });
+  };
+
+  const runtimeCallableTableLayout = (manifest) => {
+    const abi = manifest?.abi?.browser_embed;
+    if (abi === undefined || abi === null) {
+      return runtimeCallableTableLayoutFromAbi(
+        callableTableAbi.runtime_callables,
+        'generated callable-table ABI runtime_callables',
+      );
+    }
+    return runtimeCallableTableLayoutFromAbi(abi, 'manifest.abi.browser_embed');
+  };
+
+  const parseReservedRuntimeCallables = (entries) => {
     return entries.map((entry, idx) => {
       if (!entry || typeof entry !== 'object') {
         throw new Error(`reserved runtime callable manifest entry ${idx} must be an object`);
@@ -980,7 +1037,7 @@
       if (!Number.isInteger(index) || index < 0) {
         throw new Error(`reserved runtime callable manifest entry ${idx} has invalid index`);
       }
-      if (typeof runtimeExport !== 'string' || runtimeExport.length === 0) {
+      if (typeof runtimeExport !== 'string' || !runtimeExport.startsWith('molt_')) {
         throw new Error(`reserved runtime callable manifest entry ${idx} has invalid runtime_export`);
       }
       if (typeof importName !== 'string' || importName.length === 0) {
@@ -1268,6 +1325,8 @@
     remapDefaultAppRuntimeSharedTableIndex,
     resolveWasmTableBase,
     reservedRuntimeCallablesFromManifest,
+    runtimeCallableTableLayout,
+    runtimeCallableTableLayoutFromAbi,
     runtimeExceptionPending,
     runtimeImportByteSpanOutNames,
     runtimeImportObjectArrayArgNames,

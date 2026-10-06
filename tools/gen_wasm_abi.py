@@ -35,6 +35,7 @@ from wasm_abi_gen.manifest import (
     generator_input_files,
     generator_runtime_export_signature_rows,
     load_manifest,
+    reserved_runtime_callable_base,
     runtime_boxed_call_specs,
     runtime_import_return_specs,
     runtime_export_name,
@@ -2138,7 +2139,7 @@ def render_runtime_callables_rs(data: dict) -> str:
             f"{max((slot for slot, _name in poll_imports), default=0)};\n\n",
             '#[cfg(target_arch = "wasm32")]\n',
             "pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_BASE: u64 = ",
-            f"1 + {max((slot for slot, _name in poll_imports), default=0)};\n",
+            f"{reserved_runtime_callable_base(data)};\n",
             '#[cfg(target_arch = "wasm32")]\n',
             "pub(crate) const RESERVED_WASM_RUNTIME_CALLABLE_COUNT: u64 = ",
             f"{len(reserved_callables)};\n",
@@ -2497,8 +2498,37 @@ def render_js_abi(data: dict) -> str:
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 
+def _js_runtime_callable_abi(data: dict) -> dict[str, object]:
+    """The reserved runtime callable layout, in the manifest browser_embed shape."""
+    reserved_callables = _shared_runtime_callables(data)
+    return {
+        "table_layout": {
+            "default_app_table_base": data["table_layout"]["default_app_table_base"],
+            "reserved_runtime_callable_base": reserved_runtime_callable_base(data),
+            "reserved_runtime_callable_count": len(reserved_callables),
+        },
+        "reserved_runtime_callables": [
+            {
+                "index": entry["index"],
+                "runtime_export": entry["runtime_name"],
+                "import_name": entry["import_name"],
+                "arity": entry["callable_arity"],
+                "dispatch": entry.get("callable_dispatch", "direct"),
+                "trampoline_abi": entry.get("trampoline_abi", "unpack_args"),
+            }
+            for entry in reserved_callables
+        ],
+    }
+
+
 def render_js_callable_table_abi(data: dict) -> str:
-    payload = json.dumps(data["callable_table_publication"], sort_keys=True)
+    payload = json.dumps(
+        {
+            **data["callable_table_publication"],
+            "runtime_callables": _js_runtime_callable_abi(data),
+        },
+        sort_keys=True,
+    )
     return "".join(
         [
             _header("//"),
