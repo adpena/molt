@@ -1991,7 +1991,7 @@ timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend"]
 env = { MOLT_BACKEND_DAEMON = "0", RUSTC_WRAPPER = "" }
-argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/comprehension_fail.py", "--build-profile", "dev", "--target", "luau", "--output", "/tmp/test_comprehension.luau"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "build", "examples/string_comprehension.py", "--build-profile", "dev", "--target", "luau", "--output", "/tmp/test_string_comprehension.luau"]
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
