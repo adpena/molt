@@ -121,6 +121,12 @@ def live_public_schemas() -> list[str]:
     )
 
 
+# Positionals that may consume no values. argparse's own `required` flag for
+# them changed across CPython patch releases (gh-72795: "*" and REMAINDER
+# became non-required in 3.12.7/3.13.1), so the contract derives it from nargs.
+_ZERO_VALUE_NARGS = (argparse.OPTIONAL, argparse.ZERO_OR_MORE, argparse.REMAINDER, 0)
+
+
 def _action_record(action: argparse.Action) -> dict[str, Any] | None:
     if isinstance(action, argparse._HelpAction) or action.dest == "help":
         return None
@@ -130,7 +136,11 @@ def _action_record(action: argparse.Action) -> dict[str, Any] | None:
         "dest": action.dest,
         "flags": list(action.option_strings),
         "kind": type(action).__name__.lstrip("_"),
-        "required": bool(action.required),
+        "required": (
+            bool(action.required)
+            if action.option_strings
+            else action.nargs not in _ZERO_VALUE_NARGS
+        ),
     }
     if action.nargs is not None:
         record["nargs"] = (
