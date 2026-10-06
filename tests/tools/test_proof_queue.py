@@ -37,6 +37,8 @@ from tests import proof_queue_owned_roots
 from tests.proof_queue_custody_test_support import (
     ReceiptCustodyFactory,
     assert_execution_context_rejects_substitutions,
+    capability_aware_proof_execution,
+    proof_queue_execution_capability as proof_queue_execution_capability,
     synthetic_live_custody as _synthetic_live_custody,
     synthetic_python_toolchain,
     synthetic_receipt_custody as synthetic_receipt_custody,
@@ -3038,6 +3040,7 @@ def test_transcript_receipt_streams_hash_and_structured_counts(tmp_path: Path) -
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -3081,6 +3084,7 @@ def test_guarded_receipt_uses_row_repo_root_and_exact_outer_binary_identity(
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_guarded_receipt_rejects_stable_dirty_source(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -3103,6 +3107,7 @@ def test_guarded_receipt_rejects_stable_dirty_source(
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_guarded_receipt_rejects_source_mutation_during_command(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -3142,6 +3147,7 @@ def test_guarded_receipt_rejects_source_mutation_during_command(
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_live_custody_detects_mutate_execute_restore_transient(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -3195,6 +3201,7 @@ def test_live_custody_detects_mutate_execute_restore_transient(
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_live_custody_detects_tracked_directory_rename_restore(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -3236,6 +3243,7 @@ def test_live_custody_detects_tracked_directory_rename_restore(
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_python_leaf_blocks_cargo_and_node_children_before_launch(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -3463,6 +3471,7 @@ def test_python_bootstrap_pytest_disables_source_cache_exactly_once(
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_python_bootstrap_installs_custody_under_isolated_startup(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -3529,6 +3538,7 @@ def test_python_bootstrap_installs_custody_under_isolated_startup(
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3688,6 +3698,7 @@ def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_python_leaf_blocks_exec_replacement_before_launch(
     tmp_path: Path,
     guarded_execution_authorities: GuardedExecutionAuthorities,
@@ -3746,6 +3757,7 @@ def test_node_leaf_rejects_shell_mediated_spawn(tmp_path: Path) -> None:
     assert any(event.get("reason") == "opaque-shell" for event in receipt["violations"])
 
 
+@capability_aware_proof_execution
 def test_guarded_identity_timeout_is_terminal_before_command_launch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4317,6 +4329,7 @@ def _rows(db: Path) -> list[sqlite3.Row]:
     return list(conn.execute("SELECT * FROM proof_runs ORDER BY rowid"))
 
 
+@capability_aware_proof_execution
 def test_proof_queue_non_wasm_exec_does_not_load_wasm_toolchain(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, custody_python: Path
 ) -> None:
@@ -4434,7 +4447,7 @@ def test_proof_queue_git_snapshot_tracks_runtime_generation_changes(
     tmp_path: Path,
 ) -> None:
     def git(*args: str) -> None:
-        run_guarded_test_process(
+        run_custody_subject_process(
             ["git", *args],
             cwd=tmp_path,
             check=True,
@@ -4470,7 +4483,7 @@ def test_proof_queue_git_snapshot_expands_untracked_directories(
     tmp_path: Path,
 ) -> None:
     def git(*args: str) -> None:
-        run_guarded_test_process(
+        run_custody_subject_process(
             ["git", *args],
             cwd=tmp_path,
             check=True,
@@ -4497,6 +4510,7 @@ def test_proof_queue_git_snapshot_expands_untracked_directories(
     assert any("src/split/child.rs" in line for line in snapshot["status"])
 
 
+@capability_aware_proof_execution
 def test_proof_queue_exec_records_passed_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, custody_python: Path
 ) -> None:
@@ -4627,6 +4641,7 @@ def test_proof_queue_help_detection_ignores_metadata_values_and_command_args() -
     assert not cli._proof_command_help_requested(["exec", "--", "--help"])
 
 
+@capability_aware_proof_execution
 def test_proof_queue_exec_preserves_command_help_after_delimiter(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], custody_python: Path
 ) -> None:
@@ -4747,6 +4762,7 @@ def test_proof_queue_exec_rejects_pre_delimiter_residue(
     assert not db.exists()
 
 
+@capability_aware_proof_execution
 def test_proof_queue_exec_honors_explicit_memory_guard_poll_override(
     tmp_path: Path, custody_python: Path
 ) -> None:
@@ -4962,6 +4978,7 @@ def test_proof_queue_exec_rejects_invalid_memory_guard_poll_before_detach(
     assert not logs.exists()
 
 
+@capability_aware_proof_execution
 def test_proof_queue_evidence_accepts_positional_run_id(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -5024,6 +5041,7 @@ def test_proof_queue_evidence_accepts_positional_run_id(
         cli.main([*base_args, "evidence", run_id, "--run-id", "not-a-run-id"])
 
 
+@capability_aware_proof_execution
 def test_proof_queue_projection_failure_is_nonfatal_observability(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -5107,6 +5125,7 @@ def test_proof_queue_projection_failure_is_nonfatal_observability(
     assert "queue-infra-warning" in signals
 
 
+@capability_aware_proof_execution
 def test_proof_queue_submission_metadata_failure_is_terminal(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -5222,6 +5241,7 @@ def test_proof_queue_submission_metadata_failure_is_terminal(
     assert followup_marker.read_text(encoding="utf-8") == "ran"
 
 
+@capability_aware_proof_execution
 def test_proof_queue_guarded_identity_failure_is_explicit_nonexecution(
     tmp_path: Path,
     monkeypatch,
@@ -7626,6 +7646,7 @@ def test_proof_queue_prune_stale_run_id_canonicalizes_selected_stale_row(
 
 
 @pytest.mark.slow
+@capability_aware_proof_execution
 def test_proof_queue_wasm_rows_check_rust_target_before_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -7706,6 +7727,7 @@ def test_proof_queue_wasm_preflight_fails_before_command(
     assert not marker.exists()
 
 
+@capability_aware_proof_execution
 def test_proof_queue_run_id_executes_only_selected_queued_row(
     tmp_path: Path, custody_python: Path
 ) -> None:
@@ -7750,6 +7772,7 @@ def test_proof_queue_run_id_executes_only_selected_queued_row(
     assert "B" in (logs / "queued-b.log").read_text(encoding="utf-8")
 
 
+@capability_aware_proof_execution
 def test_proof_queue_run_id_executes_selected_dispatched_row(
     tmp_path: Path, custody_python: Path
 ) -> None:
@@ -9185,6 +9208,7 @@ def test_proof_queue_cargo_lane_allows_explicit_warm_single_test(
     )
 
 
+@capability_aware_proof_execution
 def test_proof_queue_submit_run_executes_queued_row_in_place(
     tmp_path: Path, custody_python: Path
 ) -> None:
@@ -9314,6 +9338,7 @@ def test_proof_queue_submit_records_initial_notes_and_marimo_projection(
     assert '"git": {' in notebook_text
 
 
+@capability_aware_proof_execution
 def test_proof_queue_submit_records_dag_edges_and_runs_ready_order(
     tmp_path: Path, custody_python: Path
 ) -> None:
