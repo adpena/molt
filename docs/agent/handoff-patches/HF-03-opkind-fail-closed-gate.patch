@@ -1,0 +1,2780 @@
+From 992c274696d308a9a0d8aa4e1e761982ad9926e3 Mon Sep 17 00:00:00 2001
+From: adpena <adpena@users.noreply.github.com>
+Date: Mon, 5 Oct 2026 17:36:45 -0500
+Subject: [PATCH] Reject unregistered operations through generated frontend and
+ SimpleIR admission
+
+The CONST_MISSING regression in fd670c00a exposed a preexisting admission
+defect: frontend serialization ignored its final dispatch result, SimpleIR
+accepted arbitrary kind strings, and SSA preserved unmapped kinds as Copy.
+A resultless unknown operation could then compile natively without emission.
+The instance was repaired in 9a5babb29; this change closes the class.
+
+Derive wire and frontend membership from op_kinds.toml's existing mapper,
+control, classifier, field-role and semantic registrations. Explicitly
+register existing cast/widen/unreachable carriers and frontend serializer
+spellings without changing their effect or target-support contracts.
+Regenerate Rust/Python projections and proof-plan authority freshness.
+
+Validate frontend kinds before and after optimization, require successful
+serializer dispatch, and validate emitted wire kinds. Share one function-aware
+Rust admission validator across all SimpleIR transports and direct SSA entry.
+Retain precise retired-kind diagnostics and existing preserved-op semantics.
+
+Add transport/programmatic Rust rejection tests and an AST frontend literal
+scan, including serializer and optimizer regressions. Migrate fictitious
+roundtrip operations to registered preserved carriers without removing their
+metadata/SSA assertions. Replace unsupported is_truthy's negative bool fixture
+with a registered opaque-result operation, retaining the independent oracle.
+
+Also: encode guarded child stdin with the declared codec, not the locale.
+memory_guard.run_guarded opened its stdin pipe with Popen(text=True) and no
+encoding, so on Windows every guarded child received text input in the
+locale code page (cp1252) while its captured stdout/stderr used UTF-8.
+Non-ASCII input was corrupted: tools/gen_op_kinds.py --check piped its
+generated Rust (with em dashes in doc comments) into rustfmt, which failed
+with "stream did not contain valid UTF-8", so the op-kind generator and its
+64 dependent tests could not run on Windows at all.
+
+Pass the guard's encoding/errors to Popen whenever text mode is on, and let
+ProcessSpawnKwargs carry them. Verified on Windows x86_64:
+
+Verification (Windows x86_64, independently re-run): gen_op_kinds.py --check
+in sync; frontend op-kind registry, op-kind generator, context-unwind and
+memory-guard tool modules 629 passed, 23 skipped. Worker-reported: molt-ir
+386 passed, molt-passes 949 passed. Two molt-tir failures
+(generic_const_non_integer_payload_stays_outside_integer_admission,
+loop_body_ops_survive_optimization) reproduce without this change and are
+fixed separately.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .github/proof-plan.generated.json             |    2 +-
+ docs/design/foundation/25_op_kind_registry.md |   23 +
+ runtime/molt-ir/src/ir.rs                     |  133 +-
+ runtime/molt-ir/src/tir/op_kinds.toml         |   38 +
+ runtime/molt-ir/src/tir/op_kinds_generated.rs |  552 ++++++++
+ runtime/molt-ir/src/tir/ssa.rs                |    1 +
+ runtime/molt-ir/src/tir/ssa/op_lowering.rs    |   14 +-
+ .../lower_to_simple/tests/naming_metadata.rs  |   25 +-
+ .../representation_plan/tests/scalar_facts.rs |    6 +-
+ runtime/molt-tir/src/tir/tests_roundtrip.rs   |   24 +-
+ .../frontend/lowering/op_kinds_generated.py   | 1144 ++++++++++++++++-
+ src/molt/frontend/lowering/serialization.py   |   17 +-
+ src/molt/process_spawn.py                     |    2 +
+ tests/test_frontend_op_kind_registry.py       |  176 +++
+ tests/test_gen_op_kinds.py                    |    5 +-
+ tools/memory_guard.py                         |    6 +
+ tools/op_kinds/registration.py                |   53 +
+ tools/op_kinds/render_python.py               |   31 +-
+ tools/op_kinds/render_rust.py                 |   14 +
+ tools/op_kinds/validate.py                    |    2 +
+ 20 files changed, 2208 insertions(+), 60 deletions(-)
+ create mode 100644 tests/test_frontend_op_kind_registry.py
+ create mode 100644 tools/op_kinds/registration.py
+
+diff --git a/.github/proof-plan.generated.json b/.github/proof-plan.generated.json
+index 858fb5a96..013acade2 100644
+--- a/.github/proof-plan.generated.json
++++ b/.github/proof-plan.generated.json
+@@ -312,7 +312,7 @@
+     "tests/tools/test_win_job_contract.py",
+     "tests/tools/test_windows_process_api.py"
+   ],
+-  "authority_sha256": "cdc0cf4f87234ea0178b2437f7866c0a061499304c3f8925d906b35268954810",
++  "authority_sha256": "918c32a60c71c0dc58cf8b2bebd46c7c7e90983e0ab6f50b93899924ac79807e",
+   "cargo_environment_policy": {
+     "incident_command": "cargo metadata --locked --format-version 1",
+     "incident_commit": "66c042c7ba51bc8606f34b27cfc6af90783cec61",
+diff --git a/docs/design/foundation/25_op_kind_registry.md b/docs/design/foundation/25_op_kind_registry.md
+index 91f51afbf..197df07f5 100644
+--- a/docs/design/foundation/25_op_kind_registry.md
++++ b/docs/design/foundation/25_op_kind_registry.md
+@@ -16,6 +16,29 @@ separate from retired compiler operation spellings.
+ 
+ ---
+ 
++## Fail-closed operation admission
++
++The registry owns both the frontend MoltOp vocabulary and the SimpleIR wire
++vocabulary. `tools/op_kinds/registration.py` projects existing mapper, control,
++custody, field-role, and runtime-semantic declarations into generated membership tables.
++`simpleir_preserved_kinds` registers wire carriers without granting new effect,
++ownership, or target-support facts. `frontend_lowering_kind` records frontend
++spellings whose serializer uses a different registered wire spelling.
++
++Frontend serialization validates all input kinds before optimization can discard
++them, rejects registered operations without a serializer, and validates emitted
++wire kinds. SimpleIR admission validates every function body before target
++selection, pruning, or lowering, through the shared contract used by JSON,
++NDJSON, MessagePack, and binary document readers. Direct SSA lifting uses the
++same validator. Unregistered operations report the kind and function instead of
++being dropped or acquiring the preserved `Copy` carrier. Registered preserved
++operations retain their existing lowering and target-specific admission.
++
++`tests/test_frontend_op_kind_registry.py` scans every literal `MoltOp(kind=...)`
++in the frontend and the serializer's complete resolved wire vocabulary against
++the generated tables. Generator freshness tests keep the Python and Rust
++projections synchronized.
++
+ ## Predicate result, effect, and representation authority
+ 
+ The six rich comparisons are callback-capable, throwing, arbitrary-owned-value
+diff --git a/runtime/molt-ir/src/ir.rs b/runtime/molt-ir/src/ir.rs
+index dd3b524d2..e259f04f3 100644
+--- a/runtime/molt-ir/src/ir.rs
++++ b/runtime/molt-ir/src/ir.rs
+@@ -9,8 +9,8 @@ use crate::tir::cfg::CFG;
+ use crate::tir::op_kinds_generated::{
+     SimpleIrCallTargetRole, SimpleIrRuntimeRequirementBits, SimpleIrRuntimeRequirements,
+     simpleir_call_target_role, simpleir_kind_has_function_reference_s_value,
+-    simpleir_kind_is_return_terminator, simpleir_runtime_requirements_table,
+-    simpleir_runtime_symbol_requirements_table,
++    simpleir_kind_is_registered, simpleir_kind_is_return_terminator,
++    simpleir_runtime_requirements_table, simpleir_runtime_symbol_requirements_table,
+ };
+ use crate::tir::simple_def_use::{
+     SimpleIrReadField, visit_simple_ir_defined_names, visit_simple_ir_reads,
+@@ -1249,6 +1249,20 @@ pub fn validate_simple_ir(ir: &SimpleIR) -> Result<(), String> {
+     Ok(())
+ }
+ 
++pub(crate) fn validate_op_kinds(function_name: &str, ops: &[OpIR]) -> Result<(), String> {
++    for (op_index, op) in ops.iter().enumerate() {
++        ir_schema::validate_op_not_retired(&op.kind)
++            .map_err(|error| format!("function `{function_name}` op#{op_index}: {error}"))?;
++        if !simpleir_kind_is_registered(&op.kind) {
++            return Err(format!(
++                "function `{function_name}` op#{op_index}: unregistered op kind `{}`",
++                op.kind
++            ));
++        }
++    }
++    Ok(())
++}
++
+ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
+     let inherited = ir
+         .functions
+@@ -1257,6 +1271,7 @@ fn validate_simple_ir_transport_contract(ir: &SimpleIR) -> Result<(), String> {
+         .map(|func| func.name.as_str())
+         .collect::<BTreeSet<_>>();
+     for func in &ir.functions {
++        validate_op_kinds(&func.name, &func.ops)?;
+         ir_schema::validate_function_param_types(
+             &func.name,
+             &func.params,
+@@ -1481,7 +1496,11 @@ fn simple_ir_op_is_reachable(dominators: &[Option<usize>], op_index: usize) -> b
+ 
+ #[cfg(test)]
+ mod json_parse_tests {
+-    use super::{FunctionIR, OpIR, SimpleIR, write_function_ir_contract};
++    use super::{
++        BackendIrDocument, FunctionIR, OpIR, SimpleIR, validate_op_kinds, validate_simple_ir,
++        write_function_ir_contract,
++    };
++    use crate::tir::cfg::CFG;
+ 
+     #[test]
+     fn return_abi_is_required_and_survives_empty_bodies_and_extern_projection() {
+@@ -1660,6 +1679,114 @@ mod json_parse_tests {
+         assert!(ir.functions[0].ops[0].fast_int.is_none());
+     }
+ 
++    #[test]
++    fn simple_ir_rejects_unregistered_op_kinds_on_every_transport() {
++        for kind in [
++            "CONST_MISSING",
++            "const_missing",
++            "future_unregistered_op",
++            "",
++        ] {
++            for out in [None, Some("unused_result")] {
++                let function = serde_json::json!({
++                    "name": "unreachable_function",
++                    "params": [],
++                    "return_abi": "void",
++                    "ops": [{"kind": "ret_void"}, {"kind": kind, "out": out}]
++                });
++                let document = serde_json::json!({"functions": [function.clone()]});
++                let json = document.to_string();
++                let binary = rmp_serde::to_vec_named(&document).unwrap();
++                let mut streamed = function;
++                streamed["kind"] = serde_json::json!("function");
++                let ndjson = format!("{streamed}\n");
++                let errors = [
++                    SimpleIR::from_json_str(&json).unwrap_err(),
++                    serde_json::from_str::<SimpleIR>(&json)
++                        .unwrap_err()
++                        .to_string(),
++                    rmp_serde::from_slice::<SimpleIR>(&binary)
++                        .unwrap_err()
++                        .to_string(),
++                    SimpleIR::from_ndjson_reader(ndjson.as_bytes()).unwrap_err(),
++                    BackendIrDocument::from_json_str(&json).unwrap_err(),
++                    serde_json::from_str::<BackendIrDocument>(&json)
++                        .unwrap_err()
++                        .to_string(),
++                    rmp_serde::from_slice::<BackendIrDocument>(&binary)
++                        .unwrap_err()
++                        .to_string(),
++                    BackendIrDocument::from_ndjson_reader(ndjson.as_bytes()).unwrap_err(),
++                ];
++                for error in errors {
++                    assert!(error.contains("unregistered op kind"), "{error}");
++                    assert!(error.contains(&format!("`{kind}`")), "{error}");
++                    assert!(error.contains("unreachable_function"), "{error}");
++                    assert!(error.contains("op#1"), "{error}");
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn programmatic_ir_and_ssa_reject_unregistered_op_kinds() {
++        let ops = vec![OpIR {
++            kind: "future_unregistered_op".into(),
++            ..OpIR::default()
++        }];
++        let ir = SimpleIR {
++            functions: vec![FunctionIR {
++                name: "programmatic_function".into(),
++                ops: ops.clone(),
++                ..FunctionIR::default()
++            }],
++            profile: None,
++        };
++        let error = validate_simple_ir(&ir).unwrap_err();
++        assert!(error.contains("future_unregistered_op"), "{error}");
++        assert!(error.contains("programmatic_function"), "{error}");
++        let cfg = CFG::build(&ops);
++        let error = std::panic::catch_unwind(|| {
++            crate::tir::ssa::convert_to_ssa_with_name_and_params(
++                "programmatic_function",
++                &cfg,
++                &ops,
++                &[],
++            );
++        })
++        .err()
++        .expect("SSA must reject unregistered kinds");
++        let diagnostic = error.downcast_ref::<String>().expect("string diagnostic");
++        assert!(
++            diagnostic.contains("future_unregistered_op"),
++            "{diagnostic}"
++        );
++        assert!(diagnostic.contains("programmatic_function"), "{diagnostic}");
++    }
++
++    #[test]
++    fn registered_preserved_and_structural_kinds_remain_admitted() {
++        for kind in [
++            "missing",
++            "nop",
++            "label",
++            "cast",
++            "widen",
++            "store_fast",
++            "string_split_field_to_int",
++            "floor_div",
++        ] {
++            validate_op_kinds(
++                "registered_function",
++                &[OpIR {
++                    kind: kind.into(),
++                    ..OpIR::default()
++                }],
++            )
++            .unwrap_or_else(|error| panic!("{error}"));
++        }
++    }
++
+     #[test]
+     fn op_ir_serde_json_roundtrip_uses_canonical_field_parser() {
+         let op = OpIR {
+diff --git a/runtime/molt-ir/src/tir/op_kinds.toml b/runtime/molt-ir/src/tir/op_kinds.toml
+index 1622caa93..e7ad554a8 100644
+--- a/runtime/molt-ir/src/tir/op_kinds.toml
++++ b/runtime/molt-ir/src/tir/op_kinds.toml
+@@ -4,6 +4,8 @@
+ # except option-dependent BytesWarning pairs, retained as observable below;
+ # ordering is nothrow only within an ordering-enabled domain. This policy is
+ # projected into both frontend Python and shared native/WASM Rust consumers.
++simpleir_preserved_kinds = ["cast", "unreachable", "widen"]
++
+ comparison_scalar_domains = [
+     { name = "number", ordering = true, tir_types = ["I64", "F64", "Bool", "BigInt"], frontend_types = ["int", "float", "bool"] },
+     { name = "text", ordering = true, tir_types = ["Str"], frontend_types = ["str"] },
+@@ -5445,6 +5447,42 @@ reason = "frontend-internal: serializes to wire `set_attr_generic_ptr` (StoreAtt
+ # pre-serialization memory-effect overrides such as CONST_STR and LOAD_VAR.
+ # ---------------------------------------------------------------------------
+ 
++[[frontend_lowering_kind]]
++kind = "ASYNC_BLOCK_ON"
++wire_kind = "block_on"
++
++[[frontend_lowering_kind]]
++kind = "CLASS_VERSION"
++wire_kind = "class_layout_version"
++
++[[frontend_lowering_kind]]
++kind = "DELATTR_GENERIC_OBJ"
++wire_kind = "del_attr_generic_obj"
++
++[[frontend_lowering_kind]]
++kind = "DELATTR_GENERIC_PTR"
++wire_kind = "del_attr_generic_ptr"
++
++[[frontend_lowering_kind]]
++kind = "ITER_NEW"
++wire_kind = "iter"
++
++[[frontend_lowering_kind]]
++kind = "LOAD_CLOSURE"
++wire_kind = "closure_load"
++
++[[frontend_lowering_kind]]
++kind = "STORE_CLOSURE"
++wire_kind = "closure_store"
++
++[[frontend_lowering_kind]]
++kind = "ret"
++wire_kind = "ret"
++
++[[frontend_lowering_kind]]
++kind = "ret_void"
++wire_kind = "ret_void"
++
+ [[frontend_effect_kind]]
+ kind = "CONST_ELLIPSIS"
+ effect = "pure"
+diff --git a/runtime/molt-ir/src/tir/op_kinds_generated.rs b/runtime/molt-ir/src/tir/op_kinds_generated.rs
+index dc49e5b5d..dbee88a69 100644
+--- a/runtime/molt-ir/src/tir/op_kinds_generated.rs
++++ b/runtime/molt-ir/src/tir/op_kinds_generated.rs
+@@ -13,6 +13,558 @@
+ use crate::tir::ops::OpCode;
+ use crate::tir::types::TirType;
+ 
++/// Whether a wire operation has a declarative registry owner.
++#[inline]
++pub fn simpleir_kind_is_registered(kind: &str) -> bool {
++    matches!(
++        kind,
++        "_m_and"
++            | "abs"
++            | "add"
++            | "aiter"
++            | "all"
++            | "alloc"
++            | "alloc_class"
++            | "alloc_class_static"
++            | "alloc_class_trusted"
++            | "alloc_instance"
++            | "alloc_task"
++            | "and"
++            | "anext"
++            | "any"
++            | "ascii_from_obj"
++            | "async_for_end"
++            | "async_for_start"
++            | "async_work_poll"
++            | "asyncgen_new"
++            | "band"
++            | "binding_alias"
++            | "binop_add"
++            | "binop_floor_div"
++            | "binop_mod"
++            | "binop_mul"
++            | "binop_pow"
++            | "binop_sub"
++            | "bit_and"
++            | "bit_not"
++            | "bit_or"
++            | "bit_xor"
++            | "block_on"
++            | "bool"
++            | "bor"
++            | "borrow"
++            | "bound_method_new"
++            | "box"
++            | "box_from_raw_int"
++            | "br_if"
++            | "branch_false"
++            | "branch_true"
++            | "bridge_unavailable"
++            | "buffer2d_get"
++            | "buffer2d_matmul"
++            | "buffer2d_new"
++            | "buffer2d_set"
++            | "build_dict"
++            | "build_list"
++            | "build_set"
++            | "build_slice"
++            | "build_tuple"
++            | "builtin_abs"
++            | "builtin_all"
++            | "builtin_any"
++            | "builtin_bool"
++            | "builtin_float"
++            | "builtin_func"
++            | "builtin_int"
++            | "builtin_len"
++            | "builtin_print"
++            | "builtin_range"
++            | "builtin_reversed"
++            | "builtin_sorted"
++            | "builtin_str"
++            | "builtin_sum"
++            | "builtin_type"
++            | "bxor"
++            | "bytearray_count"
++            | "bytearray_count_slice"
++            | "bytearray_endswith"
++            | "bytearray_endswith_slice"
++            | "bytearray_fill_range"
++            | "bytearray_find"
++            | "bytearray_find_slice"
++            | "bytearray_from_obj"
++            | "bytearray_from_str"
++            | "bytearray_replace"
++            | "bytearray_split"
++            | "bytearray_split_max"
++            | "bytearray_startswith"
++            | "bytearray_startswith_slice"
++            | "bytes_count"
++            | "bytes_count_slice"
++            | "bytes_endswith"
++            | "bytes_endswith_slice"
++            | "bytes_find"
++            | "bytes_find_slice"
++            | "bytes_from_obj"
++            | "bytes_from_str"
++            | "bytes_replace"
++            | "bytes_split"
++            | "bytes_split_max"
++            | "bytes_startswith"
++            | "bytes_startswith_slice"
++            | "call"
++            | "call_async"
++            | "call_bind"
++            | "call_builtin"
++            | "call_func"
++            | "call_function"
++            | "call_guarded"
++            | "call_indirect"
++            | "call_internal"
++            | "call_method"
++            | "call_method_ic"
++            | "call_super_method_ic"
++            | "callargs_expand_kwstar"
++            | "callargs_expand_star"
++            | "callargs_new"
++            | "callargs_push_kw"
++            | "callargs_push_pos"
++            | "cast"
++            | "cast_bool"
++            | "cast_float"
++            | "cast_int"
++            | "cast_str"
++            | "cbor_parse"
++            | "check_exception"
++            | "checked_add"
++            | "checked_mul"
++            | "chr"
++            | "class_apply_set_name"
++            | "class_def"
++            | "class_layout_field_count"
++            | "class_layout_slot_count"
++            | "class_layout_version"
++            | "class_merge_layout"
++            | "class_new"
++            | "class_set_base"
++            | "class_set_layout_version"
++            | "classmethod_new"
++            | "closure_load"
++            | "closure_store"
++            | "cmp_eq"
++            | "cmp_ge"
++            | "cmp_gt"
++            | "cmp_le"
++            | "cmp_lt"
++            | "cmp_ne"
++            | "code_new"
++            | "code_slot_set"
++            | "code_slots_init"
++            | "complex_from_obj"
++            | "const"
++            | "const_bigint"
++            | "const_bool"
++            | "const_bytes"
++            | "const_ellipsis"
++            | "const_float"
++            | "const_int"
++            | "const_none"
++            | "const_not_implemented"
++            | "const_str"
++            | "contains"
++            | "context_closing"
++            | "context_depth"
++            | "context_enter"
++            | "context_exit"
++            | "context_null"
++            | "context_unwind"
++            | "context_unwind_to"
++            | "copy"
++            | "copy_var"
++            | "dataclass_get"
++            | "dataclass_new"
++            | "dataclass_new_values"
++            | "dataclass_set"
++            | "dataclass_set_class"
++            | "dec_ref"
++            | "del_attr"
++            | "del_attr_generic_obj"
++            | "del_attr_generic_ptr"
++            | "del_attr_name"
++            | "del_boundary"
++            | "del_index"
++            | "delete_var"
++            | "dict_clear"
++            | "dict_copy"
++            | "dict_from_obj"
++            | "dict_get"
++            | "dict_items"
++            | "dict_keys"
++            | "dict_new"
++            | "dict_pop"
++            | "dict_popitem"
++            | "dict_set"
++            | "dict_setdefault"
++            | "dict_setdefault_empty_list"
++            | "dict_str_int_inc"
++            | "dict_update"
++            | "dict_update_kwstar"
++            | "dict_update_missing"
++            | "dict_values"
++            | "div"
++            | "drop_inserted"
++            | "else"
++            | "end_if"
++            | "enumerate"
++            | "env_get"
++            | "eq"
++            | "except_end"
++            | "except_start"
++            | "exception_active"
++            | "exception_class"
++            | "exception_clear"
++            | "exception_context_set"
++            | "exception_current"
++            | "exception_enter_handler"
++            | "exception_finally_pending_observer"
++            | "exception_kind"
++            | "exception_last"
++            | "exception_last_pending"
++            | "exception_match_builtin"
++            | "exception_message"
++            | "exception_new"
++            | "exception_new_builtin"
++            | "exception_new_builtin_empty"
++            | "exception_new_builtin_one"
++            | "exception_new_from_class"
++            | "exception_pending"
++            | "exception_pop"
++            | "exception_push"
++            | "exception_region_drops_inserted"
++            | "exception_resolve_captured"
++            | "exception_set_last"
++            | "exception_set_value"
++            | "exception_stack_clear"
++            | "exception_stack_depth"
++            | "exception_stack_enter"
++            | "exception_stack_exit"
++            | "exception_stack_set_depth"
++            | "exceptiongroup_combine"
++            | "exceptiongroup_match"
++            | "file_close"
++            | "file_flush"
++            | "file_open"
++            | "file_read"
++            | "file_write"
++            | "finally_end"
++            | "finally_start"
++            | "float"
++            | "float_from_obj"
++            | "floor_div"
++            | "floordiv"
++            | "for_iter"
++            | "for_iter_end"
++            | "for_iter_start"
++            | "for_range"
++            | "format_string"
++            | "frame_context_set"
++            | "frame_home_cell"
++            | "frame_home_clear"
++            | "frame_home_load"
++            | "frame_home_private_cell"
++            | "frame_home_store"
++            | "frame_home_take"
++            | "frame_locals"
++            | "frame_locals_set"
++            | "free"
++            | "frozenset_add"
++            | "frozenset_new"
++            | "func_new"
++            | "func_new_closure"
++            | "function_closure_bits"
++            | "function_defaults_version"
++            | "ge"
++            | "gen_close"
++            | "gen_send"
++            | "gen_throw"
++            | "get_attr"
++            | "get_attr_generic_obj"
++            | "get_attr_generic_ptr"
++            | "get_attr_name"
++            | "get_attr_name_default"
++            | "get_attr_special_obj"
++            | "get_item"
++            | "get_iter"
++            | "getargv"
++            | "getframe"
++            | "goto"
++            | "gpu_barrier"
++            | "gpu_block_dim"
++            | "gpu_block_id"
++            | "gpu_grid_dim"
++            | "gpu_thread_id"
++            | "gt"
++            | "guard_bool"
++            | "guard_dict_shape"
++            | "guard_float"
++            | "guard_int"
++            | "guard_layout"
++            | "guard_none"
++            | "guard_str"
++            | "guard_tag"
++            | "guard_type"
++            | "guarded_field_get"
++            | "guarded_field_set"
++            | "guarded_load"
++            | "has_attr_name"
++            | "id"
++            | "identity_alias"
++            | "if"
++            | "if_not"
++            | "import"
++            | "import_from"
++            | "import_name"
++            | "in"
++            | "inc_ref"
++            | "index"
++            | "index_set"
++            | "init_instance"
++            | "inplace_add"
++            | "inplace_bit_and"
++            | "inplace_bit_or"
++            | "inplace_bit_xor"
++            | "inplace_div"
++            | "inplace_floordiv"
++            | "inplace_lshift"
++            | "inplace_matmul"
++            | "inplace_mod"
++            | "inplace_mul"
++            | "inplace_pow"
++            | "inplace_rshift"
++            | "inplace_sub"
++            | "instance_get_field"
++            | "instance_has_field"
++            | "instance_set_field"
++            | "int"
++            | "int_from_obj"
++            | "int_from_str_of_obj"
++            | "invert"
++            | "invoke_ffi"
++            | "is"
++            | "is_bound_method"
++            | "is_callable"
++            | "is_generator"
++            | "is_native_awaitable"
++            | "is_not"
++            | "is_pending"
++            | "isinstance"
++            | "issubclass"
++            | "iter"
++            | "iter_next"
++            | "iter_next_unboxed"
++            | "json_parse"
++            | "jump"
++            | "label"
++            | "le"
++            | "len"
++            | "line"
++            | "list_append"
++            | "list_clear"
++            | "list_copy"
++            | "list_count"
++            | "list_extend"
++            | "list_fill_new"
++            | "list_from_range"
++            | "list_index"
++            | "list_index_range"
++            | "list_insert"
++            | "list_int_new"
++            | "list_new"
++            | "list_pop"
++            | "list_remove"
++            | "list_reverse"
++            | "load"
++            | "load_attr"
++            | "load_const"
++            | "load_var"
++            | "loop_break"
++            | "loop_break_if_exception"
++            | "loop_break_if_false"
++            | "loop_break_if_true"
++            | "loop_continue"
++            | "loop_end"
++            | "loop_index_end"
++            | "loop_index_next"
++            | "loop_index_start"
++            | "loop_start"
++            | "lshift"
++            | "lt"
++            | "matmul"
++            | "memoryview_cast"
++            | "missing"
++            | "mod"
++            | "mod_"
++            | "module_cache_del"
++            | "module_cache_get"
++            | "module_cache_set"
++            | "module_del_global"
++            | "module_del_global_if_present"
++            | "module_get_attr"
++            | "module_get_global"
++            | "module_get_name"
++            | "module_import"
++            | "module_import_from"
++            | "module_import_star"
++            | "module_load_cached"
++            | "module_new"
++            | "module_set_attr"
++            | "modulo"
++            | "msgpack_parse"
++            | "mul"
++            | "ne"
++            | "neg"
++            | "nop"
++            | "not"
++            | "not_in"
++            | "object_new"
++            | "object_new_bound"
++            | "object_set_class"
++            | "operator_index"
++            | "or"
++            | "ord"
++            | "ord_at"
++            | "phi"
++            | "pos"
++            | "pow"
++            | "pow_mod"
++            | "print"
++            | "print_newline"
++            | "property_new"
++            | "raise"
++            | "raise_from"
++            | "range"
++            | "range_new"
++            | "release"
++            | "repr_from_obj"
++            | "reraise"
++            | "ret"
++            | "ret_void"
++            | "reversed"
++            | "round"
++            | "rshift"
++            | "set_add"
++            | "set_add_probe"
++            | "set_attr"
++            | "set_attr_generic_obj"
++            | "set_attr_generic_ptr"
++            | "set_attr_name"
++            | "set_clear"
++            | "set_difference_update"
++            | "set_discard"
++            | "set_intersection_update"
++            | "set_item"
++            | "set_new"
++            | "set_pop"
++            | "set_remove"
++            | "set_symdiff_update"
++            | "set_update"
++            | "shl"
++            | "shr"
++            | "slice"
++            | "slice_new"
++            | "sorted"
++            | "stack_alloc"
++            | "state_block_end"
++            | "state_block_start"
++            | "state_label"
++            | "state_set"
++            | "state_switch"
++            | "state_transition"
++            | "state_yield"
++            | "stateful_locals_register"
++            | "staticmethod_new"
++            | "statistics_mean_slice"
++            | "statistics_stdev_slice"
++            | "store"
++            | "store_attr"
++            | "store_fast"
++            | "store_index"
++            | "store_subscript"
++            | "store_var"
++            | "str"
++            | "str_from_obj"
++            | "string_capitalize"
++            | "string_count"
++            | "string_count_slice"
++            | "string_endswith"
++            | "string_endswith_slice"
++            | "string_eq"
++            | "string_find"
++            | "string_find_slice"
++            | "string_format"
++            | "string_join"
++            | "string_lower"
++            | "string_lstrip"
++            | "string_replace"
++            | "string_rstrip"
++            | "string_split"
++            | "string_split_field"
++            | "string_split_field_end"
++            | "string_split_field_eq"
++            | "string_split_field_is_ascii"
++            | "string_split_field_len"
++            | "string_split_field_len_from_bounds"
++            | "string_split_field_ord_at_bounds"
++            | "string_split_field_start"
++            | "string_split_field_to_int"
++            | "string_split_max"
++            | "string_split_sep_dict_inc"
++            | "string_split_validate"
++            | "string_split_ws_dict_inc"
++            | "string_startswith"
++            | "string_startswith_slice"
++            | "string_strip"
++            | "string_upper"
++            | "sub"
++            | "subscript"
++            | "sum"
++            | "super_new"
++            | "sys_executable"
++            | "task_wait"
++            | "trace_enter_slot"
++            | "trace_exit"
++            | "true_div"
++            | "trunc"
++            | "try_end"
++            | "try_start"
++            | "tuple_count"
++            | "tuple_from_list"
++            | "tuple_index"
++            | "tuple_new"
++            | "type_guard"
++            | "type_of"
++            | "unary_invert"
++            | "unary_neg"
++            | "unary_not"
++            | "unary_pos"
++            | "unbox"
++            | "unbox_to_raw_int"
++            | "unpack_sequence"
++            | "unreachable"
++            | "vec_max"
++            | "vec_min"
++            | "vec_prod"
++            | "vec_sum"
++            | "warn_stderr"
++            | "while_end"
++            | "while_start"
++            | "widen"
++            | "yield"
++            | "yield_from"
++            | "zip"
++    )
++}
++
+ /// Whether a SimpleIR kind is consumed as a structural CFG/SSA marker before kind_to_opcode.
+ /// Generated from [[simpleir_control_kind]] in op_kinds.toml so CFG,
+ /// SSA, pre-SSA lowering, and the op-kind audit share one authority.
+diff --git a/runtime/molt-ir/src/tir/ssa.rs b/runtime/molt-ir/src/tir/ssa.rs
+index f724dde2f..26dffd6fb 100644
+--- a/runtime/molt-ir/src/tir/ssa.rs
++++ b/runtime/molt-ir/src/tir/ssa.rs
+@@ -70,6 +70,7 @@ pub fn convert_to_ssa_with_name_and_params(
+     ops: &[OpIR],
+     params: &[String],
+ ) -> SsaOutput {
++    crate::ir::validate_op_kinds(func_name, ops).unwrap_or_else(|error| panic!("{error}"));
+     let mut ctx = SsaContext::new(func_name, cfg, ops, params);
+     ctx.run();
+     ctx.into_output()
+diff --git a/runtime/molt-ir/src/tir/ssa/op_lowering.rs b/runtime/molt-ir/src/tir/ssa/op_lowering.rs
+index 9e5fab7b9..e7c628784 100644
+--- a/runtime/molt-ir/src/tir/ssa/op_lowering.rs
++++ b/runtime/molt-ir/src/tir/ssa/op_lowering.rs
+@@ -22,7 +22,7 @@ use super::*;
+ impl<'a> SsaContext<'a> {
+     /// Reserved singleton reads and ordinary names have one resolution path
+     /// across semantic argument, var, and terminator reads. Unresolved fields
+-    /// on unknown passthrough operations remain transport metadata instead.
++    /// on registered preserved operations remain transport metadata instead.
+     /// Reserved `none` is never a mutable stack entry or a textual string literal.
+     pub(super) fn resolve_known_or_reserved_operand(
+         &mut self,
+@@ -101,7 +101,7 @@ impl<'a> SsaContext<'a> {
+             && let Some(vid) = if mapped_kind {
+                 self.resolve_known_or_reserved_operand(op_idx, v, var_stacks)
+             } else if is_variable(v) {
+-                // An unknown wire operation carries unresolved `var` verbatim;
++                // A registered preserved operation carries unresolved `var` verbatim;
+                 // only an actual SSA name proves that this field is a read.
+                 self.resolve_known_var(v, var_stacks)
+             } else {
+@@ -318,10 +318,10 @@ impl<'a> SsaContext<'a> {
+             }
+         }
+ 
+-        // Preserve `_original_kind` for unknown Copy fallbacks and for mapped
++        // Preserve `_original_kind` for registered Copy carriers and for mapped
+         // spellings whose non-canonical name is semantically visible to
+         // round-trip/backends. The generated predicate owns the mapped spelling
+-        // set; unknown fallback preservation stays here because SSA is the
++        // set; registered carrier preservation stays here because SSA is the
+         // backstop for kinds with no first-class opcode.
+         if (opcode == OpCode::Copy && !mapped_kind)
+             || simpleir_kind_preserves_original_kind_for_ssa(op.kind.as_str())
+@@ -364,10 +364,8 @@ impl<'a> SsaContext<'a> {
+ /// (`runtime/molt-ir/src/tir/op_kinds.toml`, generated into
+ /// [`crate::tir::op_kinds_generated::kind_to_opcode_table`]; see
+ /// `docs/design/foundation/25_op_kind_registry.md`). A kind with no first-class
+-/// opcode falls back to `OpCode::Copy` (carrying its spelling in
+-/// `_original_kind`), exactly as before — this is the runtime backstop the
+-/// registry's sync test (`tests/test_gen_op_kinds.py`) and the drift audit
+-/// (`tools/audit_op_kinds.py --check`) keep statically total for known kinds.
++/// opcode uses `OpCode::Copy` (carrying its spelling in `_original_kind`).
++/// Admission rejects unregistered spellings before SSA conversion.
+ fn kind_to_opcode(kind: &str) -> OpCode {
+     kind_to_opcode_table(kind).unwrap_or(OpCode::Copy)
+ }
+diff --git a/runtime/molt-passes/src/tir/lower_to_simple/tests/naming_metadata.rs b/runtime/molt-passes/src/tir/lower_to_simple/tests/naming_metadata.rs
+index 3747bdbdf..22876f01d 100644
+--- a/runtime/molt-passes/src/tir/lower_to_simple/tests/naming_metadata.rs
++++ b/runtime/molt-passes/src/tir/lower_to_simple/tests/naming_metadata.rs
+@@ -567,7 +567,7 @@ fn passthrough_var_read_uses_its_resolved_ssa_operand_after_renaming() {
+                 ..OpIR::default()
+             },
+             OpIR {
+-                kind: "transport_probe".into(),
++                kind: "cast".into(),
+                 var: Some("value".into()),
+                 args: Some(vec!["arg".into()]),
+                 ..OpIR::default()
+@@ -592,9 +592,7 @@ fn passthrough_var_read_uses_its_resolved_ssa_operand_after_renaming() {
+         .blocks
+         .values()
+         .flat_map(|block| &block.ops)
+-        .find(|op| {
+-            op.attrs.get("_original_kind") == Some(&AttrValue::Str("transport_probe".into()))
+-        })
++        .find(|op| op.attrs.get("_original_kind") == Some(&AttrValue::Str("cast".into())))
+         .unwrap();
+     assert_eq!(
+         probe.attrs.get("_simple_var_operand"),
+@@ -602,10 +600,7 @@ fn passthrough_var_read_uses_its_resolved_ssa_operand_after_renaming() {
+     );
+     assert_eq!(probe.operands[1], produced);
+     let lowered = lower_to_simple_ir(&tir);
+-    let probe = lowered
+-        .iter()
+-        .find(|op| op.kind == "transport_probe")
+-        .unwrap();
++    let probe = lowered.iter().find(|op| op.kind == "cast").unwrap();
+     assert_eq!(probe.args, Some(vec!["arg".into()]));
+     assert_eq!(probe.var, Some(names.value_name(produced)));
+     assert_ne!(probe.var.as_deref(), Some("value"));
+@@ -624,9 +619,7 @@ fn passthrough_var_read_uses_its_resolved_ssa_operand_after_renaming() {
+         .blocks
+         .values()
+         .flat_map(|block| &block.ops)
+-        .find(|op| {
+-            op.attrs.get("_original_kind") == Some(&AttrValue::Str("transport_probe".into()))
+-        })
++        .find(|op| op.attrs.get("_original_kind") == Some(&AttrValue::Str("cast".into())))
+         .unwrap();
+     assert_eq!(probe.operands.len(), 2);
+     assert_eq!(probe.operands[1], produced);
+@@ -649,7 +642,7 @@ fn passthrough_unresolved_var_preserves_metadata_and_all_positional_arguments()
+                 params: vec!["arg".into()],
+                 ops: vec![
+                     OpIR {
+-                        kind: "transport_probe".into(),
++                        kind: "cast".into(),
+                         var: Some(raw.into()),
+                         args: args.clone(),
+                         source_op_idx: Some(701),
+@@ -670,8 +663,7 @@ fn passthrough_unresolved_var_preserves_metadata_and_all_positional_arguments()
+                     .values()
+                     .flat_map(|block| &block.ops)
+                     .find(|op| {
+-                        op.attrs.get("_original_kind")
+-                            == Some(&AttrValue::Str("transport_probe".into()))
++                        op.attrs.get("_original_kind") == Some(&AttrValue::Str("cast".into()))
+                     })
+                     .unwrap();
+                 assert!(
+@@ -695,10 +687,7 @@ fn passthrough_unresolved_var_preserves_metadata_and_all_positional_arguments()
+                     .map(|&operand| names.value_name(operand))
+                     .collect();
+                 let lowered = lower_to_simple_ir(&tir);
+-                let probe = lowered
+-                    .iter()
+-                    .find(|op| op.kind == "transport_probe")
+-                    .unwrap();
++                let probe = lowered.iter().find(|op| op.kind == "cast").unwrap();
+                 assert_eq!(probe.var.as_deref(), Some(raw), "{case}");
+                 assert_eq!(
+                     probe.args.as_deref().unwrap_or_default(),
+diff --git a/runtime/molt-tir/src/representation_plan/tests/scalar_facts.rs b/runtime/molt-tir/src/representation_plan/tests/scalar_facts.rs
+index 16d0ff462..5ca54ff62 100644
+--- a/runtime/molt-tir/src/representation_plan/tests/scalar_facts.rs
++++ b/runtime/molt-tir/src/representation_plan/tests/scalar_facts.rs
+@@ -1211,7 +1211,7 @@ fn bool_primary_projection_is_tir_value_owned() {
+             op("and", Some("both"), None, &["flag_copy", "add_overflow"]),
+             op("or", Some("either"), None, &["both", "mul_overflow"]),
+             op("copy", Some("either_copy"), None, &["either"]),
+-            op("is_truthy", Some("legacy_truthy"), None, &["flag"]),
++            op("index", Some("opaque_result"), None, &["flag", "lhs"]),
+         ],
+     );
+ 
+@@ -1235,8 +1235,8 @@ fn bool_primary_projection_is_tir_value_owned() {
+         );
+     }
+     assert!(
+-        !primary.bool_.contains("legacy_truthy"),
+-        "legacy SimpleIR truthiness must not mint a raw bool carrier"
++        !primary.bool_.contains("opaque_result"),
++        "an opaque result must not mint a raw bool carrier"
+     );
+     for name in ["sum", "product"] {
+         assert!(
+diff --git a/runtime/molt-tir/src/tir/tests_roundtrip.rs b/runtime/molt-tir/src/tir/tests_roundtrip.rs
+index 7aeea44a1..9c479afee 100644
+--- a/runtime/molt-tir/src/tir/tests_roundtrip.rs
++++ b/runtime/molt-tir/src/tir/tests_roundtrip.rs
+@@ -867,7 +867,7 @@ mod tests {
+     fn roundtrip_passthrough_preserves_var() {
+         let ops = vec![
+             OpIR {
+-                kind: "some_custom_op".to_string(),
++                kind: "cast".to_string(),
+                 var: Some("my_var_name".into()),
+                 out: Some("result".into()),
+                 value: Some(7),
+@@ -876,8 +876,8 @@ mod tests {
+             op_args("ret", &["result"]),
+         ];
+         let result = roundtrip_no_opt(ops);
+-        let custom = result.iter().find(|o| o.kind == "some_custom_op");
+-        assert!(custom.is_some(), "custom op must survive round-trip");
++        let custom = result.iter().find(|o| o.kind == "cast");
++        assert!(custom.is_some(), "cast must survive round-trip");
+         assert!(
+             custom.unwrap().var.is_some(),
+             "var field must be preserved for passthrough ops, got: {:?}",
+@@ -893,7 +893,7 @@ mod tests {
+     fn roundtrip_passthrough_preserves_f_value() {
+         let ops = vec![
+             OpIR {
+-                kind: "some_float_op".to_string(),
++                kind: "cast".to_string(),
+                 out: Some("result".into()),
+                 f_value: Some(PI),
+                 ..OpIR::default()
+@@ -901,8 +901,8 @@ mod tests {
+             op_args("ret", &["result"]),
+         ];
+         let result = roundtrip_no_opt(ops);
+-        let fop = result.iter().find(|o| o.kind == "some_float_op");
+-        assert!(fop.is_some(), "float op must survive round-trip");
++        let fop = result.iter().find(|o| o.kind == "cast");
++        assert!(fop.is_some(), "cast must survive round-trip");
+         assert_eq!(
+             fop.unwrap().f_value,
+             Some(PI),
+@@ -918,7 +918,7 @@ mod tests {
+     fn roundtrip_passthrough_preserves_bytes() {
+         let ops = vec![
+             OpIR {
+-                kind: "some_bytes_op".to_string(),
++                kind: "cast".to_string(),
+                 out: Some("result".into()),
+                 bytes: Some(vec![1, 2, 3]),
+                 ..OpIR::default()
+@@ -926,8 +926,8 @@ mod tests {
+             op_args("ret", &["result"]),
+         ];
+         let result = roundtrip_no_opt(ops);
+-        let bop = result.iter().find(|o| o.kind == "some_bytes_op");
+-        assert!(bop.is_some(), "bytes op must survive round-trip");
++        let bop = result.iter().find(|o| o.kind == "cast");
++        assert!(bop.is_some(), "cast must survive round-trip");
+         assert_eq!(
+             bop.unwrap().bytes.as_deref(),
+             Some(&[1u8, 2, 3][..]),
+@@ -1167,7 +1167,7 @@ mod tests {
+     fn roundtrip_passthrough_preserves_metadata() {
+         let ops = vec![
+             OpIR {
+-                kind: "async_spawn".to_string(),
++                kind: "cast".to_string(),
+                 out: Some("t".into()),
+                 task_kind: Some("coro".into()),
+                 container_type: Some("list".into()),
+@@ -1176,8 +1176,8 @@ mod tests {
+             op_args("ret", &["t"]),
+         ];
+         let result = roundtrip_no_opt(ops);
+-        let asp = result.iter().find(|o| o.kind == "async_spawn");
+-        assert!(asp.is_some(), "async_spawn must survive round-trip");
++        let asp = result.iter().find(|o| o.kind == "cast");
++        assert!(asp.is_some(), "cast must survive round-trip");
+         let a = asp.unwrap();
+         assert_eq!(
+             a.task_kind.as_deref(),
+diff --git a/src/molt/frontend/lowering/op_kinds_generated.py b/src/molt/frontend/lowering/op_kinds_generated.py
+index fbb37f30b..ab52513be 100644
+--- a/src/molt/frontend/lowering/op_kinds_generated.py
++++ b/src/molt/frontend/lowering/op_kinds_generated.py
+@@ -283,6 +283,1135 @@ def frontend_operator_facts(kind: str, *operands: str | None) -> tuple[str, bool
+     key = tuple(ty for ty in operands if ty is not None)
+     return _FRONTEND_OPERATOR_EFFECTS[opcode].get(key, ('writes_heap', False))
+ 
++SIMPLEIR_REGISTERED_KINDS: frozenset[str] = frozenset(
++    {
++        "_m_and",
++        "abs",
++        "add",
++        "aiter",
++        "all",
++        "alloc",
++        "alloc_class",
++        "alloc_class_static",
++        "alloc_class_trusted",
++        "alloc_instance",
++        "alloc_task",
++        "and",
++        "anext",
++        "any",
++        "ascii_from_obj",
++        "async_for_end",
++        "async_for_start",
++        "async_work_poll",
++        "asyncgen_new",
++        "band",
++        "binding_alias",
++        "binop_add",
++        "binop_floor_div",
++        "binop_mod",
++        "binop_mul",
++        "binop_pow",
++        "binop_sub",
++        "bit_and",
++        "bit_not",
++        "bit_or",
++        "bit_xor",
++        "block_on",
++        "bool",
++        "bor",
++        "borrow",
++        "bound_method_new",
++        "box",
++        "box_from_raw_int",
++        "br_if",
++        "branch_false",
++        "branch_true",
++        "bridge_unavailable",
++        "buffer2d_get",
++        "buffer2d_matmul",
++        "buffer2d_new",
++        "buffer2d_set",
++        "build_dict",
++        "build_list",
++        "build_set",
++        "build_slice",
++        "build_tuple",
++        "builtin_abs",
++        "builtin_all",
++        "builtin_any",
++        "builtin_bool",
++        "builtin_float",
++        "builtin_func",
++        "builtin_int",
++        "builtin_len",
++        "builtin_print",
++        "builtin_range",
++        "builtin_reversed",
++        "builtin_sorted",
++        "builtin_str",
++        "builtin_sum",
++        "builtin_type",
++        "bxor",
++        "bytearray_count",
++        "bytearray_count_slice",
++        "bytearray_endswith",
++        "bytearray_endswith_slice",
++        "bytearray_fill_range",
++        "bytearray_find",
++        "bytearray_find_slice",
++        "bytearray_from_obj",
++        "bytearray_from_str",
++        "bytearray_replace",
++        "bytearray_split",
++        "bytearray_split_max",
++        "bytearray_startswith",
++        "bytearray_startswith_slice",
++        "bytes_count",
++        "bytes_count_slice",
++        "bytes_endswith",
++        "bytes_endswith_slice",
++        "bytes_find",
++        "bytes_find_slice",
++        "bytes_from_obj",
++        "bytes_from_str",
++        "bytes_replace",
++        "bytes_split",
++        "bytes_split_max",
++        "bytes_startswith",
++        "bytes_startswith_slice",
++        "call",
++        "call_async",
++        "call_bind",
++        "call_builtin",
++        "call_func",
++        "call_function",
++        "call_guarded",
++        "call_indirect",
++        "call_internal",
++        "call_method",
++        "call_method_ic",
++        "call_super_method_ic",
++        "callargs_expand_kwstar",
++        "callargs_expand_star",
++        "callargs_new",
++        "callargs_push_kw",
++        "callargs_push_pos",
++        "cast",
++        "cast_bool",
++        "cast_float",
++        "cast_int",
++        "cast_str",
++        "cbor_parse",
++        "check_exception",
++        "checked_add",
++        "checked_mul",
++        "chr",
++        "class_apply_set_name",
++        "class_def",
++        "class_layout_field_count",
++        "class_layout_slot_count",
++        "class_layout_version",
++        "class_merge_layout",
++        "class_new",
++        "class_set_base",
++        "class_set_layout_version",
++        "classmethod_new",
++        "closure_load",
++        "closure_store",
++        "cmp_eq",
++        "cmp_ge",
++        "cmp_gt",
++        "cmp_le",
++        "cmp_lt",
++        "cmp_ne",
++        "code_new",
++        "code_slot_set",
++        "code_slots_init",
++        "complex_from_obj",
++        "const",
++        "const_bigint",
++        "const_bool",
++        "const_bytes",
++        "const_ellipsis",
++        "const_float",
++        "const_int",
++        "const_none",
++        "const_not_implemented",
++        "const_str",
++        "contains",
++        "context_closing",
++        "context_depth",
++        "context_enter",
++        "context_exit",
++        "context_null",
++        "context_unwind",
++        "context_unwind_to",
++        "copy",
++        "copy_var",
++        "dataclass_get",
++        "dataclass_new",
++        "dataclass_new_values",
++        "dataclass_set",
++        "dataclass_set_class",
++        "dec_ref",
++        "del_attr",
++        "del_attr_generic_obj",
++        "del_attr_generic_ptr",
++        "del_attr_name",
++        "del_boundary",
++        "del_index",
++        "delete_var",
++        "dict_clear",
++        "dict_copy",
++        "dict_from_obj",
++        "dict_get",
++        "dict_items",
++        "dict_keys",
++        "dict_new",
++        "dict_pop",
++        "dict_popitem",
++        "dict_set",
++        "dict_setdefault",
++        "dict_setdefault_empty_list",
++        "dict_str_int_inc",
++        "dict_update",
++        "dict_update_kwstar",
++        "dict_update_missing",
++        "dict_values",
++        "div",
++        "drop_inserted",
++        "else",
++        "end_if",
++        "enumerate",
++        "env_get",
++        "eq",
++        "except_end",
++        "except_start",
++        "exception_active",
++        "exception_class",
++        "exception_clear",
++        "exception_context_set",
++        "exception_current",
++        "exception_enter_handler",
++        "exception_finally_pending_observer",
++        "exception_kind",
++        "exception_last",
++        "exception_last_pending",
++        "exception_match_builtin",
++        "exception_message",
++        "exception_new",
++        "exception_new_builtin",
++        "exception_new_builtin_empty",
++        "exception_new_builtin_one",
++        "exception_new_from_class",
++        "exception_pending",
++        "exception_pop",
++        "exception_push",
++        "exception_region_drops_inserted",
++        "exception_resolve_captured",
++        "exception_set_last",
++        "exception_set_value",
++        "exception_stack_clear",
++        "exception_stack_depth",
++        "exception_stack_enter",
++        "exception_stack_exit",
++        "exception_stack_set_depth",
++        "exceptiongroup_combine",
++        "exceptiongroup_match",
++        "file_close",
++        "file_flush",
++        "file_open",
++        "file_read",
++        "file_write",
++        "finally_end",
++        "finally_start",
++        "float",
++        "float_from_obj",
++        "floor_div",
++        "floordiv",
++        "for_iter",
++        "for_iter_end",
++        "for_iter_start",
++        "for_range",
++        "format_string",
++        "frame_context_set",
++        "frame_home_cell",
++        "frame_home_clear",
++        "frame_home_load",
++        "frame_home_private_cell",
++        "frame_home_store",
++        "frame_home_take",
++        "frame_locals",
++        "frame_locals_set",
++        "free",
++        "frozenset_add",
++        "frozenset_new",
++        "func_new",
++        "func_new_closure",
++        "function_closure_bits",
++        "function_defaults_version",
++        "ge",
++        "gen_close",
++        "gen_send",
++        "gen_throw",
++        "get_attr",
++        "get_attr_generic_obj",
++        "get_attr_generic_ptr",
++        "get_attr_name",
++        "get_attr_name_default",
++        "get_attr_special_obj",
++        "get_item",
++        "get_iter",
++        "getargv",
++        "getframe",
++        "goto",
++        "gpu_barrier",
++        "gpu_block_dim",
++        "gpu_block_id",
++        "gpu_grid_dim",
++        "gpu_thread_id",
++        "gt",
++        "guard_bool",
++        "guard_dict_shape",
++        "guard_float",
++        "guard_int",
++        "guard_layout",
++        "guard_none",
++        "guard_str",
++        "guard_tag",
++        "guard_type",
++        "guarded_field_get",
++        "guarded_field_set",
++        "guarded_load",
++        "has_attr_name",
++        "id",
++        "identity_alias",
++        "if",
++        "if_not",
++        "import",
++        "import_from",
++        "import_name",
++        "in",
++        "inc_ref",
++        "index",
++        "index_set",
++        "init_instance",
++        "inplace_add",
++        "inplace_bit_and",
++        "inplace_bit_or",
++        "inplace_bit_xor",
++        "inplace_div",
++        "inplace_floordiv",
++        "inplace_lshift",
++        "inplace_matmul",
++        "inplace_mod",
++        "inplace_mul",
++        "inplace_pow",
++        "inplace_rshift",
++        "inplace_sub",
++        "instance_get_field",
++        "instance_has_field",
++        "instance_set_field",
++        "int",
++        "int_from_obj",
++        "int_from_str_of_obj",
++        "invert",
++        "invoke_ffi",
++        "is",
++        "is_bound_method",
++        "is_callable",
++        "is_generator",
++        "is_native_awaitable",
++        "is_not",
++        "is_pending",
++        "isinstance",
++        "issubclass",
++        "iter",
++        "iter_next",
++        "iter_next_unboxed",
++        "json_parse",
++        "jump",
++        "label",
++        "le",
++        "len",
++        "line",
++        "list_append",
++        "list_clear",
++        "list_copy",
++        "list_count",
++        "list_extend",
++        "list_fill_new",
++        "list_from_range",
++        "list_index",
++        "list_index_range",
++        "list_insert",
++        "list_int_new",
++        "list_new",
++        "list_pop",
++        "list_remove",
++        "list_reverse",
++        "load",
++        "load_attr",
++        "load_const",
++        "load_var",
++        "loop_break",
++        "loop_break_if_exception",
++        "loop_break_if_false",
++        "loop_break_if_true",
++        "loop_continue",
++        "loop_end",
++        "loop_index_end",
++        "loop_index_next",
++        "loop_index_start",
++        "loop_start",
++        "lshift",
++        "lt",
++        "matmul",
++        "memoryview_cast",
++        "missing",
++        "mod",
++        "mod_",
++        "module_cache_del",
++        "module_cache_get",
++        "module_cache_set",
++        "module_del_global",
++        "module_del_global_if_present",
++        "module_get_attr",
++        "module_get_global",
++        "module_get_name",
++        "module_import",
++        "module_import_from",
++        "module_import_star",
++        "module_load_cached",
++        "module_new",
++        "module_set_attr",
++        "modulo",
++        "msgpack_parse",
++        "mul",
++        "ne",
++        "neg",
++        "nop",
++        "not",
++        "not_in",
++        "object_new",
++        "object_new_bound",
++        "object_set_class",
++        "operator_index",
++        "or",
++        "ord",
++        "ord_at",
++        "phi",
++        "pos",
++        "pow",
++        "pow_mod",
++        "print",
++        "print_newline",
++        "property_new",
++        "raise",
++        "raise_from",
++        "range",
++        "range_new",
++        "release",
++        "repr_from_obj",
++        "reraise",
++        "ret",
++        "ret_void",
++        "reversed",
++        "round",
++        "rshift",
++        "set_add",
++        "set_add_probe",
++        "set_attr",
++        "set_attr_generic_obj",
++        "set_attr_generic_ptr",
++        "set_attr_name",
++        "set_clear",
++        "set_difference_update",
++        "set_discard",
++        "set_intersection_update",
++        "set_item",
++        "set_new",
++        "set_pop",
++        "set_remove",
++        "set_symdiff_update",
++        "set_update",
++        "shl",
++        "shr",
++        "slice",
++        "slice_new",
++        "sorted",
++        "stack_alloc",
++        "state_block_end",
++        "state_block_start",
++        "state_label",
++        "state_set",
++        "state_switch",
++        "state_transition",
++        "state_yield",
++        "stateful_locals_register",
++        "staticmethod_new",
++        "statistics_mean_slice",
++        "statistics_stdev_slice",
++        "store",
++        "store_attr",
++        "store_fast",
++        "store_index",
++        "store_subscript",
++        "store_var",
++        "str",
++        "str_from_obj",
++        "string_capitalize",
++        "string_count",
++        "string_count_slice",
++        "string_endswith",
++        "string_endswith_slice",
++        "string_eq",
++        "string_find",
++        "string_find_slice",
++        "string_format",
++        "string_join",
++        "string_lower",
++        "string_lstrip",
++        "string_replace",
++        "string_rstrip",
++        "string_split",
++        "string_split_field",
++        "string_split_field_end",
++        "string_split_field_eq",
++        "string_split_field_is_ascii",
++        "string_split_field_len",
++        "string_split_field_len_from_bounds",
++        "string_split_field_ord_at_bounds",
++        "string_split_field_start",
++        "string_split_field_to_int",
++        "string_split_max",
++        "string_split_sep_dict_inc",
++        "string_split_validate",
++        "string_split_ws_dict_inc",
++        "string_startswith",
++        "string_startswith_slice",
++        "string_strip",
++        "string_upper",
++        "sub",
++        "subscript",
++        "sum",
++        "super_new",
++        "sys_executable",
++        "task_wait",
++        "trace_enter_slot",
++        "trace_exit",
++        "true_div",
++        "trunc",
++        "try_end",
++        "try_start",
++        "tuple_count",
++        "tuple_from_list",
++        "tuple_index",
++        "tuple_new",
++        "type_guard",
++        "type_of",
++        "unary_invert",
++        "unary_neg",
++        "unary_not",
++        "unary_pos",
++        "unbox",
++        "unbox_to_raw_int",
++        "unpack_sequence",
++        "unreachable",
++        "vec_max",
++        "vec_min",
++        "vec_prod",
++        "vec_sum",
++        "warn_stderr",
++        "while_end",
++        "while_start",
++        "widen",
++        "yield",
++        "yield_from",
++        "zip",
++    }
++)
++
++FRONTEND_REGISTERED_KINDS: frozenset[str] = frozenset(
++    {
++        "ABS",
++        "ADD",
++        "AITER",
++        "ALL",
++        "ALLOC",
++        "ALLOC_CLASS",
++        "ALLOC_CLASS_STATIC",
++        "ALLOC_CLASS_TRUSTED",
++        "ALLOC_INSTANCE",
++        "ALLOC_TASK",
++        "AND",
++        "ANEXT",
++        "ANY",
++        "ASCII_FROM_OBJ",
++        "ASYNCGEN_NEW",
++        "ASYNC_BLOCK_ON",
++        "ASYNC_FOR_END",
++        "ASYNC_FOR_START",
++        "ASYNC_WORK_POLL",
++        "BAND",
++        "BINDING_ALIAS",
++        "BINOP_ADD",
++        "BINOP_FLOOR_DIV",
++        "BINOP_MOD",
++        "BINOP_MUL",
++        "BINOP_POW",
++        "BINOP_SUB",
++        "BIT_AND",
++        "BIT_NOT",
++        "BIT_OR",
++        "BIT_XOR",
++        "BLOCK_ON",
++        "BOOL",
++        "BOR",
++        "BORROW",
++        "BOUND_METHOD_NEW",
++        "BOX",
++        "BOX_FROM_RAW_INT",
++        "BRANCH_FALSE",
++        "BRANCH_TRUE",
++        "BRIDGE_UNAVAILABLE",
++        "BR_IF",
++        "BUFFER2D_GET",
++        "BUFFER2D_MATMUL",
++        "BUFFER2D_NEW",
++        "BUFFER2D_SET",
++        "BUILD_DICT",
++        "BUILD_LIST",
++        "BUILD_SET",
++        "BUILD_SLICE",
++        "BUILD_TUPLE",
++        "BUILTIN_ABS",
++        "BUILTIN_ALL",
++        "BUILTIN_ANY",
++        "BUILTIN_BOOL",
++        "BUILTIN_FLOAT",
++        "BUILTIN_FUNC",
++        "BUILTIN_INT",
++        "BUILTIN_LEN",
++        "BUILTIN_PRINT",
++        "BUILTIN_RANGE",
++        "BUILTIN_REVERSED",
++        "BUILTIN_SORTED",
++        "BUILTIN_STR",
++        "BUILTIN_SUM",
++        "BUILTIN_TYPE",
++        "BXOR",
++        "BYTEARRAY_COUNT",
++        "BYTEARRAY_COUNT_SLICE",
++        "BYTEARRAY_ENDSWITH",
++        "BYTEARRAY_ENDSWITH_SLICE",
++        "BYTEARRAY_FILL_RANGE",
++        "BYTEARRAY_FIND",
++        "BYTEARRAY_FIND_SLICE",
++        "BYTEARRAY_FROM_OBJ",
++        "BYTEARRAY_FROM_STR",
++        "BYTEARRAY_REPLACE",
++        "BYTEARRAY_SPLIT",
++        "BYTEARRAY_SPLIT_MAX",
++        "BYTEARRAY_STARTSWITH",
++        "BYTEARRAY_STARTSWITH_SLICE",
++        "BYTES_COUNT",
++        "BYTES_COUNT_SLICE",
++        "BYTES_ENDSWITH",
++        "BYTES_ENDSWITH_SLICE",
++        "BYTES_FIND",
++        "BYTES_FIND_SLICE",
++        "BYTES_FROM_OBJ",
++        "BYTES_FROM_STR",
++        "BYTES_REPLACE",
++        "BYTES_SPLIT",
++        "BYTES_SPLIT_MAX",
++        "BYTES_STARTSWITH",
++        "BYTES_STARTSWITH_SLICE",
++        "CALL",
++        "CALLARGS_EXPAND_KWSTAR",
++        "CALLARGS_EXPAND_STAR",
++        "CALLARGS_NEW",
++        "CALLARGS_PUSH_KW",
++        "CALLARGS_PUSH_POS",
++        "CALL_ASYNC",
++        "CALL_BIND",
++        "CALL_BUILTIN",
++        "CALL_FUNC",
++        "CALL_FUNCTION",
++        "CALL_GUARDED",
++        "CALL_INDIRECT",
++        "CALL_INTERNAL",
++        "CALL_METHOD",
++        "CALL_METHOD_IC",
++        "CALL_SUPER_METHOD_IC",
++        "CAST",
++        "CAST_BOOL",
++        "CAST_FLOAT",
++        "CAST_INT",
++        "CAST_STR",
++        "CBOR_PARSE",
++        "CHECKED_ADD",
++        "CHECKED_MUL",
++        "CHECK_EXCEPTION",
++        "CHR",
++        "CLASSMETHOD_NEW",
++        "CLASS_APPLY_SET_NAME",
++        "CLASS_DEF",
++        "CLASS_LAYOUT_FIELD_COUNT",
++        "CLASS_LAYOUT_SLOT_COUNT",
++        "CLASS_LAYOUT_VERSION",
++        "CLASS_MERGE_LAYOUT",
++        "CLASS_NEW",
++        "CLASS_SET_BASE",
++        "CLASS_SET_LAYOUT_VERSION",
++        "CLASS_VERSION",
++        "CLOSURE_LOAD",
++        "CLOSURE_STORE",
++        "CMP_EQ",
++        "CMP_GE",
++        "CMP_GT",
++        "CMP_LE",
++        "CMP_LT",
++        "CMP_NE",
++        "CODE_NEW",
++        "CODE_SLOTS_INIT",
++        "CODE_SLOT_SET",
++        "COMPLEX_FROM_OBJ",
++        "CONST",
++        "CONST_BIGINT",
++        "CONST_BOOL",
++        "CONST_BYTES",
++        "CONST_ELLIPSIS",
++        "CONST_FLOAT",
++        "CONST_INT",
++        "CONST_NONE",
++        "CONST_NOT_IMPLEMENTED",
++        "CONST_STR",
++        "CONTAINS",
++        "CONTEXT_CLOSING",
++        "CONTEXT_DEPTH",
++        "CONTEXT_ENTER",
++        "CONTEXT_EXIT",
++        "CONTEXT_NULL",
++        "CONTEXT_UNWIND",
++        "CONTEXT_UNWIND_TO",
++        "COPY",
++        "COPY_VAR",
++        "DATACLASS_GET",
++        "DATACLASS_NEW",
++        "DATACLASS_NEW_VALUES",
++        "DATACLASS_SET",
++        "DATACLASS_SET_CLASS",
++        "DEC_REF",
++        "DELATTR",
++        "DELATTR_GENERIC_OBJ",
++        "DELATTR_GENERIC_PTR",
++        "DELATTR_NAME",
++        "DELETE_VAR",
++        "DEL_ATTR",
++        "DEL_ATTR_GENERIC_OBJ",
++        "DEL_ATTR_GENERIC_PTR",
++        "DEL_ATTR_NAME",
++        "DEL_BOUNDARY",
++        "DEL_INDEX",
++        "DICT_CLEAR",
++        "DICT_COPY",
++        "DICT_FROM_OBJ",
++        "DICT_GET",
++        "DICT_ITEMS",
++        "DICT_KEYS",
++        "DICT_NEW",
++        "DICT_POP",
++        "DICT_POPITEM",
++        "DICT_SET",
++        "DICT_SETDEFAULT",
++        "DICT_SETDEFAULT_EMPTY_LIST",
++        "DICT_STR_INT_INC",
++        "DICT_UPDATE",
++        "DICT_UPDATE_KWSTAR",
++        "DICT_UPDATE_MISSING",
++        "DICT_VALUES",
++        "DIV",
++        "DROP_INSERTED",
++        "ELSE",
++        "END_IF",
++        "ENUMERATE",
++        "ENV_GET",
++        "EQ",
++        "EXCEPTIONGROUP_COMBINE",
++        "EXCEPTIONGROUP_MATCH",
++        "EXCEPTION_ACTIVE",
++        "EXCEPTION_CLASS",
++        "EXCEPTION_CLEAR",
++        "EXCEPTION_CONTEXT_SET",
++        "EXCEPTION_CURRENT",
++        "EXCEPTION_ENTER_HANDLER",
++        "EXCEPTION_FINALLY_PENDING_OBSERVER",
++        "EXCEPTION_KIND",
++        "EXCEPTION_LAST",
++        "EXCEPTION_LAST_PENDING",
++        "EXCEPTION_MATCH_BUILTIN",
++        "EXCEPTION_MESSAGE",
++        "EXCEPTION_NEW",
++        "EXCEPTION_NEW_BUILTIN",
++        "EXCEPTION_NEW_BUILTIN_EMPTY",
++        "EXCEPTION_NEW_BUILTIN_ONE",
++        "EXCEPTION_NEW_FROM_CLASS",
++        "EXCEPTION_PENDING",
++        "EXCEPTION_POP",
++        "EXCEPTION_PUSH",
++        "EXCEPTION_REGION_DROPS_INSERTED",
++        "EXCEPTION_RESOLVE_CAPTURED",
++        "EXCEPTION_SET_LAST",
++        "EXCEPTION_SET_VALUE",
++        "EXCEPTION_STACK_CLEAR",
++        "EXCEPTION_STACK_DEPTH",
++        "EXCEPTION_STACK_ENTER",
++        "EXCEPTION_STACK_EXIT",
++        "EXCEPTION_STACK_SET_DEPTH",
++        "EXCEPT_END",
++        "EXCEPT_START",
++        "FILE_CLOSE",
++        "FILE_FLUSH",
++        "FILE_OPEN",
++        "FILE_READ",
++        "FILE_WRITE",
++        "FINALLY_END",
++        "FINALLY_START",
++        "FLOAT",
++        "FLOAT_FROM_OBJ",
++        "FLOORDIV",
++        "FLOOR_DIV",
++        "FORMAT_STRING",
++        "FOR_ITER",
++        "FOR_ITER_END",
++        "FOR_ITER_START",
++        "FOR_RANGE",
++        "FRAME_CONTEXT_SET",
++        "FRAME_HOME_CELL",
++        "FRAME_HOME_CLEAR",
++        "FRAME_HOME_LOAD",
++        "FRAME_HOME_PRIVATE_CELL",
++        "FRAME_HOME_STORE",
++        "FRAME_HOME_TAKE",
++        "FRAME_LOCALS",
++        "FRAME_LOCALS_SET",
++        "FREE",
++        "FROZENSET_ADD",
++        "FROZENSET_NEW",
++        "FUNCTION_CLOSURE_BITS",
++        "FUNCTION_DEFAULTS_VERSION",
++        "FUNC_NEW",
++        "FUNC_NEW_CLOSURE",
++        "GE",
++        "GEN_CLOSE",
++        "GEN_SEND",
++        "GEN_THROW",
++        "GETARGV",
++        "GETATTR",
++        "GETATTR_GENERIC_OBJ",
++        "GETATTR_GENERIC_PTR",
++        "GETATTR_NAME",
++        "GETATTR_NAME_DEFAULT",
++        "GETATTR_SPECIAL_OBJ",
++        "GETFRAME",
++        "GET_ATTR",
++        "GET_ATTR_GENERIC_OBJ",
++        "GET_ATTR_GENERIC_PTR",
++        "GET_ATTR_NAME",
++        "GET_ATTR_NAME_DEFAULT",
++        "GET_ATTR_SPECIAL_OBJ",
++        "GET_ITEM",
++        "GET_ITER",
++        "GOTO",
++        "GPU_BARRIER",
++        "GPU_BLOCK_DIM",
++        "GPU_BLOCK_ID",
++        "GPU_GRID_DIM",
++        "GPU_THREAD_ID",
++        "GT",
++        "GUARDED_FIELD_GET",
++        "GUARDED_FIELD_SET",
++        "GUARDED_GETATTR",
++        "GUARDED_LOAD",
++        "GUARDED_SETATTR",
++        "GUARD_BOOL",
++        "GUARD_DICT_SHAPE",
++        "GUARD_FLOAT",
++        "GUARD_INT",
++        "GUARD_LAYOUT",
++        "GUARD_NONE",
++        "GUARD_STR",
++        "GUARD_TAG",
++        "GUARD_TYPE",
++        "HASATTR_NAME",
++        "HAS_ATTR_NAME",
++        "ID",
++        "IDENTITY_ALIAS",
++        "IF",
++        "IF_NOT",
++        "IMPORT",
++        "IMPORT_FROM",
++        "IMPORT_NAME",
++        "IN",
++        "INC_REF",
++        "INDEX",
++        "INDEX_SET",
++        "INIT_INSTANCE",
++        "INPLACE_ADD",
++        "INPLACE_BIT_AND",
++        "INPLACE_BIT_OR",
++        "INPLACE_BIT_XOR",
++        "INPLACE_DIV",
++        "INPLACE_FLOORDIV",
++        "INPLACE_LSHIFT",
++        "INPLACE_MATMUL",
++        "INPLACE_MOD",
++        "INPLACE_MUL",
++        "INPLACE_POW",
++        "INPLACE_RSHIFT",
++        "INPLACE_SUB",
++        "INSTANCE_GET_FIELD",
++        "INSTANCE_HAS_FIELD",
++        "INSTANCE_SET_FIELD",
++        "INT",
++        "INT_FROM_OBJ",
++        "INT_FROM_STR_OF_OBJ",
++        "INVERT",
++        "INVOKE_FFI",
++        "IS",
++        "ISINSTANCE",
++        "ISSUBCLASS",
++        "IS_BOUND_METHOD",
++        "IS_CALLABLE",
++        "IS_GENERATOR",
++        "IS_NATIVE_AWAITABLE",
++        "IS_NOT",
++        "IS_PENDING",
++        "ITER",
++        "ITER_NEW",
++        "ITER_NEXT",
++        "ITER_NEXT_UNBOXED",
++        "JSON_PARSE",
++        "JUMP",
++        "LABEL",
++        "LE",
++        "LEN",
++        "LINE",
++        "LIST_APPEND",
++        "LIST_CLEAR",
++        "LIST_COPY",
++        "LIST_COUNT",
++        "LIST_EXTEND",
++        "LIST_FILL_NEW",
++        "LIST_FROM_RANGE",
++        "LIST_INDEX",
++        "LIST_INDEX_RANGE",
++        "LIST_INSERT",
++        "LIST_INT_NEW",
++        "LIST_NEW",
++        "LIST_POP",
++        "LIST_REMOVE",
++        "LIST_REVERSE",
++        "LOAD",
++        "LOAD_ATTR",
++        "LOAD_CLOSURE",
++        "LOAD_CONST",
++        "LOAD_VAR",
++        "LOOP_BREAK",
++        "LOOP_BREAK_IF_EXCEPTION",
++        "LOOP_BREAK_IF_FALSE",
++        "LOOP_BREAK_IF_TRUE",
++        "LOOP_CONTINUE",
++        "LOOP_END",
++        "LOOP_INDEX_END",
++        "LOOP_INDEX_NEXT",
++        "LOOP_INDEX_START",
++        "LOOP_START",
++        "LSHIFT",
++        "LT",
++        "MATMUL",
++        "MEMORYVIEW_CAST",
++        "MISSING",
++        "MOD",
++        "MODULE_CACHE_DEL",
++        "MODULE_CACHE_GET",
++        "MODULE_CACHE_SET",
++        "MODULE_DEL_GLOBAL",
++        "MODULE_DEL_GLOBAL_IF_PRESENT",
++        "MODULE_GET_ATTR",
++        "MODULE_GET_GLOBAL",
++        "MODULE_GET_NAME",
++        "MODULE_IMPORT",
++        "MODULE_IMPORT_FROM",
++        "MODULE_IMPORT_STAR",
++        "MODULE_LOAD_CACHED",
++        "MODULE_NEW",
++        "MODULE_SET_ATTR",
++        "MODULO",
++        "MOD_",
++        "MSGPACK_PARSE",
++        "MUL",
++        "NE",
++        "NEG",
++        "NOP",
++        "NOT",
++        "NOT_IN",
++        "OBJECT_NEW",
++        "OBJECT_NEW_BOUND",
++        "OBJECT_SET_CLASS",
++        "OPERATOR_INDEX",
++        "OR",
++        "ORD",
++        "ORD_AT",
++        "PHI",
++        "POS",
++        "POW",
++        "POW_MOD",
++        "PRINT",
++        "PRINT_NEWLINE",
++        "PROPERTY_NEW",
++        "RAISE",
++        "RAISE_CAUSE",
++        "RAISE_FROM",
++        "RANGE",
++        "RANGE_NEW",
++        "RELEASE",
++        "REPR_FROM_OBJ",
++        "RERAISE",
++        "RET",
++        "RET_VOID",
++        "REVERSED",
++        "ROUND",
++        "RSHIFT",
++        "SETATTR",
++        "SETATTR_GENERIC_OBJ",
++        "SETATTR_GENERIC_PTR",
++        "SETATTR_NAME",
++        "SET_ADD",
++        "SET_ADD_PROBE",
++        "SET_ATTR",
++        "SET_ATTR_GENERIC_OBJ",
++        "SET_ATTR_GENERIC_PTR",
++        "SET_ATTR_NAME",
++        "SET_CLEAR",
++        "SET_DIFFERENCE_UPDATE",
++        "SET_DISCARD",
++        "SET_INDEX",
++        "SET_INTERSECTION_UPDATE",
++        "SET_ITEM",
++        "SET_NEW",
++        "SET_POP",
++        "SET_REMOVE",
++        "SET_SYMDIFF_UPDATE",
++        "SET_UPDATE",
++        "SHL",
++        "SHR",
++        "SLICE",
++        "SLICE_NEW",
++        "SORTED",
++        "STACK_ALLOC",
++        "STATEFUL_LOCALS_REGISTER",
++        "STATE_BLOCK_END",
++        "STATE_BLOCK_START",
++        "STATE_LABEL",
++        "STATE_SET",
++        "STATE_SWITCH",
++        "STATE_TRANSITION",
++        "STATE_YIELD",
++        "STATICMETHOD_NEW",
++        "STATISTICS_MEAN_SLICE",
++        "STATISTICS_STDEV_SLICE",
++        "STORE",
++        "STORE_ATTR",
++        "STORE_CLOSURE",
++        "STORE_FAST",
++        "STORE_INDEX",
++        "STORE_SUBSCRIPT",
++        "STORE_VAR",
++        "STR",
++        "STRING_CAPITALIZE",
++        "STRING_COUNT",
++        "STRING_COUNT_SLICE",
++        "STRING_ENDSWITH",
++        "STRING_ENDSWITH_SLICE",
++        "STRING_EQ",
++        "STRING_FIND",
++        "STRING_FIND_SLICE",
++        "STRING_FORMAT",
++        "STRING_JOIN",
++        "STRING_LOWER",
++        "STRING_LSTRIP",
++        "STRING_REPLACE",
++        "STRING_RSTRIP",
++        "STRING_SPLIT",
++        "STRING_SPLIT_FIELD",
++        "STRING_SPLIT_FIELD_END",
++        "STRING_SPLIT_FIELD_EQ",
++        "STRING_SPLIT_FIELD_IS_ASCII",
++        "STRING_SPLIT_FIELD_LEN",
++        "STRING_SPLIT_FIELD_LEN_FROM_BOUNDS",
++        "STRING_SPLIT_FIELD_ORD_AT_BOUNDS",
++        "STRING_SPLIT_FIELD_START",
++        "STRING_SPLIT_FIELD_TO_INT",
++        "STRING_SPLIT_MAX",
++        "STRING_SPLIT_SEP_DICT_INC",
++        "STRING_SPLIT_VALIDATE",
++        "STRING_SPLIT_WS_DICT_INC",
++        "STRING_STARTSWITH",
++        "STRING_STARTSWITH_SLICE",
++        "STRING_STRIP",
++        "STRING_UPPER",
++        "STR_FROM_OBJ",
++        "SUB",
++        "SUBSCRIPT",
++        "SUM",
++        "SUPER_NEW",
++        "SYS_EXECUTABLE",
++        "TASK_WAIT",
++        "TRACE_ENTER_SLOT",
++        "TRACE_EXIT",
++        "TRUE_DIV",
++        "TRUNC",
++        "TRY_END",
++        "TRY_START",
++        "TUPLE_COUNT",
++        "TUPLE_FROM_LIST",
++        "TUPLE_INDEX",
++        "TUPLE_NEW",
++        "TYPE_GUARD",
++        "TYPE_OF",
++        "UNARY_INVERT",
++        "UNARY_NEG",
++        "UNARY_NOT",
++        "UNARY_POS",
++        "UNBOX",
++        "UNBOX_TO_RAW_INT",
++        "UNPACK_SEQUENCE",
++        "UNREACHABLE",
++        "VEC_MAX",
++        "VEC_MIN",
++        "VEC_PROD",
++        "VEC_SUM",
++        "WARN_STDERR",
++        "WHILE_END",
++        "WHILE_START",
++        "WIDEN",
++        "YIELD",
++        "YIELD_FROM",
++        "ZIP",
++        "_M_AND",
++        "gpu_barrier",
++        "gpu_block_dim",
++        "gpu_block_id",
++        "gpu_grid_dim",
++        "gpu_thread_id",
++        "ret",
++        "ret_void",
++    }
++)
++
+ SIMPLEIR_STRUCTURAL_KINDS: frozenset[str] = frozenset(
+     {
+         "br_if",
+@@ -2868,14 +3997,21 @@ BINARY_IMAGE_LOCAL_ONLY_OPERAND_KINDS: frozenset[str] = frozenset(
+     }
+ )
+ 
+-def validate_serialized_kind(kind: str) -> None:
+-    """Reject frontend semantic tokens at the wire boundary.
++def validate_frontend_kind(kind: str, function_name: str) -> None:
++    if kind not in FRONTEND_REGISTERED_KINDS:
++        raise ValueError(f"function {function_name!r}: unregistered frontend op kind {kind!r}")
++
++
++def validate_serialized_kind(kind: str, function_name: str = "<direct>") -> None:
++    """Reject unregistered kinds and frontend semantic tokens.
+ 
+     Preserved wire operations retain their spelling and target-specific
+     admission. This check never collapses local binding aliases or invents
+-    a target support claim for an unclassified wire operation."""
++    a target support claim for a registered wire operation."""
+     if kind in FRONTEND_EFFECT_CLASS:
+-        raise ValueError(f"frontend operation {kind!r} escaped serialization")
++        raise ValueError(f"function {function_name!r}: frontend operation {kind!r} escaped serialization")
++    if kind not in SIMPLEIR_REGISTERED_KINDS:
++        raise ValueError(f"function {function_name!r}: unregistered SimpleIR op kind {kind!r}")
+ 
+ 
+ def canonical_kind(kind: str) -> str:
+diff --git a/src/molt/frontend/lowering/serialization.py b/src/molt/frontend/lowering/serialization.py
+index 4c7b3a6be..cc4949282 100644
+--- a/src/molt/frontend/lowering/serialization.py
++++ b/src/molt/frontend/lowering/serialization.py
+@@ -22,7 +22,10 @@ from molt.frontend.lowering.serialization_collection_ops import (
+     SerializationCollectionOpsMixin,
+ )
+ from molt.frontend.lowering.serialization_context import SerializationContext
+-from molt.frontend.lowering.op_kinds_generated import validate_serialized_kind
++from molt.frontend.lowering.op_kinds_generated import (
++    validate_frontend_kind,
++    validate_serialized_kind,
++)
+ from molt.frontend.lowering.serialization_exception_ops import (
+     SerializationExceptionOpsMixin,
+ )
+@@ -498,6 +501,9 @@ class SerializationMixin(
+             self._active_midend_function_name = function_name
+         else:
+             self._active_midend_function_name = "<direct>"
++        diagnostic_function = function_name or "<direct>"
++        for op in ops:
++            validate_frontend_kind(op.kind, diagnostic_function)
+         if run_midend:
+             ops = self._run_ir_midend_passes(ops)
+         json_ops: list[dict[str, Any]] = []
+@@ -508,6 +514,7 @@ class SerializationMixin(
+         # expression-level col_offset after the main serialization loop.
+         _col_inject: list[tuple[int, MoltOp]] = []
+         for op in ops:
++            validate_frontend_kind(op.kind, diagnostic_function)
+             serialized_start = len(json_ops)
+             _col_inject.append((serialized_start, op))
+             ctx = SerializationContext(
+@@ -525,8 +532,10 @@ class SerializationMixin(
+                 pass
+             elif self._serialize_collection_op(op, ctx):
+                 pass
+-            else:
+-                self._serialize_loop_string_async_op(op, ctx)
++            elif not self._serialize_loop_string_async_op(op, ctx):
++                raise ValueError(
++                    f"function {diagnostic_function!r}: no serializer for registered op kind {op.kind!r}"
++                )
+             if op.metadata and "source_module_publication_boundary" in op.metadata:
+                 if (
+                     len(json_ops) != serialized_start + 1
+@@ -578,7 +587,7 @@ class SerializationMixin(
+         json_ops = self._scalarize_string_split_fields_json(json_ops)
+         json_ops = self._fuse_string_split_field_consumers_json(json_ops)
+         for entry in json_ops:
+-            validate_serialized_kind(entry["kind"])
++            validate_serialized_kind(entry["kind"], diagnostic_function)
+         return json_ops
+ 
+     def _finalize_code_ids(self) -> None:
+diff --git a/src/molt/process_spawn.py b/src/molt/process_spawn.py
+index 03deca3d9..4d57c4a4a 100644
+--- a/src/molt/process_spawn.py
++++ b/src/molt/process_spawn.py
+@@ -26,6 +26,8 @@ class ProcessSpawnKwargs(ProcessGroupKwargs, total=False):
+     cwd: str | os.PathLike[str] | None
+     env: Mapping[str, str] | None
+     text: bool
++    encoding: str
++    errors: str
+     stdin: int | IO[str] | IO[bytes] | None
+     stdout: int | IO[str] | IO[bytes] | None
+     stderr: int | IO[str] | IO[bytes] | None
+diff --git a/tests/test_frontend_op_kind_registry.py b/tests/test_frontend_op_kind_registry.py
+new file mode 100644
+index 000000000..ddf19e7e6
+--- /dev/null
++++ b/tests/test_frontend_op_kind_registry.py
+@@ -0,0 +1,176 @@
++from __future__ import annotations
++
++import ast
++from pathlib import Path
++
++import pytest
++
++from molt.frontend import MoltOp, SimpleTIRGenerator
++from molt.frontend._types import MoltValue
++from molt.frontend.lowering.op_kinds_generated import (
++    FRONTEND_REGISTERED_KINDS,
++    SIMPLEIR_REGISTERED_KINDS,
++)
++from tools.audit_op_kinds import extract_frontend_kinds
++from tools.op_kinds.errors import OpKindTableError
++from tools.op_kinds.registration import validate_registration
++
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++def _literal_molt_op_kinds(source: str) -> list[tuple[str, int]]:
++    kinds: list[tuple[str, int]] = []
++    for node in ast.walk(ast.parse(source)):
++        if not isinstance(node, ast.Call):
++            continue
++        if not (
++            isinstance(node.func, ast.Name)
++            and node.func.id == "MoltOp"
++            or isinstance(node.func, ast.Attribute)
++            and node.func.attr == "MoltOp"
++        ):
++            continue
++        arguments = [
++            keyword.value for keyword in node.keywords if keyword.arg == "kind"
++        ]
++        if node.args:
++            arguments.append(node.args[0])
++        for argument in arguments:
++            if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
++                kinds.append((argument.value, node.lineno))
++    return kinds
++
++
++def test_every_frontend_literal_molt_op_kind_is_registered() -> None:
++    unregistered: list[str] = []
++    discovered: set[str] = set()
++    for path in sorted((ROOT / "src/molt/frontend").rglob("*.py")):
++        for kind, line in _literal_molt_op_kinds(path.read_text(encoding="utf-8")):
++            discovered.add(kind)
++            if kind not in FRONTEND_REGISTERED_KINDS:
++                unregistered.append(f"{path.relative_to(ROOT)}:{line}: {kind}")
++    assert discovered, "frontend scan must discover MoltOp emission sites"
++    assert not unregistered, "unregistered frontend op kinds:\n" + "\n".join(
++        unregistered
++    )
++
++
++def test_literal_scan_detects_unknown_multiline_and_qualified_constructors() -> None:
++    source = """
++MoltOp(kind="CONST_MISSING", args=[])
++frontend.MoltOp(
++    kind="NEW_UNREGISTERED_OP",
++    args=[],
++)
++MoltOp("POSITIONAL_UNREGISTERED_OP", [])
++MoltOp(kind=dynamic_kind, args=[])
++OtherOp(kind="NOT_A_MOLT_OP")
++"""
++    found = {kind for kind, _ in _literal_molt_op_kinds(source)}
++    assert found == {
++        "CONST_MISSING",
++        "NEW_UNREGISTERED_OP",
++        "POSITIONAL_UNREGISTERED_OP",
++    }
++    assert found.isdisjoint(FRONTEND_REGISTERED_KINDS)
++
++
++def test_every_resolved_serialized_kind_is_registered() -> None:
++    emitted = extract_frontend_kinds(ROOT)
++    assert not emitted.unresolved, emitted.unresolved
++    assert emitted.all
++    assert not (emitted.all - SIMPLEIR_REGISTERED_KINDS)
++
++
++@pytest.mark.parametrize("run_midend", [False, True])
++@pytest.mark.parametrize("kind", ["CONST_MISSING", "NEW_UNREGISTERED_OP"])
++@pytest.mark.parametrize("has_result", [False, True])
++def test_serialization_rejects_unknown_kinds_before_optimization(
++    run_midend: bool, kind: str, has_result: bool
++) -> None:
++    operation = MoltOp(
++        kind=kind,
++        args=[],
++        result=MoltValue("unused_result") if has_result else MoltValue("none"),
++    )
++    with pytest.raises(ValueError) as error:
++        SimpleTIRGenerator().map_ops_to_json(
++            [operation], function_name="broken_function", run_midend=run_midend
++        )
++    assert kind in str(error.value)
++    assert "broken_function" in str(error.value)
++    assert "unregistered frontend op kind" in str(error.value)
++
++
++def test_registered_kind_cannot_be_dropped_by_missing_serializer(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    generator = SimpleTIRGenerator()
++    for method in (
++        "_serialize_basic_op",
++        "_serialize_function_op",
++        "_serialize_exception_op",
++        "_serialize_object_attr_op",
++        "_serialize_collection_op",
++        "_serialize_loop_string_async_op",
++    ):
++        monkeypatch.setattr(generator, method, lambda operation, context: False)
++    with pytest.raises(ValueError, match="broken_function.*no serializer.*CONST"):
++        generator.map_ops_to_json(
++            [MoltOp(kind="CONST", args=[1], result=MoltValue("result"))],
++            function_name="broken_function",
++            run_midend=False,
++        )
++
++
++def test_serializer_cannot_emit_unregistered_wire_kind(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    def serialize(operation, context):
++        context.json_ops.append({"kind": "new_unregistered_wire_op"})
++        return True
++
++    generator = SimpleTIRGenerator()
++    monkeypatch.setattr(generator, "_serialize_basic_op", serialize)
++    with pytest.raises(
++        ValueError,
++        match="broken_function.*unregistered SimpleIR.*new_unregistered_wire_op",
++    ):
++        generator.map_ops_to_json(
++            [MoltOp(kind="CONST", args=[1], result=MoltValue("result"))],
++            function_name="broken_function",
++            run_midend=False,
++        )
++
++
++def test_midend_cannot_introduce_unregistered_frontend_kind(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    generator = SimpleTIRGenerator()
++    monkeypatch.setattr(
++        generator,
++        "_run_ir_midend_passes",
++        lambda operations: [
++            MoltOp(kind="MIDEND_TYPO", args=[], result=MoltValue("none"))
++        ],
++    )
++    with pytest.raises(
++        ValueError, match="broken_function.*unregistered frontend.*MIDEND_TYPO"
++    ):
++        generator.map_ops_to_json([], function_name="broken_function")
++
++
++@pytest.mark.parametrize("preserved", [["cast", "cast"], [None], "cast"])
++def test_preserved_registration_rejects_malformed_members(preserved) -> None:
++    with pytest.raises(OpKindTableError, match="simpleir_preserved_kinds"):
++        validate_registration({"simpleir_preserved_kinds": preserved})
++
++
++def test_frontend_lowering_registration_requires_registered_wire_kind() -> None:
++    with pytest.raises(OpKindTableError, match="unregistered wire kind"):
++        validate_registration(
++            {
++                "frontend_lowering_kind": [{"kind": "TYPO", "wire_kind": "typo"}],
++            }
++        )
+diff --git a/tests/test_gen_op_kinds.py b/tests/test_gen_op_kinds.py
+index 34d079f87..5ef4291f9 100644
+--- a/tests/test_gen_op_kinds.py
++++ b/tests/test_gen_op_kinds.py
+@@ -7791,6 +7791,5 @@ def test_generated_serialization_boundary_preserves_wire_field_roles():
+         "string_split_field_to_int",
+     ):
+         assert validate(kind) is None
+-    # This boundary does not grant support: unknown wire kinds are the target
+-    # semantic validator's obligation, independent of frontend optimizer facts.
+-    assert validate("future_unclassified_wire_kind") is None
++    with pytest.raises(ValueError, match="unregistered SimpleIR op kind"):
++        validate("future_unclassified_wire_kind")
+diff --git a/tools/memory_guard.py b/tools/memory_guard.py
+index ad9b96efa..41976be66 100644
+--- a/tools/memory_guard.py
++++ b/tools/memory_guard.py
+@@ -979,6 +979,12 @@ def run_guarded(
+             "text": text,
+             **_guarded_popen_process_isolation_kwargs(),
+         }
++        if text:
++            # The stdin pipe is the only text stream Popen opens here; it must
++            # use the same codec as the captured output, never the Windows
++            # locale code page (cp1252 corrupted non-ASCII generator input).
++            popen_kwargs["encoding"] = encoding
++            popen_kwargs["errors"] = errors
+         if capture_output:
+             popen_kwargs["stdout"] = stdout_capture.fileno()
+             popen_kwargs["stderr"] = stderr_capture.fileno()
+diff --git a/tools/op_kinds/registration.py b/tools/op_kinds/registration.py
+new file mode 100644
+index 000000000..859a01733
+--- /dev/null
++++ b/tools/op_kinds/registration.py
+@@ -0,0 +1,53 @@
++from __future__ import annotations
++
++from .errors import OpKindTableError
++from .runtime_requirements import registered_runtime_kinds
++from .schema import _CLASSIFIER_SETS, _SIMPLEIR_FIELD_ROLE_FACT_SETS
++
++
++def registered_simpleir_kinds(data: dict) -> set[str]:
++    registered = registered_runtime_kinds(data)
++    for table in (*_CLASSIFIER_SETS, *_SIMPLEIR_FIELD_ROLE_FACT_SETS):
++        registered.update(data.get(table, ()))
++    registered.update(data.get("simpleir_preserved_kinds", ()))
++    return registered
++
++
++def registered_frontend_kinds(data: dict) -> set[str]:
++    registered = {kind.upper() for kind in registered_simpleir_kinds(data)}
++    for table in (
++        "frontend_effect_kind",
++        "frontend_raising_kind",
++        "frontend_check_exception_skip",
++        "frontend_lowering_kind",
++    ):
++        registered.update(row["kind"] for row in data.get(table, ()))
++    for row in data.get("kind", ()):
++        if row.get("group") == "gpu":
++            registered.update((row["canonical"], *row.get("aliases", ())))
++    return registered
++
++
++def validate_registration(data: dict) -> None:
++    preserved = data.get("simpleir_preserved_kinds", [])
++    if (
++        not isinstance(preserved, list)
++        or any(not isinstance(kind, str) or not kind for kind in preserved)
++        or len(set(preserved)) != len(preserved)
++    ):
++        raise OpKindTableError("simpleir_preserved_kinds requires unique kind strings")
++    wire_kinds = registered_simpleir_kinds(data)
++    seen: set[str] = set()
++    for row in data.get("frontend_lowering_kind", ()):
++        if not isinstance(row, dict) or set(row) != {"kind", "wire_kind"}:
++            raise OpKindTableError("frontend_lowering_kind requires kind and wire_kind")
++        kind = row["kind"]
++        if not isinstance(kind, str) or not kind.isidentifier() or kind in seen:
++            raise OpKindTableError(
++                "frontend_lowering_kind requires unique kind identifiers"
++            )
++        seen.add(kind)
++        if not isinstance(row["wire_kind"], str) or row["wire_kind"] not in wire_kinds:
++            raise OpKindTableError(
++                f"frontend_lowering_kind {kind}: unregistered wire kind {row['wire_kind']!r}"
++            )
+diff --git a/tools/op_kinds/render_python.py b/tools/op_kinds/render_python.py
+index 16e1713a9..b53c04502 100644
+--- a/tools/op_kinds/render_python.py
++++ b/tools/op_kinds/render_python.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++from .registration import registered_frontend_kinds, registered_simpleir_kinds
+ from .runtime_requirements import (
+     integer_semantics_by_kind,
+     runtime_callable_attribute_requirement_masks,
+@@ -366,6 +367,16 @@ from __future__ import annotations
+ def render_py(data: dict) -> str:
+     kinds = data.get("kind", [])
+     out: list[str] = [_PY_HEADER, render_primitive_effects_py(data)]
++    out.append(
++        _render_py_frozenset(
++            "SIMPLEIR_REGISTERED_KINDS", sorted(registered_simpleir_kinds(data))
++        )
++    )
++    out.append(
++        _render_py_frozenset(
++            "FRONTEND_REGISTERED_KINDS", sorted(registered_frontend_kinds(data))
++        )
++    )
+     out.append(
+         _render_py_frozenset(
+             "SIMPLEIR_STRUCTURAL_KINDS",
+@@ -639,18 +650,30 @@ def render_py(data: dict) -> str:
+ 
+     out.append(_render_py_binary_image_fact_sets(data))
+ 
+-    out.append("def validate_serialized_kind(kind: str) -> None:\n")
+-    out.append('    """Reject frontend semantic tokens at the wire boundary.\n\n')
++    out.append("def validate_frontend_kind(kind: str, function_name: str) -> None:\n")
++    out.append("    if kind not in FRONTEND_REGISTERED_KINDS:\n")
++    out.append(
++        '        raise ValueError(f"function {function_name!r}: unregistered frontend op kind {kind!r}")\n\n\n'
++    )
++
++    out.append(
++        'def validate_serialized_kind(kind: str, function_name: str = "<direct>") -> None:\n'
++    )
++    out.append('    """Reject unregistered kinds and frontend semantic tokens.\n\n')
+     out.append(
+         "    Preserved wire operations retain their spelling and target-specific\n"
+     )
+     out.append(
+         "    admission. This check never collapses local binding aliases or invents\n"
+     )
+-    out.append('    a target support claim for an unclassified wire operation."""\n')
++    out.append('    a target support claim for a registered wire operation."""\n')
+     out.append("    if kind in FRONTEND_EFFECT_CLASS:\n")
+     out.append(
+-        '        raise ValueError(f"frontend operation {kind!r} escaped serialization")\n\n\n'
++        '        raise ValueError(f"function {function_name!r}: frontend operation {kind!r} escaped serialization")\n'
++    )
++    out.append("    if kind not in SIMPLEIR_REGISTERED_KINDS:\n")
++    out.append(
++        '        raise ValueError(f"function {function_name!r}: unregistered SimpleIR op kind {kind!r}")\n\n\n'
+     )
+ 
+     out.append("def canonical_kind(kind: str) -> str:\n")
+diff --git a/tools/op_kinds/render_rust.py b/tools/op_kinds/render_rust.py
+index 11448c65f..080e10880 100644
+--- a/tools/op_kinds/render_rust.py
++++ b/tools/op_kinds/render_rust.py
+@@ -5,6 +5,7 @@ import re
+ from tools import harness_memory_guard
+ 
+ from .paths import ROOT
++from .registration import registered_simpleir_kinds
+ from .primitive_effects import render_primitive_effects_rs
+ from .runtime_requirements import (
+     INTEGER_SEMANTIC_ROLES,
+@@ -91,6 +92,19 @@ def _render_rs_unformatted(data: dict) -> str:
+ 
+     out: list[str] = [_RS_HEADER]
+ 
++    out.append(
++        "/// Whether a wire operation has a declarative registry owner.\n"
++        "#[inline]\n"
++        "pub fn simpleir_kind_is_registered(kind: &str) -> bool {\n"
++        "    matches!(kind,\n"
++    )
++    out.append(
++        " |\n".join(
++            f'        "{kind}"' for kind in sorted(registered_simpleir_kinds(data))
++        )
++    )
++    out.append("\n    )\n}\n\n")
++
+     out.append(_render_simpleir_control_facts(data))
+     out.append("\n\n")
+     out.append(_render_simpleir_field_roles(data))
+diff --git a/tools/op_kinds/validate.py b/tools/op_kinds/validate.py
+index 956f001a8..ddf6627e3 100644
+--- a/tools/op_kinds/validate.py
++++ b/tools/op_kinds/validate.py
+@@ -73,6 +73,7 @@ from .schema import (
+ )
+ 
+ from .errors import OpKindTableError
++from .registration import validate_registration
+ from .frontend_validate import (
+     _frontend_effect_class_map,  # noqa: F401 - generator facade export
+     _frontend_effect_from_opcode,  # noqa: F401 - generator facade export
+@@ -981,6 +982,7 @@ def load_table(table_path: Path = TABLE) -> dict:
+ 
+     frontend_operator_map(data)
+     _validate_frontend_tables(data, opcodes)
++    validate_registration(data)
+ 
+     unknown_requirement_carriers = set(
+         requirement_carriers

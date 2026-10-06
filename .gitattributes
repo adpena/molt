@@ -7,3 +7,6 @@
 # Windows line-ending convention.
 *.bat text eol=crlf
 *.cmd text eol=crlf
+
+# Preserved handoff WIP: patch context lines carry their source whitespace verbatim.
+docs/agent/handoff-patches/*.patch -whitespace
