@@ -322,7 +322,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "10c0d8fc9d646e0b5ffbf6bd02b7f77f3058c1c180af6f0ec716d79d617f698d",
+  "authority_sha256": "d366c206eedc84f8d4fa285c1f1339a3c18145bd08d3af8dde5c390666ee4142",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -499,6 +499,8 @@
         "tests/test_manifest_pipeline_e2e.py",
         "tests/cli/test_native_link_*.py",
         "tests/cli/test_native_symbol_authority.py",
+        "tests/cli/test_link_selection_admission.py",
+        "tests/llvm_sdk_test_support.py",
         "tests/tools/test_proof_queue_native_receipts.py",
         "tests/proof_queue_custody_test_support.py",
         "tests/python_environment_test_support.py",
@@ -3714,7 +3716,9 @@
         "tests/test_runtime_build_python.py",
         "tests/cli/test_cli_python_source_closure.py::test_repository_wasm_linker_closure_reaches_binding_authority",
         "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_native_archive",
+        "tests/cli/test_native_symbol_authority.py::test_member_symbols_real_wasm_archive",
         "tests/cli/test_native_link_plan.py::test_real_elf_extension_link_preserves_eager_members_lazy_dependencies_and_runtime_edges",
+        "tests/cli/test_native_link_manifest.py::test_static_nobundle_order_changes_real_archive_resolution",
         "tests/cli/test_link_selection_admission.py"
       ],
       "cache_domain": "pytest",

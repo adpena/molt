@@ -14,6 +14,7 @@ from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
     source_extension_link_file,
 )
+from tests.llvm_sdk_test_support import verified_llvm_tools
 
 
 _COMMANDS = CommandExecutor.for_file(__file__)
@@ -87,17 +88,17 @@ def test_admission_policy_snapshot_and_subprocess_role_binding(tmp_path, monkeyp
 
 @pytest.mark.slow
 @pytest.mark.parametrize(
-    ("target", "dialect", "role"),
+    ("object_format", "dialect", "role"),
     [
-        ("x86_64-unknown-linux-gnu", "elf-gnu", "ld.lld"),
-        ("x86_64-pc-windows-msvc", "coff-msvc", "lld-link"),
-        ("x86_64-apple-darwin", "macho", "ld64.lld"),
-        ("wasm32-wasip1", "wasm", "wasm-ld"),
+        ("elf", "elf-gnu", "ld.lld"),
+        ("coff", "coff-msvc", "lld-link"),
+        ("macho", "macho", "ld64.lld"),
+        ("wasm", "wasm", "wasm-ld"),
     ],
 )
 def test_real_selection_dormant_api_is_ignored_but_selected_api_is_rejected(
     tmp_path,
-    target,
+    object_format,
     dialect,
     role,
 ):
@@ -106,24 +107,21 @@ def test_real_selection_dormant_api_is_ignored_but_selected_api_is_rejected(
     The deliberately unsupported function is supplied by an independent runtime
     object, so both links succeed. Only the second extracts the offending member.
     """
-    from molt.cli.llvm_wasi_tools import llvm_tool_candidates, llvm_linker_candidates
-
-    cc_candidates = llvm_tool_candidates("cc")
-    ar_candidates = llvm_tool_candidates("ar")
-    linkers = llvm_linker_candidates(role)
-    if not cc_candidates or not ar_candidates or not linkers:
-        pytest.skip("required canonical LLVM target tools are unavailable")
-    cc, ar, linker = map(str, (cc_candidates[0], ar_candidates[0], linkers[0]))
+    tools = verified_llvm_tools()
     if dialect == "wasm":
         from molt.llvm_toolchain import verify_wasm_llvm_nm
         from molt.source_root import compiler_source_root
 
         # Use the already-provisioned, verified SDK family, never install in tests.
+        target = "wasm32-wasip1"
         sdk = verify_wasm_llvm_nm(compiler_source_root()).path.parent
-        suffix = Path(cc).suffix
+        suffix = Path(tools.clang).suffix
         cc, ar, linker = (
             str(sdk / (name + suffix)) for name in ("clang", "llvm-ar", "wasm-ld")
         )
+    else:
+        target = tools.native_target(object_format)
+        cc, ar, linker = tools.clang, tools.ar, tools.linker(role)
 
     def run(command):
         result = _COMMANDS.run(
@@ -210,7 +208,7 @@ def test_real_selection_dormant_api_is_ignored_but_selected_api_is_rejected(
         elif dialect == "macho":
             args = [
                 "-arch",
-                "x86_64",
+                tools.macho_arch,
                 "-platform_version",
                 "macos",
                 "11.0",

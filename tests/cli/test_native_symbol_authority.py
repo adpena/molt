@@ -27,6 +27,7 @@ from molt.cli.backend_artifact_contract import (
     BackendArtifactValidationError,
 )
 from tests.cli.native_link_test_support import static_archive_bytes
+from tests.llvm_sdk_test_support import verified_llvm_tools
 from tests.native_artifact_fixtures import native_relocatable_object
 
 
@@ -1611,30 +1612,23 @@ def test_object_parser_does_not_silently_discard_archive_or_architecture_headers
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize(
-    "target",
-    [
-        "x86_64-pc-windows-msvc",
-        "x86_64-unknown-linux-gnu",
-        "aarch64-apple-darwin",
-    ],
-)
-def test_member_symbols_real_native_archive(tmp_path, monkeypatch, target):
-    _assert_real_archive_member_symbols(tmp_path, monkeypatch, target)
+@pytest.mark.parametrize("object_format", ["coff", "elf", "macho"])
+def test_member_symbols_real_native_archive(tmp_path, monkeypatch, object_format):
+    tools = verified_llvm_tools()
+    _assert_real_archive_member_symbols(
+        tmp_path, monkeypatch, tools, tools.native_target(object_format)
+    )
 
 
 @pytest.mark.slow
 def test_member_symbols_real_wasm_archive(tmp_path, monkeypatch):
-    _assert_real_archive_member_symbols(tmp_path, monkeypatch, "wasm32-wasip1")
+    _assert_real_archive_member_symbols(
+        tmp_path, monkeypatch, verified_llvm_tools(), "wasm32-wasip1"
+    )
 
 
-def _assert_real_archive_member_symbols(tmp_path, monkeypatch, target):
-    from molt.cli.llvm_wasi_tools import llvm_tool_candidates
-
-    tools = {kind: llvm_tool_candidates(kind) for kind in ("cc", "ar", "nm")}
-    if any(not paths for paths in tools.values()):
-        pytest.skip("selected LLVM clang/ar/nm toolchain is unavailable")
-    cc, ar, nm = (str(tools[kind][0]) for kind in ("cc", "ar", "nm"))
+def _assert_real_archive_member_symbols(tmp_path, monkeypatch, tools, target):
+    cc, ar, nm = tools.clang, tools.ar, tools.nm
     if target.startswith("wasm"):
         # Native LLVM and the WASI SDK have independent pinned releases. Never
         # substitute a native reader for the SDK selected by the WASM job.
