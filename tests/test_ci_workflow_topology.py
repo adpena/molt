@@ -378,7 +378,13 @@ def test_ci_push_path_is_cheap_only() -> None:
     assert "parity:" not in ci_text
     assert "runs-on: ubuntu-latest" in ci_text
     assert "runs-on: ${{ matrix.runner }}" in ci_text
-    assert "matrix: ${{ fromJSON(needs.classify-changes.outputs.matrix) }}" in ci_text
+    # Each matrix job consumes only its own family's classifier output.
+    for name in ("platform_portability", "python_unit"):
+        assert (
+            f"matrix: ${{{{ fromJSON(needs.classify-changes.outputs.{name}_matrix) }}}}"
+            in ci_text
+        )
+    assert "classify-changes.outputs.matrix" not in ci_text
     assert "Swatinem/rust-cache@" not in ci_text
     assert "uses: ./.github/actions/setup-project" in ci_text
     # Four rust-bearing jobs configure adaptive parallelism: python-tooling-smoke,
@@ -696,7 +702,12 @@ def test_ci_heavy_jobs_are_path_classified() -> None:
         "platform_portability: ${{ steps.paths.outputs.platform_portability }}"
         in ci_text
     )
-    assert "matrix: ${{ steps.paths.outputs.matrix }}" in ci_text
+    plan = tomllib.loads(_read("tools/proof_plan.toml"))
+    for family in plan["ci_family"]:
+        if family["executor"] == "github-matrix":
+            output = f"{family['name']}_matrix"
+            assert f"{output}: ${{{{ steps.paths.outputs.{output} }}}}" in ci_text
+    assert "steps.paths.outputs.matrix }}" not in ci_text
     assert "topology: ${{ steps.paths.outputs.topology }}" in ci_text
     assert "selected: ${{ steps.paths.outputs.selected }}" in ci_text
     assert ci_text.count("needs: classify-changes") >= 4
@@ -1244,6 +1255,51 @@ def test_platform_portability_is_one_generated_cross_os_authority() -> None:
         "macos-arm64-py312-queue-portability",
         "windows-x86_64-py312-queue-portability",
     }
+
+
+def test_python_unit_runs_one_receipted_job_per_generated_cell() -> None:
+    jobs = yaml.safe_load(_read(".github/workflows/ci.yml"))["jobs"]
+    job = jobs["python-unit"]
+    assert job["runs-on"] == "${{ matrix.runner }}"
+    assert job["strategy"] == {
+        "fail-fast": False,
+        "matrix": "${{ fromJSON(needs.classify-changes.outputs.python_unit_matrix) }}",
+    }
+    steps = job["steps"]
+    executor = next(
+        step for step in steps if "--run-family python_unit" in step.get("run", "")
+    )
+    assert executor["run"].split() == [
+        "python3",
+        "tools/proof_plan.py",
+        "--run-family",
+        "python_unit",
+        "--receipt",
+        "proof-receipts/python-unit-${{",
+        "matrix.cell",
+        "}}.json",
+        "--matrix-cell",
+        '"${{',
+        "matrix.cell",
+        '}}"',
+    ]
+    upload = next(
+        step for step in steps if step.get("name") == "Upload Python unit receipt"
+    )
+    # One artifact per cell; the verdict merges every proof-receipt-* artifact.
+    assert upload["with"] == {
+        "name": "proof-receipt-python-unit-${{ matrix.cell }}",
+        "path": "proof-receipts/python-unit-${{ matrix.cell }}.json",
+        "if-no-files-found": "error",
+    }
+    assert steps.index(executor) < steps.index(upload)
+    download = next(
+        step
+        for step in jobs["proof-plan-verdict"]["steps"]
+        if step.get("uses", "").startswith("actions/download-artifact@")
+    )
+    assert download["with"]["pattern"] == "proof-receipt-*"
+    assert download["with"]["merge-multiple"] is True
 
 
 def test_checkouts_drop_persisted_credentials_and_permissions_are_bounded() -> None:

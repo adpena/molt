@@ -15,7 +15,10 @@ python3 tools/proof_plan.py --run-family <family> --receipt proof-receipts/<fami
 
 `tools/proof_plan.toml` is the sole hosted command, dependency, timeout,
 resource, toolchain, and evidence authority. `tools/proof_plan.py` executes that
-typed DAG under guarded custody and writes hash-bound receipts. Workflows own
+typed DAG under guarded custody and writes hash-bound receipts. A
+`github-matrix` family (`python_unit`, `platform_portability`) runs one job per
+runner cell; locally `--run-family` runs the cell that matches the host OS and
+architecture, or takes `--matrix-cell <cell>`. Workflows own
 runner setup and artifact transport only. `tools/ci_gate.py` remains the local
 tier aggregator; its Tier 3 entry consumes `nightly_verification_t3` rather than
 redeclaring the five heavy commands.

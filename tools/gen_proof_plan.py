@@ -21,42 +21,57 @@ JSON_OUTPUT = ROOT / ".github" / "proof-plan.generated.json"
 DOC_OUTPUT = ROOT / "docs" / "agent" / "PROOF_PLAN.generated.md"
 
 
+def _envelope_record(
+    plan: ProofPlan, family_name: str, budget: int, **scope: str | None
+) -> dict[str, object]:
+    envelope = plan.timeout_envelope(family_name, **scope)
+    return {
+        "budget_seconds": budget,
+        "projected_makespan_seconds": envelope.projected_makespan_seconds,
+        "critical_path_seconds": envelope.critical_path_seconds,
+        "resource_capacity_floor_seconds": envelope.resource_capacity_floor_seconds,
+        "headroom_seconds": budget - envelope.projected_makespan_seconds,
+    }
+
+
 def _timeout_envelope_projection(plan: ProofPlan) -> dict[str, dict[str, object]]:
-    projection: dict[str, dict[str, object]] = {}
-    for family in plan.families:
-        if family.data["executor"] != "github-job":
-            continue
-        envelope = plan.timeout_envelope(family.name)
-        budget = int(family.data["timeout_minutes"]) * 60
-        projection[family.name] = {
-            "budget_seconds": budget,
-            "projected_makespan_seconds": envelope.projected_makespan_seconds,
-            "critical_path_seconds": envelope.critical_path_seconds,
-            "resource_capacity_floor_seconds": (
-                envelope.resource_capacity_floor_seconds
-            ),
-            "headroom_seconds": budget - envelope.projected_makespan_seconds,
+    return {
+        family.name: _envelope_record(
+            plan, family.name, int(family.data["timeout_minutes"]) * 60
+        )
+        for family in plan.families
+        if family.data["executor"] == "github-job"
+    }
+
+
+def _matrix_timeout_envelope_projection(
+    plan: ProofPlan,
+) -> dict[str, dict[str, dict[str, object]]]:
+    """One envelope per runner cell: each matrix job runs exactly one cell."""
+    return {
+        family.name: {
+            cell: _envelope_record(
+                plan,
+                family.name,
+                int(family.data["timeout_minutes"]) * 60,
+                matrix_cell=cell,
+            )
+            for cell in plan.family_cells(family.name)
         }
-    return projection
+        for family in plan.families
+        if family.data["executor"] == "github-matrix"
+    }
 
 
 def _scheduled_timeout_envelope_projection(
     plan: ProofPlan,
 ) -> dict[str, dict[str, object]]:
-    projection: dict[str, dict[str, object]] = {}
-    for family in plan.scheduled_families:
-        envelope = plan.timeout_envelope(family.name)
-        budget = int(family.data["timeout_minutes"]) * 60
-        projection[family.name] = {
-            "budget_seconds": budget,
-            "projected_makespan_seconds": envelope.projected_makespan_seconds,
-            "critical_path_seconds": envelope.critical_path_seconds,
-            "resource_capacity_floor_seconds": (
-                envelope.resource_capacity_floor_seconds
-            ),
-            "headroom_seconds": budget - envelope.projected_makespan_seconds,
-        }
-    return projection
+    return {
+        family.name: _envelope_record(
+            plan, family.name, int(family.data["timeout_minutes"]) * 60
+        )
+        for family in plan.scheduled_families
+    }
 
 
 def _json_projection(plan: ProofPlan) -> str:
@@ -84,7 +99,7 @@ def _json_projection(plan: ProofPlan) -> str:
         for rule in plan.local_rules
     ]
     payload = {
-        "schema": "molt.proof-plan-projection.v5",
+        "schema": "molt.proof-plan-projection.v6",
         "authority": str(plan.path.relative_to(ROOT)).replace("\\", "/"),
         "authority_inputs": list(plan.authority_inputs),
         "authority_sha256": _authority_sha256(plan),
@@ -97,6 +112,9 @@ def _json_projection(plan: ProofPlan) -> str:
                 for policy in plan.resource_policies
             ],
             "github_job_timeout_envelopes": _timeout_envelope_projection(plan),
+            "github_matrix_timeout_envelopes": (
+                _matrix_timeout_envelope_projection(plan)
+            ),
             "scheduled_job_timeout_envelopes": (
                 _scheduled_timeout_envelope_projection(plan)
             ),
@@ -196,7 +214,8 @@ def _markdown_projection(plan: ProofPlan) -> str:
         "GitHub job budgets are validated against a deterministic worst-case "
         "DAG schedule in which every admitted command consumes its full declared "
         "timeout. The projection accounts for dependencies, the global worker "
-        "ceiling, and per-resource capacity.",
+        "ceiling, and per-resource capacity. A `github-matrix` job runs one "
+        "cell, so its budget binds each cell's schedule separately.",
         "",
         "| Family | Tiers | Required | Executor | Timeout | Projected | Headroom | Resource | Selection parents | Admission | Inputs |",
         "|---|---|---:|---|---:|---:|---:|---|---|---|---:|",
@@ -206,6 +225,16 @@ def _markdown_projection(plan: ProofPlan) -> str:
         if data["executor"] == "github-job":
             projected = plan.timeout_envelope(family.name).projected_makespan_seconds
             projected_cell = f"{projected} s"
+            headroom_cell = f"{int(data['timeout_minutes']) * 60 - projected} s"
+        elif data["executor"] == "github-matrix":
+            # The budget binds each cell's job; report the tightest cell.
+            projected = max(
+                plan.timeout_envelope(
+                    family.name, matrix_cell=cell
+                ).projected_makespan_seconds
+                for cell in plan.family_cells(family.name)
+            )
+            projected_cell = f"{projected} s per cell"
             headroom_cell = f"{int(data['timeout_minutes']) * 60 - projected} s"
         else:
             projected_cell = "n/a"
@@ -250,7 +279,9 @@ def _markdown_projection(plan: ProofPlan) -> str:
             "",
             "`github-matrix` families project these cells directly into the "
             "workflow strategy. The runner is therefore generated policy, not "
-            "a second handwritten OS list.",
+            "a second handwritten OS list. Each matrix family has its own "
+            "classifier output, `<family>_matrix`, so a matrix job never "
+            "receives another family's cells.",
             "",
             "| Cell | Runner | OS | Architecture | Python | Backend | Target | Profile |",
             "|---|---|---|---|---|---|---|---|",
@@ -353,8 +384,8 @@ def _markdown_projection(plan: ProofPlan) -> str:
             "and unknown events fail closed to the full plan. Merge-group, "
             "scheduled, and manual runs intentionally select the full plan. The "
             "topology projection "
-            "records why every family was selected; the executable matrix expands "
-            "selected `github-matrix` families into exact runner cells.",
+            "records why every family was selected; each selected `github-matrix` "
+            "family's executable matrix expands into its exact runner cells.",
             "",
         ]
     )

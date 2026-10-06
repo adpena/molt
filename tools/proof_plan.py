@@ -105,6 +105,11 @@ TARGET_DERIVED_IDENTITY_PROVIDERS = frozenset({"source-extension"})
 RECEIPT_SCHEMA = "molt.proof-receipt.v4"
 
 
+def family_matrix_output(family_name: str) -> str:
+    """Name the classifier output that holds one matrix family's runner cells."""
+    return f"{family_name}_matrix"
+
+
 @dataclass(frozen=True, slots=True)
 class ProofFamily:
     name: str
@@ -261,13 +266,32 @@ class ProofPlan:
 
         return self.toolchain_closure(command.toolchains)
 
-    def timeout_envelope(self, family_name: str) -> TimeoutEnvelope:
-        """Project the bounded DAG schedule when every partition hits its timeout."""
+    def family_cells(self, family_name: str) -> tuple[str, ...]:
+        """Return the family's matrix cells in first-declaration order."""
+        return tuple(
+            dict.fromkeys(
+                str(command.data["cell"])
+                for command in self.commands
+                if command.family == family_name
+            )
+        )
+
+    def timeout_envelope(
+        self, family_name: str, *, matrix_cell: str | None = None
+    ) -> TimeoutEnvelope:
+        """Project the bounded DAG schedule when every partition hits its timeout.
+
+        A `github-matrix` job runs one cell, so its envelope is per cell.
+        """
         commands = tuple(
-            command for command in self.commands if command.family == family_name
+            command
+            for command in self.commands
+            if command.family == family_name
+            and (matrix_cell is None or command.data["cell"] == matrix_cell)
         )
         if not commands:
-            raise ValueError(f"{family_name}: selected family has no commands")
+            suffix = "" if matrix_cell is None else f" in matrix cell {matrix_cell!r}"
+            raise ValueError(f"{family_name}: selected family has no commands{suffix}")
         command_by_id = {command.id: command for command in commands}
         command_index = {command.id: index for index, command in enumerate(commands)}
         resource_limits = {
@@ -868,6 +892,31 @@ class ProofPlan:
                         errors.append(
                             f"{family.name}: workflow job does not enforce {timeout!r}"
                         )
+                    if family.data.get("executor") == "github-matrix":
+                        # Each matrix job consumes only its own family's cells.
+                        for token in (
+                            "matrix: ${{ fromJSON(needs.classify-changes.outputs."
+                            f"{family_matrix_output(family.name)}) }}}}",
+                            "runs-on: ${{ matrix.runner }}",
+                            '--matrix-cell "${{ matrix.cell }}"',
+                        ):
+                            if token not in block:
+                                errors.append(
+                                    f"{family.name}: matrix workflow job does not "
+                                    f"contain {token!r}"
+                                )
+                    else:
+                        runners = {
+                            cell.data.get("runner")
+                            for cell in self.matrix_cells
+                            if cell.id in self.family_cells(family.name)
+                        }
+                        if len(runners) > 1:
+                            errors.append(
+                                f"{family.name}: a github-job runs every command on "
+                                f"one runner, but its cells name {sorted(runners)!r}; "
+                                "use executor github-matrix"
+                            )
             admission_workflow_name = str(family.data.get("admission_workflow", ""))
             admission_workflow = ROOT / admission_workflow_name
             admission_job = str(family.data.get("admission_job", ""))
@@ -1382,20 +1431,29 @@ class ProofPlan:
 
         if not any(error.startswith("command dependency cycle:") for error in errors):
             for family in self.families:
-                if family.data.get("executor") != "github-job":
+                executor = family.data.get("executor")
+                if executor not in {"github-job", "github-matrix"}:
                     continue
-                try:
-                    envelope = self.timeout_envelope(family.name)
-                except (KeyError, TypeError, ValueError) as exc:
-                    errors.append(str(exc))
-                    continue
-                job_budget = int(family.data["timeout_minutes"]) * 60
-                if envelope.projected_makespan_seconds > job_budget:
-                    errors.append(
-                        f"{family.name}: projected resource-aware timeout envelope "
-                        f"{envelope.projected_makespan_seconds}s exceeds GitHub job "
-                        f"budget {job_budget}s"
-                    )
+                # One github-job runs every command; a matrix job runs one cell.
+                cells = (
+                    (None,)
+                    if executor == "github-job"
+                    else self.family_cells(family.name)
+                )
+                for cell in cells:
+                    try:
+                        envelope = self.timeout_envelope(family.name, matrix_cell=cell)
+                    except (KeyError, TypeError, ValueError) as exc:
+                        errors.append(str(exc))
+                        continue
+                    job_budget = int(family.data["timeout_minutes"]) * 60
+                    if envelope.projected_makespan_seconds > job_budget:
+                        scope = "" if cell is None else f" in matrix cell {cell}"
+                        errors.append(
+                            f"{family.name}: projected resource-aware timeout "
+                            f"envelope {envelope.projected_makespan_seconds}s"
+                            f"{scope} exceeds GitHub job budget {job_budget}s"
+                        )
             for family in self.scheduled_families:
                 try:
                     envelope = self.timeout_envelope(family.name)
@@ -1859,17 +1917,20 @@ def family_outputs(
         for family in selection.selected
         if family.name in selected
     ]
-    matrix_family_names = {
-        family.name
-        for family in selection.selected
-        if family.name in selected and family.data["executor"] == "github-matrix"
+    # Every matrix family owns its own output: a matrix job must never receive
+    # another family's runner cells.
+    matrices: dict[str, list[dict[str, Any]]] = {
+        family.name: []
+        for family in plan.families
+        if family.data["executor"] == "github-matrix"
     }
-    matrix = []
     for cell in plan.matrix_cells:
         command_ids = [
             command.id
             for command in tiered
-            if command.family in matrix_family_names and command.data["cell"] == cell.id
+            if command.family in matrices
+            and command.family in selected
+            and command.data["cell"] == cell.id
         ]
         if not command_ids:
             continue
@@ -1881,7 +1942,7 @@ def family_outputs(
         if len(families) != 1:
             raise ValueError(f"{cell.id}: executable matrix cell spans families")
         family_name = families.pop()
-        matrix.append(
+        matrices[family_name].append(
             {
                 "family": family_name,
                 "cell": cell.id,
@@ -1902,7 +1963,10 @@ def family_outputs(
             }
         )
     outputs["topology"] = json.dumps({"include": topology}, separators=(",", ":"))
-    outputs["matrix"] = json.dumps({"include": matrix}, separators=(",", ":"))
+    for family_name, matrix in matrices.items():
+        outputs[family_matrix_output(family_name)] = json.dumps(
+            {"include": matrix}, separators=(",", ":")
+        )
     outputs["selected"] = json.dumps(sorted(selected), separators=(",", ":"))
     outputs["changed_paths"] = json.dumps(
         selection.changed_paths, separators=(",", ":")
@@ -1951,6 +2015,29 @@ def _normalized_os() -> str:
 def _normalized_arch() -> str:
     value = platform.machine().lower()
     return {"amd64": "x86_64", "x64": "x86_64", "arm64": "aarch64"}.get(value, value)
+
+
+def host_matrix_cell(plan: ProofPlan, family_name: str) -> str:
+    """Select a matrix family's cell for this host when none is named.
+
+    CI passes `--matrix-cell` explicitly. A local `--run-family` runs only the
+    cell whose OS and architecture match the host; its receipt binds both.
+    """
+    family_cells = plan.family_cells(family_name)
+    cells = [cell for cell in plan.matrix_cells if cell.id in family_cells]
+    host = (_normalized_os(), _normalized_arch())
+    matching = [
+        cell.id for cell in cells if (cell.data["os"], cell.data["arch"]) == host
+    ]
+    if len(matching) == 1:
+        return matching[0]
+    listed = ", ".join(
+        f"{cell.id} ({cell.data['os']}/{cell.data['arch']})" for cell in cells
+    )
+    raise ValueError(
+        f"{family_name} runs one job per matrix cell and no unique cell matches "
+        f"host {host[0]}/{host[1]}; pass --matrix-cell with one of: {listed}"
+    )
 
 
 def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
