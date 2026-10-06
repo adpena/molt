@@ -372,13 +372,30 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(tmp_path, monkey
     from molt.cli import cargo_execution, runtime_cargo_plan
 
     prefix = tmp_path / "llvm"
-    prefix.mkdir()
-    library = prefix / "libLLVM.a"
-    library.write_bytes(b"LLVM-one")
+    library = prefix / "lib" / "libLLVM.a"
+    header = prefix / "include" / "llvm-c" / "Core.h"
+    unrelated = prefix / "lib" / "python3.12" / "site-packages" / "lldb" / "lldb.py"
+    llvm_config = prefix / "bin" / "llvm-config"
+    for path, content in (
+        (library, b"LLVM-one"),
+        (header, b"/* core */"),
+        (unrelated, b"# lldb"),
+        (llvm_config, b"llvm-config"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
     monkeypatch.setattr(
         llvm_toolchain,
         "verify_available_llvm_toolchain",
-        lambda root, **kw: SimpleNamespace(prefix=prefix, llvm_config=library),
+        lambda root, **kw: SimpleNamespace(
+            prefix=prefix,
+            llvm_config=llvm_config,
+            library_facts=(
+                llvm_toolchain.LlvmLibraryFact(
+                    path="lib/libLLVM.a", size=8, mtime_ns=0
+                ),
+            ),
+        ),
     )
     monkeypatch.setattr(
         llvm_toolchain,
@@ -411,11 +428,22 @@ def test_llvm_prefix_bytes_belong_to_selected_compiler_identity(tmp_path, monkey
             tmp_path, ("llvm", "native-backend"), "release", env
         ).fingerprint
 
+    def rewrite(path, content):
+        metadata = path.stat()
+        path.write_bytes(content)
+        os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+
     before = fingerprint()
-    metadata = library.stat()
-    library.write_bytes(b"LLVM-two")
-    os.utime(library, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
-    assert fingerprint() != before
+    rewrite(library, b"LLVM-two")
+    after_library = fingerprint()
+    assert after_library != before
+    rewrite(header, b"/* core, revised */")
+    after_header = fingerprint()
+    assert after_header != after_library
+    # Only the consumed content set (headers plus attested link-closure
+    # libraries) is a build input; the rest of the install is not.
+    rewrite(unrelated, b"# lldb, revised")
+    assert fingerprint() == after_header
 
 
 def test_compiler_cargo_projection_never_admits_runtime_build_python(
