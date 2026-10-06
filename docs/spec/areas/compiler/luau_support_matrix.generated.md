@@ -11,9 +11,9 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 ## Summary
 
 - `compile-error`: `7`
-- `implemented-exact`: `194`
+- `implemented-exact`: `195`
 - `implemented-target-limited`: `15`
-- `not-admitted`: `208`
+- `not-admitted`: `207`
 - `total`: `424`
 
 ## Matrix
@@ -266,7 +266,7 @@ Validated structured CFG uses `function_body.rs` and `flow_dispatch.rs` separate
 | `is_pending` | `not-admitted` | Shared generated target contract rejects this semantic family before source generation. |
 | `isinstance` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
 | `issubclass` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
-| `iter` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
+| `iter` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `iter_next` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `iter_next_unboxed` | `implemented-exact` | Lowered and outside every generated target-contract limitation. |
 | `json_parse` | `not-admitted` | Operation is unclassified in the generated target-contract authority. |
