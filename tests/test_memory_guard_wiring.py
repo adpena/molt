@@ -15,9 +15,16 @@ from molt import pytest_memory_guard_bootstrap
 from molt import pytest_memory_guard_config_plugin
 from molt import memory_guard_paths
 from molt import temporary_artifacts
+from tests.process_guard_common import install_module_os_view
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def bootstrap_uses_a_private_os(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every ``os`` patch in this file stays inside the pytest bootstrap."""
+    install_module_os_view(monkeypatch, pytest_memory_guard_bootstrap)
 
 
 def test_repository_plugin_exports_only_valid_pytest_hooks():

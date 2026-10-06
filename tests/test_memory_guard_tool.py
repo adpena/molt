@@ -16,11 +16,22 @@ from typing import Any
 
 import pytest
 
-from tools.memory_guard_core import process_custody, process_model
+from tools.memory_guard_core import (
+    cargo_quarantine,
+    memory_limits,
+    process_custody,
+    process_model,
+    reporting,
+    windows_snapshot,
+)
 
 import tools.memory_guard as memory_guard
 from molt.backend_daemon_suite_custody import LEASE_ENV
 from molt.custody_layout import unconfigured_state_root
+from tests.process_guard_common import (
+    install_module_os_view,
+    install_module_view,
+)
 from molt.memory_guard_paths import (
     active_guard_marker_dir,
     pytest_guard_summary_dir,
@@ -84,6 +95,21 @@ def fake_popen_without_windows_job(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda: None,
     )
     _patch_temporary_artifact_closure_closed(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def guard_modules_use_a_private_os(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every ``os`` patch in this file stays inside the guard modules."""
+    install_module_os_view(
+        monkeypatch,
+        memory_guard,
+        process_custody,
+        process_model,
+        cargo_quarantine,
+        windows_snapshot,
+        reporting,
+        memory_limits,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -250,6 +276,9 @@ def _patch_guard_popen_without_windows_job(
     def unobservable_if_synthetic(read: Callable[[int], Any]) -> Callable[[int], Any]:
         return lambda pid: None if pid in synthetic_pids else read(pid)
 
+    # memory_guard alone sees the synthetic Popen: the session sentinel's
+    # thread launches ps through the real subprocess module meanwhile.
+    install_module_view(monkeypatch, "subprocess", subprocess, memory_guard)
     monkeypatch.setattr(memory_guard.subprocess, "Popen", spawn)
     for owner, name in (
         (memory_guard, "_safe_getpgid"),
@@ -5012,12 +5041,16 @@ def test_run_command_rusage_catches_short_lived_allocator_spike() -> None:
         pytest.skip("requires POSIX wait4 resource accounting")
     script = "import os\nbuf = bytearray(192 * 1024 * 1024)\nos._exit(0)"
 
+    # A blind sampler models a spike between samples on every host: a fast
+    # sampler (Linux /proc) can otherwise catch it live. Only the exit rusage
+    # can then report the violation.
     result = memory_guard.run_guarded(
         [sys.executable, "-c", script],
         max_rss_kb=96 * 1024,
         max_total_rss_kb=160 * 1024,
         poll_interval=1.0,
         child_rlimit_kb=None,
+        sampler=lambda: {},
     )
 
     assert result.returncode == memory_guard.GUARD_RETURN_CODE
