@@ -1,4 +1,4 @@
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 use std::env;
 
 #[cfg(any(unix, windows))]
@@ -9,16 +9,35 @@ pub(crate) fn install_process_memory_guard() {
     install_windows_memory_guard();
 }
 
+/// The backend's committed-memory cap in bytes. The memory guard writes
+/// `MOLT_BACKEND_MAX_PROCESS_RSS_GB` as fractional GB, so it is read through
+/// the one GB parser the TIR pipeline cache uses; a zero or unparsable value
+/// falls back to the physical-memory default.
+#[cfg(any(unix, windows))]
+fn backend_max_rss_bytes() -> u64 {
+    backend_max_rss_bytes_from(
+        std::env::var("MOLT_BACKEND_MAX_PROCESS_RSS_GB")
+            .ok()
+            .as_deref(),
+        default_backend_max_rss_gb(),
+    )
+}
+
+fn backend_max_rss_bytes_from(raw_gb: Option<&str>, default_gb: u64) -> u64 {
+    raw_gb
+        .and_then(molt_tir::tir::pipeline_cache::parse_nonnegative_gb)
+        .filter(|bytes| *bytes > 0)
+        .unwrap_or_else(|| default_gb.saturating_mul(1024 * 1024 * 1024))
+}
+
+
 #[cfg(unix)]
 fn install_unix_memory_guard() {
-    let max_gb: u64 = env::var("MOLT_BACKEND_MAX_PROCESS_RSS_GB")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or_else(default_backend_max_rss_gb);
-    if let Err(reason) = install_committed_memory_rlimit(max_gb * 1024 * 1024 * 1024)
+    let max_bytes = backend_max_rss_bytes();
+    if let Err(reason) = install_committed_memory_rlimit(max_bytes)
         && env::var("MOLT_DEBUG_RLIMIT").as_deref() == Ok("1")
     {
-        eprintln!("WARNING: backend memory limit ({max_gb}GB) not active: {reason}.");
+        eprintln!("WARNING: backend memory limit ({max_bytes} bytes) not active: {reason}.");
     }
 }
 
@@ -53,11 +72,7 @@ fn install_unix_memory_guard() {}
 
 #[cfg(windows)]
 fn install_windows_memory_guard() {
-    let max_gb: u64 = env::var("MOLT_BACKEND_MAX_PROCESS_RSS_GB")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or_else(default_backend_max_rss_gb);
-    let max_bytes = max_gb * 1024 * 1024 * 1024;
+    let max_bytes = backend_max_rss_bytes();
     unsafe {
         use windows_sys::Win32::System::JobObjects::*;
         use windows_sys::Win32::System::Threading::*;
@@ -79,3 +94,33 @@ fn install_windows_memory_guard() {
 
 #[cfg(not(windows))]
 fn install_windows_memory_guard() {}
+
+#[cfg(test)]
+mod tests {
+    use super::backend_max_rss_bytes_from;
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn fractional_gb_from_the_memory_guard_becomes_the_cap() {
+        assert_eq!(
+            backend_max_rss_bytes_from(Some("1.500000"), 64),
+            3 * GIB / 2
+        );
+        assert_eq!(backend_max_rss_bytes_from(Some(" 12 "), 64), 12 * GIB);
+    }
+
+    #[test]
+    fn zero_or_invalid_values_fall_back_to_the_physical_default() {
+        for raw in [
+            None,
+            Some("0"),
+            Some("0.0"),
+            Some("-1"),
+            Some("not-a-number"),
+            Some("inf"),
+        ] {
+            assert_eq!(backend_max_rss_bytes_from(raw, 64), 64 * GIB, "{raw:?}");
+        }
+    }
+}
