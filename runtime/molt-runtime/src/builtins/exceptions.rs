@@ -6404,7 +6404,7 @@ mod tests {
             exit_tx.send(()).unwrap();
             entered_rx
                 .recv_timeout(std::time::Duration::from_secs(2))
-                .expect("worker entered ThreadExceptionState::drop");
+                .expect("worker entered the thread exception release");
 
             shutdown_proceed_tx.send(()).unwrap();
             assert!(
