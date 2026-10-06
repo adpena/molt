@@ -6768,6 +6768,11 @@ arg_count = 3
 
 # Import-name prefixes omitted by the backend Pure profile.
 # These apply to molt_runtime imports, not WASI/env host imports.
+# A prefix names an IO/async/time capability family exactly. Core modules that
+# every program imports must stay resolvable: `sys` requires the asyncgen hook
+# state accessors and `__future__` requires future_features, so the async
+# families are listed by their execution entry points, not by `asyncgen_` or
+# `future_`.
 
 [[pure_skip_prefix]]
 prefix = "process_"
@@ -6812,7 +6817,10 @@ prefix = "open_builtin"
 prefix = "async_sleep"
 
 [[pure_skip_prefix]]
-prefix = "future_"
+prefix = "future_cancel"
+
+[[pure_skip_prefix]]
+prefix = "future_poll"
 
 [[pure_skip_prefix]]
 prefix = "promise_"
@@ -6833,7 +6841,13 @@ prefix = "chan_"
 prefix = "asyncio_"
 
 [[pure_skip_prefix]]
-prefix = "asyncgen_"
+prefix = "asyncgen_locals"
+
+[[pure_skip_prefix]]
+prefix = "asyncgen_new"
+
+[[pure_skip_prefix]]
+prefix = "asyncgen_poll"
 
 [[pure_skip_prefix]]
 prefix = "anext_"
