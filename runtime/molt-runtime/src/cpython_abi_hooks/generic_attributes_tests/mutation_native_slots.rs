@@ -174,7 +174,7 @@ unsafe fn native_class(
         name: name.as_ptr(),
         basicsize: std::mem::size_of::<PyObject>() as i32,
         itemsize: 0,
-        flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE),
+        flags: PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE),
         slots: declarations.as_mut_ptr(),
     };
     let result = unsafe {

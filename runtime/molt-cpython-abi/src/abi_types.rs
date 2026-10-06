@@ -878,6 +878,42 @@ pub struct PyType_Spec {
     pub slots: *mut PyType_Slot,
 }
 
+impl PyType_Spec {
+    /// Narrow `Py_TPFLAGS_*` bits (C `unsigned long`, the `tp_flags` width)
+    /// into the `flags` field (C `unsigned int`, as CPython declares it).
+    ///
+    /// C performs this narrowing implicitly when a spec is initialised from
+    /// the flag macros. CPython's type flags occupy bits 0..=31, so every
+    /// defined flag fits; a wider value is a caller defect and panics.
+    /// `PyType_FromSpec` widens the field back into `tp_flags`.
+    pub const fn flags_from_tp_flags(tp_flags: c_ulong) -> c_uint {
+        crate::platform::c_ulong_to_c_uint(tp_flags)
+    }
+}
+
+#[cfg(test)]
+mod pytype_spec_flags_tests {
+    use super::*;
+
+    // Oracle: CPython v3.12.0 Include/object.h bit positions.
+    #[test]
+    fn spec_flags_keep_every_cpython_bit_position() {
+        assert_eq!(
+            PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE),
+            1 << 10
+        );
+        assert_eq!(
+            PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC),
+            (1 << 10) | (1 << 14)
+        );
+        assert_eq!(
+            PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_TYPE_SUBCLASS),
+            1 << 31
+        );
+        assert_eq!(PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_DEFAULT), 0);
+    }
+}
+
 unsafe impl Send for PyType_Slot {}
 unsafe impl Sync for PyType_Slot {}
 unsafe impl Send for PyType_Spec {}

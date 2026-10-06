@@ -1360,7 +1360,7 @@ unsafe fn init_storage_native_type(base: *mut PyTypeObject) -> refcount::OwnedPy
         name: c"storage.NativeException".as_ptr(),
         basicsize: unsafe { (*base).tp_basicsize } as i32,
         itemsize: 0,
-        flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE),
+        flags: PyType_Spec::flags_from_tp_flags(Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE),
         slots: slots.as_mut_ptr(),
     };
     let class = unsafe {

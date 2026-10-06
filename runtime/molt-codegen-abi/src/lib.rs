@@ -18,6 +18,8 @@ extern crate std;
 mod heap_kinds_generated;
 pub use heap_kinds_generated::*;
 
+pub mod c_width;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperatingSystem {
     Windows,
