@@ -137,6 +137,18 @@ def _platform_identity() -> dict[str, object]:
     }
 
 
+def _mapped_file_at(address: int, maps: str) -> Path | None:
+    """The file the kernel mapped at ``address`` (a /proc/<pid>/maps text)."""
+    for line in maps.splitlines():
+        fields = line.split(maxsplit=5)
+        if len(fields) < 6:
+            continue
+        start, _, end = fields[0].partition("-")
+        if int(start, 16) <= address < int(end, 16):
+            return Path(fields[5]) if fields[5].startswith("/") else None
+    return None
+
+
 def _runtime_library() -> Path | None:
     try:
         import ctypes
@@ -163,17 +175,32 @@ def _runtime_library() -> Path | None:
                 ("symbol_address", ctypes.c_void_p),
             ]
 
-        process = ctypes.CDLL(None)
-        dladdr = process.dladdr
-        dladdr.argtypes = (ctypes.c_void_p, ctypes.POINTER(_DlInfo))
-        dladdr.restype = ctypes.c_int
-        info = _DlInfo()
         symbol = ctypes.cast(ctypes.pythonapi.Py_GetVersion, ctypes.c_void_p)
-        if not dladdr(symbol, ctypes.byref(info)) or not info.filename:
-            raise PythonEnvironmentIdentityError(
-                "loader cannot identify the CPython runtime symbol owner"
-            )
-        candidate = Path(os.fsdecode(info.filename)).resolve(strict=True)
+        if sys.platform.startswith("linux"):
+            # glibc's dladdr names the main program by its invocation name
+            # (argv[0]: "python3" when found on PATH, or whatever a launcher
+            # chose), so a statically linked runtime would be resolved against
+            # the cwd. The kernel's mapping table names the real file.
+            with open(
+                "/proc/self/maps", encoding="utf-8", errors="surrogateescape"
+            ) as maps:
+                owner = _mapped_file_at(int(symbol.value or 0), maps.read())
+            if owner is None:
+                raise PythonEnvironmentIdentityError(
+                    "kernel maps no file at the CPython runtime symbol"
+                )
+        else:
+            process = ctypes.CDLL(None)
+            dladdr = process.dladdr
+            dladdr.argtypes = (ctypes.c_void_p, ctypes.POINTER(_DlInfo))
+            dladdr.restype = ctypes.c_int
+            info = _DlInfo()
+            if not dladdr(symbol, ctypes.byref(info)) or not info.filename:
+                raise PythonEnvironmentIdentityError(
+                    "loader cannot identify the CPython runtime symbol owner"
+                )
+            owner = Path(os.fsdecode(info.filename))
+        candidate = owner.resolve(strict=True)
         base_executable = Path(
             getattr(sys, "_base_executable", None) or sys.executable
         ).resolve(strict=True)
