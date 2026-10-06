@@ -2517,11 +2517,32 @@ def test_try_cached_backend_candidates_revalidates_stale_stdlib_contract_token(
     assert warnings == []
 
 
+@pytest.mark.parametrize(
+    ("target_triple", "decoration"),
+    [
+        # Mach-O prefixes every C symbol with "_"; ELF and x64 COFF do not.
+        ("x86_64-unknown-linux-gnu", ""),
+        ("x86_64-pc-windows-msvc", ""),
+        ("aarch64-apple-darwin", "_"),
+    ],
+)
 def test_native_object_symbol_sets_use_nm_candidate_ladder(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target_triple: str,
+    decoration: str,
 ) -> None:
+    # The target, not the host running the test, owns symbol decoration.
+    defined_name = decoration + "__future_____Feature___init__"
+    undefined_name = decoration + "molt_runtime_symbol"
     obj = tmp_path / "stdlib_shared_test.o"
-    obj.write_bytes(b"coff")
+    obj.write_bytes(
+        native_relocatable_object(
+            target_triple=target_triple,
+            symbols=(defined_name,),
+            undefined_symbols=(undefined_name,),
+        )
+    )
     calls: list[str] = []
 
     def fake_run_completed_command(
@@ -2530,12 +2551,11 @@ def test_native_object_symbol_sets_use_nm_candidate_ladder(
         del kwargs
         calls.append(cmd[0])
         if cmd[0] == "broken-nm":
-            return subprocess.CompletedProcess(cmd, 1, "", "unreadable COFF")
+            return subprocess.CompletedProcess(cmd, 1, "", "unreadable object")
         return subprocess.CompletedProcess(
             cmd,
             0,
-            "00000000 T __future_____Feature___init__\n"
-            "         U molt_runtime_symbol\n",
+            f"0000000000000000 T {defined_name}\n                 U {undefined_name}\n",
             "",
         )
 
@@ -2548,13 +2568,13 @@ def test_native_object_symbol_sets_use_nm_candidate_ladder(
         native_symbol_inspection, "_run_completed_command", fake_run_completed_command
     )
 
-    symbols = cli._native_object_global_symbol_sets(obj)
+    symbols = cli._native_object_global_symbol_sets(obj, target_triple=target_triple)
 
     assert calls == ["broken-nm", "llvm-nm"]
     assert symbols is not None
     defined, undefined = symbols
-    assert "__future_____Feature___init__" in defined
-    assert "molt_runtime_symbol" in undefined
+    assert defined == {"__future_____Feature___init__"}
+    assert undefined == {"molt_runtime_symbol"}
 
 
 def test_native_object_symbol_sets_accept_empty_objects(
