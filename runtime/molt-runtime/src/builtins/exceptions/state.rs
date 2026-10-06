@@ -20,8 +20,15 @@ pub(crate) struct ExceptionContextFallback {
 thread_local! {
     /// CPython-compatible pending exception for the current native thread.
     /// Async task execution uses the task-keyed runtime map instead; the
-    /// thread slot is the sole authority whenever no task is active.
+    /// thread slot is the sole authority whenever no task is active. The slot
+    /// has no destructor, so it stays accessible while other thread-locals are
+    /// torn down; `THREAD_EXCEPTION_RELEASE` releases its strong edge.
     pub(crate) static THREAD_LAST_EXCEPTION: ThreadExceptionState = const { ThreadExceptionState::new() };
+    /// Thread-exit owner of the pending exception's strong edge. Releasing it
+    /// runs finalizer probes that preserve and restore the pending error, so
+    /// they re-enter `THREAD_LAST_EXCEPTION`; a slot with its own destructor is
+    /// inaccessible while that destructor runs and would abort the thread.
+    static THREAD_EXCEPTION_RELEASE: ThreadExceptionRelease = const { ThreadExceptionRelease };
     /// Inline fast byte for the active execution context. It mirrors the
     /// thread slot outside async execution and the active task's suspended
     /// slot while a task is installed on this native thread.
@@ -73,10 +80,12 @@ impl ThreadExceptionState {
     }
 
     pub(crate) fn set(&self, ptr: *mut u8) {
+        arm_thread_exception_release(ptr);
         self.slot.set(ptr);
     }
 
     pub(crate) fn replace(&self, ptr: *mut u8) -> *mut u8 {
+        arm_thread_exception_release(ptr);
         self.slot.replace(ptr)
     }
 
@@ -102,10 +111,20 @@ impl ThreadExceptionState {
     }
 }
 
-impl Drop for ThreadExceptionState {
+/// First access registers the thread-exit release. During that release the
+/// sentinel is already being destroyed; an exception published by a finalizer
+/// there is drained by the release loop itself.
+fn arm_thread_exception_release(ptr: *mut u8) {
+    if !ptr.is_null() {
+        let _ = THREAD_EXCEPTION_RELEASE.try_with(|_| ());
+    }
+}
+
+struct ThreadExceptionRelease;
+
+impl Drop for ThreadExceptionRelease {
     fn drop(&mut self) {
-        let ptr = self.slot.replace(std::ptr::null_mut());
-        if ptr.is_null() {
+        if THREAD_LAST_EXCEPTION.with(|state| state.get().is_null()) {
             return;
         }
         let gil = GilGuard::new();
@@ -129,7 +148,15 @@ impl Drop for ThreadExceptionState {
             return;
         }
         let py = gil.token();
-        dec_ref_bits(&py, MoltObject::from_ptr(ptr).bits());
+        // Releasing an exception can run finalizers that publish another one;
+        // drain until the slot stays empty.
+        loop {
+            let ptr = THREAD_LAST_EXCEPTION.with(|state| state.slot.replace(std::ptr::null_mut()));
+            if ptr.is_null() {
+                break;
+            }
+            dec_ref_bits(&py, MoltObject::from_ptr(ptr).bits());
+        }
         #[cfg(test)]
         if let Some(completion) = test_completion {
             completion.send(()).unwrap();
