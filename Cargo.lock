@@ -3462,6 +3462,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "socket2",
+ "tempfile",
  "tungstenite",
  "unicode-casefold",
  "unicode-normalization",

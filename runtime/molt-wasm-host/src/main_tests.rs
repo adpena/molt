@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 use wasmtime::{Engine, Func, Linker, Module, Store, Val, ValType};
 use wasmtime_wasi::{I32Exit, WasiCtxBuilder, p1};
 
@@ -87,19 +86,16 @@ fn manifest_path_has_one_explicit_env_default_precedence() {
     );
 }
 
-fn runtime_manifest_fixture(label: &str, module_bytes: &[u8], digest: &str) -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "molt-wasm-host-manifest-{}-{label}-{nonce}",
-        std::process::id()
-    ));
-    fs::create_dir_all(&root).expect("create manifest fixture root");
-    fs::write(root.join("program.wasm"), module_bytes).expect("write module fixture");
+/// A manifest fixture in a directory this process alone owns; the directory
+/// is removed when the returned handle drops.
+fn runtime_manifest_fixture(label: &str, module_bytes: &[u8], digest: &str) -> tempfile::TempDir {
+    let root = tempfile::Builder::new()
+        .prefix(&format!("molt-wasm-host-manifest-{label}-"))
+        .tempdir()
+        .expect("create manifest fixture root");
+    fs::write(root.path().join("program.wasm"), module_bytes).expect("write module fixture");
     fs::write(
-        root.join("manifest.json"),
+        root.path().join("manifest.json"),
         format!(
             r#"{{"version":2,"mode":"linked","modules":{{"linked":{{"path":"program.wasm","size":{},"sha256":"{digest}"}}}}}}"#,
             module_bytes.len()
@@ -114,15 +110,14 @@ fn runtime_manifest_resolves_and_verifies_linked_module() {
     let bytes = b"linked wasm fixture";
     let digest = sha256_hex(bytes);
     let root = runtime_manifest_fixture("valid", bytes, &digest);
-    let manifest = root.join("manifest.json");
+    let manifest = root.path().join("manifest.json");
     let resolved = resolve_execution_modules(Some(manifest.to_string_lossy().into_owned()))
         .expect("resolve valid linked manifest");
     assert_eq!(resolved.manifest_path, manifest);
-    assert_eq!(resolved.main.path(), root.join("program.wasm"));
+    assert_eq!(resolved.main.path(), root.path().join("program.wasm"));
     assert_eq!(resolved.main.bytes(), bytes);
     assert!(resolved.runtime.is_none());
     assert!(resolved.linked);
-    fs::remove_dir_all(root).expect("remove valid fixture");
 }
 
 #[test]
@@ -130,12 +125,12 @@ fn runtime_manifest_resolves_and_verifies_split_modules() {
     let app_bytes = b"app wasm fixture";
     let app_digest = sha256_hex(app_bytes);
     let root = runtime_manifest_fixture("split", app_bytes, &app_digest);
-    let runtime = root.join("runtime.wasm");
+    let runtime = root.path().join("runtime.wasm");
     let runtime_bytes = b"runtime wasm fixture";
     fs::write(&runtime, runtime_bytes).expect("write runtime fixture");
     let runtime_digest = sha256_hex(runtime_bytes);
     fs::write(
-        root.join("manifest.json"),
+        root.path().join("manifest.json"),
         format!(
             r#"{{"version":2,"mode":"split-runtime","modules":{{"app":{{"path":"program.wasm","size":{},"sha256":"{app_digest}"}},"runtime":{{"path":"runtime.wasm","size":{},"sha256":"{runtime_digest}"}}}}}}"#,
             app_bytes.len(),
@@ -144,26 +139,27 @@ fn runtime_manifest_resolves_and_verifies_split_modules() {
     )
     .expect("write split manifest");
     let resolved = resolve_execution_modules(Some(
-        root.join("manifest.json").to_string_lossy().into_owned(),
+        root.path()
+            .join("manifest.json")
+            .to_string_lossy()
+            .into_owned(),
     ))
     .expect("resolve valid split manifest");
-    assert_eq!(resolved.main.path(), root.join("program.wasm"));
+    assert_eq!(resolved.main.path(), root.path().join("program.wasm"));
     assert_eq!(resolved.main.bytes(), app_bytes);
     let runtime_source = resolved.runtime.as_ref().expect("resolved runtime");
     assert_eq!(runtime_source.path(), runtime);
     assert_eq!(runtime_source.bytes(), runtime_bytes);
     assert!(!resolved.linked);
-    fs::remove_dir_all(root).expect("remove split fixture");
 }
 
 #[test]
 fn runtime_manifest_rejects_digest_drift() {
     let root = runtime_manifest_fixture("digest-drift", b"linked wasm fixture", &"0".repeat(64));
-    let manifest = root.join("manifest.json");
+    let manifest = root.path().join("manifest.json");
     let error = resolve_execution_modules(Some(manifest.to_string_lossy().into_owned()))
         .expect_err("digest drift must fail");
     assert!(error.to_string().contains("linked SHA-256 mismatch"));
-    fs::remove_dir_all(root).expect("remove drift fixture");
 }
 
 #[test]
@@ -172,7 +168,10 @@ fn admitted_manifest_bytes_are_the_bytes_compiled_after_path_replacement() {
     let replacement = br#"(module (func (export "answer") (result i32) i32.const 99))"#;
     let root = runtime_manifest_fixture("immutable-source", original, &sha256_hex(original));
     let resolved = resolve_execution_modules(Some(
-        root.join("manifest.json").to_string_lossy().into_owned(),
+        root.path()
+            .join("manifest.json")
+            .to_string_lossy()
+            .into_owned(),
     ))
     .expect("admit original module bytes");
     fs::write(resolved.main.path(), replacement).expect("replace admitted path");
@@ -191,14 +190,13 @@ fn admitted_manifest_bytes_are_the_bytes_compiled_after_path_replacement() {
             .unwrap(),
         17,
     );
-    fs::remove_dir_all(root).expect("remove immutable-source fixture");
 }
 
 #[test]
 fn runtime_manifest_rejects_version_and_nonportable_asset_paths() {
     let bytes = b"module fixture";
     let root = runtime_manifest_fixture("manifest-admission", bytes, &sha256_hex(bytes));
-    let path = root.join("manifest.json");
+    let path = root.path().join("manifest.json");
     let original: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     for version in [0, 1, 3] {
         let mut manifest = original.clone();
@@ -223,21 +221,15 @@ fn runtime_manifest_rejects_version_and_nonportable_asset_paths() {
             resolve_execution_modules(Some(path.to_string_lossy().into_owned())).unwrap_err();
         assert!(error.to_string().contains("adjacent file"), "{error:#}");
     }
-    fs::remove_dir_all(root).expect("remove manifest-admission fixture");
 }
 
 #[test]
 fn explicit_wasi_command_resolves_without_a_runtime_manifest() {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock")
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "molt-wasm-host-command-{}-{nonce}",
-        std::process::id()
-    ));
-    fs::create_dir_all(&root).expect("create command fixture root");
-    let module = root.join("command.wasm");
+    let root = tempfile::Builder::new()
+        .prefix("molt-wasm-host-command-")
+        .tempdir()
+        .expect("create command fixture root");
+    let module = root.path().join("command.wasm");
     fs::write(&module, b"command wasm fixture").expect("write command fixture");
 
     let resolved = resolve_execution(ExecutionRequest::WasiCommand {
@@ -251,7 +243,6 @@ fn explicit_wasi_command_resolves_without_a_runtime_manifest() {
         }
         ResolvedExecution::MoltApplication(_) => panic!("command resolved as application"),
     }
-    fs::remove_dir_all(root).expect("remove command fixture");
 }
 
 #[test]

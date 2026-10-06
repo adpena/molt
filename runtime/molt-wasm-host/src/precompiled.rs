@@ -403,29 +403,24 @@ pub(super) fn precompile_execution(
 mod tests {
     use super::*;
 
-    struct Fixture(PathBuf);
+    /// A directory this process alone owns, removed when the fixture drops.
+    struct Fixture(tempfile::TempDir);
     impl Fixture {
         fn new() -> Self {
-            let nonce = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let path = env::temp_dir().join(format!(
-                "molt-native-container-{}-{nonce}",
-                std::process::id()
-            ));
-            fs::create_dir(&path).unwrap();
-            Self(path)
+            Self(
+                tempfile::Builder::new()
+                    .prefix("molt-native-container-")
+                    .tempdir()
+                    .unwrap(),
+            )
+        }
+        fn path(&self) -> &Path {
+            self.0.path()
         }
         fn source(&self, name: &str, bytes: &[u8]) -> ModuleSource {
-            let path = self.0.join(name);
+            let path = self.path().join(name);
             fs::write(&path, bytes).unwrap();
             ModuleSource::read(path, "fixture", None).unwrap()
-        }
-    }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            fs::remove_dir_all(&self.0).expect("remove owned native-container fixture");
         }
     }
 
@@ -475,7 +470,7 @@ mod tests {
             b"(module (func $start unreachable) (start $start))",
         );
         let engine = build_engine().unwrap();
-        let path = fixture.0.join("trap.molt.cwasm");
+        let path = fixture.path().join("trap.molt.cwasm");
         let prepared = PreparedArtifact::prepare(&engine, &source, path.clone()).unwrap();
         assert!(!path.exists(), "preparation must not publish");
         fs::write(source.path(), b"replacement source").unwrap();
@@ -495,7 +490,7 @@ mod tests {
             "core start was not executed by producer"
         );
         assert_eq!(
-            fs::read_dir(&fixture.0).unwrap().count(),
+            fs::read_dir(fixture.path()).unwrap().count(),
             2,
             "no sidecars or temporaries"
         );
@@ -507,10 +502,10 @@ mod tests {
         let main = fixture.source("app.wat", b"(module)");
         let runtime = fixture.source("runtime.wat", b"invalid module");
         for name in ["app.molt.cwasm", "runtime.molt.cwasm"] {
-            fs::write(fixture.0.join(name), b"retained generation").unwrap();
+            fs::write(fixture.path().join(name), b"retained generation").unwrap();
         }
         let execution = ResolvedExecution::MoltApplication(ResolvedExecutionModules {
-            manifest_path: fixture.0.join("manifest.json"),
+            manifest_path: fixture.path().join("manifest.json"),
             main,
             runtime: Some(runtime),
             linked: false,
@@ -521,11 +516,11 @@ mod tests {
         assert!(format!("{error:#}").contains("runtime.wat"));
         for name in ["app.molt.cwasm", "runtime.molt.cwasm"] {
             assert_eq!(
-                fs::read(fixture.0.join(name)).unwrap(),
+                fs::read(fixture.path().join(name)).unwrap(),
                 b"retained generation"
             );
         }
-        assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 4);
+        assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 4);
     }
 
     #[test]
@@ -537,7 +532,7 @@ mod tests {
         );
         let runtime = fixture.source("runtime.wat", b"(module)");
         let execution = ResolvedExecution::MoltApplication(ResolvedExecutionModules {
-            manifest_path: fixture.0.join("manifest.json"),
+            manifest_path: fixture.path().join("manifest.json"),
             main,
             runtime: Some(runtime),
             linked: false,
@@ -556,20 +551,20 @@ mod tests {
             // Trusted bytes from this operation.
             unsafe { Module::deserialize(&engine, payload) }.unwrap();
         }
-        assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 4);
+        assert_eq!(fs::read_dir(fixture.path()).unwrap().count(), 4);
     }
 
     #[test]
     fn output_collisions_and_nonregular_destinations_fail_before_publication() {
         let fixture = Fixture::new();
         let source = fixture.source("source.wasm", b"(module)");
-        let manifest = fixture.0.join("manifest.json");
-        let output = fixture.0.join("output.molt.cwasm");
+        let manifest = fixture.path().join("manifest.json");
+        let output = fixture.path().join("output.molt.cwasm");
         for paths in [
             vec![source.path().to_path_buf()],
             vec![manifest.clone()],
             vec![output.clone(), output.clone()],
-            vec![fixture.0.clone()],
+            vec![fixture.path().to_path_buf()],
         ] {
             assert!(validate_destinations(&[&source], &paths, Some(&manifest)).is_err());
         }
@@ -581,13 +576,13 @@ mod tests {
             assert!(
                 validate_destinations(
                     &[&source],
-                    &names.map(|name| fixture.0.join(name)),
+                    &names.map(|name| fixture.path().join(name)),
                     Some(&manifest)
                 )
                 .is_err()
             );
         }
-        let alias = fixture.0.join("hardlink-source.wasm");
+        let alias = fixture.path().join("hardlink-source.wasm");
         fs::hard_link(source.path(), &alias).unwrap();
         assert!(validate_destinations(&[&source], &[alias], Some(&manifest)).is_err());
     }
@@ -597,12 +592,12 @@ mod tests {
     fn admitted_source_and_manifest_symlink_targets_are_protected() {
         let fixture = Fixture::new();
         let source = fixture.source("actual.wasm", b"(module)");
-        let link = fixture.0.join("source.wasm");
+        let link = fixture.path().join("source.wasm");
         std::os::unix::fs::symlink(source.path(), &link).unwrap();
         let admitted = ModuleSource::read(link, "symlink source", None).unwrap();
         assert!(validate_destinations(&[&admitted], &[source.path().to_path_buf()], None).is_err());
-        let manifest_target = fixture.0.join("actual.json");
-        let manifest_link = fixture.0.join("manifest.json");
+        let manifest_target = fixture.path().join("actual.json");
+        let manifest_link = fixture.path().join("manifest.json");
         fs::write(&manifest_target, b"{}").unwrap();
         std::os::unix::fs::symlink(&manifest_target, &manifest_link).unwrap();
         assert!(

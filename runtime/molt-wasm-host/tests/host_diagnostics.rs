@@ -5,31 +5,22 @@ mod support;
 
 use support::host;
 
-struct ArtifactFixture(std::path::PathBuf);
+/// Artifacts in a directory this process alone owns, removed when it drops.
+struct ArtifactFixture(tempfile::TempDir);
 
 impl ArtifactFixture {
     fn new() -> Self {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "molt-precompile-cli-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&path).unwrap();
-        Self(path)
+        Self(
+            tempfile::Builder::new()
+                .prefix("molt-precompile-cli-")
+                .tempdir()
+                .unwrap(),
+        )
     }
     fn write(&self, name: &str, content: &[u8]) -> std::path::PathBuf {
-        let path = self.0.join(name);
+        let path = self.0.path().join(name);
         std::fs::write(&path, content).unwrap();
         path
-    }
-}
-
-impl Drop for ArtifactFixture {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).expect("remove owned CLI fixture");
     }
 }
 
@@ -37,7 +28,7 @@ impl Drop for ArtifactFixture {
 fn actual_precompile_command_roundtrips_through_source_bound_loader() {
     let fixture = ArtifactFixture::new();
     let source = fixture.write("command.wat", b"(module (func (export \"_start\")))");
-    let artifact = fixture.0.join("explicit.molt.cwasm");
+    let artifact = fixture.0.path().join("explicit.molt.cwasm");
     let output = host()
         .args(["--precompile", "--wasi-command"])
         .arg(&source)
@@ -58,7 +49,7 @@ fn actual_precompile_command_roundtrips_through_source_bound_loader() {
     let original = std::fs::read(&artifact).unwrap();
     assert_eq!(main["sha256"], molt_wasm_host::sha256_hex(&original));
     assert_eq!(main["size"], original.len());
-    assert_eq!(std::fs::read_dir(&fixture.0).unwrap().count(), 2);
+    assert_eq!(std::fs::read_dir(fixture.0.path()).unwrap().count(), 2);
     let run = || {
         host()
             .arg("--wasi-command")
@@ -129,7 +120,7 @@ fn actual_manifest_precompile_resolves_every_member_without_executing_guest() {
         assert_eq!(member["sha256"], molt_wasm_host::sha256_hex(&bytes));
     }
     assert_eq!(
-        std::fs::read_dir(&fixture.0).unwrap().count(),
+        std::fs::read_dir(fixture.0.path()).unwrap().count(),
         5,
         "no custody sidecars"
     );
@@ -165,7 +156,7 @@ fn actual_precompile_rejects_source_alias_and_retired_write_mode() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("is retired"));
-    assert_eq!(std::fs::read_dir(&fixture.0).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(fixture.0.path()).unwrap().count(), 1);
 }
 
 #[test]
@@ -202,22 +193,14 @@ fn host_diagnostics_are_explicit_stderr_only_and_ignore_rust_log() {
 
 #[test]
 fn upstream_compiler_timings_are_available_through_the_actual_host() {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock")
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "molt-host-compiler-profile-{}-{nonce}.wat",
-        std::process::id()
-    ));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
+    let mut file = tempfile::Builder::new()
+        .prefix("molt-host-compiler-profile-")
+        .suffix(".wat")
+        .tempfile()
         .expect("create unique profiling fixture");
-    std::io::Write::write_all(&mut file, b"(module (func (export \"_start\")))")
+    std::io::Write::write_all(file.as_file_mut(), b"(module (func (export \"_start\")))")
         .expect("write profiling fixture");
-    drop(file);
+    let path = file.path().to_path_buf();
     let result = host()
         .args(["--wasi-command"])
         .arg(&path)
@@ -227,7 +210,7 @@ fn upstream_compiler_timings_are_available_through_the_actual_host() {
             "off,wasmtime_internal_cranelift::compiler=trace",
         )
         .output();
-    std::fs::remove_file(&path).expect("remove owned profiling fixture");
+    drop(file);
     let output = result.expect("run production compiler profiling");
     let stderr = String::from_utf8(output.stderr).expect("UTF-8 compiler diagnostics");
     assert!(output.status.success(), "host failed: {stderr}");
