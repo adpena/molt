@@ -114,14 +114,44 @@ def _read_capability(
     )
 
 
-@pytest.mark.parametrize("mode", ["leaf", "declared-tree"])
+_REAL_REFUSALS = {
+    # Linux advertises its authorities even when Yama forbids ptrace.
+    "leaf": {
+        "sys_platform": "linux",
+        "platform": "linux",
+        "backend": "ptrace-exitkill",
+        "pre_entry_exec_authority": True,
+        "pre_entry_process_create_authority": True,
+        "recursive_descendant_authority": True,
+        "reason": "Yama ptrace_scope=3 forbids ptrace",
+    },
+    # macOS without Endpoint Security refuses every tree mode before launch.
+    "declared-tree": {
+        "sys_platform": "darwin",
+        "platform": "macos",
+        "backend": "seatbelt+ptrace",
+        "pre_entry_exec_authority": False,
+        "pre_entry_process_create_authority": False,
+        "recursive_descendant_authority": False,
+        "reason": (
+            "macOS without an Endpoint Security entitlement cannot observe "
+            "descendant process creation before entry: EVFILT_PROC NOTE_TRACK "
+            "is unsupported, NOTE_FORK carries no child pid, ptrace does not "
+            "follow fork, and PT_ATTACHEXC is denied for platform binaries; "
+            "only leaf closure is kernel-enforced on this host"
+        ),
+    },
+}
+
+
+@pytest.mark.parametrize("mode", sorted(_REAL_REFUSALS))
 def test_unavailable_capability_refuses_before_execution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     cargo_output_implementation_source: Path,
     mode: str,
 ) -> None:
-    """Inject the unavailable report, not a successful execution or receipt."""
+    """Inject a real backend's unavailable report, never an execution or receipt."""
     tmp_path = proof_queue_owned_roots.native_case_path(
         tmp_path, source=Path(__file__), nodeid=f"unavailable-capability::{mode}"
     )
@@ -160,20 +190,9 @@ def test_unavailable_capability_refuses_before_execution(
         ),
         encoding="utf-8",
     )
-    capability = {
-        **_capability({}),
-        "platform": "macos",
-        "mode": mode,
-        "backend": "macos-endpoint-security",
-        "available": False,
-        "pre_entry_exec_authority": False,
-        "pre_entry_process_create_authority": False,
-        "recursive_descendant_authority": False,
-        "reason": (
-            "Endpoint Security entitlement and privileged helper "
-            "are not available in this binary"
-        ),
-    }
+    refusal = dict(_REAL_REFUSALS[mode])
+    sys_platform = str(refusal.pop("sys_platform"))
+    capability = {**_capability({}), **refusal, "mode": mode, "available": False}
 
     def capability_probe(command: tuple[str, ...], **kwargs: object):
         assert command[1:] == ("capability", mode)
@@ -189,7 +208,9 @@ def test_unavailable_capability_refuses_before_execution(
         pytest.fail("an unavailable capability must never start the command")
 
     monkeypatch.setattr(command_identity, "_run_captured", capability_probe)
-    monkeypatch.setattr(supervisor_custody, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(
+        supervisor_custody, "sys", SimpleNamespace(platform=sys_platform)
+    )
     monkeypatch.setattr(supervisor_generation, "provision", provision)
     monkeypatch.setattr(
         guarded_execution, "_run_supervisor_with_transcripts", forbidden

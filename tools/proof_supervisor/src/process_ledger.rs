@@ -42,6 +42,7 @@ struct ActiveProcess {
 enum ProcessEventDialect {
     WindowsDebugProcess,
     LinuxPtrace,
+    MacosSeatbeltPtrace,
     Unavailable,
 }
 
@@ -60,6 +61,7 @@ impl ProcessEventDialect {
                 Ok(Self::WindowsDebugProcess)
             }
             ("linux", "ptrace-exitkill") if capability.available => Ok(Self::LinuxPtrace),
+            ("macos", "seatbelt+ptrace") if capability.available => Ok(Self::MacosSeatbeltPtrace),
             _ if !capability.available => Ok(Self::Unavailable),
             _ => Err(format!(
                 "event ledger has no dialect for available backend {}/{}",
@@ -75,7 +77,8 @@ impl ProcessEventDialect {
                 ProcessEventKind::ProcessExit { .. } => true,
                 ProcessEventKind::Fork { .. }
                 | ProcessEventKind::Exec { .. }
-                | ProcessEventKind::CloneUnclassified { .. } => false,
+                | ProcessEventKind::CloneUnclassified { .. }
+                | ProcessEventKind::KernelPolicyTermination { .. } => false,
             },
             Self::LinuxPtrace => match &event.event {
                 ProcessEventKind::ProcessCreate { image, .. } => root_missing && image.is_none(),
@@ -83,6 +86,16 @@ impl ProcessEventDialect {
                 | ProcessEventKind::Fork { .. }
                 | ProcessEventKind::Exec { .. }
                 | ProcessEventKind::CloneUnclassified { .. } => true,
+                ProcessEventKind::KernelPolicyTermination { .. } => false,
+            },
+            // Seatbelt denies every fork before the child exists, so the only
+            // processes are the traced root and its pre-entry exec images.
+            Self::MacosSeatbeltPtrace => match &event.event {
+                ProcessEventKind::ProcessCreate { image, .. } => root_missing && image.is_none(),
+                ProcessEventKind::ProcessExit { .. }
+                | ProcessEventKind::Exec { .. }
+                | ProcessEventKind::KernelPolicyTermination { .. } => true,
+                ProcessEventKind::Fork { .. } | ProcessEventKind::CloneUnclassified { .. } => false,
             },
             Self::Unavailable => false,
         };
@@ -92,6 +105,7 @@ impl ProcessEventDialect {
             let backend = match self {
                 Self::WindowsDebugProcess => "Windows debug-process",
                 Self::LinuxPtrace => "Linux ptrace",
+                Self::MacosSeatbeltPtrace => "macOS seatbelt+ptrace",
                 Self::Unavailable => "unavailable",
             };
             Err(format!(
@@ -281,6 +295,14 @@ impl ProcessLedger {
                 self.validate_live_parent(Some(*parent_process_id))?;
                 if reason.is_empty() {
                     return Err("unclassified clone event has an empty reason".to_owned());
+                }
+                self.record_violation(reason.clone(), &mut outcome);
+            }
+            ProcessEventKind::KernelPolicyTermination { reason } => {
+                self.require_root_creation()?;
+                self.require_active_process(event)?;
+                if reason.is_empty() {
+                    return Err("kernel policy termination event has an empty reason".to_owned());
                 }
                 self.record_violation(reason.clone(), &mut outcome);
             }

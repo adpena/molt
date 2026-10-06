@@ -1,4 +1,4 @@
-#![cfg(any(target_os = "windows", target_os = "linux"))]
+#![cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 
 use molt_proof_supervisor::evidence::{durable_atomic_write, event_artifact_path};
 use molt_proof_supervisor::{
@@ -27,7 +27,14 @@ impl Drop for TestRun {
 
 #[test]
 fn verify_binds_every_canonical_policy_dimension() {
-    let run = run_fixture(ClosureMode::DeclaredTree);
+    // macOS admits only leaf closure; a leaf policy cannot carry derived
+    // roots, so that dimension is exercised where tree closure exists.
+    let mode = if cfg!(target_os = "macos") {
+        ClosureMode::Leaf
+    } else {
+        ClosureMode::DeclaredTree
+    };
+    let run = run_fixture(mode);
     assert!(
         verify(&run.binary, &run.policy_path, &run.receipt_path)
             .status
@@ -59,12 +66,14 @@ fn verify_binds_every_canonical_policy_dimension() {
     role.fixed_images[0].role = role.root_role.clone();
     variants.push(role);
 
-    let mut derived = run.policy.clone();
-    derived.derived_roots.push(DerivedRoot {
-        role: "generated-tool".to_owned(),
-        path: derived_root,
-    });
-    variants.push(derived);
+    if mode == ClosureMode::DeclaredTree {
+        let mut derived = run.policy.clone();
+        derived.derived_roots.push(DerivedRoot {
+            role: "generated-tool".to_owned(),
+            path: derived_root,
+        });
+        variants.push(derived);
+    }
 
     for (index, policy) in variants.into_iter().enumerate() {
         let path = run.directory.join(format!("substitute-{index}.json"));

@@ -156,6 +156,12 @@ pub enum ProcessEventKind {
         parent_process_id: u32,
         reason: String,
     },
+    /// The kernel enforced the sealed policy by terminating a live process
+    /// before the denied process creation or image could exist. The process
+    /// still exits afterwards; this event only attributes the kill.
+    KernelPolicyTermination {
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

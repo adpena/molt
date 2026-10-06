@@ -1,9 +1,11 @@
-#![cfg(any(target_os = "windows", target_os = "linux"))]
+#![cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 
 use molt_proof_supervisor::{
-    ClosureMode, FixedImage, ImageClass, POLICY_SCHEMA, Policy, ProcessEvent, Receipt,
-    RootExitDisposition, platform, sha256_file,
+    ClosureMode, FixedImage, POLICY_SCHEMA, Policy, Receipt, RootExitDisposition, platform,
+    sha256_file,
 };
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+use molt_proof_supervisor::{ImageClass, ProcessEvent};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -31,9 +33,17 @@ fn leaf_rejects_descendants_before_they_escape_custody() {
             .any(|value| value.contains("descendant process")),
         "{receipt:#?}"
     );
-    assert!(receipt.accounting.process_creates >= 2);
+    // Seatbelt denies the fork in the kernel, so no descendant ever exists
+    // on macOS; the other backends observe it before it escapes.
+    if cfg!(target_os = "macos") {
+        assert_eq!(receipt.accounting.process_creates, 1);
+        assert_eq!(receipt.root_exit_code, Some(137));
+    } else {
+        assert!(receipt.accounting.process_creates >= 2);
+    }
 }
 
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 #[test]
 fn declared_tree_accepts_a_fixed_descendant_image() {
     let receipt = supervise(ClosureMode::DeclaredTree, "spawn-self");
@@ -45,6 +55,7 @@ fn declared_tree_accepts_a_fixed_descendant_image() {
     );
 }
 
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 #[test]
 fn inventory_observes_a_distinct_runtime_before_normal_policy_sealing() {
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_molt-proof-supervisor"));
@@ -144,6 +155,7 @@ fn inventory_observes_a_distinct_runtime_before_normal_policy_sealing() {
     let _ = fs::remove_dir_all(directory);
 }
 
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 #[test]
 fn declared_auxiliary_is_terminated_when_root_exits() {
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_molt-proof-supervisor"));
@@ -213,6 +225,7 @@ fn declared_auxiliary_is_terminated_when_root_exits() {
     let _ = fs::remove_dir_all(directory);
 }
 
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 #[test]
 fn process_heavy_declared_tree_keeps_terminal_receipt_compact() {
     let receipt = supervise_with_fixture_args(ClosureMode::DeclaredTree, &["spawn-many", "256"]);
