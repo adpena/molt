@@ -10,7 +10,7 @@ import hashlib
 from pathlib import Path
 import stat
 import subprocess
-import tempfile
+from molt.temporary_artifacts import new_temporary_directory
 import threading
 import time
 from types import MappingProxyType
@@ -500,9 +500,7 @@ def _snapshot_rust_wasm_facts_scanner(
     ):
         raise ValueError("WASM facts scanner bytes changed during snapshot")
     scratch_root.mkdir(parents=True, exist_ok=True)
-    snapshot_dir = Path(
-        tempfile.mkdtemp(prefix="wasm-facts-scanner-", dir=scratch_root)
-    )
+    snapshot_dir = new_temporary_directory(scratch_root, prefix="wasm-facts-scanner-")
     snapshot = snapshot_dir / source_identity.path.name
     try:
         snapshot.write_bytes(source_bytes)

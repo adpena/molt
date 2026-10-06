@@ -5,7 +5,6 @@ import argparse
 import json
 import os
 import sys
-import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -237,6 +236,8 @@ def _run_wasm_ld(
     expected_inputs: Mapping[Path, str] | None = None,
     additional_inputs: Sequence[Path] = (),
 ) -> int:
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+
     expected_target = "wasm32-unknown-unknown" if freestanding else "wasm32-wasip1"
     phase_timings_ms: dict[str, float] = {}
     expected = dict(expected_inputs or {})
@@ -308,7 +309,7 @@ def _run_wasm_ld(
             publication_outputs["timings"] = phase_timings_file
         validate_link_output_paths(publication_outputs, inputs=publication_inputs)
         output_paths_admitted = True
-        with tempfile.TemporaryDirectory(prefix="molt-wasm-link-custody-") as tmp:
+        with OwnedTemporaryDirectory(prefix="molt-wasm-link-custody-") as tmp:
             snapshot_root = Path(tmp)
             runtime_snapshot_root = snapshot_root / "runtime-pair"
             facts_provider = make_rust_wasm_facts_provider(

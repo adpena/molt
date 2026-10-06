@@ -4,7 +4,7 @@ from __future__ import annotations
 from wasm_link_fact_provider import WasmFactsProvider
 
 import sys
-import tempfile
+from molt.temporary_artifacts import OwnedTemporaryDirectory
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -196,7 +196,7 @@ def _extend_code_relocations(
 
 def _inject_app_export_adapters(
     output: Path,
-    temp_dir: tempfile.TemporaryDirectory,
+    temp_dir: OwnedTemporaryDirectory,
     *,
     public_export_names: Sequence[str],
     call_abi: Mapping[str, object],
@@ -1096,7 +1096,7 @@ def _rewrite_runtime_imports_in_module(
 def _rewrite_native_runtime_imports(
     native_objects: tuple[Path, ...],
     runtime_exports: set[str],
-    temp_dir: tempfile.TemporaryDirectory,
+    temp_dir: OwnedTemporaryDirectory,
     *,
     split_runtime: bool = False,
 ) -> tuple[tuple[Path, ...], list[str]]:
@@ -1152,7 +1152,7 @@ def _rewrite_runtime_import_module_namespace(
     source_module: str,
     target_module: str,
     runtime_exports: set[str],
-    temp_dir: tempfile.TemporaryDirectory,
+    temp_dir: OwnedTemporaryDirectory,
     filename: str,
 ) -> tuple[Path, list[str]] | None:
     data = module_path.read_bytes()
@@ -1176,8 +1176,8 @@ def _rewrite_runtime_import_module_namespace(
 def _rewrite_output_imports(
     output: Path,
     runtime_exports: set[str],
-    temp_dir: tempfile.TemporaryDirectory,
-) -> tuple[Path, tempfile.TemporaryDirectory, list[str]] | None:
+    temp_dir: OwnedTemporaryDirectory,
+) -> tuple[Path, OwnedTemporaryDirectory, list[str]] | None:
     """Rewrite output imports to add the ``molt_`` prefix where needed.
 
     Returns ``(rewritten_path, temp_dir, force_exports)`` on success.

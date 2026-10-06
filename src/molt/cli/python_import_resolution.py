@@ -205,6 +205,7 @@ class _LocalPathProbe:
 @dataclass(frozen=True)
 class LocalPythonModuleResolver:
     search_roots: tuple[Path, ...]
+    source_roots: tuple[Path, ...] | None = None
     _resolution_cache: dict[str, _ResolvedLocalModule | None] = field(
         default_factory=dict,
         compare=False,
@@ -220,6 +221,18 @@ class LocalPythonModuleResolver:
         if not resolved:
             raise ValueError("local Python module resolver requires a search root")
         object.__setattr__(self, "search_roots", resolved)
+        sources = (
+            resolved
+            if self.source_roots is None
+            else tuple(root.resolve() for root in self.source_roots)
+        )
+        if not sources:
+            raise ValueError("local Python module resolver requires a source root")
+        object.__setattr__(self, "source_roots", sources)
+
+    def _owns_source(self, path: Path) -> bool:
+        assert self.source_roots is not None
+        return any(path.is_relative_to(root) for root in self.source_roots)
 
     def capture_source(self, path: Path) -> PythonSourceSnapshot:
         try:
@@ -229,6 +242,8 @@ class LocalPythonModuleResolver:
 
     def module_identity(self, path: Path) -> tuple[str, str]:
         """Name a source already canonicalized at the discovery boundary."""
+        if not self._owns_source(path):
+            raise ValueError(f"Python source is outside local source roots: {path}")
         for root in self.search_roots:
             try:
                 path.relative_to(root)
@@ -334,7 +349,9 @@ class LocalPythonModuleResolver:
             resolved = path.resolve()
         except OSError:
             return None
-        if any(resolved.is_relative_to(root) for root in self.search_roots):
+        if self._owns_source(resolved) and any(
+            resolved.is_relative_to(root) for root in self.search_roots
+        ):
             return _LocalPathProbe(resolved, mode)
         return None
 

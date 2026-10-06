@@ -4,7 +4,6 @@ import importlib.util
 import json
 import os
 import subprocess
-import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -15,7 +14,7 @@ from molt.cli.source_extension_link_requirements import (
     merge_source_extension_link_requirements,
     source_extension_link_requirements,
 )
-from molt.cli import link_fingerprints
+from molt.cli import link_fingerprints, native_symbol_inspection
 from molt.cli.python_source_closure import LocalPythonSourceClosure
 from molt.cli.wasm_link_args import wasm_link_output_arguments
 from molt.cli.source_extension_link_requirements import (
@@ -26,6 +25,7 @@ from molt.cli.source_extension_link_requirements import (
     source_extension_link_file,
 )
 from tests.cli.native_link_test_support import static_archive_bytes
+from tests.executable_test_support import write_mock_executable
 from molt import wasm_artifact
 from molt._wasm_runtime_exports import (
     wasm_split_runtime_export_name_for_import,
@@ -37,6 +37,7 @@ from molt.frontend import SimpleTIRGenerator
 from molt.wasm_artifact import parse_wasm_exports, parse_wasm_imports
 from molt.wasm_linking_symbols import (
     FLAG_BINDING_GLOBAL,
+    FLAG_BINDING_LOCAL,
     FLAG_EXPORTED,
     FLAG_NO_STRIP,
     FLAG_BINDING_WEAK,
@@ -47,6 +48,7 @@ from molt.wasm_linking_symbols import (
     parse_wasm_linking_symbols,
 )
 from molt.toolchain_identity import stable_regular_file_identity
+from molt.temporary_artifacts import OwnedTemporaryDirectory
 
 
 def _load_wasm_link():
@@ -808,6 +810,64 @@ def _rust_facts_fixture(data: bytes) -> dict[str, object]:
             key=lambda row: str(row["name"]),
         ),
     }
+
+
+@pytest.fixture(autouse=True)
+def _native_symbol_reader_fixture(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Mock SDK selection and nm transport, retaining native artifact admission."""
+    reader_path: Path | None = None
+
+    def reader(*, nm_command, target_triple, requirement):
+        nonlocal reader_path
+        assert nm_command is None
+        assert target_triple == "wasm32-wasip1"
+        if reader_path is None:
+            reader_path = write_mock_executable(
+                tmp_path_factory.mktemp("wasm-native-reader") / "llvm-nm",
+                b"mocked WASM llvm-nm transport v1\n",
+            )
+        candidate = native_symbol_inspection._native_symbol_reader_candidate(
+            (str(reader_path),)
+        )
+        assert candidate.admission_error is None
+        return native_symbol_inspection._NativeSymbolReader(
+            (candidate,),
+            (candidate.cache_identity(), requirement.cache_identity()),
+            requirement,
+        )
+
+    def run_nm(command, **kwargs):
+        assert reader_path is not None
+        assert command[:2] == [str(reader_path), "-g"]
+        assert len(command) == 3
+        path = Path(command[2])
+        assert kwargs["cwd"] == path.parent
+        rows: list[str] = []
+        archive = path.read_bytes().startswith(wasm_archive.AR_MAGIC)
+        for member in wasm_archive.iter_wasm_object_members(path):
+            if archive:
+                rows.append(f"{member.name}:")
+            for symbol in _fixture_linking_symbols(member.data):
+                flags = symbol["flags"]
+                binding = flags & SYMBOL_BINDING_MASK
+                if binding == FLAG_BINDING_LOCAL:
+                    continue
+                if flags & wasm_link_format.FLAG_UNDEFINED:
+                    if binding == FLAG_BINDING_WEAK:
+                        kind = "w" if symbol["kind"] == "function" else "v"
+                    else:
+                        kind = "U"
+                elif symbol["kind"] == "function":
+                    kind = "W" if binding == FLAG_BINDING_WEAK else "T"
+                else:
+                    kind = "V" if binding == FLAG_BINDING_WEAK else "D"
+                rows.append(f"00000000 {kind} {symbol['name']}")
+        return subprocess.CompletedProcess(command, 0, "\n".join(rows), "")
+
+    monkeypatch.setattr(native_symbol_inspection, "_native_symbol_reader", reader)
+    monkeypatch.setattr(native_symbol_inspection, "_run_completed_command", run_nm)
 
 
 @pytest.fixture(autouse=True)
@@ -1856,7 +1916,7 @@ def test_app_export_adapters_sweep_arity_and_forward_owned_result_boundary(
 ) -> None:
     output = tmp_path / "output.wasm"
     output.write_bytes(_build_app_adapter_input((0, 1, 3)))
-    temp_dir = tempfile.TemporaryDirectory(dir=tmp_path)
+    temp_dir = OwnedTemporaryDirectory(dir=tmp_path)
     try:
         adapted_path, adapter_map = wasm_link_edit._inject_app_export_adapters(
             output,
@@ -1908,7 +1968,7 @@ def test_app_export_adapter_validator_replaces_raw_target_identity(
 ) -> None:
     output = tmp_path / "output.wasm"
     output.write_bytes(_build_app_adapter_input((0, 1)))
-    temp_dir = tempfile.TemporaryDirectory(dir=tmp_path)
+    temp_dir = OwnedTemporaryDirectory(dir=tmp_path)
     try:
         adapted_path, adapter_map = wasm_link_edit._inject_app_export_adapters(
             output,
@@ -1964,7 +2024,7 @@ def test_app_export_adapter_identity_survives_metadata_strip_and_rejects_wrong_c
 ) -> None:
     output = tmp_path / "output.wasm"
     output.write_bytes(_build_app_adapter_input((1, 1)))
-    temp_dir = tempfile.TemporaryDirectory(dir=tmp_path)
+    temp_dir = OwnedTemporaryDirectory(dir=tmp_path)
     try:
         adapted_path, adapter_map = wasm_link_edit._inject_app_export_adapters(
             output,
@@ -2048,7 +2108,7 @@ def test_app_export_adapters_have_no_ownership_import_dependency(
 ) -> None:
     output = tmp_path / "output.wasm"
     output.write_bytes(_build_app_adapter_input((0,)))
-    temp_dir = tempfile.TemporaryDirectory(dir=tmp_path)
+    temp_dir = OwnedTemporaryDirectory(dir=tmp_path)
     try:
         adapted_path, _adapter_map = wasm_link_edit._inject_app_export_adapters(
             output,
@@ -2070,7 +2130,7 @@ def test_app_export_adapters_fail_closed_on_noncanonical_target_signature(
 ) -> None:
     output = tmp_path / "output.wasm"
     output.write_bytes(_build_app_adapter_input((0,), target_result_type=0x7F))
-    temp_dir = tempfile.TemporaryDirectory(dir=tmp_path)
+    temp_dir = OwnedTemporaryDirectory(dir=tmp_path)
     try:
         with pytest.raises(ValueError, match=r"canonical \(i64\.\.\.\) -> i64"):
             wasm_link_edit._inject_app_export_adapters(
@@ -3625,6 +3685,56 @@ def _module_with_linking_symbols(entries: list[bytes]) -> bytes:
     )
     custom = wasm_link_format._build_custom_section("linking", linking_payload)
     return wasm_link_operations.build_sections([(0, custom)])
+
+
+@pytest.mark.parametrize("archive", [False, True])
+def test_native_reader_fixture_preserves_symbol_kinds_and_member_custody(
+    tmp_path: Path, archive: bool
+) -> None:
+    module = _module_with_linking_symbols(
+        [
+            _function_symbol_entry(
+                flags=wasm_link_format.FLAG_EXPLICIT_NAME,
+                index=0,
+                name="fixture_function",
+            ),
+            _function_symbol_entry(
+                flags=FLAG_BINDING_LOCAL | wasm_link_format.FLAG_EXPLICIT_NAME,
+                index=1,
+                name="fixture_local",
+            ),
+            _data_symbol_entry(
+                flags=wasm_link_format.FLAG_EXPLICIT_NAME,
+                name="fixture_data",
+            ),
+            _data_symbol_entry(
+                flags=wasm_link_format.FLAG_UNDEFINED,
+                name="fixture_required",
+            ),
+            _data_symbol_entry(
+                flags=FLAG_BINDING_WEAK | wasm_link_format.FLAG_UNDEFINED,
+                name="fixture_optional",
+            ),
+        ]
+    )
+    path = tmp_path / ("fixture.a" if archive else "fixture.o")
+    path.write_bytes(static_archive_bytes(module) if archive else module)
+    read_facts = (
+        native_symbol_inspection._native_archive_global_symbol_facts
+        if archive
+        else native_symbol_inspection._native_object_global_symbol_facts
+    )
+    facts = read_facts(path, target_triple="wasm32-wasip1")
+    assert facts.defined == frozenset({"fixture_function", "fixture_data"})
+    assert facts.defined_functions == frozenset({"fixture_function"})
+    assert facts.undefined == frozenset({"fixture_required"})
+    assert facts.weak_undefined == frozenset({"fixture_optional"})
+    assert facts.artifact_digest == hashlib.sha256(path.read_bytes()).hexdigest()
+    if archive:
+        assert facts.members is not None and len(facts.members) == 1
+        assert facts.members[0].identity.sha256 == hashlib.sha256(module).hexdigest()
+    else:
+        assert facts.members is None
 
 
 def _linking_data_symbol_names(data: bytes) -> list[tuple[int, str]]:
@@ -5285,17 +5395,14 @@ def test_link_transaction_cleans_owned_resources_when_command_planning_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    transaction_dir = tmp_path / "transaction"
-    transaction_dir.mkdir()
-
-    class OwnedTempDirectory:
-        name = str(transaction_dir)
+    class CountingTemporaryDirectory(OwnedTemporaryDirectory):
         cleanup_calls = 0
 
         def cleanup(self) -> None:
             self.cleanup_calls += 1
+            super().cleanup()
 
-    owned_temp_dir = OwnedTempDirectory()
+    owned_temp_dir = CountingTemporaryDirectory(dir=tmp_path, prefix="transaction-")
     output = tmp_path / "output.wasm"
     linked = tmp_path / "output_linked.wasm"
     staged_linked = tmp_path / "staged-output.wasm"
@@ -5345,8 +5452,8 @@ def test_link_transaction_cleans_owned_resources_when_command_planning_fails(
         return real_staged_output_path(destination)
 
     monkeypatch.setattr(
-        wasm_link_pipeline.tempfile,
-        "TemporaryDirectory",
+        wasm_link_pipeline,
+        "OwnedTemporaryDirectory",
         lambda **_kwargs: owned_temp_dir,
     )
     monkeypatch.setattr(
@@ -5384,6 +5491,7 @@ def test_link_transaction_cleans_owned_resources_when_command_planning_fails(
 
     assert result == 1
     assert owned_temp_dir.cleanup_calls == 1
+    assert not Path(owned_temp_dir.name).exists()
     assert not staged_linked.exists()
     assert timings["wasm_link_total"] >= 0
     assert timings["wasm_whole_artifact_section_walks"] == 0
@@ -6883,7 +6991,7 @@ def test_rewrite_output_imports_uses_generated_runtime_export_names(
     output = tmp_path / "output.wasm"
     output.write_bytes(_build_runtime_import_module(["socket_drop", "molt_alloc"]))
 
-    owned_temp_dir = tempfile.TemporaryDirectory()
+    owned_temp_dir = OwnedTemporaryDirectory()
     rewritten = wasm_link_edit._rewrite_output_imports(
         output,
         {"molt_socket_drop", "molt_alloc"},
@@ -6908,7 +7016,7 @@ def test_rewrite_native_runtime_imports_canonicalizes_env_molt_abi_only(
     native = tmp_path / "ndimage.molt.wasm"
     native.write_bytes(_build_env_function_import_module(["molt_add", "malloc"]))
 
-    with tempfile.TemporaryDirectory() as raw_tmp:
+    with OwnedTemporaryDirectory() as raw_tmp:
         temp_dir = type("_Tmp", (), {"name": raw_tmp})()
 
         rewritten_paths, force_exports = wasm_link_edit._rewrite_native_runtime_imports(
@@ -6948,7 +7056,7 @@ def test_rewrite_native_runtime_imports_routes_canonical_cpython_abi_symbols(
         )
     )
 
-    with tempfile.TemporaryDirectory() as raw_tmp:
+    with OwnedTemporaryDirectory() as raw_tmp:
         temp_dir = type("_Tmp", (), {"name": raw_tmp})()
 
         rewritten_paths, force_exports = wasm_link_edit._rewrite_native_runtime_imports(
@@ -7002,7 +7110,7 @@ def test_rewrite_native_runtime_imports_split_runtime_uses_public_cpython_abi_ex
         )
     )
 
-    with tempfile.TemporaryDirectory() as raw_tmp:
+    with OwnedTemporaryDirectory() as raw_tmp:
         temp_dir = type("_Tmp", (), {"name": raw_tmp})()
 
         rewritten_paths, force_exports = wasm_link_edit._rewrite_native_runtime_imports(
@@ -7065,7 +7173,7 @@ def test_rewrite_native_runtime_imports_split_runtime_prefixes_cpython_abi_data_
         )
     )
 
-    with tempfile.TemporaryDirectory() as raw_tmp:
+    with OwnedTemporaryDirectory() as raw_tmp:
         temp_dir = type("_Tmp", (), {"name": raw_tmp})()
 
         rewritten_paths, force_exports = wasm_link_edit._rewrite_native_runtime_imports(
@@ -7124,7 +7232,7 @@ def test_rewrite_native_runtime_imports_reloc_keeps_unprefixed_cpython_abi_data_
         )
     )
 
-    with tempfile.TemporaryDirectory() as raw_tmp:
+    with OwnedTemporaryDirectory() as raw_tmp:
         temp_dir = type("_Tmp", (), {"name": raw_tmp})()
 
         rewritten_paths, force_exports = wasm_link_edit._rewrite_native_runtime_imports(
@@ -7174,7 +7282,7 @@ def test_split_runtime_data_alias_object_uses_deploy_runtime_export_addresses(
     )
     reloc_runtime.write_bytes(_build_defined_data_symbol_object({"PyLong_Type": 208}))
 
-    with tempfile.TemporaryDirectory() as raw_tmp:
+    with OwnedTemporaryDirectory() as raw_tmp:
         temp_dir = type("_Tmp", (), {"name": raw_tmp})()
 
         alias = wasm_link_runtime_data._split_runtime_data_alias_object(
@@ -7216,7 +7324,7 @@ def test_split_runtime_data_alias_object_preserves_wasm32_high_bit_address(
     reloc_runtime.write_bytes(_build_defined_data_symbol_object({"PyLong_Type": 208}))
     native.write_bytes(_build_undefined_data_symbol_object(["molt_PyLong_Type"]))
 
-    with tempfile.TemporaryDirectory() as raw_tmp:
+    with OwnedTemporaryDirectory() as raw_tmp:
         temp_dir = type("_Tmp", (), {"name": raw_tmp})()
         alias = wasm_link_runtime_data._split_runtime_data_alias_object(
             native_link_requirements=_native_link_requirements(*(native,)),
@@ -7239,7 +7347,7 @@ def test_split_runtime_data_alias_requires_relocatable_size_authority(
     )
     native.write_bytes(_build_undefined_data_symbol_object(["molt_PyLong_Type"]))
 
-    with tempfile.TemporaryDirectory() as raw_tmp:
+    with OwnedTemporaryDirectory() as raw_tmp:
         temp_dir = type("_Tmp", (), {"name": raw_tmp})()
         with pytest.raises(
             ValueError, match="exact relocatable runtime size authority"
@@ -7271,7 +7379,7 @@ def test_split_runtime_data_alias_rejects_duplicate_relocatable_size_authority(
     reloc_runtime.write_bytes(_module_with_linking_symbols([duplicate, duplicate]))
     native.write_bytes(_build_undefined_data_symbol_object(["molt_PyLong_Type"]))
 
-    with tempfile.TemporaryDirectory() as raw_tmp:
+    with OwnedTemporaryDirectory() as raw_tmp:
         temp_dir = type("_Tmp", (), {"name": raw_tmp})()
         with pytest.raises(ValueError, match="duplicate defined runtime data symbol"):
             wasm_link_runtime_data._split_runtime_data_alias_object(
@@ -7309,7 +7417,7 @@ def test_split_runtime_data_alias_rejects_invalid_relocatable_symbol_size(
     )
     native.write_bytes(_build_undefined_data_symbol_object(["molt_PyLong_Type"]))
 
-    with tempfile.TemporaryDirectory() as raw_tmp:
+    with OwnedTemporaryDirectory() as raw_tmp:
         temp_dir = type("_Tmp", (), {"name": raw_tmp})()
         with pytest.raises(ValueError, match="invalid size"):
             wasm_link_runtime_data._split_runtime_data_alias_object(
@@ -7333,7 +7441,7 @@ def test_split_runtime_data_alias_rejects_missing_relocatable_symbol_size(
     reloc_runtime.write_bytes(_module_with_linking_symbols([]))
     native.write_bytes(_build_undefined_data_symbol_object(["molt_PyLong_Type"]))
 
-    with tempfile.TemporaryDirectory() as raw_tmp:
+    with OwnedTemporaryDirectory() as raw_tmp:
         temp_dir = type("_Tmp", (), {"name": raw_tmp})()
         with pytest.raises(ValueError, match="missing exact size"):
             wasm_link_runtime_data._split_runtime_data_alias_object(
@@ -7361,7 +7469,7 @@ def test_rewrite_native_runtime_imports_rejects_non_manifest_raw_c_api_symbol(
     native = tmp_path / "ndimage.molt.wasm"
     native.write_bytes(_build_env_function_import_module(["PyArray_NDIM"]))
 
-    with tempfile.TemporaryDirectory() as raw_tmp:
+    with OwnedTemporaryDirectory() as raw_tmp:
         temp_dir = type("_Tmp", (), {"name": raw_tmp})()
 
         rewritten_paths, force_exports = wasm_link_edit._rewrite_native_runtime_imports(
@@ -7383,7 +7491,7 @@ def test_rewrite_native_runtime_imports_forces_generated_runtime_exports(
     native = tmp_path / "ndimage.molt.wasm"
     native.write_bytes(_build_env_function_import_module(["add"]))
 
-    with tempfile.TemporaryDirectory() as raw_tmp:
+    with OwnedTemporaryDirectory() as raw_tmp:
         temp_dir = type("_Tmp", (), {"name": raw_tmp})()
 
         rewritten_paths, force_exports = wasm_link_edit._rewrite_native_runtime_imports(
@@ -7422,7 +7530,7 @@ def test_native_wasm_archive_members_share_runtime_and_provider_analysis(
         == frozenset({"__trunctfdf2"})
     )
 
-    with tempfile.TemporaryDirectory() as raw_tmp:
+    with OwnedTemporaryDirectory() as raw_tmp:
         temp_dir = type("_Tmp", (), {"name": raw_tmp})()
         rewritten_paths, force_exports = wasm_link_edit._rewrite_native_runtime_imports(
             (archive,),
@@ -7447,7 +7555,7 @@ def test_native_wasm_archive_rejects_uninspected_member_kinds(
     archive = tmp_path / "libnative.a"
     archive.write_bytes(_build_wasm_archive(("opaque.o", b"not-wasm")))
 
-    with tempfile.TemporaryDirectory() as raw_tmp:
+    with OwnedTemporaryDirectory() as raw_tmp:
         temp_dir = type("_Tmp", (), {"name": raw_tmp})()
         with pytest.raises(ValueError, match="non-WASM object member"):
             wasm_link_edit._rewrite_native_runtime_imports(
@@ -8901,7 +9009,7 @@ def test_native_object_link_allowlist_includes_generated_external_imports(tmp_pa
     native = tmp_path / "extension.molt.wasm"
     native.write_bytes(b"\0asm\x01\0\0\0")
 
-    with tempfile.TemporaryDirectory() as raw_tmp:
+    with OwnedTemporaryDirectory() as raw_tmp:
         temp_dir = type("_Tmp", (), {"name": raw_tmp})()
         assert (
             wasm_link_native_inputs._compose_wasm_ld_allowlist(
@@ -9301,7 +9409,7 @@ def test_split_runtime_data_alias_points_at_deploy_runtime_addresses(
         )
     ) == set(names)
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with OwnedTemporaryDirectory() as tmp:
         temp_dir = type("_TD", (), {"name": tmp})()
         alias_plan = wasm_link_runtime_data._split_runtime_data_alias_object(
             native_link_requirements=_native_link_requirements(*[native]),
@@ -9348,7 +9456,7 @@ def test_split_runtime_data_alias_fails_loud_on_missing_deploy_export(
         _build_defined_data_symbol_object({"Py_None": 8, "PyExc_ValueError": 8})
     )
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with OwnedTemporaryDirectory() as tmp:
         temp_dir = type("_TD", (), {"name": tmp})()
         with pytest.raises(ValueError, match="PyExc_ValueError"):
             wasm_link_runtime_data._split_runtime_data_alias_object(
@@ -10338,7 +10446,7 @@ def test_split_runtime_native_allowlist_is_the_split_runtime_export_surface(
     base.write_text("# base\nhost_only\n", encoding="utf-8")
     native_object = tmp_path / "ext.molt.wasm"
     native_object.write_bytes(b"\0asm\x01\0\0\0")
-    temp_dir = tempfile.TemporaryDirectory()
+    temp_dir = OwnedTemporaryDirectory()
     try:
         composed = wasm_link_native_inputs._compose_split_runtime_native_allowlist(
             base_allowlist=base,
@@ -10356,7 +10464,7 @@ def test_split_runtime_native_allowlist_is_the_split_runtime_export_surface(
             base_allowlist=base,
             native_link_requirements=_native_link_requirements(),
             split_runtime_exports={"molt_PyType_Ready"},
-            temp_dir=tempfile.TemporaryDirectory(),
+            temp_dir=OwnedTemporaryDirectory(),
         )
         == base
     )
@@ -10900,7 +11008,7 @@ def test_lazy_archive_data_candidates_do_not_require_unused_runtime_addresses(
     runtime = tmp_path / "runtime.wasm"
     runtime.write_bytes(b"\0asm\x01\0\0\0")
     requirements = _native_link_requirements(archive)
-    with tempfile.TemporaryDirectory(dir=tmp_path) as scratch:
+    with OwnedTemporaryDirectory(dir=tmp_path) as scratch:
         temp_dir = type("_Tmp", (), {"name": scratch})()
         assert (
             wasm_link_runtime_data._split_runtime_data_alias_object(

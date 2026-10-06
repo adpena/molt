@@ -28,6 +28,8 @@ from molt.cli import runtime_cargo_plan as cargo_plans
 from molt.cli import runtime_identity_schema as schema
 from molt.python_runtime_identity import validate_python_runtime_identity
 from tests.python_environment_test_support import runtime_identity_manifest
+from tests.executable_test_support import write_mock_executable
+from tests.rustc_test_support import rustc_target_metadata_output
 
 
 @pytest.fixture(scope="module")
@@ -210,6 +212,15 @@ def _resolve(
 
 @pytest.fixture
 def identity_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from molt.cli.cargo_target_cfg import parse_rustc_target_metadata
+
+    def target_metadata(_rustc, _target, _flags, **_kwargs):
+        stdout, stderr = rustc_target_metadata_output(
+            tmp_path / "rust-sysroot", "unix", target=_target
+        )
+        return parse_rustc_target_metadata(stdout, stderr)
+
+    monkeypatch.setattr(cargo_plans, "_rust_target_metadata", target_metadata)
     monkeypatch.setattr(cargo_plans, "_rust_resource_roots", lambda *args, **kwargs: ())
     monkeypatch.setattr(
         identity,
@@ -971,7 +982,7 @@ def test_tool_version_banner_never_serializes_installed_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tool = tmp_path / "clang.exe"
-    tool.write_bytes(b"MZtool-bytes")
+    write_mock_executable(tool, b"MZtool-bytes")
     monkeypatch.setattr(identity, "_command_path", lambda *_args, **_kwargs: tool)
     monkeypatch.setattr(
         toolchain_identity.subprocess,
@@ -1408,15 +1419,14 @@ def test_wasi_sysroot_layout_does_not_include_unattested_parent_version(
 @pytest.mark.skipif(os.name == "nt", reason="POSIX linker entrypoint symlink contract")
 def test_executable_identity_preserves_role_selecting_symlink(tmp_path: Path) -> None:
     generic = tmp_path / "lld"
-    generic.write_text(
-        "#!/bin/sh\n"
-        'case "$0" in\n'
-        '  *wasm-ld) echo "LLD 22.1.8" ;;\n'
-        '  *) echo "lld is a generic driver" >&2; exit 1 ;;\n'
-        "esac\n",
-        encoding="utf-8",
+    write_mock_executable(
+        generic,
+        b"#!/bin/sh\n"
+        b'case "$0" in\n'
+        b'  *wasm-ld) echo "LLD 22.1.8" ;;\n'
+        b'  *) echo "lld is a generic driver" >&2; exit 1 ;;\n'
+        b"esac\n",
     )
-    generic.chmod(0o755)
     role = tmp_path / "wasm-ld"
     role.symlink_to(generic)
 
@@ -1616,7 +1626,7 @@ def python_session(tmp_path, monkeypatch, runtime_receipt):
     from molt.cli import runtime_build_python as admission
 
     selected = tmp_path / "selected-python.exe"
-    selected.write_bytes(b"selected-interpreter-launcher")
+    write_mock_executable(selected, b"selected-interpreter-launcher")
     session = _CaptureSession(runtime_receipt)
     calls = []
 

@@ -42,7 +42,10 @@ _EXECUTABLE_TOOL_IMPORT_POLICY = PythonImportPolicy(
 )
 _DYNAMIC_IMPORT_MANIFEST = Path("src/molt/cli/python_source_closure.toml")
 _GRAPH_CACHE_SCHEMA_VERSION = 19
-_GraphQuery = tuple[Path, tuple[Path, ...], tuple[Path, ...], PythonImportPolicy]
+_GraphQuery = tuple[
+    Path, tuple[Path, ...], tuple[Path, ...], tuple[Path, ...], PythonImportPolicy
+]
+_ImportManifest = tuple[Path, bytes, dict[str, object]]
 _GRAPH_TRANSACTION: ContextVar[dict[_GraphQuery, LocalPythonSourceClosure] | None] = (
     ContextVar("_GRAPH_TRANSACTION", default=None)
 )
@@ -372,14 +375,12 @@ def _molt_cli_lazy_targets(
     return targets
 
 
-def _read_dynamic_import_manifest(
+def _read_python_import_manifest(
     project_root: Path,
-    resolver: LocalPythonModuleResolver,
-    capture: Callable[[Path], PythonSourceSnapshot],
-) -> tuple[tuple[Path, bytes] | None, dict[Path, tuple[int, tuple[str, ...]]]]:
+) -> _ImportManifest | None:
     manifest = project_root / _DYNAMIC_IMPORT_MANIFEST
     if not manifest.is_file():
-        return None, {}
+        return None
     manifest = manifest.resolve()
     _relative_cache_key(project_root, manifest)
     try:
@@ -393,6 +394,49 @@ def _read_dynamic_import_manifest(
         raise ValueError(
             f"unsupported Python tooling import manifest schema: {manifest}"
         )
+    return manifest, content, payload
+
+
+def _manifest_python_roots(
+    project_root: Path, manifest: _ImportManifest | None, field: str
+) -> tuple[Path, ...] | None:
+    if manifest is None or field not in manifest[2]:
+        return None
+    values = manifest[2][field]
+    if (
+        not isinstance(values, list)
+        or not values
+        or not all(isinstance(value, str) and value for value in values)
+    ):
+        raise ValueError(f"invalid Python tooling {field}: {manifest[0]}")
+    roots: list[Path] = []
+    for value in values:
+        if (
+            PurePosixPath(value).is_absolute()
+            or PureWindowsPath(value).drive
+            or "\\" in value
+            or ".." in PurePosixPath(value).parts
+        ):
+            raise ValueError(f"invalid Python tooling {field}: {value!r}")
+        candidate = (project_root / value).resolve()
+        _relative_cache_key(project_root, candidate)
+        if not candidate.is_dir():
+            raise ValueError(f"missing Python tooling {field} directory: {candidate}")
+        if candidate in roots:
+            raise ValueError(f"duplicate Python tooling {field} directory: {candidate}")
+        roots.append(candidate)
+    return tuple(roots)
+
+
+def _read_dynamic_import_manifest(
+    manifest_record: _ImportManifest | None,
+    project_root: Path,
+    resolver: LocalPythonModuleResolver,
+    capture: Callable[[Path], PythonSourceSnapshot],
+) -> tuple[tuple[Path, bytes] | None, dict[Path, tuple[int, tuple[str, ...]]]]:
+    if manifest_record is None:
+        return None, {}
+    manifest, content, payload = manifest_record
     rows = payload.get("source")
     if not isinstance(rows, list):
         raise ValueError(
@@ -449,10 +493,13 @@ def local_python_import_closure(
 ) -> LocalPythonSourceClosure:
     """Return the policy projection of one source-byte-keyed dependency graph.
 
-    Seeds may name files or whole Python source directories. Executable tools
-    default to ``tools``/``src``/repository search order, full lexical imports,
-    parent-package execution and checked dynamic manifests. Lowering supplies its existing
-    module-level-only policy and ``src`` root. Unknown literal-relative anchors
+    Seeds may name files or whole Python source directories. A project's import
+    manifest declares ordered search roots and admitted source roots separately;
+    a namespace search location does not grant ownership of all its descendants.
+    Unconfigured projects use ``tools``/``src``/repository search order. Tools use
+    full lexical imports, parent-package execution and checked dynamic manifests.
+    Lowering supplies its existing module-level-only policy and ``src`` root.
+    Unknown literal-relative anchors
     require the complete local source domain, resolved and captured once per
     traversal. That byte inventory does not promote speculative owners to AST
     analysis; ordinary graph edges keep their error and manifest validation.
@@ -462,25 +509,37 @@ def local_python_import_closure(
     """
 
     root = project_root.resolve()
+    manifest_record = _read_python_import_manifest(root)
+    declared_search_roots = _manifest_python_roots(
+        root, manifest_record, "search_roots"
+    )
     roots = tuple(
         candidate.resolve()
         for candidate in (
             search_roots
             if search_roots is not None
-            else (root / "tools", root / "src", root)
+            else (
+                declared_search_roots
+                if declared_search_roots is not None
+                else (root / "tools", root / "src", root)
+            )
         )
         if candidate.is_dir()
     )
     if not roots:
         raise ValueError(f"project has no local Python source roots: {root}")
+    declared_source_roots = _manifest_python_roots(
+        root, manifest_record, "source_roots"
+    )
+    source_roots = roots if declared_source_roots is None else declared_source_roots
     seed_paths = tuple(sorted({seed.resolve() for seed in seeds}))
     if any(not path.is_relative_to(root) for path in (*roots, *seed_paths)):
         raise ValueError(f"Python tooling source is outside project root: {root}")
-    query = (root, seed_paths, roots, policy)
+    query = (root, seed_paths, roots, source_roots, policy)
     transaction = _GRAPH_TRANSACTION.get()
     if transaction is not None and query in transaction:
         return transaction[query]
-    resolver = LocalPythonModuleResolver(roots)
+    resolver = LocalPythonModuleResolver(roots, source_roots=source_roots)
     snapshots: dict[Path, PythonSourceSnapshot] = {}
     covered_sources: set[Path] = set()
     topology_digest = ""
@@ -491,7 +550,7 @@ def local_python_import_closure(
         return snapshots[path]
 
     manifest, dynamic_import_overrides = (
-        _read_dynamic_import_manifest(root, resolver, capture)
+        _read_dynamic_import_manifest(manifest_record, root, resolver, capture)
         if not policy.module_level_only
         else (None, {})
     )

@@ -684,6 +684,66 @@ def test_guarded_helper_rejects_non_basename_prefixes(tmp_path, prefix):
         _finish(lease)
 
 
+def test_scratch_allocator_uses_host_directory_custody_mode(monkeypatch, tmp_path):
+    modes = []
+    mkdir = Path.mkdir
+
+    def observe(path, mode=0o777, parents=False, exist_ok=False):
+        modes.append(mode)
+        return mkdir(path, mode=mode, parents=parents, exist_ok=exist_ok)
+
+    monkeypatch.setattr(Path, "mkdir", observe)
+    path = scratch.new_temporary_directory(tmp_path, prefix="compile-")
+    assert modes == [0o755 if os.name == "nt" else 0o700]
+    assert path.parent == tmp_path
+    assert list(path.iterdir()) == []
+
+
+def test_scratch_allocator_does_not_reuse_a_colliding_directory(monkeypatch, tmp_path):
+    existing = tmp_path / "compile-aaaaaaaa"
+    existing.mkdir()
+    marker = existing / "owner.txt"
+    marker.write_text("other allocation", encoding="utf-8")
+    characters = iter("aaaaaaaa" + "bbbbbbbb")
+    monkeypatch.setattr(scratch.secrets, "choice", lambda _alphabet: next(characters))
+    allocated = scratch.new_temporary_directory(tmp_path, prefix="compile-")
+    assert allocated == tmp_path / "compile-bbbbbbbb"
+    assert marker.read_text(encoding="utf-8") == "other allocation"
+    assert list(allocated.iterdir()) == []
+
+
+def test_owned_temporary_directory_matches_scoped_cleanup_contract(tmp_path):
+    with scratch.OwnedTemporaryDirectory(dir=tmp_path, prefix="compiler-") as name:
+        path = Path(name)
+        assert path.parent == tmp_path
+        payload = path / "bytes.bin"
+        payload.write_bytes(b"owned bytes")
+        payload.chmod(0o444)
+        assert payload.read_bytes() == b"owned bytes"
+    assert not path.exists()
+
+
+def test_owned_temporary_directory_cleanup_is_idempotent(tmp_path):
+    directory = scratch.OwnedTemporaryDirectory(dir=tmp_path)
+    directory.cleanup()
+    directory.cleanup()
+    assert not Path(directory.name).exists()
+
+
+def test_owned_temporary_directory_does_not_delete_a_replaced_allocation(tmp_path):
+    directory = scratch.OwnedTemporaryDirectory(dir=tmp_path)
+    original = Path(directory.name)
+    retained = original.with_name("retained-original")
+    original.rename(retained)
+    original.mkdir()
+    marker = original / "other-owner.txt"
+    marker.write_text("retain", encoding="utf-8")
+    with pytest.raises(ValueError, match="allocation changed"):
+        directory.cleanup()
+    assert marker.read_text(encoding="utf-8") == "retain"
+    assert retained.exists()
+
+
 def test_helper_subdirectories_are_owned_by_terminal_guard_not_context_age(tmp_path):
     lease, env = _lease(tmp_path)
     first = scratch.new_guarded_directory(tmp_path, env, prefix="compile-")

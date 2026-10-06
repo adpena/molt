@@ -1442,3 +1442,120 @@ def test_inventory_failure_and_directory_cycle_never_publish_partial_coverage(
         pytest.skip(f"directory symlinks unavailable: {exc}")
     with pytest.raises(ValueError, match="cyclic local Python search topology"):
         local_python_import_closure(tmp_path, (seed,))
+
+
+def test_declared_source_domain_bounds_inventory_and_qualified_tool_aliases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli import python_import_resolution as resolution
+
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    package = tmp_path / "src" / "pkg"
+    package.mkdir(parents=True)
+    seed = tools / "entry.py"
+    seed.write_text("__package__ = unknown\nfrom . import child\n")
+    helper = tools / "helper.py"
+    helper.write_text("VALUE = 1\n")
+    initializer = package / "__init__.py"
+    initializer.write_text("")
+    leaf = package / "leaf.py"
+    leaf.write_text("VALUE = 2\n")
+    scratch = tmp_path / "tmp" / "pytest-current" / "package"
+    scratch.mkdir(parents=True)
+    noise = scratch / "child.py"
+    noise.write_text("scratch must never be a tooling dependency")
+    root_module = tmp_path / "unowned.py"
+    root_module.write_text("root namespace is not source ownership")
+    manifest = tmp_path / graph._DYNAMIC_IMPORT_MANIFEST
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        'schema_version = 1\nsearch_roots = ["src", "tools", "."]\n'
+        'source_roots = ["src", "tools"]\nsource = []\n'
+    )
+    real_scandir = resolution.os.scandir
+
+    def admitted_scandir(path):
+        assert not Path(path).is_relative_to(tmp_path / "tmp")
+        return real_scandir(path)
+
+    monkeypatch.setattr(resolution.os, "scandir", admitted_scandir)
+    before = local_python_import_closure(tmp_path, (seed,))
+    assert set(before.paths) == {seed, helper, initializer, leaf, manifest}
+    assert before.topology_digest
+    noise.write_text("changed scratch generation")
+    assert local_python_import_closure(tmp_path, (seed,)) == before
+    helper.write_text("VALUE = 3\n")
+    assert local_python_import_closure(tmp_path, (seed,)).content_digest != (
+        before.content_digest
+    )
+    seed.write_text("import tools.helper\nfrom pkg import leaf\n")
+    qualified = local_python_import_closure(tmp_path, (seed,))
+    assert set(qualified.paths) == {seed, helper, initializer, leaf, manifest}
+    with pytest.raises(ValueError, match="outside local source roots"):
+        local_python_import_closure(tmp_path, (root_module,))
+
+
+def test_manifest_search_order_and_domain_changes_invalidate_warm_closure(
+    tmp_path: Path,
+) -> None:
+    tools = tmp_path / "tools"
+    src = tmp_path / "src"
+    tools.mkdir()
+    src.mkdir()
+    seed = tools / "entry.py"
+    seed.write_text("import shared\n")
+    first = src / "shared.py"
+    second = tools / "shared.py"
+    first.write_text("OWNER = 'src'\n")
+    second.write_text("OWNER = 'tools'\n")
+    manifest = tmp_path / graph._DYNAMIC_IMPORT_MANIFEST
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        'schema_version = 1\nsearch_roots = ["src", "tools", "."]\n'
+        'source_roots = ["src", "tools"]\nsource = []\n'
+    )
+    before = local_python_import_closure(tmp_path, (seed,))
+    assert set(before.paths) == {seed, first, manifest}
+    manifest.write_text(
+        manifest.read_text().replace(
+            'search_roots = ["src", "tools", "."]',
+            'search_roots = ["tools", "src", "."]',
+        )
+    )
+    after = local_python_import_closure(tmp_path, (seed,))
+    assert set(after.paths) == {seed, second, manifest}
+    assert after.content_digest != before.content_digest
+    manifest.write_text(
+        manifest.read_text().replace(
+            'source_roots = ["src", "tools"]', 'source_roots = ["tools"]'
+        )
+    )
+    narrowed = local_python_import_closure(tmp_path, (seed,))
+    assert narrowed.content_digest != after.content_digest
+
+
+@pytest.mark.parametrize("field", ["search_roots", "source_roots"])
+@pytest.mark.parametrize(
+    "value, message",
+    [
+        ("[]", "invalid Python tooling"),
+        ("[1]", "invalid Python tooling"),
+        ('["../outside"]', "invalid Python tooling"),
+        ('["C:/outside"]', "invalid Python tooling"),
+        ('["/outside"]', "invalid Python tooling"),
+        ('["missing"]', "missing Python tooling"),
+        ('["src", "./src"]', "duplicate Python tooling"),
+    ],
+)
+def test_manifest_root_contract_rejects_invalid_domains(
+    tmp_path: Path, field: str, value: str, message: str
+) -> None:
+    seed = tmp_path / "src" / "entry.py"
+    seed.parent.mkdir()
+    seed.write_text("VALUE = 1\n")
+    manifest = tmp_path / graph._DYNAMIC_IMPORT_MANIFEST
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(f"schema_version = 1\n{field} = {value}\nsource = []\n")
+    with pytest.raises(ValueError, match=message):
+        local_python_import_closure(tmp_path, (seed,))

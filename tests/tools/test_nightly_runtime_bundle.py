@@ -23,6 +23,7 @@ from tests.cli.native_link_test_support import (
     write_test_static_archive,
 )
 from tests.runtime_build_identity_helper import native_runtime_staticlib_identity
+from tests.executable_test_support import write_mock_executable
 from tools import nightly_runtime_bundle as bundle
 from molt.exact_json import encode_exact
 from molt import artifact_publication
@@ -68,8 +69,7 @@ def _built_target(
     write_test_static_archive(runtime, b"runtime object bytes")
     write_test_native_link_manifest(runtime, build_identity=build_identity)
     backend = profile_root / bundle._backend_executable_name(identity)
-    backend.write_bytes(b"\x7fELF\x02\x01molt backend")
-    backend.chmod(0o755)
+    write_mock_executable(backend, b"\x7fELF\x02\x01molt backend")
     return target_root
 
 
@@ -704,11 +704,13 @@ def test_verify_extract_rejects_runtime_build_identity_mismatch(
         ("dev-fast/fifo", tarfile.FIFOTYPE, "not a regular file"),
     ],
 )
+@pytest.mark.parametrize("after_regular_member", [False, True])
 def test_verify_extract_rejects_unsafe_member_classes(
     tmp_path: Path,
     name: str,
     type_code: bytes,
     message: str,
+    after_regular_member: bool,
 ) -> None:
     payload = b"bad"
     member = _regular_info(name, payload)
@@ -718,7 +720,14 @@ def test_verify_extract_rejects_unsafe_member_classes(
         member.size = 0
         payload = b""
     malformed = tmp_path / "malformed.tar"
-    _write_tar(malformed, [(member, payload)])
+    members = [(member, payload)]
+    if after_regular_member:
+        manifest_payload = b"{}"
+        members.insert(
+            0,
+            (_regular_info(bundle.MANIFEST_NAME, manifest_payload), manifest_payload),
+        )
+    _write_tar(malformed, members)
 
     with pytest.raises(bundle.NightlyRuntimeBundleError, match=message):
         bundle.verify_extract_bundle(

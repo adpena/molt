@@ -26,7 +26,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,6 +40,8 @@ TOOLS_DIR = MOLT_ROOT / "tools"
 SRC_DIR = MOLT_ROOT / "src"
 if str(MOLT_ROOT) not in sys.path:
     sys.path.insert(0, str(MOLT_ROOT))
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 from tools import harness_memory_guard  # noqa: E402
 from tools.wasm_optimize import optimize as optimize_wasm  # noqa: E402
@@ -437,9 +438,11 @@ def run_pipeline(
     verbose: bool = False,
 ) -> PipelineResult:
     """Run the full compile -> link -> optimize pipeline."""
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+
     result = PipelineResult(source=str(source))
 
-    with tempfile.TemporaryDirectory(prefix="molt-pipeline-") as tmpdir:
+    with OwnedTemporaryDirectory(prefix="molt-pipeline-") as tmpdir:
         work = Path(tmpdir)
 
         # Stage 1: Compile
@@ -498,9 +501,11 @@ def run_benchmark_suite(
     json_output: bool = False,
 ) -> list[PipelineResult]:
     """Run the pipeline on several benchmark programs and compare sizes."""
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+
     results: list[PipelineResult] = []
 
-    with tempfile.TemporaryDirectory(prefix="molt-bench-") as tmpdir:
+    with OwnedTemporaryDirectory(prefix="molt-bench-") as tmpdir:
         for name, code in BENCHMARK_PROGRAMS:
             src_path = Path(tmpdir) / f"{name}.py"
             src_path.write_text(code)

@@ -9,7 +9,7 @@ from molt.wasm_artifact import skip_wasm_import_description as _parse_import_des
 from collections.abc import Mapping, Sequence
 import json
 from pathlib import Path
-import tempfile
+from molt.temporary_artifacts import OwnedTemporaryDirectory
 
 from molt._wasm_abi_generated import (
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
@@ -272,7 +272,7 @@ def _required_native_direct_symbols(
 def _rewrite_required_native_direct_imports(
     module_path: Path,
     required_symbols: Sequence[str],
-    temp_dir: tempfile.TemporaryDirectory[str],
+    temp_dir: OwnedTemporaryDirectory,
 ) -> Path:
     required = set(required_symbols)
     if not required:
@@ -353,7 +353,7 @@ def _compose_wasm_ld_allowlist(
     *,
     base_allowlist: Path,
     native_link_requirements: SourceExtensionLinkRequirements,
-    temp_dir: tempfile.TemporaryDirectory,
+    temp_dir: OwnedTemporaryDirectory,
 ) -> Path:
     """Return the wasm-ld allowlist for this link transaction.
 
@@ -390,7 +390,7 @@ def _compose_split_runtime_native_allowlist(
     base_allowlist: Path,
     native_link_requirements: SourceExtensionLinkRequirements,
     split_runtime_exports: set[str],
-    temp_dir: tempfile.TemporaryDirectory,
+    temp_dir: OwnedTemporaryDirectory,
 ) -> Path:
     """Return the deployed split-app allowlist for static native extensions.
 

@@ -202,6 +202,7 @@ def test_symbol_reader_failure_is_a_build_error_and_releases_ir_lease(
     )
     preamble = SimpleNamespace(
         diagnostics_enabled=False,
+        resolved_diagnostics_verbosity="full",
         warnings=[],
         phase_starts={},
         backend_daemon_config_digest=None,
