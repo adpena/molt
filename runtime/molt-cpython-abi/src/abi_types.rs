@@ -1086,6 +1086,44 @@ pub const PY_VERSION_HEX: c_ulong = 0x030c00f0;
 #[allow(clippy::unnecessary_cast)]
 pub const TARGET_PY_MINOR: u32 = ((PY_VERSION_HEX >> 16) & 0xff) as u32;
 
+// ─── C `long` width authority ────────────────────────────────────────────────
+//
+// `long` is 64-bit on LP64 (Linux, macOS) and 32-bit on LLP64 (Windows) and
+// wasm32. Casting between `c_long` and `i64` is a no-op on one family and
+// required on the other, so clippy flags whichever is redundant on the target
+// it runs on. Call sites convert through these instead of casting directly.
+
+/// `c_long::MIN` widened to `i64` (lossless on every target).
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "c_long is i64 on LP64 and i32 on LLP64/wasm32"
+)]
+pub(crate) const C_LONG_MIN_I64: i64 = std::os::raw::c_long::MIN as i64;
+
+/// `c_long::MAX` widened to `i64` (lossless on every target).
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "c_long is i64 on LP64 and i32 on LLP64/wasm32"
+)]
+pub(crate) const C_LONG_MAX_I64: i64 = std::os::raw::c_long::MAX as i64;
+
+/// `c_ulong::MAX` widened to `u64` (lossless on every target).
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "c_ulong is u64 on LP64 and u32 on LLP64/wasm32"
+)]
+pub(crate) const C_ULONG_MAX_U64: u64 = c_ulong::MAX as u64;
+
+/// Widen a C `long` to `i64` (lossless on every target).
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "c_long is i64 on LP64 and i32 on LLP64/wasm32"
+)]
+#[inline]
+pub(crate) const fn c_long_to_i64(value: std::os::raw::c_long) -> i64 {
+    value as i64
+}
+
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static Py_Version: c_ulong = PY_VERSION_HEX;
