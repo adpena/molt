@@ -976,6 +976,27 @@ pub(crate) struct MoltFileState {
     pub(crate) backend: Mutex<Option<MoltFileBackend>>,
     #[cfg(windows)]
     pub(crate) crt_fd: Mutex<Option<i64>>,
+    /// The backend wraps a descriptor that the host owns, not this state.
+    /// WASI has no `dup`, so standard streams wrap the host's own fds 0-2;
+    /// releasing the state must leave them open, as CPython's
+    /// `closefd=False` standard streams do.
+    pub(crate) host_descriptor: bool,
+}
+
+impl Drop for MoltFileState {
+    fn drop(&mut self) {
+        if !self.host_descriptor {
+            return;
+        }
+        let backend = match self.backend.get_mut() {
+            Ok(backend) => backend.take(),
+            Err(poisoned) => poisoned.into_inner().take(),
+        };
+        if let Some(MoltFileBackend::File(file)) = backend {
+            // Release the wrapper without closing the host's descriptor.
+            std::mem::forget(file);
+        }
+    }
 }
 
 pub(crate) struct MoltFileHandle {

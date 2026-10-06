@@ -759,6 +759,7 @@ fn open_impl(
                     }))),
                     #[cfg(windows)]
                     crt_fd: Mutex::new(None),
+                    host_descriptor: false,
                 });
 
                 // Register VFS writeback so molt_file_close can flush
@@ -963,6 +964,7 @@ fn open_impl(
         backend: Mutex::new(Some(MoltFileBackend::File(file))),
         #[cfg(windows)]
         crt_fd: Mutex::new(crt_fd),
+        host_descriptor: false,
     });
     let builtins = builtin_classes(_py);
     let buffered_class_bits = if mode_info.readable && mode_info.writable {
@@ -1076,7 +1078,11 @@ fn alloc_stdio_handle(
     write_through: bool,
 ) -> u64 {
     let trace_stdio = std::env::var("MOLT_TRACE_STDIO_BUILD").as_deref() == Ok("1");
-    let effective_fd = if cfg!(target_arch = "wasm32") {
+    // Native hosts give each stream a private duplicate that the handle owns
+    // and closes. WASI has no `dup`: the stream borrows the host descriptor and
+    // must never close it, or host output after runtime teardown is lost.
+    let borrows_host_fd = cfg!(target_arch = "wasm32");
+    let effective_fd = if borrows_host_fd {
         fd
     } else {
         match dup_fd(fd) {
@@ -1112,6 +1118,7 @@ fn alloc_stdio_handle(
         backend: Mutex::new(Some(MoltFileBackend::File(file))),
         #[cfg(windows)]
         crt_fd: Mutex::new(Some(effective_fd)),
+        host_descriptor: borrows_host_fd,
     });
     let builtins = builtin_classes(_py);
     let buffered_class_bits = if mode_info.readable && mode_info.writable {
@@ -1150,7 +1157,7 @@ fn alloc_stdio_handle(
             mode_info.writable,
             false,
             false,
-            true,
+            !borrows_host_fd,
             false,
             false,
             buffer_size,
@@ -1185,8 +1192,8 @@ fn alloc_stdio_handle(
         mode_info.readable,
         mode_info.writable,
         mode_info.text,
-        true,
-        true,
+        false, // closefd: closing a standard stream never closes its fd
+        !borrows_host_fd,
         line_buffering,
         write_through,
         buffer_size,

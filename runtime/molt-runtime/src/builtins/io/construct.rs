@@ -251,6 +251,7 @@ pub extern "C" fn molt_bytesio_new(_cls_bits: u64, initial_bits: u64) -> u64 {
             backend: Mutex::new(Some(MoltFileBackend::Memory(MoltMemoryBackend { pos: 0 }))),
             #[cfg(windows)]
             crt_fd: Mutex::new(None),
+            host_descriptor: false,
         });
         let ptr = alloc_file_handle_with_state(
             _py,
@@ -313,6 +314,7 @@ pub extern "C" fn molt_stringio_new(_cls_bits: u64, initial_bits: u64, newline_b
             }))),
             #[cfg(windows)]
             crt_fd: Mutex::new(None),
+            host_descriptor: false,
         });
         let ptr = alloc_file_handle_with_state(
             _py,
