@@ -17,6 +17,10 @@ def _isolate_synthetic_queue_repos_from_hosted_checkout_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("MOLT_CI_EPHEMERAL_CUSTODY_ROOT", raising=False)
+    # Hosted CI exports its Cargo cache target; an explicit target directory
+    # rightly wins over the custody-derived one these tests assert.
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
 
 
 def test_molt_queue_parser_preserves_queue_args() -> None:
