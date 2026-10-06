@@ -42,10 +42,6 @@ molt-backend-wasm = { path = "../molt-backend-wasm", default-features = false, f
 wasm-encoder = "0.259.0"
 wasmparser = "0.259.0"
 
-[target.'cfg(target_os = "macos")'.dependencies]
-metal = { version = "0.33", optional = true }
-objc = { version = "0.2", optional = true }
-
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",

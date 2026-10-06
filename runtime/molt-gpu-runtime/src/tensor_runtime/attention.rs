@@ -1655,7 +1655,9 @@ pub extern "C" fn molt_gpu_turboquant_attention_packed(
                     ];
                     let mut owned_buffers: Vec<MetalBuffer> = Vec::new();
                     for data in buffer_payloads {
-                        let metal_buf = device.alloc_buffer(data.len().max(1));
+                        let metal_buf = device
+                            .alloc_buffer(data.len())
+                            .map_err(|msg| raise_exception::<u64>(_py, "RuntimeError", &msg))?;
                         if !data.is_empty() {
                             device.copy_to_buffer(&metal_buf, data);
                         }

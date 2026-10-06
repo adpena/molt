@@ -1,20 +1,34 @@
 //! MetalDevice — Apple GPU backend.
 //!
-//! Implements Allocator, Compiler, and Executor for Metal on macOS.
-//! Device pool and kernel cache are internal to this struct.
+//! Implements Allocator, Compiler, and Executor for Metal on macOS through
+//! the maintained `objc2-metal` bindings. Device pool and kernel cache are
+//! internal to this struct.
 
 #![cfg(target_os = "macos")]
 
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::sync::Mutex;
 
-use metal::foreign_types::ForeignType;
-use metal::{Device, MTLResourceOptions, MTLSize};
+use objc2::Message;
+use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
+use objc2_foundation::{NSError, NSString};
+use objc2_metal::{
+    MTLBuffer, MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLComputeCommandEncoder,
+    MTLComputePipelineState, MTLCreateSystemDefaultDevice, MTLDevice, MTLLibrary,
+    MTLResourceOptions, MTLSize,
+};
 
 use crate::device::{
     Allocator, BufferHandle, CompiledProgram, Compiler, DeviceBuffer, DeviceError, Executor,
     ProgramHandle,
 };
+
+type Device = Retained<ProtocolObject<dyn MTLDevice>>;
+type CommandQueue = Retained<ProtocolObject<dyn MTLCommandQueue>>;
+type Buffer = Retained<ProtocolObject<dyn MTLBuffer>>;
+type PipelineState = Retained<ProtocolObject<dyn MTLComputePipelineState>>;
 
 /// Apple Metal GPU device backend.
 ///
@@ -22,19 +36,37 @@ use crate::device::{
 /// and kernel dispatch via command buffers.
 pub struct MetalDevice {
     device: Device,
-    queue: metal::CommandQueue,
+    queue: CommandQueue,
     /// Compiled pipeline state cache: source hash -> pipeline state.
-    cache: Mutex<HashMap<u64, metal::ComputePipelineState>>,
-    /// Live Metal buffers: ptr -> retained Buffer (prevents premature drop).
-    live_buffers: Mutex<HashMap<usize, metal::Buffer>>,
+    cache: Mutex<HashMap<u64, PipelineState>>,
+    /// Live Metal buffers: object address -> retained buffer (prevents premature drop).
+    live_buffers: Mutex<HashMap<usize, Buffer>>,
+}
+
+// SAFETY: Metal devices, command queues, buffers and pipeline states are
+// thread-safe objects (Metal Programming Guide, "Thread Safety"); only command
+// buffers and encoders are not, and this device creates those inside one call
+// and never stores them. The retained maps are behind mutexes.
+unsafe impl Send for MetalDevice {}
+unsafe impl Sync for MetalDevice {}
+
+/// The stable identity of a retained Metal object: its Objective-C address.
+fn object_address<T: ?Sized + Message>(object: &Retained<T>) -> *mut c_void {
+    Retained::as_ptr(object).cast_mut().cast()
+}
+
+fn error_text(error: &NSError) -> String {
+    error.localizedDescription().to_string()
 }
 
 impl MetalDevice {
     /// Create a new Metal device from the system default GPU.
     pub fn new() -> Result<Self, DeviceError> {
-        let device = Device::system_default()
+        let device = MTLCreateSystemDefaultDevice()
             .ok_or_else(|| DeviceError::AllocationFailed("no Metal device found".into()))?;
-        let queue = device.new_command_queue();
+        let queue = device.newCommandQueue().ok_or_else(|| {
+            DeviceError::AllocationFailed("Metal command queue creation failed".into())
+        })?;
         Ok(Self {
             device,
             queue,
@@ -54,11 +86,18 @@ impl MetalDevice {
 
 impl Allocator for MetalDevice {
     fn alloc(&self, size_bytes: usize) -> Result<DeviceBuffer, DeviceError> {
+        // Metal rejects a zero-length buffer; a zero-sized tensor still owns a
+        // handle, so it is backed by one byte while `size_bytes` stays exact.
         let buffer = self
             .device
-            .new_buffer(size_bytes as u64, MTLResourceOptions::StorageModeShared);
-        let key = buffer.as_ptr() as usize;
-        let ptr = buffer.as_ptr() as *mut std::ffi::c_void;
+            .newBufferWithLength_options(size_bytes.max(1), MTLResourceOptions::StorageModeShared)
+            .ok_or_else(|| {
+                DeviceError::AllocationFailed(format!(
+                    "Metal buffer allocation of {size_bytes} bytes failed"
+                ))
+            })?;
+        let ptr = object_address(&buffer);
+        let key = ptr as usize;
 
         // Keep buffer alive in our map
         self.live_buffers.lock().unwrap().insert(key, buffer);
@@ -89,10 +128,11 @@ impl Allocator for MetalDevice {
                 let mtl_buf = live
                     .get(&key)
                     .ok_or_else(|| DeviceError::InvalidArgument("buffer not found".into()))?;
-                let contents = mtl_buf.contents() as *mut u8;
-                // SAFETY: MTLBuffer::contents() returns a valid shared-mode pointer.
-                // The copy length is clamped to the buffer size, preventing out-of-bounds writes.
-                // Metal shared-mode buffers are CPU-accessible without synchronization.
+                let contents = mtl_buf.contents().as_ptr().cast::<u8>();
+                // SAFETY: `contents()` of a shared-mode buffer is CPU-visible for
+                // the buffer's whole lifetime, which `live_buffers` holds. The
+                // copy length is clamped to the buffer size, so the write stays
+                // in bounds, and shared-mode memory needs no synchronization.
                 unsafe {
                     std::ptr::copy_nonoverlapping(
                         data.as_ptr(),
@@ -115,11 +155,12 @@ impl Allocator for MetalDevice {
                 let mtl_buf = live
                     .get(&key)
                     .ok_or_else(|| DeviceError::InvalidArgument("buffer not found".into()))?;
-                let contents = mtl_buf.contents() as *const u8;
+                let contents = mtl_buf.contents().as_ptr().cast::<u8>().cast_const();
                 let len = data.len().min(buf.size_bytes);
-                // SAFETY: MTLBuffer::contents() returns a valid shared-mode pointer.
-                // synchronize() was called above, guaranteeing all GPU writes are visible.
-                // The copy length is clamped to the minimum of buffer and output sizes.
+                // SAFETY: `contents()` of a shared-mode buffer is CPU-visible for
+                // the buffer's whole lifetime, which `live_buffers` holds.
+                // `synchronize()` above completed every queued GPU write, and the
+                // copy length is the minimum of the buffer and output sizes.
                 unsafe {
                     std::ptr::copy_nonoverlapping(contents, data.as_mut_ptr(), len);
                 }
@@ -138,31 +179,33 @@ impl Compiler for MetalDevice {
         {
             let cache = self.cache.lock().unwrap();
             if let Some(pso) = cache.get(&hash) {
-                let ptr = pso.as_ptr() as *mut std::ffi::c_void;
                 return Ok(CompiledProgram {
-                    handle: ProgramHandle::Metal(ptr),
+                    handle: ProgramHandle::Metal(object_address(pso)),
                     entry: entry.to_string(),
                 });
             }
         }
 
-        // Compile MSL source
-        let options = metal::CompileOptions::new();
+        // Compile MSL source with the default compile options.
         let library = self
             .device
-            .new_library_with_source(source, &options)
-            .map_err(|e| DeviceError::CompilationFailed(e.to_string()))?;
+            .newLibraryWithSource_options_error(&NSString::from_str(source), None)
+            .map_err(|error| DeviceError::CompilationFailed(error_text(&error)))?;
 
         let function = library
-            .get_function(entry, None)
-            .map_err(|e| DeviceError::CompilationFailed(format!("function '{}': {}", entry, e)))?;
+            .newFunctionWithName(&NSString::from_str(entry))
+            .ok_or_else(|| {
+                DeviceError::CompilationFailed(format!(
+                    "function '{entry}': not found in the compiled library"
+                ))
+            })?;
 
         let pso = self
             .device
-            .new_compute_pipeline_state_with_function(&function)
-            .map_err(|e| DeviceError::CompilationFailed(e.to_string()))?;
+            .newComputePipelineStateWithFunction_error(&function)
+            .map_err(|error| DeviceError::CompilationFailed(error_text(&error)))?;
 
-        let ptr = pso.as_ptr() as *mut std::ffi::c_void;
+        let ptr = object_address(&pso);
 
         // Cache (keeps the pso alive)
         self.cache.lock().unwrap().insert(hash, pso);
@@ -190,21 +233,22 @@ impl Executor for MetalDevice {
         grid: [u32; 3],
         local: [u32; 3],
     ) -> Result<(), DeviceError> {
-        let command_buffer = self.queue.new_command_buffer();
-        let encoder = command_buffer.new_compute_command_encoder();
+        let command_buffer = self.queue.commandBuffer().ok_or_else(|| {
+            DeviceError::ExecutionFailed("Metal command buffer creation failed".into())
+        })?;
+        let encoder = command_buffer.computeCommandEncoder().ok_or_else(|| {
+            DeviceError::ExecutionFailed("Metal compute command encoder creation failed".into())
+        })?;
 
         // Set pipeline state from cached PSO
         match &prog.handle {
             ProgramHandle::Metal(ptr) => {
-                // SAFETY: The pointer was obtained from a cached ComputePipelineState
-                // that remains alive in self.cache for the device's lifetime.
-                // We reconstruct a temporary handle, use it, then forget it to
-                // prevent double-free since the cache owns the underlying object.
-                unsafe {
-                    let pso = metal::ComputePipelineState::from_ptr(*ptr as *mut _);
-                    encoder.set_compute_pipeline_state(&pso);
-                    std::mem::forget(pso);
-                }
+                // SAFETY: `compile` produced this address from a pipeline state
+                // that `self.cache` retains for the device's lifetime, so the
+                // object is alive for this borrow; the encoder retains it on its
+                // own for the command buffer's lifetime.
+                let pso = unsafe { &*ptr.cast::<ProtocolObject<dyn MTLComputePipelineState>>() };
+                encoder.setComputePipelineState(pso);
             }
             _ => return Err(DeviceError::InvalidArgument("not a Metal program".into())),
         }
@@ -218,7 +262,9 @@ impl Executor for MetalDevice {
                     let mtl_buf = live
                         .get(&key)
                         .ok_or_else(|| DeviceError::InvalidArgument("buffer not found".into()))?;
-                    encoder.set_buffer(i as u64, Some(mtl_buf), 0);
+                    // SAFETY: the buffer is a live object of this device, bound
+                    // at offset 0 inside its own length; the encoder retains it.
+                    unsafe { encoder.setBuffer_offset_atIndex(Some(&**mtl_buf), 0, i) };
                 }
                 _ => return Err(DeviceError::InvalidArgument("not a Metal buffer".into())),
             }
@@ -227,25 +273,35 @@ impl Executor for MetalDevice {
 
         // Dispatch. `grid` is the number of THREADGROUPS (tinygrad's dispatch
         // model, and exactly what `schedule::specialize_shapes` computes —
-        // `grid_x = ceil(total / local)`). `dispatch_thread_groups` launches
+        // `grid_x = ceil(total / local)`). `dispatchThreadgroups` launches
         // `grid * local` total threads, the kernel guarding the `gid >= total`
         // tail. The previous `dispatch_threads` treated `grid` as a raw thread
         // count, so a specialized kernel whose grid is the threadgroup count
         // launched only `ceil(total/local)` threads (e.g. 16 of 1024 elements)
         // and silently left the rest unwritten.
-        let threadgroups = MTLSize::new(grid[0] as u64, grid[1] as u64, grid[2] as u64);
-        let threads_per_group = MTLSize::new(local[0] as u64, local[1] as u64, local[2] as u64);
-        encoder.dispatch_thread_groups(threadgroups, threads_per_group);
-        encoder.end_encoding();
+        let threadgroups = MTLSize {
+            width: grid[0] as usize,
+            height: grid[1] as usize,
+            depth: grid[2] as usize,
+        };
+        let threads_per_group = MTLSize {
+            width: local[0] as usize,
+            height: local[1] as usize,
+            depth: local[2] as usize,
+        };
+        encoder.dispatchThreadgroups_threadsPerThreadgroup(threadgroups, threads_per_group);
+        encoder.endEncoding();
         command_buffer.commit();
 
         Ok(())
     }
 
     fn synchronize(&self) -> Result<(), DeviceError> {
-        let command_buffer = self.queue.new_command_buffer();
+        let command_buffer = self.queue.commandBuffer().ok_or_else(|| {
+            DeviceError::ExecutionFailed("Metal command buffer creation failed".into())
+        })?;
         command_buffer.commit();
-        command_buffer.wait_until_completed();
+        command_buffer.waitUntilCompleted();
         Ok(())
     }
 }
