@@ -225,7 +225,7 @@ unsafe fn dict_get_string_bytes(globals: *mut PyObject, key: &CStr) -> Option<Ve
         unsafe { crate::api::errors::PyErr_Clear() };
         return None;
     }
-    Some(unsafe { std::slice::from_raw_parts(ptr as *const u8, size as usize) }.to_vec())
+    Some(unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), size as usize) }.to_vec())
 }
 
 /// CPython `Python/import.c` `resolve_name`: combine `level` leading dots with

@@ -9,10 +9,17 @@
 //! functions and every caller spells the platform fact the same way. The
 //! assertions keep every widening lossless on every target; the narrowing
 //! checks its value and panics on a bit outside the destination.
+//!
+//! C `char` has one width everywhere but two signednesses: it is `u8` on
+//! aarch64, arm, powerpc and s390x Linux and `i8` on x86_64 everywhere and on
+//! aarch64 macOS and Windows. The byte pattern is the value on both, so the
+//! conversion is a reinterpretation that is a same-type cast on one family
+//! and a sign reinterpretation on the other; it, too, is spelled only here.
 
-use core::ffi::{c_long, c_longlong, c_uint, c_ulong, c_ulonglong};
+use core::ffi::{c_char, c_long, c_longlong, c_uint, c_ulong, c_ulonglong};
 
 const _: () = {
+    assert!(size_of::<c_char>() == 1);
     assert!(size_of::<c_long>() <= size_of::<i64>());
     assert!(size_of::<c_ulong>() <= size_of::<u64>());
     assert!(size_of::<c_longlong>() == size_of::<i64>());
@@ -60,6 +67,26 @@ pub const fn c_ulonglong_to_u64(value: c_ulonglong) -> u64 {
     value as u64
 }
 
+/// Reinterpret a C `char` as the byte it stores.
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "c_char is u8 on aarch64 Linux and i8 on x86_64, macOS and Windows"
+)]
+#[inline]
+pub const fn c_char_to_u8(value: c_char) -> u8 {
+    value as u8
+}
+
+/// Store a byte in a C `char`, keeping its bit pattern.
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "c_char is u8 on aarch64 Linux and i8 on x86_64, macOS and Windows"
+)]
+#[inline]
+pub const fn u8_to_c_char(value: u8) -> c_char {
+    value as c_char
+}
+
 /// Narrow a C `unsigned long` to a C `unsigned int` without losing a bit.
 ///
 /// C narrows this assignment implicitly and silently. Rust spells it here
@@ -90,6 +117,15 @@ mod tests {
         assert!(c_long_to_i64(c_long::MAX) >= i64::from(i32::MAX));
         assert!(c_ulong_to_u64(c_ulong::MAX) >= u64::from(u32::MAX));
         assert_eq!(c_ulonglong_to_u64(c_ulonglong::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn char_reinterpretation_keeps_every_bit_on_both_signednesses() {
+        for byte in [0u8, 1, 0x7f, 0x80, 0xff] {
+            assert_eq!(c_char_to_u8(u8_to_c_char(byte)), byte);
+        }
+        // MIN and MAX are 0x80/0x7f for i8 and 0x00/0xff for u8: both XOR to 0xff.
+        assert_eq!(c_char_to_u8(c_char::MIN) ^ c_char_to_u8(c_char::MAX), 0xff);
     }
 
     #[test]

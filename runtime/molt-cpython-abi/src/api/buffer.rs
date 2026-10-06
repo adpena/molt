@@ -674,7 +674,7 @@ pub unsafe extern "C" fn PyBuffer_IsContiguous(
     if unsafe { (*view).len } == 0 {
         return 1;
     }
-    match order as u8 {
+    match crate::platform::c_char_to_u8(order) {
         b'C' | b'c' => unsafe { pybuffer_is_c_contiguous(view) as c_int },
         b'F' | b'f' => unsafe { pybuffer_is_f_contiguous(view) as c_int },
         _ => unsafe { (pybuffer_is_c_contiguous(view) || pybuffer_is_f_contiguous(view)) as c_int },

@@ -5,7 +5,8 @@ use std::ffi::{c_int, c_long, c_ulong, c_void};
 // The C integer width conversions are owned by `molt_codegen_abi::c_width`;
 // this crate re-exports them so every ABI site spells one authority.
 pub(crate) use molt_codegen_abi::c_width::{
-    c_long_to_i64, c_longlong_to_i64, c_ulong_to_c_uint, c_ulong_to_u64, c_ulonglong_to_u64,
+    c_char_to_u8, c_long_to_i64, c_longlong_to_i64, c_ulong_to_c_uint, c_ulong_to_u64,
+    c_ulonglong_to_u64,
 };
 
 /// `LONG_MIN` of the target C ABI, widened to `i64`.

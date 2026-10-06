@@ -230,90 +230,6 @@ pub extern "C" fn molt_zlib_decompress(data_bits: u64, wbits_bits: u64, bufsize_
 
 // ── zlib.crc32 ───────────────────────────────────────────────────────────────
 
-/// Standard CRC-32 lookup table (polynomial 0xEDB88320, reflected).
-const CRC32_TABLE: [u32; 256] = {
-    let mut table = [0u32; 256];
-    let mut i = 0u32;
-    while i < 256 {
-        let mut crc = i;
-        let mut j = 0;
-        while j < 8 {
-            if crc & 1 != 0 {
-                crc = (crc >> 1) ^ 0xEDB8_8320;
-            } else {
-                crc >>= 1;
-            }
-            j += 1;
-        }
-        table[i as usize] = crc;
-        i += 1;
-    }
-    table
-};
-
-fn crc32_compute(data: &[u8], initial: u32) -> u32 {
-    let mut crc = !initial;
-    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
-    let mut scalar_start = 0usize;
-    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-    let scalar_start = 0usize;
-
-    // Hardware CRC32 acceleration on aarch64
-    #[cfg(target_arch = "aarch64")]
-    {
-        if std::arch::is_aarch64_feature_detected!("crc") {
-            unsafe {
-                use std::arch::aarch64::*;
-                // Process 8 bytes at a time using hardware CRC32 instructions
-                while scalar_start + 8 <= data.len() {
-                    let val = u64::from_le_bytes(
-                        data[scalar_start..scalar_start + 8].try_into().unwrap(),
-                    );
-                    crc = __crc32d(crc, val);
-                    scalar_start += 8;
-                }
-                // Process remaining bytes one at a time
-                while scalar_start < data.len() {
-                    crc = __crc32b(crc, data[scalar_start]);
-                    scalar_start += 1;
-                }
-                return !crc;
-            }
-        }
-    }
-
-    // Hardware CRC32 acceleration on x86_64 (SSE4.2)
-    #[cfg(target_arch = "x86_64")]
-    {
-        if std::arch::is_x86_feature_detected!("sse4.2") {
-            unsafe {
-                use std::arch::x86_64::*;
-                // Process 8 bytes at a time
-                while scalar_start + 8 <= data.len() {
-                    let val = u64::from_le_bytes(
-                        data[scalar_start..scalar_start + 8].try_into().unwrap(),
-                    );
-                    crc = _mm_crc32_u64(crc as u64, val) as u32;
-                    scalar_start += 8;
-                }
-                // Process remaining bytes
-                while scalar_start < data.len() {
-                    crc = _mm_crc32_u8(crc, data[scalar_start]);
-                    scalar_start += 1;
-                }
-                return !crc;
-            }
-        }
-    }
-
-    // Scalar fallback (table-based)
-    for &byte in &data[scalar_start..] {
-        let idx = ((crc ^ u32::from(byte)) & 0xFF) as usize;
-        crc = CRC32_TABLE[idx] ^ (crc >> 8);
-    }
-    !crc
-}
-
 /// `zlib.crc32(data, value=0) -> int`
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_zlib_crc32(data_bits: u64, value_bits: u64) -> u64 {
@@ -334,7 +250,7 @@ pub extern "C" fn molt_zlib_crc32(data_bits: u64, value_bits: u64) -> u64 {
                 val as u32
             }
         };
-        let result = crc32_compute(data, initial);
+        let result = molt_runtime_core::crc32::crc32(data, initial);
         // CPython returns unsigned 32-bit int
         int_bits_from_i64(_py, i64::from(result))
     })
