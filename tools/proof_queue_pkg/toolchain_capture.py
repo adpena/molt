@@ -38,7 +38,15 @@ from tools.proof_queue_pkg.process_image_capture import (
 
 CAPTURE_SCHEMA = "molt.proof-toolchain-capture.v1"
 VERIFICATION_SCHEMA = "molt.proof-toolchain-verification.v1"
+# std::process::Command's Debug form, which rustc uses to print link commands:
+# an optional `cd "dir" && `, then `env -i ` (cleared) or `env -u NAME ...`
+# (removed variables; rustc strips Apple deployment targets this way), then
+# `NAME="value"` assignments, an optional `["program"] ` when the executable
+# differs from argv[0], and the quoted argv.
+_COMMAND_CWD_PREFIX = re.compile(r'cd (?=")')
+_COMMAND_ENVIRONMENT_EDIT = re.compile(r'env(?: -i| -u [^\s"]+)+ ')
 _COMMAND_ENVIRONMENT_ASSIGNMENT = re.compile(r'[A-Za-z_][A-Za-z0-9_]*=(?=")')
+_COMMAND_PROGRAM_OVERRIDE = re.compile(r'\[(?=")')
 _COMMANDS = CommandExecutor.for_file(__file__)
 
 
@@ -320,6 +328,13 @@ def _command_tokens(line: str) -> list[str]:
     tokens: list[str] = []
     decoder = json.JSONDecoder()
     index = 0
+    if cwd := _COMMAND_CWD_PREFIX.match(line):
+        _directory, end = decoder.raw_decode(line, cwd.end())
+        if not line.startswith(" && ", end):
+            raise ValueError("rust linker command has a malformed working directory")
+        index = end + len(" && ")
+    if edit := _COMMAND_ENVIRONMENT_EDIT.match(line, index):
+        index = edit.end()
     while assignment := _COMMAND_ENVIRONMENT_ASSIGNMENT.match(line, index):
         value, end = decoder.raw_decode(line, assignment.end())
         if not isinstance(value, str) or end >= len(line) or not line[end].isspace():
@@ -329,6 +344,12 @@ def _command_tokens(line: str) -> list[str]:
         index = end
         while index < len(line) and line[index].isspace():
             index += 1
+    program: str | None = None
+    if override := _COMMAND_PROGRAM_OVERRIDE.match(line, index):
+        program, end = decoder.raw_decode(line, override.end())
+        if not isinstance(program, str) or not line.startswith("] ", end):
+            raise ValueError("rust linker command has a malformed program override")
+        index = end + len("] ")
     if index and (index >= len(line) or line[index] != '"'):
         raise ValueError("rust linker environment assignments have no quoted command")
     command_start = index
@@ -344,6 +365,9 @@ def _command_tokens(line: str) -> list[str]:
             raise ValueError("rust linker command contains a non-string argument")
         tokens.append(value)
         index = end
+    if program is not None and tokens:
+        # argv[0] is display-only once the executable is named separately.
+        tokens[0] = program
     return tokens
 
 
@@ -351,8 +375,14 @@ def _selected_command_lines(output: str) -> list[list[str]]:
     commands: list[list[str]] = []
     for line in output.splitlines():
         stripped = line.strip()
-        if not stripped.startswith('"') and not _COMMAND_ENVIRONMENT_ASSIGNMENT.match(
-            stripped
+        if not stripped.startswith('"') and not any(
+            prefix.match(stripped)
+            for prefix in (
+                _COMMAND_CWD_PREFIX,
+                _COMMAND_ENVIRONMENT_EDIT,
+                _COMMAND_ENVIRONMENT_ASSIGNMENT,
+                _COMMAND_PROGRAM_OVERRIDE,
+            )
         ):
             continue
         try:
