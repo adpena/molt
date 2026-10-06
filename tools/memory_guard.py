@@ -123,7 +123,6 @@ from tools.memory_guard_core.payloads import (  # noqa: E402
 )
 from tools.memory_guard_core.sample_records import (  # noqa: E402
     DEFAULT_SAMPLES_MAX_MB as DEFAULT_SAMPLES_MAX_MB,
-    _append_sample_jsonl as _append_sample_jsonl,
     _format_sample_payload as _format_sample_payload,
     _record_gb as _record_gb,
     _record_sample as _record_sample,
@@ -217,7 +216,6 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
     _is_windows_process_model as _is_windows_process_model,
     _live_process_group_ids as _live_process_group_ids,
     _pid_exited_or_unobservable as _pid_exited_or_unobservable,
-    _poll_wait4_child as _poll_wait4_child,
     _process_group_exited_or_unobservable as _process_group_exited_or_unobservable,
     _process_group_is_fully_owned as _process_group_is_fully_owned,
     _process_group_members as _process_group_members,
@@ -235,6 +233,7 @@ from tools.memory_guard_core.process_custody import (  # noqa: E402
     _send_process_group_signal_if_identities_match_action as _send_process_group_signal_if_identities_match_action,
     _set_env_gb_ceiling as _set_env_gb_ceiling,
     _signal_name as _signal_name,
+    _take_child_exit_usage as _take_child_exit_usage,
     _terminate_pid_if_identity_action as _terminate_pid_if_identity_action,
     _terminate_process_group as _terminate_process_group,
     _terminate_process_group_if_identities_match_action as _terminate_process_group_if_identities_match_action,
@@ -1707,21 +1706,124 @@ def run_guarded(
             remembered_watched = set(watched)
             return samples, watched
 
-        baseline_authoritative = not cleanup_orphans
-        if cleanup_orphans:
-            baseline_snapshot = sample_tracked_tree(allow_transient_timeout=True)
-            if baseline_snapshot is not None and not guard_interrupted:
-                baseline_samples, _baseline_watched = baseline_snapshot
-                baseline_pgids = _live_process_group_ids(baseline_samples)
-                baseline_authoritative = True
+        def child_exit_observed() -> bool:
+            # The owned child handle is the sole exit authority on every
+            # platform. ChildExecutionClock reserves and reaps a real child and
+            # publishes its rusage; a raw PID wait would race that reaper.
+            return proc.poll() is not None
 
+        def await_child_exit(wait_s: float) -> bool:
+            """Wait up to ``wait_s`` on the owned handle; True once it exited."""
+            try:
+                proc.wait(timeout=wait_s)
+            except subprocess.TimeoutExpired:
+                # An exit can publish while the bounded wait reports expiry.
+                return child_exit_observed()
+            return True
+
+        def next_poll_wait_s(*, fast_start: bool) -> float:
+            elapsed = time.perf_counter() - start
+            wait_s = paced_poll_interval(poll_interval, last_sample_cost_s)
+            if fast_start and elapsed < DEFAULT_FAST_START_DURATION_SEC:
+                wait_s = min(wait_s, DEFAULT_FAST_START_POLL_INTERVAL_SEC)
+            if timeout is not None:
+                wait_s = max(0.0, min(wait_s, timeout - elapsed))
+            return wait_s
+
+        def enforce_snapshot(
+            samples: Mapping[int, ProcessSample], watched: set[int]
+        ) -> bool:
+            """Account, record and enforce one tree observation; True on a trip."""
+            nonlocal saw_cargo_build_state, peak, peak_total, last_limits
+            nonlocal violation, limit_at_violation
+            saw_cargo_build_state = (
+                saw_cargo_build_state
+                or _samples_include_cargo_build_state(samples, watched)
+            )
+            observed_peak = peak_rss(samples, root_pid=proc.pid, watched=watched)
+            if observed_peak is not None and (
+                peak is None or observed_peak.rss_kb > peak.rss_kb
+            ):
+                peak = observed_peak
+            observed_total = total_rss(samples, root_pid=proc.pid, watched=watched)
+            if observed_total is not None and (
+                peak_total is None or observed_total.rss_kb > peak_total.rss_kb
+            ):
+                peak_total = observed_total
+            current_limits = resolve_memory_limits(
+                max_process_rss_kb=max_rss_kb,
+                max_total_rss_kb=max_total_rss_kb,
+                adaptive_budget_provider=adaptive_budget_provider,
+                dynamic_process_rss=dynamic_process_rss,
+                dynamic_total_rss=dynamic_total_rss,
+                accounted_rss_kb=0 if observed_total is None else observed_total.rss_kb,
+            )
+            last_limits = current_limits
+            violation = find_rss_violation(
+                samples,
+                root_pid=proc.pid,
+                max_rss_kb=current_limits.max_process_rss_kb,
+                max_total_rss_kb=current_limits.max_total_rss_kb,
+                watched=watched,
+            )
+            if violation is None:
+                if samples_jsonl is not None or stream:
+                    _record_sample(
+                        root_pid=proc.pid,
+                        peak=observed_peak,
+                        total=observed_total,
+                        violation=None,
+                        limits=current_limits,
+                        samples_jsonl=samples_jsonl,
+                        samples_jsonl_max_bytes=samples_jsonl_max_bytes,
+                        stream=stream,
+                    )
+                return False
+            limit_at_violation = current_limits
+            _record_sample(
+                root_pid=proc.pid,
+                peak=observed_peak,
+                total=observed_total,
+                violation=violation,
+                limits=current_limits,
+                samples_jsonl=samples_jsonl,
+                samples_jsonl_max_bytes=samples_jsonl_max_bytes,
+                stream=stream,
+            )
+            _update_active_guard_marker(
+                guard_marker,
+                guard_token,
+                status="rss_limit_terminating",
+                child_process=guarded_child_process_payload(child_process),
+                violation=_rss_record_payload(violation),
+                peak=_rss_record_payload(observed_peak),
+                peak_total=_rss_record_payload(observed_total),
+                limit_at_violation=memory_limits_payload(current_limits),
+                elapsed_s=time.perf_counter() - start,
+            )
+            terminate_owned_tree(
+                reason="rss_limit",
+                samples=samples,
+                watched=watched,
+                grace=0.25,
+            )
+            return True
+
+        # One observation of the launched tree is both the orphan-cleanup
+        # baseline and the first enforced, recorded sample. Each later sample
+        # follows a bounded wait on the owned child handle, which returns as
+        # soon as the child exits.
+        snapshot = sample_tracked_tree(allow_transient_timeout=True)
+        baseline_authoritative = not cleanup_orphans
+        if cleanup_orphans and snapshot is not None and not guard_interrupted:
+            baseline_pgids = _live_process_group_ids(snapshot[0])
+            baseline_authoritative = True
+        child_exited = False
         while not guard_interrupted:
-            if os.name == "posix" and hasattr(os, "wait4"):
-                exited_usage = _poll_wait4_child(proc)
-                if exited_usage is not None:
-                    child_exit_usage = exited_usage
-                    break
-            elif proc.poll() is not None:
+            if snapshot is not None and enforce_snapshot(*snapshot):
+                break
+            if await_child_exit(next_poll_wait_s(fast_start=snapshot is not None)):
+                child_exited = True
                 break
             now = time.perf_counter()
             cancelled = cancellation_requested is not None and cancellation_requested()
@@ -1802,134 +1904,8 @@ def run_guarded(
                 assert keepalive_interval is not None
                 next_keepalive = now + keepalive_interval
             snapshot = sample_tracked_tree(allow_transient_timeout=True)
-            if snapshot is None:
-                exited_usage = _poll_wait4_child(proc)
-                if exited_usage is not None:
-                    child_exit_usage = exited_usage
-                    break
-                if os.name != "posix" and proc.poll() is not None:
-                    break
-                elapsed = time.perf_counter() - start
-                wait_timeout = paced_poll_interval(
-                    poll_interval,
-                    last_sample_cost_s,
-                )
-                if timeout is not None:
-                    wait_timeout = max(
-                        0.0,
-                        min(wait_timeout, timeout - elapsed),
-                    )
-                if os.name == "posix" and hasattr(os, "wait4"):
-                    time.sleep(wait_timeout)
-                else:
-                    try:
-                        proc.wait(timeout=wait_timeout)
-                        break
-                    except subprocess.TimeoutExpired:
-                        pass
-                continue
-            samples, watched = snapshot
-            if guard_interrupted:
-                break
-            saw_cargo_build_state = (
-                saw_cargo_build_state
-                or _samples_include_cargo_build_state(samples, watched)
-            )
-            observed_peak = peak_rss(samples, root_pid=proc.pid, watched=watched)
-            if observed_peak is not None and (
-                peak is None or observed_peak.rss_kb > peak.rss_kb
-            ):
-                peak = observed_peak
-            observed_total = total_rss(samples, root_pid=proc.pid, watched=watched)
-            if observed_total is not None and (
-                peak_total is None or observed_total.rss_kb > peak_total.rss_kb
-            ):
-                peak_total = observed_total
-            current_limits = resolve_memory_limits(
-                max_process_rss_kb=max_rss_kb,
-                max_total_rss_kb=max_total_rss_kb,
-                adaptive_budget_provider=adaptive_budget_provider,
-                dynamic_process_rss=dynamic_process_rss,
-                dynamic_total_rss=dynamic_total_rss,
-                accounted_rss_kb=0 if observed_total is None else observed_total.rss_kb,
-            )
-            last_limits = current_limits
-            violation = find_rss_violation(
-                samples,
-                root_pid=proc.pid,
-                max_rss_kb=current_limits.max_process_rss_kb,
-                max_total_rss_kb=current_limits.max_total_rss_kb,
-                watched=watched,
-            )
-            if violation is not None:
-                limit_at_violation = current_limits
-                _record_sample(
-                    root_pid=proc.pid,
-                    peak=observed_peak,
-                    total=observed_total,
-                    violation=violation,
-                    limits=current_limits,
-                    samples_jsonl=samples_jsonl,
-                    samples_jsonl_max_bytes=samples_jsonl_max_bytes,
-                    stream=stream,
-                )
-                _update_active_guard_marker(
-                    guard_marker,
-                    guard_token,
-                    status="rss_limit_terminating",
-                    child_process=guarded_child_process_payload(child_process),
-                    violation=_rss_record_payload(violation),
-                    peak=_rss_record_payload(observed_peak),
-                    peak_total=_rss_record_payload(observed_total),
-                    limit_at_violation=memory_limits_payload(current_limits),
-                    elapsed_s=now - start,
-                )
-                terminate_owned_tree(
-                    reason="rss_limit",
-                    samples=samples,
-                    watched=watched,
-                    grace=0.25,
-                )
-                break
-            if samples_jsonl is not None or stream:
-                _record_sample(
-                    root_pid=proc.pid,
-                    peak=observed_peak,
-                    total=observed_total,
-                    violation=None,
-                    limits=current_limits,
-                    samples_jsonl=samples_jsonl,
-                    samples_jsonl_max_bytes=samples_jsonl_max_bytes,
-                    stream=stream,
-                )
-            exited_usage = _poll_wait4_child(proc)
-            if exited_usage is not None:
-                child_exit_usage = exited_usage
-                break
-            if os.name != "posix" and proc.poll() is not None:
-                break
-            elapsed = time.perf_counter() - start
-            paced_interval = paced_poll_interval(poll_interval, last_sample_cost_s)
-            wait_timeout = (
-                min(paced_interval, DEFAULT_FAST_START_POLL_INTERVAL_SEC)
-                if elapsed < DEFAULT_FAST_START_DURATION_SEC
-                else paced_interval
-            )
-            if timeout is not None:
-                remaining = timeout - elapsed
-                wait_timeout = max(0.0, min(wait_timeout, remaining))
-            if os.name == "posix" and hasattr(os, "wait4"):
-                time.sleep(wait_timeout)
-                exited_usage = _poll_wait4_child(proc)
-                if exited_usage is not None:
-                    child_exit_usage = exited_usage
-                    break
-            else:
-                try:
-                    proc.wait(timeout=wait_timeout)
-                    break
-                except subprocess.TimeoutExpired:
-                    pass
+        if child_exited and violation is None:
+            child_exit_usage = _take_child_exit_usage(proc)
         if violation is None and child_exit_usage is not None:
             current_limits = last_limits or resolve_memory_limits(
                 max_process_rss_kb=max_rss_kb,

@@ -42,31 +42,6 @@ def _rotate_jsonl_if_needed(
         path.replace(rotated)
 
 
-def _append_sample_jsonl(
-    path: str,
-    *,
-    root_pid: int,
-    peak: Any | None,
-    total: Any | None,
-    violation: Any | None,
-    max_bytes: int | None = None,
-) -> None:
-    sample_path = Path(path)
-    if sample_path.parent:
-        sample_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "ts": time.time(),
-        "root_pid": root_pid,
-        "peak": _rss_record_payload(peak),
-        "total": _rss_record_payload(total),
-        "violation": _rss_record_payload(violation),
-    }
-    line = json.dumps(payload, sort_keys=True) + "\n"
-    _rotate_jsonl_if_needed(sample_path, len(line.encode("utf-8")), max_bytes)
-    with sample_path.open("a", encoding="utf-8") as handle:
-        handle.write(line)
-
-
 def _record_gb(record: object) -> str:
     if not isinstance(record, dict):
         return "-"
