@@ -1495,10 +1495,10 @@ mod process_registry_tests {
     fn wait_for_pid_file(path: &std::path::Path) -> i32 {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            if let Ok(raw) = fs::read_to_string(path) {
-                if let Ok(pid) = raw.trim().parse::<i32>() {
-                    return pid;
-                }
+            if let Ok(raw) = fs::read_to_string(path)
+                && let Ok(pid) = raw.trim().parse::<i32>()
+            {
+                return pid;
             }
             assert!(
                 Instant::now() < deadline,

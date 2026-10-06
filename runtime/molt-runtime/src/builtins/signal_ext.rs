@@ -2257,7 +2257,7 @@ mod delivery_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let recording = handler_object(py, record_delivery_handler as *const ());
-            let sigusr2 = libc::SIGUSR2 as i32;
+            let sigusr2 = libc::SIGUSR2;
             let old = install(py, sigusr2, recording);
             let parker = crate::async_rt::event_loop::LoopParker::new().expect("parker");
             parker.fill_for_test();
@@ -2284,7 +2284,7 @@ mod delivery_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             use std::os::fd::AsRawFd;
-            let sigusr2 = libc::SIGUSR2 as i32;
+            let sigusr2 = libc::SIGUSR2;
             let old_handler = install(py, sigusr2, HANDLER_DEFAULT_INT);
             let (reader, writer) = os_pipe::pipe().expect("pipe");
             let old_fd = runtime_state(py).signal.swap_wakeup_fd(writer.as_raw_fd());

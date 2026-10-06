@@ -92,7 +92,7 @@ static PyObject *payload_keyword_identity(PyObject *self, PyObject *args, PyObje
 static PyMethodDef payload_methods[] = {
     {"next_value", payload_method, METH_NOARGS, NULL},
     {"identity", payload_identity, METH_O, NULL},
-    {"keyword_identity", (PyCFunction)payload_keyword_identity, METH_VARARGS | METH_KEYWORDS, NULL},
+    {"keyword_identity", (PyCFunction)(void (*)(void))payload_keyword_identity, METH_VARARGS | METH_KEYWORDS, NULL},
     {"reject", payload_reject, METH_O, NULL},
     {NULL, NULL, 0, NULL}
 };
