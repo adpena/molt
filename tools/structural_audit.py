@@ -41,9 +41,13 @@ import io
 import json
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, asdict
 from pathlib import Path
 import tokenize
+from typing import TypeVar, cast
+
+_T = TypeVar("_T")
 
 if __package__ in (None, ""):
     from import_file import bind_repository_imports
@@ -57,6 +61,7 @@ from molt.rust_source_scan import (  # noqa: E402
     mask_rust_test_items,
     rust_test_only_source_files,
     project_rust_source,
+    scan_memo,
 )
 from tools import release_criterion_receipt as release_receipt  # noqa: E402
 from tools import compatibility_error_protocol as compatibility_errors  # noqa: E402
@@ -158,19 +163,45 @@ def _is_generated(path: Path) -> bool:
     # Authoritative manifest list (doc 59 F1) — a declared generated output is
     # generated even if its @generated header were ever stripped.
     try:
-        rel = path.resolve().relative_to(ROOT_DEFAULT).as_posix()
+        rel = _resolved(path).relative_to(ROOT_DEFAULT).as_posix()
         if rel in _manifest_declared_outputs():
             return True
     except (ValueError, OSError):
         pass
     try:
-        head = path.read_text(errors="replace")[:400]
+        head = _source_text(path)[:400]
     except OSError:
         return False
     return bool(_GENERATED_FILE_MARKER_RE.search(head))
 
 
-def _iter_pruned_files(base: Path, root: Path, suffixes: tuple[str, ...]) -> list[Path]:
+# One run_all pass shares filesystem walks and derived indexes across probes.
+# The cache never outlives that run (tests mutate sources between runs), and a
+# probe called outside run_all stays uncached.
+_RUN_CACHE: dict[tuple[object, ...], object] | None = None
+
+
+def _run_cached(key: tuple[object, ...], compute: Callable[[], _T]) -> _T:
+    if _RUN_CACHE is None:
+        return compute()
+    if key not in _RUN_CACHE:
+        _RUN_CACHE[key] = compute()
+    return cast(_T, _RUN_CACHE[key])
+
+
+def _resolved(path: Path) -> Path:
+    """The file's resolved path, computed once per run_all pass."""
+    return _run_cached(("resolved", path), path.resolve)
+
+
+def _source_text(path: Path) -> str:
+    """The file's text, read once per run_all pass."""
+    return _run_cached(
+        ("text", path), lambda: path.read_text(errors="replace", encoding="utf-8")
+    )
+
+
+def _walk_pruned_files(base: Path, root: Path, suffixes: tuple[str, ...]) -> list[Path]:
     out: list[Path] = []
     stack = [base]
     while stack:
@@ -189,6 +220,15 @@ def _iter_pruned_files(base: Path, root: Path, suffixes: tuple[str, ...]) -> lis
                 out.append(path)
         stack.extend(reversed(dirs))
     return out
+
+
+def _iter_pruned_files(base: Path, root: Path, suffixes: tuple[str, ...]) -> list[Path]:
+    return list(
+        _run_cached(
+            ("pruned", base, root, suffixes),
+            lambda: _walk_pruned_files(base, root, suffixes),
+        )
+    )
 
 
 def _iter_source_files(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
@@ -676,16 +716,27 @@ def _large_source_files(
     ceiling: int = 4000,
     py_ceiling: int = 2500,
 ) -> list[LargeSourceFile]:
+    return list(
+        _run_cached(
+            ("large", root, ceiling, py_ceiling, _ACTIVE_SOURCE_FILE_SCOPE),
+            lambda: _scan_large_source_files(root, ceiling, py_ceiling),
+        )
+    )
+
+
+def _scan_large_source_files(
+    root: Path, ceiling: int, py_ceiling: int
+) -> list[LargeSourceFile]:
     files: list[LargeSourceFile] = []
     test_paths = _rust_test_source_paths(root)
     for suffix, lang_ceiling in ((".rs", ceiling), (".py", py_ceiling)):
         for path in _iter_source_files(root, (suffix,)):
             if _is_generated(path) or (
-                suffix == ".rs" and path.resolve() in test_paths
+                suffix == ".rs" and _resolved(path) in test_paths
             ):
                 continue
             try:
-                text = path.read_text(errors="replace")
+                text = _source_text(path)
             except OSError:
                 continue
             line_count = _line_count(text)
@@ -744,10 +795,10 @@ def probe_semantic_fallthroughs(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     test_paths = _rust_test_source_paths(root)
     for path in _iter_source_files(root, (".rs",)):
-        if _is_generated(path) or path.resolve() in test_paths:
+        if _is_generated(path) or _resolved(path) in test_paths:
             continue
         try:
-            raw = path.read_text(errors="replace")
+            raw = _source_text(path)
         except OSError:
             continue
         if "OpCode::" not in raw:
@@ -1049,7 +1100,7 @@ def probe_debt_markers(root: Path) -> list[Finding]:
         if _is_generated(path):
             continue
         try:
-            text = path.read_text(errors="replace")
+            text = _source_text(path)
         except OSError:
             continue
         hits = _debt_marker_hits(path, text)
@@ -1232,7 +1283,7 @@ def probe_python_stub_surfaces(root: Path) -> list[Finding]:
         ):
             continue
         try:
-            text = path.read_text(errors="replace")
+            text = _source_text(path)
         except OSError:
             continue
         projection = _compatibility_projection_inventory(
@@ -1282,13 +1333,16 @@ def probe_python_stub_surfaces(root: Path) -> list[Finding]:
 
 def _rust_test_source_paths(root: Path) -> set[Path]:
     # Ownership must see declarations outside a --path diagnostic selection.
-    paths = [
-        path
-        for sub in _SOURCE_ROOTS
-        if (root / sub).is_dir()
-        for path in _iter_pruned_files(root / sub, root, (".rs",))
-    ]
-    return rust_test_only_source_files(paths)
+    def compute() -> set[Path]:
+        paths = [
+            path
+            for sub in _SOURCE_ROOTS
+            if (root / sub).is_dir()
+            for path in _iter_pruned_files(root / sub, root, (".rs",))
+        ]
+        return rust_test_only_source_files(paths)
+
+    return _run_cached(("rust_test_paths", root), compute)
 
 
 def _rust_line_is_comment_only(line: str) -> bool:
@@ -1374,10 +1428,10 @@ def probe_rust_stub_surfaces(root: Path) -> list[Finding]:
             _is_generated(path)
             and path.relative_to(root).as_posix()
             not in compatibility_errors.projections()
-        ) or path.resolve() in test_paths:
+        ) or _resolved(path) in test_paths:
             continue
         try:
-            text = path.read_text(errors="replace")
+            text = _source_text(path)
         except OSError:
             continue
         projection = _compatibility_projection_inventory(
@@ -1843,9 +1897,9 @@ def _rust_rejection_family(
     paths = [root / "runtime/molt-backend-rust/src/rust.rs", *family.rglob("*.rs")]
     test_paths = _rust_test_source_paths(root)
     for path in sorted(path for path in paths if path.is_file()):
-        if path.resolve() in test_paths:
+        if _resolved(path) in test_paths:
             continue
-        text = path.read_text(errors="replace")
+        text = _source_text(path)
         code = mask_rust_comments_and_strings(mask_rust_test_items(text))
         family_sources.append(code)
         if path == root / "runtime/molt-backend-rust/src/rust.rs":
@@ -2129,7 +2183,7 @@ def probe_rust_backend_lowering_gaps(root: Path) -> list[Finding]:
                 )
             ]
     try:
-        text = path.read_text(errors="replace")
+        text = _source_text(path)
     except OSError:
         return []
     lines = mask_rust_comments_and_strings(text, preserve_literals=True).split("\n")
@@ -2240,7 +2294,7 @@ def probe_native_scalar_plan_authority(root: Path) -> list[Finding]:
         if not path.is_file():
             continue
         try:
-            text = path.read_text(errors="replace")
+            text = _source_text(path)
         except OSError:
             continue
         rel = path.relative_to(root).as_posix()
@@ -2288,7 +2342,7 @@ def probe_repr_name_scalar_authority(root: Path) -> list[Finding]:
     if not path.is_file():
         return []
     try:
-        text = path.read_text(errors="replace")
+        text = _source_text(path)
     except OSError:
         return []
 
@@ -2352,11 +2406,11 @@ def probe_duplicate_authorities(root: Path) -> list[Finding]:
     }
     test_paths = _rust_test_source_paths(root)
     for path in _iter_source_files(root, (".rs",)):
-        if _is_generated(path) or path.resolve() in test_paths:
+        if _is_generated(path) or _resolved(path) in test_paths:
             continue
         rel_path = path.relative_to(root)
         try:
-            text = path.read_text(errors="replace")
+            text = _source_text(path)
         except OSError:
             continue
         rel = rel_path.as_posix()
@@ -2446,8 +2500,10 @@ def probe_registry_reconciliation(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     if not ops_rs.is_file() or not toml_path.is_file():
         return findings
-    variants = _count_enum_variants(ops_rs.read_text(errors="replace"), "OpCode")
-    toml_text = toml_path.read_text(errors="replace")
+    variants = _count_enum_variants(
+        ops_rs.read_text(errors="replace", encoding="utf-8"), "OpCode"
+    )
+    toml_text = _source_text(toml_path)
     opcode_rows = set(
         re.findall(r'^\s*opcode\s*=\s*"([A-Za-z0-9_]+)"', toml_text, re.MULTILINE)
     )
@@ -2491,16 +2547,20 @@ PROBES = (
 
 def run_all(root: Path, path_scope: frozenset[str] | None = None) -> list[Finding]:
     findings: list[Finding] = []
-    global _ACTIVE_SOURCE_FILE_SCOPE
+    global _ACTIVE_SOURCE_FILE_SCOPE, _RUN_CACHE
     previous_scope = _ACTIVE_SOURCE_FILE_SCOPE
+    previous_cache = _RUN_CACHE
     _ACTIVE_SOURCE_FILE_SCOPE = path_scope
+    _RUN_CACHE = {}
     try:
-        for probe in PROBES:
-            if path_scope is not None and probe is probe_registry_reconciliation:
-                continue
-            findings.extend(probe(root))
+        with scan_memo():
+            for probe in PROBES:
+                if path_scope is not None and probe is probe_registry_reconciliation:
+                    continue
+                findings.extend(probe(root))
     finally:
         _ACTIVE_SOURCE_FILE_SCOPE = previous_scope
+        _RUN_CACHE = previous_cache
     findings.sort(key=lambda f: f.sort_key())
     return findings
 
