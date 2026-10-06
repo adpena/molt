@@ -1150,10 +1150,6 @@ def _prepare_non_native_build_result_in_generation(
             try:
                 link_tool_closure = local_python_import_closure(molt_root, (tool,))
                 linker_identity = wasm_toolchain.resolve_wasm_linker()
-                if linker_identity is None:
-                    raise ValueError(
-                        "wasm-ld not found; install LLVM to enable linking"
-                    )
                 admitted_link_inputs = tuple(
                     stable_regular_file_identity(
                         path.resolve(), label="WASM link input"

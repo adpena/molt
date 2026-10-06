@@ -172,33 +172,40 @@ def _materialize_fake_extension_command(cmd: list[str]) -> Path:
     return output
 
 
-def test_resolve_wasm_linker_prefers_matching_wasi_sdk_linker(
+def test_resolve_wasm_linker_never_searches_path_and_names_provisioning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    sdk = tmp_path / "wasi-sdk"
-    sysroot = sdk / "share" / "wasi-sysroot"
-    sysroot.mkdir(parents=True)
-    (sysroot / "VERSION").write_text("llvm-version: 22.1.0\n", encoding="utf-8")
-    linker = (
-        sdk
-        / "bin"
-        / ("wasm-ld.exe" if cli_wasm_toolchain.os.name == "nt" else "wasm-ld")
+    """No selector and no provisioned SDK: fail with the exact remedy.
+
+    An ambient wasm-ld on PATH is not toolchain authority; the error names the
+    provisioning command and the selectors instead of "install LLVM".
+    """
+    import molt.llvm_toolchain as llvm_toolchain
+    from tests.executable_test_support import write_mock_executable
+
+    ambient = tmp_path / "ambient-bin"
+    ambient.mkdir()
+    write_mock_executable(
+        ambient / ("wasm-ld.exe" if os.name == "nt" else "wasm-ld"), b"ambient"
     )
-    linker.parent.mkdir()
-    linker.write_bytes(b"linker")
     monkeypatch.setattr(
-        wasm_link_inputs, "resolve_wasi_sysroot", lambda **_kwargs: sysroot
+        llvm_toolchain,
+        "provisioned_wasi_sdk_prefix",
+        lambda _root, **_kwargs: tmp_path / "missing-wasi-sdk",
     )
     monkeypatch.setattr(
-        cli_wasm_toolchain, "_wasm_linker_version", lambda _path, **_kwargs: "22.1.7"
+        cli_wasm_toolchain,
+        "_wasm_linker_version",
+        lambda _path, **_kwargs: pytest.fail("no linker may be executed"),
     )
 
-    identity = cli_wasm_toolchain.resolve_wasm_linker(env={})
+    with pytest.raises(cli_wasm_toolchain.WasmLinkerContractError) as raised:
+        cli_wasm_toolchain.resolve_wasm_linker(env={"PATH": str(ambient)})
 
-    assert identity is not None
-    assert identity.path == linker.resolve()
-    assert identity.version == "22.1.7"
-    assert identity.wasi_sdk_llvm_version == "22.1.0"
+    message = str(raised.value)
+    assert "tools/provision_wasi_sdk.py" in message
+    assert "MOLT_WASM_LD" in message
+    assert "install LLVM" not in message
 
 
 def test_resolve_wasm_linker_rejects_wasi_sdk_release_mismatch(
@@ -264,7 +271,7 @@ def test_resolve_wasm_linker_rejects_generic_lld_override(
 
     with pytest.raises(
         cli_wasm_toolchain.WasmLinkerContractError,
-        match="generic lld.*not wasm linkers",
+        match="does not select a wasm-ld entrypoint",
     ):
         cli_wasm_toolchain.resolve_wasm_linker()
 

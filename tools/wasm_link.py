@@ -38,6 +38,7 @@ from molt.cli.source_extension_link_requirements import (  # noqa: E402
     map_source_extension_link_inputs,
     read_source_extension_link_plan,
 )
+from molt.cli import wasm_toolchain  # noqa: E402
 from molt.wasm_optimization import WASM_OPT_LEVELS  # noqa: E402
 import wasm_link_command as _link_command  # noqa: E402
 import wasm_link_native_inputs as _native_inputs  # noqa: E402
@@ -645,12 +646,10 @@ def main() -> int:
             return 1
     linked.parent.mkdir(parents=True, exist_ok=True)
 
-    wasm_ld = _link_command._find_wasm_ld()
-    if not wasm_ld:
-        print(
-            "wasm-ld not found; install LLVM to enable single-module linking.",
-            file=sys.stderr,
-        )
+    try:
+        wasm_ld = str(wasm_toolchain.resolve_wasm_linker().path)
+    except wasm_toolchain.WasmLinkerContractError as exc:
+        print(f"WASM linker is unavailable: {exc}", file=sys.stderr)
         return 1
 
     try:

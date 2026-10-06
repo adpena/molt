@@ -17,7 +17,6 @@ from molt.cli import wasm_toolchain
 from molt.cli.backend_daemon_config import _backend_daemon_enabled
 from molt.cli.default_paths import _default_molt_cache
 from molt.cli.installation_diagnostics import installation_checks
-from molt.cli.llvm_wasi_tools import llvm_linker_candidates
 from molt.cli.wasm_link_cache import _default_wasm_link_cache
 from molt.cli.models import _ToolchainReport
 from molt.cli.output import emit_json as _emit_json
@@ -595,15 +594,15 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             ),
         )
 
-    wasm_ld_candidates = llvm_linker_candidates("wasm-ld", target_family="wasm")
-    wasm_ld_path = str(wasm_ld_candidates[0]) if wasm_ld_candidates else None
-    record(
-        "wasm-ld",
-        bool(wasm_ld_path),
-        wasm_ld_path or "not found",
-        level="warning",
-        advice=_clang_setup_advice(system) if not wasm_ld_path else None,
-    )
+    # The WASM toolchain authority selects wasm-ld (MOLT_WASM_LD, WASI_SDK_PATH
+    # or the provisioned wasi-sdk); its error names the provisioning command.
+    try:
+        wasm_ld_detail = wasm_toolchain.resolve_wasm_linker().diagnostic
+        wasm_ld_ok = True
+    except wasm_toolchain.WasmLinkerContractError as exc:
+        wasm_ld_detail = str(exc)
+        wasm_ld_ok = False
+    record("wasm-ld", wasm_ld_ok, wasm_ld_detail, level="warning")
 
     try:
         wasm_tools = require_pinned_tool("wasm-tools")
@@ -656,7 +655,11 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
         bool(zig_path),
         zig_path or "not found",
         level="warning",
-        advice=["Install zig if you need wasm linking"] if not zig_path else None,
+        advice=(
+            ["Install zig if you need cross-target native linking"]
+            if not zig_path
+            else None
+        ),
     )
 
     if source_checkout:
@@ -947,7 +950,7 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             "llvm": False,
             "wasm": any(readiness["wasm"].values()),
             "linked-wasm": any(readiness["wasm"].values())
-            and bool((zig_path or wasm_ld_path) and wasm_tools_path),
+            and bool(wasm_ld_ok and wasm_tools_path),
             "luau": bool(luau_runner_path),
         }
         profiles = {
@@ -960,10 +963,7 @@ def _build_toolchain_report(root: Path) -> _ToolchainReport:
             "llvm": bool(cargo_path and cc_path and llvm_toolchain),
             "wasm": bool(cargo_path and wasm_target_ok),
             "linked-wasm": bool(
-                cargo_path
-                and wasm_target_ok
-                and (zig_path or wasm_ld_path)
-                and wasm_tools_path
+                cargo_path and wasm_target_ok and wasm_ld_ok and wasm_tools_path
             ),
             "luau": bool(luau_runner_path),
         }

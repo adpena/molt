@@ -18,17 +18,17 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
+from tests.wasm_linked_runner import (
+    _run_wasm_test_process,
+    selected_wasm_ld,
+    wasm_ld_unavailable_reason,
+    wasm_test_build_env,
+)
 from tools import wasm_optimize
-from tools import wasm_link_command
 
 ROOT = Path(__file__).resolve().parents[1]
 HELLO_PY = ROOT / "examples" / "hello.py"
 WASM_LD_RUSTUP_GLOB = "toolchains/stable-*/lib/rustlib/*/bin/gcc-ld/wasm-ld"
-
-
-def _find_wasm_ld() -> str | None:
-    return wasm_link_command._find_wasm_ld()
 
 
 def _find_wasmtime() -> str | None:
@@ -46,10 +46,6 @@ def _molt_build(
     env = wasm_test_build_env(ROOT, linked=linked)
     if linked:
         env["MOLT_WASM_LINK"] = "1"
-        wasm_ld_path = _find_wasm_ld()
-        if wasm_ld_path:
-            ld_dir = str(Path(wasm_ld_path).parent)
-            env["PATH"] = ld_dir + os.pathsep + env.get("PATH", "")
     if extra_env:
         env.update(extra_env)
     cmd = [
@@ -203,8 +199,7 @@ def pipeline_results() -> dict:
             }
 
         # Stage 2: Linked build
-        wasm_ld = _find_wasm_ld()
-        if wasm_ld:
+        if wasm_ld_unavailable_reason() is None:
             linked_dir = tmpdir_path / "linked"
             linked_dir.mkdir()
             linked = _molt_build(HELLO_PY, linked_dir, linked=True)
@@ -281,16 +276,10 @@ class TestWasmPipelineE2E:
         assert size > 1024, f"Standalone size {size:,} suspiciously small"
 
     def test_wasm_ld_detected(self, pipeline_results: dict) -> None:
-        wasm_ld = _find_wasm_ld()
-        if wasm_ld is None:
-            pytest.skip(
-                "wasm-ld not available; install LLVM or rustup stable toolchain"
-            )
-        assert Path(wasm_ld).is_file()
+        assert selected_wasm_ld().is_file()
 
     def test_linked_build_succeeds(self, pipeline_results: dict) -> None:
-        if _find_wasm_ld() is None:
-            pytest.skip("wasm-ld not available")
+        selected_wasm_ld()
         assert "linked" in pipeline_results["stages"], "Linked WASM build failed"
 
     def test_wasm_opt_reduces_size(self, pipeline_results: dict) -> None:

@@ -136,7 +136,7 @@ and a metric-correction or retirement plan.
 - **arm64 Python 3.14**: uv-managed 3.14 can hang on macOS arm64; install a system `python3.14` and use `--no-managed-python` (see [spec/STATUS.md](spec/STATUS.md)).
 - **Windows toolchain conflicts**: prefer a single active toolchain (MSVC or clang); ensure `clang`, `cmake`, and `ninja` are on PATH.
 - **Windows path lengths**: keep repo paths short and avoid deeply nested build output paths when possible.
-- **WASM linker availability**: `wasm-ld` and `wasm-tools` must be installed; use `--require-linked` to fail fast when they are missing.
+- **WASM linker availability**: `wasm-ld` comes only from the manifest-owned wasi-sdk (`tools/provision_wasi_sdk.py`, or select one with `WASI_SDK_PATH`/`MOLT_WASM_LD`), never from `PATH`; `wasm-tools` is a pinned tool. Use `--require-linked` to fail fast when they are missing.
 
 ## Toolchain And Dependency Maintenance
 

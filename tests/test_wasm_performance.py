@@ -14,9 +14,13 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
+from tests.wasm_linked_runner import (
+    _run_wasm_test_process,
+    selected_wasm_ld,
+    wasm_test_build_env,
+)
 from tools import wasm_optimize
-from tools import wasm_link_command, wasm_link_operations
+from tools import wasm_link_operations
 
 ROOT = Path(__file__).resolve().parents[1]
 HELLO_PY = ROOT / "examples" / "hello.py"
@@ -42,36 +46,17 @@ class TestWasmToolAvailability:
     """Verify that WASM optimization tools are detectable."""
 
     def test_wasm_ld_find(self) -> None:
-        """wasm-ld should be discoverable via _find_wasm_ld."""
-        wasm_ld = wasm_link_command._find_wasm_ld()
-        if wasm_ld is None:
-            pytest.skip(
-                "wasm-ld not found; install LLVM or ensure rustup stable toolchain"
-            )
-        assert Path(wasm_ld).is_file()
-        # Verify it actually works
+        """The toolchain authority's wasm-ld runs and is LLD."""
+        wasm_ld = selected_wasm_ld()
+        assert wasm_ld.is_file()
         result = _run_wasm_test_process(
-            [wasm_ld, "--version"],
+            [str(wasm_ld), "--version"],
             cwd=ROOT,
             env=os.environ,
             timeout=10,
         )
         assert result.returncode == 0
         assert "LLD" in result.stdout or "lld" in result.stdout.lower()
-
-    def test_wasm_ld_rustup_fallback(self) -> None:
-        """_find_wasm_ld should locate wasm-ld in rustup toolchains."""
-        rustup_home = os.environ.get("RUSTUP_HOME", str(Path.home() / ".rustup"))
-        toolchains = Path(rustup_home) / "toolchains"
-        if not toolchains.is_dir():
-            pytest.skip("No rustup toolchains directory")
-        import glob
-
-        candidates = glob.glob(str(toolchains / "*/lib/rustlib/*/bin/gcc-ld/wasm-ld"))
-        if not candidates:
-            pytest.skip("No wasm-ld found in rustup toolchains")
-        # At least one should be executable
-        assert any(os.path.isfile(c) and os.access(c, os.X_OK) for c in candidates)
 
     def test_wasm_opt_available(self) -> None:
         """The canonical optimizer discovery should find a readable binary."""
@@ -109,10 +94,6 @@ def _build_wasm(
     env = wasm_test_build_env(ROOT, linked=linked)
     if linked:
         env["MOLT_WASM_LINK"] = "1"
-        wasm_ld_path = wasm_link_command._find_wasm_ld()
-        if wasm_ld_path:
-            ld_dir = str(Path(wasm_ld_path).parent)
-            env["PATH"] = ld_dir + os.pathsep + env.get("PATH", "")
     cmd = _molt_build_cmd() + [
         str(source),
         "--target",
@@ -236,8 +217,7 @@ class TestWasmSizeThresholds:
             )
 
     def test_linked_size(self) -> None:
-        if wasm_link_command._find_wasm_ld() is None:
-            pytest.skip("wasm-ld not available")
+        selected_wasm_ld()
         with tempfile.TemporaryDirectory(prefix="molt-perf-") as tmpdir:
             output = _build_wasm(HELLO_PY, Path(tmpdir), linked=True)
             if output is None:
@@ -249,8 +229,7 @@ class TestWasmSizeThresholds:
             )
 
     def test_linked_optimized_size(self) -> None:
-        if wasm_link_command._find_wasm_ld() is None:
-            pytest.skip("wasm-ld not available")
+        selected_wasm_ld()
         if wasm_optimize.find_wasm_opt() is None:
             pytest.skip("wasm-opt not available")
         with tempfile.TemporaryDirectory(prefix="molt-perf-") as tmpdir:
