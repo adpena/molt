@@ -2405,7 +2405,9 @@ def run_guarded(
         )
         raise
     finally:
-        if proc is not None and proc.poll() is None:
+        # The finalizer reads the published exit only. poll() re-raises a
+        # reaper failure, which would abort the remaining custody cleanup.
+        if proc is not None and proc.returncode is None:
             _update_active_guard_marker(
                 guard_marker,
                 guard_token,
@@ -2433,7 +2435,7 @@ def run_guarded(
             with contextlib.suppress(Exception):
                 proc.wait(timeout=termination_wait_seconds(env))
             with contextlib.suppress(Exception):
-                if proc.poll() is None:
+                if proc.returncode is None:
                     terminate_direct_child_handle(
                         reason="run_guarded_finalizer_direct_child_handle"
                     )
