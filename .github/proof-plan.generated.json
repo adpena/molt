@@ -317,7 +317,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "df6ebe44b5fc6704e523285f2f83bd810d2e2460ca5ea11d300db112330f7079",
+  "authority_sha256": "a3249a74c813a2811dd9f9dd1664f2d8873f2d6e03200cc09177bc6f83ea37e1",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -695,11 +695,22 @@
       ],
       "admission_workflow": ".github/workflows/ci.yml",
       "dependencies": [],
-      "description": "Hosted Linux, macOS, and Windows queue, process, path, and source-build custody proof.",
+      "description": "Hosted Linux, macOS, and Windows queue, process, path, and source-build custody proof, plus Rust workspace lint/compile and runtime test truth on macOS.",
       "executor": "github-matrix",
       "inputs": [
         ".github/workflows/ci.yml",
         ".python-version",
+        ".cargo/**",
+        "Cargo.lock",
+        "Cargo.toml",
+        "config/ci_resource_policy.toml",
+        "runtime/**",
+        "tools/cargo_test_binary_runner.py",
+        "tools/ci_resource_env.py",
+        "tools/libtest_results.py",
+        "tools/run_runtime_test_gate.py",
+        "tools/runtime_descendant_receipts.py",
+        "tests/tools/test_runtime_test_gate.py",
         "config/source_extension_package_sets.toml",
         "docs/agent/PROOF_QUEUE.md",
         "docs/spec/areas/tooling/0215_MOLT_EXTENSION_BUILD_PIPELINE.md",
@@ -802,7 +813,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 20,
+      "timeout_minutes": 180,
       "workflow": ".github/workflows/ci.yml"
     }
   ],
@@ -1503,6 +1514,69 @@
       "toolchains": [
         "python",
         "uv"
+      ]
+    },
+    {
+      "argv": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "macos-arm64-py312-rust-native-dev",
+      "dependencies": [],
+      "family": "platform_portability",
+      "id": "portability.rust.macos.clippy-workspace",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "suite",
+      "timeout_seconds": 1800,
+      "toolchains": [
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--active",
+        "--project",
+        ".",
+        "--no-sync",
+        "python",
+        "tools/run_runtime_test_gate.py",
+        "--profile",
+        "dev-fast",
+        "--build-timeout-seconds",
+        "6300",
+        "--child-timeout-seconds",
+        "120"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "macos-arm64-py312-rust-native-dev",
+      "dependencies": [],
+      "family": "platform_portability",
+      "id": "portability.rust.macos.runtime-gate",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "main"
+      ],
+      "timeout_budget": "shipping",
+      "timeout_seconds": 9000,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
       ]
     },
     {
@@ -3642,29 +3716,36 @@
     {
       "argv": [
         "cargo",
-        "check",
+        "clippy",
         "--locked",
         "--target",
         "wasm32-wasip1",
+        "--lib",
         "-p",
-        "molt-tir"
+        "molt-runtime",
+        "-p",
+        "molt-tir",
+        "--",
+        "-D",
+        "warnings"
       ],
       "cache_domain": "cargo-workspace",
       "cell": "linux-x86_64-rust-wasi-dev",
       "dependencies": [],
       "family": "rust",
-      "id": "rust.check.tir-wasi32",
+      "id": "rust.clippy.wasi32",
       "resource_class": "compiler-build-resource",
       "tiers": [
         "pre-push",
         "pr",
         "main"
       ],
-      "timeout_budget": "cross-check",
-      "timeout_seconds": 240,
+      "timeout_budget": "cold",
+      "timeout_seconds": 1200,
       "toolchains": [
         "rustc",
-        "cargo"
+        "cargo",
+        "wasm-ld"
       ]
     },
     {
@@ -4611,10 +4692,10 @@
       "rust": {
         "budget_seconds": 14400,
         "critical_path_seconds": 11400,
-        "headroom_seconds": 1440,
-        "projected_makespan_seconds": 12960,
+        "headroom_seconds": 480,
+        "projected_makespan_seconds": 13920,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 12960
+          "compiler-build-resource": 13920
         }
       },
       "rust_security": {
@@ -6045,6 +6126,16 @@
       "python": "3.12",
       "runner": "macos-14",
       "target": "host"
+    },
+    {
+      "arch": "aarch64",
+      "backend": "rust",
+      "id": "macos-arm64-py312-rust-native-dev",
+      "os": "macos",
+      "profile": "dev",
+      "python": "3.12",
+      "runner": "macos-14",
+      "target": "aarch64-apple-darwin"
     },
     {
       "arch": "x86_64",

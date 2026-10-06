@@ -1037,7 +1037,7 @@ def test_compiler_build_commands_use_shared_timeout_budgets() -> None:
             "wasm.build.host",
             "native.integration.bench-cli",
             "native.integration.capability-manifest",
-            "rust.check.tir-wasi32",
+            "rust.clippy.wasi32",
             "rust.test.default-truth",
             "llvm.build.backend",
             "mlir.test.backend",
@@ -1046,7 +1046,7 @@ def test_compiler_build_commands_use_shared_timeout_budgets() -> None:
         "wasm.build.host": ("cold", 1200),
         "native.integration.bench-cli": ("cold", 1200),
         "native.integration.capability-manifest": ("warm", 300),
-        "rust.check.tir-wasi32": ("cross-check", 240),
+        "rust.clippy.wasi32": ("cold", 1200),
         "rust.test.default-truth": ("suite", 1800),
         "llvm.build.backend": ("cold", 1200),
         "mlir.test.backend": ("warm", 300),
@@ -1462,7 +1462,19 @@ def test_generated_matrix_records_selection_reason() -> None:
     assert by_name["rust"]["admission_needs"] == ["classify-changes"]
     assert "rust.test.default-truth" in by_name["rust"]["command_ids"]
     assert "linux-x86_64-rust-wasi-dev" in by_name["rust"]["matrix_cells"]
-    assert json.loads(outputs["matrix"]) == {"include": []}
+    # A Rust input also selects the hosted portability matrix, whose macOS
+    # Rust cell carries exactly the workspace lint and the runtime gate.
+    matrix = json.loads(outputs["matrix"])["include"]
+    assert {entry["family"] for entry in matrix} == {"platform_portability"}
+    assert all(entry["selected_by"] == ["Cargo.lock"] for entry in matrix)
+    rust_cells = [entry for entry in matrix if entry["backend"] == "rust"]
+    assert [
+        (entry["cell"], entry["runner"], entry["target"]) for entry in rust_cells
+    ] == [("macos-arm64-py312-rust-native-dev", "macos-14", "aarch64-apple-darwin")]
+    assert rust_cells[0]["command_ids"] == [
+        "portability.rust.macos.clippy-workspace",
+        "portability.rust.macos.runtime-gate",
+    ]
 
 
 def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None:
@@ -1472,6 +1484,7 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
 
     assert [(entry["os"], entry["runner"]) for entry in matrix] == [
         ("linux", "ubuntu-latest"),
+        ("macos", "macos-14"),
         ("macos", "macos-14"),
         ("windows", "windows-2022"),
     ]
@@ -1485,6 +1498,10 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
             "portability.queue.macos",
             "portability.ir.macos",
             "portability.cargo-custody.macos",
+        ],
+        "macos-arm64-py312-rust-native-dev": [
+            "portability.rust.macos.clippy-workspace",
+            "portability.rust.macos.runtime-gate",
         ],
         "windows-x86_64-py312-queue-portability": [
             "portability.queue.windows",

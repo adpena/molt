@@ -110,7 +110,7 @@ jobs:
     needs: classify-changes
     if: needs.classify-changes.outputs.platform_portability == 'true'
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.classify-changes.outputs.matrix) }}
@@ -144,6 +144,10 @@ jobs:
           sync: "true"
           sync-frozen: "true"
           sync-groups: dev
+
+      - name: Configure adaptive Rust parallelism
+        shell: bash
+        run: python tools/ci_resource_env.py --github-env "$GITHUB_ENV"
 
       - name: Resolve portability command evidence custody
         id: build-control
