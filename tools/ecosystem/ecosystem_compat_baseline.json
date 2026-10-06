@@ -74,7 +74,7 @@
     "numpy": {
       "verdict": "partial",
       "hardest_feature": "D28",
-      "sha256_of_evidence": "a105a5848a6ddfad94f758daa15546fad4769c8001bbafe60e6741bbc5e69b59"
+      "sha256_of_evidence": "bf50002d6dae01b23ec542f4393b8ed6a4aaa40e4257f2e72ee0930413c00036"
     },
     "packaging": {
       "verdict": "compatible",
@@ -104,7 +104,7 @@
     "rich": {
       "verdict": "compatible",
       "hardest_feature": "D12",
-      "sha256_of_evidence": "e193c1e6ca5ef88e46089d333b9d105aaa49de1712f99e5121259c2f04b32cd2"
+      "sha256_of_evidence": "699793216641438105a7a301ad017c3debec257c2f221243726f375692d22ce7"
     },
     "six": {
       "verdict": "compatible",
