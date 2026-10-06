@@ -394,6 +394,69 @@ def _selected_command_lines(output: str) -> list[list[str]]:
     return commands
 
 
+def _driver_command_tokens(line: str) -> list[str]:
+    """Decode one `-###` command line as gcc and clang print it.
+
+    Both drivers print every argument after a space. gcc quotes an argument
+    unless it is plainly safe, clang always quotes, and inside quotes only a
+    double quote, a backslash or a dollar sign is backslash-escaped.
+    """
+    tokens: list[str] = []
+    index = 0
+    while index < len(line):
+        if line[index] == " ":
+            index += 1
+            continue
+        if line[index] != '"':
+            end = line.find(" ", index)
+            end = len(line) if end < 0 else end
+            if '"' in line[index:end] or "\\" in line[index:end]:
+                raise ValueError("driver command has a malformed bare argument")
+            tokens.append(line[index:end])
+            index = end
+            continue
+        value: list[str] = []
+        index += 1
+        while True:
+            if index >= len(line):
+                raise ValueError("driver command has an unterminated quote")
+            character = line[index]
+            if character == "\\":
+                if index + 1 >= len(line) or line[index + 1] not in '"\\$':
+                    raise ValueError("driver command has an unknown escape")
+                value.append(line[index + 1])
+                index += 2
+            elif character == '"':
+                index += 1
+                break
+            else:
+                value.append(character)
+                index += 1
+        if index < len(line) and line[index] != " ":
+            raise ValueError("driver command argument runs into the next one")
+        tokens.append("".join(value))
+    return tokens
+
+
+def _driver_command_lines(output: str) -> list[list[str]]:
+    """Select the helper commands a compiler driver reports under `-###`.
+
+    Command lines are indented by exactly one space; banner lines (`Target:`,
+    `COLLECT_GCC_OPTIONS=`, ...) start at column zero.
+    """
+    commands: list[list[str]] = []
+    for line in output.splitlines():
+        if not line.startswith(" ") or line.startswith("  "):
+            continue
+        try:
+            tokens = _driver_command_tokens(line.rstrip("\r"))
+        except ValueError:
+            continue
+        if tokens:
+            commands.append(tokens)
+    return commands
+
+
 def _selected_rust_link_command(stdout: str, stderr: str) -> list[str]:
     """Select exactly one rustc link command from its complete output stream."""
     commands = _selected_command_lines(stdout + "\n" + stderr)
@@ -900,7 +963,10 @@ def _capture_rust_link_unit(
         # disjoint for Cargo and direct rustc. Cargo fingerprints extra_args_for
         # the unit, so the changed print request is not a freshness retry.
         metadata_command = [*command, "--print", "sysroot"]
-        command = [*command, "--print", "link-args"]
+        # The driver dry run below re-reads this command's inputs; save-temps
+        # keeps rustc's temporaries (symbols.o, codegen units) inside the
+        # synthetic root, since clang rejects missing inputs even under -###.
+        command = [*command, "-C", "save-temps", "--print", "link-args"]
         metadata = _run_rust_link_probe(
             metadata_command,
             phase="selected-sysroot",
@@ -970,7 +1036,7 @@ def _capture_rust_link_unit(
                 timeout=30.0,
                 probes=probes,
             )
-            nested_commands = _selected_command_lines(
+            nested_commands = _driver_command_lines(
                 dry_run.stdout + "\n" + dry_run.stderr
             )
             if dry_run.returncode != 0 or not nested_commands:
