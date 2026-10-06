@@ -52,19 +52,6 @@ pub(super) struct WebSocketManager {
     sockets: HashMap<u64, WebSocketEntry>,
 }
 
-#[cfg(test)]
-mod resource_tests {
-    use super::*;
-
-    #[test]
-    fn empty_websocket_manager_close_is_idempotent() {
-        let mut manager = WebSocketManager::new();
-        manager.close().unwrap();
-        manager.close().unwrap();
-        assert!(manager.sockets.is_empty());
-    }
-}
-
 struct WebSocketEntry {
     socket: tungstenite::WebSocket<MaybeTlsStream<TcpStream>>,
     queue: VecDeque<Vec<u8>>,
@@ -472,4 +459,17 @@ pub(super) fn define_ws_host(
     linker.define(&mut *store, "env", "molt_ws_recv_host", ws_recv)?;
     linker.define(&mut *store, "env", "molt_ws_close_host", ws_close)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+
+    #[test]
+    fn empty_websocket_manager_close_is_idempotent() {
+        let mut manager = WebSocketManager::new();
+        manager.close().unwrap();
+        manager.close().unwrap();
+        assert!(manager.sockets.is_empty());
+    }
 }

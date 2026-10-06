@@ -1547,7 +1547,7 @@ pub(crate) unsafe fn has_special_method(py: &PyToken<'_>, bits: u64, name: &[u8]
             };
             let c_name = GLOBAL_BRIDGE.handle_to_borrowed_pyobj(name_bits);
             let result = if c_name.is_null() {
-                Err(())
+                Err(molt_cpython_abi::ErrorIndicatorSet)
             } else {
                 molt_cpython_abi::api::object::has_type_special(native, c_name)
             };
@@ -1620,7 +1620,7 @@ pub(crate) unsafe fn lookup_special_method_bits(
                     result
                 }
                 Ok(None) => None,
-                Err(()) => {
+                Err(molt_cpython_abi::ErrorIndicatorSet) => {
                     crate::cpython_abi_hooks::propagate_native_failure(
                         py,
                         "special-method descriptor lookup",

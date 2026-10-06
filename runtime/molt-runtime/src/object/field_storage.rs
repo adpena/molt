@@ -125,13 +125,15 @@ pub(crate) unsafe fn field_at_offset(
         if object_type_id(object) == TYPE_ID_DATACLASS {
             let desc = dataclass_desc_ptr(object);
             let index = offset / size_of::<u64>();
-            if desc.is_null() || offset % size_of::<u64>() != 0 {
+            if desc.is_null() || !offset.is_multiple_of(size_of::<u64>()) {
                 return None;
             }
+            let layout = &(*desc).field_layout;
+            let field = layout.get(index)?;
             return Some(InstanceField {
-                name: (&(*desc).field_layout).get(index)?.name,
+                name: field.name,
                 offset,
-                kind: (&(*desc).field_layout).get(index)?.kind,
+                kind: field.kind,
             });
         }
         if !super::object_has_class_shape(object) && !super::native_instance::has_fields(object) {
@@ -167,7 +169,8 @@ pub(crate) unsafe fn dataclass_slot_storage_offset(
         if desc.is_null() {
             return None;
         }
-        (&(*desc).field_layout)
+        (*desc)
+            .field_layout
             .iter()
             .position(|field| field.slot_offset == Some(slot_offset))
             .and_then(|index| index.checked_mul(size_of::<u64>()))
@@ -316,9 +319,9 @@ pub(crate) unsafe fn replace_dictionary(
             return;
         }
         if let Some(bits) = replacement
-            && !obj_from_bits(bits)
+            && obj_from_bits(bits)
                 .as_ptr()
-                .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_DICT)
+                .is_none_or(|ptr| object_type_id(ptr) != TYPE_ID_DICT)
         {
             let message = format!(
                 "__dict__ must be set to a dictionary, not a '{}'",
@@ -642,10 +645,7 @@ pub(crate) unsafe fn slot_state_names<'a, 'py>(
             // Hidden physical rows are already represented by their captured
             // class declarations. Only logical descriptor-only names can add
             // observable state reads here.
-            for field in (&(*desc).field_layout)
-                .iter()
-                .take((*desc).field_names.len())
-            {
+            for field in (*desc).field_layout.iter().take((*desc).field_names.len()) {
                 let name = field.name;
                 if field.kind.is_declared_slot()
                     && !names
@@ -683,8 +683,9 @@ pub(crate) unsafe fn dataclass_snapshot<'a, 'py>(
             );
             return None;
         };
+        let flags = &(*desc).field_flags;
         for index in 0..count {
-            let flag = (&(*desc).field_flags).get(index).copied().unwrap_or(0x7);
+            let flag = flags.get(index).copied().unwrap_or(0x7);
             let bits = if flag & flag_mask == 0 {
                 MoltObject::none().bits()
             } else {

@@ -1909,15 +1909,18 @@ pub(crate) fn alloc_property_obj(
 pub(crate) fn alloc_native_descriptor_obj(
     _py: &PyToken<'_>,
     class_bits: u64,
-    flavor: super::layout::NativeDescriptorFlavor,
-    operation: u32,
-    owner_bits: u64,
-    name_bits: u64,
-    doc_bits: u64,
-    getter_bits: u64,
-    setter_bits: u64,
-    deleter_bits: u64,
+    spec: crate::builtins::types::NativeDescriptorSpec,
 ) -> *mut u8 {
+    let crate::builtins::types::NativeDescriptorSpec {
+        flavor,
+        operation,
+        owner: owner_bits,
+        name: name_bits,
+        doc: doc_bits,
+        getter: getter_bits,
+        setter: setter_bits,
+        deleter: deleter_bits,
+    } = spec;
     let references = [
         owner_bits,
         name_bits,
@@ -3376,7 +3379,7 @@ mod tests {
             // Check the allocation bound before reading the byte beyond content.
             assert!(
                 crate::object::object_payload_size(ptr)
-                    >= std::mem::size_of::<usize>() + expected.len() + 1
+                    > std::mem::size_of::<usize>() + expected.len()
             );
             assert_eq!(crate::string_len(ptr), expected.len());
             let data = crate::string_bytes(ptr);

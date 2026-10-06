@@ -676,10 +676,12 @@ pub(crate) fn dynamic_class_attribute_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &state.dynamic_class_attribute_class,
         "DynamicClassAttribute",
-        ClassSemanticPolicy::heap(false, true),
-        8,
-        None,
-        None,
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::heap(false, true),
+            layout_size: 8,
+            instance_shape: None,
+            native_slots: None,
+        },
         &methods,
     )
 }

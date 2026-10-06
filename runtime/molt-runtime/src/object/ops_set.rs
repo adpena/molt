@@ -830,7 +830,7 @@ pub(crate) unsafe fn set_update_iterable(
     set: *mut u8,
     other_bits: u64,
     ctx: HashContext,
-) -> Result<(), ()> {
+) -> Result<(), molt_runtime_core::ErrorIndicatorSet> {
     let _source = SetOwned::borrow(py, other_bits);
     unsafe {
         if let Some(other) = obj_from_bits(other_bits).as_ptr() {
@@ -841,7 +841,7 @@ pub(crate) unsafe fn set_update_iterable(
                 if crate::builtins::containers::set_len(set) == 0 {
                     super::ops::set_copy_into_empty(py, other, set);
                     return if exception_pending(py) {
-                        Err(())
+                        Err(molt_runtime_core::ErrorIndicatorSet)
                     } else {
                         Ok(())
                     };
@@ -851,7 +851,7 @@ pub(crate) unsafe fn set_update_iterable(
                     super::ops::set_add_with_hash_in_place(py, set, entry.bits(), entry.hash());
                     drop(entry);
                     if exception_pending(py) {
-                        return Err(());
+                        return Err(molt_runtime_core::ErrorIndicatorSet);
                     }
                     index += 1;
                 }
@@ -863,25 +863,26 @@ pub(crate) unsafe fn set_update_iterable(
                     super::ops::set_add_with_hash_in_place(py, set, key.bits, hash);
                     drop(key);
                     if exception_pending(py) {
-                        return Err(());
+                        return Err(molt_runtime_core::ErrorIndicatorSet);
                     }
                     index += 1;
                 }
                 return Ok(());
             }
         }
-        let mut iter = crate::object::iterable::OwnedIterator::new(py, other_bits).ok_or(())?;
+        let mut iter = crate::object::iterable::OwnedIterator::new(py, other_bits)
+            .ok_or(molt_runtime_core::ErrorIndicatorSet)?;
         while let Some(item) = iter.next()? {
             let item = SetOwned::adopt(py, item);
             set_add_in_place(py, set, item.bits, ctx);
             if exception_pending(py) {
                 drop(iter);
                 drop(item);
-                return Err(());
+                return Err(molt_runtime_core::ErrorIndicatorSet);
             }
             drop(item);
             if exception_pending(py) {
-                return Err(());
+                return Err(molt_runtime_core::ErrorIndicatorSet);
             }
         }
         Ok(())
@@ -928,7 +929,7 @@ unsafe fn set_intersection_bits(py: &PyToken<'_>, set: *mut u8, other_bits: u64,
             custody.key = match custody.iter.as_mut().unwrap().next() {
                 Ok(Some(item)) => Some(SetOwned::adopt(py, item)),
                 Ok(None) => break,
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             let key = custody.key.as_ref().unwrap().bits;
             if !ensure_hashable(py, key, HashContext::Bare) {
@@ -975,13 +976,13 @@ pub(in crate::object) unsafe fn set_difference_update_iterable(
     py: &PyToken<'_>,
     set: *mut u8,
     other_bits: u64,
-) -> Result<(), ()> {
+) -> Result<(), molt_runtime_core::ErrorIndicatorSet> {
     let _source = SetOwned::borrow(py, other_bits);
     unsafe {
         if obj_from_bits(other_bits).as_ptr() == Some(set) {
             set_clear_in_place(py, set);
             return if exception_pending(py) {
-                Err(())
+                Err(molt_runtime_core::ErrorIndicatorSet)
             } else {
                 Ok(())
             };
@@ -996,7 +997,7 @@ pub(in crate::object) unsafe fn set_difference_update_iterable(
                 let bits = set_like_intersection(py, set, other, TYPE_ID_SET);
                 if exception_pending(py) {
                     dec_ref_bits(py, bits);
-                    return Err(());
+                    return Err(molt_runtime_core::ErrorIndicatorSet);
                 }
                 Some(SetOwned::adopt(py, bits))
             } else {
@@ -1012,27 +1013,28 @@ pub(in crate::object) unsafe fn set_difference_update_iterable(
                 if exception_pending(py) {
                     drop(temporary);
                     drop(entry);
-                    return Err(());
+                    return Err(molt_runtime_core::ErrorIndicatorSet);
                 }
                 drop(entry);
                 if exception_pending(py) {
-                    return Err(());
+                    return Err(molt_runtime_core::ErrorIndicatorSet);
                 }
                 index += 1;
             }
         } else {
-            let mut iter = crate::object::iterable::OwnedIterator::new(py, other_bits).ok_or(())?;
+            let mut iter = crate::object::iterable::OwnedIterator::new(py, other_bits)
+                .ok_or(molt_runtime_core::ErrorIndicatorSet)?;
             while let Some(item) = iter.next()? {
                 let item = SetOwned::adopt(py, item);
                 set_del_in_place(py, set, item.bits);
                 if exception_pending(py) {
                     drop(iter);
                     drop(item);
-                    return Err(());
+                    return Err(molt_runtime_core::ErrorIndicatorSet);
                 }
                 drop(item);
                 if exception_pending(py) {
-                    return Err(());
+                    return Err(molt_runtime_core::ErrorIndicatorSet);
                 }
             }
         }
@@ -1098,17 +1100,22 @@ unsafe fn set_difference_bits(py: &PyToken<'_>, set: *mut u8, other_bits: u64, k
     }
 }
 
-unsafe fn set_toggle_entry(py: &PyToken<'_>, set: *mut u8, key: u64, hash: u64) -> Result<(), ()> {
+unsafe fn set_toggle_entry(
+    py: &PyToken<'_>,
+    set: *mut u8,
+    key: u64,
+    hash: u64,
+) -> Result<(), molt_runtime_core::ErrorIndicatorSet> {
     unsafe {
         let removed = super::ops::set_del_with_hash_in_place(py, set, key, hash);
         if exception_pending(py) {
-            return Err(());
+            return Err(molt_runtime_core::ErrorIndicatorSet);
         }
         if !removed {
             super::ops::set_add_with_hash_in_place(py, set, key, hash);
         }
         if exception_pending(py) {
-            Err(())
+            Err(molt_runtime_core::ErrorIndicatorSet)
         } else {
             Ok(())
         }
@@ -1119,13 +1126,13 @@ pub(in crate::object) unsafe fn set_symdiff_update_iterable(
     py: &PyToken<'_>,
     set: *mut u8,
     other_bits: u64,
-) -> Result<(), ()> {
+) -> Result<(), molt_runtime_core::ErrorIndicatorSet> {
     let _source = SetOwned::borrow(py, other_bits);
     unsafe {
         if obj_from_bits(other_bits).as_ptr() == Some(set) {
             set_clear_in_place(py, set);
             return if exception_pending(py) {
-                Err(())
+                Err(molt_runtime_core::ErrorIndicatorSet)
             } else {
                 Ok(())
             };
@@ -1138,25 +1145,25 @@ pub(in crate::object) unsafe fn set_symdiff_update_iterable(
                 set_toggle_entry(py, set, key.bits, hash)?;
                 drop(key);
                 if exception_pending(py) {
-                    return Err(());
+                    return Err(molt_runtime_core::ErrorIndicatorSet);
                 }
                 index += 1;
             }
             return Ok(());
         }
-        let (other, temporary) =
-            set_like_ptr_from_bits(py, other_bits, HashContext::SetElement).ok_or(())?;
+        let (other, temporary) = set_like_ptr_from_bits(py, other_bits, HashContext::SetElement)
+            .ok_or(molt_runtime_core::ErrorIndicatorSet)?;
         let temporary = temporary.map(|bits| SetOwned::adopt(py, bits));
         let mut index = 0;
         while let Some(entry) = super::ops::set_pin_entry(py, other, index) {
             if set_toggle_entry(py, set, entry.bits(), entry.hash()).is_err() {
                 drop(temporary);
                 drop(entry);
-                return Err(());
+                return Err(molt_runtime_core::ErrorIndicatorSet);
             }
             drop(entry);
             if exception_pending(py) {
-                return Err(());
+                return Err(molt_runtime_core::ErrorIndicatorSet);
             }
             index += 1;
         }
@@ -1165,14 +1172,15 @@ pub(in crate::object) unsafe fn set_symdiff_update_iterable(
 }
 
 unsafe fn set_probe_iterable(py: &PyToken<'_>, set: *mut u8, other: u64, disjoint: bool) -> u64 {
-    let done = (|| -> Result<bool, ()> {
-        let mut iter = crate::object::iterable::OwnedIterator::new(py, other).ok_or(())?;
+    let done = (|| -> Result<bool, molt_runtime_core::ErrorIndicatorSet> {
+        let mut iter = crate::object::iterable::OwnedIterator::new(py, other)
+            .ok_or(molt_runtime_core::ErrorIndicatorSet)?;
         while let Some(item) = iter.next()? {
             let item = SetOwned::adopt(py, item);
             let found = unsafe { set_find_entry(py, set, item.bits) };
             drop(item);
             if exception_pending(py) {
-                return Err(());
+                return Err(molt_runtime_core::ErrorIndicatorSet);
             }
             if found.is_some() == disjoint {
                 return Ok(false);
@@ -1185,6 +1193,6 @@ unsafe fn set_probe_iterable(py: &PyToken<'_>, set: *mut u8, other: u64, disjoin
     }
     match done {
         Ok(value) => MoltObject::from_bool(value).bits(),
-        Err(()) => MoltObject::none().bits(),
+        Err(molt_runtime_core::ErrorIndicatorSet) => MoltObject::none().bits(),
     }
 }

@@ -1236,10 +1236,10 @@ pub extern "C" fn molt_asyncgen_hooks_set(
                 (AsyncGenHook::Finalizer, finalizer_bits),
                 (AsyncGenHook::Firstiter, firstiter_bits),
             ] {
-                if bits != omitted_bits {
-                    if let Err(raised) = validate_asyncgen_hook(py, slot, bits) {
-                        return raised;
-                    }
+                if bits != omitted_bits
+                    && let Err(raised) = validate_asyncgen_hook(py, slot, bits)
+                {
+                    return raised;
                 }
             }
         }
@@ -1266,27 +1266,25 @@ pub extern "C" fn molt_asyncgen_hooks_set(
             if bits == omitted_bits {
                 continue;
             }
-            if !transactional {
-                if let Err(raised) = validate_asyncgen_hook(py, slot, bits) {
-                    return raised;
-                }
+            if !transactional && let Err(raised) = validate_asyncgen_hook(py, slot, bits) {
+                return raised;
             }
             if !audit_asyncgen_hook(py, slot) {
-                if matches!(slot, AsyncGenHook::Firstiter) {
-                    if let Some(previous) = previous {
-                        // Rollback is audited even when finalizer was omitted.
-                        // Audit saves the firstiter failure, restoring it only
-                        // on success; a rollback audit failure replaces it.
-                        if audit_asyncgen_hook(py, AsyncGenHook::Finalizer) {
-                            if let Some(bits) = previous.upgrade_owned() {
-                                replace_asyncgen_hook(py, AsyncGenHook::Finalizer, bits);
-                                dec_ref_bits(py, bits);
-                            }
-                            // CPython's borrowed rollback pointer may already
-                            // be dead. Never dereference/revive such a pointer:
-                            // leave the current hook and original failure intact.
-                        }
+                if matches!(slot, AsyncGenHook::Firstiter)
+                    && let Some(previous) = previous
+                {
+                    // Rollback is audited even when finalizer was omitted.
+                    // Audit saves the firstiter failure, restoring it only
+                    // on success; a rollback audit failure replaces it.
+                    if audit_asyncgen_hook(py, AsyncGenHook::Finalizer)
+                        && let Some(bits) = previous.upgrade_owned()
+                    {
+                        replace_asyncgen_hook(py, AsyncGenHook::Finalizer, bits);
+                        dec_ref_bits(py, bits);
                     }
+                    // CPython's borrowed rollback pointer may already
+                    // be dead. Never dereference/revive such a pointer:
+                    // leave the current hook and original failure intact.
                 }
                 return MoltObject::none().bits();
             }

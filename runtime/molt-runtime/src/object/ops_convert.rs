@@ -409,6 +409,7 @@ fn parse_simple_ascii_decimal_i64(text: &str) -> Option<i64> {
 
 /// # Safety
 /// - `ptr` must be null or valid for `len_bits` bytes.
+///
 /// Invalid input or failed materialization returns None with a pending exception.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn molt_bigint_from_str(ptr: *const u8, len_bits: u64) -> u64 {

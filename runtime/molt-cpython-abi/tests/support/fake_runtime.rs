@@ -1,7 +1,6 @@
 //! Shared ownership-bearing dictionary/string runtime for ABI fixture binaries.
 //! The real runtime remains the semantic oracle; this model supplies the hook
 //! capabilities and terminal foreign-owner release needed by native C fixtures.
-#![allow(dead_code)]
 
 use molt_cpython_abi::abi_types::{self, MoltTypeTag, PyTypeObject};
 use molt_cpython_abi::bridge::GLOBAL_BRIDGE;

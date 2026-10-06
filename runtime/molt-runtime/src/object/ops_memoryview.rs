@@ -65,7 +65,7 @@ pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
                     molt_cpython_abi::api::buffer::PyObject_GetBuffer,
                 ) {
                     Ok(lease) => lease,
-                    Err(()) => {
+                    Err(molt_cpython_abi::ErrorIndicatorSet) => {
                         crate::cpython_abi_hooks::propagate_native_failure(
                             _py,
                             "native memoryview acquisition",
@@ -77,7 +77,7 @@ pub extern "C" fn molt_memoryview_new(bits: u64) -> u64 {
                     lease.descriptor(),
                 ) {
                     Ok(descriptor) => descriptor,
-                    Err(()) => {
+                    Err(molt_cpython_abi::api::buffer::InvalidBufferDescriptor) => {
                         return raise_exception(
                             _py,
                             "BufferError",

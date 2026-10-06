@@ -526,8 +526,8 @@ unsafe fn call_function_obj_bound1(_py: &PyToken<'_>, func_bits: u64, arg0_bits:
                 }
             }
         };
-        let res = enforce_no_pending_on_success(_py, res, "call_function_obj1");
-        res
+
+        enforce_no_pending_on_success(_py, res, "call_function_obj1")
     }
 }
 
@@ -927,8 +927,8 @@ unsafe fn call_function_obj_bound2(
                 }
             }
         };
-        let res = enforce_no_pending_on_success(_py, res, "call_function_obj2");
-        res
+
+        enforce_no_pending_on_success(_py, res, "call_function_obj2")
     }
 }
 
@@ -1035,8 +1035,8 @@ unsafe fn call_function_obj_bound3(
                 )
             }
         };
-        let res = enforce_no_pending_on_success(_py, res, "call_function_obj3");
-        res
+
+        enforce_no_pending_on_success(_py, res, "call_function_obj3")
     }
 }
 
@@ -1146,8 +1146,8 @@ unsafe fn call_function_obj_bound4(
                 )
             }
         };
-        let res = enforce_no_pending_on_success(_py, res, "call_function_obj4");
-        res
+
+        enforce_no_pending_on_success(_py, res, "call_function_obj4")
     }
 }
 
@@ -1278,8 +1278,8 @@ unsafe fn call_function_obj_bound5(
                 )
             }
         };
-        let res = enforce_no_pending_on_success(_py, res, "call_function_obj5");
-        res
+
+        enforce_no_pending_on_success(_py, res, "call_function_obj5")
     }
 }
 
@@ -1426,8 +1426,8 @@ unsafe fn call_function_obj_bound6(
                 ) as u64
             }
         };
-        let res = enforce_no_pending_on_success(_py, res, "call_function_obj6");
-        res
+
+        enforce_no_pending_on_success(_py, res, "call_function_obj6")
     }
 }
 
@@ -1479,7 +1479,8 @@ unsafe fn call_function_obj_bound7(
         else {
             return crate::MoltObject::none().bits();
         };
-        let res = if closure_bits != 0 {
+
+        if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
@@ -1582,8 +1583,7 @@ unsafe fn call_function_obj_bound7(
                     arg0_bits, arg1_bits, arg2_bits, arg3_bits, arg4_bits, arg5_bits, arg6_bits,
                 ) as u64
             }
-        };
-        res
+        }
     }
 }
 
@@ -1637,7 +1637,8 @@ unsafe fn call_function_obj_bound8(
         else {
             return crate::MoltObject::none().bits();
         };
-        let res = if closure_bits != 0 {
+
+        if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
@@ -1746,8 +1747,7 @@ unsafe fn call_function_obj_bound8(
                     arg7_bits,
                 ) as u64
             }
-        };
-        res
+        }
     }
 }
 
@@ -1802,7 +1802,8 @@ unsafe fn call_function_obj_bound9(
         else {
             return crate::MoltObject::none().bits();
         };
-        let res = if closure_bits != 0 {
+
+        if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
@@ -1925,8 +1926,7 @@ unsafe fn call_function_obj_bound9(
                     arg7_bits, arg8_bits,
                 ) as u64
             }
-        };
-        res
+        }
     }
 }
 
@@ -1982,7 +1982,8 @@ unsafe fn call_function_obj_bound10(
         else {
             return crate::MoltObject::none().bits();
         };
-        let res = if closure_bits != 0 {
+
+        if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
@@ -2131,8 +2132,7 @@ unsafe fn call_function_obj_bound10(
                     arg7_bits, arg8_bits, arg9_bits,
                 ) as u64
             }
-        };
-        res
+        }
     }
 }
 
@@ -2189,7 +2189,8 @@ unsafe fn call_function_obj_bound11(
         else {
             return crate::MoltObject::none().bits();
         };
-        let res = if closure_bits != 0 {
+
+        if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
@@ -2356,8 +2357,7 @@ unsafe fn call_function_obj_bound11(
                     arg7_bits, arg8_bits, arg9_bits, arg10_bits,
                 ) as u64
             }
-        };
-        res
+        }
     }
 }
 
@@ -2415,7 +2415,8 @@ unsafe fn call_function_obj_bound12(
         else {
             return crate::MoltObject::none().bits();
         };
-        let res = if closure_bits != 0 {
+
+        if closure_bits != 0 {
             #[cfg(target_arch = "wasm32")]
             {
                 if tramp_ptr != 0 {
@@ -2590,8 +2591,7 @@ unsafe fn call_function_obj_bound12(
                     arg7_bits, arg8_bits, arg9_bits, arg10_bits, arg11_bits,
                 ) as u64
             }
-        };
-        res
+        }
     }
 }
 

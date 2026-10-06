@@ -27,10 +27,12 @@ pub(crate) fn compiled_loader_base_class(py: &PyToken<'_>) -> u64 {
         py,
         &state.compiled_loader_base_class,
         "_MoltLoader",
-        ClassSemanticPolicy::heap(false, true),
-        8,
-        None,
-        None,
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::heap(false, true),
+            layout_size: 8,
+            instance_shape: None,
+            native_slots: None,
+        },
         |class_bits, dict_ptr| {
             let methods = [
                 RuntimeClassMethodSpec::with_signature(
@@ -85,10 +87,12 @@ fn compiled_loader_derived_class(py: &PyToken<'_>, frozen: bool) -> u64 {
         py,
         slot,
         name,
-        ClassSemanticPolicy::heap(false, true),
-        8,
-        None,
-        None,
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::heap(false, true),
+            layout_size: 8,
+            instance_shape: None,
+            native_slots: None,
+        },
         |class_bits, dict_ptr| {
             let set_base = molt_class_set_base(class_bits, base);
             dec_ref_bits(py, set_base);
@@ -343,17 +347,17 @@ pub extern "C" fn molt_importlib_compiled_loader_exec_module(
                 None => none,
             }
         };
-        if !exception_pending(py) {
-            if let Some(target) = required_attr(py, module_bits, b"__dict__") {
-                if let Some(update) = required_attr(py, target, b"update") {
-                    let out = unsafe { call_callable1(py, update, payload) };
-                    if !obj_from_bits(out).is_none() {
-                        dec_ref_bits(py, out);
-                    }
-                    dec_ref_bits(py, update);
+        if !exception_pending(py)
+            && let Some(target) = required_attr(py, module_bits, b"__dict__")
+        {
+            if let Some(update) = required_attr(py, target, b"update") {
+                let out = unsafe { call_callable1(py, update, payload) };
+                if !obj_from_bits(out).is_none() {
+                    dec_ref_bits(py, out);
                 }
-                dec_ref_bits(py, target);
+                dec_ref_bits(py, update);
             }
+            dec_ref_bits(py, target);
         }
         if !obj_from_bits(payload).is_none() {
             dec_ref_bits(py, payload);

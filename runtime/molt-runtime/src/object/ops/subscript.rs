@@ -1924,7 +1924,7 @@ fn iterable_contains(_py: &PyToken<'_>, container_bits: u64, item_bits: u64) -> 
         let value = match iter.next() {
             Ok(Some(value)) => value,
             Ok(None) => return MoltObject::from_bool(false).bits(),
-            Err(()) => return MoltObject::none().bits(),
+            Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
         };
         let outcome =
             crate::object::ops_compare::compare_object_eq_bool(_py, obj_from_bits(value), item);

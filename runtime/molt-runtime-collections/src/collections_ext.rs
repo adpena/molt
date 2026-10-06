@@ -1159,19 +1159,22 @@ fn deque_mutated_since(id: i64, expected_version: u64) -> bool {
 
 /// Parse maxlen_bits into Option<usize>.
 /// Returns Ok(None) for Python None (unbounded), Ok(Some(n)) for non-negative int,
-/// or Err(()) after raising ValueError for negative.
-fn parse_maxlen(_py: &CoreGilToken, maxlen_bits: u64) -> Result<Option<usize>, ()> {
+/// or an error indicator after raising ValueError for negative.
+fn parse_maxlen(
+    _py: &CoreGilToken,
+    maxlen_bits: u64,
+) -> Result<Option<usize>, molt_runtime_core::ErrorIndicatorSet> {
     let obj = obj_from_bits(maxlen_bits);
     if obj.is_none() {
         return Ok(None);
     }
     let Some(n) = to_i64(obj) else {
         let _ = raise_exception::<u64>(_py, "TypeError", "an integer is required");
-        return Err(());
+        return Err(molt_runtime_core::ErrorIndicatorSet);
     };
     if n < 0 {
         let _ = raise_exception::<u64>(_py, "ValueError", "maxlen must be non-negative");
-        return Err(());
+        return Err(molt_runtime_core::ErrorIndicatorSet);
     }
     Ok(Some(n as usize))
 }
@@ -1214,7 +1217,7 @@ pub extern "C" fn molt_deque_new(maxlen_bits: u64) -> u64 {
     molt_runtime_core::with_core_gil!(_py, {
         let maxlen = match parse_maxlen(_py, maxlen_bits) {
             Ok(m) => m,
-            Err(()) => return MoltObject::none().bits(),
+            Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
         };
         let id = next_deque_handle();
         collections_state()
@@ -1234,7 +1237,7 @@ pub extern "C" fn molt_deque_from_iterable(iterable_bits: u64, maxlen_bits: u64)
     molt_runtime_core::with_core_gil!(_py, {
         let maxlen = match parse_maxlen(_py, maxlen_bits) {
             Ok(m) => m,
-            Err(()) => return MoltObject::none().bits(),
+            Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
         };
         let Some(elems) = extract_iterable_elements(_py, iterable_bits) else {
             return MoltObject::none().bits();
@@ -1645,7 +1648,7 @@ pub extern "C" fn molt_deque_contains(handle_bits: u64, item_bits: u64) -> u64 {
             release_handle_value(_py, elem_bits);
             let matched = match compared {
                 Ok(value) => value,
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             if matched {
                 return MoltObject::from_bool(true).bits();
@@ -1677,7 +1680,7 @@ pub extern "C" fn molt_deque_count(handle_bits: u64, item_bits: u64) -> u64 {
             release_handle_value(_py, elem_bits);
             let matched = match compared {
                 Ok(value) => value,
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             if deque_mutated_since(id, mutation_version) {
                 return raise_exception::<_>(_py, "RuntimeError", "deque mutated during iteration");
@@ -1749,7 +1752,7 @@ pub extern "C" fn molt_deque_index(
             release_handle_value(_py, elem_bits);
             let matched = match compared {
                 Ok(value) => value,
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             if matched {
                 return MoltObject::from_int(i as i64).bits();
@@ -1844,7 +1847,7 @@ pub extern "C" fn molt_deque_remove(handle_bits: u64, item_bits: u64) -> u64 {
             release_handle_value(_py, elem_bits);
             let matched = match compared {
                 Ok(value) => value,
-                Err(()) => return MoltObject::none().bits(),
+                Err(molt_runtime_core::ErrorIndicatorSet) => return MoltObject::none().bits(),
             };
             if deque_mutated_since(id, mutation_version) {
                 return raise_exception::<_>(_py, "IndexError", "deque mutated during iteration");

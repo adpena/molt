@@ -182,7 +182,7 @@ impl<'a, 'gil> TypeMutation<'a, 'gil> {
                 class,
                 native: Some(native),
             }),
-            Err(()) => {
+            Err(molt_cpython_abi::ErrorIndicatorSet) => {
                 crate::cpython_abi_hooks::propagate_native_failure(
                     py,
                     "class mutation preparation",
@@ -839,19 +839,17 @@ unsafe fn set_attr_ptr_with_name(
                 if class_bits != 0
                     && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                     && object_type_id(class_ptr) == TYPE_ID_TYPE
+                    && access == AttributeMutation::Normal
+                    && dispatch_custom_mutation(
+                        _py,
+                        class_ptr,
+                        obj_ptr,
+                        attr_bits,
+                        DescriptorMutation::Set(val_bits),
+                        CustomMutationDefaultPolicy::ContinueOnObjectDefault,
+                    ) == CustomMutationDispatch::Handled
                 {
-                    if access == AttributeMutation::Normal
-                        && dispatch_custom_mutation(
-                            _py,
-                            class_ptr,
-                            obj_ptr,
-                            attr_bits,
-                            DescriptorMutation::Set(val_bits),
-                            CustomMutationDefaultPolicy::ContinueOnObjectDefault,
-                        ) == CustomMutationDispatch::Handled
-                    {
-                        return MoltObject::none().bits();
-                    }
+                    return MoltObject::none().bits();
                 }
                 let result = object_setattr_raw(_py, obj_ptr, attr_bits, attr_name, val_bits);
                 return result;
@@ -924,7 +922,7 @@ unsafe fn module_delattr_namespace(
         let module_name =
             string_obj_to_owned(obj_from_bits(module_name_bits(obj_ptr))).unwrap_or_default();
         let msg = format!("module '{module_name}' has no attribute '{attr_name}'");
-        return attr_error_with_message(_py, &msg);
+        attr_error_with_message(_py, &msg)
     }
 }
 
@@ -1044,7 +1042,7 @@ unsafe fn del_attr_ptr_with_access(
                 return MoltObject::none().bits();
             }
             if access == AttributeMutation::Generic {
-                return attr_error(_py, &class_name_for_error(metaclass_bits), attr_name);
+                return attr_error(_py, class_name_for_error(metaclass_bits), attr_name);
             }
             let class_name =
                 string_obj_to_owned(obj_from_bits(class_name_bits(obj_ptr))).unwrap_or_default();
@@ -1146,19 +1144,17 @@ unsafe fn del_attr_ptr_with_access(
             if class_bits != 0
                 && let Some(class_ptr) = obj_from_bits(class_bits).as_ptr()
                 && object_type_id(class_ptr) == TYPE_ID_TYPE
+                && access == AttributeMutation::Normal
+                && dispatch_custom_mutation(
+                    _py,
+                    class_ptr,
+                    obj_ptr,
+                    attr_bits,
+                    DescriptorMutation::Delete,
+                    CustomMutationDefaultPolicy::ContinueOnObjectDefault,
+                ) == CustomMutationDispatch::Handled
             {
-                if access == AttributeMutation::Normal
-                    && dispatch_custom_mutation(
-                        _py,
-                        class_ptr,
-                        obj_ptr,
-                        attr_bits,
-                        DescriptorMutation::Delete,
-                        CustomMutationDefaultPolicy::ContinueOnObjectDefault,
-                    ) == CustomMutationDispatch::Handled
-                {
-                    return MoltObject::none().bits();
-                }
+                return MoltObject::none().bits();
             }
             return object_delattr_raw(_py, obj_ptr, attr_bits, attr_name);
         }
@@ -1228,10 +1224,10 @@ pub(crate) unsafe fn object_setattr_raw(
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }
-        if let Some(class_ptr) = class_ptr {
-            if let Some(offset) = class_inferred_field_offset(_py, class_ptr, attr_bits) {
-                return object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
-            }
+        if let Some(class_ptr) = class_ptr
+            && let Some(offset) = class_inferred_field_offset(_py, class_ptr, attr_bits)
+        {
+            return object_field_set_ptr_raw(_py, obj_ptr, offset, val_bits);
         }
         if object_type_id(obj_ptr) == TYPE_ID_MODULE {
             if attr_name == "__dict__" {

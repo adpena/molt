@@ -15,7 +15,9 @@ use crate::hooks::{
 use std::os::raw::c_int;
 use std::ptr;
 
-unsafe fn protocol(descriptor: *mut PyObject) -> Result<DescriptorProtocol, ()> {
+unsafe fn protocol(
+    descriptor: *mut PyObject,
+) -> Result<DescriptorProtocol, crate::ErrorIndicatorSet> {
     if descriptor.is_null() {
         return Ok(DescriptorProtocol::None);
     }
@@ -23,11 +25,11 @@ unsafe fn protocol(descriptor: *mut PyObject) -> Result<DescriptorProtocol, ()> 
     // acquiring a runtime wrapper never turns a native descriptor into a
     // managed view or redispatches its physical slot back through that wrapper.
     if GLOBAL_BRIDGE.molt_handle_for_pyobj(descriptor).is_some() {
-        let value = unsafe { RuntimeValue::acquire(descriptor) }.ok_or(())?;
+        let value = unsafe { RuntimeValue::acquire(descriptor) }.ok_or(crate::ErrorIndicatorSet)?;
         let protocol = unsafe { (hooks_or_stubs().descriptor_protocol)(value.bits()) };
         return if protocol == DescriptorProtocol::Error || errors::raised_error_pending() {
             unsafe { crate::bridge::ensure_result_error(c"managed descriptor protocol failed") };
-            Err(())
+            Err(crate::ErrorIndicatorSet)
         } else {
             Ok(protocol)
         };
@@ -41,11 +43,11 @@ unsafe fn protocol(descriptor: *mut PyObject) -> Result<DescriptorProtocol, ()> 
     ))
 }
 
-pub(crate) unsafe fn has_get(descriptor: *mut PyObject) -> Result<bool, ()> {
+pub(crate) unsafe fn has_get(descriptor: *mut PyObject) -> Result<bool, crate::ErrorIndicatorSet> {
     unsafe { protocol(descriptor) }.map(DescriptorProtocol::has_get)
 }
 
-pub(crate) unsafe fn is_data(descriptor: *mut PyObject) -> Result<bool, ()> {
+pub(crate) unsafe fn is_data(descriptor: *mut PyObject) -> Result<bool, crate::ErrorIndicatorSet> {
     unsafe { protocol(descriptor) }.map(DescriptorProtocol::is_data)
 }
 
@@ -90,7 +92,7 @@ pub(crate) unsafe fn get(
         match unsafe { has_get(descriptor) } {
             Ok(true) => {}
             Ok(false) => return None,
-            Err(()) => return Some(ptr::null_mut()),
+            Err(crate::ErrorIndicatorSet) => return Some(ptr::null_mut()),
         }
         let operands = unsafe { CallbackOperands::new([descriptor, receiver, owner]) };
         let Some(descriptor) = (unsafe { RuntimeValue::acquire(descriptor) }) else {
@@ -98,11 +100,11 @@ pub(crate) unsafe fn get(
         };
         let receiver = match unsafe { optional_value(receiver) } {
             Ok(value) => value,
-            Err(()) => return Some(ptr::null_mut()),
+            Err(crate::ErrorIndicatorSet) => return Some(ptr::null_mut()),
         };
         let owner = match unsafe { optional_value(owner) } {
             Ok(value) => value,
-            Err(()) => return Some(ptr::null_mut()),
+            Err(crate::ErrorIndicatorSet) => return Some(ptr::null_mut()),
         };
         let receiver_bits = receiver.as_ref().map(RuntimeValue::bits);
         let owner_bits = owner.as_ref().map(RuntimeValue::bits);
@@ -124,11 +126,15 @@ pub(crate) unsafe fn get(
     Some(unsafe { invoke_get(slot, descriptor, receiver, owner) })
 }
 
-unsafe fn optional_value(value: *mut PyObject) -> Result<Option<RuntimeValue>, ()> {
+unsafe fn optional_value(
+    value: *mut PyObject,
+) -> Result<Option<RuntimeValue>, crate::ErrorIndicatorSet> {
     if value.is_null() {
         Ok(None)
     } else {
-        unsafe { RuntimeValue::acquire(value) }.map(Some).ok_or(())
+        unsafe { RuntimeValue::acquire(value) }
+            .map(Some)
+            .ok_or(crate::ErrorIndicatorSet)
     }
 }
 
@@ -145,7 +151,7 @@ pub(crate) unsafe fn set(
         match unsafe { is_data(descriptor) } {
             Ok(true) => {}
             Ok(false) => return None,
-            Err(()) => return Some(-1),
+            Err(crate::ErrorIndicatorSet) => return Some(-1),
         }
         let operands = unsafe { CallbackOperands::new([descriptor, receiver, value]) };
         let Some(descriptor) = (unsafe { RuntimeValue::acquire(descriptor) }) else {
@@ -156,7 +162,7 @@ pub(crate) unsafe fn set(
         };
         let value = match unsafe { optional_value(value) } {
             Ok(value) => value,
-            Err(()) => return Some(-1),
+            Err(crate::ErrorIndicatorSet) => return Some(-1),
         };
         let value_bits = value.as_ref().map(RuntimeValue::bits);
         let status = unsafe {

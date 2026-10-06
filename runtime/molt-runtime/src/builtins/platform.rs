@@ -2744,9 +2744,7 @@ fn importlib_import_via_spec_with_support(
     if obj_from_bits(spec_bits).is_none() {
         return Ok(None);
     }
-    if let Err(err) = importlib_enforce_extension_spec_object_boundary(_py, resolved, spec_bits) {
-        return Err(err);
-    }
+    importlib_enforce_extension_spec_object_boundary(_py, resolved, spec_bits)?;
 
     let preseed_modules = importlib_spec_transaction_should_preseed(_py, spec_bits)?;
     let result = importlib_spec_execution_transaction(

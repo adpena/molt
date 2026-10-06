@@ -796,7 +796,7 @@ mod tests {
                 .exit_registry
                 .try_lock()
                 .is_ok_and(|registry| {
-                    registry.callbacks.is_empty() && registry.weakref_finalizers.len() == 0
+                    registry.callbacks.is_empty() && registry.weakref_finalizers.is_empty()
                 });
             RELEASE_SAW_DETACHED_ROOTS.store(detached, Ordering::Release);
             if detached {

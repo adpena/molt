@@ -374,11 +374,15 @@ unsafe extern "C" {
     fn __molt_collections_compare_eq(lhs_bits: u64, rhs_bits: u64) -> i32;
 }
 
-pub fn compare_eq(_py: &CoreGilToken, lhs: MoltObject, rhs: MoltObject) -> Result<bool, ()> {
+pub fn compare_eq(
+    _py: &CoreGilToken,
+    lhs: MoltObject,
+    rhs: MoltObject,
+) -> Result<bool, molt_runtime_core::ErrorIndicatorSet> {
     match unsafe { __molt_collections_compare_eq(lhs.bits(), rhs.bits()) } {
         1 => Ok(true),
         0 => Ok(false),
-        _ => Err(()),
+        _ => Err(molt_runtime_core::ErrorIndicatorSet),
     }
 }
 

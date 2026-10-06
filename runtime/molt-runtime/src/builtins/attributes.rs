@@ -798,42 +798,39 @@ pub(crate) unsafe fn attr_lookup_ptr_default_with_suppression(
         }
         if type_id == TYPE_ID_STRING
             && let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits))
+            && let Some(func_bits) = string_method_bits(_py, name.as_str())
         {
-            if let Some(func_bits) = string_method_bits(_py, name.as_str()) {
-                let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                return descriptor_bind(
-                    _py,
-                    func_bits,
-                    Some(type_of_bits(_py, self_bits)),
-                    Some(self_bits),
-                );
-            }
+            let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+            return descriptor_bind(
+                _py,
+                func_bits,
+                Some(type_of_bits(_py, self_bits)),
+                Some(self_bits),
+            );
         }
         if type_id == TYPE_ID_BYTES
             && let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits))
+            && let Some(func_bits) = bytes_method_bits(_py, name.as_str())
         {
-            if let Some(func_bits) = bytes_method_bits(_py, name.as_str()) {
-                let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                return descriptor_bind(
-                    _py,
-                    func_bits,
-                    Some(type_of_bits(_py, self_bits)),
-                    Some(self_bits),
-                );
-            }
+            let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+            return descriptor_bind(
+                _py,
+                func_bits,
+                Some(type_of_bits(_py, self_bits)),
+                Some(self_bits),
+            );
         }
         if type_id == TYPE_ID_BYTEARRAY
             && let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits))
+            && let Some(func_bits) = bytearray_method_bits(_py, name.as_str())
         {
-            if let Some(func_bits) = bytearray_method_bits(_py, name.as_str()) {
-                let self_bits = MoltObject::from_ptr(obj_ptr).bits();
-                return descriptor_bind(
-                    _py,
-                    func_bits,
-                    Some(type_of_bits(_py, self_bits)),
-                    Some(self_bits),
-                );
-            }
+            let self_bits = MoltObject::from_ptr(obj_ptr).bits();
+            return descriptor_bind(
+                _py,
+                func_bits,
+                Some(type_of_bits(_py, self_bits)),
+                Some(self_bits),
+            );
         }
         if type_id == TYPE_ID_COMPLEX
             && let Some(name) = string_obj_to_owned(obj_from_bits(attr_bits))
@@ -1364,14 +1361,14 @@ pub extern "C" fn molt_function_descriptor_get(
             }
             let owner = (!obj_from_bits(owner_bits).is_none()).then_some(owner_bits);
             let instance = (!obj_from_bits(instance_bits).is_none()).then_some(instance_bits);
-            if let Some(kind) = NativeCallableKind::from_class(_py, object_class_bits(pointer)) {
-                if !kind.is_descriptor() {
-                    return raise_exception::<_>(
-                        _py,
-                        "TypeError",
-                        "native function is not a descriptor",
-                    );
-                }
+            if let Some(kind) = NativeCallableKind::from_class(_py, object_class_bits(pointer))
+                && !kind.is_descriptor()
+            {
+                return raise_exception::<_>(
+                    _py,
+                    "TypeError",
+                    "native function is not a descriptor",
+                );
             }
             descriptor_bind(_py, self_bits, owner, instance)
                 .unwrap_or_else(|| MoltObject::none().bits())

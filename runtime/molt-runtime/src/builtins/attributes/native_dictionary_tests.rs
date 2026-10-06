@@ -547,7 +547,7 @@ fn native_type_metadata_and_c_mappingproxy_share_runtime_descriptors() {
                 name: c"namespace.MetadataProbe".as_ptr(),
                 basicsize: std::mem::size_of::<PyObject>() as i32,
                 itemsize: 0,
-                flags: Py_TPFLAGS_DEFAULT as u32,
+                flags: Py_TPFLAGS_DEFAULT,
                 slots: slots.as_mut_ptr(),
             };
             let class = OwnedPyObject::from_owned(typeobj::PyType_FromSpec(&mut spec));

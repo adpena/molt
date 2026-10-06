@@ -8,7 +8,7 @@ const MOVE_COST: usize = 2;
 fn substitution_cost(a: u8, b: u8) -> usize {
     if a == b {
         0
-    } else if a.to_ascii_lowercase() == b.to_ascii_lowercase() {
+    } else if a.eq_ignore_ascii_case(&b) {
         1
     } else {
         MOVE_COST

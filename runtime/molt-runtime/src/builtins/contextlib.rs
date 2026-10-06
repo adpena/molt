@@ -2293,13 +2293,13 @@ mod payload_publication_tests {
                         );
                     }
                     assert_eq!(CALLBACK_CALLS.load(Ordering::Relaxed), 1);
-                    for index in 0..3 {
+                    for (index, owner) in weak.iter().enumerate() {
                         assert_eq!(
                             payload_slot(payload, ASYNC_EXITSTACK_SLOT_CUR_TYPE + index),
                             MoltObject::from_int(77).bits()
                         );
                         assert!(
-                            obj_from_bits(crate::molt_weakref_call(weak[index])).is_none(),
+                            obj_from_bits(crate::molt_weakref_call(*owner)).is_none(),
                             "displaced owner leaked"
                         );
                     }

@@ -9,7 +9,10 @@ use std::os::raw::c_int;
 use std::ptr;
 
 /// Resolve the runtime's single dict storage authority, retaining its error.
-fn resolve_dict(op: *mut PyObject, merge_source: bool) -> Result<Option<u64>, ()> {
+fn resolve_dict(
+    op: *mut PyObject,
+    merge_source: bool,
+) -> Result<Option<u64>, crate::ErrorIndicatorSet> {
     if op.is_null() {
         return Ok(None);
     }
@@ -22,7 +25,7 @@ fn resolve_dict(op: *mut PyObject, merge_source: bool) -> Result<Option<u64>, ()
         crate::hooks::DecodedHandleResult::Missing => Ok(None),
         crate::hooks::DecodedHandleResult::Error => {
             bad_dict_argument();
-            Err(())
+            Err(crate::ErrorIndicatorSet)
         }
     }
 }
@@ -41,7 +44,7 @@ fn require_dict(op: *mut PyObject) -> Option<u64> {
             bad_dict_argument();
             None
         }
-        Err(()) => None,
+        Err(crate::ErrorIndicatorSet) => None,
     }
 }
 
@@ -244,7 +247,7 @@ pub unsafe extern "C" fn PyDict_Merge(
     // ── Native-dict fast path: iterate `other` via the O(1) cursor. ──
     let source_backing = match resolve_dict(other, true) {
         Ok(backing) => backing,
-        Err(()) => return -1,
+        Err(crate::ErrorIndicatorSet) => return -1,
     };
     if source_backing.is_some() {
         if std::ptr::eq(op, other) {
@@ -752,7 +755,7 @@ pub unsafe extern "C" fn PyDict_Next(
     }
     let dict_bits = match resolve_dict(op, false) {
         Ok(Some(bits)) => bits,
-        Ok(None) | Err(()) => return 0,
+        Ok(None) | Err(crate::ErrorIndicatorSet) => return 0,
     };
     let index = unsafe { *pos };
     if index < 0 {
@@ -924,33 +927,6 @@ pub unsafe extern "C" fn PyDict_Items(op: *mut PyObject) -> *mut PyObject {
     unsafe { dict_op(crate::hooks::DictOp::Items, op) }
 }
 
-#[cfg(test)]
-mod dict_anchor_tests {
-    use super::*;
-
-    /// `_PyDict_GetItemStringWithError` is the error-propagating variant: a NULL
-    /// key is a bad internal call (sets an exception), never a silent NULL. The
-    /// found/absent dict-lookup paths are exercised end-to-end by the discovery
-    /// engine (they need the runtime `dict` hooks); here we pin the guard that
-    /// distinguishes it from the error-suppressing `PyDict_GetItemString`.
-    #[test]
-    fn getitemstring_witherror_null_key_is_bad_internal_call() {
-        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
-        crate::bridge::init_tag_table();
-        unsafe {
-            crate::api::errors::PyErr_Clear();
-            let recv = GLOBAL_BRIDGE.owned_handle_to_pyobj(MoltObject::from_int(0xD1C7).bits());
-            let got = _PyDict_GetItemStringWithError(recv, ptr::null());
-            assert!(got.is_null(), "NULL key must yield NULL");
-            assert!(
-                !crate::api::errors::PyErr_Occurred().is_null(),
-                "NULL key must set an exception (bad internal call), not a silent NULL"
-            );
-            crate::api::errors::PyErr_Clear();
-        }
-    }
-}
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn PyDict_Pop(
     op: *mut PyObject,
@@ -992,6 +968,33 @@ pub unsafe extern "C" fn PyDict_Pop(
                 unsafe { *result = object };
             }
             1
+        }
+    }
+}
+
+#[cfg(test)]
+mod dict_anchor_tests {
+    use super::*;
+
+    /// `_PyDict_GetItemStringWithError` is the error-propagating variant: a NULL
+    /// key is a bad internal call (sets an exception), never a silent NULL. The
+    /// found/absent dict-lookup paths are exercised end-to-end by the discovery
+    /// engine (they need the runtime `dict` hooks); here we pin the guard that
+    /// distinguishes it from the error-suppressing `PyDict_GetItemString`.
+    #[test]
+    fn getitemstring_witherror_null_key_is_bad_internal_call() {
+        let _thread_state = crate::api::object::AbiTestThreadStateTransaction::new();
+        crate::bridge::init_tag_table();
+        unsafe {
+            crate::api::errors::PyErr_Clear();
+            let recv = GLOBAL_BRIDGE.owned_handle_to_pyobj(MoltObject::from_int(0xD1C7).bits());
+            let got = _PyDict_GetItemStringWithError(recv, ptr::null());
+            assert!(got.is_null(), "NULL key must yield NULL");
+            assert!(
+                !crate::api::errors::PyErr_Occurred().is_null(),
+                "NULL key must set an exception (bad internal call), not a silent NULL"
+            );
+            crate::api::errors::PyErr_Clear();
         }
     }
 }

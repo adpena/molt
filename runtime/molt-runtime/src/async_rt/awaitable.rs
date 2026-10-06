@@ -702,10 +702,10 @@ fn iterator_resume(
     iterator: u64,
     request: ResumeRequest,
 ) -> Result<SpecialIterationStep, ()> {
-    if let ResumeRequest::Send(value) = request {
-        if obj_from_bits(value).is_none() {
-            return special_iteration_step(py, iterator, SpecialIterationKind::Next);
-        }
+    if let ResumeRequest::Send(value) = request
+        && obj_from_bits(value).is_none()
+    {
+        return special_iteration_step(py, iterator, SpecialIterationKind::Next);
     }
     let closing = match &request {
         ResumeRequest::Throw(arguments) => {

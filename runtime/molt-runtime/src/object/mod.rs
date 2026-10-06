@@ -2849,7 +2849,7 @@ pub(crate) unsafe fn validate_class_field_offsets(
 ) -> Result<(), ()> {
     unsafe {
         let entries = crate::dict_order(offsets_ptr);
-        if entries.len() % 2 != 0 {
+        if !entries.len().is_multiple_of(2) {
             crate::raise_exception::<()>(
                 _py,
                 "SystemError",
@@ -2938,7 +2938,6 @@ pub(crate) unsafe fn validate_class_field_offsets(
 /// mutation point. Bulk class construction can bypass those setters with raw
 /// namespace copies, so every creation path routes through this single seal
 /// before instances may be allocated from the class.
-#[must_use]
 pub(crate) unsafe fn class_finish_definition(
     _py: &PyToken<'_>,
     class_ptr: *mut u8,

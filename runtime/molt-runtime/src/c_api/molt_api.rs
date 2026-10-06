@@ -1062,10 +1062,11 @@ pub(crate) fn module_state_add_with_import(
                     }
                     let old_len = other.imports.len();
                     other.imports.retain(|existing| existing != identity);
-                    if other.imports.len() != old_len && other.imports.is_empty() {
-                        if let Some(snapshot) = other.legacy.take() {
-                            decref_bits.push(snapshot.dict_bits);
-                        }
+                    if other.imports.len() != old_len
+                        && other.imports.is_empty()
+                        && let Some(snapshot) = other.legacy.take()
+                    {
+                        decref_bits.push(snapshot.dict_bits);
                     }
                 }
                 // Independent PyState module ownership remains registered.

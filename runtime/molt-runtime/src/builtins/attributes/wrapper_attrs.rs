@@ -368,9 +368,7 @@ pub(crate) fn prepare_wrapper_members(
             let dictionary = class_dict_bits(class);
             let live = obj_from_bits(dictionary).as_ptr().unwrap();
             let staged_bits = crate::object::ops_dict::molt_dict_copy(dictionary);
-            let Some(staged) = obj_from_bits(staged_bits).as_ptr() else {
-                return None;
-            };
+            let staged = obj_from_bits(staged_bits).as_ptr()?;
             staged_owners.push(PtrDropGuard::new(staged));
             if exception_pending(py) {
                 return None;
@@ -384,9 +382,7 @@ pub(crate) fn prepare_wrapper_members(
                 if previous_version != 0 && member.minimum_minor == 0 {
                     continue;
                 }
-                let Some(name_bits) = attr_name_bits_from_bytes(py, member.name.as_bytes()) else {
-                    return None;
-                };
+                let name_bits = attr_name_bits_from_bytes(py, member.name.as_bytes())?;
                 let _name_owner = PtrDropGuard::new(obj_from_bits(name_bits).as_ptr().unwrap());
                 let (getter, setter, deleter) =
                     if matches!(member.operation, MemberOperation::RootMetadata(_)) {
@@ -447,9 +443,7 @@ pub(crate) fn prepare_wrapper_members(
                         },
                     },
                 );
-                let Some(descriptor_ptr) = obj_from_bits(descriptor).as_ptr() else {
-                    return None;
-                };
+                let descriptor_ptr = obj_from_bits(descriptor).as_ptr()?;
                 let _descriptor_owner = PtrDropGuard::new(descriptor_ptr);
                 if exception_pending(py) {
                     return None;
@@ -551,7 +545,7 @@ unsafe fn coroutine_member_value(
         match operation {
             MemberOperation::CoroutineRunning => {
                 let running = ((*header).load_synchronized_flags() & HEADER_FLAG_GEN_RUNNING) != 0;
-                return Some(MoltObject::from_bool(running).bits());
+                Some(MoltObject::from_bool(running).bits())
             }
             MemberOperation::CoroutineFrame => {
                 if crate::object::object_poll_fn(object) == 0
@@ -564,7 +558,7 @@ unsafe fn coroutine_member_value(
                 } else {
                     0
                 };
-                return Some(suspended_frame_bits(py, object, lasti));
+                Some(suspended_frame_bits(py, object, lasti))
             }
             MemberOperation::CoroutineCode => {
                 let code_bits = crate::object::aux_header::object_frame_code_bits(object);
@@ -572,7 +566,7 @@ unsafe fn coroutine_member_value(
                     inc_ref_bits(py, code_bits);
                     return Some(code_bits);
                 }
-                return Some(MoltObject::none().bits());
+                Some(MoltObject::none().bits())
             }
             MemberOperation::CoroutineAwait => {
                 if (*header).load_synchronized_flags()
@@ -585,7 +579,7 @@ unsafe fn coroutine_member_value(
                 if bits != 0 {
                     return Some(crate::async_rt::awaitable::python_awaited_bits(py, bits));
                 }
-                return Some(MoltObject::none().bits());
+                Some(MoltObject::none().bits())
             }
             _ => unreachable!("non-coroutine member operation"),
         }
@@ -631,9 +625,8 @@ pub extern "C" fn molt_wrapper_member_get(descriptor: u64, instance: u64) -> u64
                     WrapperKind::from_type_id(object_type_id(object)).unwrap(),
                 ),
                 MemberOperation::Dictionary => {
-                    crate::object::field_storage::materialize(py, object).map(|bits| {
+                    crate::object::field_storage::materialize(py, object).inspect(|&bits| {
                         inc_ref_bits(py, bits);
-                        bits
                     })
                 }
                 MemberOperation::LazyMetadata => lazy_wrapped_attribute(py, object, name),

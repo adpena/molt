@@ -314,7 +314,10 @@ pub(crate) unsafe fn class_is_abstract(class: *mut u8) -> bool {
     }
 }
 
-pub(crate) unsafe fn class_set_abstract(class: *mut u8, abstract_type: bool) -> Result<(), ()> {
+pub(crate) unsafe fn class_set_abstract(
+    class: *mut u8,
+    abstract_type: bool,
+) -> Result<(), molt_cpython_abi::ErrorIndicatorSet> {
     unsafe {
         let word = class_declarations_word(class);
         if abstract_type {

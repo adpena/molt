@@ -142,128 +142,6 @@ fn spawn_db_reader(
     Ok((task, responses))
 }
 
-#[cfg(test)]
-mod frame_tests {
-    use super::*;
-
-    struct FragmentedReader(std::io::Cursor<Vec<u8>>);
-
-    impl Read for FragmentedReader {
-        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-            let size = buffer.len().min(2);
-            self.0.read(&mut buffer[..size])
-        }
-    }
-
-    #[test]
-    fn worker_frame_survives_fragmented_header_and_payload() {
-        let mut bytes = Vec::new();
-        write_frame(&mut bytes, b"first").unwrap();
-        write_frame(&mut bytes, b"second").unwrap();
-        let mut reader = FragmentedReader(std::io::Cursor::new(bytes));
-        assert_eq!(read_frame(&mut reader).unwrap().unwrap(), b"first");
-        assert_eq!(read_frame(&mut reader).unwrap().unwrap(), b"second");
-        assert!(read_frame(&mut reader).unwrap().is_none());
-    }
-
-    #[test]
-    fn worker_rejects_oversized_frame_before_reading_payload() {
-        let bytes = ((MAX_DB_FRAME_SIZE + 1) as u32).to_le_bytes();
-        assert!(
-            read_frame(&bytes[..])
-                .unwrap_err()
-                .to_string()
-                .contains("frame too large")
-        );
-    }
-
-    #[test]
-    fn worker_rejects_truncated_header_and_payload() {
-        assert!(read_frame(&[1_u8, 0][..]).is_err());
-        assert!(read_frame(&[3_u8, 0, 0, 0, b'x'][..]).is_err());
-    }
-
-    #[test]
-    fn worker_rejects_invalid_response_envelope() {
-        assert!(decode_worker_frame(b"not json").is_err());
-        assert!(decode_worker_frame(br#"{"request_id":1,"payload_b64":"!invalid!"}"#).is_err());
-    }
-
-    fn finish_reader_input(task: &HostReaderTask) {
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while !task.is_finished() {
-            assert!(
-                Instant::now() < deadline,
-                "reader did not consume finite fixture"
-            );
-            thread::sleep(Duration::from_millis(1));
-        }
-    }
-
-    #[test]
-    fn database_reader_retains_invalid_frame_error_without_guest_poll() {
-        let (pipe, mut writer) = os_pipe::pipe().unwrap();
-        write_frame(&mut writer, b"invalid json").unwrap();
-        drop(writer);
-        let (mut task, _unpolled_responses) =
-            spawn_db_reader(HostPipeReader::new(pipe).unwrap()).unwrap();
-        finish_reader_input(&task);
-        let error = task.close(Instant::now()).unwrap_err();
-        assert!(error.downcast_ref::<serde_json::Error>().is_some());
-    }
-
-    #[test]
-    fn database_reader_retains_truncation_without_guest_poll() {
-        let (pipe, mut writer) = os_pipe::pipe().unwrap();
-        writer.write_all(&[3, 0, 0, 0, b'x']).unwrap();
-        drop(writer);
-        let (mut task, _unpolled_responses) =
-            spawn_db_reader(HostPipeReader::new(pipe).unwrap()).unwrap();
-        finish_reader_input(&task);
-        let error = task.close(Instant::now()).unwrap_err();
-        assert_eq!(
-            error.downcast_ref::<std::io::Error>().unwrap().kind(),
-            std::io::ErrorKind::UnexpectedEof
-        );
-    }
-
-    #[test]
-    fn database_reader_delivers_completed_frames_before_channel_eof() {
-        let (pipe, mut writer) = os_pipe::pipe().unwrap();
-        for request_id in [1, 2] {
-            let payload =
-                serde_json::to_vec(&serde_json::json!({"request_id":request_id,"status":"Ok"}))
-                    .unwrap();
-            write_frame(&mut writer, &payload).unwrap();
-        }
-        drop(writer);
-        let (mut task, responses) = spawn_db_reader(HostPipeReader::new(pipe).unwrap()).unwrap();
-        finish_reader_input(&task);
-        task.close(Instant::now()).unwrap();
-        for expected in [1, 2] {
-            let WorkerMessage::Response(response) = responses.try_recv().unwrap() else {
-                panic!("completed frame replaced by failure");
-            };
-            assert_eq!(response.request_id, expected);
-        }
-        assert!(matches!(
-            responses.try_recv(),
-            Err(std::sync::mpsc::TryRecvError::Disconnected)
-        ));
-    }
-
-    #[test]
-    fn database_reader_owner_cancellation_is_not_a_terminal_failure() {
-        let (pipe, _writer) = os_pipe::pipe().unwrap();
-        let (mut task, responses) = spawn_db_reader(HostPipeReader::new(pipe).unwrap()).unwrap();
-        task.close(Instant::now() + Duration::from_secs(1)).unwrap();
-        assert!(matches!(
-            responses.try_recv(),
-            Err(std::sync::mpsc::TryRecvError::Disconnected)
-        ));
-    }
-}
-
 fn map_worker_status(status: &str) -> &'static str {
     match status {
         "Ok" => "ok",
@@ -825,4 +703,126 @@ pub(super) fn define_db_host(
     linker.define(&mut *store, "env", "molt_db_exec_host", exec)?;
     linker.define(&mut *store, "env", "molt_db_host_poll", poll)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+
+    struct FragmentedReader(std::io::Cursor<Vec<u8>>);
+
+    impl Read for FragmentedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let size = buffer.len().min(2);
+            self.0.read(&mut buffer[..size])
+        }
+    }
+
+    #[test]
+    fn worker_frame_survives_fragmented_header_and_payload() {
+        let mut bytes = Vec::new();
+        write_frame(&mut bytes, b"first").unwrap();
+        write_frame(&mut bytes, b"second").unwrap();
+        let mut reader = FragmentedReader(std::io::Cursor::new(bytes));
+        assert_eq!(read_frame(&mut reader).unwrap().unwrap(), b"first");
+        assert_eq!(read_frame(&mut reader).unwrap().unwrap(), b"second");
+        assert!(read_frame(&mut reader).unwrap().is_none());
+    }
+
+    #[test]
+    fn worker_rejects_oversized_frame_before_reading_payload() {
+        let bytes = ((MAX_DB_FRAME_SIZE + 1) as u32).to_le_bytes();
+        assert!(
+            read_frame(&bytes[..])
+                .unwrap_err()
+                .to_string()
+                .contains("frame too large")
+        );
+    }
+
+    #[test]
+    fn worker_rejects_truncated_header_and_payload() {
+        assert!(read_frame(&[1_u8, 0][..]).is_err());
+        assert!(read_frame(&[3_u8, 0, 0, 0, b'x'][..]).is_err());
+    }
+
+    #[test]
+    fn worker_rejects_invalid_response_envelope() {
+        assert!(decode_worker_frame(b"not json").is_err());
+        assert!(decode_worker_frame(br#"{"request_id":1,"payload_b64":"!invalid!"}"#).is_err());
+    }
+
+    fn finish_reader_input(task: &HostReaderTask) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !task.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "reader did not consume finite fixture"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn database_reader_retains_invalid_frame_error_without_guest_poll() {
+        let (pipe, mut writer) = os_pipe::pipe().unwrap();
+        write_frame(&mut writer, b"invalid json").unwrap();
+        drop(writer);
+        let (mut task, _unpolled_responses) =
+            spawn_db_reader(HostPipeReader::new(pipe).unwrap()).unwrap();
+        finish_reader_input(&task);
+        let error = task.close(Instant::now()).unwrap_err();
+        assert!(error.downcast_ref::<serde_json::Error>().is_some());
+    }
+
+    #[test]
+    fn database_reader_retains_truncation_without_guest_poll() {
+        let (pipe, mut writer) = os_pipe::pipe().unwrap();
+        writer.write_all(&[3, 0, 0, 0, b'x']).unwrap();
+        drop(writer);
+        let (mut task, _unpolled_responses) =
+            spawn_db_reader(HostPipeReader::new(pipe).unwrap()).unwrap();
+        finish_reader_input(&task);
+        let error = task.close(Instant::now()).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[test]
+    fn database_reader_delivers_completed_frames_before_channel_eof() {
+        let (pipe, mut writer) = os_pipe::pipe().unwrap();
+        for request_id in [1, 2] {
+            let payload =
+                serde_json::to_vec(&serde_json::json!({"request_id":request_id,"status":"Ok"}))
+                    .unwrap();
+            write_frame(&mut writer, &payload).unwrap();
+        }
+        drop(writer);
+        let (mut task, responses) = spawn_db_reader(HostPipeReader::new(pipe).unwrap()).unwrap();
+        finish_reader_input(&task);
+        task.close(Instant::now()).unwrap();
+        for expected in [1, 2] {
+            let WorkerMessage::Response(response) = responses.try_recv().unwrap() else {
+                panic!("completed frame replaced by failure");
+            };
+            assert_eq!(response.request_id, expected);
+        }
+        assert!(matches!(
+            responses.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn database_reader_owner_cancellation_is_not_a_terminal_failure() {
+        let (pipe, _writer) = os_pipe::pipe().unwrap();
+        let (mut task, responses) = spawn_db_reader(HostPipeReader::new(pipe).unwrap()).unwrap();
+        task.close(Instant::now() + Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            responses.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
+    }
 }

@@ -815,7 +815,7 @@ fn handler_bits_from_py(py: &PyToken<'_>, signum: i32, handler_bits: u64) -> Res
     if handler.is_none() || !crate::builtins::callable::is_callable_impl(py, handler_bits) {
         return Err(raise_exception::<u64>(py, "TypeError", HANDLER_TYPE_ERROR));
     }
-    if signum == libc::SIGINT as i32 {
+    if signum == libc::SIGINT {
         let default_int = default_int_handler_object(py)?;
         let is_default = default_int == handler_bits;
         dec_ref_bits(py, default_int);
@@ -1879,8 +1879,8 @@ mod tests {
     #[test]
     fn startup_sigint_is_the_default_int_disposition_and_other_slots_are_default() {
         let state = SignalRuntimeState::new();
-        assert_eq!(state.handler_bits(libc::SIGINT as i32), HANDLER_DEFAULT_INT);
-        assert_eq!(state.handler_bits(libc::SIGTERM as i32), HANDLER_SIG_DFL);
+        assert_eq!(state.handler_bits(libc::SIGINT), HANDLER_DEFAULT_INT);
+        assert_eq!(state.handler_bits(libc::SIGTERM), HANDLER_SIG_DFL);
     }
 }
 
@@ -2068,7 +2068,7 @@ mod delivery_tests {
         crate::with_gil_entry_nopanic!(py, {
             let raising = handler_object(py, raising_handler as *const ());
             let recording = handler_object(py, record_delivery_handler as *const ());
-            let (low, high) = (libc::SIGINT as i32, libc::SIGTERM as i32);
+            let (low, high) = (libc::SIGINT, libc::SIGTERM);
             let old_low = install(py, low, raising);
             let old_high = install(py, high, recording);
             RECORDED_SIGNUM.store(0, Ordering::SeqCst);
@@ -2096,7 +2096,7 @@ mod delivery_tests {
     fn default_int_disposition_dispatches_keyboard_interrupt() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let sigint = libc::SIGINT as i32;
+            let sigint = libc::SIGINT;
             let old = install(py, sigint, HANDLER_DEFAULT_INT);
             assert_eq!(signal_set_interrupt(sigint as i64), 0);
             assert!(signal_tripped());
@@ -2111,7 +2111,7 @@ mod delivery_tests {
     fn simulated_delivery_ignores_signals_python_does_not_handle() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let sigterm = libc::SIGTERM as i32;
+            let sigterm = libc::SIGTERM;
             let old = install(py, sigterm, HANDLER_SIG_DFL);
             assert_eq!(signal_set_interrupt(sigterm as i64), 0);
             assert!(!signal_tripped(), "SIG_DFL is not handled by Python");
@@ -2128,7 +2128,7 @@ mod delivery_tests {
     fn interrupt_occurred_consumes_only_a_recorded_sigint() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let sigint = libc::SIGINT as i32;
+            let sigint = libc::SIGINT;
             let old = install(py, sigint, HANDLER_DEFAULT_INT);
             assert!(!signal_interrupt_occurred(py));
             assert_eq!(signal_set_interrupt(sigint as i64), 0);
@@ -2145,7 +2145,7 @@ mod delivery_tests {
     fn a_propagating_exception_defers_dispatch_to_the_next_clean_safepoint() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let sigint = libc::SIGINT as i32;
+            let sigint = libc::SIGINT;
             let old = install(py, sigint, HANDLER_DEFAULT_INT);
             let _ = raise_exception::<u64>(py, "RuntimeError", "already propagating");
             assert_eq!(signal_set_interrupt(sigint as i64), 0);
@@ -2165,7 +2165,7 @@ mod delivery_tests {
     fn non_owner_threads_never_dispatch() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let sigint = libc::SIGINT as i32;
+            let sigint = libc::SIGINT;
             let old = install(py, sigint, HANDLER_DEFAULT_INT);
             assert_eq!(signal_set_interrupt(sigint as i64), 0);
             let observed = {
@@ -2227,7 +2227,7 @@ mod delivery_tests {
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());
         crate::with_gil_entry_nopanic!(py, {
             use molt_cpython_abi::api::errors;
-            let sigint = libc::SIGINT as i32;
+            let sigint = libc::SIGINT;
             let old = install(py, sigint, HANDLER_DEFAULT_INT);
             unsafe {
                 assert_eq!(errors::PyErr_CheckSignals(), 0, "nothing is recorded");

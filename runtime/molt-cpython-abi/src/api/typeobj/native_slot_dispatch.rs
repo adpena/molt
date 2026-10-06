@@ -127,10 +127,10 @@ unsafe fn name<const SLOT: c_int>(variant: usize) -> OwnedPyObject {
 unsafe fn special<const SLOT: c_int>(
     receiver: *mut PyObject,
     variant: usize,
-) -> Result<Option<OwnedPyObject>, ()> {
+) -> Result<Option<OwnedPyObject>, crate::ErrorIndicatorSet> {
     let key = unsafe { name::<SLOT>(variant) };
     if key.as_ptr().is_null() {
-        return Err(());
+        return Err(crate::ErrorIndicatorSet);
     }
     unsafe { object::lookup_type_special(receiver, key.as_ptr()) }
 }
@@ -142,7 +142,7 @@ unsafe fn invoke<const SLOT: c_int>(
     optional: bool,
 ) -> *mut PyObject {
     match unsafe { special::<SLOT>(receiver, variant) } {
-        Err(()) => ptr::null_mut(),
+        Err(crate::ErrorIndicatorSet) => ptr::null_mut(),
         Ok(None) if optional => unsafe { object::Py_NewRef(&raw mut Py_NotImplementedSentinel) },
         Ok(None) => {
             let key = unsafe { name::<SLOT>(variant) };
@@ -169,7 +169,7 @@ unsafe extern "C" fn repr(receiver: *mut PyObject) -> *mut PyObject {
     unsafe {
         match special::<{ ts::Py_tp_repr }>(receiver, 0) {
             Ok(Some(method)) => object::PyObject_CallNoArgs(method.as_ptr()),
-            Err(()) | Ok(None) => {
+            Err(crate::ErrorIndicatorSet) | Ok(None) => {
                 errors::PyErr_Clear();
                 errors::PyUnicode_FromFormat(
                     c"<%s object at %p>".as_ptr(),
@@ -184,7 +184,7 @@ unsafe extern "C" fn async_unary<const SLOT: c_int>(receiver: *mut PyObject) -> 
     unsafe {
         match special::<SLOT>(receiver, 0) {
             Ok(Some(method)) => object::PyObject_CallNoArgs(method.as_ptr()),
-            Err(()) | Ok(None) => {
+            Err(crate::ErrorIndicatorSet) | Ok(None) => {
                 let slot = stable_slot_wrapper(SLOT).expect("declared async slot");
                 let declaration = SLOT_WRAPPER_DEFS
                     .iter()
@@ -229,11 +229,11 @@ pub(super) unsafe extern "C" fn next_not_implemented(receiver: *mut PyObject) ->
 unsafe fn reflected_overrides<const SLOT: c_int>(
     left: *mut PyObject,
     right: *mut PyObject,
-) -> Result<bool, ()> {
+) -> Result<bool, crate::ErrorIndicatorSet> {
     unsafe {
         let key = name::<SLOT>(1);
         if key.as_ptr().is_null() {
-            return Err(());
+            return Err(crate::ErrorIndicatorSet);
         }
         let left_type = crate::bridge::semantic_type(left);
         let right_type = crate::bridge::semantic_type(right);
@@ -241,7 +241,7 @@ unsafe fn reflected_overrides<const SLOT: c_int>(
             OwnedPyObject::from_owned(object::PyObject_GetAttr(right_type.cast(), key.as_ptr()));
         if right.as_ptr().is_null() {
             if errors::PyErr_ExceptionMatches((&raw mut PyExc_AttributeError).cast()) == 0 {
-                return Err(());
+                return Err(crate::ErrorIndicatorSet);
             }
             errors::PyErr_Clear();
             return Ok(false);
@@ -250,14 +250,14 @@ unsafe fn reflected_overrides<const SLOT: c_int>(
             OwnedPyObject::from_owned(object::PyObject_GetAttr(left_type.cast(), key.as_ptr()));
         if left.as_ptr().is_null() {
             if errors::PyErr_ExceptionMatches((&raw mut PyExc_AttributeError).cast()) == 0 {
-                return Err(());
+                return Err(crate::ErrorIndicatorSet);
             }
             errors::PyErr_Clear();
             return Ok(true);
         }
         let comparison = PyObject_RichCompareBool(left.as_ptr(), right.as_ptr(), 3);
         if comparison < 0 {
-            Err(())
+            Err(crate::ErrorIndicatorSet)
         } else {
             Ok(comparison != 0)
         }
@@ -287,7 +287,7 @@ unsafe fn binary_dispatch<const SLOT: c_int>(
         if left_dispatches {
             if right_dispatches && PyType_IsSubtype(right_type, left_type) != 0 {
                 match reflected_overrides::<SLOT>(left, right) {
-                    Err(()) => return ptr::null_mut(),
+                    Err(crate::ErrorIndicatorSet) => return ptr::null_mut(),
                     Ok(true) => {
                         let result = call(right, left, 1);
                         if result != &raw mut Py_NotImplementedSentinel {
@@ -368,11 +368,11 @@ unsafe extern "C" fn length<const SLOT: c_int>(receiver: *mut PyObject) -> Py_ss
 unsafe extern "C" fn truth(receiver: *mut PyObject) -> c_int {
     unsafe {
         let method = match special::<{ ts::Py_nb_bool }>(receiver, 0) {
-            Err(()) => return -1,
+            Err(crate::ErrorIndicatorSet) => return -1,
             Ok(Some(method)) => method,
             Ok(None) => {
                 return match special::<{ ts::Py_sq_length }>(receiver, 0) {
-                    Err(()) => -1,
+                    Err(crate::ErrorIndicatorSet) => -1,
                     Ok(None) => 1,
                     Ok(Some(method)) => {
                         let result =
@@ -491,7 +491,7 @@ unsafe extern "C" fn setitem_index(
 unsafe extern "C" fn contains(receiver: *mut PyObject, value: *mut PyObject) -> c_int {
     unsafe {
         let method = match special::<{ ts::Py_sq_contains }>(receiver, 0) {
-            Err(()) => return -1,
+            Err(crate::ErrorIndicatorSet) => return -1,
             Ok(None) => {
                 return crate::api::abstract_sequence::iter_search(
                     receiver,
@@ -548,7 +548,7 @@ unsafe extern "C" fn getattribute(receiver: *mut PyObject, key: *mut PyObject) -
         // A missing fallback must preserve the original AttributeError.
         let raised = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
         match special::<{ ts::Py_tp_getattro }>(receiver, 1) {
-            Err(()) => ptr::null_mut(),
+            Err(crate::ErrorIndicatorSet) => ptr::null_mut(),
             Ok(None) => {
                 errors::PyErr_SetRaisedException(raised.into_ptr());
                 ptr::null_mut()
@@ -574,13 +574,13 @@ unsafe extern "C" fn iter(receiver: *mut PyObject) -> *mut PyObject {
                 object::PyObject_CallNoArgs(method.as_ptr())
             }
             Ok(Some(_)) => not_iterable(receiver),
-            Err(()) | Ok(None) => {
+            Err(crate::ErrorIndicatorSet) | Ok(None) => {
                 // slot_tp_iter clears a failed __iter__ lookup before trying
                 // the sequence protocol, including descriptor lookup errors.
                 errors::PyErr_Clear();
                 match special::<{ ts::Py_sq_item }>(receiver, 0) {
                     Ok(Some(_)) => object::PySeqIter_New(receiver),
-                    Err(()) | Ok(None) => not_iterable(receiver),
+                    Err(crate::ErrorIndicatorSet) | Ok(None) => not_iterable(receiver),
                 }
             }
         }
@@ -655,7 +655,7 @@ unsafe fn call_tuple<const SLOT: c_int>(
 ) -> *mut PyObject {
     unsafe {
         match special::<SLOT>(receiver, 0) {
-            Err(()) => ptr::null_mut(),
+            Err(crate::ErrorIndicatorSet) => ptr::null_mut(),
             Ok(None) => {
                 errors::PyErr_SetString(
                     (&raw mut PyExc_AttributeError).cast(),

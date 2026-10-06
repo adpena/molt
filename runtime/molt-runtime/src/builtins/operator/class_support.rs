@@ -26,10 +26,12 @@ pub(super) fn itemgetter_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &operator.itemgetter_class,
         "itemgetter",
-        ClassSemanticPolicy::heap(true, false),
-        16,
-        Some(crate::object::ObjectShapeId::OperatorItemGetter),
-        Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::heap(true, false),
+            layout_size: 16,
+            instance_shape: Some(crate::object::ObjectShapeId::OperatorItemGetter),
+            native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        },
         &methods,
     )
 }
@@ -55,10 +57,12 @@ pub(super) fn attrgetter_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &operator.attrgetter_class,
         "attrgetter",
-        ClassSemanticPolicy::heap(true, false),
-        16,
-        Some(crate::object::ObjectShapeId::OperatorAttrGetter),
-        Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::heap(true, false),
+            layout_size: 16,
+            instance_shape: Some(crate::object::ObjectShapeId::OperatorAttrGetter),
+            native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        },
         &methods,
     )
 }
@@ -84,10 +88,12 @@ pub(super) fn methodcaller_class(_py: &PyToken<'_>) -> u64 {
         _py,
         &operator.methodcaller_class,
         "methodcaller",
-        ClassSemanticPolicy::heap(true, false),
-        32,
-        Some(crate::object::ObjectShapeId::OperatorMethodCaller),
-        Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        crate::builtins::types::RuntimeClassLayout {
+            semantics: ClassSemanticPolicy::heap(true, false),
+            layout_size: 32,
+            instance_shape: Some(crate::object::ObjectShapeId::OperatorMethodCaller),
+            native_slots: Some(crate::object::class_storage::ClassSlotPolicy::default()),
+        },
         &methods,
     )
 }

@@ -987,7 +987,8 @@ fn managed_call_dispatch_ignores_semantic_class_slots_but_type_reports_that_clas
 fn bound_type_shell_uses_runtime_constructor_when_native_tp_new_is_absent() {
     let _guard = init();
     let _ = unsafe { support::fake_runtime::runtime_class_borrowed(MoltObject::none().bits()) };
-    assert!(unsafe { (*(&raw mut PyType_Type)).tp_new.is_none() });
+    let canonical_new = unsafe { PyType_Type.tp_new };
+    assert!(canonical_new.is_none());
     FAKE_CALLS.store(0, Ordering::Relaxed);
     FAKE_CALL_ENABLED.store(true, Ordering::Relaxed);
     unsafe {
