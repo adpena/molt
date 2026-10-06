@@ -1,12 +1,14 @@
 use crate::{CAPABILITY_SCHEMA, Capability, ClosureMode, EventJournal, Receipt, ValidatedPolicy};
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 use crate::{KernelAccounting, SupervisorState};
 use std::collections::BTreeMap;
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 use std::time::Instant;
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
@@ -25,12 +27,7 @@ pub fn capability(mode: ClosureMode) -> Capability {
     #[cfg(target_os = "linux")]
     return linux::capability(mode);
     #[cfg(target_os = "macos")]
-    return unavailable(
-        mode,
-        "macos",
-        "macos-endpoint-security",
-        "Endpoint Security entitlement and privileged helper are not available in this binary",
-    );
+    return macos::capability(mode);
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     return unavailable(
         mode,
@@ -61,7 +58,9 @@ pub fn capability_contract_is_valid(recorded: &Capability, mode: ClosureMode) ->
                 .as_ref()
                 .is_some_and(|reason| !reason.is_empty())
         };
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    return macos::capability_contract_is_valid(recorded, mode);
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     return recorded == &capability(mode);
 }
 
@@ -74,7 +73,9 @@ pub fn run(
     return windows::run(policy, _events, capability);
     #[cfg(target_os = "linux")]
     return linux::run(policy, _events, capability);
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    return macos::run(policy, _events, capability);
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
         Receipt::rejected(
             policy,
@@ -103,7 +104,7 @@ fn unavailable(mode: ClosureMode, platform: &str, backend: &str, reason: &str) -
     }
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn run_backend(
     policy: &ValidatedPolicy,
     events: &mut EventJournal,

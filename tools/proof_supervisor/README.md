@@ -175,7 +175,8 @@ uses write-through replacement plus a flushed directory handle). The immutable
 content-addressed event artifact is published first; the compact receipt is the
 commit marker. Verification requires the deterministic adjacent filename,
 digest, byte/record counts and contiguous sequence numbers. One `ProcessLedger`
-applies typed process-create, fork, exec, exit and unclassified-clone events during
+applies typed process-create, fork, exec, exit, unclassified-clone and
+kernel-policy-termination events during
 both capture and replay. It validates the recorded platform dialect, stable process
 identities, live parent ownership, image classification, root command, root exit,
 derived-image stability and violation counts. Threads remain under kernel custody
@@ -196,9 +197,23 @@ identity and size are preserved in the image records.
   events. Exec images are classified at the kernel stop before user code runs.
   An unreadable `PTRACE_EVENT_CLONE` thread-group identity is a terminal
   violation, and a run cannot complete without an admitted root exec event.
-- macOS rejects before launch because this binary has no entitled Endpoint
-  Security helper. It does not substitute polling or kqueue for recursive
-  process-image authority.
+- macOS admits only `leaf` closure, through two kernel authorities that need
+  no entitlement. The root is forked, traced with `PT_TRACE_ME`, and confined by
+  a Seatbelt profile that denies `process-fork` and every `process-exec*`
+  outside the sealed fixed-image paths, each denial killing the attempting
+  process with `SIGKILL` before a child or image exists. ptrace stops the root
+  with `SIGTRAP` at every kernel exec boundary, where the mapped text vnode is
+  identified (`proc_pidpath` plus the region vnode) and hashed before the first
+  user instruction; `NOTE_EXEC` on a kqueue distinguishes exec stops from
+  program `SIGTRAP`s. XNU kills a traced process when its tracer exits, so
+  supervisor death tears the root down. XNU keeps no exit reason for a traced
+  target, so a `SIGKILL` the supervisor did not request is recorded as a typed
+  `kernel-policy-termination` violation naming both the sealed denial and an
+  external kill. `declared-tree` and `inventory-tree` reject before launch:
+  without Endpoint Security, macOS cannot observe descendant creation before
+  entry (`EVFILT_PROC` rejects `NOTE_TRACK`, `NOTE_FORK` carries no child pid,
+  ptrace does not follow fork, `PT_ATTACHEXC` is denied for platform binaries),
+  and no polling or kqueue substitute is admitted for recursive authority.
 
 Receipts follow one enforced lifecycle:
 `CREATED -> POLICY_SEALED -> RUNNING -> DRAINING -> COMPLETE|INCOMPLETE`, with

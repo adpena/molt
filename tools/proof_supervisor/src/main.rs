@@ -60,6 +60,20 @@ fn dispatch(args: Vec<String>) -> Result<u8, String> {
                 .map_err(|error| error.to_string())?;
             Ok(status.code().unwrap_or(1).clamp(0, 255) as u8)
         }
+        #[cfg(unix)]
+        [command, fixture, image, rest @ ..]
+            if command == "fixture-child" && fixture == "exec-image" =>
+        {
+            use std::os::unix::process::CommandExt;
+
+            // Replace this process image in place; a successful exec never
+            // returns, so reaching the error is the only outcome here.
+            let error = Command::new(image)
+                .arg("fixture-child")
+                .args(rest)
+                .exec();
+            Err(format!("fixture exec-image failed: {error}"))
+        }
         [command, fixture, auxiliary]
             if command == "fixture-child" && fixture == "spawn-and-wait" =>
         {
