@@ -31,11 +31,15 @@ GENERATION_SCHEMA = "molt.proof-supervisor-generation.v1"
 PROVISION_SCHEMA = "molt.proof-supervisor-provision-telemetry.v2"
 
 
+TOOL_IDENTITY_REUSE_DIRNAME = "tool-identity"
+
+
 def _build_inputs(
     env: Mapping[str, str],
     *,
     profile: str = "release",
     target: str | None = None,
+    reuse_telemetry: list[dict[str, object]] | None = None,
 ) -> tuple[dict[str, object], list[StableRegularFileIdentity]]:
     # Import after supervisor_custody's protocol/source authority is initialized.
     from tools import proof_plan
@@ -64,9 +68,22 @@ def _build_inputs(
         command.extend(("--target", target))
     envelope = admission.envelope_for_command(command)
     plan = proof_plan.ProofPlan.load()
+    # Probe transcripts are reused beside the shared bootstrap store; every
+    # recorded image is rehashed before reuse and Cargo still owns freshness.
+    reuse_root = None
+    raw_target = env.get("CARGO_TARGET_DIR")
+    if raw_target and Path(raw_target).is_absolute():
+        reuse_root = Path(raw_target).parent / TOOL_IDENTITY_REUSE_DIRNAME
     tools = {
         name: command_identity._tool_identity(
-            plan, name, envelope, command, cwd=crate, env=env
+            plan,
+            name,
+            envelope,
+            command,
+            cwd=crate,
+            env=env,
+            reuse_root=reuse_root,
+            reuse_telemetry=reuse_telemetry,
         )
         for name in ("cargo", "rustc")
     }
@@ -153,59 +170,11 @@ def _cargo_content_inputs(
         if not isinstance(configured, dict):
             raise ValueError("Cargo environment configuration must be a table")
         configured_names.update(configured)
-    compile_names = {
-        "RUSTC",
-        "RUSTC_WRAPPER",
-        "RUSTC_WORKSPACE_WRAPPER",
-        "RUSTFLAGS",
-        "CARGO_ENCODED_RUSTFLAGS",
-        "RUSTUP_TOOLCHAIN",
-        "SOURCE_DATE_EPOCH",
-        "CC",
-        "CXX",
-        "AR",
-        "CFLAGS",
-        "CXXFLAGS",
-        "CPPFLAGS",
-        "LDFLAGS",
-        "SDKROOT",
-        "MACOSX_DEPLOYMENT_TARGET",
-        "INCLUDE",
-        "LIB",
-        "LIBPATH",
-        "CL",
-        "_CL_",
-        "LINK",
-        "_LINK_",
-    }
-    operational_names = {
-        "CARGO_BUILD_JOBS",
-        "CARGO_BUILD_BUILD_DIR",
-        "CARGO_BUILD_TARGET_DIR",
-        "CARGO_TARGET_DIR",
-        "CARGO_TARGET_TMPDIR",
-    }
-    environment = {
-        name: canonical_json_sha256(value)
-        for name, value in sorted(env.items())
-        if name not in operational_names
-        and (
-            name in compile_names
-            or name in configured_names
-            or name.startswith(
-                (
-                    "CARGO_PROFILE_",
-                    "CARGO_TARGET_",
-                    "CARGO_BUILD_",
-                    "CC_",
-                    "CXX_",
-                    "AR_",
-                    "CFLAGS_",
-                    "CXXFLAGS_",
-                )
-            )
-        )
-    }
+    from tools.proof_queue_pkg import command_identity
+
+    environment = command_identity.compile_environment_selection(
+        env, configured_names=configured_names
+    )
     # Tool capture includes immutable compiler/linker images. Its process-image
     # metadata and probe transport are evidence, not Cargo invalidation inputs.
     from tools.proof_queue_pkg import toolchain_capture
@@ -382,7 +351,8 @@ def provision(*, cwd: Path, env: Mapping[str, str]) -> tuple[Path, dict[str, obj
         with _provision_guard_scope(env):
             # The lock covers input capture, Cargo and the immutable copy. No
             # process can overwrite the shared Cargo output during publication.
-            inputs, identities = _build_inputs(env)
+            reuse_telemetry: list[dict[str, object]] = []
+            inputs, identities = _build_inputs(env, reuse_telemetry=reuse_telemetry)
             binary, completed = build_cargo(inputs=inputs, env=env)
             if completed.returncode != 0:
                 raise ValueError(
@@ -454,6 +424,7 @@ def provision(*, cwd: Path, env: Mapping[str, str]) -> tuple[Path, dict[str, obj
                     "cargo_fresh_artifact_count": fresh,
                     "cargo_compiled_artifact_count": compiled,
                     "generation_artifact": generation_ref,
+                    "tool_identity_reuse": reuse_telemetry,
                 }
     finally:
         file_locks._release_file_lock(lock)

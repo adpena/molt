@@ -923,6 +923,27 @@ corresponding global `MOLT_MAX_*`, `MOLT_CHILD_RLIMIT_GB`, and
 values are validated, clamped by live and hard custody ceilings, and recorded
 in the exact guard command.
 
+Toolchain version and link probes are deterministic functions of the tool
+bytes, their configuration files, the probe cwd and the resolution/compiler
+environment. `command_identity._tool_identity` therefore reuses a prior
+capture when `reuse_root` (the `tool-identity` directory beside the shared
+supervisor bootstrap store) holds a record whose content-addressed key matches
+and whose every recorded process image, configuration file and content
+resolver still hashes to the stored identity. A hit skips only the guarded
+probe subprocesses; the supervisor build, its inventories, the live mutation
+watcher and the proof command itself never reuse anything, and a stale,
+tampered or malformed record is a miss that recaptures and replaces it.
+Provision and toolchain-location telemetry record each `tool_identity_reuse`
+decision (`hit`, or `miss` with `absent`, `key-collision` or
+`revalidation-drift`) so a receipt shows which probes were skipped.
+
+Memory-guard process sampling reads native process tables: Linux parses one
+`/proc/<pid>/stat` row for ancestry, start marker and resident set, and macOS
+enumerates through `proc_listallpids`/`proc_pidinfo` instead of a `ps`
+subprocess with a hard timeout. Another user's process carries zero resident
+kB on macOS because `PROC_PIDTASKINFO` is uid-restricted; the guard never
+sizes those, since global RSS sums only Molt-owned process groups.
+
 Python custody additionally binds the venv launcher and `pyvenv.cfg`, base
 CPython executable and shared libraries, stdlib and native-extension byte
 manifest, resolved runtime/import roots, and installed distributions. Every

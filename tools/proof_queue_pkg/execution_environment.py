@@ -553,9 +553,11 @@ def _locate_toolchain_watch_roots(
     cwd: Path,
     env: Mapping[str, str],
     supervisor_binary: Path,
+    reuse_root: Path | None = None,
 ) -> tuple[list[Path], dict[str, object], dict[str, object]]:
     """Locate broad roots and child executables without a full inventory."""
     started = time.perf_counter()
+    reuse_telemetry: list[dict[str, object]] = []
     plan = proof_plan.ProofPlan.load()
     requested_raw = envelope.get("toolchains")
     if not isinstance(requested_raw, list) or not all(
@@ -648,7 +650,14 @@ def _locate_toolchain_watch_roots(
         if name == "python":
             continue
         identity = command_identity._tool_identity(
-            plan, name, envelope, exact, cwd=cwd, env=env
+            plan,
+            name,
+            envelope,
+            exact,
+            cwd=cwd,
+            env=env,
+            reuse_root=reuse_root,
+            reuse_telemetry=reuse_telemetry,
         )
         probes = policies[name].data.get("process_image_probes", [])
         assert isinstance(probes, list)
@@ -687,6 +696,7 @@ def _locate_toolchain_watch_roots(
         ),
         "root_count": len(roots),
         "locate_s": time.perf_counter() - started,
+        "tool_identity_reuse": reuse_telemetry,
     }
     return roots, policy_identities, telemetry
 

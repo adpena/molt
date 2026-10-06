@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import stat
 import subprocess
-from typing import Any, BinaryIO, Mapping, Sequence, cast
+import sys
+from typing import Any, BinaryIO, Iterable, Mapping, Sequence, cast
 
 from molt import file_publication
 from molt.dx import _reject_onedrive
@@ -834,6 +837,247 @@ def _rust_target(exact: Sequence[str], env: Mapping[str, str]) -> str | None:
     return unique[0] if unique else None
 
 
+TOOL_IDENTITY_REUSE_SCHEMA = "molt.proof-tool-identity-reuse.v1"
+
+# Environment names whose values define compiled output or compiler/linker
+# behaviour. One authority serves the supervisor build digest and toolchain
+# probe reuse; operational output placement is transport, never an input.
+COMPILE_ENVIRONMENT_NAMES = frozenset(
+    {
+        "RUSTC",
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "RUSTFLAGS",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "RUSTUP_TOOLCHAIN",
+        "SOURCE_DATE_EPOCH",
+        "CC",
+        "CXX",
+        "AR",
+        "CFLAGS",
+        "CXXFLAGS",
+        "CPPFLAGS",
+        "LDFLAGS",
+        "SDKROOT",
+        "MACOSX_DEPLOYMENT_TARGET",
+        "INCLUDE",
+        "LIB",
+        "LIBPATH",
+        "CL",
+        "_CL_",
+        "LINK",
+        "_LINK_",
+    }
+)
+COMPILE_ENVIRONMENT_PREFIXES = (
+    "CARGO_PROFILE_",
+    "CARGO_TARGET_",
+    "CARGO_BUILD_",
+    "CC_",
+    "CXX_",
+    "AR_",
+    "CFLAGS_",
+    "CXXFLAGS_",
+)
+OPERATIONAL_CARGO_NAMES = frozenset(
+    {
+        "CARGO_BUILD_JOBS",
+        "CARGO_BUILD_BUILD_DIR",
+        "CARGO_BUILD_TARGET_DIR",
+        "CARGO_TARGET_DIR",
+        "CARGO_TARGET_TMPDIR",
+    }
+)
+# Names that additionally decide how a probe resolves and loads nested tools.
+_PROBE_RESOLUTION_NAMES = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USERPROFILE",
+        "RUSTUP_HOME",
+        "CARGO_HOME",
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+        "DYLD_FALLBACK_LIBRARY_PATH",
+        "DEVELOPER_DIR",
+        "LLVM_CONFIG_PATH",
+        "CLANG_PATH",
+        "LIBCLANG_PATH",
+        "RUSTFMT",
+    }
+)
+_PROBE_RESOLUTION_PREFIXES = ("RUSTUP_", "CARGO_", "DYLD_", "LDFLAGS_")
+# Identity fields that re-verification can prove unchanged from file bytes.
+# Anything else (a runtime probe payload, a package tree) is captured fresh.
+_REUSABLE_IDENTITY_FIELDS = frozenset(
+    {
+        "path",
+        "launcher_sha256",
+        "content_path",
+        "executable_sha256",
+        "version",
+        "probe_cwd",
+        "policy_sha256",
+        "configuration_files",
+        "content_resolver",
+        "process_images",
+        "link_selection",
+        "identity_sha256",
+    }
+)
+_MAX_REUSE_RECORD_BYTES = 4 * 1024 * 1024
+
+
+def compile_environment_selection(
+    env: Mapping[str, str], *, configured_names: Iterable[str] = ()
+) -> dict[str, str]:
+    """Hash every environment value that defines compiled output."""
+    configured = set(configured_names)
+    return {
+        name: canonical_json_sha256(value)
+        for name, value in sorted(env.items())
+        if name not in OPERATIONAL_CARGO_NAMES
+        and (
+            name in COMPILE_ENVIRONMENT_NAMES
+            or name in configured
+            or name.startswith(COMPILE_ENVIRONMENT_PREFIXES)
+        )
+    }
+
+
+def _probe_environment_selection(env: Mapping[str, str]) -> dict[str, str]:
+    """Hash the environment a toolchain probe can observe beyond tool bytes."""
+    selected = compile_environment_selection(env)
+    for name, value in sorted(env.items()):
+        if name in OPERATIONAL_CARGO_NAMES or name in selected:
+            continue
+        if name in _PROBE_RESOLUTION_NAMES or name.startswith(
+            _PROBE_RESOLUTION_PREFIXES
+        ):
+            selected[name] = canonical_json_sha256(value)
+    return dict(sorted(selected.items()))
+
+
+def _tool_identity_reuse_key(
+    *,
+    name: str,
+    policy_sha256: str,
+    envelope: Mapping[str, object],
+    command_argv: Sequence[str],
+    cwd: Path,
+    probe_cwd: Path,
+    launcher: Path,
+    env: Mapping[str, str],
+) -> dict[str, object]:
+    python_authority = envelope.get("python")
+    toolchains = envelope.get("toolchains")
+    return {
+        "schema": TOOL_IDENTITY_REUSE_SCHEMA,
+        "platform": sys.platform,
+        "toolchain": name,
+        "policy_sha256": policy_sha256,
+        "cwd": str(cwd),
+        "probe_cwd": str(probe_cwd),
+        "command_argv": [str(value) for value in command_argv],
+        "python": (
+            {str(key): value for key, value in python_authority.items()}
+            if isinstance(python_authority, Mapping)
+            else None
+        ),
+        "toolchains": (
+            [str(value) for value in toolchains]
+            if isinstance(toolchains, list)
+            else None
+        ),
+        "launcher": _executable_identity(launcher),
+        "environment": _probe_environment_selection(env),
+    }
+
+
+def _reuse_record_path(reuse_root: Path, key_sha256: str) -> Path:
+    return reuse_root / f"{key_sha256}.json"
+
+
+def _load_reuse_record(path: Path) -> dict[str, object] | None:
+    try:
+        if path.stat().st_size > _MAX_REUSE_RECORD_BYTES:
+            return None
+        payload = loads_exact(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ExactJsonError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != TOOL_IDENTITY_REUSE_SCHEMA
+        or not isinstance(payload.get("key"), dict)
+        or not isinstance(payload.get("identity"), dict)
+    ):
+        return None
+    return payload
+
+
+def _store_reuse_record(path: Path, payload: Mapping[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    staging = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    try:
+        with open(staging, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(staging, path)
+    finally:
+        with contextlib.suppress(OSError):
+            staging.unlink()
+
+
+def _reused_identity_is_current(
+    name: str,
+    identity: Mapping[str, object],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    command_argv: Sequence[str],
+) -> bool:
+    """Re-prove a stored identity from file bytes before it is reused.
+
+    Every recorded process image is rehashed by exact path, configuration
+    files are re-identified, the content resolver is re-hashed, and the
+    identity digest is recomputed. Any drift is a miss, never an error.
+    """
+    if not set(identity) <= _REUSABLE_IDENTITY_FIELDS:
+        return False
+    material = dict(identity)
+    digest = material.pop("identity_sha256", None)
+    if (
+        digest
+        != hashlib.sha256(
+            json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    ):
+        return False
+    images = identity.get("process_images")
+    if not isinstance(images, list) or not images:
+        return False
+    try:
+        process_image_capture.revalidate_images(images)
+        configuration = _tool_configuration_identities(
+            name, cwd=cwd, env=env, command_argv=command_argv
+        )
+    except (OSError, ValueError):
+        return False
+    if configuration != identity.get("configuration_files"):
+        return False
+    resolver = identity.get("content_resolver")
+    if resolver is not None:
+        if not isinstance(resolver, Mapping) or not isinstance(
+            resolver.get("path"), str
+        ):
+            return False
+        if _executable_identity(Path(str(resolver["path"]))) != dict(resolver):
+            return False
+    return True
+
+
 def _tool_identity(
     plan: proof_plan.ProofPlan,
     name: str,
@@ -842,7 +1086,18 @@ def _tool_identity(
     *,
     cwd: Path,
     env: Mapping[str, str],
+    reuse_root: Path | None = None,
+    reuse_telemetry: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
+    """Capture one toolchain identity, reusing a content-addressed record.
+
+    With ``reuse_root`` the probe transcripts of an earlier capture are reused
+    when the key (policy, launcher bytes, probe cwd, command, Python
+    authority, resolution and compiler environment) matches and every recorded
+    image and configuration file still hashes to the stored identity. The
+    supervisor, its image inventories and the proof command itself never
+    reuse anything; only deterministic version and link probes are skipped.
+    """
     policies = {policy.name: policy for policy in plan.toolchain_policies}
     try:
         policy = policies[name]
@@ -876,6 +1131,91 @@ def _tool_identity(
         path = _which_in_command_environment(
             requested, envelope, exact, cwd=probe_cwd, env=env
         )
+    policy_sha256 = hashlib.sha256(
+        json.dumps(policy.data, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    command_argv = admission._nested_command(exact) or [str(value) for value in exact]
+    record_path: Path | None = None
+    key: dict[str, object] | None = None
+    key_sha256 = ""
+    if reuse_root is not None:
+        key = _tool_identity_reuse_key(
+            name=name,
+            policy_sha256=policy_sha256,
+            envelope=envelope,
+            command_argv=command_argv,
+            cwd=cwd,
+            probe_cwd=probe_cwd,
+            launcher=path,
+            env=env,
+        )
+        key_sha256 = canonical_json_sha256(key)
+        record_path = _reuse_record_path(reuse_root, key_sha256)
+        record = _load_reuse_record(record_path)
+        reason = "absent"
+        if record is not None:
+            stored_identity = cast(dict[str, object], record["identity"])
+            if record["key"] != key:
+                reason = "key-collision"
+            elif _reused_identity_is_current(
+                name, stored_identity, cwd=cwd, env=env, command_argv=command_argv
+            ):
+                if reuse_telemetry is not None:
+                    reuse_telemetry.append(
+                        {
+                            "toolchain": name,
+                            "state": "hit",
+                            "key_sha256": key_sha256,
+                            "record": str(record_path),
+                            "revalidated_images": len(
+                                cast(list[object], stored_identity["process_images"])
+                            ),
+                        }
+                    )
+                return dict(stored_identity)
+            else:
+                reason = "revalidation-drift"
+        if reuse_telemetry is not None:
+            reuse_telemetry.append(
+                {
+                    "toolchain": name,
+                    "state": "miss",
+                    "reason": reason,
+                    "key_sha256": key_sha256,
+                    "record": str(record_path),
+                }
+            )
+    material = _capture_tool_identity(
+        policy,
+        name,
+        envelope,
+        exact,
+        path=path,
+        probe_cwd=probe_cwd,
+        policy_sha256=policy_sha256,
+        cwd=cwd,
+        env=env,
+    )
+    if record_path is not None and set(material) <= _REUSABLE_IDENTITY_FIELDS:
+        _store_reuse_record(
+            record_path,
+            {"schema": TOOL_IDENTITY_REUSE_SCHEMA, "key": key, "identity": material},
+        )
+    return material
+
+
+def _capture_tool_identity(
+    policy: proof_plan.ToolchainPolicy,
+    name: str,
+    envelope: Mapping[str, object],
+    exact: Sequence[str],
+    *,
+    path: Path,
+    probe_cwd: Path,
+    policy_sha256: str,
+    cwd: Path,
+    env: Mapping[str, str],
+) -> dict[str, object]:
     raw_version_args = policy.data.get("version_args")
     if not isinstance(raw_version_args, list) or not all(
         isinstance(value, str) and value for value in raw_version_args
@@ -937,9 +1277,7 @@ def _tool_identity(
         "executable_sha256": content_image["sha256"],
         "version": (completed.stdout or completed.stderr).strip(),
         "probe_cwd": str(probe_cwd),
-        "policy_sha256": hashlib.sha256(
-            json.dumps(policy.data, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest(),
+        "policy_sha256": policy_sha256,
         "configuration_files": _tool_configuration_identities(
             name,
             cwd=cwd,

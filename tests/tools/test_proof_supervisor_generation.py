@@ -43,7 +43,8 @@ def _model(tmp_path, monkeypatch, *, during_build=None):
     binary.parent.mkdir()
     calls = []
 
-    def inputs(env):
+    def inputs(env, *, profile="release", target=None, reuse_telemetry=None):
+        del profile, target, reuse_telemetry
         identity = stable_regular_file_identity(source, label="model supervisor input")
         return {
             "profile": "release",

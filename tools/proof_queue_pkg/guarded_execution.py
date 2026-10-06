@@ -527,6 +527,8 @@ def execute_guarded_request(request_path: Path) -> int:
                 cwd=cwd,
                 env=execution_env,
                 supervisor_binary=supervisor_binary,
+                reuse_root=output_layout.supervisor_store
+                / supervisor_generation.TOOL_IDENTITY_REUSE_DIRNAME,
             )
         )
         if output_layout.declaration is not None:
