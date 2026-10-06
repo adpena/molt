@@ -3687,9 +3687,11 @@ def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
 ) -> None:
     repo = tmp_path / "minimal-cargo-link"
     _initialize_clean_git_repo(repo)
+    # Scratch may sit below another Cargo workspace (CI roots it in the
+    # checkout); the fixture package owns its workspace like the capture probe.
     (repo / "Cargo.toml").write_text(
         '[package]\nname="proof_cargo_link"\nversion="0.0.0"\n'
-        'edition="2024"\npublish=false\n\n[[bin]]\n'
+        'edition="2024"\npublish=false\n\n[workspace]\n\n[[bin]]\n'
         'name="proof_cargo_link"\npath="main.rs"\n',
         encoding="utf-8",
     )
