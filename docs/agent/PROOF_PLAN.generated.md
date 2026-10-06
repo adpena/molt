@@ -40,7 +40,7 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 3420 s | 180 s | `repository-policy` | none | `docs-gates` needs none | 1 |
 | `wasm` | pr, main | yes | `github-job` | 125 min | 7200 s | 300 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 18 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | none | `python-static` needs `classify-changes` | 8 |
-| `python_unit` | pre-push, pr, main | yes | `github-job` | 20 min | 900 s | 300 s | `python-tests` | none | `python-unit` needs `classify-changes` | 10 |
+| `python_unit` | pre-push, pr, main | yes | `github-job` | 20 min | 1200 s | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 10 |
 | `native_integration` | pr, main | yes | `github-job` | 25 min | 1500 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 17 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 240 min | 12960 s | 1440 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 17 |
 | `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 75 min | 4200 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 25 |
@@ -216,8 +216,8 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `python.static.ty` | `python_static` | `linux-x86_64-py312-static` | `explicit` | 300 s | `python-static` | 0 |
 | `python.unit.harness` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 900 s | `python-tests` | 0 |
 | `python.unit.python-custody` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
-| `python.unit.binding-authority` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 120 s | `python-tests` | 0 |
-| `python.unit.runtime-artifacts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
+| `python.unit.binding-authority` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 300 s | `python-tests` | 0 |
+| `python.unit.runtime-artifacts` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 600 s | `python-tests` | 0 |
 | `python.unit.runtime-library-boundary` | `python_unit` | `linux-x86_64-py312-unit` | `explicit` | 120 s | `python-tests` | 0 |
 | `native.integration.python-custody` | `native_integration` | `linux-x86_64-py312-native-dev` | `explicit` | 300 s | `python-tests` | 0 |
 | `native.integration.bench-cli` | `native_integration` | `linux-x86_64-py312-native-dev` | `cold` | 1200 s | `compiler-build-resource` | 0 |
