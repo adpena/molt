@@ -679,14 +679,15 @@ def _cpython_output(source: str) -> str:
     ).stdout.strip()
 
 
-@pytest.mark.skipif(
-    not _llvm_backend_available(),
-    reason="LLVM backend toolchain is unavailable",
-)
+@pytest.mark.parametrize("backend", ["llvm", "cranelift"])
 @pytest.mark.parametrize("profile", ["dev", "release"])
-def test_native_llvm_integer_carrier_matrix_matches_cpython(profile: str) -> None:
+def test_native_llvm_integer_carrier_matrix_matches_cpython(
+    profile: str, backend: str
+) -> None:
+    if backend == "llvm" and not _llvm_backend_available():
+        pytest.skip("LLVM backend toolchain is unavailable")
     # One compiled module owns the coherent integer-carrier matrix. Keeping the
-    # cases together proves the same LLVM artifact and avoids rebuilding the
+    # cases together proves the same backend artifact and avoids rebuilding the
     # runtime once per assertion.
     source = textwrap.dedent(
         """
@@ -727,6 +728,10 @@ def test_native_llvm_integer_carrier_matrix_matches_cpython(profile: str) -> Non
         print(sum_crosses_47_bits())
         print(stays_inline())
         print(7 * 11 + 7 - 11)
+        absolute = abs
+        print(absolute(-crosses_47_bits()))
+        print(absolute(-overflows_i64()))
+        print(absolute(-17))
         """
     )
     expected = _cpython_output(source)
@@ -736,5 +741,6 @@ def test_native_llvm_integer_carrier_matrix_matches_cpython(profile: str) -> Non
         "1180591620717411303424",
     ]
     assert int(expected_lines[2]) > (1 << 47)
-    assert expected_lines[3:] == ["499500", "73"]
-    assert _compile_and_run(source, profile, backend="llvm") == expected
+    assert expected_lines[3:5] == ["499500", "73"]
+    assert expected_lines[5:] == [*expected_lines[:2], "17"]
+    assert _compile_and_run(source, profile, backend=backend) == expected
