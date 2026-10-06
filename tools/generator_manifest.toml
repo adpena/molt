@@ -25,7 +25,8 @@
 # === The add-a-fact / add-a-generator workflow (doc 59 §5) ===================
 # When you add a new `gen_*.py`:
 #   1. add a [[generator]] row (tool, outputs, source);
-#   2. give it a `--check` flag and set check_mode = true;
+#   2. give it a `--check` flag, set check_mode = true, and record the command
+#      that rewrites its outputs as generate_command;
 #   3. wire a CI `--check` step UNLESS its source is not reproducible in a vanilla
 #      CI checkout (live interpreters, an external/gitignored corpus); in that
 #      case set ci_checkable = false and record ci_skip_reason;
@@ -34,11 +35,14 @@
 #      if byte-identity is not the gate (e.g. an import-only Protocol shim);
 #   6. if it renders an exhaustive match over a Rust enum, add the enum to
 #      `closed_domains` AND a matching [[closed_domain]] row.
-# The meta-gate enforces 2/3/4/5; rustc + the closed-domain auditor enforce 6.
+# The meta-gate enforces 2/3/4/5 (including generate_command); rustc + the closed-domain auditor enforce 6.
 #
 # Field contract (per [[generator]] row):
 #   check_mode      bool  — the generator supports `--check`. MUST be true for a
 #                           non-discovery authority (the meta-gate fails otherwise).
+#   generate_command str — REQUIRED iff check_mode: the tool invocation that
+#                           rewrites the outputs (`molt_dev.py fix` runs it for
+#                           a stale, CI-checkable generator).
 #   ci_checkable    bool  — default true. false ⇒ the source is not reproducible
 #                           in a vanilla CI checkout; ci_skip_reason is REQUIRED
 #                           and the gate does not demand a ci.yml --check step.
@@ -71,6 +75,7 @@ outputs = [
 source = "tools/proof_plan.toml + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_proof_plan.py --check"
+generate_command = "tools/gen_proof_plan.py"
 idempotent = true
 sync_test = "tests/test_proof_plan.py"
 discovery_only = false
@@ -81,6 +86,7 @@ outputs = ["src/molt/release_matrix.py"]
 source = "config/release_targets.toml + src/molt/target_python.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_release_matrix.py --check"
+generate_command = "tools/gen_release_matrix.py"
 idempotent = true
 sync_test = "tests/tools/test_release_supply_chain.py"
 closed_domains = []
@@ -92,6 +98,7 @@ outputs = ["runtime/molt-runtime/src/object/unicode_width_generated.rs"]
 source = "src/molt/target_python.py + installed matching CPython unicodedata databases + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_unicode_width.py --check"
+generate_command = "tools/gen_unicode_width.py"
 idempotent = true
 toolchains = ["uv"]
 sync_test = "tests/test_runtime_build_python.py"
@@ -107,6 +114,7 @@ outputs = [
 source = "config/cpython_coverage.toml (declares version_assumption_audit.source_roots scanned recursively) + config/cpython_stable_abi_3_12.toml + runtime/molt-cpython-abi/src + runtime/molt-cpython-abi/shims/pyarg_variadic.exports + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_cpython_coverage.py --check"
+generate_command = "tools/gen_cpython_coverage.py"
 idempotent = true
 sync_test = "tests/tools/test_gen_cpython_coverage.py"
 discovery_only = false
@@ -119,6 +127,7 @@ outputs = [
 source = "runtime/molt-cpython-abi/src/type_slots.rs + config/cpython_stable_abi_3_12.toml + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_cpython_type_slots.py --check"
+generate_command = "tools/gen_cpython_type_slots.py"
 idempotent = true
 sync_test = "tests/tools/test_gen_cpython_type_slots.py"
 closed_domains = ["CPython 3.12 stable ABI type-slot ids"]
@@ -136,6 +145,7 @@ outputs = [
 source = "runtime/heap_kinds.toml + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_heap_kinds.py --check"
+generate_command = "tools/gen_heap_kinds.py"
 toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_heap_kinds.py"
@@ -151,6 +161,7 @@ outputs = [
 source = "runtime/python_effects.toml + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_python_effects.py --check"
+generate_command = "tools/gen_python_effects.py"
 toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_python_effects.py"
@@ -168,6 +179,7 @@ outputs = [
 source = "runtime/host_capabilities.toml + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_host_capabilities.py --check"
+generate_command = "tools/gen_host_capabilities.py"
 toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_host_capabilities.py"
@@ -184,6 +196,7 @@ outputs = [
 source = "runtime/native_callable_abi.toml + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_native_callable_abi.py --check"
+generate_command = "tools/gen_native_callable_abi.py"
 toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_native_callable_abi.py"
@@ -199,6 +212,7 @@ outputs = [
 source = "runtime/runtime_profile_schema.toml + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_runtime_profile_schema.py --check"
+generate_command = "tools/gen_runtime_profile_schema.py"
 toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_runtime_profile_schema.py"
@@ -214,6 +228,7 @@ outputs = [
 source = "runtime/molt-ir/src/tir/op_kinds.toml + tools/op_kinds/runtime_requirements.py + src/molt/opcode_literal_payloads.py + src/molt/rust_source_scan.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_op_kinds.py --check"
+generate_command = "tools/gen_op_kinds.py"
 toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_op_kinds.py"
@@ -228,6 +243,7 @@ outputs = ["src/molt/frontend/frontend_diagnostics_generated.py"]
 source = "src/molt/frontend/frontend_diagnostics.toml + src/molt/frontend/**/*.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_frontend_diagnostics.py --check"
+generate_command = "tools/gen_frontend_diagnostics.py"
 idempotent = true
 sync_test = "tests/test_frontend_diagnostics.py"
 closed_domains = []
@@ -266,6 +282,7 @@ outputs = [
 source = "runtime/molt-backend-wasm/src/wasm_abi_manifest.toml + runtime/molt-ir/src/tir/op_kinds.toml + src/molt/opcode_literal_payloads.py + runtime/molt-runtime/src/intrinsics/manifest.pyi + src/molt/rust_source_scan.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_wasm_abi.py --check"
+generate_command = "tools/gen_wasm_abi.py"
 toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_wasm_abi.py"
@@ -283,6 +300,7 @@ upstream_generators = [
 ]
 check_mode = true
 check_command = "tools/gen_browser_asset_graph.py --check"
+generate_command = "tools/gen_browser_asset_graph.py"
 idempotent = true
 sync_test = "tests/test_browser_asset_closure.py"
 closed_domains = []
@@ -298,6 +316,7 @@ outputs = [
 source = "src/molt/target_feature_manifest.toml + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_target_feature_manifest.py --check"
+generate_command = "tools/gen_target_feature_manifest.py"
 idempotent = true
 sync_test = "tests/test_gen_target_feature_manifest.py"
 closed_domains = []
@@ -318,6 +337,7 @@ outputs = [
 source = "runtime/molt-runtime/src/intrinsics/manifest.pyi + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_intrinsics.py --check"
+generate_command = "tools/gen_intrinsics.py"
 toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_intrinsics.py"
@@ -333,6 +353,7 @@ outputs = [
 source = "runtime/molt-stdlib-text/src/codec_registry.rs + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_codecs.py --check"
+generate_command = "tools/gen_codecs.py"
 toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_codecs.py"
@@ -345,6 +366,7 @@ outputs = ["runtime/molt-gpu/op_contract.toml"]
 source = "runtime/molt-gpu/src/ops.rs + pinned tinygrad 0.13.0 AST + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_gpu_op_contract.py --check"
+generate_command = "tools/gen_gpu_op_contract.py"
 # Reconciles against a PINNED off-the-shelf tinygrad checkout under
 # bench/friends/repos/tinygrad_off_the_shelf/ which is untracked/absent in a
 # vanilla CI checkout; --check there fails with "pinned source missing". The
@@ -363,6 +385,7 @@ outputs = ["runtime/molt-runtime-stringprep/src/tables.rs"]
 source = "stringprep (CPython oracle module) + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_stringprep_tables.py --check"
+generate_command = "tools/gen_stringprep_tables.py"
 toolchains = ["rustfmt"]
 idempotent = true
 sync_test = "tests/test_gen_stringprep_tables.py"
@@ -378,6 +401,7 @@ outputs = [
 source = "src/molt/frontend (assembled SimpleTIRGenerator surface) + tools/python_source_index.py (invocation-scoped source AST) + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_protocol.py --check"
+generate_command = "tools/gen_protocol.py"
 idempotent = true
 # gen_protocol renders an import-only Protocol shim; byte-identity is NOT the
 # semantic gate (the superset-coverage invariant is — gen_protocol.py:25-30).
@@ -393,6 +417,7 @@ outputs = ["docs/spec/areas/compiler/luau_support_matrix.generated.md"]
 source = "runtime/molt-backend-luau/src/luau + runtime/molt-ir/src/tir/op_kinds.toml + tools/op_kinds/runtime_requirements.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_luau_support_matrix.py --check"
+generate_command = "tools/gen_luau_support_matrix.py --write"
 idempotent = true
 # Freshness is gated by the CI --check step (the rendered doc must match the live
 # Luau emitter arms); there is no separate byte-equality pytest.
@@ -408,6 +433,7 @@ outputs = [
 source = "docs/python_documentation (CPython library reference text) + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_compat_platform_availability.py --check"
+generate_command = "tools/gen_compat_platform_availability.py --write"
 # The input corpus (docs/python_documentation/) is a large, gitignored external
 # CPython documentation tree absent from a vanilla checkout; a CI --check there
 # would render 0 rows and false-fail. The render also embeds a generation
@@ -430,6 +456,7 @@ outputs = [
 source = "tests/differential/COVERAGE_INDEX.yaml + tests/differential/{basic,stdlib,pyperformance}/*.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_diff_lanes.py --check"
+generate_command = "tools/gen_diff_lanes.py"
 idempotent = true
 sync_test = "tests/test_gen_diff_lanes.py"
 closed_domains = []
@@ -443,6 +470,7 @@ outputs = [
 source = "runtime/molt-runtime-core/src/lib.rs + runtime/*/src/bridge.rs extern declarations + tools/generator_io.py"
 check_mode = true
 check_command = "tools/check_runtime_bridge_test_stubs.py --check"
+generate_command = "tools/check_runtime_bridge_test_stubs.py --fix"
 idempotent = true
 sync_test = "tests/tools/test_runtime_bridge_test_stubs.py"
 closed_domains = []
@@ -459,6 +487,7 @@ outputs = [
 source = "sys.stdlib_module_names (CPython 3.12/3.13/3.14, live) + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_stdlib_module_union.py --check"
+generate_command = "tools/gen_stdlib_module_union.py"
 # Requires THREE live CPython interpreters (3.12/3.13/3.14) on PATH; a vanilla
 # docs-gates CI job has only the .python-version interpreter, so a hard CI
 # --check would skip/false-fail. The baseline is an upstream-CPython snapshot
@@ -479,6 +508,7 @@ outputs = [
 source = "runtime/molt-cpython-abi/src/abi_types.rs + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_cpython_abi_layout.py --check"
+generate_command = "tools/gen_cpython_abi_layout.py --write"
 idempotent = true
 sync_test = "tests/test_gen_cpython_abi_layout.py"
 closed_domains = []
@@ -539,6 +569,7 @@ outputs = [
 source = "config/python_numeric_errors.toml + src/molt/target_python.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_python_numeric_errors.py --check"
+generate_command = "tools/gen_python_numeric_errors.py"
 idempotent = true
 sync_test = "tests/tools/test_gen_python_numeric_errors.py"
 closed_domains = ["NumericErrorContext"]
@@ -562,6 +593,7 @@ outputs = [
 source = "tools/compatibility_error_protocol.py + config/python_compatibility_error_sources.json + tools/generator_io.py"
 check_mode = true
 check_command = "tools/compatibility_error_protocol.py --check"
+generate_command = "tools/compatibility_error_protocol.py"
 idempotent = true
 sync_test = "tests/test_structural_audit.py"
 closed_domains = ["CompatibilityError"]

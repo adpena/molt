@@ -169,6 +169,20 @@ def load_manifest(root: Path) -> Manifest:
             raise ManifestError(f"{tool}: toolchains must be a string list")
         if len(toolchains) != len(set(toolchains)):
             raise ManifestError(f"{tool}: toolchains must be unique")
+        # A check-mode generator declares how to rewrite its outputs, so
+        # repair (`molt_dev.py fix`) never guesses a write flag.
+        if row.get("check_mode", False):
+            generate = row.get("generate_command")
+            if not isinstance(generate, str) or not generate.strip():
+                raise ManifestError(f"{tool}: check_mode requires generate_command")
+            if generate.split()[0] != tool:
+                raise ManifestError(
+                    f"{tool}: generate_command must run its own tool: {generate!r}"
+                )
+            if generate == row.get("check_command"):
+                raise ManifestError(
+                    f"{tool}: generate_command must differ from check_command"
+                )
         # A non-discovery authority that is CI-checkable must justify any skip.
         if not row.get("discovery_only", False):
             if not row.get("ci_checkable", True) and not row.get("ci_skip_reason"):
@@ -757,7 +771,7 @@ def audit_closed_domains(root: Path, manifest: Manifest, sa) -> list[Violation]:
             )
             continue
         variants = sa._count_enum_variants(
-            enum_file.read_text(errors="replace"), enum_name
+            enum_file.read_text(errors="replace", encoding="utf-8"), enum_name
         )
         if not variants:
             violations.append(
@@ -787,7 +801,7 @@ def audit_closed_domains(root: Path, manifest: Manifest, sa) -> list[Violation]:
     for path in sa._iter_source_files(root, (".rs",)):
         if sa._is_generated(path) or path.resolve() in test_paths:
             continue
-        text = path.read_text(errors="replace")
+        text = path.read_text(errors="replace", encoding="utf-8")
         rel = None
         for enum_name, marker, variants, audited in domains:
             if marker not in text:
@@ -834,6 +848,7 @@ def check_idempotence(root: Path, manifest: Manifest) -> list[Violation]:
                 capture_output=True,
                 text=True,
                 timeout=180,
+                encoding="utf-8",
             )
         except subprocess.TimeoutExpired:
             violations.append(

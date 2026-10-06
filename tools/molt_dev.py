@@ -126,6 +126,7 @@ Subcommands
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import filecmp
 import json
 import os
@@ -725,6 +726,13 @@ class Marker:
 # --------------------------------------------------------------------------
 
 
+def _has_venv_python(venv: Path) -> bool:
+    """True if ``venv`` holds an interpreter in its POSIX or Windows layout."""
+    return (venv / "bin" / "python").exists() or (
+        venv / "Scripts" / "python.exe"
+    ).exists()
+
+
 def _resolve_repo_venv(repo: Path) -> Path | None:
     """Resolve the repository virtualenv for gate subprocesses, worktree-aware.
 
@@ -736,7 +744,7 @@ def _resolve_repo_venv(repo: Path) -> Path | None:
     diagnostic, which names the remedy.
     """
     own = repo / ".venv"
-    if (own / "bin" / "python").exists():
+    if _has_venv_python(own):
         return own
     proc = _run_driver_command(
         ["git", "rev-parse", "--git-common-dir"],
@@ -749,10 +757,10 @@ def _resolve_repo_venv(repo: Path) -> Path | None:
             common = (repo / common).resolve()
         main_repo = common.parent
         cand = main_repo / ".venv"
-        if (cand / "bin" / "python").exists():
+        if _has_venv_python(cand):
             return cand
     envv = os.environ.get("MOLT_VENV")
-    if envv and (Path(envv) / "bin" / "python").exists():
+    if envv and _has_venv_python(Path(envv)):
         return Path(envv)
     return None
 
@@ -1707,6 +1715,137 @@ def cmd_difftest(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# --------------------------------------------------------------------------
+# Subcommand: fix
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _ManifestGenerator:
+    tool: str
+    check: str
+    generate: str
+    upstream: tuple[str, ...]
+
+
+def _manifest_generators(repo: Path) -> tuple[list[_ManifestGenerator], list[str]]:
+    """Repairable generators in dependency order, plus host-input generators.
+
+    tools/generator_manifest.toml is the authority: each check-mode row names
+    its ``generate_command`` (the meta-gate requires it) and its
+    ``upstream_generators``. Rows with ``ci_checkable = false`` read inputs
+    that are not reproducible from the checkout (gitignored corpora, external
+    checkouts, live interpreters), so they are reported, never regenerated.
+    """
+    with (repo / "tools" / "generator_manifest.toml").open("rb") as handle:
+        rows = tomllib.load(handle).get("generator", ())
+    repairable: dict[str, _ManifestGenerator] = {}
+    host_input: list[str] = []
+    for row in rows:
+        if not row.get("check_mode") or row.get("discovery_only"):
+            continue
+        if not row.get("ci_checkable", True):
+            host_input.append(str(row["tool"]))
+            continue
+        repairable[str(row["tool"])] = _ManifestGenerator(
+            tool=str(row["tool"]),
+            check=str(row["check_command"]),
+            generate=str(row["generate_command"]),
+            upstream=tuple(str(item) for item in row.get("upstream_generators", ())),
+        )
+    # Kahn order over declared upstreams; the proof plan hashes every
+    # authority input, so it is always regenerated last.
+    order: list[_ManifestGenerator] = []
+    placed: set[str] = set()
+    pending = sorted(
+        repairable.values(), key=lambda g: (g.tool == "tools/gen_proof_plan.py", g.tool)
+    )
+    while pending:
+        ready = [
+            g
+            for g in pending
+            if all(u in placed or u not in repairable for u in g.upstream)
+        ]
+        if not ready:
+            raise RuntimeError(
+                "generator_manifest upstream_generators form a cycle: "
+                + ", ".join(g.tool for g in pending)
+            )
+        order.append(ready[0])
+        placed.add(ready[0].tool)
+        pending.remove(ready[0])
+    return order, sorted(host_input)
+
+
+def _generator_check_passes(
+    generator: _ManifestGenerator, repo: Path, env: dict[str, str]
+) -> bool:
+    result = _run_driver_command(
+        ["python3", "tools/venv_exec.py", "python", *generator.check.split()],
+        cwd=repo,
+        env=env,
+        timeout=900.0,
+    )
+    return result.returncode == 0
+
+
+def cmd_fix(args: argparse.Namespace) -> int:
+    """Apply every mechanical repair the read-only gates ask for, in one pass.
+
+    Pre-commit hooks stay read-only (they must never rewrite another agent's
+    unstaged work); this is the one command their failures point to.
+    """
+    repo = Path(args.repo).resolve()
+    env = dict(os.environ)
+    venv = _resolve_repo_venv(repo)
+    if venv is not None:
+        env["MOLT_VENV"] = str(venv)
+    python = "python3 tools/venv_exec.py python"
+
+    _step("pin text encodings (tools/encoding_gate.py --fix)")
+    if run_gate(f"{python} tools/encoding_gate.py --fix", repo, env) != 0:
+        return 1
+    _step("format Python (ruff format)")
+    if run_gate(f"{python} -m ruff format .", repo, env) != 0:
+        return 1
+
+    generators, host_input = _manifest_generators(repo)
+    _step(f"check {len(generators)} manifest generators (parallel)")
+    workers = max(1, min(8, os.cpu_count() or 1))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        fresh = dict(
+            zip(
+                (g.tool for g in generators),
+                pool.map(lambda g: _generator_check_passes(g, repo, env), generators),
+            )
+        )
+    regenerated: set[str] = set()
+    failed: list[str] = []
+    for generator in generators:
+        upstream_changed = any(u in regenerated for u in generator.upstream)
+        if fresh[generator.tool] and not upstream_changed:
+            continue
+        _step(f"regenerate {generator.tool}")
+        run_gate(f"{python} {generator.generate}", repo, env)
+        regenerated.add(generator.tool)
+        if not _generator_check_passes(generator, repo, env):
+            failed.append(generator.check)
+    if host_input:
+        _say("    host-input generators (not regenerated; see ci_skip_reason):")
+        for tool in host_input:
+            _say(f"      {tool}")
+    if failed:
+        _say("    still stale after regeneration:")
+        for check in failed:
+            _say(f"      {check}")
+        return 1
+    _say(
+        f"fix: formatted, encodings pinned, {len(regenerated)} generator(s) "
+        "regenerated, all CI-checkable generators fresh"
+    )
+    return 0
+
+
 def cmd_cleanup(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     git = Git(repo)
@@ -1967,6 +2106,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="abandon despite unpushed/dirty; MUST name the HEAD sha being abandoned",
     )
     p_cl.set_defaults(func=cmd_cleanup)
+
+    # fix: the one command read-only gate failures point to
+    p_fx = sub.add_parser(
+        "fix",
+        help="pin encodings, format, and regenerate stale generated outputs",
+    )
+    _add_repo_arg(p_fx)
+    p_fx.set_defaults(func=cmd_fix)
 
     # difftest (hazard 12: split-root toolchain + differential vs pinned CPython)
     p_df = sub.add_parser(
