@@ -1243,12 +1243,17 @@ def test_ci_rust_compile_truth_has_no_redundant_subset_commands() -> None:
         assert redundant_id not in commands
     assert "native-backend" in backend_manifest["features"]["default"]
     assert commands["rust.test.default-truth"]["dependencies"] == []
-    assert commands["rust.clippy.workspace-default"]["dependencies"] == [
-        "rust.test.default-truth"
-    ]
-    assert commands["rust.clippy.feature-surfaces"]["dependencies"] == [
-        "rust.clippy.workspace-default"
-    ]
+    # The compiler-build resource runs one command at a time, so ordering edges
+    # add no starvation protection; they would only let one red truth hide the
+    # independent lint truths behind "required dependency failed".
+    assert commands["rust.clippy.workspace-default"]["dependencies"] == []
+    assert commands["rust.clippy.feature-surfaces"]["dependencies"] == []
+    compiler_policy = next(
+        policy
+        for policy in plan["resource_policy"]
+        if policy["name"] == "compiler-build-resource"
+    )
+    assert compiler_policy["max_parallel"] == 1
     assert commands["rust.test.default-truth"]["argv"] == [
         "uv",
         "run",
