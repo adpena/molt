@@ -427,7 +427,7 @@ version_pattern = '^v24\.16\.0$'
 setup_value = "24.16.0"
 setup_evidence = [
   "config/tool_releases.toml::version = \"24.16.0\"",
-  ".github/actions/setup-project/action.yml::actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+  ".github/actions/setup-project/action.yml::uses: actions/setup-node@",
   ".github/workflows/formal.yml::node-version: \"24.16.0\"",
 ]
 
@@ -478,7 +478,7 @@ process_image_probes = [["--version"]]
 version_pattern = '^git version 2\.'
 setup_value = "2.x"
 setup_evidence = [
-  ".github/workflows/ci.yml::actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+  ".github/workflows/ci.yml::uses: actions/checkout@",
 ]
 
 [[toolchain_policy]]

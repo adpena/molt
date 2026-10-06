@@ -1051,7 +1051,8 @@ def test_release_topology_has_one_atomic_promotion_and_separate_deployments() ->
     assert (
         "release:" in cloudflare and "environment: cloudflare-production" in cloudflare
     )
-    assert 'wranglerVersion: "4.112.0"' in cloudflare
+    # Wrangler is exact; its version lives only in the deploy workflow.
+    assert re.search(r'^\s+wranglerVersion: "\d+\.\d+\.\d+"$', cloudflare, re.M)
     assert "release:" in modal and "environment: modal-production" in modal
     assert "pip install modal" not in modal
     assert pyproject["dependency-groups"]["deployment"] == ["modal==1.5.2"]

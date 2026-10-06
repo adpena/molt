@@ -717,9 +717,7 @@ def test_ci_heavy_jobs_are_path_classified() -> None:
         "--verify-selected '${{ needs.classify-changes.outputs.selected }}'" in ci_text
     )
     assert "--receipt-dir proof-receipts" in ci_text
-    assert (
-        "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131" in ci_text
-    )
+    assert "uses: actions/download-artifact@" in ci_text
     assert "== 'success' && 1 || 0" not in ci_text
     # Full history exactly where a job reads it: the path classifier diffs
     # against the event base, and docs-gates runs the commit-attribution
@@ -1061,31 +1059,42 @@ def test_github_workflows_pin_every_external_action_to_full_sha() -> None:
     assert found > 0
 
 
-def test_github_workflows_use_current_setup_uv_release() -> None:
+def test_github_actions_pin_one_exact_release_per_action() -> None:
+    """Each external action resolves to one commit and one exact release tag.
+
+    Dependabot rewrites every ``uses:`` line of an action together; a second
+    digest or a floating ``# v7`` comment means a partial or hand-made bump.
+    """
+    action_files = [
+        *WORKFLOW_ROOT.glob("*.yml"),
+        *REPO_ROOT.glob(".github/actions/*/action.yml"),
+    ]
+    uses_pattern = re.compile(
+        r"^\s*(?:-\s*)?uses:\s*([^\s#@]+)@([0-9a-f]{40})(?:\s*#\s*(\S+))?\s*$",
+        re.MULTILINE,
+    )
+    release = re.compile(r"^v\d+\.\d+\.\d+$")
+    pins: dict[str, set[tuple[str, str | None]]] = {}
+    for path in sorted(action_files):
+        for action, sha, comment in uses_pattern.findall(path.read_text("utf-8")):
+            repository = "/".join(action.split("/")[:2])
+            pins.setdefault(repository, set()).add((sha, comment or None))
+            assert comment and release.fullmatch(comment), (path, action, comment)
+    assert pins
+    divergent = {repo: sorted(found) for repo, found in pins.items() if len(found) != 1}
+    assert divergent == {}
+
+
+def test_setup_uv_installs_the_plan_pinned_uv() -> None:
+    policy = {
+        entry["name"]: entry
+        for entry in tomllib.loads(_read("tools/proof_plan.toml"))["toolchain_policy"]
+    }
+    setup_project = _read(".github/actions/setup-project/action.yml")
+    assert setup_project.count("astral-sh/setup-uv@") == 1
+    assert f'version: "{policy["uv"]["setup_value"]}"' in setup_project
     for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
-        text = workflow.read_text(encoding="utf-8")
-        setup_uv_lines = [
-            line.strip() for line in text.splitlines() if "astral-sh/setup-uv@" in line
-        ]
-        if not setup_uv_lines:
-            continue
-
-        assert all("# v8.2.0" in line for line in setup_uv_lines), (
-            workflow,
-            setup_uv_lines,
-        )
-
-
-def test_executable_proof_workflows_pin_uv_tool_version() -> None:
-    for relative in (
-        ".github/workflows/ci.yml",
-        ".github/workflows/molt-wasm-ci.yml",
-        ".github/workflows/security_hardening.yml",
-    ):
-        text = _read(relative)
-        assert text.count(
-            "astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39"
-        ) == text.count('version: "0.11.24"'), relative
+        assert "astral-sh/setup-uv@" not in workflow.read_text("utf-8"), workflow
 
 
 def test_executable_receipt_root_is_git_ignored() -> None:
@@ -1533,9 +1542,7 @@ def test_quint_workflows_pin_patched_node24_toolchain() -> None:
     nightly_workflow = _read(".github/workflows/nightly.yml")
 
     setup_project = _read(".github/actions/setup-project/action.yml")
-    assert (
-        "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38" in setup_project
-    )
+    assert "uses: actions/setup-node@" in setup_project
     node_version = tool_releases.tool_release("node").version
     assert f'node-version: "{node_version}"' in formal_workflow
     assert "check-latest: true" not in setup_project
@@ -1547,10 +1554,7 @@ def test_quint_workflows_pin_patched_node24_toolchain() -> None:
     assert "sha256sum --check" in formal_workflow
 
     assert 'npm install -g "$MOLT_QUINT_NPM_PACKAGE"' not in nightly_workflow
-    assert (
-        "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38"
-        not in nightly_workflow
-    )
+    assert "actions/setup-node@" not in nightly_workflow
     assert f"node-version: '{node_version}'" not in nightly_workflow
     assert "Install Quint Rust evaluator" not in nightly_workflow
 
@@ -1580,9 +1584,7 @@ def test_nightly_contains_correctness_jobs() -> None:
     ):
         assert f"--run-family {family} --receipt" in nightly_text
     assert "nightly-verdict:" in nightly_text
-    assert "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131" in (
-        nightly_text
-    )
+    assert "uses: actions/download-artifact@" in nightly_text
     assert "--verify-scheduled --receipt-dir nightly-artifacts" in nightly_text
     assert "tools/guarded_exec.py" not in nightly_text
     assert "tests/harness/run_molt_conformance.py" not in nightly_text
