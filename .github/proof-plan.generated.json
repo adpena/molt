@@ -322,7 +322,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "435be9d0789129f6c32ee63cd2de6c9de719de8a8f3ca15e19fd8d5a9f21ad1c",
+  "authority_sha256": "860efbd6c71f97c77c76d277bf03cce8cefb36d188b69bf401d217a5df598d2b",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -412,7 +412,7 @@
         "pr",
         "main"
       ],
-      "timeout_minutes": 125,
+      "timeout_minutes": 160,
       "workflow": ".github/workflows/molt-wasm-ci.yml"
     },
     {
@@ -2930,6 +2930,48 @@
         "python3",
         "-m",
         "molt.cli",
+        "internal-runtime-wasm-build",
+        "--build-profile",
+        "release",
+        "--kind",
+        "both",
+        "--json"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [
+        "wasm.build.backend"
+      ],
+      "family": "wasm",
+      "id": "wasm.build.split-runtime-release",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cold",
+      "timeout_env": [
+        "MOLT_CARGO_TIMEOUT",
+        "MOLT_WASM_TEST_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 1200,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo",
+        "ld.lld",
+        "wasm-ld",
+        "wasm-tools"
+      ]
+    },
+    {
+      "argv": [
+        "python3",
+        "tools/venv_exec.py",
+        "python3",
+        "-m",
+        "molt.cli",
         "build",
         "examples/hello.py",
         "--build-profile",
@@ -3295,11 +3337,6 @@
         "pytest",
         "-q",
         "tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts::test_repeated_build_preserves_complete_generation_and_executes",
-        "tests/test_wasm_split_runtime.py::test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output",
-        "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none",
-        "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_dtype_class",
-        "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_tensor_module",
-        "tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype",
         "tests/test_browser_vfs.py"
       ],
       "cache_domain": "cargo-workspace",
@@ -3307,7 +3344,7 @@
       "dependencies": [
         "wasm.build.backend",
         "wasm.build.host",
-        "wasm.build.shared-runtime"
+        "wasm.build.split-runtime-release"
       ],
       "family": "wasm",
       "id": "wasm.integration.split-runtime",
@@ -3321,6 +3358,52 @@
         "MOLT_WASM_TEST_TIMEOUT_SEC"
       ],
       "timeout_seconds": 300,
+      "toolchains": [
+        "python",
+        "uv",
+        "node",
+        "rustc",
+        "cargo",
+        "ld.lld",
+        "wasm-ld",
+        "wasm-tools"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--python",
+        "3.12",
+        "pytest",
+        "-q",
+        "tests/test_wasm_split_runtime.py::test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output",
+        "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none",
+        "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_dtype_class",
+        "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_tensor_module",
+        "tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-py312-wasm-dev",
+      "dependencies": [
+        "wasm.build.backend",
+        "wasm.build.host",
+        "wasm.build.shared-runtime",
+        "wasm.build.split-runtime-release"
+      ],
+      "family": "wasm",
+      "id": "wasm.integration.host-exports",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cold",
+      "timeout_env": [
+        "MOLT_CARGO_TIMEOUT",
+        "MOLT_WASM_TEST_TIMEOUT_SEC"
+      ],
+      "timeout_seconds": 1200,
       "toolchains": [
         "python",
         "uv",
@@ -5043,12 +5126,12 @@
         }
       },
       "wasm": {
-        "budget_seconds": 7500,
-        "critical_path_seconds": 3000,
-        "headroom_seconds": 300,
-        "projected_makespan_seconds": 7200,
+        "budget_seconds": 9600,
+        "critical_path_seconds": 3600,
+        "headroom_seconds": 0,
+        "projected_makespan_seconds": 9600,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 7200,
+          "compiler-build-resource": 9600,
           "wasm-runtime": 450
         }
       }

@@ -871,7 +871,7 @@ admission_job = "wasm-validation"
 admission_needs = ["classify-changes"]
 tiers = ["pr", "main"]
 required = true
-timeout_minutes = 125
+timeout_minutes = 160
 resource_class = "compiler-build-resource"
 dependencies = []
 
@@ -2075,6 +2075,19 @@ argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
 [[command]]
+id = "wasm.build.split-runtime-release"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cold"
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-runtime-wasm-build", "--build-profile", "release", "--kind", "both", "--json"]
+toolchains = ["python", "uv", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
+
+[[command]]
 id = "wasm.compile.hello"
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
@@ -2206,8 +2219,21 @@ resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
-dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime"]
-argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts::test_repeated_build_preserves_complete_generation_and_executes", "tests/test_wasm_split_runtime.py::test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output", "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none", "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_dtype_class", "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_tensor_module", "tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype", "tests/test_browser_vfs.py"]
+dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.split-runtime-release"]
+argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts::test_repeated_build_preserves_complete_generation_and_executes", "tests/test_browser_vfs.py"]
+toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
+
+[[command]]
+id = "wasm.integration.host-exports"
+family = "wasm"
+cell = "linux-x86_64-py312-wasm-dev"
+tiers = ["pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cold"
+timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
+cache_domain = "cargo-workspace"
+dependencies = ["wasm.build.backend", "wasm.build.host", "wasm.build.shared-runtime", "wasm.build.split-runtime-release"]
+argv = ["uv", "run", "--python", "3.12", "pytest", "-q", "tests/test_wasm_split_runtime.py::test_split_runtime_compiled_gpu_kernel_vector_add_matches_expected_output", "tests/test_wasm_split_runtime.py::test_linked_host_export_attribute_error_does_not_return_none", "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_dtype_class", "tests/test_wasm_split_runtime.py::test_linked_host_export_imports_tinygrad_tensor_module", "tests/test_wasm_split_runtime.py::test_linked_host_export_tensor_row_ops_accept_equivalent_float_dtype"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools"]
 
 [[command]]
