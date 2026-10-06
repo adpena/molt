@@ -1630,7 +1630,7 @@ def _matches(path: str, pattern: str) -> bool:
 
 def _run_git(args: list[str]) -> str:
     return subprocess.check_output(
-        ["git", *args], cwd=ROOT, text=True, stderr=subprocess.STDOUT
+        ["git", *args], cwd=ROOT, text=True, stderr=subprocess.STDOUT, encoding="utf-8"
     )
 
 
@@ -1749,6 +1749,34 @@ def _event_payload(path: str) -> dict[str, Any]:
     return value
 
 
+# Each command's `tiers` names the CI events it gates. A pull request runs the
+# fast `pr` tier; pushes to main and the merge queue run `main`; the scheduled
+# workflow runs `nightly`. Dependencies always run with their dependents.
+PROOF_TIER_ENV = "MOLT_PROOF_TIER"
+_EVENT_TIERS = {
+    "pull_request": "pr",
+    "pull_request_target": "pr",
+    "push": "main",
+    "merge_group": "main",
+    "workflow_dispatch": "main",
+    "workflow_call": "main",
+    "schedule": "nightly",
+}
+
+
+def active_tier(environ: Mapping[str, str] | None = None) -> str | None:
+    """The tier this process gates, or None to run every tier (local use)."""
+    source = os.environ if environ is None else environ
+    explicit = source.get(PROOF_TIER_ENV, "").strip()
+    if explicit:
+        return explicit
+    return _EVENT_TIERS.get(source.get("GITHUB_EVENT_NAME", "").strip())
+
+
+def _command_in_tier(command: ProofCommand, tier: str | None) -> bool:
+    return tier is None or tier in command.data["tiers"]
+
+
 def selection_for_event(
     plan: ProofPlan,
     *,
@@ -1782,8 +1810,18 @@ def selection_for_event(
         return plan.all_selected(reason=f"fail-closed event selection: {exc}")
 
 
-def family_outputs(plan: ProofPlan, selection: Selection) -> dict[str, str]:
-    selected = {family.name for family in selection.selected}
+def family_outputs(
+    plan: ProofPlan, selection: Selection, *, tier: str | None = None
+) -> dict[str, str]:
+    tiered = tuple(
+        command for command in plan.commands if _command_in_tier(command, tier)
+    )
+    # A family with nothing to run in this tier never starts a runner.
+    selected = {
+        family.name
+        for family in selection.selected
+        if any(command.family == family.name for command in tiered)
+    }
     outputs = {
         family.name: "true" if family.name in selected else "false"
         for family in plan.families
@@ -1807,29 +1845,30 @@ def family_outputs(plan: ProofPlan, selection: Selection) -> dict[str, str]:
                 )
             },
             "command_ids": [
-                command.id for command in plan.commands if command.family == family.name
+                command.id for command in tiered if command.family == family.name
             ],
             "matrix_cells": list(
                 dict.fromkeys(
                     str(command.data["cell"])
-                    for command in plan.commands
+                    for command in tiered
                     if command.family == family.name
                 )
             ),
             "selected_by": list(selection.reasons.get(family.name, ())),
         }
         for family in selection.selected
+        if family.name in selected
     ]
     matrix_family_names = {
         family.name
         for family in selection.selected
-        if family.data["executor"] == "github-matrix"
+        if family.name in selected and family.data["executor"] == "github-matrix"
     }
     matrix = []
     for cell in plan.matrix_cells:
         command_ids = [
             command.id
-            for command in plan.commands
+            for command in tiered
             if command.family in matrix_family_names and command.data["cell"] == cell.id
         ]
         if not command_ids:
@@ -1958,6 +1997,7 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
                 text=True,
                 timeout=5,
                 env=cargo_subprocess_environment(content_path_command, os.environ)[0],
+                encoding="utf-8",
             )
             if resolved.returncode != 0:
                 raise OSError("toolchain content resolver failed")
@@ -1979,6 +2019,7 @@ def _version_fingerprint(policy: ToolchainPolicy) -> dict[str, str] | None:
             text=True,
             timeout=5,
             env=cargo_subprocess_environment(version_argv, os.environ)[0],
+            encoding="utf-8",
         )
         version = completed.stdout.strip()
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -2093,18 +2134,21 @@ def _topological_commands(
     family: str | None = None,
     command_id: str | None = None,
     matrix_cell: str | None = None,
+    tier: str | None = None,
 ) -> tuple[ProofCommand, ...]:
     by_id = {command.id: command for command in plan.commands}
     if family is not None:
-        roots = {
+        members = {
             command.id
             for command in plan.commands
             if command.family == family
             and (matrix_cell is None or command.data["cell"] == matrix_cell)
         }
-        if not roots:
+        if not members:
             suffix = "" if matrix_cell is None else f" in matrix cell {matrix_cell!r}"
             raise ValueError(f"unknown or empty proof family {family!r}{suffix}")
+        # Tier filtering selects roots only; their dependencies still run.
+        roots = {member for member in members if _command_in_tier(by_id[member], tier)}
     elif command_id is not None:
         if command_id not in by_id:
             raise ValueError(f"unknown proof command {command_id!r}")
@@ -2637,6 +2681,8 @@ def verify_receipts(
     plan: ProofPlan,
     selected_names: list[str] | tuple[str, ...],
     receipt_root: Path,
+    *,
+    tier: str | None = None,
 ) -> list[str]:
     known_families = {
         *(family.name for family in plan.families),
@@ -2647,8 +2693,12 @@ def verify_receipts(
         f"unknown selected proof family {name!r}"
         for name in sorted(selected - known_families)
     ]
+    # Exactly what `--run-family` executes for this tier: the family's tiered
+    # roots plus their dependency closure.
     expected_commands = {
-        command.id: command for command in plan.commands if command.family in selected
+        command.id: command
+        for name in sorted(selected & {command.family for command in plan.commands})
+        for command in _topological_commands(plan, family=name, tier=tier)
     }
     expected_digest = _authority_sha256(plan)
     expected_source = _source_identity()

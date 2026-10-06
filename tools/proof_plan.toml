@@ -326,6 +326,11 @@ authority_inputs = [
   "tests/tools/test_windows_process_api.py",
 ]
 
+# Tiers are enforced per CI event (tools/proof_plan.py active_tier): pull
+# requests run `pr`, pushes and the merge queue run `main`, the scheduled
+# workflow runs `nightly`. Whole-suite end-to-end, benchmark and proof-queue
+# real-execution commands are `main`-only so pull requests stay fast.
+
 # Gates that run for any non-empty local integration change.
 always = [
   "python3 tools/venv_exec.py python -m ruff check .",
@@ -1334,7 +1339,7 @@ toolchains = ["python", "uv"]
 id = "portability.queue.linux"
 family = "platform_portability"
 cell = "linux-x86_64-py312-queue-portability"
-tiers = ["pr", "main"]
+tiers = ["main"]
 resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
@@ -1346,7 +1351,7 @@ toolchains = ["python", "uv", "rustc", "cargo"]
 id = "portability.queue.macos"
 family = "platform_portability"
 cell = "macos-arm64-py312-queue-portability"
-tiers = ["pr", "main"]
+tiers = ["main"]
 resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
@@ -1358,7 +1363,7 @@ toolchains = ["python", "uv", "rustc", "cargo"]
 id = "portability.queue.windows"
 family = "platform_portability"
 cell = "windows-x86_64-py312-queue-portability"
-tiers = ["pr", "main"]
+tiers = ["main"]
 resource_class = "python-tests"
 timeout_seconds = 600
 cache_domain = "pytest"
@@ -1774,6 +1779,20 @@ dependencies = ["repository.op-kinds.generated", "repository.heap-kinds.generate
 argv = ["uv", "run", "python3", "tools/check_generator_manifest.py", "--check"]
 toolchains = ["python", "uv"]
 
+# The cp1252 text-encoding class (M43): unpinned text I/O in tools, src/molt and
+# tests. Strict at zero; `python3 tools/molt_dev.py fix` repairs new sites.
+[[command]]
+id = "repository.encoding-gate"
+family = "repository_policy"
+cell = "linux-x86_64-py312-repository-policy"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "repository-policy"
+timeout_seconds = 120
+cache_domain = "uv"
+dependencies = []
+argv = ["uv", "run", "python3", "tools/encoding_gate.py", "--check"]
+toolchains = ["python", "uv"]
+
 [[command]]
 id = "repository.proof-plan.generated"
 family = "repository_policy"
@@ -2025,7 +2044,7 @@ toolchains = ["rustc", "cargo", "wasm-tools"]
 id = "wasm.test.control-flow"
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
-tiers = ["pr", "main"]
+tiers = ["main"]
 resource_class = "compiler-build-resource"
 timeout_budget = "integration"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
@@ -2038,7 +2057,7 @@ toolchains = ["python", "uv", "rustc", "cargo", "clang", "llvm-ar", "llvm-nm", "
 id = "wasm.integration.split-runtime"
 family = "wasm"
 cell = "linux-x86_64-py312-wasm-dev"
-tiers = ["pr", "main"]
+tiers = ["main"]
 resource_class = "compiler-build-resource"
 timeout_budget = "warm"
 timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
@@ -2162,7 +2181,7 @@ toolchains = ["python", "uv", "rustc", "clang", "llvm-ar", "llvm-nm", "wasm-ld"]
 id = "native.integration.bench-cli"
 family = "native_integration"
 cell = "linux-x86_64-py312-native-dev"
-tiers = ["pr", "main"]
+tiers = ["main"]
 resource_class = "compiler-build-resource"
 timeout_budget = "cold"
 cache_domain = "cargo-workspace"
@@ -2381,7 +2400,7 @@ toolchains = ["python", "uv", "clang", "llvm-config", "ld.lld"]
 id = "llvm.test.differential"
 family = "llvm"
 cell = "linux-x86_64-py312-llvm-release-fast"
-tiers = ["pr", "main", "nightly"]
+tiers = ["main", "nightly"]
 resource_class = "compiler-build-resource"
 timeout_budget = "suite"
 cache_domain = "llvm-cargo"

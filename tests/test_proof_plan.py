@@ -2975,3 +2975,55 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
         "partition" if sys.platform == "win32" else "global"
     ), record
     assert (target / "debug" / "incremental").is_dir()
+
+
+@pytest.mark.parametrize(
+    ("environ", "expected"),
+    [
+        ({"GITHUB_EVENT_NAME": "pull_request"}, "pr"),
+        ({"GITHUB_EVENT_NAME": "push"}, "main"),
+        ({"GITHUB_EVENT_NAME": "merge_group"}, "main"),
+        ({"GITHUB_EVENT_NAME": "schedule"}, "nightly"),
+        ({"GITHUB_EVENT_NAME": "pull_request", "MOLT_PROOF_TIER": "main"}, "main"),
+        ({}, None),
+    ],
+)
+def test_active_tier_follows_the_ci_event(environ, expected) -> None:
+    assert proof_plan.active_tier(environ) == expected
+
+
+def test_pull_requests_skip_main_only_commands_but_keep_their_dependencies() -> None:
+    main_only = [
+        command
+        for command in PLAN.commands
+        if "pr" not in command.data["tiers"] and "main" in command.data["tiers"]
+    ]
+    assert main_only, "the plan keeps whole-suite commands off pull requests"
+    selection = PLAN.select(["tools/proof_queue.py"])
+    pr = proof_plan.family_outputs(PLAN, selection, tier="pr")
+    main = proof_plan.family_outputs(PLAN, selection, tier="main")
+    pr_ids = {
+        command_id
+        for entry in json.loads(pr["matrix"])["include"]
+        for command_id in entry["command_ids"]
+    }
+    main_ids = {
+        command_id
+        for entry in json.loads(main["matrix"])["include"]
+        for command_id in entry["command_ids"]
+    }
+    assert "portability.queue.linux" in main_ids - pr_ids
+    for family in {command.family for command in PLAN.commands}:
+        ran = proof_plan._topological_commands(PLAN, family=family, tier="pr")
+        ran_ids = {command.id for command in ran}
+        for command in ran:
+            # Tiers select roots; every dependency of a root still runs.
+            assert set(command.dependencies) <= ran_ids
+
+
+def test_family_without_tier_commands_starts_no_runner(tmp_path) -> None:
+    selection = PLAN.select(["tools/proof_queue.py"])
+    outputs = proof_plan.family_outputs(PLAN, selection, tier="no-such-tier")
+    assert json.loads(outputs["selected"]) == []
+    assert json.loads(outputs["matrix"]) == {"include": []}
+    assert all(outputs[family.name] == "false" for family in PLAN.families)

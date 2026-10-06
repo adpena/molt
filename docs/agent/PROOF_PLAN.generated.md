@@ -190,6 +190,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `repository.native-callable-abi.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.release-matrix.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.generator-manifest` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 18 |
+| `repository.encoding-gate` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 120 s | `repository-policy` | 0 |
 | `repository.proof-plan.generated` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.llvm-runtime-abi` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
 | `repository.structural-debt` | `repository_policy` | `linux-x86_64-py312-repository-policy` | `explicit` | 300 s | `repository-policy` | 0 |
