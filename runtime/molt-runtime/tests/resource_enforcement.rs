@@ -59,7 +59,6 @@ static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn clear_all_resource_env() {
     for key in [
-        "MOLT_MEMORY_LIMIT",
         "MOLT_RESOURCE_MAX_MEMORY",
         "MOLT_RESOURCE_MAX_DURATION_MS",
         "MOLT_RESOURCE_MAX_ALLOCATIONS",
@@ -165,7 +164,7 @@ fn env_var_init_installs_tracker() {
     set_tracker(Box::new(UnlimitedTracker));
 }
 
-/// End-to-end demonstration: `MOLT_MEMORY_LIMIT=64M` set BEFORE runtime init
+/// End-to-end demonstration: `MOLT_RESOURCE_MAX_MEMORY=64M` set BEFORE runtime init
 /// causes a >64MB allocation to be rejected by the in-VM tracker (Layer 1) —
 /// the host is never OOM-ed. This is the exact path a compiled binary takes at
 /// startup (`molt_runtime_init_resources` is the runtime-init C entrypoint).
@@ -178,8 +177,8 @@ fn molt_memory_limit_alias_enforces_via_real_init_path() {
     clear_global_tracker_factory();
     set_tracker(Box::new(UnlimitedTracker));
 
-    // Human-readable front door — resolves into ResourceLimits.max_memory.
-    unsafe { std::env::set_var("MOLT_MEMORY_LIMIT", "64M") };
+    // A human-readable size resolves into ResourceLimits.max_memory.
+    unsafe { std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", "64M") };
 
     // Run the actual runtime resource initialization (parses env, installs the
     // global LimitedTracker + OS memory backstop).
@@ -230,11 +229,11 @@ fn no_memory_limit_env_means_unchanged_behavior() {
     set_tracker(Box::new(UnlimitedTracker));
 }
 
-/// The `MOLT_RESOURCE_MAX_MEMORY` canonical field and the `MOLT_MEMORY_LIMIT`
-/// human-size alias resolve to the SAME limit (single enforcement path); the
-/// alias wins when both are set.
+/// `MOLT_RESOURCE_MAX_MEMORY` accepts a human-readable size as well as the raw
+/// byte count the capability manifest emits; both resolve to the SAME limit
+/// (single enforcement path).
 #[test]
-fn alias_and_canonical_field_share_one_enforcement_path() {
+fn human_size_and_raw_bytes_resolve_to_one_limit() {
     let _g = ENV_GUARD
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -242,15 +241,12 @@ fn alias_and_canonical_field_share_one_enforcement_path() {
     clear_global_tracker_factory();
     set_tracker(Box::new(UnlimitedTracker));
 
-    // 1 MiB via human alias overrides a larger raw-byte canonical value.
-    unsafe {
-        std::env::set_var("MOLT_MEMORY_LIMIT", "1M");
-        std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", "536870912"); // 512 MiB
-    }
+    // 1 MiB written as a human size is the effective cap.
+    unsafe { std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", "1M") };
     let _restore = OsBackstopRestore::capture();
     unsafe { molt_runtime_init_resources() };
 
-    // The 1 MiB alias is the effective cap: a 2 MiB grow is rejected.
+    // A 2 MiB grow is rejected under the 1 MiB cap.
     let err = with_tracker(|t| t.on_grow(2 * 1024 * 1024)).unwrap_err();
     assert!(matches!(
         err,
@@ -262,9 +258,11 @@ fn alias_and_canonical_field_share_one_enforcement_path() {
     set_tracker(Box::new(UnlimitedTracker));
 }
 
-/// The human-size parser used by the front door accepts the documented forms.
+/// The size parser behind `MOLT_RESOURCE_MAX_MEMORY` accepts the documented
+/// forms, including the raw byte count the manifest emits.
 #[test]
-fn human_size_front_door_parses_documented_forms() {
+fn human_size_parser_accepts_documented_forms() {
+    assert_eq!(parse_human_size("536870912").unwrap(), 512 * 1024 * 1024);
     assert_eq!(parse_human_size("64M").unwrap(), 64 * 1024 * 1024);
     assert_eq!(parse_human_size("2G").unwrap(), 2 * 1024 * 1024 * 1024);
     assert!(parse_human_size("bogus").is_err());

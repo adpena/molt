@@ -1193,22 +1193,12 @@ def _target_sys_platform(target: Target) -> str | None:
 
 
 @functools.lru_cache(maxsize=32)
-def _native_arch_perf_requested_cached(
-    profile_raw: str,
-    native_arch_raw: str,
-) -> bool:
-    profile = profile_raw.strip().lower()
-    if profile in {"native-arch", "native_arch", "native"}:
-        return True
-    raw = native_arch_raw.strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+def _native_arch_perf_requested_cached(profile_raw: str) -> bool:
+    return profile_raw.strip().lower() in {"native-arch", "native_arch", "native"}
 
 
 def _native_arch_perf_requested() -> bool:
-    return _native_arch_perf_requested_cached(
-        os.environ.get("MOLT_PERF_PROFILE", ""),
-        os.environ.get("MOLT_NATIVE_ARCH_PERF", ""),
-    )
+    return _native_arch_perf_requested_cached(os.environ.get("MOLT_PERF_PROFILE", ""))
 
 
 def _apply_native_arch_perf_policy(target: Target, warnings: list[str]) -> bool:

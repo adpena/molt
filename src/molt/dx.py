@@ -18,6 +18,10 @@ from pathlib import Path
 from typing import Literal, Mapping, Sequence, cast
 
 from molt import custody_layout
+from molt.environment_registry import (
+    EnvironmentRegistryError,
+    check_process_environment,
+)
 from molt.source_root import compiler_source_root
 from molt.path_custody import (
     CustodyPathRole,
@@ -84,14 +88,14 @@ PROOF_SCRATCH_ROOT_ENV = "MOLT_PROOF_SCRATCH_ROOT"
 DEFAULT_SCCACHE_CACHE_SIZE = "10G"
 DEFAULT_MOLT_CACHE_MAX_GB = "30"
 DEFAULT_MOLT_CACHE_MAX_AGE_DAYS = "30"
+REQUIRE_EXTERNAL_ARTIFACTS_ENV = "MOLT_REQUIRE_EXTERNAL_ARTIFACTS"
+PREFER_EXTERNAL_ARTIFACTS_ENV = "MOLT_PREFER_EXTERNAL_ARTIFACTS"
+EXTERNAL_ARTIFACT_ROOTS_ENV = "MOLT_EXTERNAL_ARTIFACT_ROOTS"
+# Either request knob asks for guarded artifact custody; REQUIRE also fails
+# when no external root is healthy.
 DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS = (
-    "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
-    "MOLT_PREFER_EXTERNAL_ARTIFACTS",
-    "MOLT_USE_EXTERNAL_ARTIFACTS",
-)
-DEVELOPMENT_ARTIFACT_CANDIDATE_ENV_KEYS = (
-    "MOLT_EXTERNAL_ARTIFACT_ROOTS",
-    "MOLT_EXTERNAL_ARTIFACT_CANDIDATES",
+    REQUIRE_EXTERNAL_ARTIFACTS_ENV,
+    PREFER_EXTERNAL_ARTIFACTS_ENV,
 )
 TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off"}
@@ -1047,14 +1051,7 @@ def _reject_c_drive_artifact_path(
 
 
 def _candidate_roots(repo_root: Path, env: Mapping[str, str]) -> tuple[Path, ...]:
-    raw = next(
-        (
-            value
-            for key in DEVELOPMENT_ARTIFACT_CANDIDATE_ENV_KEYS
-            if (value := env.get(key))
-        ),
-        "",
-    )
+    raw = env.get(EXTERNAL_ARTIFACT_ROOTS_ENV, "")
     candidates = raw.split(os.pathsep) if raw.strip() else ()
     roots: list[Path] = []
     for candidate in candidates:
@@ -1117,7 +1114,7 @@ def select_external_artifact_root(
     if (
         not _env_bool(
             env,
-            ("MOLT_PREFER_EXTERNAL_ARTIFACTS", "MOLT_USE_EXTERNAL_ARTIFACTS"),
+            (PREFER_EXTERNAL_ARTIFACTS_ENV,),
             default=prefer_external,
         )
         and not require_external
@@ -1483,6 +1480,10 @@ class RunContext:
         force_default_keys: Collection[str] = (),
     ) -> dict[str, str]:
         env = dict(os.environ if base is None else base)
+        try:
+            check_process_environment(env, program="molt-dev")
+        except EnvironmentRegistryError as exc:
+            raise DxConfigError(str(exc)) from exc
         _drop_ambient_tmpdir(env, prefer_external=self.prefer_external_artifacts)
         forced = set(force_default_keys)
         custody = checkout_custody(self.root, env)

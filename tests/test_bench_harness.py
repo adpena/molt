@@ -44,7 +44,7 @@ def test_bench_harness_run_cmd_uses_memory_guard(
     for key in (
         *molt_dx.CANONICAL_RUN_ENV_KEYS,
         *molt_dx.DEVELOPMENT_ARTIFACT_REQUEST_ENV_KEYS,
-        *molt_dx.DEVELOPMENT_ARTIFACT_CANDIDATE_ENV_KEYS,
+        molt_dx.EXTERNAL_ARTIFACT_ROOTS_ENV,
     ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(molt_dx, "_candidate_roots", lambda _root, _env: ())

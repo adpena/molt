@@ -288,9 +288,7 @@ impl SimpleBackend {
                 if *is_extern {
                     continue;
                 }
-                if env_setting("TIR_DUMP").as_deref() == Some("1")
-                    || env_setting("MOLT_TIR_DUMP").as_deref() == Some("1")
-                {
+                if env_setting("MOLT_TIR_DUMP").as_deref() == Some("1") {
                     eprintln!(
                         "[LLVM] TIR for '{}':\n{}",
                         tir_func.name,

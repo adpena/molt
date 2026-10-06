@@ -232,8 +232,8 @@ lockfiles committed with the manifest change.
 - **OOM retry**: OOM failures retry once with `--jobs 1` by default (`MOLT_DIFF_RETRY_OOM=0` disables).
 - **Memory caps**: default adaptive per-process, per-tree, and global RSS budgets
   with a matching child `RLIMIT_RSS` backstop; override with
-  `MOLT_DIFF_CHILD_RLIMIT_GB`, legacy `MOLT_DIFF_RLIMIT_GB`/`MOLT_DIFF_RLIMIT_MB`,
-  or disable that kernel backstop with `MOLT_DIFF_CHILD_RLIMIT_GB=0` only for an
+  `MOLT_DIFF_CHILD_RLIMIT_GB`, or disable that kernel backstop with
+  `MOLT_DIFF_CHILD_RLIMIT_GB=0` only for an
   explicit local investigation. Sparse virtual-address reservations are never
   capped by this RSS policy.
 - **Backend daemon mode**: set `MOLT_DIFF_BACKEND_DAEMON=1|0` to force daemon behavior in diff runs; default is platform-safe auto (`0` on macOS, `1` elsewhere).

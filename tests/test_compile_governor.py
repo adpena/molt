@@ -194,8 +194,8 @@ def test_governor_default_target_matches_cli_and_daemon_with_artifact_root(
 def test_compile_slot_defaults_use_resource_pressure_plan(monkeypatch) -> None:
     monkeypatch.setattr(compile_governor.os, "cpu_count", lambda: 16)
     env = {
-        "MOLT_COMPILE_GUARD_TOTAL_MEMORY_GB": "64",
-        "MOLT_COMPILE_GUARD_MEM_AVAILABLE_GB": "8",
+        "MOLT_COMPILE_GUARD_MEMORY_TOTAL_GB": "64",
+        "MOLT_COMPILE_GUARD_MEMORY_AVAILABLE_GB": "8",
         "MOLT_COMPILE_GUARD_MEMORY_RESERVE_GB": "4",
     }
 

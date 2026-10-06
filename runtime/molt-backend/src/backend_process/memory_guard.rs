@@ -11,7 +11,7 @@ pub(crate) fn install_process_memory_guard() {
 
 #[cfg(unix)]
 fn install_unix_memory_guard() {
-    let max_gb: u64 = env::var("MOLT_BACKEND_MAX_RSS_GB")
+    let max_gb: u64 = env::var("MOLT_BACKEND_MAX_PROCESS_RSS_GB")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(default_backend_max_rss_gb);
@@ -53,7 +53,7 @@ fn install_unix_memory_guard() {}
 
 #[cfg(windows)]
 fn install_windows_memory_guard() {
-    let max_gb: u64 = env::var("MOLT_BACKEND_MAX_RSS_GB")
+    let max_gb: u64 = env::var("MOLT_BACKEND_MAX_PROCESS_RSS_GB")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(default_backend_max_rss_gb);

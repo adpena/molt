@@ -19,10 +19,6 @@ class HarnessLimitsView(Protocol):
     def max_total_rss_gb(self) -> float: ...
 
 
-def normalize_prefix(prefix: str) -> str:
-    return prefix.strip().upper().rstrip("_")
-
-
 def utc_timestamp() -> str:
     return (
         dt.datetime.now(dt.timezone.utc)
@@ -40,7 +36,7 @@ def limit_text(limit_gb: float | None) -> str:
 
 
 def rss_limit_hint(prefix: str) -> str:
-    normalized = normalize_prefix(prefix) or "MOLT"
+    normalized = memory_guard.normalize_env_prefix(prefix) or "MOLT"
     if normalized == "MOLT":
         return "MOLT_MAX_PROCESS_RSS_GB/MOLT_MAX_TOTAL_RSS_GB"
     return (
@@ -50,7 +46,7 @@ def rss_limit_hint(prefix: str) -> str:
 
 
 def timeout_hint(prefix: str) -> str:
-    normalized = normalize_prefix(prefix) or "MOLT"
+    normalized = memory_guard.normalize_env_prefix(prefix) or "MOLT"
     return f"{normalized}_TIMEOUT_SEC or MOLT_TEST_PROCESS_TIMEOUT_SEC"
 
 

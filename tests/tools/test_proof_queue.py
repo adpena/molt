@@ -4994,21 +4994,13 @@ def test_proof_queue_memory_guard_defaults_reach_exact_command(
 ) -> None:
     for name in (
         "MOLT_PROOF_QUEUE_MAX_PROCESS_RSS_GB",
-        "MOLT_PROOF_QUEUE_MAX_RSS_GB",
         "MOLT_MAX_PROCESS_RSS_GB",
-        "MOLT_MAX_RSS_GB",
         "MOLT_PROOF_QUEUE_MAX_TOTAL_RSS_GB",
-        "MOLT_PROOF_QUEUE_MAX_TREE_RSS_GB",
         "MOLT_MAX_TOTAL_RSS_GB",
-        "MOLT_MAX_TREE_RSS_GB",
-        "MOLT_PROOF_QUEUE_GLOBAL_RSS_LIMIT_GB",
         "MOLT_PROOF_QUEUE_MAX_GLOBAL_RSS_GB",
-        "MOLT_GLOBAL_RSS_LIMIT_GB",
         "MOLT_MAX_GLOBAL_RSS_GB",
         "MOLT_PROOF_QUEUE_CHILD_RLIMIT_GB",
-        "MOLT_PROOF_QUEUE_MAX_CHILD_RLIMIT_GB",
         "MOLT_CHILD_RLIMIT_GB",
-        "MOLT_MAX_CHILD_RLIMIT_GB",
         "MOLT_PROOF_QUEUE_MEMORY_GUARD_POLL_SEC",
         "MOLT_MEMORY_GUARD_POLL_SEC",
     ):

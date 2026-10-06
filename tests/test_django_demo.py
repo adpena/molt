@@ -32,7 +32,7 @@ def _worker_cmd() -> str:
 
 def _setup_worker_env() -> None:
     os.environ["MOLT_WORKER_CMD"] = _worker_cmd()
-    os.environ["MOLT_WIRE"] = "json"
+    os.environ["MOLT_WORKER_WIRE"] = "json"
     os.environ["MOLT_ACCEL_CLIENT_MODE"] = "per_request"
     os.environ["MOLT_STUB_LIST_ITEMS_CODEC_OUT"] = "json"
     # Ensure molt_accel is importable by the stub worker.

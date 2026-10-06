@@ -2837,9 +2837,6 @@ fn unix_now() -> u64 {
 }
 
 fn default_memory_cache_limit_bytes() -> usize {
-    if let Some(bytes) = env_cache_limit_bytes("MOLT_BACKEND_TIR_CACHE_MEMORY_BYTES") {
-        return bytes;
-    }
     if let Some(mib) = env_cache_limit_bytes("MOLT_BACKEND_TIR_CACHE_MEMORY_MB") {
         return mib.saturating_mul(1024 * 1024);
     }
@@ -2865,9 +2862,6 @@ fn default_persistent_cache_max_entries() -> usize {
 }
 
 fn default_persistent_cache_max_bytes() -> u64 {
-    if let Some(bytes) = env_cache_limit_u64("MOLT_BACKEND_TIR_CACHE_DISK_BYTES") {
-        return bytes;
-    }
     env_cache_limit_u64("MOLT_BACKEND_TIR_CACHE_DISK_MB")
         .and_then(|mib| mib.checked_mul(1024 * 1024))
         .unwrap_or(DEFAULT_PERSISTENT_CACHE_MAX_BYTES)
@@ -2889,16 +2883,12 @@ fn usable_memory_budget_bytes_from_env() -> Option<usize> {
     let available_gb = env_cache_limit_gb(&[
         "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
         "MOLT_CLI_MEMORY_AVAILABLE_GB",
-        "MOLT_CLI_MEM_AVAILABLE_GB",
         "MOLT_MEMORY_AVAILABLE_GB",
-        "MOLT_MEM_AVAILABLE_GB",
     ])?;
     let reserve_gb = env_cache_limit_gb(&[
         "MOLT_BACKEND_MEMORY_RESERVE_GB",
         "MOLT_CLI_MEMORY_RESERVE_GB",
-        "MOLT_CLI_MEM_RESERVE_GB",
         "MOLT_MEMORY_RESERVE_GB",
-        "MOLT_MEM_RESERVE_GB",
     ])
     .unwrap_or(0.0);
     let usable_gb = (available_gb - reserve_gb).max(0.0);

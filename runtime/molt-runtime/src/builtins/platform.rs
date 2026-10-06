@@ -162,19 +162,22 @@ struct SysBootstrapState {
     py_path_raw: String,
     module_roots_raw: String,
     virtual_env_raw: String,
-    dev_trusted_raw: String,
+    capability_tier_raw: String,
     pwd: String,
     include_cwd: bool,
 }
 
 fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBootstrapState {
-    let (module_roots_raw, dev_trusted_raw, pwd_raw, windows_paths) = {
+    let (module_roots_raw, capability_tier_raw, pwd_raw, windows_paths) = {
         let guard = env_state()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         (
             guard.get("MOLT_MODULE_ROOTS").cloned().unwrap_or_default(),
-            guard.get("MOLT_DEV_TRUSTED").cloned().unwrap_or_default(),
+            guard
+                .get("MOLT_CAPABILITY_TIER")
+                .cloned()
+                .unwrap_or_default(),
             guard.get("PWD").cloned().unwrap_or_default(),
             sys_platform_str().starts_with("win"),
         )
@@ -207,8 +210,9 @@ fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBoots
     let venv_site_packages_entries: Vec<String> = Vec::new();
     let virtual_env_raw = String::new();
 
-    let dev_trusted = dev_trusted_raw.trim().to_ascii_lowercase();
-    let include_cwd = !matches!(dev_trusted.as_str(), "0" | "false" | "no");
+    // The working directory joins sys.path only at the full capability tier;
+    // the default tier runs untrusted, as CI does.
+    let include_cwd = capability_tier_raw.trim().eq_ignore_ascii_case("full");
     if include_cwd && !paths.iter().any(|entry| entry.is_empty()) {
         paths.insert(0, String::new());
     }
@@ -222,7 +226,7 @@ fn sys_bootstrap_state_from_module_file(module_file: Option<String>) -> SysBoots
         py_path_raw,
         module_roots_raw,
         virtual_env_raw,
-        dev_trusted_raw,
+        capability_tier_raw,
         pwd,
         include_cwd,
     }

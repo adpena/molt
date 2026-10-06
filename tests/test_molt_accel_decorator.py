@@ -20,7 +20,7 @@ def _worker_env() -> dict[str, str]:
     root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
     env["PYTHONPATH"] = str(root / "src")
-    env["MOLT_WIRE"] = "json"
+    env["MOLT_WORKER_WIRE"] = "json"
     return env
 
 

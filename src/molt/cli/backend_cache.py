@@ -274,10 +274,7 @@ def _shared_cache_lock(name: str, *, cache_root: Path | None = None):
         cache_root = _default_molt_cache()
     lock_dir = _shared_cache_lock_dir_cached(os.fspath(cache_root))
     lock_path = lock_dir / f"{name}.lock"
-    timeout_raw = (
-        os.environ.get("MOLT_CACHE_LOCK_TIMEOUT", "").strip()
-        or os.environ.get("MOLT_BUILD_LOCK_TIMEOUT", "").strip()
-    )
+    timeout_raw = os.environ.get("MOLT_BUILD_LOCK_TIMEOUT", "").strip()
     lock_timeout = _parse_lock_timeout(timeout_raw, default_s=300.0)
     timeout_label = "unbounded" if lock_timeout is None else f"{lock_timeout:.1f}s"
     handle = _acquire_file_lock(

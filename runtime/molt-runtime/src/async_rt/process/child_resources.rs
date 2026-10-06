@@ -12,7 +12,7 @@ const CHILD_RESOURCE_ENV_KEYS: &[&str] = &[
     "MOLT_RESOURCE_MAX_RECURSION_DEPTH",
     // Per-operation result caps are raw-byte integers like the keys above, so a
     // spawned child inherits the tighter of (parent, child-requested) for each.
-    // The `MOLT_MEMORY_LIMIT` human-size alias is intentionally absent: a child
+    // `MOLT_RESOURCE_MAX_MEMORY` may carry a human-readable size; a child
     // resolves it into `max_memory` at its own init, and the numeric min-merge
     // here only handles raw integers.
     "MOLT_RESOURCE_MAX_OPERATION_RESULT",
@@ -108,17 +108,6 @@ pub(super) fn enforce_child_resource_env_entries(
 }
 
 #[cfg(unix)]
-fn parse_child_rlimit_bytes_env(name: &str) -> Option<Option<u64>> {
-    let raw = std::env::var(name).ok()?;
-    let value = raw.trim().parse::<u64>().ok()?;
-    if value == 0 {
-        Some(None)
-    } else {
-        Some(Some(value))
-    }
-}
-
-#[cfg(unix)]
 fn parse_child_rlimit_gb_env(name: &str) -> Option<Option<u64>> {
     let raw = std::env::var(name).ok()?;
     let value = raw.trim().parse::<f64>().ok()?;
@@ -137,30 +126,20 @@ fn parse_child_rlimit_gb_env(name: &str) -> Option<Option<u64>> {
 
 /// OS memory cap for a spawned child. The parent's Layer-1 tracker limit maps
 /// to the same backstop budget runtime init installs (limit plus headroom, so a
-/// Molt child's own tracker fires first); an explicit `MOLT_CHILD_RLIMIT_*`
+/// Molt child's own tracker fires first); an explicit `MOLT_CHILD_RLIMIT_GB`
 /// operator cap applies exactly and may only tighten it.
 #[cfg(unix)]
 fn child_memory_rlimit_bytes() -> Option<u64> {
-    for candidate in [
-        parse_child_rlimit_bytes_env("MOLT_CHILD_RLIMIT_BYTES"),
-        parse_child_rlimit_gb_env("MOLT_CHILD_RLIMIT_GB"),
-    ] {
-        if let Some(None) = candidate {
-            return None;
-        }
+    if let Some(None) = parse_child_rlimit_gb_env("MOLT_CHILD_RLIMIT_GB") {
+        return None;
     }
 
     let mut limit = active_parent_resource_limit("MOLT_RESOURCE_MAX_MEMORY")
         .and_then(|value| usize::try_from(value).ok())
         .filter(|value| *value > 0)
         .and_then(|value| u64::try_from(crate::resource::memory_backstop_budget(value)).ok());
-    for candidate in [
-        parse_child_rlimit_bytes_env("MOLT_CHILD_RLIMIT_BYTES"),
-        parse_child_rlimit_gb_env("MOLT_CHILD_RLIMIT_GB"),
-    ] {
-        if let Some(Some(value)) = candidate {
-            limit = Some(limit.map_or(value, |current| current.min(value)));
-        }
+    if let Some(Some(value)) = parse_child_rlimit_gb_env("MOLT_CHILD_RLIMIT_GB") {
+        limit = Some(limit.map_or(value, |current| current.min(value)));
     }
     limit.filter(|value| *value > 0)
 }
@@ -270,7 +249,6 @@ mod tests {
         with_env(
             &[
                 ("MOLT_RESOURCE_MAX_MEMORY", Some("4096")),
-                ("MOLT_CHILD_RLIMIT_BYTES", None),
                 ("MOLT_CHILD_RLIMIT_GB", None),
             ],
             || {
@@ -306,8 +284,8 @@ mod tests {
         with_env(
             &[
                 ("MOLT_RESOURCE_MAX_MEMORY", Some("8192")),
-                ("MOLT_CHILD_RLIMIT_BYTES", Some("4096")),
-                ("MOLT_CHILD_RLIMIT_GB", None),
+                // 4096 bytes written in GB: 2^12 / 2^30 is exact in f64.
+                ("MOLT_CHILD_RLIMIT_GB", Some("0.000003814697265625")),
             ],
             || {
                 assert_eq!(child_memory_rlimit_bytes(), Some(4096));
@@ -321,7 +299,6 @@ mod tests {
         with_env(
             &[
                 ("MOLT_RESOURCE_MAX_MEMORY", Some("8192")),
-                ("MOLT_CHILD_RLIMIT_BYTES", None),
                 ("MOLT_CHILD_RLIMIT_GB", None),
             ],
             || {
@@ -339,7 +316,6 @@ mod tests {
         with_env(
             &[
                 ("MOLT_RESOURCE_MAX_MEMORY", Some("4096")),
-                ("MOLT_CHILD_RLIMIT_BYTES", None),
                 ("MOLT_CHILD_RLIMIT_GB", Some("0")),
             ],
             || {

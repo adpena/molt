@@ -237,15 +237,11 @@ fn daemon_request_env_clears_omitted_resource_and_trace_keys_between_requests() 
     let keys = [
         "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
         "MOLT_CLI_MEMORY_AVAILABLE_GB",
-        "MOLT_CLI_MEM_AVAILABLE_GB",
         "MOLT_MEMORY_AVAILABLE_GB",
-        "MOLT_MEM_AVAILABLE_GB",
-        "MOLT_BACKEND_MAX_RSS_GB",
+        "MOLT_BACKEND_MAX_PROCESS_RSS_GB",
         "MOLT_BACKEND_MEMORY_RESERVE_GB",
         "MOLT_CLI_MEMORY_RESERVE_GB",
-        "MOLT_CLI_MEM_RESERVE_GB",
         "MOLT_MEMORY_RESERVE_GB",
-        "MOLT_MEM_RESERVE_GB",
         "RAYON_NUM_THREADS",
         "MOLT_TIR_TRACE_FUNC",
     ];

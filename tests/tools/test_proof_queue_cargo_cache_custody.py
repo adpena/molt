@@ -175,7 +175,7 @@ def test_queue_environment_preserves_scratch_custody_without_admitting_secrets(
         "TMP",
         "TEMP",
         "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
-        "MOLT_BACKEND_MAX_RSS_GB",
+        "MOLT_BACKEND_MAX_PROCESS_RSS_GB",
     ],
 )
 def test_caller_temp_and_backend_policy_remain_compilation_inputs(name):
@@ -274,7 +274,7 @@ def test_owned_temporary_paths_are_roles_not_caller_values(subcommand):
     )
     assert base != cache.input_identity(
         **arguments,
-        env={"TEMP": "one", "RUSTFLAGS": "one", "MOLT_BACKEND_MAX_RSS_GB": "4"},
+        env={"TEMP": "one", "RUSTFLAGS": "one", "MOLT_BACKEND_MAX_PROCESS_RSS_GB": "4"},
     )
 
 

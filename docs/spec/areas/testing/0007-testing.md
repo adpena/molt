@@ -121,11 +121,11 @@ as generated programs; a pass on one host cannot establish the whole matrix.
 ### 1.0 Performance + Memory Controls
 - **Parallelism**: auto-selected based on CPU and available memory (default budget: 2 GB/worker).
   - Override with `--jobs <n>` or `MOLT_DIFF_MAX_JOBS=<n>`.
-  - Tune memory budget with `MOLT_DIFF_MEM_PER_JOB_GB=<n>` or `MOLT_DIFF_MEM_AVAILABLE_GB=<n>`.
+  - Tune memory budget with `MOLT_DIFF_MEM_PER_JOB_GB=<n>` or `MOLT_DIFF_MEMORY_AVAILABLE_GB=<n>`.
 - **Memory guard**: enabled by default with adaptive per-process,
   per-test-tree, global RSS, and a direct-child `RLIMIT_RSS` backstop. Configure
   deliberate investigation caps with `MOLT_DIFF_MAX_PROCESS_RSS_GB`,
-  `MOLT_DIFF_MAX_TREE_RSS_GB`, `MOLT_DIFF_GLOBAL_RSS_LIMIT_GB`, or
+  `MOLT_DIFF_MAX_TOTAL_RSS_GB`, `MOLT_DIFF_MAX_GLOBAL_RSS_GB`, or
   `MOLT_DIFF_CHILD_RLIMIT_GB`. Test execution is not allowed to bypass memory
   custody; direct pytest sessions re-exec through `tools/memory_guard.py` before
   collection, and differential/conformance/regrtest harnesses keep their RSS

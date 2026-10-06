@@ -62,19 +62,27 @@ class ResolvedMemoryLimits:
         return self.max_global_rss_kb / (1024 * 1024)
 
 
-def _normalize_env_prefix(prefix: str | None) -> str:
+def normalize_env_prefix(prefix: str | None) -> str:
+    """The guard scope stem for ``prefix``: upper-cased, no trailing underscore.
+
+    One authority for every ``<STEM>_<SUFFIX>`` environment name the guards
+    compose (see ``[[family]]`` in ``src/molt/environment_registry.toml``).
+    """
+
     if not prefix:
         return ""
     return prefix.strip().upper().rstrip("_")
 
 
-def _prefixed_names(prefix: str | None, suffixes: Sequence[str]) -> list[str]:
-    normalized = _normalize_env_prefix(prefix)
+def _prefixed_names(prefix: str | None, suffix: str) -> list[str]:
+    """``<STEM>_<suffix>`` then the root fallback ``MOLT_<suffix>``."""
+
+    normalized = normalize_env_prefix(prefix)
     names: list[str] = []
-    if normalized:
-        names.extend(f"{normalized}_{suffix}" for suffix in suffixes)
-    names.extend(f"MOLT_{suffix}" for suffix in suffixes)
-    return list(dict.fromkeys(names))
+    if normalized and normalized != "MOLT":
+        names.append(f"{normalized}_{suffix}")
+    names.append(f"MOLT_{suffix}")
+    return names
 
 
 def _float_env(environ: Mapping[str, str], names: Sequence[str]) -> float | None:
@@ -199,7 +207,7 @@ def physical_memory_bytes(
     source = os.environ if environ is None else environ
     override = _float_env(
         source,
-        _prefixed_names(prefix, ("TOTAL_MEMORY_GB", "MEMORY_TOTAL_GB")),
+        _prefixed_names(prefix, "MEMORY_TOTAL_GB"),
     )
     if override is not None:
         return int(override * 1024 * 1024 * 1024)
@@ -220,7 +228,7 @@ def available_memory_bytes(
     source = os.environ if environ is None else environ
     override = _float_env(
         source,
-        _prefixed_names(prefix, ("MEM_AVAILABLE_GB", "MEMORY_AVAILABLE_GB")),
+        _prefixed_names(prefix, "MEMORY_AVAILABLE_GB"),
     )
     if override is not None:
         return int(override * 1024 * 1024 * 1024)
@@ -247,7 +255,7 @@ def adaptive_memory_budget(
         available_gb = min(available_gb, physical_gb)
     reserve_override = _float_env(
         source,
-        _prefixed_names(prefix, ("MEMORY_RESERVE_GB", "MEM_RESERVE_GB")),
+        _prefixed_names(prefix, "MEMORY_RESERVE_GB"),
     )
     if reserve_override is not None:
         reserve_gb = reserve_override

@@ -153,7 +153,7 @@ sys.path.insert(0, str(root / "src"))
 from molt_accel.client import MoltClient
 
 cmd = shlex.split(os.environ["MOLT_WORKER_CMD"])
-wire = os.environ.get("MOLT_WORKER_WIRE") or os.environ.get("MOLT_WIRE")
+wire = os.environ.get("MOLT_WORKER_WIRE")
 client = MoltClient(worker_cmd=cmd, wire=wire)
 try:
     client.ping(timeout_ms=250)

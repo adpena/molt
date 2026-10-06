@@ -23938,7 +23938,7 @@ def test_runtime_wasm_resource_exports_are_not_satisfied_by_browser_fallbacks(
 def test_run_subprocess_captured_to_tempfiles_emits_keepalive(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setenv("MOLT_SUBPROCESS_KEEPALIVE_SECS", "0.01")
+    monkeypatch.setenv("MOLT_SUBPROCESS_KEEPALIVE_SEC", "0.01")
     result = COMMAND_RUNTIME._run_subprocess_captured_to_tempfiles(
         [
             sys.executable,
@@ -27939,7 +27939,7 @@ def test_backend_daemon_compile_request_includes_resource_env_without_codegen_di
     backend_output = tmp_path / "output.o"
     baseline_digest = BACKEND_EXECUTION._backend_codegen_env_digest(is_wasm=False)
     monkeypatch.setenv("MOLT_BACKEND_MEMORY_AVAILABLE_GB", "18")
-    monkeypatch.setenv("MOLT_BACKEND_MAX_RSS_GB", "18")
+    monkeypatch.setenv("MOLT_BACKEND_MAX_PROCESS_RSS_GB", "18")
     monkeypatch.setenv("MOLT_BACKEND_MEMORY_RESERVE_GB", "4")
     monkeypatch.setenv("RAYON_NUM_THREADS", "2")
 
@@ -27966,7 +27966,7 @@ def test_backend_daemon_compile_request_includes_resource_env_without_codegen_di
     assert request_bytes is not None
     payload = json.loads(request_bytes)
     assert payload["env"]["MOLT_BACKEND_MEMORY_AVAILABLE_GB"] == "18"
-    assert payload["env"]["MOLT_BACKEND_MAX_RSS_GB"] == "18"
+    assert payload["env"]["MOLT_BACKEND_MAX_PROCESS_RSS_GB"] == "18"
     assert payload["env"]["MOLT_BACKEND_MEMORY_RESERVE_GB"] == "4"
     assert payload["env"]["RAYON_NUM_THREADS"] == "2"
     assert (

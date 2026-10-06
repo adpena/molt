@@ -404,19 +404,15 @@ pub fn env_memory_limit_bytes() -> Option<u64> {
     let available = [
         "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
         "MOLT_CLI_MEMORY_AVAILABLE_GB",
-        "MOLT_CLI_MEM_AVAILABLE_GB",
         "MOLT_MEMORY_AVAILABLE_GB",
-        "MOLT_MEM_AVAILABLE_GB",
-        "MOLT_BACKEND_MAX_RSS_GB",
+        "MOLT_BACKEND_MAX_PROCESS_RSS_GB",
     ]
     .iter()
     .find_map(|name| parse_nonnegative_gb_env(name))?;
     let reserve = [
         "MOLT_BACKEND_MEMORY_RESERVE_GB",
         "MOLT_CLI_MEMORY_RESERVE_GB",
-        "MOLT_CLI_MEM_RESERVE_GB",
         "MOLT_MEMORY_RESERVE_GB",
-        "MOLT_MEM_RESERVE_GB",
     ]
     .iter()
     .find_map(|name| parse_nonnegative_gb_env(name))

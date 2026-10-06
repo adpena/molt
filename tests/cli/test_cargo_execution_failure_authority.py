@@ -73,7 +73,7 @@ def test_canonical_cargo_environment_forces_incremental_off_with_sccache(
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     monkeypatch.delenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", raising=False)
     monkeypatch.delenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", raising=False)
-    monkeypatch.delenv("MOLT_USE_EXTERNAL_ARTIFACTS", raising=False)
+    monkeypatch.delenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", raising=False)
 
     env = CARGO._cargo_build_env()
 
@@ -96,7 +96,7 @@ def test_canonical_cargo_environment_uses_normal_policy_without_sccache(
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
     monkeypatch.delenv("MOLT_REQUIRE_EXTERNAL_ARTIFACTS", raising=False)
     monkeypatch.delenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", raising=False)
-    monkeypatch.delenv("MOLT_USE_EXTERNAL_ARTIFACTS", raising=False)
+    monkeypatch.delenv("MOLT_PREFER_EXTERNAL_ARTIFACTS", raising=False)
 
     env = CARGO._cargo_build_env()
 

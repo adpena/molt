@@ -17,7 +17,7 @@ def main() -> int:
     env = harness_memory_guard.canonical_harness_env(os.environ, repo_root=ROOT)
     env["PYTHONPATH"] = f"{ROOT / 'src'}:{ROOT / 'demo' / 'django_app'}"
     env["DJANGO_SETTINGS_MODULE"] = "demoapp.settings"
-    env["MOLT_WIRE"] = env.get("MOLT_WIRE", "msgpack")
+    env["MOLT_WORKER_WIRE"] = env.get("MOLT_WORKER_WIRE", "msgpack")
     context = harness_memory_guard.HarnessExecutionContext.from_env(
         "MOLT_BENCH",
         env,

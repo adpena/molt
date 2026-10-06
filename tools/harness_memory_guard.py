@@ -322,7 +322,7 @@ class HarnessMemoryLimitDefaults:
     child_rlimit_gb: float | None = None
 
 
-_normalize_prefix = _harness_outcomes.normalize_prefix
+_normalize_prefix = memory_guard.normalize_env_prefix
 
 
 def _label_from_prefix(prefix: str) -> str:
@@ -504,12 +504,7 @@ def limits_from_env(
     adaptive_budget = memory_guard.adaptive_memory_budget(normalized, source)
     process_override = _env_float_optional(
         source,
-        [
-            f"{normalized}_MAX_PROCESS_RSS_GB",
-            f"{normalized}_MAX_RSS_GB",
-            "MOLT_MAX_PROCESS_RSS_GB",
-            "MOLT_MAX_RSS_GB",
-        ],
+        [f"{normalized}_MAX_PROCESS_RSS_GB", "MOLT_MAX_PROCESS_RSS_GB"],
         strict=strict,
         positive=strict,
     )
@@ -524,12 +519,7 @@ def limits_from_env(
     )
     total_override = _env_float_optional(
         source,
-        [
-            f"{normalized}_MAX_TOTAL_RSS_GB",
-            f"{normalized}_MAX_TREE_RSS_GB",
-            "MOLT_MAX_TOTAL_RSS_GB",
-            "MOLT_MAX_TREE_RSS_GB",
-        ],
+        [f"{normalized}_MAX_TOTAL_RSS_GB", "MOLT_MAX_TOTAL_RSS_GB"],
         strict=strict,
         positive=strict,
     )
@@ -544,12 +534,7 @@ def limits_from_env(
     )
     global_override = _env_float_optional(
         source,
-        [
-            f"{normalized}_GLOBAL_RSS_LIMIT_GB",
-            f"{normalized}_MAX_GLOBAL_RSS_GB",
-            "MOLT_GLOBAL_RSS_LIMIT_GB",
-            "MOLT_MAX_GLOBAL_RSS_GB",
-        ],
+        [f"{normalized}_MAX_GLOBAL_RSS_GB", "MOLT_MAX_GLOBAL_RSS_GB"],
         strict=strict,
         positive=strict,
     )
@@ -605,12 +590,7 @@ def limits_from_env(
         poll_interval = DEFAULT_POLL_INTERVAL_SEC
     child_rlimit_override = _env_float_optional(
         source,
-        [
-            f"{normalized}_CHILD_RLIMIT_GB",
-            f"{normalized}_MAX_CHILD_RLIMIT_GB",
-            "MOLT_CHILD_RLIMIT_GB",
-            "MOLT_MAX_CHILD_RLIMIT_GB",
-        ],
+        [f"{normalized}_CHILD_RLIMIT_GB", "MOLT_CHILD_RLIMIT_GB"],
         strict=strict,
     )
     child_rlimit_gb = (
@@ -802,11 +782,7 @@ def _github_context_payload(env: Mapping[str, str]) -> dict[str, str] | None:
 
 
 def _command_profile_mode(env: Mapping[str, str]) -> str:
-    raw = (
-        (env.get("MOLT_GUARD_PROFILE", "") or env.get("MOLT_GUARD_PROFILE_MODE", ""))
-        .strip()
-        .lower()
-    )
+    raw = env.get("MOLT_GUARD_PROFILE", "").strip().lower()
     if raw in FALSE_VALUES:
         return "off"
     if env.get("MOLT_GUARD_PROFILE_LOG", "").strip():
@@ -1511,13 +1487,8 @@ def _subprocess_keepalive_interval_secs(
     normalized = _normalize_prefix(prefix or "")
     names: list[str] = []
     if normalized:
-        names.extend(
-            [
-                f"{normalized}_KEEPALIVE_SEC",
-                f"{normalized}_KEEPALIVE_SECS",
-            ]
-        )
-    names.append("MOLT_SUBPROCESS_KEEPALIVE_SECS")
+        names.append(f"{normalized}_KEEPALIVE_SEC")
+    names.append("MOLT_SUBPROCESS_KEEPALIVE_SEC")
     raw = ""
     for name in names:
         value = source.get(name)

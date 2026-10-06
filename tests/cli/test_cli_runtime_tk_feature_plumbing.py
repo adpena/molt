@@ -385,7 +385,6 @@ def test_cargo_target_root_ignores_removed_legacy_target_root_env(
         "MOLT_EXT_ROOT",
         "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
         "MOLT_PREFER_EXTERNAL_ARTIFACTS",
-        "MOLT_USE_EXTERNAL_ARTIFACTS",
     ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv(legacy_key, str(tmp_path / "legacy-target"))
@@ -422,7 +421,6 @@ def test_cargo_build_env_preserves_public_cargo_defaults_without_dev_request(
         "CARGO_TARGET_DIR",
         "MOLT_REQUIRE_EXTERNAL_ARTIFACTS",
         "MOLT_PREFER_EXTERNAL_ARTIFACTS",
-        "MOLT_USE_EXTERNAL_ARTIFACTS",
     ):
         monkeypatch.delenv(key, raising=False)
 

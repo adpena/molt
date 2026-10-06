@@ -239,7 +239,7 @@ def test_limits_from_env_prefers_harness_prefix(monkeypatch) -> None:
     monkeypatch.setenv("MOLT_BENCH_MEMORY_GUARD", "1")
     monkeypatch.setenv("MOLT_BENCH_MAX_PROCESS_RSS_GB", "3")
     monkeypatch.setenv("MOLT_BENCH_MAX_TOTAL_RSS_GB", "4")
-    monkeypatch.setenv("MOLT_BENCH_GLOBAL_RSS_LIMIT_GB", "7")
+    monkeypatch.setenv("MOLT_BENCH_MAX_GLOBAL_RSS_GB", "7")
     monkeypatch.setenv("MOLT_BENCH_CHILD_RLIMIT_GB", "6")
     monkeypatch.setenv("MOLT_BENCH_MEMORY_GUARD_POLL_SEC", "0.05")
     # Pin the host model: explicit limits are clamped to plausible host
@@ -376,12 +376,12 @@ def test_limits_from_env_uses_adaptive_defaults(monkeypatch) -> None:
     monkeypatch.delenv("MOLT_BENCH_MAX_PROCESS_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_BENCH_MAX_TOTAL_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_BENCH_MAX_GLOBAL_RSS_GB", raising=False)
-    monkeypatch.delenv("MOLT_BENCH_GLOBAL_RSS_LIMIT_GB", raising=False)
+    monkeypatch.delenv("MOLT_BENCH_MAX_GLOBAL_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_BENCH_MEMORY_GUARD_POLL_SEC", raising=False)
     monkeypatch.delenv("MOLT_MAX_PROCESS_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_MAX_TOTAL_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_MAX_GLOBAL_RSS_GB", raising=False)
-    monkeypatch.delenv("MOLT_GLOBAL_RSS_LIMIT_GB", raising=False)
+    monkeypatch.delenv("MOLT_MAX_GLOBAL_RSS_GB", raising=False)
     monkeypatch.delenv("MOLT_MEMORY_GUARD_POLL_SEC", raising=False)
     monkeypatch.delenv("CODEX_SHELL", raising=False)
     monkeypatch.delenv("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", raising=False)
@@ -391,8 +391,8 @@ def test_limits_from_env_uses_adaptive_defaults(monkeypatch) -> None:
         "MOLT_BENCH",
         {
             "PATH": "/usr/bin",
-            "MOLT_BENCH_TOTAL_MEMORY_GB": "128",
-            "MOLT_BENCH_MEM_AVAILABLE_GB": "96",
+            "MOLT_BENCH_MEMORY_TOTAL_GB": "128",
+            "MOLT_BENCH_MEMORY_AVAILABLE_GB": "96",
         },
     )
 
@@ -421,8 +421,8 @@ def test_limits_from_env_caps_dynamic_defaults_for_codex_shell(monkeypatch) -> N
             "PATH": "/usr/bin",
             "CODEX_SHELL": "1",
             "CODEX_THREAD_ID": "thread",
-            "MOLT_BUILD_TOTAL_MEMORY_GB": "128",
-            "MOLT_BUILD_MEM_AVAILABLE_GB": "120",
+            "MOLT_BUILD_MEMORY_TOTAL_GB": "128",
+            "MOLT_BUILD_MEMORY_AVAILABLE_GB": "120",
         },
     )
 
@@ -455,8 +455,8 @@ def test_limits_from_env_keeps_explicit_codex_rss_overrides_authoritative(
         {
             "PATH": "/usr/bin",
             "CODEX_SHELL": "1",
-            "MOLT_BUILD_TOTAL_MEMORY_GB": "128",
-            "MOLT_BUILD_MEM_AVAILABLE_GB": "120",
+            "MOLT_BUILD_MEMORY_TOTAL_GB": "128",
+            "MOLT_BUILD_MEMORY_AVAILABLE_GB": "120",
             "MOLT_BUILD_MAX_PROCESS_RSS_GB": "40",
             "MOLT_BUILD_MAX_TOTAL_RSS_GB": "44",
             "MOLT_BUILD_MAX_GLOBAL_RSS_GB": "48",
@@ -496,13 +496,13 @@ def test_limits_from_env_merges_parent_guard_controls(monkeypatch) -> None:
 
 def test_limits_from_env_canonicalizes_implausible_overrides(monkeypatch) -> None:
     monkeypatch.setenv("MOLT_CONFORMANCE_MAX_PROCESS_RSS_GB", "4200")
-    monkeypatch.setenv("MOLT_CONFORMANCE_MAX_TREE_RSS_GB", "4500")
-    monkeypatch.setenv("MOLT_CONFORMANCE_GLOBAL_RSS_LIMIT_GB", "5000")
+    monkeypatch.setenv("MOLT_CONFORMANCE_MAX_TOTAL_RSS_GB", "4500")
+    monkeypatch.setenv("MOLT_CONFORMANCE_MAX_GLOBAL_RSS_GB", "5000")
     monkeypatch.setenv("MOLT_CONFORMANCE_CHILD_RLIMIT_GB", "5000")
     env = {
         "PATH": "/usr/bin",
-        "MOLT_CONFORMANCE_TOTAL_MEMORY_GB": "128",
-        "MOLT_CONFORMANCE_MEM_AVAILABLE_GB": "96",
+        "MOLT_CONFORMANCE_MEMORY_TOTAL_GB": "128",
+        "MOLT_CONFORMANCE_MEMORY_AVAILABLE_GB": "96",
     }
 
     limits = harness_memory_guard.limits_from_env("MOLT_CONFORMANCE", env)

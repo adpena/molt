@@ -481,7 +481,7 @@ Split applications stage both members before any commit; each container is
 crash-atomic, but the pair is not a filesystem transaction. Failure reports
 prior committed paths and preserves replacement/durability error state.
 There are no sidecars or rollback backups. The retired
-`MOLT_WASM_PRECOMPILED_WRITE` setting fails with an explicit migration error.
+the retired precompiled-write variable fails with an explicit migration error (`molt-wasm-host --precompile` replaced it).
 Source/manifest/output aliases are rejected by filesystem identity; two new
 outputs in the same physical directory must also have distinct Unicode-normalized,
 case-folded names. The producer never instantiates a guest or executes a start.

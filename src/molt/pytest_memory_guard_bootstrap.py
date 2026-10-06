@@ -372,11 +372,7 @@ def _artifact_root_accepts_child_dirs(path: Path, *, create_dirs: bool) -> bool:
 
 
 def _configured_windows_pytest_artifact_roots() -> tuple[Path, ...]:
-    raw = (
-        os.environ.get("MOLT_EXTERNAL_ARTIFACT_ROOTS")
-        or os.environ.get("MOLT_EXTERNAL_ARTIFACT_CANDIDATES")
-        or ""
-    )
+    raw = os.environ.get("MOLT_EXTERNAL_ARTIFACT_ROOTS") or ""
     roots: list[Path] = []
     for candidate in raw.split(os.pathsep) if raw.strip() else ():
         text = candidate.strip()

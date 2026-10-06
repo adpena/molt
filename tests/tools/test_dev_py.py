@@ -525,10 +525,11 @@ def test_dev_py_test_argv_is_consumed_by_real_runner(monkeypatch, flags) -> None
 
     def capture_batch(args, python=None, env=None, tty=False):
         batches.append((list(args), python))
-        assert env["MOLT_CAPABILITY_TIER"] == module.MAXIMUM_BUILTIN_CAPABILITY_TIER
+        # The driver never raises the ambient capability tier (HF-44): tests
+        # that need capabilities declare them, so local runs match CI.
+        assert "MOLT_CAPABILITY_TIER" not in env
 
     monkeypatch.delenv("MOLT_CAPABILITY_TIER", raising=False)
-    monkeypatch.delenv("MOLT_DEV_TRUSTED", raising=False)
     monkeypatch.delenv("MOLT_PYTEST_RANDOM_ORDER", raising=False)
     monkeypatch.delenv("MOLT_PYTEST_RANDOM_SEED", raising=False)
     monkeypatch.setattr(module, "run_uv", capture_batch)
