@@ -294,7 +294,10 @@ def test_native_selection_captures_member_facts_under_owned_admission(
 
     from molt.cli import native_symbol_inspection as symbols
     from molt.cli.extension_scan_surface import _ExtensionScanSurface
-    from tests.cli.native_link_test_support import static_archive_bytes
+    from tests.cli.native_link_test_support import (
+        mock_symbol_reader_admission,
+        static_archive_bytes,
+    )
     from tests.native_artifact_fixtures import native_relocatable_object
 
     target = "x86_64-unknown-linux-gnu"
@@ -325,9 +328,10 @@ def test_native_selection_captures_member_facts_under_owned_admission(
     monkeypatch.setattr(symbols, "open_stable_regular_file", own)
     monkeypatch.setattr(symbols, "_nm_candidate_binaries", lambda: [sys.executable])
     monkeypatch.setattr(symbols, "_run_completed_command", inspect)
-    monkeypatch.setattr(symbols, "_default_molt_cache", lambda: tmp_path / "cache")
     monkeypatch.setattr(symbols, "_NATIVE_OBJECT_SYMBOL_SETS_CACHE", OrderedDict())
-    captured = LinkSelectionAdmission.capture(requirements, surface=surface)
+    # The interpreter stands in for llvm-nm; `inspect` supplies its output.
+    with mock_symbol_reader_admission(monkeypatch, tmp_path / "cache"):
+        captured = LinkSelectionAdmission.capture(requirements, surface=surface)
     facts = captured.facts[artifact]
     assert facts.defined_functions == {"selected"}
     assert facts.artifact_digest == hashlib.sha256(artifact.read_bytes()).hexdigest()
