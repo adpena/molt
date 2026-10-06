@@ -41,7 +41,6 @@ from molt.cli.compiler_identity import (
     backend_build_admission,
     installed_compiler_admission,
 )
-from molt.cli import native_toolchain
 from molt.cli.runtime_fingerprints import (
     _artifact_semantic_identity,
     _admitted_runtime_fingerprint,
@@ -460,9 +459,10 @@ def _ensure_backend_binary(
         ) -> tuple[StableRegularFileIdentity, StableRegularFileIdentity] | None:
             if not source.exists():
                 return None
-            if source == backend_bin:
-                # One signing seam: atomic copies sign through it as well.
-                native_toolchain._codesign_binary(backend_bin)
+            # The alias is the exact Cargo bytes. The source already passed an
+            # executable probe, and publication replaces the inode, so its
+            # linker signature stays valid; re-signing would only rewrite the
+            # bytes (and the compiler identity) on every build.
             with stable_executable_probe(
                 source, label="backend alias source", identity=expected_identity
             ) as (
@@ -470,7 +470,7 @@ def _ensure_backend_binary(
                 identity,
             ):
                 if source != backend_bin:
-                    _atomic_copy_file(source, backend_bin, codesign=True)
+                    _atomic_copy_file(source, backend_bin)
                 with stable_executable_probe(
                     backend_bin, label="materialized backend alias"
                 ) as (_alias_entrypoint, alias_identity):

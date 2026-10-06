@@ -865,7 +865,8 @@ def test_native_candidate_is_finalized_before_atomic_publication(
         assert path.read_bytes() == b"stripped"
         events.append("validate")
 
-    def fake_sign(path: Path) -> None:
+    def fake_sign(path: Path, destination: Path) -> None:
+        assert destination == output
         assert path.read_bytes() == b"stripped"
         assert output.read_bytes() == b"previous"
         events.append("sign")

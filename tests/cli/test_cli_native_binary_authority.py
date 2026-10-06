@@ -184,7 +184,8 @@ def test_actual_native_finalization_consumer_rejects_before_publication(
     monkeypatch.delenv("MOLT_SKIP_BINARY_VALIDITY_CHECK", raising=False)
     monkeypatch.delenv("MOLT_BUILD_SMOKE_EXEC", raising=False)
 
-    def sign(source: Path) -> None:
+    def sign(source: Path, destination: Path) -> None:
+        assert destination == output
         published.append(source)
 
     monkeypatch.setattr(atomic_io, "_codesign_atomic_copy_temp", sign)

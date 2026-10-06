@@ -439,7 +439,7 @@ def test_native_consumer_reuses_published_bytes_and_relinks_tampering(
         linked.append(candidate)
         return subprocess.CompletedProcess(link_cmd, 0, "", "")
 
-    def sign(candidate):
+    def sign(candidate, destination):
         candidate.write_bytes(candidate.read_bytes() + b" signed")
 
     monkeypatch.setattr(link_pipeline, "_run_native_link_command", run)

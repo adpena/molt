@@ -65,24 +65,23 @@ def _write_json_sidecar(path: Path, payload: Mapping[str, Any]) -> None:
     _atomic_write_json(path, payload, indent=2, sort_keys=True)
 
 
-def _codesign_atomic_copy_temp(path: Path) -> None:
+def _codesign_atomic_copy_temp(path: Path, destination: Path) -> None:
+    """Sign a private stage as the binary it will be published as."""
     from molt.cli.native_toolchain import _codesign_binary
 
-    _codesign_binary(path)
+    _codesign_binary(path, identifier=destination.name)
 
 
 def _atomic_copy_file(
     src: Path,
     dst: Path,
     *,
-    codesign: bool = False,
     expected_sha256: str | None = None,
     observed: StableRegularFileIdentity | None = None,
 ) -> None:
     with _staged_copy_file(
         src,
         dst,
-        codesign=codesign,
         expected_sha256=expected_sha256,
         observed=observed,
     ) as tmp_path:
@@ -104,7 +103,9 @@ def _staged_copy_file(
     with artifact_publication.staged_copy_file(
         src,
         dst,
-        prepare=_codesign_atomic_copy_temp if codesign else None,
+        prepare=(lambda stage: _codesign_atomic_copy_temp(stage, dst))
+        if codesign
+        else None,
         expected_sha256=expected_sha256,
         observed=observed,
     ) as candidate:

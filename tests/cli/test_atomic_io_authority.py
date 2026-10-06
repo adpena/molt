@@ -391,3 +391,28 @@ def test_atomic_write_missing_stage_cleanup_is_ignored(
         )
         assert destination.read_bytes() == b"replacement"
     assert not stage.exists()
+
+
+def test_signed_staged_copy_is_a_pure_function_of_bytes_and_destination(
+    tmp_path: Path,
+) -> None:
+    """Two publications of one binary to one name produce identical signed bytes.
+
+    Every stage gets a unique random name. On macOS an ad-hoc signature takes
+    its identifier from the file name unless the caller fixes it, so signing
+    the stage used to embed the random name and change the published bytes on
+    every build. Other hosts do not sign, which this oracle also covers.
+    """
+    import sys
+
+    source = tmp_path / "source-binary"
+    source.write_bytes(Path(sys.executable).resolve().read_bytes())
+    source.chmod(0o755)
+    produced: list[bytes] = []
+    for generation in ("first", "second"):
+        destination = tmp_path / generation / "molt-app"
+        destination.parent.mkdir()
+        with atomic_io._staged_copy_file(source, destination, codesign=True) as stage:
+            assert stage.name != destination.name
+            produced.append(stage.read_bytes())
+    assert produced[0] == produced[1]
