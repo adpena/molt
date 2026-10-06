@@ -17,7 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -2402,13 +2402,21 @@ class GuardedExecutionAuthorities:
     command: list[str]
     envelope: dict[str, object]
     selection: Mapping[str, object]
+    # The unpatched capture authority: _execute_request monkeypatches
+    # command_identity._python_identity onto this fixture, so a recapture
+    # looked up by name would re-enter current() without bound.
+    capture: Callable[..., dict[str, object] | None]
     recaptures: int = 0
 
     def current(self) -> dict[str, object]:
-        rows = toolchain_capture.frozen_files(
-            {"tools": {"python": self.python_identity}}
-        )
         workers = proof_plan.ProofPlan.load().inventory_hash_workers
+        try:
+            rows = toolchain_capture.frozen_files(
+                {"tools": {"python": self.python_identity}}
+            )
+        except ValueError:
+            # A cache that cannot even be projected is not reusable evidence.
+            rows = None
 
         def rehash(row: toolchain_capture.FrozenFile) -> bool:
             path = Path(row.path)
@@ -2420,10 +2428,11 @@ class GuardedExecutionAuthorities:
                 return False
             return digest == row.sha256 and (row.size is None or size == row.size)
 
-        with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
-            if all(executor.map(rehash, rows)):
-                return self.python_identity
-        identity = command_identity._python_identity(
+        if rows is not None:
+            with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+                if all(executor.map(rehash, rows)):
+                    return self.python_identity
+        identity = self.capture(
             self.envelope,
             self.command,
             cwd=state.ROOT,
@@ -2622,6 +2631,7 @@ def guarded_execution_authorities(
         command=command,
         envelope=envelope,
         selection=selections["python"],
+        capture=command_identity._python_identity,
     )
 
 
@@ -3445,16 +3455,14 @@ def test_python_bootstrap_module_and_script_main_semantics(tmp_path: Path) -> No
         if key != "PYTHONPATH" and not key.startswith("MOLT_PROOF_CHILD_CUSTODY")
     }
 
+    envelope = {"python": {"kind": "direct"}}
+    module_argv = command_admission._python_bootstrap_command(
+        envelope, [sys.executable, "-S", "-m", "sample_package", "payload"]
+    )
+    assert module_argv[:3] == [sys.executable, "-B", "-S"]
+    assert module_argv[3] == str(bootstrap)
     module = run_custody_subject_process(
-        [
-            sys.executable,
-            "-S",
-            str(bootstrap),
-            "module",
-            "0",
-            "sample_package",
-            "payload",
-        ],
+        module_argv,
         cwd=tmp_path,
         env=clean_env,
         check=False,
@@ -3469,16 +3477,13 @@ def test_python_bootstrap_module_and_script_main_semantics(tmp_path: Path) -> No
     assert module_payload["package"] == "sample_package"
     assert module_payload["spec"] == "sample_package.__main__"
 
+    script_argv = command_admission._python_bootstrap_command(
+        envelope, [sys.executable, "-I", str(script), "payload"]
+    )
+    assert script_argv[:3] == [sys.executable, "-B", "-I"]
+    assert script_argv[3] == str(bootstrap)
     script_result = run_custody_subject_process(
-        [
-            sys.executable,
-            "-I",
-            str(bootstrap),
-            "script",
-            "0",
-            str(script),
-            "payload",
-        ],
+        script_argv,
         cwd=tmp_path,
         env=clean_env,
         check=False,
@@ -3492,6 +3497,40 @@ def test_python_bootstrap_module_and_script_main_semantics(tmp_path: Path) -> No
     assert script_payload["name"] == "__main__"
     assert script_payload["package"] is None
     assert script_payload["spec"] is None
+
+
+@pytest.mark.slow
+def test_cached_python_authorities_recapture_once_under_the_execution_patch(
+    guarded_execution_authorities: GuardedExecutionAuthorities,
+) -> None:
+    """Drift in a cached row recaptures through the unpatched authority.
+
+    _execute_request patches command_identity._python_identity onto the
+    fixture; a recapture that looked that name up again would re-enter
+    current() without bound and hash the inventory until the recursion limit.
+    """
+    authorities = guarded_execution_authorities
+    before = authorities.recaptures
+    stale = copy.deepcopy(authorities.python_identity)
+    rows = stale["file_custody"]
+    assert isinstance(rows, list) and rows
+    rows[0] = {**rows[0], "sha256": "0" * 64}
+    authorities.python_identity = stale
+
+    def reentrant(*args: object, **kwargs: object) -> dict[str, object]:
+        pytest.fail("recapture must not re-enter the patched execution identity")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(command_identity, "_python_identity", reentrant)
+        current = authorities.current()
+    assert authorities.recaptures == before + 1
+    assert current is authorities.python_identity
+    assert current["file_custody"][0]["sha256"] != "0" * 64
+    # A proven identity is reused as-is on the next call.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(command_identity, "_python_identity", reentrant)
+        assert authorities.current() is current
+    assert authorities.recaptures == before + 1
 
 
 def test_python_bootstrap_honors_canonical_bytecode_policy_under_isolated_startup(
