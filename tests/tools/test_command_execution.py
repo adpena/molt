@@ -106,6 +106,26 @@ def test_read_only_git_classifier_excludes_mutations() -> None:
     )
 
 
+def test_read_only_git_classifier_sees_through_inert_global_options() -> None:
+    # The proof queue snapshots source custody with these exact spellings.
+    assert command_execution._is_bounded_metadata_probe(
+        ["git", "--no-optional-locks", "status", "--porcelain=v1", "-z"]
+    )
+    assert command_execution._is_bounded_metadata_probe(
+        ["git", "ls-files", "--cached", "--full-name", "-z"]
+    )
+    assert command_execution._is_bounded_metadata_probe(
+        ["git", "-C", "repo", "--no-pager", "log", "-1"]
+    )
+    # A config override can arm a hook or a pager, so it keeps the guard.
+    assert not command_execution._is_bounded_metadata_probe(
+        ["git", "-c", "core.fsmonitor=./hook", "status"]
+    )
+    assert not command_execution._is_bounded_metadata_probe(
+        ["git", "--no-optional-locks"]
+    )
+
+
 def test_owned_cargo_process_normalizes_wrapper_incremental_conflict(
     monkeypatch,
 ) -> None:
