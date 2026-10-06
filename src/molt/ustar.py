@@ -14,9 +14,10 @@ class RegularUstarTarInfo(tarfile.TarInfo):
     def fromtarfile(cls, tarfile: TarFile) -> Self:
         """Own header admission before the base decoder can process extensions.
 
-        CPython 3.12.14 routes TarInfo.fromtarfile through a private _frombuf
-        that bypasses this class's frombuf, so the header read is owned here
-        on every patch release. _proc_member is untyped private stdlib API.
+        Recent CPython patch releases route TarInfo.fromtarfile through a
+        private _frombuf that bypasses this class's frombuf, so the header
+        read is owned here on every patch release. _proc_member is untyped
+        private stdlib API.
         """
         raw = tarfile.fileobj.read(BLOCKSIZE)
         member = cls.frombuf(raw, tarfile.encoding, tarfile.errors)
