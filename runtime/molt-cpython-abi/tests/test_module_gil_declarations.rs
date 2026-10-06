@@ -67,7 +67,7 @@ fn install_hooks() {
     hooks.classify_heap = classify;
     hooks.alloc_module = alloc_module;
     hooks.module_exec_begin = exec_begin;
-    support::prepare_abi_test_thread(hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 #[repr(C)]
 struct NativeSpec {

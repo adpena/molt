@@ -10,13 +10,13 @@ use molt_cpython_abi::hooks::{
 use molt_lang_obj_model::MoltObject;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 mod sequences;
 
 enum Value {
     Opaque { supports_subscript: bool },
-    Class,
+    NativeClassAnchor,
     CFunction { method: bool },
     String(Vec<u8>),
     Dict(Vec<(u64, u64)>),
@@ -162,7 +162,10 @@ pub unsafe extern "C" fn dec_ref(bits: u64) {
             }
         }
         Value::Iterator { source, .. } => unsafe { dec_ref(source) },
-        Value::String(_) | Value::Opaque { .. } | Value::Class | Value::CFunction { .. } => {}
+        Value::String(_)
+        | Value::Opaque { .. }
+        | Value::NativeClassAnchor
+        | Value::CFunction { .. } => {}
     }
     if let Some(observer) = on_retire {
         observer(bits);
@@ -438,7 +441,7 @@ pub unsafe extern "C" fn str_data(bits: u64, out_len: *mut usize) -> *const u8 {
 pub unsafe extern "C" fn classify_heap(bits: u64) -> u8 {
     let values = VALUES.lock().unwrap();
     match values.get(&bits).map(|entry| &entry.value) {
-        Some(Value::Class) => MoltTypeTag::Type as u8,
+        Some(Value::NativeClassAnchor) => MoltTypeTag::Other as u8,
         Some(Value::CFunction { .. }) => MoltTypeTag::BuiltinCallable as u8,
         Some(Value::String(_)) => MoltTypeTag::Str as u8,
         Some(Value::Dict(_)) => MoltTypeTag::Dict as u8,
@@ -455,6 +458,12 @@ pub unsafe extern "C" fn classify_heap(bits: u64) -> u8 {
 struct Classes {
     type_class: u64,
     string: u64,
+    boolean: u64,
+    integer: u64,
+    float: u64,
+    complex: u64,
+    bytes: u64,
+    tuple: u64,
     dict: u64,
     module: u64,
     list: u64,
@@ -462,24 +471,11 @@ struct Classes {
     method: u64,
     opaque: u64,
 }
-// Only a fixture that supplies tuple storage needs this binding. Keep the
-// native-only tuple capability of other shared-runtime consumers unchanged.
-static TUPLE_CLASS: LazyLock<u64> = LazyLock::new(|| {
-    let bits = allocate(Value::Class);
-    unsafe {
-        GLOBAL_BRIDGE
-            .bind_static_pyobj_to_runtime_handle(
-                (&raw mut abi_types::PyTuple_Type).cast(),
-                bits,
-                true,
-            )
-            .expect("bind fixture tuple class");
-    }
-    bits
-});
-static CLASSES: LazyLock<Classes> = LazyLock::new(|| {
+static CLASSES: OnceLock<Classes> = OnceLock::new();
+
+fn initialize_class_bindings() -> Classes {
     let bind = |class: *mut PyTypeObject| {
-        let bits = allocate(Value::Class);
+        let bits = allocate(Value::NativeClassAnchor);
         unsafe {
             GLOBAL_BRIDGE
                 .bind_static_pyobj_to_runtime_handle(class.cast(), bits, true)
@@ -490,6 +486,12 @@ static CLASSES: LazyLock<Classes> = LazyLock::new(|| {
     Classes {
         type_class: bind(&raw mut abi_types::PyType_Type),
         string: bind(&raw mut abi_types::PyUnicode_Type),
+        boolean: bind(&raw mut abi_types::PyBool_Type),
+        integer: bind(&raw mut abi_types::PyLong_Type),
+        float: bind(&raw mut abi_types::PyFloat_Type),
+        complex: bind(&raw mut abi_types::PyComplex_Type),
+        bytes: bind(&raw mut abi_types::PyBytes_Type),
+        tuple: bind(&raw mut abi_types::PyTuple_Type),
         dict: bind(&raw mut abi_types::PyDict_Type),
         module: bind(&raw mut abi_types::PyModule_Type),
         list: bind(&raw mut abi_types::PyList_Type),
@@ -497,12 +499,25 @@ static CLASSES: LazyLock<Classes> = LazyLock::new(|| {
         method: bind(&raw mut abi_types::PyCMethod_Type),
         opaque: bind(&raw mut abi_types::MoltManaged_Type),
     }
-});
+}
 pub unsafe extern "C" fn runtime_class_borrowed(bits: u64) -> BorrowedHandleResult {
-    let classes = &*CLASSES;
+    let classes = CLASSES
+        .get()
+        .expect("initialize fixture class bindings before C-API execution");
+    let value = MoltObject::from_bits(bits);
+    if value.is_bool() {
+        return BorrowedHandleResult::ok(classes.boolean);
+    }
+    if value.is_int() {
+        return BorrowedHandleResult::ok(classes.integer);
+    }
+    if value.is_float() {
+        return BorrowedHandleResult::ok(classes.float);
+    }
     let callable_class = {
         let values = VALUES.lock().unwrap();
         match values.get(&bits).map(|entry| &entry.value) {
+            Some(Value::NativeClassAnchor) => Some(classes.type_class),
             Some(Value::CFunction { method: true }) => Some(classes.method),
             Some(Value::CFunction { method: false }) => Some(classes.function),
             _ => None,
@@ -517,19 +532,28 @@ pub unsafe extern "C" fn runtime_class_borrowed(bits: u64) -> BorrowedHandleResu
     let class = match tag {
         tag if tag == MoltTypeTag::Type as u8 => classes.type_class,
         tag if tag == MoltTypeTag::Str as u8 => classes.string,
+        tag if tag == MoltTypeTag::Bool as u8 => classes.boolean,
+        tag if tag == MoltTypeTag::Int as u8 => classes.integer,
+        tag if tag == MoltTypeTag::Float as u8 => classes.float,
+        tag if tag == MoltTypeTag::Complex as u8 => classes.complex,
+        tag if tag == MoltTypeTag::Bytes as u8 => classes.bytes,
         tag if tag == MoltTypeTag::Dict as u8 => classes.dict,
         tag if tag == MoltTypeTag::Module as u8 => classes.module,
         tag if tag == MoltTypeTag::List as u8 => classes.list,
-        tag if tag == MoltTypeTag::Tuple as u8 => *TUPLE_CLASS,
+        tag if tag == MoltTypeTag::Tuple as u8 => classes.tuple,
         _ => classes.opaque,
     };
     BorrowedHandleResult::ok(class)
 }
 unsafe extern "C" fn type_is_subtype(subclass: u64, class: u64) -> i32 {
-    // This fixture cohort has no user-defined managed classes. Its only
-    // non-reflexive relation between bound classes is CMethod -> CFunction.
-    let classes = &*CLASSES;
-    i32::from(subclass == class || (subclass == classes.method && class == classes.function))
+    let classes = CLASSES
+        .get()
+        .expect("initialize fixture class bindings before C-API execution");
+    i32::from(
+        subclass == class
+            || (subclass == classes.method && class == classes.function)
+            || (subclass == classes.boolean && class == classes.integer),
+    )
 }
 // Formatting is intentionally limited to the fixture's strings and inline
 // scalars. The result always allocates or retains in this same owner registry.
@@ -567,6 +591,75 @@ pub unsafe extern "C" fn object_str(bits: u64) -> OwnedHandleResult {
 pub unsafe extern "C" fn object_repr(bits: u64) -> OwnedHandleResult {
     unsafe { stringify(bits, true) }
 }
+static NOT_IMPLEMENTED: LazyLock<u64> = LazyLock::new(|| {
+    let bits = fresh_handle();
+    unsafe {
+        GLOBAL_BRIDGE
+            .bind_static_pyobj_to_runtime_handle(
+                &raw mut abi_types::Py_NotImplementedSentinel,
+                bits,
+                true,
+            )
+            .expect("bind fixture NotImplemented singleton")
+    };
+    bits
+});
+
+pub unsafe extern "C" fn richcompare(
+    operation: std::os::raw::c_int,
+    left: u64,
+    right: u64,
+) -> OwnedHandleResult {
+    use molt_cpython_abi::hooks::DecodedHandleResult;
+    if !(0..=5).contains(&operation) {
+        unsafe { molt_cpython_abi::api::errors::PyErr_BadInternalCall() };
+        return OwnedHandleResult::error();
+    }
+    let compare = molt_cpython_abi::hooks::hooks_or_stubs().object_richcompare_builtin;
+    let DecodedHandleResult::Ok(class) = unsafe { runtime_class_borrowed(left) }.decode() else {
+        return OwnedHandleResult::error();
+    };
+    let result = unsafe { compare(class, operation, left, right) };
+    if !matches!(result.decode(), DecodedHandleResult::Ok(bits) if bits == not_implemented()) {
+        return result;
+    }
+    let DecodedHandleResult::Ok(class) = unsafe { runtime_class_borrowed(right) }.decode() else {
+        return OwnedHandleResult::error();
+    };
+    let reflected = [4, 5, 2, 3, 0, 1][operation as usize];
+    let result = unsafe { compare(class, reflected, right, left) };
+    if !matches!(result.decode(), DecodedHandleResult::Ok(bits) if bits == not_implemented()) {
+        return result;
+    }
+    if matches!(operation, 2 | 3) {
+        return OwnedHandleResult::ok(
+            MoltObject::from_bool(if operation == 2 {
+                left == right
+            } else {
+                left != right
+            })
+            .bits(),
+        );
+    }
+    unsafe {
+        molt_cpython_abi::api::errors::PyErr_SetNone((&raw mut abi_types::PyExc_TypeError).cast())
+    };
+    OwnedHandleResult::error()
+}
+
+pub fn not_implemented() -> u64 {
+    *NOT_IMPLEMENTED
+}
+
+pub fn prepare_class_bindings() {
+    CLASSES.get_or_init(initialize_class_bindings);
+}
+
+pub fn wire_class_identity(hooks: &mut RuntimeHooks) {
+    hooks.runtime_class_borrowed = runtime_class_borrowed;
+    hooks.type_is_subtype = type_is_subtype;
+}
+
 pub fn wire(hooks: &mut RuntimeHooks) {
     hooks.register_c_function = register_c_function;
     hooks.alloc_dict = alloc_dict;
@@ -582,8 +675,7 @@ pub fn wire(hooks: &mut RuntimeHooks) {
     hooks.alloc_str = alloc_str;
     hooks.str_data = str_data;
     hooks.classify_heap = classify_heap;
-    hooks.runtime_class_borrowed = runtime_class_borrowed;
-    hooks.type_is_subtype = type_is_subtype;
+    wire_class_identity(hooks);
     hooks.inc_ref = inc_ref;
     hooks.dec_ref = dec_ref;
     hooks.ref_count = ref_count;

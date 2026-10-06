@@ -6,8 +6,32 @@ mod support;
 
 use std::ptr;
 
+thread_local! {
+    static STRING_ALLOCATION_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+unsafe extern "C" fn alloc_string(data: *const u8, len: usize) -> u64 {
+    if STRING_ALLOCATION_ENABLED.with(std::cell::Cell::get) {
+        unsafe { support::fake_strings::alloc_str(data, len) }
+    } else {
+        0
+    }
+}
+
+unsafe extern "C" fn classify(bits: u64) -> u8 {
+    if support::fake_strings::contains(bits) {
+        molt_cpython_abi::abi_types::MoltTypeTag::Str as u8
+    } else {
+        molt_cpython_abi::abi_types::MoltTypeTag::Other as u8
+    }
+}
+
 fn init() {
-    support::prepare_abi_test_thread(support::stub_runtime_hooks());
+    let mut hooks = support::stub_runtime_hooks();
+    support::fake_strings::wire(&mut hooks);
+    hooks.alloc_str = alloc_string;
+    hooks.classify_heap = classify;
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 // ---------------------------------------------------------------------------
@@ -435,6 +459,7 @@ fn test_unicode_concat_fails_closed_on_alloc_failure() {
 
 #[test]
 fn native_bytearray_resize_preserves_aliases_until_last_export_releases() {
+    STRING_ALLOCATION_ENABLED.with(|enabled| enabled.set(true));
     init();
     use molt_cpython_abi::abi_types::{Py_buffer, PyBUF_WRITABLE, PyExc_BufferError, PyObject};
     use molt_cpython_abi::api::{buffer, errors, refcount, strings};

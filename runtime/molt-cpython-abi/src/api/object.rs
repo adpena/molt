@@ -5989,7 +5989,7 @@ mod f3_divergence_tests {
         };
         let mut name = PyObject {
             ob_refcnt: 1,
-            ob_type: ptr::null_mut(),
+            ob_type: &raw mut crate::abi_types::PyUnicode_Type,
         };
         let mut result: *mut PyObject = ptr::null_mut();
         let rc = unsafe { PyObject_GetOptionalAttr(&raw mut obj, &raw mut name, &raw mut result) };
@@ -6028,7 +6028,7 @@ mod f3_divergence_tests {
         };
         let mut name = PyObject {
             ob_refcnt: 1,
-            ob_type: ptr::null_mut(),
+            ob_type: &raw mut crate::abi_types::PyUnicode_Type,
         };
         let mut result: *mut PyObject = ptr::null_mut();
         let rc = unsafe { PyObject_GetOptionalAttr(&raw mut obj, &raw mut name, &raw mut result) };

@@ -853,6 +853,7 @@ unsafe extern "C" fn fake_object_dir(_obj: u64) -> OwnedHandleResult {
 fn init() -> MutexGuard<'static, ()> {
     let guard = TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     support::prepare_abi_test_thread(TEST_HOOKS);
+    support::fake_runtime::prepare_class_bindings();
     guard
 }
 
@@ -986,7 +987,6 @@ fn managed_call_dispatch_ignores_semantic_class_slots_but_type_reports_that_clas
 #[test]
 fn bound_type_shell_uses_runtime_constructor_when_native_tp_new_is_absent() {
     let _guard = init();
-    let _ = unsafe { support::fake_runtime::runtime_class_borrowed(MoltObject::none().bits()) };
     let canonical_new = unsafe { PyType_Type.tp_new };
     assert!(canonical_new.is_none());
     FAKE_CALLS.store(0, Ordering::Relaxed);

@@ -58,7 +58,7 @@ fn install_hooks_with_rejected_method_store() {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire(&mut hooks);
     hooks.dict_mutate = reject_method_store;
-    support::prepare_abi_test_thread(hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
     METHOD_STORE_FAILURES.store(0, Ordering::Relaxed);
 }
 

@@ -41,7 +41,7 @@ fn pytype_spec_flags(flags: c_ulong) -> c_uint {
 fn install_hooks() {
     let mut hooks: RuntimeHooks = molt_cpython_abi::hooks::STUB_HOOKS;
     support::fake_runtime::wire(&mut hooks);
-    support::prepare_abi_test_thread(hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 // ── Slot callbacks whose identity the test verifies survives dispatch ────────
@@ -151,7 +151,11 @@ fn fromspec_installs_all_slot_families() {
     let obj = unsafe {
         molt_cpython_abi::api::typeobj::PyType_FromSpecWithBases(&mut spec, ptr::null_mut())
     };
-    assert!(!obj.is_null(), "PyType_FromSpecWithBases returned NULL");
+    assert!(
+        !obj.is_null(),
+        "PyType_FromSpecWithBases returned NULL: {:?}",
+        support::take_current_error_text()
+    );
     let tp = obj.cast::<PyTypeObject>();
 
     unsafe {

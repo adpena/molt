@@ -164,13 +164,18 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
     // Source architecture witness: Rust/Luau reject through shared admission
     // before private source emission, not stale leaf-emitter string markers.
     // Actual backend rejection executions live in their own compiler suites.
-    for (backend, target) in [(&luau, "luau_release_fast"), (&rust, "rust_release_fast")] {
+    for (backend, target, boundary) in [
+        (
+            &luau,
+            "luau_release_fast",
+            "validate_target_contract_with_representation_plan(",
+        ),
+        (&rust, "rust_release_fast", "admit_target_program("),
+    ] {
         let checked = &backend[backend
             .find("pub fn compile_checked(")
             .expect("public checked boundary")..];
-        let admission = checked
-            .find("validate_target_contract_with_representation_plan(")
-            .expect("shared target admission");
+        let admission = checked.find(boundary).expect("shared target admission");
         let publication = checked
             .find("self.emit_source(")
             .expect("private source generation");

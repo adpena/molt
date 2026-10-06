@@ -133,6 +133,33 @@ unsafe extern "C" fn mock_number_binary_op(
     molt_cpython_abi::hooks::OwnedHandleResult::error()
 }
 
+unsafe extern "C" fn mock_number_unary_op(
+    operation: u32,
+    bits: u64,
+) -> molt_cpython_abi::hooks::OwnedHandleResult {
+    use molt_cpython_abi::hooks::{NumberUnaryOp, OwnedHandleResult};
+    if operation == NumberUnaryOp::Float as u32 || operation == NumberUnaryOp::FloatAsDouble as u32
+    {
+        let value = if bits == BIG_U64_BITS.load(Ordering::SeqCst) {
+            Some(BIG_U64_VALUE as f64)
+        } else if bits == HUGE_BITS.load(Ordering::SeqCst) {
+            Some(HUGE_AS_F64)
+        } else if bits == NEG_HUGE_BITS.load(Ordering::SeqCst) {
+            Some(-HUGE_AS_F64)
+        } else if bits == MIN_I64_BITS.load(Ordering::SeqCst) {
+            Some(i64::MIN as f64)
+        } else if bits == MAX_I64_BITS.load(Ordering::SeqCst) {
+            Some(i64::MAX as f64)
+        } else {
+            None
+        };
+        if let Some(value) = value {
+            return OwnedHandleResult::ok(MoltObject::from_float(value).bits());
+        }
+    }
+    unsafe { support::fake_numbers::unary(operation, bits) }
+}
+
 fn install_hooks() {
     molt_cpython_abi::bridge::molt_cpython_abi_init();
     if BIG_U64_BITS.load(Ordering::SeqCst) == 0 {
@@ -154,8 +181,9 @@ fn install_hooks() {
     hooks.int_as_u64_mask = mock_int_as_u64_mask;
     hooks.int_sign = mock_int_sign;
     hooks.number_binary_op = mock_number_binary_op;
+    hooks.number_unary_op = mock_number_unary_op;
     support::fake_strings::wire(&mut hooks);
-    support::prepare_abi_test_thread(hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 fn proxy(bits: u64) -> *mut PyObject {

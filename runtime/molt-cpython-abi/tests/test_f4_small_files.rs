@@ -90,7 +90,7 @@ fn install() {
     hooks.sys_get_object_borrowed = fake_sys_get_object_borrowed;
     hooks.import_add_module_borrowed = fake_import_add_module_borrowed;
     hooks.import_module = fake_import_module_fails;
-    support::prepare_abi_test_thread(hooks);
+    support::prepare_runtime_class_abi_test_thread(hooks);
 }
 
 unsafe fn str_obj(text: &str) -> *mut PyObject {

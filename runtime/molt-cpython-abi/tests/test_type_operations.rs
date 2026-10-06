@@ -35,6 +35,8 @@ fn test_type_ready_fails_closed_when_tp_dict_alloc_fails() {
     init();
     unsafe { molt_cpython_abi::api::errors::PyErr_Clear() };
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
+    tp.ob_base.ob_base.ob_refcnt = 1;
+    tp.ob_base.ob_base.ob_type = &raw mut PyType_Type;
     tp.tp_name = c"NoDictionary".as_ptr();
     tp.tp_flags = 0;
     let result = unsafe { molt_cpython_abi::api::typeobj::PyType_Ready(&mut tp) };
@@ -63,6 +65,8 @@ fn test_ready_flag_without_namespace_reenters_readiness_and_fails_closed() {
     // Stub dictionary allocation fails, so this incomplete shell stays unready.
     init();
     let mut tp: PyTypeObject = unsafe { std::mem::zeroed() };
+    tp.ob_base.ob_base.ob_refcnt = 1;
+    tp.ob_base.ob_base.ob_type = &raw mut PyType_Type;
     tp.tp_name = c"IncompleteShell".as_ptr();
     tp.tp_flags = Py_TPFLAGS_READY;
     // Retrying the same failed shell must retry allocation, without a stale
