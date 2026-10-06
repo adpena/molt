@@ -2286,7 +2286,7 @@ tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
 timeout_budget = "cross-check"
 cache_domain = "cargo-workspace"
-dependencies = ["rust.test.default-truth"]
+dependencies = []
 argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
 
@@ -2298,7 +2298,7 @@ tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
 timeout_budget = "cross-check"
 cache_domain = "cargo-workspace"
-dependencies = ["rust.clippy.workspace-default"]
+dependencies = []
 argv = ["cargo", "clippy", "--locked", "-p", "molt-ir", "-p", "molt-passes", "-p", "molt-tir", "-p", "molt-gpu", "-p", "molt-gpu-runtime", "--all-targets", "--all-features", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo"]
 
