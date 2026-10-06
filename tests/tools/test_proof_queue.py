@@ -16366,11 +16366,23 @@ def test_cached_python_authority_never_redirects_supervisor_build_layout(
         return 0
 
     monkeypatch.setattr(guarded_execution, "execute_guarded_request", execute)
-    authority = GuardedExecutionAuthorities(python_identity={})
-    rc, record = _execute_request(
-        repo, result, [sys.executable, "-c", "pass"], authorities=authority
+    command = [sys.executable, "-c", "pass"]
+
+    def never_recapture(*args: object, **kwargs: object) -> dict[str, object] | None:
+        raise AssertionError("a patched execution never consults the Python authority")
+
+    # An empty cached identity carries no layout fields at all. The patched
+    # execution must never consult it, so a recapture is a contract failure.
+    authority = GuardedExecutionAuthorities(
+        python_identity={},
+        command=command,
+        envelope=command_admission.envelope_for_command(command),
+        selection={},
+        capture=never_recapture,
     )
+    rc, record = _execute_request(repo, result, command, authorities=authority)
     assert rc == 0 and record["model"] is True
     assert observed == [(repo, admitted_environment)]
+    assert authority.recaptures == 0
     assert not hasattr(authority, "supervisor_target")
     assert supervisor_generation.provision is provision
