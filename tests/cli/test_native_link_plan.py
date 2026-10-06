@@ -994,6 +994,9 @@ def test_host_spec_keeps_driver_and_runtime_selection_native(
     monkeypatch.setattr(
         native_link_command, "_detect_macos_deployment_target", lambda _arch: "11.0"
     )
+    monkeypatch.setattr(
+        native_link_command, "_resolve_macos_sdk_root", lambda: "/SDK/MacOSX.sdk"
+    )
     runtime = tmp_path / "dev-fast" / "runtime.a"
     runtime.parent.mkdir()
     write_test_static_archive(runtime)
@@ -1020,6 +1023,11 @@ def test_host_spec_keeps_driver_and_runtime_selection_native(
     if host_platform == "darwin":
         assert "-arch" in command
         assert "-mmacosx-version-min=11.0" in command
+        # A managed LLVM clang has no implicit macOS SDK; the driver command
+        # names the active SDK so <stdio.h> resolves for the main stub.
+        assert command[command.index("-isysroot") + 1] == "/SDK/MacOSX.sdk"
+    else:
+        assert "-isysroot" not in command
     inputs = read_native_link_flags(
         runtime,
         target_triple=target.cargo_target,
