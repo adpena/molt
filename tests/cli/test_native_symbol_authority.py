@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 import subprocess
@@ -26,7 +27,10 @@ from molt.cli.backend_artifact_contract import (
     BackendArtifactKind,
     BackendArtifactValidationError,
 )
-from tests.cli.native_link_test_support import static_archive_bytes
+from tests.cli.native_link_test_support import (
+    mock_symbol_reader_admission,
+    static_archive_bytes,
+)
 from tests.llvm_sdk_test_support import verified_llvm_tools
 from tests.native_artifact_fixtures import native_relocatable_object
 
@@ -228,35 +232,16 @@ def test_callable_projection_reuses_one_owned_archive_admission_per_call(
 
 
 @pytest.fixture(autouse=True)
-def isolated_symbol_cache(monkeypatch: pytest.MonkeyPatch, request):
+def isolated_symbol_cache(
+    monkeypatch: pytest.MonkeyPatch, request, tmp_path_factory
+) -> Iterator[None]:
     if request.node.get_closest_marker("slow") is not None:
         yield
         return
-    identity = cache.stable_regular_file_identity(
-        Path(sys.executable).resolve(strict=True), label="test symbol reader"
-    )
-
-    @contextmanager
-    def admitted_reader(path, *, label, identity=None):
-        del label
-        assert identity is not None
-        yield path, identity
-
-    monkeypatch.setattr(
-        native_symbol_inspection,
-        "_native_symbol_reader_candidate",
-        lambda command: native_symbol_inspection._NativeSymbolReaderCandidate(
-            tuple(command), executable_identity=identity, reader_family="llvm"
-        ),
-    )
-    monkeypatch.setattr(
-        native_symbol_inspection, "stable_executable_probe", admitted_reader
-    )
-    native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
-    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
-    yield
-    native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
-    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+    with mock_symbol_reader_admission(
+        monkeypatch, tmp_path_factory.mktemp("symbol-facts")
+    ):
+        yield
 
 
 def _tool(monkeypatch, *, code=0, stdout="", stderr=""):

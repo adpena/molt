@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from contextlib import contextmanager
+import sys
 from typing import Sequence
 
+from molt.cli import native_symbol_inspection
 from molt.cli.native_symbol_inspection import (
     NativeSymbolInspectionError,
     NativeSymbolRequirement,
     _NativeArchiveMemberSymbolFacts,
     _NativeGlobalSymbolFacts,
     _NativeSymbolReader,
+    _NativeSymbolReaderCandidate,
 )
+from molt.toolchain_identity import stable_regular_file_identity
 from molt.cli.static_archive_identity import StaticArchiveMemberIdentity
 
 from molt.cli.native_link_manifest import write_native_link_dependency_manifest
@@ -21,6 +26,49 @@ from tests.native_artifact_fixtures import (
     NativeSymbolFixture,
     native_relocatable_object,
 )
+
+
+@contextmanager
+def mock_symbol_reader_admission(monkeypatch, facts_cache: Path) -> Iterator[None]:
+    """Admit mocked nm commands as llvm-nm under the interpreter's identity.
+
+    Tests replace reader execution with canned output, so the facts they read
+    are synthetic. The persistent symbol-facts cache therefore lives in
+    ``facts_cache`` for the test: synthetic facts must never reach a developer
+    or CI MOLT_CACHE, where a later test with the same archive bytes and reader
+    identity would hit them instead of running its own reader.
+    """
+    identity = stable_regular_file_identity(
+        Path(sys.executable).resolve(strict=True), label="test symbol reader"
+    )
+
+    @contextmanager
+    def admitted_reader(path, *, label, identity=None):
+        del label
+        assert identity is not None
+        yield path, identity
+
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "_native_symbol_reader_candidate",
+        lambda command: _NativeSymbolReaderCandidate(
+            tuple(command), executable_identity=identity, reader_family="llvm"
+        ),
+    )
+    monkeypatch.setattr(
+        native_symbol_inspection, "stable_executable_probe", admitted_reader
+    )
+    monkeypatch.setattr(
+        native_symbol_inspection, "_default_molt_cache", lambda: facts_cache
+    )
+    # Within a test the production content caches stay live across siblings.
+    native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
+    native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
+    try:
+        yield
+    finally:
+        native_symbol_inspection._NATIVE_OBJECT_SYMBOL_SETS_CACHE.clear()
+        native_symbol_inspection._NATIVE_ARCHIVE_SYMBOL_SETS_CACHE.clear()
 
 
 def stub_native_symbol_admission(monkeypatch, read_facts) -> None:
