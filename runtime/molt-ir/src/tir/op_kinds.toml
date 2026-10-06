@@ -1,5 +1,22 @@
 # @generated SEED — hand-reviewed; thereafter the SINGLE SOURCE OF TRUTH.
 
+# Registered wire carriers without a first-class opcode. Registration does not
+# grant effect, ownership or target support facts.
+simpleir_preserved_kinds = ["cast", "unreachable", "widen"]
+
+# Target-owned operations accepted by shared SSA when Luau re-lifts rewritten
+# functions. These are excluded from frontend emission vocabulary.
+simpleir_backend_private_kinds = [
+    { backend = "luau", kinds = [
+        "binop", "bool_const", "branch", "compare", "del_item", "end_for",
+        "load_local", "loop_carry_init", "loop_carry_update", "none_const",
+        "pcall_wrap_begin", "pcall_wrap_end", "store_local", "string_concat",
+        "string_const", "string_index", "string_index_slice", "string_partition",
+        "string_repeat", "string_rfind", "string_rfind_slice", "string_rindex",
+        "string_rindex_slice", "string_rpartition", "string_splitlines", "unary_op",
+    ] },
+]
+
 # Exact primitive rich-comparison domains. Equality is total across domains
 # except option-dependent BytesWarning pairs, retained as observable below;
 # ordering is nothrow only within an ordering-enabled domain. This policy is
@@ -5444,6 +5461,42 @@ reason = "frontend-internal: serializes to wire `set_attr_generic_ptr` (StoreAtt
 # [[frontend_raising_kind]]. Rows here are frontend-only facts or explicit
 # pre-serialization memory-effect overrides such as CONST_STR and LOAD_VAR.
 # ---------------------------------------------------------------------------
+
+[[frontend_lowering_kind]]
+kind = "ASYNC_BLOCK_ON"
+wire_kind = "block_on"
+
+[[frontend_lowering_kind]]
+kind = "CLASS_VERSION"
+wire_kind = "class_layout_version"
+
+[[frontend_lowering_kind]]
+kind = "DELATTR_GENERIC_OBJ"
+wire_kind = "del_attr_generic_obj"
+
+[[frontend_lowering_kind]]
+kind = "DELATTR_GENERIC_PTR"
+wire_kind = "del_attr_generic_ptr"
+
+[[frontend_lowering_kind]]
+kind = "ITER_NEW"
+wire_kind = "iter"
+
+[[frontend_lowering_kind]]
+kind = "LOAD_CLOSURE"
+wire_kind = "closure_load"
+
+[[frontend_lowering_kind]]
+kind = "STORE_CLOSURE"
+wire_kind = "closure_store"
+
+[[frontend_lowering_kind]]
+kind = "ret"
+wire_kind = "ret"
+
+[[frontend_lowering_kind]]
+kind = "ret_void"
+wire_kind = "ret_void"
 
 [[frontend_effect_kind]]
 kind = "CONST_ELLIPSIS"

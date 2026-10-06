@@ -73,6 +73,7 @@ from .schema import (
 )
 
 from .errors import OpKindTableError
+from .registration import validate_registration
 from .frontend_validate import (
     _frontend_effect_class_map,  # noqa: F401 - generator facade export
     _frontend_effect_from_opcode,  # noqa: F401 - generator facade export
@@ -981,6 +982,7 @@ def load_table(table_path: Path = TABLE) -> dict:
 
     frontend_operator_map(data)
     _validate_frontend_tables(data, opcodes)
+    validate_registration(data)
 
     unknown_requirement_carriers = set(
         requirement_carriers

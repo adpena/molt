@@ -16,7 +16,7 @@ Index mode executes the captured staged generator with its staged manifest, poli
 | CI selection families | 5 | 11 |
 | Hashed executable authority inputs | 1 | 323 |
 | Local path rules | 35 | 43 |
-| Unique local commands | 73 | 96 |
+| Unique local commands | 73 | 97 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -293,7 +293,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `host-capability-authority` | 7 | 2 | no |
 | `runtime-profile-schema-authority` | 6 | 2 | no |
 | `native-callable-abi` | 19 | 5 | no |
-| `op-kind-registry` | 10 | 2 | no |
+| `op-kind-registry` | 18 | 3 | no |
 | `frontend-diagnostics` | 6 | 2 | no |
 | `wasm-abi-registry` | 13 | 2 | no |
 | `tinygrad-op-contract` | 9 | 3 | no |

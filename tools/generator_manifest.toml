@@ -225,7 +225,7 @@ outputs = [
   "runtime/molt-ir/src/tir/op_kinds_generated.rs",
   "src/molt/frontend/lowering/op_kinds_generated.py",
 ]
-source = "runtime/molt-ir/src/tir/op_kinds.toml + tools/op_kinds/runtime_requirements.py + src/molt/opcode_literal_payloads.py + src/molt/rust_source_scan.py + tools/generator_io.py"
+source = "runtime/molt-ir/src/tir/op_kinds.toml + tools/op_kinds + src/molt/opcode_literal_payloads.py + src/molt/rust_source_scan.py + tools/generator_io.py"
 check_mode = true
 check_command = "tools/gen_op_kinds.py --check"
 generate_command = "tools/gen_op_kinds.py"

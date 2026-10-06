@@ -7792,9 +7792,8 @@ def test_generated_serialization_boundary_preserves_wire_field_roles():
         "string_split_field_to_int",
     ):
         assert validate(kind) is None
-    # This boundary does not grant support: unknown wire kinds are the target
-    # semantic validator's obligation, independent of frontend optimizer facts.
-    assert validate("future_unclassified_wire_kind") is None
+    with pytest.raises(ValueError, match="unregistered SimpleIR op kind"):
+        validate("future_unclassified_wire_kind")
 
 
 def test_preserved_iterator_requires_the_generated_iterable_protocol():

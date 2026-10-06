@@ -1211,7 +1211,7 @@ fn bool_primary_projection_is_tir_value_owned() {
             op("and", Some("both"), None, &["flag_copy", "add_overflow"]),
             op("or", Some("either"), None, &["both", "mul_overflow"]),
             op("copy", Some("either_copy"), None, &["either"]),
-            op("is_truthy", Some("legacy_truthy"), None, &["flag"]),
+            op("index", Some("opaque_result"), None, &["flag", "lhs"]),
         ],
     );
 
@@ -1235,8 +1235,8 @@ fn bool_primary_projection_is_tir_value_owned() {
         );
     }
     assert!(
-        !primary.bool_.contains("legacy_truthy"),
-        "legacy SimpleIR truthiness must not mint a raw bool carrier"
+        !primary.bool_.contains("opaque_result"),
+        "an opaque result must not mint a raw bool carrier"
     );
     for name in ["sum", "product"] {
         assert!(

@@ -121,3 +121,6 @@ pub(crate) fn native_codegen_portable() -> bool {
         Some(value) => panic!("invalid MOLT_PORTABLE={value:?}; expected 0/1 or false/true"),
     }
 }
+
+#[cfg(test)]
+mod test_support;

@@ -22,7 +22,10 @@ from molt.frontend.lowering.serialization_collection_ops import (
     SerializationCollectionOpsMixin,
 )
 from molt.frontend.lowering.serialization_context import SerializationContext
-from molt.frontend.lowering.op_kinds_generated import validate_serialized_kind
+from molt.frontend.lowering.op_kinds_generated import (
+    validate_frontend_kind,
+    validate_serialized_kind,
+)
 from molt.frontend.lowering.serialization_exception_ops import (
     SerializationExceptionOpsMixin,
 )
@@ -498,6 +501,9 @@ class SerializationMixin(
             self._active_midend_function_name = function_name
         else:
             self._active_midend_function_name = "<direct>"
+        diagnostic_function = function_name or "<direct>"
+        for op in ops:
+            validate_frontend_kind(op.kind, diagnostic_function)
         if run_midend:
             ops = self._run_ir_midend_passes(ops)
         json_ops: list[dict[str, Any]] = []
@@ -508,6 +514,7 @@ class SerializationMixin(
         # expression-level col_offset after the main serialization loop.
         _col_inject: list[tuple[int, MoltOp]] = []
         for op in ops:
+            validate_frontend_kind(op.kind, diagnostic_function)
             serialized_start = len(json_ops)
             _col_inject.append((serialized_start, op))
             ctx = SerializationContext(
@@ -525,8 +532,10 @@ class SerializationMixin(
                 pass
             elif self._serialize_collection_op(op, ctx):
                 pass
-            else:
-                self._serialize_loop_string_async_op(op, ctx)
+            elif not self._serialize_loop_string_async_op(op, ctx):
+                raise ValueError(
+                    f"function {diagnostic_function!r}: no serializer for registered op kind {op.kind!r}"
+                )
             if op.metadata and "source_module_publication_boundary" in op.metadata:
                 if (
                     len(json_ops) != serialized_start + 1
@@ -578,7 +587,7 @@ class SerializationMixin(
         json_ops = self._scalarize_string_split_fields_json(json_ops)
         json_ops = self._fuse_string_split_field_consumers_json(json_ops)
         for entry in json_ops:
-            validate_serialized_kind(entry["kind"])
+            validate_serialized_kind(entry["kind"], diagnostic_function)
         return json_ops
 
     def _finalize_code_ids(self) -> None:

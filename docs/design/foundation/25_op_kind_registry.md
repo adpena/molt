@@ -16,6 +16,38 @@ separate from retired compiler operation spellings.
 
 ---
 
+## Fail-closed operation admission
+
+The registry owns both the frontend MoltOp vocabulary and the SimpleIR wire
+vocabulary. `tools/op_kinds/registration.py` projects existing mapper, control,
+custody, field-role, and runtime-semantic declarations into generated membership tables.
+`simpleir_preserved_kinds` registers wire carriers without granting new effect,
+ownership, or target-support facts. `frontend_lowering_kind` records frontend
+spellings whose serializer uses a different registered wire spelling.
+`simpleir_backend_private_kinds` records target-owned operations (including
+Luau exception-capture markers and string operations) that shared SSA must
+re-lift. These registrations grant no effect, ownership or cross-target support
+facts. Full-program admission rejects them at every public transport and checked
+backend entrypoint, before preprocessing can discard operations. Function-level
+shape validation and SSA admit them only for internal lowering and re-lifting;
+frontend serialization also rejects them. The generated private-owner projection
+and shared `validate_simple_ir_op_shapes` boundary enforce this distinction.
+
+Frontend serialization validates all input kinds before optimization can discard
+them, rejects registered operations without a serializer, and validates emitted
+wire kinds. SimpleIR admission validates every function body before target
+selection, pruning, or lowering, through the shared contract used by JSON,
+NDJSON, MessagePack, and binary document readers. Direct SSA lifting shares the
+registered-kind validator while allowing the internal private vocabulary.
+Unregistered operations report the kind and function instead of
+being dropped or acquiring the preserved `Copy` carrier. Registered preserved
+operations retain their existing lowering and target-specific admission.
+
+`tests/test_frontend_op_kind_registry.py` scans every literal `MoltOp(kind=...)`
+in the frontend and the serializer's complete resolved wire vocabulary against
+the generated tables. Generator freshness tests keep the Python and Rust
+projections synchronized.
+
 ## Predicate result, effect, and representation authority
 
 The six rich comparisons are callback-capable, throwing, arbitrary-owned-value
