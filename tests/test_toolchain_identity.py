@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from molt import toolchain_identity as identity
+from tests.operation_probe import same_thread_probe
 
 
 def test_capture_bytes_and_identity_share_one_stable_read(tmp_path, monkeypatch):
@@ -37,7 +38,11 @@ def test_capture_bytes_and_identity_share_one_stable_read(tmp_path, monkeypatch)
         with original_open(path, **kwargs) as opened:
             yield replace(opened, stream=CountedStream(opened.stream))
 
-    monkeypatch.setattr(identity, "open_stable_regular_file", counted_open)
+    monkeypatch.setattr(
+        identity,
+        "open_stable_regular_file",
+        same_thread_probe(identity.open_stable_regular_file, counted_open),
+    )
     captured, raw = identity.capture_stable_regular_file(path, label="fixture")
     assert raw == data
     assert captured.path == path
@@ -117,7 +122,11 @@ def test_mutation_version_avoids_hashing_and_detects_changed_size(
     def forbid_hash(*args, **kwargs):
         pytest.fail("mutation-only capture must not read payload bytes")
 
-    monkeypatch.setattr(identity, "_sha256_stream", forbid_hash)
+    monkeypatch.setattr(
+        identity,
+        "_sha256_stream",
+        same_thread_probe(identity._sha256_stream, forbid_hash),
+    )
     version = identity.stable_regular_file_version(path, label="payload")
     identity.verify_stable_regular_file_identity(version, label="payload")
     path.write_bytes(b"modified-content")
@@ -194,7 +203,11 @@ def test_expected_path_stat_keeps_the_handle_mutation_fence(tmp_path, monkeypatc
         os.utime(path, ns=(expected.st_atime_ns, expected.st_mtime_ns))
         return digest
 
-    monkeypatch.setattr(identity, "_sha256_stream", mutate_after_hash)
+    monkeypatch.setattr(
+        identity,
+        "_sha256_stream",
+        same_thread_probe(identity._sha256_stream, mutate_after_hash),
+    )
     with pytest.raises(identity.StableRegularFileChangedError, match="changed"):
         identity.stable_regular_file_identity(
             path, label="payload", expected_path_stat=expected
@@ -211,7 +224,11 @@ def test_capture_rejects_short_source_read(tmp_path, monkeypatch):
         with original_open(path, **kwargs) as opened:
             yield replace(opened, stat=SimpleNamespace(st_size=opened.stat.st_size + 1))
 
-    monkeypatch.setattr(identity, "open_stable_regular_file", incorrect_length)
+    monkeypatch.setattr(
+        identity,
+        "open_stable_regular_file",
+        same_thread_probe(identity.open_stable_regular_file, incorrect_length),
+    )
     with pytest.raises(identity.StableRegularFileChangedError, match="size changed"):
         identity.capture_stable_regular_file(path, label="fixture")
 
@@ -234,7 +251,11 @@ def test_capture_rejects_write_and_restored_timestamp_during_read(
         os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
         return result
 
-    monkeypatch.setattr(identity.hashlib, "sha256", mutate_after_read)
+    monkeypatch.setattr(
+        identity.hashlib,
+        "sha256",
+        same_thread_probe(identity.hashlib.sha256, mutate_after_read),
+    )
     with pytest.raises(identity.StableRegularFileChangedError, match="changed"):
         identity.capture_stable_regular_file(path, label="fixture")
 
@@ -480,7 +501,11 @@ def test_content_consumers_reject_write_restore_during_hash(
         return result
 
     with monkeypatch.context() as scoped:
-        scoped.setattr(identity, "_sha256_stream", mutate)
+        scoped.setattr(
+            identity,
+            "_sha256_stream",
+            same_thread_probe(identity._sha256_stream, mutate),
+        )
         with pytest.raises(ValueError, match="changed"):
             consumer(path, label="fixture")
     assert len(calls) == 1
@@ -497,7 +522,11 @@ def test_executable_digest_and_header_share_one_owned_descriptor(tmp_path, monke
         opened.append(path)
         return descriptor(path)
 
-    monkeypatch.setattr(identity, "open_stable_read_descriptor", open_descriptor)
+    monkeypatch.setattr(
+        identity,
+        "open_stable_read_descriptor",
+        same_thread_probe(identity.open_stable_read_descriptor, open_descriptor),
+    )
     lexical, resolved, size, digest, header = identity._stable_file_content(
         path, label="fixture"
     )
@@ -532,8 +561,14 @@ def test_version_probe_hashes_once_and_closes_generation_fence(
             os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
         return subprocess.CompletedProcess(argv, 0, "tool 1.2.3", "")
 
-    monkeypatch.setattr(identity, "stable_regular_file_handle_identity", counted)
-    monkeypatch.setattr(identity.subprocess, "run", run)
+    monkeypatch.setattr(
+        identity,
+        "stable_regular_file_handle_identity",
+        same_thread_probe(identity.stable_regular_file_handle_identity, counted),
+    )
+    monkeypatch.setattr(
+        identity.subprocess, "run", same_thread_probe(identity.subprocess.run, run)
+    )
     if mutate:
         with pytest.raises(ValueError, match="changed"):
             identity.probe_executable(
@@ -566,7 +601,11 @@ def test_native_content_and_cargo_custody_share_one_hash_authority(
         calls.append(opened.path)
         return capture(opened, **kwargs)
 
-    monkeypatch.setattr(identity, "stable_regular_file_handle_identity", counted)
+    monkeypatch.setattr(
+        identity,
+        "stable_regular_file_handle_identity",
+        same_thread_probe(identity.stable_regular_file_handle_identity, counted),
+    )
     content = identity.native_executable_content_identity(path, label="fixture")
     assert calls == [path]
     calls.clear()
@@ -591,7 +630,11 @@ def test_native_consumers_reject_scripts_before_execution(
     def unexpected_execution(*args, **kwargs):
         pytest.fail("script was executed before native admission")
 
-    monkeypatch.setattr(identity.subprocess, "run", unexpected_execution)
+    monkeypatch.setattr(
+        identity.subprocess,
+        "run",
+        same_thread_probe(identity.subprocess.run, unexpected_execution),
+    )
     with pytest.raises(ValueError, match="native executable, not a script"):
         if consumer == "content":
             identity.native_executable_content_identity(path, label="fixture")
@@ -765,7 +808,11 @@ def test_attested_read_checks_content_with_one_owned_read(
         with open_stable(path, **kwargs) as opened:
             yield replace(opened, stream=CountedStream(opened.stream))
 
-    monkeypatch.setattr(identity, "open_stable_regular_file", counted_open)
+    monkeypatch.setattr(
+        identity,
+        "open_stable_regular_file",
+        same_thread_probe(identity.open_stable_regular_file, counted_open),
+    )
     if mutate:
         with pytest.raises(
             identity.StableRegularFileChangedError, match="content changed"
@@ -794,7 +841,11 @@ def test_bounded_capture_never_issues_an_unbounded_read(tmp_path, monkeypatch):
         with original(path, **kwargs) as opened:
             yield replace(opened, stream=GrowingStream())
 
-    monkeypatch.setattr(identity, "open_stable_regular_file", growing_open)
+    monkeypatch.setattr(
+        identity,
+        "open_stable_regular_file",
+        same_thread_probe(identity.open_stable_regular_file, growing_open),
+    )
     with pytest.raises(ValueError, match="size changed"):
         identity.capture_stable_regular_file(path, label="fixture", max_bytes=8)
     assert reads == [6]
