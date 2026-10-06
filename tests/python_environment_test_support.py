@@ -9,6 +9,8 @@ import re
 import sys
 from typing import Iterable, Sequence
 
+import venv
+
 from molt import python_environment_identity
 from molt.python_runtime_identity import _NATIVE_DEPENDENCY_POLICIES
 from molt.cli import source_build_environment_schema
@@ -178,6 +180,19 @@ def lock_closure_manifest(
     }
     closure = _sealed(material, "closure_sha256")
     return python_environment_identity.validate_uv_lock_group_closure(closure)
+
+
+def create_test_venv(environment: Path) -> Path:
+    """Create a runnable venv the way the platform's own tooling does.
+
+    ``venv.EnvBuilder`` defaults to copied launchers. A copied launcher of a
+    relocatable CPython (python-build-standalone, which uv manages on macOS)
+    resolves ``libpython`` relative to its own location and cannot start, so
+    POSIX uses symlinks like ``python -m venv`` and ``uv venv``; Windows keeps
+    copies because symlinks need a privilege there. Returns the launcher.
+    """
+    venv.EnvBuilder(symlinks=os.name != "nt", with_pip=False).create(environment)
+    return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
 
 def realized_environment_manifest(

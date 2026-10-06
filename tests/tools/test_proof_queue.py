@@ -17,7 +17,6 @@ import sqlite3
 import subprocess
 import sys
 import time
-import venv
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -32,7 +31,10 @@ from molt.cargo_execution_policy import normalize_cargo_environment
 from molt.file_hashing import _sha256_file
 from molt import python_environment_identity
 from molt.exact_json import ExactJsonError, canonical_json_sha256
-from tests.python_environment_test_support import build_environment_manifest
+from tests.python_environment_test_support import (
+    build_environment_manifest,
+    create_test_venv,
+)
 from tests import proof_queue_owned_roots
 from tests.proof_queue_custody_test_support import (
     ReceiptCustodyFactory,
@@ -1957,10 +1959,7 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
     tmp_path: Path,
 ) -> None:
     environment = tmp_path / "venv"
-    venv.EnvBuilder(with_pip=False).create(environment)
-    executable = environment / (
-        "Scripts/python.exe" if os.name == "nt" else "bin/python"
-    )
+    executable = create_test_venv(environment)
     purelib = Path(
         check_output_custody_subject_process(
             [
@@ -2014,7 +2013,14 @@ def test_python_probe_verifies_declared_record_hash_against_installed_bytes(
         assert runtime["file_nodes"]
         authorities = {row["role"] for row in runtime["explicit_files"]}
         assert "base-executable" in authorities
-        assert identity["selected_executable"]["node"]
+        selected = identity["selected_executable"]
+        if selected["kind"] == "tree-reference":
+            assert selected["node"]
+        else:
+            # Symlinked launchers (uv, python -m venv on POSIX) bind the base
+            # runtime executable by role instead of carrying their own node.
+            assert selected["kind"] == "runtime-role-reference"
+            assert selected["role"] == "base-executable"
         assert identity["pyvenv_config"]["node"]
         assert runtime["native_dependency_closure"]["status"] == "closed"
         distribution = next(
@@ -2113,10 +2119,7 @@ def test_python_probe_classifies_owned_record_symlinks_and_rejects_external_esca
     tmp_path: Path,
 ) -> None:
     environment = tmp_path / "venv"
-    venv.EnvBuilder(with_pip=False).create(environment)
-    executable = environment / (
-        "Scripts/python.exe" if os.name == "nt" else "bin/python"
-    )
+    executable = create_test_venv(environment)
     purelib = Path(
         check_output_custody_subject_process(
             [
@@ -2199,10 +2202,7 @@ def test_python_probe_ignores_ambient_ownership_and_uses_admitted_pep610_root(
     tmp_path: Path,
 ) -> None:
     environment_root = tmp_path / "venv"
-    venv.EnvBuilder(with_pip=False).create(environment_root)
-    custody_python = environment_root / (
-        "Scripts/python.exe" if os.name == "nt" else "bin/python"
-    )
+    custody_python = create_test_venv(environment_root)
     project = tmp_path / "source-project"
     _initialize_clean_git_repo(project)
     source = project / "src"
@@ -2384,9 +2384,7 @@ def _initialize_clean_git_repo(path: Path) -> str:
 
 @pytest.fixture(scope="module")
 def custody_python(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    environment = tmp_path_factory.mktemp("proof-custody-python") / "venv"
-    venv.EnvBuilder(with_pip=False).create(environment)
-    return environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    return create_test_venv(tmp_path_factory.mktemp("proof-custody-python") / "venv")
 
 
 @dataclass(frozen=True)
