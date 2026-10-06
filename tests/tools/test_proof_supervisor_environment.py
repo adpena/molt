@@ -7,10 +7,23 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
-from tools.proof_queue_pkg import execution_environment, supervisor_custody
+from tests import proof_queue_owned_roots
+from tools.proof_queue_pkg import (
+    command_admission,
+    command_identity,
+    execution_environment,
+    guarded_execution,
+    supervisor_custody,
+    supervisor_generation,
+)
+from tests.proof_queue_custody_test_support import (
+    assert_supervisor_refusal,
+    capability_aware_proof_execution,
+)
 
 
 def test_leaf_requires_pre_entry_process_creation_authority() -> None:
@@ -101,11 +114,152 @@ def _read_capability(
     )
 
 
+@pytest.mark.parametrize("mode", ["leaf", "declared-tree"])
+def test_unavailable_capability_refuses_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cargo_output_implementation_source: Path,
+    mode: str,
+) -> None:
+    """Inject the unavailable report, not a successful execution or receipt."""
+    tmp_path = proof_queue_owned_roots.native_case_path(
+        tmp_path, source=Path(__file__), nodeid=f"unavailable-capability::{mode}"
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    marker = tmp_path / "must-not-start"
+    command = [sys.executable, "-c", f"open({str(marker)!r}, 'w').close()"]
+    if mode == "declared-tree":
+        command = ["git", "status"]
+    output_root = tmp_path / "o"
+    output_root.mkdir()
+    metadata = tmp_path / "metadata"
+    metadata.mkdir()
+    envelope = command_admission.envelope_for_command(
+        command, cargo_output_root=str(output_root)
+    )
+    assert (envelope["process_closure"]["descendants"] == "forbidden") == (
+        mode == "leaf"
+    )
+    result_path = metadata / "refused.execution.json"
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "schema": command_admission.EXECUTION_SCHEMA,
+                "run_id": "unavailable-capability",
+                "execution_nonce": "a" * 64,
+                "env_override_names": [],
+                "command": command,
+                "envelope": envelope,
+                "cwd": str(repo),
+                "resource_family": "python-tests",
+                "result_path": str(result_path),
+                "timeout_seconds": 30.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    capability = {
+        **_capability({}),
+        "platform": "macos",
+        "mode": mode,
+        "backend": "macos-endpoint-security",
+        "available": False,
+        "pre_entry_exec_authority": False,
+        "pre_entry_process_create_authority": False,
+        "recursive_descendant_authority": False,
+        "reason": (
+            "Endpoint Security entitlement and privileged helper "
+            "are not available in this binary"
+        ),
+    }
+
+    def capability_probe(command: tuple[str, ...], **kwargs: object):
+        assert command[1:] == ("capability", mode)
+        return subprocess.CompletedProcess(command, 0, json.dumps(capability), "")
+
+    def provision(*, cwd: Path, env: dict[str, str]):
+        supervisor_custody.required_execution_environment(
+            binary=Path("supervisor.bin"), mode=mode, cwd=cwd, env=env
+        )
+        pytest.fail("an unavailable capability must never finish provisioning")
+
+    def forbidden(*args: object, **kwargs: object):
+        pytest.fail("an unavailable capability must never start the command")
+
+    monkeypatch.setattr(command_identity, "_run_captured", capability_probe)
+    monkeypatch.setattr(supervisor_custody, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(supervisor_generation, "provision", provision)
+    monkeypatch.setattr(
+        guarded_execution, "_run_supervisor_with_transcripts", forbidden
+    )
+    returncode = guarded_execution.execute_guarded_request(request_path)
+    assert assert_supervisor_refusal(returncode, result_path)
+    assert not marker.exists()
+    assert (
+        json.loads(result_path.read_text(encoding="utf-8"))["supervisor_capability"]
+        == capability
+    )
+
+
 @pytest.mark.parametrize("required", [{}, {"_NO_DEBUG_HEAP": "1"}])
 def test_native_capability_owns_platform_launch_environment(
     monkeypatch: pytest.MonkeyPatch, required: dict[str, str]
 ) -> None:
     assert _read_capability(monkeypatch, _capability(required)) == required
+
+
+@pytest.mark.parametrize(
+    "mutation", ["started", "reason", "context", "stdout", "policy", "available"]
+)
+def test_refusal_assertions_reject_partial_or_dishonest_execution(
+    tmp_path: Path, mutation: str
+) -> None:
+    command = [sys.executable, "-c", "pass"]
+    capability = {
+        **_capability({}),
+        "mode": "leaf",
+        "available": False,
+        "pre_entry_exec_authority": False,
+        "pre_entry_process_create_authority": False,
+        "recursive_descendant_authority": False,
+        "reason": "kernel process closure unavailable",
+    }
+    record = {
+        "envelope": command_admission.envelope_for_command(command),
+        "phase": "failed",
+        "command_started": False,
+        "supervisor_capability": capability,
+        "error": str(supervisor_custody.SupervisorCapabilityUnavailable.__name__)
+        + ": native supervisor launch capability unavailable: "
+        + capability["reason"],
+    }
+    result_path = tmp_path / "execution.json"
+    if mutation == "started":
+        record["command_started"] = True
+    elif mutation == "reason":
+        record["error"] = "unrelated launch failure"
+    elif mutation == "context":
+        record["receipt_context"] = {"source_custody": {"evidence_eligible": True}}
+    elif mutation == "stdout":
+        result_path.with_suffix(".stdout.bin").write_bytes(b"partial execution")
+    elif mutation == "policy":
+        result_path.with_suffix(".supervisor-policy.json").write_text("{}")
+    elif mutation == "available":
+        capability["available"] = True
+    result_path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises((AssertionError, ValueError)):
+        assert_supervisor_refusal(2, result_path)
+
+
+def test_capability_adapter_does_not_hide_available_host_assertions() -> None:
+    @capability_aware_proof_execution
+    def failing_execution_assertion() -> None:
+        assert False, "available-host assertion remains load-bearing"
+
+    with pytest.raises(AssertionError, match="available-host assertion"):
+        failing_execution_assertion(proof_queue_execution_capability=None)
 
 
 @pytest.mark.parametrize(
