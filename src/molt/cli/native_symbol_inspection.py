@@ -18,12 +18,12 @@ from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from collections.abc import Callable, Iterator
-from typing import Sequence
+from typing import Literal, Sequence
 
 from molt.cli.atomic_io import _atomic_write_json
 from molt.cli.command_runtime import _run_completed_command
 from molt.cli.default_paths import _default_molt_cache
-from molt.cli.llvm_wasi_tools import llvm_tool_candidates
+from molt.cli.llvm_wasi_tools import _tool_version, llvm_tool_candidates
 from molt.cli.static_archive_identity import (
     StaticArchiveMemberIdentity,
     static_archive_member_identities,
@@ -263,11 +263,47 @@ class NativeSymbolArtifactError(NativeSymbolInspectionError):
     """
 
 
+NmReaderFamily = Literal["llvm", "gnu"]
+
+
+def nm_reader_family_from_banner(banner: str | None) -> NmReaderFamily | None:
+    """Classify the first line of ``nm --version``.
+
+    ``llvm-nm`` announces itself as ``llvm-nm, compatible with GNU nm``; Xcode's
+    ``nm`` is an llvm-nm and prints the same line. GNU binutils announces
+    ``GNU nm (GNU Binutils ...)``. Any other reader is not one this module knows
+    how to drive, so its candidate fails admission with the banner it printed.
+    """
+    if banner is None:
+        return None
+    text = banner.strip()
+    if text.startswith("llvm-nm"):
+        return "llvm"
+    if text.startswith("GNU nm"):
+        return "gnu"
+    return None
+
+
+@functools.lru_cache(maxsize=16)
+def _cached_nm_reader_family(
+    path_text: str,
+    sha256: str,
+) -> tuple[NmReaderFamily | None, str | None]:
+    # One ``--version`` per distinct reader binary; the digest keys the cache so
+    # a replaced executable is classified again.
+    del sha256
+    banner = _tool_version(Path(path_text))
+    return nm_reader_family_from_banner(banner), banner
+
+
 @dataclass(frozen=True, slots=True)
 class _NativeSymbolReaderCandidate:
     command: tuple[str, ...]
     executable_identity: StableRegularFileIdentity | None = None
     admission_error: str | None = None
+    # ``None`` only together with ``admission_error``: an admitted reader always
+    # has a known family, because the family selects its command line.
+    reader_family: NmReaderFamily | None = None
 
     def cache_identity(self) -> str:
         return json.dumps(
@@ -362,9 +398,21 @@ def _native_symbol_reader_candidate(
                 command,
                 admission_error=f"{type(refreshed_exc).__name__}: {refreshed_exc}",
             )
+    reader_family, banner = _cached_nm_reader_family(str(entrypoint), identity.sha256)
+    if reader_family is None:
+        return _NativeSymbolReaderCandidate(
+            (str(entrypoint), *command[1:]),
+            executable_identity=identity,
+            admission_error=(
+                "nm reader printed no --version banner"
+                if banner is None
+                else f"unrecognized nm reader banner: {banner!r}"
+            ),
+        )
     return _NativeSymbolReaderCandidate(
         (str(entrypoint), *command[1:]),
         executable_identity=identity,
+        reader_family=reader_family,
     )
 
 
@@ -427,6 +475,7 @@ def _native_symbol_reader(
     candidate = _NativeSymbolReaderCandidate(
         (str(verification.path),),
         executable_identity=verification.executable_identity,
+        reader_family="llvm",
     )
     return _NativeSymbolReader(
         (candidate,),
@@ -605,7 +654,22 @@ def _symbol_normalization_target(target_triple: str | None) -> str:
     return f"target:{_symbol_target_policy(target_triple)[0]}"
 
 
-def _native_nm_command(nm_command: Sequence[str], path: Path) -> list[str]:
+def _native_nm_command(
+    nm_command: Sequence[str],
+    path: Path,
+    *,
+    reader_family: NmReaderFamily,
+) -> list[str]:
+    """``-g`` reads the global symbol table, and only the symbol table.
+
+    Rust's sysroot objects for Apple targets carry an embedded ``__LLVM,__bitcode``
+    section. llvm-nm's default bitcode reader then also lists the IR symbols,
+    with a dash placeholder instead of an address, which is not a symbol-table
+    row. ``--no-llvm-bc`` keeps llvm-nm (Xcode's ``nm`` included) on the native
+    symbol table. GNU nm has no bitcode reader and no such flag.
+    """
+    if reader_family == "llvm":
+        return [*nm_command, "-g", "--no-llvm-bc", str(path)]
     return [*nm_command, "-g", str(path)]
 
 
@@ -731,6 +795,7 @@ def _read_native_global_symbol_facts(
             failures.append(f"{command!r}: {candidate.admission_error}")
             continue
         assert candidate.executable_identity is not None
+        assert candidate.reader_family is not None
         execution_error: BaseException | None = None
         result: subprocess.CompletedProcess[str] | None = None
         try:
@@ -749,7 +814,11 @@ def _read_native_global_symbol_facts(
             ) as (entrypoint, _identity):
                 try:
                     result = _run_completed_command(
-                        _native_nm_command((str(entrypoint), *command[1:]), path),
+                        _native_nm_command(
+                            (str(entrypoint), *command[1:]),
+                            path,
+                            reader_family=candidate.reader_family,
+                        ),
                         capture_output=True,
                         timeout=read_timeout,
                         env=None,

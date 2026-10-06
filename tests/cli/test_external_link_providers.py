@@ -228,7 +228,9 @@ def test_provider_projection_admits_once_and_fences_native_cache_hits(
     reader = native_symbol_inspection._NativeSymbolReader(
         candidates=(
             native_symbol_inspection._NativeSymbolReaderCandidate(
-                (str(reader_path),), executable_identity=reader_identity
+                (str(reader_path),),
+                executable_identity=reader_identity,
+                reader_family="llvm",
             ),
         ),
         input_identity=(

@@ -105,6 +105,15 @@ persistent symbol-cache identity, with no Rust-toolchain or ambient native `nm`
 fallback. Build and readiness paths discover a provisioned SDK but never
 install one.
 
+Native archive inspection walks the managed `nm` ladder (`llvm-nm`, then
+`nm`) and admits each candidate by its `--version` banner: `llvm-nm, compatible
+with GNU nm` (LLVM's tool, which is also Xcode's `nm`) or `GNU nm (GNU Binutils
+...)`; any other banner fails that candidate's admission with the banner it
+printed. An llvm-nm reader runs with `--no-llvm-bc`, because Rust's sysroot
+objects for Apple targets embed bitcode and llvm-nm's default bitcode reader
+lists those IR symbols with a dash placeholder instead of an address, which is
+not a symbol-table row. GNU nm has no bitcode reader and takes no flag.
+
 `MOLT_LLVM_NM` selects one executable, not a shell command. A selected path or
 PATH-resolved name must pass lexical and resolved-content custody before probing;
 the captured executable generation is checked again at execution and cache reuse.

@@ -245,7 +245,7 @@ def isolated_symbol_cache(monkeypatch: pytest.MonkeyPatch, request):
         native_symbol_inspection,
         "_native_symbol_reader_candidate",
         lambda command: native_symbol_inspection._NativeSymbolReaderCandidate(
-            tuple(command), executable_identity=identity
+            tuple(command), executable_identity=identity, reader_family="llvm"
         ),
     )
     monkeypatch.setattr(
@@ -1915,3 +1915,92 @@ def test_external_symbol_admission_uses_content_policy_without_input_sidecars(
             else None,
         )
         assert again == facts and calls == [120]
+
+
+def test_nm_reader_family_is_classified_from_the_version_banner():
+    classify = native_symbol_inspection.nm_reader_family_from_banner
+    # LLVM 22.1.8 llvm-nm and Xcode's nm (an llvm-nm) print the same first line.
+    assert classify("llvm-nm, compatible with GNU nm") == "llvm"
+    assert classify("GNU nm (GNU Binutils for Ubuntu) 2.42") == "gnu"
+    assert classify("Apple, Inc. version cctools-1010.6") is None
+    assert classify(None) is None
+
+
+def test_unrecognized_nm_banner_fails_candidate_admission(monkeypatch):
+    monkeypatch.undo()  # Admit a real executable instead of the fixture's fake.
+    probe = native_symbol_inspection._cached_nm_reader_family
+    probe.cache_clear()
+    banner = "Apple, Inc. version cctools-1010.6"
+    monkeypatch.setattr(native_symbol_inspection, "_tool_version", lambda path: banner)
+    try:
+        candidate = native_symbol_inspection._native_symbol_reader_candidate(
+            (str(Path(sys.executable).resolve(strict=True)),)
+        )
+    finally:
+        probe.cache_clear()
+    assert candidate.reader_family is None
+    assert candidate.admission_error == f"unrecognized nm reader banner: {banner!r}"
+
+
+def test_llvm_nm_reads_the_native_symbol_table_not_embedded_bitcode(
+    tmp_path, monkeypatch
+):
+    # Rust's sysroot objects for Apple targets embed bitcode. llvm-nm's default
+    # bitcode reader lists those IR symbols with a dash placeholder, which is
+    # not a symbol-table row; GNU nm has no such reader and no such flag.
+    artifact = tmp_path / "libmolt_runtime.a"
+    artifact.write_bytes(b"symbol-reader protocol input")
+    identity = cache.stable_regular_file_identity(
+        Path(sys.executable).resolve(strict=True), label="test symbol reader"
+    )
+    families = {"llvm-nm": "llvm", "gnu-nm": "gnu"}
+    monkeypatch.setattr(
+        native_symbol_inspection,
+        "_native_symbol_reader_candidate",
+        lambda command: native_symbol_inspection._NativeSymbolReaderCandidate(
+            tuple(command),
+            executable_identity=identity,
+            reader_family=families[command[0]],
+        ),
+    )
+    # Rows captured from llvm-nm 22.1.8 reading a dev-fast libmolt_runtime
+    # staticlib on aarch64-apple-darwin, with and without --no-llvm-bc.
+    bitcode_rows = (
+        "---------------- T __RINvMs5_NtNtCscEX5ZwinSox_3std2io5errorNtB6_"
+        "5Error3newReEBa_\n000000000000274c T _molt_abs_builtin\n"
+    )
+    native_rows = "000000000000274c T _molt_abs_builtin\n"
+    commands: list[list[str]] = []
+
+    def run(argv, **kwargs):
+        commands.append(list(argv))
+        if argv[0] == "gnu-nm":
+            assert "--no-llvm-bc" not in argv
+            return subprocess.CompletedProcess(
+                argv, 0, "000000000000274c T molt_abs_builtin\n", ""
+            )
+        rows = native_rows if "--no-llvm-bc" in argv else bitcode_rows
+        return subprocess.CompletedProcess(argv, 0, rows, "")
+
+    monkeypatch.setattr(native_symbol_inspection, "_run_completed_command", run)
+    monkeypatch.setattr(
+        native_symbol_inspection, "_nm_candidate_binaries", lambda: ["llvm-nm"]
+    )
+    facts = native_symbol_inspection._read_native_global_symbol_facts(
+        artifact, timeout=1, target_triple="aarch64-apple-darwin"
+    )
+    assert facts.defined == {"molt_abs_builtin"}
+    assert commands[-1][1:] == ["-g", "--no-llvm-bc", str(artifact)]
+    monkeypatch.setattr(
+        native_symbol_inspection, "_nm_candidate_binaries", lambda: ["gnu-nm"]
+    )
+    facts = native_symbol_inspection._read_native_global_symbol_facts(
+        artifact, timeout=1, target_triple="x86_64-unknown-linux-gnu"
+    )
+    assert facts.defined == {"molt_abs_builtin"}
+    assert commands[-1][1:] == ["-g", str(artifact)]
+    # The parser stays strict: a bitcode placeholder row is never a symbol fact.
+    with pytest.raises(ValueError, match="unrecognized nm symbol row"):
+        native_symbol_inspection._parse_native_nm_global_symbol_facts(
+            bitcode_rows, target_triple="aarch64-apple-darwin"
+        )
