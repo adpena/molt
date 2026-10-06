@@ -162,9 +162,6 @@ def _build_once(
     env["PYTHONHASHSEED"] = "0"
     env["MOLT_DETERMINISTIC"] = "1"
     env["MOLT_CACHE"] = cache_dir
-    # Clear any cached state
-    if "MOLT_BUILD_CACHE" in env:
-        del env["MOLT_BUILD_CACHE"]
     limits = harness_memory_guard.limits_from_env("MOLT_TEST_SUITE", env)
 
     emit_args = ["--emit", "obj"] if prefer_object else []

@@ -43,7 +43,7 @@ process.stdout.write = function startupStdoutWrite(...args) {
 function emit() {
   if (emitted) return;
   emitted = true;
-  process.stderr.write(`MOLT_STARTUP_PHASES=${JSON.stringify({
+  process.stderr.write(`molt_startup_phases=${JSON.stringify({
     schema_version: 1,
     preload_to_exit_ms: performance.now() - startedAt,
     first_stdout_ms: firstStdoutMs,

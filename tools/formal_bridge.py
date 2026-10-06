@@ -9,9 +9,6 @@ Usage:
   python3 tools/formal_bridge.py <ir.json>
   python3 tools/formal_bridge.py --dir tests/differential/basic/core_types/
   python3 tools/formal_bridge.py --summary    # aggregated coverage stats
-
-Integration with molt_diff.py:
-  MOLT_FORMAL_BRIDGE=1 uv run python3 tests/molt_diff.py tests/differential/basic
 """
 
 from __future__ import annotations

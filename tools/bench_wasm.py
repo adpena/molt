@@ -803,14 +803,7 @@ def prepare_wasm_binary(
     run_env.pop("PYTHONPATH", None)
     run_env.pop("PYTHONHASHSEED", None)
     run_env.pop("PYTHONUNBUFFERED", None)
-    for name in (
-        "MOLT_WASM_PATH",
-        "MOLT_WASM_LINKED_PATH",
-        "MOLT_RUNTIME_WASM",
-        "MOLT_WASM_DIRECT_LINK",
-        "MOLT_WASM_PREFER_LINKED",
-        "MOLT_WASM_LINKED",
-    ):
+    for name in ("MOLT_RUNTIME_WASM", "MOLT_WASM_LINKED"):
         run_env.pop(name, None)
     # Avoid noisy Node warnings in parity and benchmark lanes.
     run_env.setdefault("NODE_NO_WARNINGS", "1")

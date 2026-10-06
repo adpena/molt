@@ -992,8 +992,6 @@ def _profile_bench(
     runs: int,
     env_overrides: list[str],
     collect_profile: bool,
-    collect_alloc_sites: bool,
-    alloc_sites_limit: int | None,
     perf_stat_events: str,
     limits: harness_memory_guard.HarnessMemoryLimits,
 ) -> dict[str, object]:
@@ -1003,14 +1001,8 @@ def _profile_bench(
     extra = extra_args + molt_args_for_benchmark(bench)
     env = _base_env()
     _apply_env_overrides(env, env_overrides)
-    if collect_profile or collect_alloc_sites:
+    if collect_profile:
         env["MOLT_PROFILE"] = env.get("MOLT_PROFILE", "1") or "1"
-    if collect_alloc_sites:
-        env["MOLT_PROFILE_ALLOC_SITES"] = (
-            env.get("MOLT_PROFILE_ALLOC_SITES", "1") or "1"
-        )
-        if alloc_sites_limit is not None:
-            env["MOLT_PROFILE_ALLOC_SITES_LIMIT"] = str(alloc_sites_limit)
     _build_molt(bench, extra, env, limits=limits)
     cmd = ["./hello_molt"]
 
@@ -1154,17 +1146,6 @@ def main() -> None:
         help="Enable runtime counters via MOLT_PROFILE and parse output.",
     )
     parser.add_argument(
-        "--molt-profile-alloc-sites",
-        action="store_true",
-        help="Record string allocation call sites via MOLT_PROFILE_ALLOC_SITES.",
-    )
-    parser.add_argument(
-        "--molt-profile-alloc-sites-limit",
-        type=int,
-        default=None,
-        help="Limit alloc site entries (MOLT_PROFILE_ALLOC_SITES_LIMIT).",
-    )
-    parser.add_argument(
         "--runs",
         type=int,
         default=1,
@@ -1213,7 +1194,7 @@ def main() -> None:
     cpu_tool = _pick_cpu_tool(args.cpu_tool)
     alloc_tool = _pick_alloc_tool(args.alloc_tool)
 
-    collect_profile = args.molt_profile or args.molt_profile_alloc_sites
+    collect_profile = args.molt_profile
     metadata: dict[str, object] = {
         "timestamp": stamp,
         "git_rev": _git_rev(),
@@ -1227,8 +1208,6 @@ def main() -> None:
         "alloc_tool": alloc_tool,
         "perf_stat_events": args.perf_stat_events,
         "molt_profile": collect_profile,
-        "molt_profile_alloc_sites": args.molt_profile_alloc_sites,
-        "molt_profile_alloc_sites_limit": args.molt_profile_alloc_sites_limit,
         "env_overrides": args.env,
         "summary_enabled": args.summary,
         "summary_top_n": args.summary_top,
@@ -1254,8 +1233,6 @@ def main() -> None:
                     runs=args.runs,
                     env_overrides=args.env,
                     collect_profile=collect_profile,
-                    collect_alloc_sites=args.molt_profile_alloc_sites,
-                    alloc_sites_limit=args.molt_profile_alloc_sites_limit,
                     perf_stat_events=args.perf_stat_events,
                     limits=limits,
                 )

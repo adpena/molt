@@ -924,7 +924,6 @@ def cmd_calibrate_wasm(
         results_out.unlink()
     env = dict(os.environ)
     env["MOLT_DIFF_RESULTS_JSONL"] = str(results_out)
-    env.setdefault("MOLT_TARGET", "wasm")
     cmd = [
         sys.executable,
         "-u",

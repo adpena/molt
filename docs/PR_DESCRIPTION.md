@@ -21,7 +21,7 @@ Monty-inspired resource controls, audit logging, quality harness, formal verific
 - Atomic shared+reloc runtime generation with caller-trusted build identities
 
 ### WASM Codegen & Backend
-- `resource_check_time` emitted at loop backedges (`MOLT_WASM_RESOURCE_CHECKS=1`)
+- `resource_check_time` emitted at loop backedges
 - `resource_check_op_size` before pow/lshift operations
 - `resource_on_allocate`/`free` wired into alloc/dealloc paths
 - All resource violations throw uncatchable tag 1
