@@ -144,3 +144,25 @@ def pytest_sessionfinish(session, exitstatus) -> None:  # type: ignore[no-untype
 
 def pytest_collect_file() -> None:
     _remove_molt_stdlib_top_level_root()
+
+
+@pytest.fixture
+def cargo_output_implementation_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Model source and Cargo outputs as siblings even with an in-checkout basetemp.
+
+    CI places pytest's basetemp under the checkout's tmp/, so a declared
+    "external" output root would otherwise overlap the implementation source
+    and trip the production supervisor-store overlap check. Lives in the root
+    conftest because directory conftest discovery under the non-package
+    tests/tools directory is unreliable when collected with package modules.
+    """
+    from tools.proof_queue_pkg import cargo_output_layout
+
+    source = tmp_path / "implementation-source"
+    source.mkdir()
+    monkeypatch.setattr(
+        cargo_output_layout, "implementation_source_root", lambda: source
+    )
+    return source
