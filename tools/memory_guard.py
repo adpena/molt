@@ -1042,14 +1042,19 @@ def run_guarded(
                 stderr_capture.close()
             raise
         _close_fds(launch.close_fds)
-        # Freeze the owned launch identity while Popen still reserves this PID.
-        # ChildExecutionClock starts the sole reaper immediately; a fast child
-        # can be gone (or its PID reused) before that constructor returns.
-        # Closure must use the original group/session, never a post-reap query.
+        # Freeze the owned launch identity from the launch contract, never a
+        # kernel query. A POSIX child started with start_new_session is a
+        # session leader once Popen returns (CPython raises if setsid fails),
+        # and a leader can change neither its group nor its session, so both
+        # equal its PID for its whole life. A fast child can already have
+        # exited here, and macOS answers getpgid/getsid for an unreaped zombie
+        # with ESRCH; closure would then lose its root group and report a
+        # successful child as an infrastructure failure.
+        launched_session_leader = popen_kwargs.get("start_new_session") is True
         child_process = GuardedChildProcess(
             pid=proc.pid,
-            pgid=_safe_getpgid(proc.pid),
-            sid=_safe_getsid(proc.pid),
+            pgid=proc.pid if launched_session_leader else None,
+            sid=proc.pid if launched_session_leader else None,
             command=tuple(launch.command),
             started_at=_utc_timestamp(),
         )
