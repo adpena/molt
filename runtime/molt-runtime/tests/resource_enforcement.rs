@@ -9,15 +9,47 @@ molt_runtime::declare_app_bootstrap!(molt_runtime::AppBootstrapProvider::Unavail
 
 use molt_runtime::resource::{
     LimitedTracker, ResourceLimits, ResourceTracker, UnlimitedTracker,
-    clear_global_tracker_factory, install_address_space_backstop, parse_human_size, set_tracker,
-    with_tracker,
+    clear_global_tracker_factory, install_memory_backstop, memory_backstop_budget,
+    parse_human_size, set_tracker, with_tracker,
 };
 
 unsafe extern "C" {
     /// The real runtime startup entrypoint that parses the resource env vars
     /// and installs the global tracker (and, when a memory cap is set, the
-    /// RLIMIT_AS backstop). Compiled binaries call this from runtime init.
+    /// OS memory backstop). Compiled binaries call this from runtime init.
     fn molt_runtime_init_resources();
+}
+
+/// Runtime init installs the process-wide OS memory backstop. Tests that drive
+/// the real init path restore the runner's own limit so sibling tests keep it.
+struct OsBackstopRestore {
+    #[cfg(target_os = "linux")]
+    data: libc::rlimit,
+}
+
+impl OsBackstopRestore {
+    fn capture() -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            let mut data = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_DATA, &mut data) }, 0);
+            Self { data }
+        }
+        #[cfg(not(target_os = "linux"))]
+        Self {}
+    }
+}
+
+impl Drop for OsBackstopRestore {
+    fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        unsafe {
+            libc::setrlimit(libc::RLIMIT_DATA, &self.data);
+        }
+    }
 }
 
 /// Serialize env-mutating tests in this integration binary. The runtime's
@@ -107,26 +139,30 @@ fn env_var_init_installs_tracker() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     clear_all_resource_env();
+    clear_global_tracker_factory();
+    set_tracker(Box::new(UnlimitedTracker));
 
-    // Set the env var
     unsafe { std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", "1048576") };
-    unsafe { std::env::set_var("MOLT_RESOURCE_MAX_ALLOCATIONS", "1000") };
+    unsafe { std::env::set_var("MOLT_RESOURCE_MAX_ALLOCATIONS", "2") };
 
-    // Call the init function (this is what runtime_init calls)
-    // We can't call molt_runtime_init_resources directly as it's extern "C",
-    // but we can verify the env var parsing logic works
-    let max_mem = std::env::var("MOLT_RESOURCE_MAX_MEMORY")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok());
-    assert_eq!(max_mem, Some(1048576));
+    // The runtime-init C entrypoint parses both fields into one tracker.
+    let _restore = OsBackstopRestore::capture();
+    unsafe { molt_runtime_init_resources() };
 
-    let max_alloc = std::env::var("MOLT_RESOURCE_MAX_ALLOCATIONS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok());
-    assert_eq!(max_alloc, Some(1000));
+    assert!(matches!(
+        with_tracker(|t| t.on_grow(2 * 1024 * 1024)).unwrap_err(),
+        molt_runtime::resource::ResourceError::Memory { .. }
+    ));
+    let allocations = with_tracker(|t| (0..3).map(|_| t.on_allocate(8)).collect::<Vec<_>>());
+    assert!(allocations[..2].iter().all(Result::is_ok));
+    assert!(matches!(
+        allocations[2],
+        Err(molt_runtime::resource::ResourceError::Allocation { .. })
+    ));
 
-    // Clean up
     clear_all_resource_env();
+    clear_global_tracker_factory();
+    set_tracker(Box::new(UnlimitedTracker));
 }
 
 /// End-to-end demonstration: `MOLT_MEMORY_LIMIT=64M` set BEFORE runtime init
@@ -146,7 +182,8 @@ fn molt_memory_limit_alias_enforces_via_real_init_path() {
     unsafe { std::env::set_var("MOLT_MEMORY_LIMIT", "64M") };
 
     // Run the actual runtime resource initialization (parses env, installs the
-    // global LimitedTracker + RLIMIT_AS backstop).
+    // global LimitedTracker + OS memory backstop).
+    let _restore = OsBackstopRestore::capture();
     unsafe { molt_runtime_init_resources() };
 
     // A small allocation under the cap succeeds.
@@ -210,6 +247,7 @@ fn alias_and_canonical_field_share_one_enforcement_path() {
         std::env::set_var("MOLT_MEMORY_LIMIT", "1M");
         std::env::set_var("MOLT_RESOURCE_MAX_MEMORY", "536870912"); // 512 MiB
     }
+    let _restore = OsBackstopRestore::capture();
     unsafe { molt_runtime_init_resources() };
 
     // The 1 MiB alias is the effective cap: a 2 MiB grow is rejected.
@@ -232,91 +270,83 @@ fn human_size_front_door_parses_documented_forms() {
     assert!(parse_human_size("bogus").is_err());
 }
 
-/// The RLIMIT_AS backstop installs above a configured limit. We use a value
-/// (1 TiB) large enough that even Darwin — which rejects *lowering* RLIMIT_AS
-/// to a small finite value (EINVAL), see the Linux-only enforcement test below
-/// — accepts it. This asserts the helper wires up `setrlimit` correctly without
-/// depending on platform-specific small-cap enforcement.
-#[cfg(all(unix, not(target_arch = "wasm32")))]
+/// The OS memory backstop installs above the live footprint on Linux. A 1 TiB
+/// tracker limit keeps the runner's own budget effectively unbounded.
+#[cfg(target_os = "linux")]
 #[test]
-fn address_space_backstop_installs_on_unix() {
-    let installed = install_address_space_backstop(1usize << 40); // 1 TiB
+fn memory_backstop_installs_on_linux() {
+    let _restore = OsBackstopRestore::capture();
+    let installed = install_memory_backstop(1usize << 40);
     assert!(
-        installed.is_some(),
-        "RLIMIT_AS backstop should install for a large (non-lowering) value on unix"
+        installed.is_some_and(|bytes| bytes > memory_backstop_budget(1usize << 40)),
+        "RLIMIT_DATA backstop should install above the live footprint on Linux"
     );
 }
 
-/// On non-unix / wasm targets the backstop is a documented no-op.
-#[cfg(not(all(unix, not(target_arch = "wasm32"))))]
+/// Off Linux no committed-memory rlimit exists; the backstop honestly reports
+/// that it is unavailable and the in-VM tracker remains the enforcement.
+#[cfg(not(target_os = "linux"))]
 #[test]
-fn address_space_backstop_is_noop_off_unix() {
-    assert!(install_address_space_backstop(1usize << 40).is_none());
+fn memory_backstop_is_unavailable_off_linux() {
+    assert!(install_memory_backstop(1usize << 40).is_none());
 }
 
-/// LINUX ONLY: the RLIMIT_AS backstop GENUINELY tightens the OS address-space
-/// limit and blocks an over-cap reservation. We prove this in a forked child
-/// (so we never lower the test runner's own address space): the child installs
-/// a small backstop, confirms `getrlimit(RLIMIT_AS)` reflects the tightened
-/// soft limit, and that a huge `mmap` past it fails at the OS layer — a clean
-/// failure, not an OOM-kill of the host.
+/// LINUX ONLY: the backstop GENUINELY bounds committed memory without breaking
+/// a healthy process. In a forked child (so the runner's own limits are never
+/// touched) a 16 MiB tracker limit is installed; the child then proves that
 ///
-/// This is gated to Linux because Darwin's `setrlimit(RLIMIT_AS, …)` returns
-/// EINVAL when asked to lower the limit to a small finite value (verified:
-/// RLIMIT_AS is not a usable hard memory cap on macOS). On macOS the in-VM
-/// tracker (Layer 1) is the enforcement; the OS backstop degrades to best-effort
-/// and `install_address_space_backstop` honestly reports `None`.
+/// * `getrlimit(RLIMIT_DATA)` reflects a tightened, finite soft limit;
+/// * ordinary growth within the budget still maps and touches memory — the
+///   regression an address-space cap caused: this binary's allocator arenas
+///   already exceed a small `RLIMIT_AS`, so every new mapping failed and the
+///   next main-stack growth was SIGSEGV;
+/// * a writable reservation past the budget fails at the OS layer — a clean
+///   failure, not an OOM-kill of the host.
 #[cfg(target_os = "linux")]
 #[test]
-fn address_space_backstop_actually_tightens_os_limit_in_child() {
-    // SAFETY: between fork() and _exit() the child only calls async-signal-safe
-    // libc and our own pure-Rust helpers (no allocation in the failure path, no
-    // locks held across the fork in this single-threaded test context).
+fn memory_backstop_bounds_growth_without_breaking_child() {
+    // SAFETY: between fork() and _exit() the child only calls libc and our own
+    // pure-Rust helpers; it holds no locks taken before the fork.
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0, "fork failed");
 
     if pid == 0 {
-        // ---- child ----
-        // Install a small (16 MiB tracker -> ~80 MiB backstop) limit.
-        let installed = match install_address_space_backstop(16 * 1024 * 1024) {
-            Some(v) => v,
+        let installed = match install_memory_backstop(16 * 1024 * 1024) {
+            Some(bytes) => bytes,
             None => unsafe { libc::_exit(10) },
         };
-
-        // Confirm getrlimit reflects a tightened (finite, <= installed) soft
-        // limit rather than the inherited (typically unlimited) value.
         let mut now = libc::rlimit {
             rlim_cur: 0,
             rlim_max: 0,
         };
-        if unsafe { libc::getrlimit(libc::RLIMIT_AS, &mut now) } != 0 {
+        if unsafe { libc::getrlimit(libc::RLIMIT_DATA, &mut now) } != 0 {
             unsafe { libc::_exit(11) };
         }
         if now.rlim_cur == libc::RLIM_INFINITY || (now.rlim_cur as usize) > installed {
             unsafe { libc::_exit(12) };
         }
-
-        // A reservation far past the backstop must fail at the OS layer
-        // (mmap returns MAP_FAILED) — proving Layer 2 catches what the tracker
-        // cannot see. We use raw mmap to bypass the in-VM tracker entirely.
-        let huge = installed.saturating_mul(8); // ~640 MiB, well past ~80 MiB cap
-        let p = unsafe {
+        let map = |bytes: usize| unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
-                huge,
+                bytes,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_PRIVATE | libc::MAP_ANON,
                 -1,
                 0,
             )
         };
-        if p == libc::MAP_FAILED {
-            unsafe { libc::_exit(0) }; // success: OS backstop rejected the mapping
+        let within = 8 * 1024 * 1024;
+        let healthy = map(within);
+        if healthy == libc::MAP_FAILED {
+            unsafe { libc::_exit(13) };
         }
-        unsafe { libc::_exit(13) }; // mapping unexpectedly succeeded past the backstop
+        unsafe { std::ptr::write_bytes(healthy.cast::<u8>(), 0xA5, within) };
+        if map(installed) != libc::MAP_FAILED {
+            unsafe { libc::_exit(14) };
+        }
+        unsafe { libc::_exit(0) };
     }
 
-    // ---- parent ----
     let mut status: libc::c_int = 0;
     let waited = unsafe { libc::waitpid(pid, &mut status, 0) };
     assert_eq!(waited, pid, "waitpid failed");
@@ -327,7 +357,7 @@ fn address_space_backstop_actually_tightens_os_limit_in_child() {
     let code = libc::WEXITSTATUS(status);
     assert_eq!(
         code, 0,
-        "child should prove the RLIMIT_AS backstop tightened the OS limit and \
-         blocked an over-cap mmap (exit code {code})"
+        "child must keep healthy growth within the RLIMIT_DATA budget and reject \
+         a reservation past it (exit code {code})"
     );
 }

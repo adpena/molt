@@ -424,14 +424,16 @@ pub fn env_memory_limit_bytes() -> Option<u64> {
     Some(available.saturating_sub(reserve))
 }
 
-#[cfg(unix)]
-pub fn rlimit_address_space_bytes() -> Option<u64> {
+/// The committed-memory rlimit the backend process guard installs
+/// (`RLIMIT_DATA` on Linux; other kernels have none).
+#[cfg(target_os = "linux")]
+pub fn rlimit_committed_memory_bytes() -> Option<u64> {
     unsafe {
         let mut limit = libc::rlimit {
             rlim_cur: 0,
             rlim_max: 0,
         };
-        if libc::getrlimit(libc::RLIMIT_AS, &mut limit) != 0 {
+        if libc::getrlimit(libc::RLIMIT_DATA, &mut limit) != 0 {
             return None;
         }
         let raw = limit.rlim_cur;
@@ -443,13 +445,13 @@ pub fn rlimit_address_space_bytes() -> Option<u64> {
     }
 }
 
-#[cfg(not(unix))]
-pub fn rlimit_address_space_bytes() -> Option<u64> {
+#[cfg(not(target_os = "linux"))]
+pub fn rlimit_committed_memory_bytes() -> Option<u64> {
     None
 }
 
 pub fn backend_memory_limit_bytes() -> Option<u64> {
-    match (env_memory_limit_bytes(), rlimit_address_space_bytes()) {
+    match (env_memory_limit_bytes(), rlimit_committed_memory_bytes()) {
         (Some(env_limit), Some(rlimit)) => Some(env_limit.min(rlimit)),
         (Some(env_limit), None) => Some(env_limit),
         (None, Some(rlimit)) => Some(rlimit),

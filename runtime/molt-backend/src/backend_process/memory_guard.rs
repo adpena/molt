@@ -15,20 +15,37 @@ fn install_unix_memory_guard() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(default_backend_max_rss_gb);
-    let max_bytes = max_gb * 1024 * 1024 * 1024;
-    unsafe {
-        let rlim = libc::rlimit {
-            rlim_cur: max_bytes,
-            rlim_max: max_bytes,
-        };
-        if libc::setrlimit(libc::RLIMIT_AS, &rlim) != 0
-            && env::var("MOLT_DEBUG_RLIMIT").as_deref() == Ok("1")
-        {
-            eprintln!(
-                "WARNING: failed to set memory limit (RLIMIT_AS={max_gb}GB). OOM guard not active."
-            );
-        }
+    if let Err(reason) = install_committed_memory_rlimit(max_gb * 1024 * 1024 * 1024)
+        && env::var("MOLT_DEBUG_RLIMIT").as_deref() == Ok("1")
+    {
+        eprintln!("WARNING: backend memory limit ({max_gb}GB) not active: {reason}.");
     }
+}
+
+/// Linux charges `RLIMIT_DATA` for every writable private mapping, the
+/// committed-memory counterpart of the Windows job memory limit below.
+/// `RLIMIT_AS` would also charge sparse reservations (allocator arenas, the
+/// mapped executable, guard regions) that are not memory.
+#[cfg(target_os = "linux")]
+fn install_committed_memory_rlimit(max_bytes: u64) -> Result<(), String> {
+    let rlim = libc::rlimit {
+        rlim_cur: max_bytes,
+        rlim_max: max_bytes,
+    };
+    if unsafe { libc::setrlimit(libc::RLIMIT_DATA, &rlim) } != 0 {
+        return Err(format!(
+            "setrlimit(RLIMIT_DATA) failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+/// Other Unix kernels have no committed-memory rlimit (macOS's `RLIMIT_DATA`
+/// governs only `brk`); the parent's RSS guard remains the enforcement.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn install_committed_memory_rlimit(_max_bytes: u64) -> Result<(), String> {
+    Err("this kernel has no committed-memory rlimit".to_string())
 }
 
 #[cfg(not(unix))]
