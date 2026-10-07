@@ -19,7 +19,18 @@ from molt.wasi_sdk_identity import (
 from tools import provision_wasi_sdk as provisioner
 
 
-VERSION_TEXT = b"33.0+m\nwasi-libc: test\nllvm-version: 22.1.0\n"
+# The pinned SDK's VERSION file, read from its one authority.
+_WASI = llvm_toolchain.load_llvm_releases(provisioner.ROOT).wasi_sdk
+VERSION_TEXT = (
+    f"{_WASI.sdk_version}\nwasi-libc: test\nllvm-version: {_WASI.llvm_version}\n"
+).encode()
+_SDK_MAJOR = int(_WASI.archive_version.split(".", 1)[0])
+_LLVM_MAJOR, _LLVM_MINOR, _LLVM_PATCH = _WASI.llvm_version.split(".")
+# Near misses: the previous SDK release, and another patch of the LLVM line.
+_PREVIOUS_SDK_VERSION_TEXT = (
+    f"{_SDK_MAJOR - 1}.0\nwasi-libc: test\nllvm-version: {_WASI.llvm_version}\n"
+).encode()
+_OTHER_LLVM_PATCH = f"{_LLVM_MAJOR}.{_LLVM_MINOR}.{int(_LLVM_PATCH) + 8}"
 
 
 def _host_asset() -> llvm_toolchain.WasiSdkHostAsset:
@@ -283,8 +294,14 @@ def test_provision_never_repairs_a_modified_installation(
 @pytest.mark.parametrize(
     ("version_text", "omit", "message"),
     (
-        (b"33.0\nwasi-libc: test\nllvm-version: 22.1.0\n", None, "VERSION identity"),
-        (VERSION_TEXT.replace(b"22.1.0", b"22.1.8"), None, "LLVM producer identity"),
+        (_PREVIOUS_SDK_VERSION_TEXT, None, "VERSION identity"),
+        (
+            VERSION_TEXT.replace(
+                _WASI.llvm_version.encode(), _OTHER_LLVM_PATCH.encode()
+            ),
+            None,
+            "LLVM producer identity",
+        ),
         (VERSION_TEXT, "share/wasi-sysroot/lib/wasm32-wasip1/libc.a", "missing"),
         (VERSION_TEXT, "bin/llvm-nm", "missing"),
         (VERSION_TEXT, "bin/clang", "missing"),
