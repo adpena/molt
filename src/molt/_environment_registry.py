@@ -1521,7 +1521,7 @@ _REGISTRY_JSON = r"""{
       "kind": "path",
       "name": "MOLT_CI_EPHEMERAL_CUSTODY_ROOT",
       "owner": "src/molt/dx.py",
-      "summary": "Per-run custody directory under RUNNER_TEMP that the ephemeral-custody action writes to GITHUB_ENV; src/molt/dx.py treats a non-empty value as the hosted-checkout contract and fails closed unless GITHUB_ACTIONS, CI, the GitHub URLs, workspace and commit facts all agree, and unset means no hosted custody.",
+      "summary": "Per-run custody directory under RUNNER_TEMP that the setup-project action's first step writes to GITHUB_ENV; src/molt/dx.py treats a non-empty value as the hosted-checkout contract and fails closed unless GITHUB_ACTIONS, CI, the GitHub URLs, workspace and commit facts all agree, and unset means no hosted custody.",
       "values": []
     },
     {

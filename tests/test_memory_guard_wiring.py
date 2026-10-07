@@ -1106,7 +1106,7 @@ def test_windows_native_proof_scratch_layout_retains_linker_path_budget() -> Non
 
     # Replays the CI2 quote build-script output shape that failed with LNK1104.
     # Long-path-aware Python does not make MSVC's output paths long-path-aware.
-    action = (REPO_ROOT / ".github/actions/ephemeral-custody/action.yml").read_text(
+    action = (REPO_ROOT / ".github/actions/setup-project/action.yml").read_text(
         encoding="utf-8"
     )
     setup = action.split("- name: Configure verified ephemeral custody", 1)[1]
