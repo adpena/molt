@@ -102,7 +102,7 @@ def test_layout_uses_bound_pair_not_mutable_selection_or_ambient_overrides(
         "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE",
     ):
         monkeypatch.setenv(name, "999999")
-    monkeypatch.delenv("MOLT_WASM_LINK", raising=False)
+    monkeypatch.delenv("MOLT_WASM_RELOCATABLE", raising=False)
     layout = prepare_wasm_codegen_layout(
         binding, linked=linked, split_runtime=split_runtime
     )

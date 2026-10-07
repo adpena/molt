@@ -108,7 +108,7 @@ def test_prepare_wasm_binary_sets_linked_table_base(
     )
     assert wasm is not None
     assert pruned_envs == [base_env]
-    assert "MOLT_WASM_LINK" not in captured_env
+    assert "MOLT_WASM_RELOCATABLE" not in captured_env
     assert captured_env.get("MOLT_WASM_TABLE_BASE") == "2354"
 
 

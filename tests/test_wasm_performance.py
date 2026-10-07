@@ -93,7 +93,7 @@ def _build_wasm(
     """Build source to WASM. Returns output path or None."""
     env = wasm_test_build_env(ROOT, linked=linked)
     if linked:
-        env["MOLT_WASM_LINK"] = "1"
+        env["MOLT_WASM_RELOCATABLE"] = "1"
     cmd = _molt_build_cmd() + [
         str(source),
         "--target",

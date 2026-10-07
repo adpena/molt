@@ -42,7 +42,7 @@ pub struct WasmCompileOptions {
 impl Default for WasmCompileOptions {
     fn default() -> Self {
         Self {
-            reloc_enabled: matches!(std::env::var("MOLT_WASM_LINK").as_deref(), Ok("1")),
+            reloc_enabled: matches!(std::env::var("MOLT_WASM_RELOCATABLE").as_deref(), Ok("1")),
             data_base: {
                 let raw = std::env::var("MOLT_WASM_DATA_BASE")
                     .ok()
