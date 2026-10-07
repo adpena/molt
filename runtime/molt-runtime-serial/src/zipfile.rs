@@ -14,18 +14,7 @@ pub extern "C" fn molt_zipfile_crc32(data_bits: u64) -> u64 {
             return raise_exception::<_>(_py, "TypeError", "zipfile crc32 expects bytes-like");
         };
 
-        let mut crc = 0xFFFF_FFFFu32;
-        for byte in bytes {
-            crc ^= u32::from(*byte);
-            for _ in 0..8 {
-                if (crc & 1) != 0 {
-                    crc = (crc >> 1) ^ 0xEDB8_8320;
-                } else {
-                    crc >>= 1;
-                }
-            }
-        }
-        crc ^= 0xFFFF_FFFF;
+        let crc = molt_runtime_core::crc32::crc32(bytes, 0);
         MoltObject::from_int(i64::from(crc)).bits()
     })
 }
