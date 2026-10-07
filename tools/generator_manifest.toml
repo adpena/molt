@@ -556,11 +556,6 @@ audited_defaults = []
 # Each row names the real producer so the file stays accountable.
 # ===========================================================================
 
-[[orphan_generated]]
-path = "runtime/molt-ffi/src/header.rs"
-producer = "molt-ffi crate (Rust build-side generator)"
-reason = "emitted by the molt-ffi crate's own codegen, not a tools/ generator; checked in for the C ABI header"
-
 [[generator]]
 tool = "tools/gen_python_numeric_errors.py"
 outputs = [

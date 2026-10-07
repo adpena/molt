@@ -200,9 +200,11 @@ reported a `release-fast` daemon prime of 10.31 s, `dev-fast` `test-lib` of
   `.cargo/config.toml`; flip on for dev profiles (keep the portable baseline for CI).
 
 ### 4. Feature-graph hygiene (avoid rebuild thrash)
-Guarded live metadata currently shows three direct workspace reverse-dependencies
-on `molt-runtime`: `molt-wasm-host`, `molt-embed`, and `molt-ffi`. Treat that as
-the live critical path, not the older over-broad dependent count. Any
+The declared workspace has one direct consumer of `molt-runtime`:
+`molt-cext-discovery`. The compilation SDK invokes the CLI without linking the
+runtime, and the WASM host loads guest modules without a native runtime dependency.
+The [generated build graph](foundation/BUILD_GRAPH_BOARD.md) tracks the measured
+dependency cones. Any
 feature-unification mismatch across those consumers, backend features, or WASM
 profiles can still force duplicate compiles; audit `native-backend`,
 `stdlib_path`, wasm features, and leaf stdlib gates for accidental thrash, and

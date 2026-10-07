@@ -2967,17 +2967,6 @@ dependencies = [
 [[package]]
 name = "molt-embed"
 version = "0.1.0"
-dependencies = [
- "molt-runtime",
-]
-
-[[package]]
-name = "molt-ffi"
-version = "0.1.0"
-dependencies = [
- "molt-lang-obj-model",
- "molt-runtime",
-]
 
 [[package]]
 name = "molt-gpu"

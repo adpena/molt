@@ -1,7 +1,7 @@
 //! Embeddable Python-to-WASM/native compilation SDK.
 //!
-//! Provides a minimal API for compiling Python subsets inline from Rust
-//! applications without using the Molt CLI.
+//! Provides a Rust API for compiling Python source through the installed
+//! Molt CLI.
 //!
 //! # Usage
 //!
@@ -9,10 +9,11 @@
 //! use molt_embed::{MoltCompiler, CompileTarget, CompileOptions};
 //!
 //! let compiler = MoltCompiler::new()?;
-//! let wasm_bytes = compiler.compile_to_wasm(
+//! let result = compiler.compile_source(
 //!     "def fib(n): return n if n < 2 else fib(n-1) + fib(n-2)",
-//!     CompileOptions::default(),
+//!     CompileOptions { target: CompileTarget::Wasm, ..CompileOptions::default() },
 //! )?;
+//! let wasm_bytes = result.artifact;
 //! ```
 //!
 //! # Design
@@ -24,9 +25,9 @@
 //! - `CompileResult` — compilation output with artifacts and diagnostics
 //! - `CapabilitySet` — capability configuration for the compiled module
 //!
-//! The compiler shells out to the Molt backend daemon for heavy lifting,
-//! keeping the embed crate lightweight. For environments where the daemon
-//! is not available, a fallback path uses the backend library directly.
+//! The SDK invokes the installed Molt CLI and reads its compilation output.
+//! It has no runtime or backend-library dependency. A missing CLI is reported
+//! as `CompileError::BackendUnavailable`.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -221,9 +222,8 @@ pub struct MoltCompiler {
 impl MoltCompiler {
     /// Create a new compiler instance.
     ///
-    /// Discovers the Molt installation by checking:
-    /// 1. `MOLT_HOME` environment variable
-    /// 2. `~/.molt` default directory
+    /// Discovers the CLI in `MOLT_HOME/bin`, then `PATH`. Compilation reports
+    /// `CompileError::BackendUnavailable` when discovery finds no CLI.
     pub fn new() -> Result<Self, CompileError> {
         // Try to find the molt CLI
         let molt_cli = which_molt();

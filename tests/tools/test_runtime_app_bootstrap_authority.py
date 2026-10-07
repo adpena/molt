@@ -22,7 +22,6 @@ def test_native_bootstrap_definition_has_one_typed_authority() -> None:
             "molt-runtime-core",
             "molt-runtime",
             "molt-cext-discovery",
-            "molt-ffi",
             "molt-wasm-host",
         )
         for path in sorted((RUNTIME / crate).rglob("*.rs"))
@@ -43,7 +42,7 @@ def test_runtime_linking_test_images_explicitly_declare_one_provider() -> None:
     for path in sorted((RUNTIME / "molt-runtime/fuzz/fuzz_targets").glob("*.rs")):
         source = path.read_text(encoding="utf-8")
         assert source.count("declare_app_bootstrap!(") == 1, path
-    for name in ("molt-cext-discovery", "molt-ffi"):
+    for name in ("molt-cext-discovery",):
         source = (RUNTIME / name / "src/lib.rs").read_text(encoding="utf-8")
         assert source.count("declare_app_bootstrap!(") == 1, name
 

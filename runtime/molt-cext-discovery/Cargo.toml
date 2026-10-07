@@ -18,8 +18,8 @@ crate-type = ["cdylib"]
 [dependencies]
 # BOTH halves in ONE image => a single molt_cpython_abi static pool that owns
 # the REAL hooks AND the Py* the extension calls AND the loader that drives it.
-# `stdlib_micro` (no networking) is the known-good NATIVE feature set — matches
-# molt-embed/molt-ffi. The default `stdlib_full + wasi_host` combo is
+# `stdlib_micro` (no networking) is the discovery image's native feature set.
+# The default `stdlib_full + wasi_host` combo is
 # wasm-oriented and does not compile cleanly for native (net-io / TLS paths
 # reference a wasm-only `libc_compat`). The CPython-ABI hooks live in the core
 # runtime, so no stdlib feature beyond micro is needed to drive numpy's PyInit.

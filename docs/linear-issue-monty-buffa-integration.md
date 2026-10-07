@@ -81,7 +81,11 @@ using Buffa for native-speed wire serialization.
 
 ### Phase 4: Monty C API Bridge
 
-- [ ] MOL-XX: molt-ffi crate (327 stdlib extern "C" wrappers)
+- Retired proposal: the unpublished `molt-ffi` scaffold and its incomplete header
+  have been removed. Foreign-host integration must use the maintained
+  [runtime C API](spec/areas/compat/surfaces/c_api/libmolt_c_api_surface.md) with
+  explicit object, error, lifecycle and capability custody. This proposal does
+  not establish stdlib or Monty compatibility.
 - [ ] MOL-XX: Monty host integration example
 - [ ] MOL-XX: Upstream PR to pydantic/monty
 
