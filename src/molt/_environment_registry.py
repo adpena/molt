@@ -7408,8 +7408,8 @@ _REGISTRY_JSON = r"""{
       "default": "",
       "kind": "path",
       "name": "MOLT_WASM_LD",
-      "owner": "src/molt/cli/wasm_toolchain.py",
-      "summary": "Path of the wasm-ld executable for wasm links, which must name one executable without arguments and must be the wasm-ld entrypoint or the link fails; when unset Molt searches the wasi-sdk bin directory beside the sysroot and then the LLVM linker candidates, and the SDK provisioning, proof queue, and release workflow set it to the provisioned SDK's wasm-ld for child builds.",
+      "owner": "src/molt/llvm_toolchain.py",
+      "summary": "Path of the wasm-ld executable for wasm links; it must name one executable without arguments and be the wasm-ld entrypoint. When unset, wasm-ld comes only from the manifest-owned WASI SDK (WASI_SDK_PATH or the provisioned SDK), never from PATH; SDK provisioning, the proof queue and the release workflow set it to the provisioned SDK's wasm-ld for child builds.",
       "values": []
     },
     {
