@@ -13,7 +13,7 @@ be-red and this suite fails. The tables checked:
 
   #1 type-tags         frontend BUILTIN_TYPE_TAGS <-> runtime TYPE_TAG_*/BUILTIN_TAG_*
   #2 exception-ordinals frontend enumerate() <-> runtime builtin_exception_name_for_tag
-  #3 exception-names    frontend BUILTIN_EXCEPTION_NAMES <-> runtime exception_base_spec
+  #3 exception-names    frontend BUILTIN_EXCEPTION_NAMES <-> object-model BUILTIN_EXCEPTION_SPECS
   #4 target-python      cli authority <-> stdlib-union baseline <-> generator
 
 Run:
@@ -21,32 +21,14 @@ Run:
 """
 
 from __future__ import annotations
-from tests.process_guard_common import check_output_guarded_test_process
-
 import importlib.util
-import subprocess
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 
-def _find_repo_root() -> Path:
-    try:
-        out = check_output_guarded_test_process(
-            ["git", "rev-parse", "--show-toplevel"],
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ).strip()
-        if out:
-            return Path(out)
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-    return Path(__file__).resolve().parents[1]
-
-
-ROOT = _find_repo_root()
+ROOT = Path(__file__).resolve().parents[1]
 GATE_PATH = ROOT / "tools" / "check_table_drift.py"
 
 
@@ -74,6 +56,7 @@ def test_gate_module_paths_resolve_to_this_repo() -> None:
     assert GATE.FRONTEND_TYPES_PY.exists()
     assert GATE.TYPE_IDS_RS.exists()
     assert GATE.EXCEPTIONS_RS.exists()
+    assert GATE.EXCEPTION_SCHEMA_RS.exists()
     assert GATE.TARGET_PYTHON_PY.exists()
     assert GATE.STDLIB_UNION_PY.exists()
     assert GATE.GEN_STDLIB_UNION_PY.exists()
@@ -120,13 +103,6 @@ class _Mutation:
             self.path.write_bytes(self._original)
 
 
-@pytest.fixture(autouse=True)
-def _reload_gate_after_mutation() -> Iterator[None]:
-    """Each category re-reads files from disk, so no module reload is needed;
-    but guard the tree is clean after every test regardless of assertion order."""
-    yield
-
-
 def _assert_mutation_fails(category: str, mutation: _Mutation) -> None:
     assert _category_ok(category), (
         f"precondition: {category} must be green before mutation"
@@ -134,7 +110,7 @@ def _assert_mutation_fails(category: str, mutation: _Mutation) -> None:
     with mutation:
         assert not _category_ok(category), (
             f"MUTATION NOT CAUGHT: {category} stayed green after mutating "
-            f"{mutation.path.name} ({mutation.old!r} -> {mutation.new!r}). "
+            f"{mutation.path.name} ({mutation._old!r} -> {mutation._new!r}). "
             "The drift gate has a hole."
         )
     assert _category_ok(category), f"{category} must be green again after revert"
@@ -197,18 +173,136 @@ def test_mutation_exception_name_frontend_only_caught() -> None:
 
 
 def test_mutation_exception_name_runtime_only_caught() -> None:
-    # #3 add a real builtin exception to the runtime spec only (frontend can't
+    # #3 add a real builtin exception to the schema only (frontend can't
     # name it) -- proves the runtime->frontend direction has teeth and is not
-    # masked by the KNOWN_NON_FRONTEND allowlist.
+    # masked by treating an arbitrary string as a declared class.
     _assert_mutation_fails(
         "exception-names",
         _Mutation(
-            GATE.EXCEPTIONS_RS,
-            '        "ModuleNotFoundError" => Some(ExceptionBaseSpec::One("ImportError")),',
-            '        "ModuleNotFoundError" | "TotallyFakeRuntimeError" => '
-            'Some(ExceptionBaseSpec::One("ImportError")),',
+            GATE.EXCEPTION_SCHEMA_RS,
+            '    exception_spec(\n        "ModuleNotFoundError",',
+            '    exception_spec("TotallyFakeRuntimeError", ExceptionBaseSpec::One("Exception"), None),\n'
+            '    exception_spec(\n        "ModuleNotFoundError",',
         ),
     )
+
+
+def test_commented_exception_row_cannot_preserve_a_removed_declaration() -> None:
+    _assert_mutation_fails(
+        "exception-names",
+        _Mutation(
+            GATE.EXCEPTION_SCHEMA_RS,
+            '    exception_spec("MemoryError", ExceptionBaseSpec::One("Exception"), None),',
+            '    // exception_spec("MemoryError", ExceptionBaseSpec::One("Exception"), None),',
+        ),
+    )
+
+
+def test_missing_canonical_alias_is_rejected() -> None:
+    _assert_mutation_fails(
+        "exception-names",
+        _Mutation(
+            GATE.EXCEPTION_SCHEMA_RS,
+            'exception_alias("IOError", "OSError")',
+            'exception_alias("IOError", "MissingError")',
+        ),
+    )
+
+
+@pytest.mark.parametrize("target", ["EnvironmentError", "IOError"])
+def test_alias_target_must_be_canonical(target: str) -> None:
+    # Runtime canonical() resolves one hop and its schema invariant forbids
+    # alias targets that are themselves aliases, including self-references.
+    _assert_mutation_fails(
+        "exception-names",
+        _Mutation(
+            GATE.EXCEPTION_SCHEMA_RS,
+            'exception_alias("IOError", "OSError")',
+            f'exception_alias("IOError", "{target}")',
+        ),
+    )
+
+
+def test_declared_module_owns_frontend_namespace_exclusion() -> None:
+    _assert_mutation_fails(
+        "exception-names",
+        _Mutation(
+            GATE.EXCEPTION_SCHEMA_RS,
+            '.with_heap_class("asyncio.exceptions")',
+            '.with_heap_class("builtins")',
+        ),
+    )
+
+
+def test_platform_alias_is_in_the_target_superset_without_host_filtering() -> None:
+    names = GATE._parse_builtin_exception_names(GATE.EXCEPTION_SCHEMA_RS.read_text())
+    assert {"WindowsError", "EnvironmentError", "IOError", "OSError"} <= names
+    assert "CancelledError" not in names
+    assert "UnsupportedOperation" not in names
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "// const TYPE_TAG_INT: i64 = 99;\nconst TYPE_TAG_INT: i64 = 2;",
+        'const DECOY: &str = r#"const TYPE_TAG_INT: i64 = 99;"#;\nconst TYPE_TAG_INT: i64 = 2;',
+        "const TYPE_TAG_INT: i64 = 2;\n/* const TYPE_TAG_INT: i64 = 99; */",
+    ],
+)
+def test_rust_constant_projection_ignores_comment_and_literal_decoys(text: str) -> None:
+    assert GATE._parse_rust_i64_consts(text) == {"TYPE_TAG_INT": 2}
+
+
+def test_ordinal_projection_ignores_literal_braces_and_nested_decoys() -> None:
+    text = """
+    const DECOY: &str = r#"fn ordinal(tag: u64) { match tag { 1 => Some("Fake") } }"#;
+    fn ordinal(tag: u64) -> Option<&'static str> {
+        // } 1 => Some("Fake")
+        match tag { 1 => Some("RealError"), _ => None }
+    }
+    mod nested { fn ordinal(tag: u64) { match tag { 1 => Some("Fake") } } }
+    """
+    assert GATE._parse_rust_match_ordinals(text, "ordinal") == {1: "RealError"}
+
+
+def test_missing_ordinal_body_cannot_borrow_the_next_function() -> None:
+    text = """
+    fn ordinal(tag: u64) -> Option<&'static str>;
+    fn other(tag: u64) -> Option<&'static str> {
+        match tag { 1 => Some("WrongError"), _ => None }
+    }
+    """
+    assert GATE._parse_rust_match_ordinals(text, "ordinal") == {}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "fn decoy(tag: u64) -> Option<&'static str> { "
+        'match tag { 1 => Some("WrongError"), _ => None } } None',
+        'let _ignored = match tag { 1 => Some("WrongError"), _ => None }; None',
+    ],
+)
+def test_ordinal_projection_rejects_unreturned_matches(body: str) -> None:
+    # Both actual functions return None. An unused helper or local match must
+    # not stand in for the constructor's return value.
+    text = f"fn ordinal(tag: u64) -> Option<&'static str> {{ {body} }}"
+    assert GATE._parse_rust_match_ordinals(text, "ordinal") == {}
+
+
+@pytest.mark.parametrize(
+    "arms",
+    [
+        '1 => Some("Error")',
+        '_ => None, 1 => Some("Error")',
+        '1 => Some("Error"), 1 => Some("OtherError"), _ => None',
+        '1 => Some("Error"), _ => None, _ => None',
+        "1 => Some(NAME), _ => None",
+    ],
+)
+def test_ordinal_projection_rejects_unsupported_or_ambiguous_arms(arms: str) -> None:
+    text = f"fn ordinal(tag: u64) -> Option<&'static str> {{ match tag {{ {arms} }} }}"
+    assert GATE._parse_rust_match_ordinals(text, "ordinal") == {}
 
 
 def test_mutation_target_python_baseline_bump_caught() -> None:

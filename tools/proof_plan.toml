@@ -3197,12 +3197,17 @@ gates = [
 # --- Cross-language duplicate-authority tables ---------------------------
 [[rule]]
 name = "table-drift"
-description = "Hand-synced cross-language / cross-file tables (type tags, exception ordinals/names, target-Python versions): parse-both drift gate."
+description = "Cross-language tables (type tags, exception ordinals/names, target-Python versions, C-API module slots): bind actual declarative owners."
 globs = [
   # #1 builtin-type numeric tags + #2/#3 exception ordinals & names.
   "src/molt/frontend/_types.py",
   "runtime/molt-runtime/src/object/type_ids.rs",
   "runtime/molt-runtime/src/builtins/exceptions.rs",
+  "runtime/molt-obj-model/src/exception_layout.rs",
+  "src/molt/rust_source_scan.py",
+  # #5 C-API module slots have two maintained header consumers.
+  "include/molt/Python.h",
+  "runtime/molt-cpython-abi/include/Python.h",
   # #4 supported target-Python version triple.
   "src/molt/target_python.py",
   "tools/stdlib_module_union.py",
