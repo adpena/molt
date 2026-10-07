@@ -49,7 +49,10 @@ jobs:
           sync: "true"
           sync-frozen: "true"
           sync-groups: dev
-      - name: pip-audit
+      - name: Execute Python security partitions
+        env:
+          # The scheduled pin-freshness partition reads upstream release APIs.
+          GITHUB_TOKEN: ${{ github.token }}
         run: uv run python3 tools/proof_plan.py --run-family python_security --receipt proof-receipts/python_security.json
       - name: Upload Python security receipt
         if: always() && hashFiles('proof-receipts/python_security.json') != ''

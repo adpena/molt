@@ -322,7 +322,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "2b331c7aa2ed864107def65f4f99b64cdc7d6a8553edf661d2011aa9058764ed",
+  "authority_sha256": "cc1645c8d2350418173952bff438f5ffabe08828fd6902c6e9fd20d8f06363bb",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -604,7 +604,7 @@
         "pre-push",
         "pr",
         "main",
-        "nightly"
+        "scheduled"
       ],
       "timeout_minutes": 75,
       "workflow": ".github/workflows/ci.yml"
@@ -616,7 +616,7 @@
       ],
       "admission_workflow": ".github/workflows/ci.yml",
       "dependencies": [],
-      "description": "Locked Python dependency vulnerability proof.",
+      "description": "Locked Python dependency vulnerability proof; on schedule, also upstream pin freshness.",
       "executor": "github-job",
       "inputs": [
         ".github/workflows/security_hardening.yml",
@@ -631,7 +631,7 @@
       "tiers": [
         "pr",
         "main",
-        "weekly"
+        "scheduled"
       ],
       "timeout_minutes": 20,
       "workflow": ".github/workflows/security_hardening.yml"
@@ -659,7 +659,7 @@
       "tiers": [
         "pr",
         "main",
-        "weekly"
+        "scheduled"
       ],
       "timeout_minutes": 20,
       "workflow": ".github/workflows/security_hardening.yml"
@@ -690,7 +690,7 @@
       "tiers": [
         "pr",
         "main",
-        "nightly"
+        "scheduled"
       ],
       "timeout_minutes": 45,
       "workflow": ".github/workflows/formal.yml"
@@ -844,7 +844,7 @@
       "id": "nightly.shards.prepare",
       "resource_class": "scheduled-suite",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_seconds": 3300,
       "toolchains": [
@@ -880,7 +880,7 @@
       "id": "nightly.conformance.aggregate",
       "resource_class": "scheduled-suite",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_seconds": 600,
       "toolchains": [
@@ -914,7 +914,7 @@
       "id": "nightly.differential.aggregate",
       "resource_class": "scheduled-suite",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_seconds": 600,
       "toolchains": [
@@ -948,7 +948,7 @@
       "id": "nightly.regrtest.aggregate",
       "resource_class": "scheduled-suite",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_seconds": 600,
       "toolchains": [
@@ -987,7 +987,7 @@
       "id": "nightly.shards.profile-feedback",
       "resource_class": "scheduled-suite",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_seconds": 300,
       "toolchains": [
@@ -1012,7 +1012,7 @@
       "id": "nightly.determinism.runtime-build",
       "resource_class": "compiler-build-resource",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_budget": "cold",
       "timeout_seconds": 1200,
@@ -1048,7 +1048,7 @@
       "id": "nightly.determinism.runtime",
       "resource_class": "scheduled-suite",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_seconds": 1200,
       "toolchains": [
@@ -1082,7 +1082,7 @@
       "id": "nightly.determinism.ir",
       "resource_class": "scheduled-suite",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_seconds": 900,
       "toolchains": [
@@ -1109,7 +1109,7 @@
       "id": "nightly.verification-t3.runtime-build",
       "resource_class": "compiler-build-resource",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_budget": "cold",
       "timeout_seconds": 1200,
@@ -1144,7 +1144,7 @@
       "id": "nightly.verification-t3.reproducibility",
       "resource_class": "scheduled-suite",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_seconds": 600,
       "toolchains": [
@@ -1180,7 +1180,7 @@
       "id": "nightly.verification-t3.fuzz-compiler",
       "resource_class": "scheduled-suite",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_seconds": 600,
       "toolchains": [
@@ -1215,7 +1215,7 @@
       "id": "nightly.verification-t3.mutation",
       "resource_class": "scheduled-suite",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_seconds": 3600,
       "toolchains": [
@@ -1245,7 +1245,7 @@
       "id": "nightly.verification-t3.translation",
       "resource_class": "scheduled-suite",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_seconds": 1800,
       "toolchains": [
@@ -1275,7 +1275,7 @@
       "id": "nightly.verification-t3.model-based",
       "resource_class": "scheduled-suite",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_seconds": 600,
       "toolchains": [
@@ -4486,7 +4486,7 @@
         "pre-push",
         "pr",
         "main",
-        "nightly"
+        "scheduled"
       ],
       "timeout_budget": "cold",
       "timeout_seconds": 1200,
@@ -4530,7 +4530,7 @@
         "pre-push",
         "pr",
         "main",
-        "nightly"
+        "scheduled"
       ],
       "timeout_budget": "warm",
       "timeout_seconds": 300,
@@ -4566,7 +4566,7 @@
         "pre-push",
         "pr",
         "main",
-        "nightly"
+        "scheduled"
       ],
       "timeout_budget": "warm",
       "timeout_seconds": 300,
@@ -4606,7 +4606,7 @@
         "pre-push",
         "pr",
         "main",
-        "nightly"
+        "scheduled"
       ],
       "timeout_budget": "warm",
       "timeout_seconds": 300,
@@ -4638,7 +4638,7 @@
         "pre-push",
         "pr",
         "main",
-        "nightly"
+        "scheduled"
       ],
       "timeout_budget": "warm",
       "timeout_seconds": 300,
@@ -4674,7 +4674,7 @@
         "pre-push",
         "pr",
         "main",
-        "nightly"
+        "scheduled"
       ],
       "timeout_seconds": 120,
       "toolchains": [
@@ -4713,7 +4713,7 @@
       "resource_class": "compiler-build-resource",
       "tiers": [
         "main",
-        "nightly"
+        "scheduled"
       ],
       "timeout_budget": "suite",
       "timeout_seconds": 1800,
@@ -4743,9 +4743,32 @@
       "tiers": [
         "pr",
         "main",
-        "weekly"
+        "scheduled"
       ],
       "timeout_seconds": 900,
+      "toolchains": [
+        "python",
+        "uv"
+      ]
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "python3",
+        "tools/pin_freshness.py",
+        "--check"
+      ],
+      "cache_domain": "uv",
+      "cell": "linux-x86_64-py312-python-audit",
+      "dependencies": [],
+      "family": "python_security",
+      "id": "security.pin-freshness",
+      "resource_class": "network-audit",
+      "tiers": [
+        "scheduled"
+      ],
+      "timeout_seconds": 300,
       "toolchains": [
         "python",
         "uv"
@@ -4766,7 +4789,7 @@
       "tiers": [
         "pr",
         "main",
-        "weekly"
+        "scheduled"
       ],
       "timeout_seconds": 450,
       "toolchains": [
@@ -4793,7 +4816,7 @@
       "tiers": [
         "pr",
         "main",
-        "weekly"
+        "scheduled"
       ],
       "timeout_seconds": 450,
       "toolchains": [
@@ -4817,7 +4840,7 @@
       "tiers": [
         "pr",
         "main",
-        "nightly"
+        "scheduled"
       ],
       "timeout_seconds": 900,
       "toolchains": [
@@ -4841,7 +4864,7 @@
       "tiers": [
         "pr",
         "main",
-        "nightly"
+        "scheduled"
       ],
       "timeout_seconds": 300,
       "toolchains": [
@@ -4864,7 +4887,7 @@
       "tiers": [
         "pr",
         "main",
-        "nightly"
+        "scheduled"
       ],
       "timeout_seconds": 1200,
       "toolchains": [
@@ -4889,7 +4912,7 @@
       "tiers": [
         "pr",
         "main",
-        "nightly"
+        "scheduled"
       ],
       "timeout_seconds": 300,
       "toolchains": [
@@ -5086,7 +5109,7 @@
         "headroom_seconds": 300,
         "projected_makespan_seconds": 900,
         "resource_capacity_floor_seconds": {
-          "network-audit": 450
+          "network-audit": 600
         }
       },
       "python_static": {
@@ -6663,7 +6686,7 @@
       "name": "nightly_shard_prepare",
       "resource_class": "scheduled-suite",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_minutes": 60,
       "workflow": ".github/workflows/nightly.yml"
@@ -6676,7 +6699,7 @@
       "shard_count": 8,
       "sharded_program": "conformance",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_minutes": 15,
       "workflow": ".github/workflows/nightly.yml"
@@ -6689,7 +6712,7 @@
       "shard_count": 16,
       "sharded_program": "differential",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_minutes": 15,
       "workflow": ".github/workflows/nightly.yml"
@@ -6702,7 +6725,7 @@
       "shard_count": 4,
       "sharded_program": "regrtest",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_minutes": 15,
       "workflow": ".github/workflows/nightly.yml"
@@ -6719,7 +6742,7 @@
       ],
       "resource_class": "scheduled-suite",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_minutes": 10,
       "workflow": ".github/workflows/nightly.yml"
@@ -6730,7 +6753,7 @@
       "name": "nightly_determinism",
       "resource_class": "scheduled-suite",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_minutes": 60,
       "workflow": ".github/workflows/nightly.yml"
@@ -6741,7 +6764,7 @@
       "name": "nightly_verification_t3",
       "resource_class": "scheduled-suite",
       "tiers": [
-        "nightly"
+        "scheduled"
       ],
       "timeout_minutes": 90,
       "workflow": ".github/workflows/nightly.yml"

@@ -3187,13 +3187,82 @@ def test_executor_real_cargo_test_timeout_retains_completed_incremental_cache(
         ({"GITHUB_EVENT_NAME": "pull_request"}, "pr"),
         ({"GITHUB_EVENT_NAME": "push"}, "main"),
         ({"GITHUB_EVENT_NAME": "merge_group"}, "main"),
-        ({"GITHUB_EVENT_NAME": "schedule"}, "nightly"),
+        ({"GITHUB_EVENT_NAME": "schedule"}, "scheduled"),
         ({"GITHUB_EVENT_NAME": "pull_request", "MOLT_PROOF_TIER": "main"}, "main"),
         ({}, None),
     ],
 )
 def test_active_tier_follows_the_ci_event(environ, expected) -> None:
     assert proof_plan.active_tier(environ) == expected
+
+
+def test_active_tier_rejects_unknown_explicit_tiers() -> None:
+    with pytest.raises(ValueError, match="MOLT_PROOF_TIER='weekly'"):
+        proof_plan.active_tier({"MOLT_PROOF_TIER": "weekly"})
+
+
+def test_every_event_maps_into_the_tier_vocabulary() -> None:
+    assert set(proof_plan._EVENT_TIERS.values()) <= set(proof_plan.PROOF_TIERS)
+
+
+def test_plan_rejects_tiers_outside_the_vocabulary() -> None:
+    families = tuple(
+        replace(family, data={**family.data, "tiers": ["pr", "main", "weekly"]})
+        if family.name == "python_security"
+        else family
+        for family in PLAN.families
+    )
+    errors = replace(PLAN, families=families).validate()
+    assert (
+        "python_security: tiers ['pr', 'main', 'weekly'] must come from "
+        "['pre-push', 'pr', 'main', 'scheduled']"
+    ) in errors
+
+
+def test_plan_rejects_a_family_tier_that_gates_no_command() -> None:
+    families = tuple(
+        replace(family, data={**family.data, "tiers": ["pre-push", "pr", "main"]})
+        if family.name == "rust_security"
+        else family
+        for family in PLAN.families
+    )
+    errors = replace(PLAN, families=families).validate()
+    assert "rust_security: tier 'pre-push' gates no command" in errors
+
+
+def test_scheduled_families_run_their_scheduled_tier_on_any_event() -> None:
+    # A manual dispatch maps to `main`; a scheduled family must still prove
+    # exactly what its schedule proves instead of running nothing.
+    for family in PLAN.scheduled_families:
+        dispatched = proof_plan._topological_commands(
+            PLAN, family=family.name, tier="main"
+        )
+        scheduled = proof_plan._topological_commands(
+            PLAN, family=family.name, tier="scheduled"
+        )
+        assert dispatched == scheduled and dispatched, family.name
+
+
+def test_family_run_with_no_tier_commands_fails_loud() -> None:
+    with pytest.raises(ValueError, match="has no commands in tier 'pre-push'"):
+        proof_plan._topological_commands(PLAN, family="rust_security", tier="pre-push")
+
+
+def test_pin_freshness_runs_only_on_schedule() -> None:
+    pr = {
+        command.id
+        for command in proof_plan._topological_commands(
+            PLAN, family="python_security", tier="pr"
+        )
+    }
+    scheduled = {
+        command.id
+        for command in proof_plan._topological_commands(
+            PLAN, family="python_security", tier="scheduled"
+        )
+    }
+    assert "security.pin-freshness" not in pr
+    assert "security.pin-freshness" in scheduled
 
 
 def test_pull_requests_skip_main_only_commands_but_keep_their_dependencies() -> None:
