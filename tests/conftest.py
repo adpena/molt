@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 import pytest
@@ -14,6 +15,23 @@ if TYPE_CHECKING:
 ROOT = Path(__file__).resolve().parents[1]
 MOLT_STDLIB_ROOT = str(ROOT / "src" / "molt" / "stdlib")
 _PYTEST_SENTINEL_ATTR = "_molt_repo_process_sentinel"
+
+
+@pytest.fixture(autouse=True)
+def _restore_process_environment() -> Iterator[None]:
+    """Every test ends with the process environment it started with.
+
+    Product code exports some selections into ``os.environ`` for the child
+    processes it launches (for example ``MOLT_BACKEND``); a test that calls it
+    in process would otherwise leak them into every later test on the same
+    worker. Session-scoped fixtures run before this one, so their settings
+    persist as intended.
+    """
+    snapshot = dict(os.environ)
+    yield
+    if os.environ != snapshot:
+        os.environ.clear()
+        os.environ.update(snapshot)
 
 
 @pytest.fixture
