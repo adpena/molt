@@ -1,53 +1,84 @@
 # Molt Security & Hardening
 
-Molt is built on the principle of **Secure by Default**. We treat Python as a high-level specification that is lowered into a hardened, capability-gated native runtime.
+Security claims apply to an explicitly verified target, backend, runtime profile,
+Python version and host configuration. The
+[public stable contract](spec/PUBLIC_CONTRACT_V1.md) and
+[release acceptance matrix](../config/release_acceptance_matrix.toml) own the
+release obligations. Implemented policy and available audit tools alone do not
+establish those obligations.
 
-## 1. Core Security Pillars
+## Capability and host boundaries
 
-### A. Memory Safety (Rust)
-The Molt runtime and compiler are written in Rust with **minimal, audited `unsafe` blocks** (e.g., arena allocation and NaN-boxing internals), verified via tooling.
-- **No CPython C-extension ABI (yet)**: Molt does not ship a `Python.h`-compatible ABI today; the primary path is a `libmolt` C-API subset with recompiled extensions, and any CPython bridge is planned to be capability-gated and opt-in (TODO(c-api, owner:runtime, milestone:SL3, priority:P2, status:missing): define `libmolt` C-extension ABI surface + bridge policy).
-- **NaN-Boxing Invariants**: Our 64-bit object model uses strict NaN-boxing. We maintain pointer invariants (48-bit addresses) and sign-extension checks to prevent pointer manipulation attacks.
-- **Runtime Guards**: Molt inserts bounds checks on dynamic collection accesses; specialized paths use guards and fall back to runtime checks when safety cannot be proven.
+The [capability contract](CAPABILITIES.md) owns permission resolution and native
+and WASM host checks. Build and run default to the generated ambientless tier;
+explicit grants are resolved through that same policy. Capability checks apply
+at the operations that implement them. They do not isolate arbitrary native
+code, foreign extensions or host callbacks from the authority of their process.
 
-### B. Capability Gating (No Ambient Authority)
-Molt employs a **Capability-based Security** model. A Molt binary has zero authority to interact with the OS unless explicitly granted.
-- **Explicit Manifests**: Capabilities like `net`, `fs.read`, `env.read`, and `time` must be declared in build flags or capability profiles.
-- **Granular Access**: Filesystem access is path-restricted.
-- **WASM Isolation**: When targeting WASM, the sandbox enforces these boundaries via the host interface.
+Filesystem permission tokens authorize access. Path confinement requires the
+virtual mount or host adapter described by the capability contract; a path list
+reduced to a token does not establish confinement. WASM isolation depends on the
+selected engine and admitted host imports. An embedding host is responsible for
+the authority and validation of its callbacks.
 
-### C. Supply Chain & Provenance
-- **Lockfile Enforcement**: `molt build` strictly enforces `uv.lock`. If dependencies change without a lockfile update, the build fails.
-- **Verified Packages**: Molt Packages (`.moltpkg`) use checksum verification to ensure that the code you run is the code you built.
-- **Deterministic Binaries**: Molt guarantees bit-identical output for the same source and toolchain. This allows for "Reproducible Builds," where third parties can verify that a binary matches its public source code.
+## Memory, extension and resource boundaries
 
-## 2. Threat Model
+Rust ownership, collection checks and object-layout invariants are part of the
+implementation. Unsafe Rust, FFI, allocator and generated-code paths require
+verification at their actual consumers. No blanket memory-safety or audited-unsafe
+claim follows from the implementation language.
 
-### What Molt Protects Against:
-1.  **Arbitrary Code Execution (ACE)**: Via memory safety and WASM isolation.
-2.  **Data Exfiltration**: Via strict network/filesystem capability gating.
-3.  **Dependency Confusion/Substitution**: Via lockfile and checksum enforcement.
+Molt supplies a maintained runtime C API and a bounded `Python.h` source facade.
+The [extension ABI contract](spec/areas/compat/contracts/libmolt_extension_abi_contract.md)
+separates source recompilation, stable ABI declarations and CPython binary
+compatibility. Header or symbol coverage alone does not prove extension execution,
+lifetime safety or package support.
 
-### What Molt Does NOT (Currently) Protect Against:
-1.  **Logic Errors in Python Source**: If your Python code has a vulnerability (e.g., SQL injection), Molt will faithfully compile that vulnerability into native code.
-2.  **Full CPU Preemption for Native Binaries**: Molt enforces manifest-driven runtime resource controls for heap bytes, allocation counts, recursion depth, and sampled wall-clock duration, and the developer/test harnesses wrap subprocesses in default-on adaptive RSS guards. Native execution is still cooperative at runtime check points, so hard preemptive CPU quotas remain host/harness responsibility rather than an in-process guarantee.
+[Resource controls](RESOURCE_CONTROLS.md) describes the configuration and tracker
+API, including incomplete allocation coverage and independent thread-local
+budgets. Complete memory, time, allocation, recursion and operation-size
+enforcement remains V1-19 release work. Configuration is not evidence of an
+enforced aggregate budget. A deployment requiring hard limits must establish
+those limits through its operating system, engine or host.
 
-## 3. Verification & Auditing
+Developer and compiler RSS guards supervise development subprocesses. Their
+accounting, cleanup and costs belong to that apparatus; they do not establish
+resource limits in an emitted user binary. Runtime enforcement must be qualified
+on the actual native and WASM execution cells.
 
-Molt uses **Differential Testing** as a security tool. By running test cases against both CPython and Molt, we ensure that our "Performance Optimizations" do not introduce "Semantic Divergence" (which is often where security bugs hide).
+## Supply chain and reproducibility
 
-### Standardized Security Checks:
-We use `tools/runtime_safety.py` to run:
-- **Sanitizers (ASan/TSan/UBSan)**: For memory, threading, and undefined behavior detection.
-- **Miri**: To verify the soundness of our (minimal) Rust `unsafe` blocks.
-- **Fuzzing**: Targeted `cargo fuzz` runs for high-risk components (string parsers, codec decoders).
+Use the selected lockfiles and
+[toolchain custody contract](spec/areas/tooling/0001-toolchains.md) for dependency
+and executable admission. Locking dependencies does not establish signer identity
+or prevent vulnerabilities in admitted code. Capability-manifest digests and
+package checksums establish integrity only within their declared coverage;
+authenticity requires the release trust policy and validated signatures.
 
-### Supply-chain audits (recommended before release)
-- **Rust**: `cargo audit`, `cargo deny check`
-- **Python**: `uv run pip-audit`
+The [packaging contract](../packaging/PACKAGING.md) owns immutable
+candidate assembly and provenance. The release workflow builds independent native
+and runtime generations and passes them to candidate assembly. Reproducibility
+requires their actual comparison and the complete release gates to pass for the
+selected source and toolchain. It is not an unconditional bit-identical-output
+promise.
 
-## 4. Reporting a Vulnerability
+## Verification
 
-If you find a security issue in Molt, please do not open a public issue.
-Contact the project owner (**@adpena** on GitHub) privately.
-We aim to acknowledge all reports within 24 hours and provide a fix within 7 days.
+Differential tests use CPython as the semantic oracle. They must exercise the
+actual compiled consumer and compare observable behavior; they do not by
+themselves prove absence of security defects.
+
+`tools/runtime_safety.py` provides sanitizer, Miri and fuzzing commands. The
+[sanitizer workflow](../.github/workflows/sanitizers.yml) configures ASan and
+Miri lanes; its ASan runs disable leak detection and its TSan lane is unwired.
+The [proof plan](agent/PROOF_PLAN.generated.md) selects dependency and audit
+obligations. A configured command counts as evidence only after it passes with
+its exact source, toolchain, target and inputs. Unsupported or unexecuted cells
+remain open in the [release findings](agent/V1_HANDOFF_FINDINGS.md).
+
+## Reporting a vulnerability
+
+Please report vulnerabilities privately to the project owner, **@adpena** on
+GitHub, rather than opening a public issue. The project aims to acknowledge a
+report within 24 hours and provide a fix within 7 days; these are response goals,
+not a guaranteed remediation deadline.

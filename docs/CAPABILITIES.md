@@ -124,30 +124,20 @@ Tooling enforces capability/effect allowlists during `molt package` and `molt ve
 
 ## Memory and Resource Limits
 
-Beyond capability tokens, a manifest can constrain *how much* a program may
-consume (memory, time, allocations, recursion depth, and per-operation result
-sizes) via a `[resources]` table — see `docs/RESOURCE_CONTROLS.md` for the full
-schema. These limits are enforced by the in-VM `ResourceTracker`, shared by all
-backends.
+A manifest's `[resources]` table describes memory, time, allocation, recursion
+and operation-size settings. [`RESOURCE_CONTROLS.md`](RESOURCE_CONTROLS.md) owns
+the schema, tracker behavior and enforcement limitations. The runtime environment
+settings select that same configuration; they do not establish complete storage
+coverage or one aggregate budget across threads.
 
-For memory specifically, a compiled binary can also cap itself at run time
-through `MOLT_RESOURCE_MAX_MEMORY`, which accepts human sizes like `64M` and
-`2G` as well as the raw byte count the manifest emits; both resolve into the
-same single `ResourceLimits.max_memory` enforcement path — there is no
-parallel limit system:
+Complete runtime enforcement is a V1.0 release blocker (V1-19). Native, WASM,
+LLVM and Luau require evidence for their actual execution and host cells before
+an enforcement or parity claim. Operating-system or engine limits must be
+established independently for deployments that require hard bounds.
 
-```bash
-# Cap the binary at 64 MiB; a runaway raises an uncatchable MemoryError
-# instead of OOM-killing the host.
-MOLT_RESOURCE_MAX_MEMORY=64M ./my_app
-```
-
-Enforcement is two-layer: the precise in-VM tracker (deterministic, identical
-across native/WASM/LLVM/Luau) plus, on Linux, an OS-level committed-memory
-(`RLIMIT_DATA`) backstop that bounds anything the tracker cannot see. This protection is **opt-in** (no
-default limit unless configured); capability-tier (deployment-profile) defaults
-are deferred. A misconfigured limit fails loudly at init rather than being
-silently ignored.
+Developer/compiler RSS guards supervise build and test processes. Those guards
+add no resource enforcement to the emitted program, and their measurements are
+not evidence of a guest memory, time or recursion limit.
 
 ## Native vs WASM Parity
 

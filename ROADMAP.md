@@ -262,9 +262,11 @@ even when another export keeps the original storage alive. Exact parity needs
 shared storage-liveness observation that does not block release/resize callbacks
 or defer native exporter release; the type matrix tracks that remaining gap.
 
-- The release workflow does not yet produce and pass both runtime-cell
-  inventories required by candidate assembly. The packaging contract remains
-  mandatory; source implementation of an assembler is not a successful release.
+- The release workflow builds independent native generations and both
+  runtime-cell inventories, then passes all four roots to candidate assembly.
+  Qualification remains open: the exact source-bound candidates, comparisons,
+  installed consumers and complete release gates must pass for every claimed
+  coordinate. Existing workflow wiring does not establish a successful release.
 - Verified-subset policy declares both `dev` and `release` guest profiles and
   execution binds the requested profile to its coordinate. Complete passing
   coverage remains unqualified. The default stderr comparison and expected-failure

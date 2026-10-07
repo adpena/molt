@@ -1,42 +1,18 @@
 # Molt Packaging & Distribution
 
-## 1. Goal: Single-File Executables
-Molt aims to produce a single, statically-linked executable for the target platform.
-- **Static Linking**: The `molt-runtime` and all "Native" Molt Packages are linked into the final binary.
-- **WASM Embedding**: WASM-based packages are embedded as bytes in the data segment and instantiated at runtime.
+The [release authority](../../../../packaging/PACKAGING.md) owns candidate
+assembly, independent build comparisons, provenance, trust and release delivery.
+The [public stable contract](../../PUBLIC_CONTRACT_V1.md) owns advertised surfaces
+and their release acceptance obligations.
 
-## 2. Cross-Compilation
-Molt leverages Rust's excellent cross-compilation support.
-- **Toolchain**: `molt build --target x86_64-unknown-linux-musl`.
-- **Zig as Linker**: Molt uses `zig cc` as a cross-platform linker to avoid glibc versioning hell on Linux.
+Use [toolchain custody](0001-toolchains.md) for executable and locked-input
+admission, the [extension ABI contract](../compat/contracts/libmolt_extension_abi_contract.md)
+for source-built native extensions, and the
+[capability contract](../../../CAPABILITIES.md) for host permissions.
 
-## 3. Reproducibility
-- **Deterministic Builds**: Given the same `uv.lock` and source, Molt produces bit-identical binaries.
-- **Build ID**: Every binary contains a unique hash of its source closure and compiler version.
-
-## 4. Signing & SBOM
-- **Signing**: Support for `codesign` (macOS) and `cosign` (Linux) builtin to the CLI.
-- **Verification**: `molt verify`/`molt publish` can enforce signature verification and
-  trust policies for packaged artifacts (remote publish defaults to enforcement).
-- **SBOM**: Molt generates a Software Bill of Materials (CycloneDX or SPDX) including:
-    - The compiler version.
-    - All Python dependencies (from `uv.lock`).
-    - All Molt Packages (WASM or Native).
-    - The Rust toolchain version.
-    - Dependency tier classification (see `docs/spec/areas/tooling/0013_PYTHON_DEPENDENCIES.md`).
-  - Current CLI emits CycloneDX (default) or SPDX JSON sidecars
-    (`<artifact>.sbom.json`) and embeds `sbom.json` inside `.moltpkg` archives;
-    signature metadata is emitted via sidecar (`<artifact>.sig.json`) and
-    in-package `signature.json` entries. When `--sign` uses cosign, a
-    `<artifact>.sig` sidecar is also produced.
-
-## 5. Molt Registry
-A centralized (but cacheable) registry for verified Molt Packages.
-- **Trust**: Only packages signed by the Molt team or trusted vendors are allowed by default in Tier 0.
-
-## 6. Determinism enforcement checklist (implementation)
-- Fail the build if `uv.lock` or `Cargo.lock` is missing or out of date.
-- Record compiler, toolchain, and target triple in build metadata.
-- Embed the build ID (hash of source closure + compiler version) in the binary.
-- Emit an SBOM alongside each release artifact.
-- Gate nondeterministic features (time, randomness, network) behind explicit capabilities.
+Reproducibility, installed execution, signatures and semantic release acceptance
+require evidence for the declared source, toolchain and product coordinates.
+Configured workflow steps, matching dependency locks and header coverage alone
+do not establish those results. Native OS signing/notarization, package-manager
+availability and registry publication retain their delivery obligations in the
+release authority.
