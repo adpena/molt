@@ -2130,6 +2130,109 @@ def test_live_rust_admitted_domains_close_refusal_paths(tmp_path):
     assert SA.probe_rust_backend_lowering_gaps(tmp_path) == []
 
 
+def test_live_rust_operand_projection_uses_registered_current_validators():
+    from tools.structural_audit_rust_domains import _operand_shapes
+
+    schema = (ROOT / "runtime/molt-ir/src/ir_schema.rs").read_text(encoding="utf-8")
+    generated = (ROOT / "runtime/molt-ir/src/tir/op_kinds_generated.rs").read_text(
+        encoding="utf-8"
+    )
+    shapes = _operand_shapes(schema, generated)
+    assert shapes is not None
+    # Independent wire expectations: these emitters consume exactly one value;
+    # an invented wire spelling must not acquire a shape from the recognizer.
+    assert shapes["warn_stderr"] == 1
+    assert shapes["type_guard"] == 1
+    assert "__unregistered_wire" not in shapes
+
+
+@pytest.mark.parametrize(
+    ("owner", "before", "after"),
+    [
+        (
+            "validate_registered_op_kind",
+            "if !simpleir_kind_is_registered(kind)",
+            "if simpleir_kind_is_registered(kind)",
+        ),
+        (
+            "validate_registered_op_kind",
+            "validate_op_not_retired(kind)?;",
+            "return Ok(());",
+        ),
+        (
+            "validate_simple_op_shape",
+            "validate_registered_op_kind(&op.kind)?;",
+            "let _ = validate_registered_op_kind(&op.kind);",
+        ),
+        (
+            "validate_simple_op_shape",
+            "validate_registered_op_kind(&op.kind)?;",
+            'validate_registered_op_kind("warn_stderr")?;',
+        ),
+        (
+            "validate_simple_op_shape",
+            "op.args.as_ref().map(Vec::len)",
+            "Some(1)",
+        ),
+        (
+            "validate_simple_op_shape",
+            "op.var.is_some()",
+            "op.var.is_none()",
+        ),
+        (
+            "validate_op_shape",
+            "operands.unwrap_or(0) != shape.operands",
+            "operands.unwrap_or(1) != shape.operands",
+        ),
+        (
+            "validate_op_shape",
+            "kind: shape.kind.into(),",
+            'kind: "different-operation".into(),',
+        ),
+        (
+            "validate_simple_op_shape",
+            "kind: shape.kind.into(),",
+            'kind: "different-operation".into(),',
+        ),
+    ],
+)
+def test_rust_operand_projection_rejects_changed_admission_or_operands(
+    owner, before, after
+):
+    from tools.structural_audit_rust_admission import _body
+    from tools.structural_audit_rust_domains import _operand_shapes
+
+    schema = (ROOT / "runtime/molt-ir/src/ir_schema.rs").read_text(encoding="utf-8")
+    generated = (ROOT / "runtime/molt-ir/src/tir/op_kinds_generated.rs").read_text(
+        encoding="utf-8"
+    )
+    assert _operand_shapes(schema, generated) is not None
+    body = _body(schema, owner)
+    assert body is not None and schema.count(body) == 1 and body.count(before) == 1
+    changed = schema.replace(body, body.replace(before, after, 1), 1)
+    assert _operand_shapes(changed, generated) is None
+
+
+def test_rust_operand_projection_requires_generated_registration_membership():
+    from tools.structural_audit_rust_admission import _body
+    from tools.structural_audit_rust_domains import _operand_shapes
+
+    schema = (ROOT / "runtime/molt-ir/src/ir_schema.rs").read_text(encoding="utf-8")
+    generated = (ROOT / "runtime/molt-ir/src/tir/op_kinds_generated.rs").read_text(
+        encoding="utf-8"
+    )
+    assert _operand_shapes(schema, generated) is not None
+    body = _body(generated, "simpleir_kind_is_registered")
+    assert body is not None and generated.count(body) == 1
+    assert body.count('"warn_stderr"') == 1
+    for changed_body in (
+        body.replace('"warn_stderr"', '"__unregistered_wire"'),
+        "true",
+    ):
+        changed = generated.replace(body, changed_body, 1)
+        assert _operand_shapes(schema, changed) is None
+
+
 @pytest.mark.parametrize(
     ("capability", "kinds"),
     [
@@ -2179,6 +2282,18 @@ def test_rust_admitted_domain_numeric_total_rejection_requires_each_branch(
             "runtime/molt-ir/src/ir_schema.rs",
             "validate_value_transport(op)?;",
             "",
+            "rust_backend_rejection_applicability",
+        ),
+        (
+            "runtime/molt-ir/src/ir_schema.rs",
+            "if !simpleir_kind_is_registered(kind)",
+            "if simpleir_kind_is_registered(kind)",
+            "rust_backend_rejection_applicability",
+        ),
+        (
+            "runtime/molt-ir/src/ir_schema.rs",
+            "validate_registered_op_kind(&op.kind)?;",
+            "let _ = validate_registered_op_kind(&op.kind);",
             "rust_backend_rejection_applicability",
         ),
         (
@@ -2283,6 +2398,8 @@ def test_rust_admitted_domain_mutations_restore_obligations(
     tmp_path, relative, before, after, expected_probe
 ):
     _copy_live_rust_admission_sources(tmp_path)
+    # A failed baseline projection cannot serve as a negative mutation oracle.
+    assert SA.probe_rust_backend_lowering_gaps(tmp_path) == []
     path = tmp_path / relative
     source = path.read_text(encoding="utf-8")
     assert before in source
