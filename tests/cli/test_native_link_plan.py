@@ -115,7 +115,10 @@ def test_native_link_sidecars_are_private_for_overlapping_plans(
         monkeypatch,
         tmp_path,
         host_platform="linux",
-        external_target=native_link_plan._host_target_triple(host_platform="linux"),
+        # The simulated host is x86_64 Linux (_plan default), not this machine.
+        external_target=native_link_plan._host_target_triple(
+            host_platform="linux", host_arch="x86_64"
+        ),
         external_inputs=(source_extension_link_file(extension),),
     )
     assert plain.sidecars[0].planned_path == external.sidecars[0].planned_path
@@ -664,7 +667,12 @@ def test_explicit_cc_overrides_managed_driver(tmp_path: Path, monkeypatch) -> No
         )
     )
 
-    assert command == [str(explicit.resolve())]
+    # The explicit CC is the driver. On a macOS host the driver also receives
+    # -arch, the deployment target and the SDK, whichever driver it is.
+    assert command[0] == str(explicit.resolve())
+    assert not any(str(managed_bin) in token for token in command)
+    if sys.platform != "darwin":
+        assert command == [str(explicit.resolve())]
     assert linker_hint is None
 
 
