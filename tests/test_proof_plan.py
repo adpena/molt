@@ -1755,7 +1755,7 @@ def _receipt_for(
     # Each tool's --version spelling around the plan's pinned setup value, so
     # the fixture tracks every pin bump without a second copy of the versions.
     spellings = {
-        "python": "Python {}.0",
+        "python": "Python {}",
         "uv": "uv {}",
         "node": "v{}",
         "rustc": "rustc {}",

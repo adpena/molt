@@ -161,8 +161,15 @@ def crate_latest(name: str, fetch: FetchJson) -> str:
     return str(record["crate"]["max_stable_version"])
 
 
-def python_latest_minor(fetch: FetchJson) -> str:
-    return str(fetch("https://endoflife.date/api/python.json")[0]["cycle"])
+def python_latest(fetch: FetchJson) -> str:
+    """The newest CPython release of the newest release line."""
+    return str(fetch("https://endoflife.date/api/python.json")[0]["latest"])
+
+
+def python_latest_patch(current: str, fetch: FetchJson) -> str:
+    """The newest CPython patch release of `current`'s release line."""
+    line = ".".join(current.split(".")[:2])
+    return str(fetch(f"https://endoflife.date/api/python/{line}.json")["latest"])
 
 
 @dataclass(frozen=True)
@@ -217,7 +224,15 @@ def collect_pins(
             rust_channel((root / "rust-toolchain.toml").read_bytes()),
             lambda: rust_stable(fetch_text),
         ),
-        Pin("python", plan, policies["python"], lambda: python_latest_minor(fetch)),
+        # The pinned line must run its newest patch; moving to a newer line is
+        # its own held arc.
+        Pin(
+            "python-patch",
+            plan,
+            policies["python"],
+            lambda: python_latest_patch(policies["python"], fetch),
+        ),
+        Pin("python", plan, policies["python"], lambda: python_latest(fetch)),
         Pin("uv", plan, policies["uv"], github("astral-sh/uv", "")),
         Pin("node", manifest, tools["node"].version, lambda: node_latest(fetch)),
         Pin(

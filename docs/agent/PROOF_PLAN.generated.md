@@ -14,7 +14,7 @@ Index mode executes the captured staged generator with its staged manifest, poli
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 323 |
+| Hashed executable authority inputs | 1 | 324 |
 | Local path rules | 35 | 43 |
 | Unique local commands | 73 | 97 |
 | Handwritten Python classifier rule tables | 5 | 0 |
@@ -103,7 +103,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 
 | Toolchain | Identity kind | Provider | Required version | Probe cwd | Setup value | Setup evidence |
 |---|---|---|---|---|---|---:|
-| `python` | `executable` | — | `^Python 3\.12\.` | `.` | `3.12` | 1 |
+| `python` | `executable` | — | `^Python 3\.12\.15$` | `.` | `3.12.15` | 1 |
 | `source-extension` | `target-derived` | `source-extension` | `^molt-source-extension-toolchain-v2$` | — | — | — |
 | `uv` | `executable` | — | `^uv 0\.12\.23\b` | `.` | `0.12.23` | 1 |
 | `node` | `executable` | — | `^v26\.10\.0$` | `.` | `26.10.0` | 3 |

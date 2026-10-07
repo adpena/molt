@@ -19,6 +19,7 @@ authority_inputs = [
   "src/molt/build_state_layout.py",
   "src/molt/release_matrix.py",
   "src/molt/tool_releases.py",
+  "src/molt/platform_toolchain.py",
   "src/molt/wasi_sysroot.py",
   "tools/compat/diff_output_layout.py",
   "tools/disk_guard.py",
@@ -399,9 +400,9 @@ max_parallel = 2
 name = "python"
 executable = "{python}"
 version_args = ["--version"]
-version_pattern = '^Python 3\.12\.'
-setup_value = "3.12"
-setup_evidence = [".python-version::3.12"]
+version_pattern = '^Python 3\.12\.15$'
+setup_value = "3.12.15"
+setup_evidence = [".python-version::3.12.15"]
 
 [[toolchain_policy]]
 name = "source-extension"
