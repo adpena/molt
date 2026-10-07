@@ -86,7 +86,9 @@ def test_size_uses_compiler_target_profile_and_archive_authorities(
     assert str(artifact.parent) in result.details
 
 
-def test_run_cmd_uses_harness_memory_guard(monkeypatch, tmp_path: Path):
+def test_run_cmd_uses_harness_memory_guard(
+    monkeypatch, tmp_path: Path, generous_host_memory
+):
     import molt.harness_layers as harness_layers
 
     calls: list[dict[str, object]] = []

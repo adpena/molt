@@ -60,6 +60,31 @@ def admitted_build_capacity(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
+def generous_host_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the adaptive memory budget to a large host.
+
+    The guard clamps even explicit limits to the host's adaptive global budget,
+    so a test of how explicit limits resolve must not pass or fail with the
+    runner's memory (a 7 GB CI runner clamps a 3 GB cap to about 2 GB).
+    """
+    from tools import memory_guard
+
+    def budget(prefix=None, environ=None, *, accounted_rss_kb=0):
+        return memory_guard.AdaptiveMemoryBudget(
+            max_process_rss_gb=48,
+            max_total_rss_gb=56,
+            max_global_rss_gb=60,
+            reserve_gb=4,
+            physical_gb=64,
+            available_gb=60,
+            source="test",
+            accounted_rss_gb=accounted_rss_kb / (1024 * 1024),
+        )
+
+    monkeypatch.setattr(memory_guard, "adaptive_memory_budget", budget)
+
+
+@pytest.fixture
 def runtime_fixture_root(tmp_path: Path) -> RuntimeFixtureRoot:
     """Separate writable synthetic runtime tools from compiler source custody."""
     from tests.runtime_build_identity_helper import RuntimeFixtureRoot
