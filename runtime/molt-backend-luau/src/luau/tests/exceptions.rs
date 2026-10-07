@@ -718,7 +718,7 @@ fn checked_exception_flow_executes_nested_edges_calls_cleanup_and_coroutine_cust
             ..OpIR::default()
         })
         .chain([
-            exception_op("const_missing", &[], Some("omitted_cause"), None),
+            exception_op("missing", &[], Some("omitted_cause"), None),
             OpIR {
                 kind: "ret_void".into(),
                 ..OpIR::default()

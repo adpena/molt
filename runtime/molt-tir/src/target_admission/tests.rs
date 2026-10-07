@@ -20,6 +20,65 @@ fn function_ir(ops: Vec<OpIR>) -> SimpleIR {
 }
 
 #[test]
+fn singleton_materialization_does_not_authorize_identity_or_unknown_spellings() {
+    for kind in ["const_ellipsis", "const_not_implemented", "missing"] {
+        let literal = OpIR {
+            kind: kind.into(),
+            out: Some("singleton".into()),
+            ..OpIR::default()
+        };
+        let ir = function_ir(vec![
+            literal.clone(),
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["singleton".into()]),
+                ..OpIR::default()
+            },
+        ]);
+        for target in [
+            TargetInfo::native_release_fast(),
+            TargetInfo::wasm_release_fast(),
+            TargetInfo::llvm_release_fast(),
+            TargetInfo::luau_release_fast(),
+            TargetInfo::rust_release_fast(),
+            TargetInfo::mlir_release_fast(),
+        ] {
+            validate_runtime_target_contract(&ir, &target).expect(kind);
+        }
+        let observed = function_ir(vec![
+            literal,
+            OpIR {
+                kind: "is".into(),
+                args: Some(vec!["singleton".into(), "singleton".into()]),
+                out: Some("observed".into()),
+                ..OpIR::default()
+            },
+            OpIR {
+                kind: "ret".into(),
+                args: Some(vec!["observed".into()]),
+                ..OpIR::default()
+            },
+        ]);
+        let restricted = target_with_runtime(
+            SimpleIrRuntimeRequirements::ALL.difference(SimpleIrRuntimeRequirements::IDENTITY),
+        );
+        let error = validate_runtime_target_contract(&observed, &restricted)
+            .expect_err("a literal does not grant object identity semantics");
+        assert!(error.contains("Python object identity"), "{error}");
+    }
+    for kind in ["const_missing", "unregistered_singleton"] {
+        let ir = function_ir(vec![OpIR {
+            kind: kind.into(),
+            out: Some("singleton".into()),
+            ..OpIR::default()
+        }]);
+        let error = validate_runtime_target_contract(&ir, &TargetInfo::luau_release_fast())
+            .expect_err("unknown spellings remain unclassified");
+        assert!(error.contains("unclassified"), "{error}");
+    }
+}
+
+#[test]
 fn shared_graph_admission_precedes_target_representation_planning() {
     let labelled = |kind: &str, value: i64| OpIR {
         kind: kind.into(),

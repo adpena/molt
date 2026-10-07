@@ -3123,6 +3123,7 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "loop_start": 0,
     "lshift": 0,
     "lt": 256,
+    "missing": 0,
     "mod": 0,
     "mod_": 0,
     "module_cache_del": 64,
