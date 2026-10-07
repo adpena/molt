@@ -23,6 +23,7 @@ from molt.cargo_execution_policy import (
     without_sccache_compiler_wrappers,
 )
 from molt.disk_capacity import require_build_capacity
+from molt.exact_json import loads_exact
 from molt.dx import (
     DEFAULT_SCCACHE_CACHE_SIZE,
     _memory_bounded_cargo_jobs,
@@ -377,7 +378,7 @@ def _maybe_enable_sccache(env: dict[str, str]) -> None:
     normalized, _applied = normalize_cargo_environment(env)
     env.update(normalized)
     _sccache_diag(
-        f"enabled (RUSTC_WRAPPER={sccache}); post-build stats attest effectiveness."
+        f"enabled (RUSTC_WRAPPER={sccache}); post-build stats report cumulative counts."
     )
 
 
@@ -410,34 +411,58 @@ def _cargo_build_env(source: Mapping[str, str] | None = None) -> dict[str, str]:
     return env
 
 
-def _attest_sccache_stats(sccache: str, label: str) -> None:
-    """Log post-build sccache stats so a configured-but-0-hit cache is VISIBLE
-    (the 'sccache was on but doing nothing' class) instead of silently wasting
-    the wrapper overhead. Cumulative counts: requests==0 after a build means the
-    cache did nothing."""
+def _attest_sccache_stats(
+    sccache: str, label: str, *, cwd: Path, env: Mapping[str, str]
+) -> None:
+    """Report the selected cache's cumulative counters, not per-build attribution."""
     try:
         result = _run_completed_command(
-            [sccache, "--show-stats"],
-            cwd=Path.cwd(),
-            env=os.environ.copy(),
+            [sccache, "--show-stats", "--stats-format", "json"],
+            cwd=cwd,
+            env=dict(env),
             capture_output=True,
             memory_guard_prefix="MOLT_BUILD",
             timeout=15,
         )
     except (OSError, subprocess.SubprocessError):
         return
-    if result.returncode != 0:
+    if (
+        result.returncode != 0
+        or getattr(result, "infrastructure_failure", None) is not None
+        or len(result.stdout) > _CARGO_ATTEMPT_TEXT_LIMIT
+    ):
         return
-    requests = hits = "?"
-    for line in result.stdout.splitlines():
-        low = line.lower()
-        if "compile requests" in low and "executed" not in low:
-            requests = line.split()[-1]
-        elif "cache hits" in low and "rate" not in low:
-            hits = line.split()[-1]
+    try:
+        payload = loads_exact(result.stdout)
+    except ValueError:
+        return
+    if not isinstance(payload, dict) or not isinstance(payload.get("stats"), dict):
+        return
+    stats = payload["stats"]
+    requests = stats.get("compile_requests")
+    cache_hits = stats.get("cache_hits")
+    if (
+        type(requests) is not int
+        or not 0 <= requests <= 2**64 - 1
+        or not isinstance(cache_hits, dict)
+        or set(cache_hits) != {"counts", "adv_counts"}
+    ):
+        return
+    # The pinned ServerInfo schema has two views of the same u64 counters.
+    # Only counts contributes to PerLanguageCount::all(); do not add both views.
+    for counts in cache_hits.values():
+        if not isinstance(counts, dict) or any(
+            type(value) is not int or not 0 <= value <= 2**64 - 1
+            for value in counts.values()
+        ):
+            return
+    hits = sum(cache_hits["counts"].values())
+    if hits > 2**64 - 1:
+        return
     print(
-        f"{label}: sccache attest — compile_requests={requests} cache_hits={hits} "
-        f"(requests=0 => cache ineffective this session)",
+        f"{label}: sccache cumulative statistics — "
+        f"compile_requests={requests} cache_hits={hits} "
+        f"(not attributable to this build)",
         file=sys.stderr,
         flush=True,
     )
@@ -677,7 +702,9 @@ def _run_resolved_cargo_plan(
             f"Cargo plan changed during execution: {exc}", result
         ) from exc
     if not json_output and wrapper and result.infrastructure_failure is None:
-        _attest_sccache_stats(wrapper, label)
+        _attest_sccache_stats(
+            wrapper, label, cwd=plan.project_root, env=plan.environment
+        )
     return result
 
 
@@ -692,17 +719,19 @@ def _run_cargo_with_sccache_retry(
     tempfile_runner: _TempfileCargoRunner | None = None,
     progress_label: str | None = None,
 ) -> CargoExecutionResult:
+    execution_env, _applied = normalize_cargo_environment(env)
     started = time.perf_counter()
     build = _run_cargo_attempt(
         cmd,
         cwd=cwd,
-        env=env,
+        env=execution_env,
         timeout=timeout,
         tempfile_runner=tempfile_runner,
         progress_label=progress_label,
+        resolved_environment=True,
     )
     first_duration = time.perf_counter() - started
-    wrappers = sccache_compiler_wrappers(env)
+    wrappers = sccache_compiler_wrappers(execution_env)
     wrapper = wrappers[0][1] if wrappers else ""
     retry_reason = (
         _sccache_wrapper_failure_reason(build)
@@ -744,7 +773,7 @@ def _run_cargo_with_sccache_retry(
                 failure_kind=None,
             )
         )
-    active_wrappers = sccache_compiler_wrappers(env)
+    active_wrappers = sccache_compiler_wrappers(execution_env)
     active_wrapper = active_wrappers[0][1] if active_wrappers else ""
     if (
         not json_output
@@ -752,7 +781,7 @@ def _run_cargo_with_sccache_retry(
         and _wrapper_is_sccache(active_wrapper)
         and getattr(build, "infrastructure_failure", None) is None
     ):
-        _attest_sccache_stats(active_wrapper, label)
+        _attest_sccache_stats(active_wrapper, label, cwd=cwd, env=execution_env)
     return CargoExecutionResult(
         build,
         attempts=attempts,

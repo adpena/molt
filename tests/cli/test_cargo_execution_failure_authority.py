@@ -5,7 +5,8 @@ import inspect
 import json
 from pathlib import Path
 import subprocess
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
+from typing import Mapping
 
 import pytest
 
@@ -47,6 +48,319 @@ def _completed(
     result.timed_out = False  # type: ignore[attr-defined]
     result.guard_signal = None  # type: ignore[attr-defined]
     return result
+
+
+@pytest.mark.parametrize(
+    ("output", "expected_counters"),
+    [
+        (
+            '{"stats":{"compile_requests":7,"cache_hits":'
+            '{"counts":{"Rust":3,"C/C++":2},'
+            '"adv_counts":{"rust [rustc]":3,"c/c++ [clang]":2}}}}',
+            "compile_requests=7 cache_hits=5",
+        ),
+        (
+            '{"stats":{"compile_requests":18446744073709551615,"cache_hits":'
+            '{"counts":{"Rust":18446744073709551610,"C/C++":5},'
+            '"adv_counts":{"rust [rustc]":18446744073709551610,"c/c++ [clang]":5}}}}',
+            "compile_requests=18446744073709551615 cache_hits=18446744073709551615",
+        ),
+    ],
+)
+def test_sccache_stats_uses_the_selected_context_and_cumulative_json_counters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    output: str,
+    expected_counters: str,
+) -> None:
+    ambient = tmp_path / "ambient"
+    ambient.mkdir()
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    monkeypatch.chdir(ambient)
+    monkeypatch.setenv("SCCACHE_DIR", str(ambient / "cache"))
+    monkeypatch.setenv("SCCACHE_SERVER_PORT", "49999")
+    monkeypatch.setenv("AMBIENT_ONLY", "must not be inherited")
+    environment = MappingProxyType(
+        {"SCCACHE_DIR": str(selected / "cache"), "SCCACHE_SERVER_PORT": "48888"}
+    )
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return _completed(command, 0, stdout=output)
+
+    monkeypatch.setattr(CARGO, "_run_completed_command", run)
+    CARGO._attest_sccache_stats(
+        "selected-sccache", "Build", cwd=selected, env=environment
+    )
+
+    assert calls == [
+        (
+            ["selected-sccache", "--show-stats", "--stats-format", "json"],
+            {
+                "cwd": selected,
+                "env": {
+                    "SCCACHE_DIR": str(selected / "cache"),
+                    "SCCACHE_SERVER_PORT": "48888",
+                },
+                "capture_output": True,
+                "memory_guard_prefix": "MOLT_BUILD",
+                "timeout": 15,
+            },
+        )
+    ]
+    assert capsys.readouterr().err == (
+        f"Build: sccache cumulative statistics — {expected_counters} "
+        "(not attributable to this build)\n"
+    )
+
+
+@pytest.mark.parametrize("caller", ["resolved_plan", "retry"])
+@pytest.mark.parametrize(
+    "outcome", ["success", "cargo_failure", "json", "no_wrapper", "infrastructure"]
+)
+def test_both_cargo_callers_bind_stats_to_the_actual_build_environment(
+    runtime_fixture_root: RuntimeFixtureRoot,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caller: str,
+    outcome: str,
+) -> None:
+    ambient = tmp_path / "ambient"
+    ambient.mkdir()
+    project = (tmp_path / "project").resolve()
+    project.mkdir()
+    monkeypatch.chdir(ambient)
+    monkeypatch.setenv("SCCACHE_DIR", str(ambient / "cache"))
+    monkeypatch.setenv("SCCACHE_SERVER_PORT", "49999")
+    monkeypatch.setenv("TMPDIR", str(ambient / "tmp"))
+    monkeypatch.setenv("AMBIENT_ONLY", "must not be inherited")
+    environment = _cargo_env(
+        tmp_path / "cargo-target",
+        SCCACHE_DIR=str(tmp_path / "selected-cache"),
+        SCCACHE_SERVER_PORT="48888",
+        TMPDIR=str(tmp_path / "selected-tmp"),
+        CARGO_INCREMENTAL="0" if caller == "resolved_plan" else "1",
+    )
+    if outcome != "no_wrapper":
+        environment["RUSTC_WRAPPER"] = "sccache"
+    original_environment = dict(environment)
+    if caller == "resolved_plan":
+        plan = runtime_cargo_plan(
+            project,
+            fixture_root=runtime_fixture_root,
+            env=environment,
+            cargo_command=("cargo", "rustc"),
+        )
+        command = list(plan.command)
+        expected_environment = dict(plan.environment)
+    else:
+        command = ["cargo", "rustc"]
+        expected_environment = dict(environment)
+        if outcome != "no_wrapper":
+            expected_environment["CARGO_INCREMENTAL"] = "0"
+    terminal = _completed(
+        command,
+        7 if outcome == "cargo_failure" else 125 if outcome == "infrastructure" else 0,
+        stdout="original build output",
+        stderr="original build diagnostic",
+    )
+    if outcome == "infrastructure":
+        from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
+
+        terminal.infrastructure_failure = GuardInfrastructureFailure(
+            "temporary_artifact_custody", ("independent fixture failure",)
+        )
+    calls = []
+
+    def run(actual_command, **kwargs):
+        calls.append((list(actual_command), kwargs["cwd"], dict(kwargs["env"])))
+        if actual_command == command:
+            return terminal
+        assert actual_command == [
+            expected_environment["RUSTC_WRAPPER"],
+            "--show-stats",
+            "--stats-format",
+            "json",
+        ]
+        return _completed(
+            actual_command,
+            0,
+            stdout=(
+                '{"stats":{"compile_requests":0,"cache_hits":'
+                '{"counts":{},"adv_counts":{}}}}'
+            ),
+        )
+
+    monkeypatch.setattr(CARGO, "_run_completed_command", run)
+    if caller == "resolved_plan":
+        result = CARGO._run_resolved_cargo_plan(
+            plan, timeout=1.0, json_output=outcome == "json", label="Build"
+        )
+    else:
+        result = CARGO._run_cargo_with_sccache_retry(
+            command,
+            cwd=project,
+            env=environment,
+            timeout=1.0,
+            json_output=outcome == "json",
+            label="Build",
+        )
+
+    assert (result.returncode, result.stdout, result.stderr) == (
+        terminal.returncode,
+        "original build output",
+        "original build diagnostic",
+    )
+    assert result.retry_reason is None and len(result.attempts) == 1
+    assert environment == original_environment
+    assert calls[0] == (command, project.resolve(), expected_environment)
+    expected_probe = outcome in {"success", "cargo_failure"}
+    assert len(calls) == (2 if expected_probe else 1)
+    diagnostic = capsys.readouterr().err
+    if expected_probe:
+        assert calls[1][1:] == (project.resolve(), expected_environment)
+        assert calls[1][2]["SCCACHE_SERVER_PORT"] == "48888"
+        assert "AMBIENT_ONLY" not in calls[1][2]
+        assert "compile_requests=0 cache_hits=0" in diagnostic
+        assert "not attributable to this build" in diagnostic
+    else:
+        assert "sccache cumulative statistics" not in diagnostic
+
+
+def test_retry_stats_preserves_wrapped_attempt_context_and_direct_retry_policy(
+    tmp_path, monkeypatch, capsys
+):
+    environment = _cargo_env(
+        tmp_path / "cargo-target",
+        RUSTC_WRAPPER="sccache",
+        CARGO_INCREMENTAL="1",
+        SCCACHE_DIR=str(tmp_path / "selected-cache"),
+    )
+    monkeypatch.setenv("SCCACHE_DIR", str(tmp_path / "ambient-cache"))
+    builds = []
+    probes = []
+
+    def build(command, **kwargs):
+        builds.append((kwargs["cwd"], dict(kwargs["env"])))
+        if len(builds) == 1:
+            return _completed(command, 2, stderr="sccache: error: connection reset")
+        return _completed(command, 101, stderr="original rustc failure")
+
+    def probe(command, **kwargs):
+        assert command == ["sccache", "--show-stats", "--stats-format", "json"]
+        probes.append((kwargs["cwd"], dict(kwargs["env"])))
+        return _completed(
+            command,
+            0,
+            stdout=(
+                '{"stats":{"compile_requests":0,"cache_hits":'
+                '{"counts":{},"adv_counts":{}}}}'
+            ),
+        )
+
+    monkeypatch.setattr(CARGO, "_run_completed_command", probe)
+    result = CARGO._run_cargo_with_sccache_retry(
+        ["cargo", "rustc"],
+        cwd=tmp_path,
+        env=environment,
+        timeout=1.0,
+        json_output=False,
+        label="Build",
+        tempfile_runner=build,
+    )
+    assert len(builds) == 2
+    assert builds[0] == (tmp_path, {**environment, "CARGO_INCREMENTAL": "0"})
+    assert builds[1] == (
+        tmp_path,
+        {key: value for key, value in environment.items() if key != "RUSTC_WRAPPER"},
+    )
+    assert probes == [builds[0]]
+    assert environment["CARGO_INCREMENTAL"] == "1"
+    assert (result.returncode, result.stderr) == (101, "original rustc failure")
+    assert len(result.attempts) == 2
+    assert result.retry_reason == "explicit-sccache-error"
+    assert "not attributable to this build" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "Compile requests 7\nCache hits 5\n",
+        "{",
+        "[]",
+        '{"stats":[]}',
+        '{"stats":{"compile_requests":0}}',
+        '{"stats":{"compile_requests":true,"cache_hits":{"counts":{},"adv_counts":{}}}}',
+        '{"stats":{"compile_requests":1.0,"cache_hits":{"counts":{},"adv_counts":{}}}}',
+        '{"stats":{"compile_requests":-1,"cache_hits":{"counts":{},"adv_counts":{}}}}',
+        '{"stats":{"compile_requests":18446744073709551616,"cache_hits":{"counts":{},"adv_counts":{}}}}',
+        '{"stats":{"compile_requests":0,"cache_hits":{"counts":[],"adv_counts":{}}}}',
+        '{"stats":{"compile_requests":0,"cache_hits":{"counts":{"Rust":true},"adv_counts":{}}}}',
+        '{"stats":{"compile_requests":0,"cache_hits":{"counts":{},"adv_counts":{"Rust":-1}}}}',
+        '{"stats":{"compile_requests":0,"cache_hits":{"counts":{"Rust":18446744073709551615,"C/C++":1},"adv_counts":{}}}}',
+        '{"stats":{"compile_requests":0,"compile_requests":1,"cache_hits":{"counts":{},"adv_counts":{}}}}',
+        '{"stats":{"compile_requests":NaN,"cache_hits":{"counts":{},"adv_counts":{}}}}',
+    ],
+)
+def test_malformed_sccache_json_has_no_counter_attestation(
+    tmp_path, monkeypatch, capsys, output
+):
+    def run(command, **_kwargs):
+        return _completed(command, 0, stdout=output)
+
+    monkeypatch.setattr(CARGO, "_run_completed_command", run)
+    CARGO._attest_sccache_stats("sccache", "Build", cwd=tmp_path, env={})
+    assert capsys.readouterr().err == ""
+
+
+def test_sccache_json_decode_is_bounded_before_additional_allocation(
+    tmp_path, monkeypatch, capsys
+):
+    def run(command, **_kwargs):
+        return _completed(command, 0, stdout=" " * (128 * 1024 + 1))
+
+    monkeypatch.setattr(CARGO, "_run_completed_command", run)
+    monkeypatch.setattr(
+        CARGO,
+        "loads_exact",
+        lambda _text: pytest.fail("oversized JSON reached decoder"),
+    )
+    CARGO._attest_sccache_stats("sccache", "Build", cwd=tmp_path, env={})
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize(
+    "failure", ["nonzero", "os_error", "timeout", "infrastructure"]
+)
+def test_failed_sccache_probe_has_no_counter_attestation(
+    tmp_path, monkeypatch, capsys, failure
+):
+    def run(command, **_kwargs):
+        if failure == "os_error":
+            raise OSError("independent cache probe failure")
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(command, 15)
+        result = _completed(command, 4 if failure == "nonzero" else 0, stdout="{")
+        if failure == "infrastructure":
+            from tools.memory_guard_core.process_custody import (
+                GuardInfrastructureFailure,
+            )
+
+            result.infrastructure_failure = GuardInfrastructureFailure(
+                "temporary_artifact_custody", ("probe receipt unavailable",)
+            )
+        return result
+
+    monkeypatch.setattr(CARGO, "_run_completed_command", run)
+    monkeypatch.setattr(
+        CARGO, "loads_exact", lambda _text: pytest.fail("failed probe reached decoder")
+    )
+    CARGO._attest_sccache_stats("sccache", "Build", cwd=tmp_path, env={})
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.parametrize(
@@ -217,13 +531,13 @@ def test_guard_infrastructure_is_not_wrapper_retry_or_cargo_failure(
         return terminal
 
     monkeypatch.setattr(CARGO, "_run_completed_command", run)
-    monkeypatch.setattr(
-        CARGO,
-        "_attest_sccache_stats",
-        lambda *_args: pytest.fail(
-            "infrastructure failure must not launch cache probes"
-        ),
-    )
+
+    def reject_stats(
+        _sccache: str, _label: str, *, cwd: Path, env: Mapping[str, str]
+    ) -> None:
+        pytest.fail("infrastructure failure must not launch cache probes")
+
+    monkeypatch.setattr(CARGO, "_attest_sccache_stats", reject_stats)
     result = CARGO._run_cargo_with_sccache_retry(
         command,
         cwd=Path.cwd(),
