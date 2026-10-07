@@ -19,6 +19,7 @@ from unittest.mock import patch
 import pytest
 
 from molt.file_locks import _try_acquire_file_lock, _release_file_lock
+from molt.rust_toolchain import rust_channel
 from tools.memory_guard_core import cargo_quarantine as cargo
 from tools.memory_guard_core.process_model import process_identity
 from tests.process_guard_common import (
@@ -27,6 +28,11 @@ from tests.process_guard_common import (
     install_module_os_view,
     run_custody_subject_process,
     start_owned_test_process,
+)
+
+# Real cargo runs use the repository's pinned toolchain, never a stale literal.
+RUST_CHANNEL = rust_channel(
+    (Path(__file__).resolve().parents[1] / "rust-toolchain.toml").read_bytes()
 )
 
 
@@ -570,7 +576,7 @@ def test_installed_cargo_artifact_lock_conflicts_with_recovery_exclusion(tmp_pat
             run_custody_subject_process(
                 [
                     "cargo",
-                    "+1.96.1",
+                    f"+{RUST_CHANNEL}",
                     "check",
                     "--offline",
                     "--manifest-path",
@@ -956,7 +962,7 @@ def test_actual_cargo_held_profile_locks_defer_recovery(tmp_path):
                 run_custody_subject_process(
                     [
                         "cargo",
-                        "+1.96.1",
+                        f"+{RUST_CHANNEL}",
                         "check",
                         "--offline",
                         "--manifest-path",
@@ -1024,7 +1030,7 @@ def test_actual_cargo_held_profile_locks_defer_recovery(tmp_path):
     assert len(outcome) == 1 and not isinstance(outcome[0], BaseException)
     assert outcome[0].returncode == 0, outcome[0].stderr
     stored = {
-        "cargo_version": "1.96.1",
+        "cargo_version": RUST_CHANNEL,
         "platform": os.name,
         "actual_cargo_returncode": outcome[0].returncode,
         "both_profile_locks_blocked_recovery": True,
@@ -1486,7 +1492,7 @@ def test_actual_windows_job_cargo_observer_preserves_completed_cache_on_late_tim
     result = memory_guard.run_guarded(
         [
             "cargo",
-            "+1.96.1",
+            f"+{RUST_CHANNEL}",
             "check",
             "--offline",
             "--manifest-path",
