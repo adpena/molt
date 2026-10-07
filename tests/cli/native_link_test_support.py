@@ -30,17 +30,31 @@ from tests.native_artifact_fixtures import (
 
 @contextmanager
 def mock_symbol_reader_admission(monkeypatch, facts_cache: Path) -> Iterator[None]:
-    """Admit mocked nm commands as llvm-nm under the interpreter's identity.
+    """Admit nm commands under the interpreter's content identity.
 
-    Tests replace reader execution with canned output, so the facts they read
-    are synthetic. The persistent symbol-facts cache therefore lives in
-    ``facts_cache`` for the test: synthetic facts must never reach a developer
-    or CI MOLT_CACHE, where a later test with the same archive bytes and reader
-    identity would hit them instead of running its own reader.
+    A real reader keeps the family its own ``--version`` banner names, so a
+    host's GNU nm never receives llvm-nm flags. Any other command is a stand-in
+    whose output the test fabricates; it is admitted as llvm-nm.
+
+    The facts a test reads may be synthetic, so the persistent symbol-facts
+    cache lives in ``facts_cache`` for the test: synthetic facts must never
+    reach a developer or CI MOLT_CACHE, where a later test with the same
+    archive bytes and reader identity would hit them instead of running its
+    own reader.
     """
     identity = stable_regular_file_identity(
         Path(sys.executable).resolve(strict=True), label="test symbol reader"
     )
+
+    def reader_family(executable: str) -> str:
+        path = Path(executable)
+        if path.is_file() and path.resolve() != identity.path:
+            family, _banner = native_symbol_inspection._cached_nm_reader_family(
+                str(path), stable_regular_file_identity(path, label="nm").sha256
+            )
+            if family is not None:
+                return family
+        return "llvm"
 
     @contextmanager
     def admitted_reader(path, *, label, identity=None):
@@ -52,7 +66,9 @@ def mock_symbol_reader_admission(monkeypatch, facts_cache: Path) -> Iterator[Non
         native_symbol_inspection,
         "_native_symbol_reader_candidate",
         lambda command: _NativeSymbolReaderCandidate(
-            tuple(command), executable_identity=identity, reader_family="llvm"
+            tuple(command),
+            executable_identity=identity,
+            reader_family=reader_family(command[0]),
         ),
     )
     monkeypatch.setattr(
