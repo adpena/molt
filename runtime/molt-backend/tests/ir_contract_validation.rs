@@ -445,29 +445,26 @@ fn backend_private_string_semantics_survive_internal_tir_roundtrip() {
 fn assert_checked_shape_rejection(ir: &SimpleIR) {
     let expected = molt_ir::ir_schema::validate_simple_ir_op_shapes(ir).unwrap_err();
     #[cfg(feature = "native-backend")]
-    assert_eq!(
-        molt_backend::SimpleBackend::new()
-            .compile_checked(ir.clone())
-            .err()
-            .expect("native checked admission"),
-        expected
-    );
+    {
+        let Err(error) = molt_backend::SimpleBackend::new().compile_checked(ir.clone()) else {
+            panic!("native checked admission");
+        };
+        assert_eq!(error, expected);
+    }
     #[cfg(all(feature = "native-backend", feature = "llvm"))]
-    assert_eq!(
-        molt_backend::SimpleBackend::new()
-            .compile_llvm_checked(ir.clone())
-            .err()
-            .expect("LLVM checked admission"),
-        expected
-    );
+    {
+        let Err(error) = molt_backend::SimpleBackend::new().compile_llvm_checked(ir.clone()) else {
+            panic!("LLVM checked admission");
+        };
+        assert_eq!(error, expected);
+    }
     #[cfg(feature = "wasm-backend")]
-    assert_eq!(
-        molt_backend::WasmBackend::new()
-            .compile_checked(ir.clone())
-            .err()
-            .expect("WASM checked admission"),
-        expected
-    );
+    {
+        let Err(error) = molt_backend::WasmBackend::new().compile_checked(ir.clone()) else {
+            panic!("WASM checked admission");
+        };
+        assert_eq!(error, expected);
+    }
     #[cfg(feature = "rust-backend")]
     {
         let error = molt_backend::rust::RustBackend::new()

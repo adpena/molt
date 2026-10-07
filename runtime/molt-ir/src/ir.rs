@@ -1748,8 +1748,7 @@ mod json_parse_tests {
                 &[],
             );
         })
-        .err()
-        .expect("SSA must reject unregistered kinds");
+        .expect_err("SSA must reject unregistered kinds");
         let diagnostic = error.downcast_ref::<String>().expect("string diagnostic");
         assert!(
             diagnostic.contains("future_unregistered_op"),

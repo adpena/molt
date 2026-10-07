@@ -929,10 +929,11 @@ fn runtime_provider_budget_counts_concurrent_private_cells() {
         .emit("molt_left(); molt_right()", false)
         .unwrap();
     assert_eq!(prelude.local_count, 3);
-    let error = library(runtime_prelude::CHUNK_LOCAL_LIMIT - 2)
-        .emit("molt_left(); molt_right()", false)
-        .err()
-        .expect("one provider plus exports must still fit the concurrent limit");
+    let Err(error) =
+        library(runtime_prelude::CHUNK_LOCAL_LIMIT - 2).emit("molt_left(); molt_right()", false)
+    else {
+        panic!("one provider plus exports must still fit the concurrent limit");
+    };
     assert!(
         error.contains("199 simultaneously active locals"),
         "{error}"
