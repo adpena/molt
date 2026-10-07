@@ -332,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "a0c2efaa5d03d65924a8223096f7c5c5e8f42dde8ad42a71c3c2d0ce45500653",
+  "authority_sha256": "6af28f2c512a0c7bbf262e598d4e21cb0ef7253d35d5ad6e60cad8f0cfc77a87",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -5668,7 +5668,7 @@
           "local.table-drift.0",
           "local.table-drift.1"
         ],
-        "description": "Hand-synced cross-language / cross-file tables (type tags, exception ordinals/names, target-Python versions): parse-both drift gate.",
+        "description": "Cross-language tables (type tags, exception ordinals/names, target-Python versions, C-API module slots): bind actual declarative owners.",
         "gates": [
           "python3 tools/venv_exec.py python tools/check_table_drift.py --check",
           "python3 tools/venv_exec.py python -m pytest -q tests/test_table_drift_gate.py"
@@ -5677,6 +5677,10 @@
           "src/molt/frontend/_types.py",
           "runtime/molt-runtime/src/object/type_ids.rs",
           "runtime/molt-runtime/src/builtins/exceptions.rs",
+          "runtime/molt-obj-model/src/exception_layout.rs",
+          "src/molt/rust_source_scan.py",
+          "include/molt/Python.h",
+          "runtime/molt-cpython-abi/include/Python.h",
           "src/molt/target_python.py",
           "tools/stdlib_module_union.py",
           "tools/gen_stdlib_module_union.py",

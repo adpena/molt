@@ -289,7 +289,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `dev-tooling` | 12 | 5 | no |
 | `rust-ffi-blocks` | 6 | 2 | no |
 | `rust-toolchain` | 10 | 2 | no |
-| `table-drift` | 8 | 2 | no |
+| `table-drift` | 12 | 2 | no |
 | `findings-registry` | 4 | 1 | no |
 | `memory-graph` | 5 | 2 | no |
 | `ci-wiring` | 51 | 2 | no |
