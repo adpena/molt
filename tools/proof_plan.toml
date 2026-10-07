@@ -2452,6 +2452,21 @@ dependencies = []
 argv = ["cargo", "clippy", "--locked", "--target", "wasm32-wasip1", "--lib", "-p", "molt-runtime", "-p", "molt-tir", "--", "-D", "warnings"]
 toolchains = ["rustc", "cargo", "wasm-ld"]
 
+# Lockfiles outside the main workspace (MLIR backend, fuzz targets) are not
+# exercised by any build here; resolve each so none silently outgrows its
+# manifest.
+[[command]]
+id = "rust.cargo-locks"
+family = "rust"
+cell = "linux-x86_64-rust-native-dev"
+tiers = ["pre-push", "pr", "main"]
+resource_class = "compiler-build-resource"
+timeout_budget = "cross-check"
+cache_domain = "cargo-workspace"
+dependencies = []
+argv = ["uv", "run", "--frozen", "python3", "tools/check_cargo_locks.py"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
 [[command]]
 id = "rust.check.math-aarch64"
 family = "rust"

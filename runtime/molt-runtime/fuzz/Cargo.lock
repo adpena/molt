@@ -98,12 +98,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "block"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d8c1fef690941d3e7788d328517591fecc684c084084702d6ff1641e993699a"
-
-[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -119,6 +113,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
 dependencies = [
  "hybrid-array",
+]
+
+[[package]]
+name = "block2"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5"
+dependencies = [
+ "objc2",
 ]
 
 [[package]]
@@ -197,33 +200,6 @@ name = "constant_time_eq"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
-
-[[package]]
-name = "core-foundation"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6"
-dependencies = [
- "core-foundation-sys",
- "libc",
-]
-
-[[package]]
-name = "core-foundation-sys"
-version = "0.8.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
-
-[[package]]
-name = "core-graphics-types"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d44a101f213f6c4cdc1853d4b78aef6db6bdfa3468798cc1d9912f4735013eb"
-dependencies = [
- "bitflags",
- "core-foundation",
- "libc",
-]
 
 [[package]]
 name = "cpufeatures"
@@ -350,6 +326,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dispatch2"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
+dependencies = [
+ "bitflags",
+ "objc2",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -427,33 +413,6 @@ name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
-
-[[package]]
-name = "foreign-types"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d737d9aa519fb7b749cbc3b962edcf310a8dd1f4b67c91c4f83975dbdd17d965"
-dependencies = [
- "foreign-types-macros",
- "foreign-types-shared",
-]
-
-[[package]]
-name = "foreign-types-macros"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a5c6c585bc94aaf2c7b51dd4c2ba22680844aba4c687be581871a6f518c5742"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "foreign-types-shared"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
 name = "fs_extra"
@@ -750,16 +709,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libloading"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
-dependencies = [
- "cfg-if",
- "windows-link",
-]
-
-[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -792,6 +741,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
+name = "lock_api"
+version = "0.4.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
+dependencies = [
+ "scopeguard",
+]
+
+[[package]]
 name = "log"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -806,15 +764,6 @@ dependencies = [
  "cc",
  "libc",
  "pkg-config",
-]
-
-[[package]]
-name = "malloc_buf"
-version = "0.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62bb907fe88d54d8d9ce32a3cceab4218ed2f6b7d35617cafe9adf84e43919cb"
-dependencies = [
- "libc",
 ]
 
 [[package]]
@@ -841,21 +790,6 @@ name = "memchr"
 version = "2.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
-
-[[package]]
-name = "metal"
-version = "0.33.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7047791b5bc903b8cd963014b355f71dc9864a9a0b727057676c1dcae5cbc15"
-dependencies = [
- "bitflags",
- "block",
- "core-graphics-types",
- "foreign-types",
- "log",
- "objc",
- "paste",
-]
 
 [[package]]
 name = "mimalloc"
@@ -889,6 +823,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-codegen-abi"
+version = "0.1.0"
+
+[[package]]
 name = "molt-db"
 version = "0.1.0"
 dependencies = [
@@ -900,19 +838,49 @@ name = "molt-gpu"
 version = "0.1.0"
 dependencies = [
  "half 2.7.1",
- "metal",
+ "objc2",
+ "objc2-foundation",
+ "objc2-metal",
+]
+
+[[package]]
+name = "molt-gpu-runtime"
+version = "0.1.0"
+dependencies = [
+ "molt-gpu",
+ "molt-runtime-core",
+ "objc2",
+ "objc2-foundation",
+ "objc2-metal",
+ "serde_json",
+]
+
+[[package]]
+name = "molt-lang-cpython-abi"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "libc",
+ "molt-codegen-abi",
+ "molt-lang-obj-model",
+ "molt-runtime-platform",
+ "once_cell",
+ "parking_lot",
+ "unicode-properties",
 ]
 
 [[package]]
 name = "molt-lang-obj-model"
 version = "0.1.0"
+dependencies = [
+ "molt-codegen-abi",
+]
 
 [[package]]
 name = "molt-runtime"
 version = "0.1.0"
 dependencies = [
  "bzip2",
- "cc",
  "crossbeam-channel",
  "crossbeam-deque",
  "digest 0.11.3",
@@ -923,19 +891,23 @@ dependencies = [
  "lazy_static",
  "libc",
  "libm",
- "md-5",
  "memchr",
  "mimalloc",
  "mio",
+ "molt-codegen-abi",
  "molt-db",
  "molt-gpu",
+ "molt-gpu-runtime",
+ "molt-lang-cpython-abi",
  "molt-lang-obj-model",
  "molt-runtime-asyncio",
+ "molt-runtime-audit",
  "molt-runtime-collections",
  "molt-runtime-compression",
+ "molt-runtime-constants",
  "molt-runtime-core",
  "molt-runtime-crypto",
- "molt-stdlib-difflib",
+ "molt-runtime-diagnostics",
  "molt-runtime-http",
  "molt-runtime-ipaddress",
  "molt-runtime-itertools",
@@ -943,19 +915,25 @@ dependencies = [
  "molt-runtime-math",
  "molt-runtime-net",
  "molt-runtime-path",
+ "molt-runtime-platform",
  "molt-runtime-regex",
+ "molt-runtime-resource",
  "molt-runtime-serial",
  "molt-runtime-stringprep",
- "molt-stdlib-text",
  "molt-runtime-tk",
+ "molt-runtime-vfs",
  "molt-runtime-xml",
  "molt-runtime-zoneinfo",
+ "molt-stdlib-difflib",
+ "molt-stdlib-graphlib",
+ "molt-stdlib-text",
  "num-bigint",
  "num-integer",
  "num-traits",
  "num_cpus",
  "once_cell",
  "os_pipe",
+ "parking_lot",
  "rmpv",
  "rustls",
  "rustls-pemfile",
@@ -969,7 +947,6 @@ dependencies = [
  "tempfile",
  "tungstenite",
  "unicode-casefold",
- "unicode-ident",
  "unicode_names2 3.1.0",
  "webpki-roots 1.0.8",
  "windows-sys 0.61.2",
@@ -985,6 +962,10 @@ dependencies = [
  "molt-lang-obj-model",
  "molt-runtime-core",
 ]
+
+[[package]]
+name = "molt-runtime-audit"
+version = "0.1.0"
 
 [[package]]
 name = "molt-runtime-collections"
@@ -1006,10 +987,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-runtime-constants"
+version = "0.1.0"
+
+[[package]]
 name = "molt-runtime-core"
 version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",
+ "num-bigint",
+ "num-traits",
 ]
 
 [[package]]
@@ -1038,12 +1025,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "molt-stdlib-difflib"
+name = "molt-runtime-diagnostics"
 version = "0.1.0"
-dependencies = [
- "molt-lang-obj-model",
- "molt-runtime-core",
-]
 
 [[package]]
 name = "molt-runtime-fuzz"
@@ -1096,12 +1079,14 @@ dependencies = [
 name = "molt-runtime-math"
 version = "0.1.0"
 dependencies = [
+ "digest 0.11.3",
  "libm",
  "molt-lang-obj-model",
  "molt-runtime-core",
  "num-bigint",
  "num-integer",
  "num-traits",
+ "sha2",
 ]
 
 [[package]]
@@ -1131,11 +1116,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "molt-runtime-platform"
+version = "0.1.0"
+dependencies = [
+ "digest 0.11.3",
+ "getrandom 0.4.3",
+ "libc",
+ "md-5",
+ "sha1 0.11.0",
+]
+
+[[package]]
 name = "molt-runtime-regex"
 version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",
  "molt-runtime-core",
+]
+
+[[package]]
+name = "molt-runtime-resource"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -1161,24 +1164,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "molt-stdlib-text"
-version = "0.1.0"
-dependencies = [
- "memchr",
- "molt-lang-obj-model",
- "molt-runtime-core",
- "unicode_names2 3.1.0",
-]
-
-[[package]]
 name = "molt-runtime-tk"
 version = "0.1.0"
 dependencies = [
  "libc",
- "libloading",
  "molt-lang-obj-model",
  "molt-runtime-core",
 ]
+
+[[package]]
+name = "molt-runtime-vfs"
+version = "0.1.0"
 
 [[package]]
 name = "molt-runtime-xml"
@@ -1194,6 +1190,32 @@ version = "0.1.0"
 dependencies = [
  "molt-lang-obj-model",
  "molt-runtime-core",
+]
+
+[[package]]
+name = "molt-stdlib-difflib"
+version = "0.1.0"
+dependencies = [
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+]
+
+[[package]]
+name = "molt-stdlib-graphlib"
+version = "0.1.0"
+dependencies = [
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+]
+
+[[package]]
+name = "molt-stdlib-text"
+version = "0.1.0"
+dependencies = [
+ "memchr",
+ "molt-lang-obj-model",
+ "molt-runtime-core",
+ "unicode_names2 3.1.0",
 ]
 
 [[package]]
@@ -1235,12 +1257,56 @@ dependencies = [
 ]
 
 [[package]]
-name = "objc"
-version = "0.2.7"
+name = "objc2"
+version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "915b1b472bc21c53464d6c8461c9d3af805ba1ef837e1cac254428f4a77177b1"
+checksum = "08849bbd4767dfae9457696856ae1c84fe4e0281bbe4a7abff2d0e06fb7981f8"
 dependencies = [
- "malloc_buf",
+ "objc2-encode",
+]
+
+[[package]]
+name = "objc2-core-foundation"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
+dependencies = [
+ "bitflags",
+ "dispatch2",
+ "objc2",
+]
+
+[[package]]
+name = "objc2-encode"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33"
+
+[[package]]
+name = "objc2-foundation"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
+dependencies = [
+ "bitflags",
+ "block2",
+ "libc",
+ "objc2",
+ "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-metal"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794"
+dependencies = [
+ "bitflags",
+ "block2",
+ "dispatch2",
+ "objc2",
+ "objc2-core-foundation",
+ "objc2-foundation",
 ]
 
 [[package]]
@@ -1260,10 +1326,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "paste"
-version = "1.0.15"
+name = "parking_lot"
+version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+checksum = "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a"
+dependencies = [
+ "lock_api",
+ "parking_lot_core",
+]
+
+[[package]]
+name = "parking_lot_core"
+version = "0.9.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "redox_syscall",
+ "smallvec",
+ "windows-link",
+]
 
 [[package]]
 name = "pbkdf2"
@@ -1421,6 +1504,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
 dependencies = [
  "getrandom 0.3.4",
+]
+
+[[package]]
+name = "redox_syscall"
+version = "0.5.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
+dependencies = [
+ "bitflags",
 ]
 
 [[package]]
@@ -1625,6 +1717,12 @@ dependencies = [
  "cfg-if",
  "cipher",
 ]
+
+[[package]]
+name = "scopeguard"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "scrypt"
@@ -1972,6 +2070,12 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-properties"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7df058c713841ad818f1dc5d3fd88063241cc61f49f5fbea4b951e8cf5a8d71d"
 
 [[package]]
 name = "unicode-width"
