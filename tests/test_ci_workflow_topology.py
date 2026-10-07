@@ -50,9 +50,10 @@ def _named_step_blocks(workflow_text: str) -> list[str]:
 
 
 def _default_python_version() -> str:
+    """The exact tooling CPython; generator oracles differ between patches."""
     version = _read(".python-version").strip()
     components = version.split(".")
-    assert len(components) == 2
+    assert len(components) == 3
     assert all(component.isdigit() for component in components)
     return version
 
@@ -1361,12 +1362,14 @@ def test_default_ci_python_version_comes_from_single_file() -> None:
     checked_files = [".pre-commit-config.yaml"] + [
         f".github/workflows/{path.name}" for path in sorted(WORKFLOW_ROOT.glob("*.yml"))
     ]
+    minor = default_python.rsplit(".", 1)[0]
     for path in checked_files:
         text = _read(path)
-        assert f"--python {default_python}" not in text
-        assert f"uv python install {default_python}" not in text
-        assert f'python-version: "{default_python}"' not in text
-        assert f"python-version: '{default_python}'" not in text
+        for version in (default_python, minor):
+            assert f"--python {version}" not in text
+            assert f"uv python install {version}" not in text
+            assert f'python-version: "{version}"' not in text
+            assert f"python-version: '{version}'" not in text
 
     setup_project = _read(".github/actions/setup-project/action.yml")
     assert "python-version-file: .python-version" in setup_project

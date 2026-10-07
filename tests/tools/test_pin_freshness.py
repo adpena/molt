@@ -114,7 +114,18 @@ def test_every_pin_reads_its_authority_loader() -> None:
         assert pins[name].current == release.version
         assert pins[name].authority == tool_releases.TOOL_RELEASES_PATH
     assert set(pin_freshness.HOLDS) <= set(pins)
-    assert {"rust", "python", "uv", "llvm", "wasi-sdk", "binaryen", "lean"} <= set(pins)
+    assert {
+        "rust",
+        "python",
+        "python-patch",
+        "uv",
+        "llvm",
+        "wasi-sdk",
+        "binaryen",
+        "lean",
+    } <= set(pins)
+    assert pins["python"].current == pins["python-patch"].current
+    assert pins["python"].current == (ROOT / ".python-version").read_text().strip()
 
 
 def _leb128(value: int) -> bytes:
@@ -495,3 +506,22 @@ def test_manifest_loaders_reread_a_rewritten_file(tmp_path) -> None:
     manifest.write_text("schema_version = 1\n", encoding="utf-8")
     with pytest.raises(BinaryenConfigError):
         load_binaryen_manifest(root)
+
+
+def test_python_pins_track_the_patch_line_and_the_newest_line() -> None:
+    seen = []
+
+    def fetch(url: str) -> object:
+        seen.append(url)
+        if url.endswith("/python.json"):
+            return [{"cycle": "3.14", "latest": "3.14.3"}]
+        return {"latest": "3.12.16"}
+
+    pins = {
+        pin.name: pin
+        for pin in pin_freshness.collect_pins(ROOT, fetch=fetch, fetch_text=_no_network)
+    }
+    line = ".".join(pins["python-patch"].current.split(".")[:2])
+    assert pins["python-patch"].latest() == "3.12.16"
+    assert seen[-1] == f"https://endoflife.date/api/python/{line}.json"
+    assert pins["python"].latest() == "3.14.3"

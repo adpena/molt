@@ -11,6 +11,7 @@
     "src/molt/build_state_layout.py",
     "src/molt/release_matrix.py",
     "src/molt/tool_releases.py",
+    "src/molt/platform_toolchain.py",
     "src/molt/wasi_sysroot.py",
     "tools/compat/diff_output_layout.py",
     "tools/disk_guard.py",
@@ -325,7 +326,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "4c2b5404ec4092461cdaf40c04baeea6efe9516c8c7cb6153e178b4c912f857d",
+  "authority_sha256": "4adb24fbccb483b157c44f6f10f09767ed0114d340e853b6e34580d51907c27f",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -6788,13 +6789,13 @@
       "executable": "{python}",
       "name": "python",
       "setup_evidence": [
-        ".python-version::3.12"
+        ".python-version::3.12.15"
       ],
-      "setup_value": "3.12",
+      "setup_value": "3.12.15",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "^Python 3\\.12\\."
+      "version_pattern": "^Python 3\\.12\\.15$"
     },
     {
       "dependencies": [
