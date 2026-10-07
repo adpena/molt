@@ -737,7 +737,7 @@ _LIBTEST_OPTIONS_WITH_VALUES = frozenset(
 def _libtest_is_query(arguments: Sequence[str]) -> bool:
     """Recognize harness queries without treating filter operands as flags.
 
-    Value-taking options follow Rust 1.96 library/test/src/cli.rs. In
+    Value-taking options follow Rust 1.99 library/test/src/cli.rs. In
     particular, --report-time and --ensure-time are flags, not operands.
     """
     index = 0
@@ -801,7 +801,7 @@ class CargoInvocation:
         if self.is_cargo_query:
             return "query"
         # Cargo run_tests/run_benches compile first and return before executing
-        # any harness when their own --no-run option is set (Cargo 1.96).
+        # any harness when their own --no-run option is set (Cargo 1.99).
         if self.subcommand in {"test", "bench"} and "--no-run" in self.flags:
             return "build"
         if self.subcommand in {"test", "bench"} and _libtest_is_query(self.forwarded):

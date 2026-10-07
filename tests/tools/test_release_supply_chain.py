@@ -150,15 +150,23 @@ def test_release_target_and_download_authority_is_complete_and_exact() -> None:
 
     config = release_model.load_config()
     elan = config["downloads"]["elan"]
-    assert elan["version"] == "4.2.3"
+    # The pin lives only in config/release_supply_chain.toml; compare the
+    # loader with an independent parse instead of restating the version.
+    raw = tomllib.loads(
+        (ROOT / "config" / "release_supply_chain.toml").read_text(encoding="utf-8")
+    )["downloads"]["elan"]
+    version = raw["version"]
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version)
+    assert elan["version"] == version
     linux = elan["targets"]["x86_64-unknown-linux-gnu"]
-    assert linux == {
-        "url": "https://github.com/leanprover/elan/releases/download/v4.2.3/elan-x86_64-unknown-linux-gnu.tar.gz",
-        "sha256": "df0b2b3a439961ffcbb3985214365ffe40f49bc871df04dff268c7d8e21ca8b2",
-        "size": 4984019,
-        "archive": "tar.gz",
-        "member": "elan-init",
-    }
+    assert linux == raw["targets"]["x86_64-unknown-linux-gnu"]
+    assert linux["url"] == (
+        f"https://github.com/leanprover/elan/releases/download/v{version}/"
+        "elan-x86_64-unknown-linux-gnu.tar.gz"
+    )
+    assert re.fullmatch(r"[0-9a-f]{64}", linux["sha256"])
+    assert linux["size"] > 0
+    assert (linux["archive"], linux["member"]) == ("tar.gz", "elan-init")
 
 
 def test_release_and_deployment_python_tools_are_exact_hash_locked() -> None:

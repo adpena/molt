@@ -3,7 +3,7 @@ name = "molt-cpython-abi-test-support"
 version = "0.1.0"
 publish = false
 edition = "2024"
-rust-version = "1.96.1"
+rust-version = "1.99.0"
 license = "Apache-2.0"
 build = "build.rs"
 

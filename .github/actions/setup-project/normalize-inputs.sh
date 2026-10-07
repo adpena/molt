@@ -57,9 +57,50 @@ sync=${INPUT_SYNC:?}
 sync_frozen=${INPUT_SYNC_FROZEN:?}
 sync_dev=${INPUT_SYNC_DEV:?}
 namespace=${INPUT_CACHE_NAMESPACE:?}
+
+# Callers name a role, never a version: each version lives in one authority
+# file, so a pin bump edits that file and no workflow.
+read_exact_version() {
+  local label=$1 version=$2
+  if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "$label must declare exactly one X.Y.Z version, got: $version" >&2
+    exit 2
+  fi
+  printf '%s' "$version"
+}
+
 toolchain=${INPUT_RUST_TOOLCHAIN:-}
-if [[ "$toolchain" == "sanitizer-nightly" ]]; then
-  toolchain=$(< config/rust_nightly_toolchain.txt)
+case "$toolchain" in
+  "") ;;
+  pinned)
+    toolchain=$(read_exact_version "rust-toolchain.toml channel" \
+      "$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)")
+    ;;
+  sanitizer-nightly)
+    toolchain=$(< config/rust_nightly_toolchain.txt)
+    ;;
+  *)
+    echo "rust-toolchain must be 'pinned' (rust-toolchain.toml) or 'sanitizer-nightly'" \
+      "(config/rust_nightly_toolchain.txt), got: $toolchain" >&2
+    exit 2
+    ;;
+esac
+
+node_version=${INPUT_NODE_VERSION:-}
+case "$node_version" in
+  "") ;;
+  pinned)
+    node_version=$(read_exact_version "config/tool_releases.toml [tools.node] version" \
+      "$(sed -n '/^\[tools\.node\]$/,/^\[/s/^version = "\(.*\)"$/\1/p' config/tool_releases.toml)")
+    ;;
+  *)
+    echo "node-version must be 'pinned' (config/tool_releases.toml), got: $node_version" >&2
+    exit 2
+    ;;
+esac
+if [[ -n "${INPUT_NODE_CACHE_DEPENDENCY_PATH:-}" && -z "$node_version" ]]; then
+  echo "node-cache-dependency-path requires node-version" >&2
+  exit 2
 fi
 
 for bool_name in python uv cache_uv cache_cargo cache_lean actionlint sync sync_frozen sync_dev; do
@@ -122,6 +163,7 @@ rust_cache_token=$(
   printf 'sync-groups=%s\n' "$sync_groups"
   printf 'cache-namespace=%s\n' "$namespace"
   printf 'rust-toolchain=%s\n' "$toolchain"
+  printf 'node-version=%s\n' "$node_version"
   printf 'rust-components=%s\n' "$components"
   printf 'rust-targets=%s\n' "$targets"
   printf 'rust-cache-token=%s\n' "$rust_cache_token"

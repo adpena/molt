@@ -247,11 +247,9 @@ def test_release_candidate_admits_both_installed_guest_targets() -> None:
     ]
     assert len(setups) == 1
     setup = setups[0]["with"]
-    policy = tomllib.loads(_read("tools/proof_plan.toml"))
-    node = next(item for item in policy["toolchain_policy"] if item["name"] == "node")
     rust = tomllib.loads(_read("rust-toolchain.toml"))["toolchain"]
-    assert setup["node-version"] == node["setup_value"]
-    assert setup["rust-toolchain"] == rust["channel"]
+    assert setup["node-version"] == "pinned"
+    assert setup["rust-toolchain"] == "pinned"
     assert {part.strip() for part in setup["rust-targets"].split(",")} >= set(
         rust["targets"]
     )
@@ -1175,7 +1173,7 @@ def test_rust_security_reuses_cached_tool_builds() -> None:
         rust_security
     )
     assert "uses: ./.github/actions/setup-project" in rust_security
-    assert 'rust-toolchain: "1.96.1"' in rust_security
+    assert "rust-toolchain: pinned" in rust_security
     assert 'cache-cargo: "true"' in rust_security
     setup_project = _read(".github/actions/setup-project/action.yml")
     assert "Restore Cargo dependency cache" in setup_project
@@ -1543,19 +1541,30 @@ def test_quint_workflows_pin_patched_node24_toolchain() -> None:
 
     setup_project = _read(".github/actions/setup-project/action.yml")
     assert "uses: actions/setup-node@" in setup_project
-    node_version = tool_releases.tool_release("node").version
-    assert f'node-version: "{node_version}"' in formal_workflow
+    assert "node-version: pinned" in formal_workflow
     assert "check-latest: true" not in setup_project
-    assert 'MOLT_QUINT_NPM_PACKAGE: "@informalsystems/quint@0.32.0"' in (
-        formal_workflow
+    quint = next(
+        policy
+        for policy in tomllib.loads(_read("tools/proof_plan.toml"))["toolchain_policy"]
+        if policy["name"] == "quint"
     )
-    assert 'MOLT_QUINT_RUST_EVALUATOR_VERSION: "v0.6.0"' in formal_workflow
+    assert (
+        f'MOLT_QUINT_NPM_PACKAGE: "@informalsystems/quint@{quint["setup_value"]}"'
+        in formal_workflow
+    )
+    # Quint pins its own evaluator release; the workflow pins that exact release.
+    assert re.search(
+        r'MOLT_QUINT_RUST_EVALUATOR_VERSION: "v\d+\.\d+\.\d+"', formal_workflow
+    )
+    assert re.search(
+        r'MOLT_QUINT_RUST_EVALUATOR_SHA256: "[0-9a-f]{64}"', formal_workflow
+    )
     assert "Install Quint Rust evaluator" in formal_workflow
     assert "sha256sum --check" in formal_workflow
 
     assert 'npm install -g "$MOLT_QUINT_NPM_PACKAGE"' not in nightly_workflow
     assert "actions/setup-node@" not in nightly_workflow
-    assert f"node-version: '{node_version}'" not in nightly_workflow
+    assert "node-version:" not in nightly_workflow
     assert "Install Quint Rust evaluator" not in nightly_workflow
 
 
@@ -1827,6 +1836,9 @@ def test_node_toolchain_consumers_provision_the_canonical_version() -> None:
         "wasm": (".github/workflows/molt-wasm-ci.yml", "wasm-build"),
         "formal": (".github/workflows/formal.yml", "formal-quint"),
     }
+    # setup-project resolves `pinned` from config/tool_releases.toml; the
+    # plan's preflight pattern must accept exactly that version.
+    assert node_policy["setup_value"] == tool_releases.tool_release("node").version
 
     assert node_families == set(consumers)
     for family, (workflow_path, job_name) in consumers.items():
@@ -1837,10 +1849,7 @@ def test_node_toolchain_consumers_provision_the_canonical_version() -> None:
             if step.get("uses") == "./.github/actions/setup-project"
         ]
         assert len(setup_steps) == 1, family
-        assert (
-            setup_steps[0].get("with", {}).get("node-version")
-            == node_policy["setup_value"]
-        ), family
+        assert setup_steps[0].get("with", {}).get("node-version") == "pinned", family
 
 
 def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:

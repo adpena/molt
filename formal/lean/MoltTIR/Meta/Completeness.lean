@@ -118,7 +118,9 @@ theorem exprPasses_all_verified :
     ∀ p ∈ exprTransformingPasses,
       VerificationLevel.le .exprLevel (currentLevel p) = true := by
   intro p hp
-  simp [exprTransformingPasses, pipelinePassList, isExprTransformingPass] at hp
+  have hpasses : exprTransformingPasses = [.constFold, .sccp, .cse] := rfl
+  rw [hpasses] at hp
+  simp only [List.mem_cons, List.mem_nil_iff, or_false] at hp
   rcases hp with rfl | rfl | rfl <;> simp [currentLevel, VerificationLevel.le]
 
 /-- constFoldExpr is expression-semantics-preserving (fully proven, no sorry). -/

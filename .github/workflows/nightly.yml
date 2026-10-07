@@ -34,7 +34,7 @@ jobs:
       - name: Setup Nightly build toolchains
         uses: ./.github/actions/setup-project
         with:
-          rust-toolchain: "1.96.1"
+          rust-toolchain: pinned
           cache-cargo: "true"
           sync: "true"
           sync-groups: dev
@@ -96,7 +96,7 @@ jobs:
       - name: Setup conformance toolchains
         uses: ./.github/actions/setup-project
         with:
-          rust-toolchain: "1.96.1"
+          rust-toolchain: pinned
           cache-cargo: "true"
           sync: "true"
           sync-groups: dev
@@ -152,7 +152,7 @@ jobs:
       - name: Setup differential toolchains
         uses: ./.github/actions/setup-project
         with:
-          rust-toolchain: "1.96.1"
+          rust-toolchain: pinned
           cache-cargo: "true"
           sync: "true"
           sync-groups: dev
@@ -209,7 +209,7 @@ jobs:
       - name: Setup regrtest toolchains
         uses: ./.github/actions/setup-project
         with:
-          rust-toolchain: "1.96.1"
+          rust-toolchain: pinned
           cache-cargo: "true"
           sync: "true"
           sync-frozen: "true"
@@ -381,7 +381,7 @@ jobs:
       - name: Setup determinism toolchains
         uses: ./.github/actions/setup-project
         with:
-          rust-toolchain: "1.96.1"
+          rust-toolchain: pinned
           cache-cargo: "true"
           sync: "true"
           sync-frozen: "true"
@@ -422,7 +422,7 @@ jobs:
       - name: Setup Tier 3 toolchains
         uses: ./.github/actions/setup-project
         with:
-          rust-toolchain: "1.96.1"
+          rust-toolchain: pinned
           cache-cargo: "true"
           sync: "true"
           sync-frozen: "true"

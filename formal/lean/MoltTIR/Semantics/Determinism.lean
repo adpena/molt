@@ -13,10 +13,10 @@ namespace MoltTIR
 -- Re-export the key determinism results for convenient reference.
 
 /-- Expression evaluation is deterministic. -/
-def eval_det := @evalExpr_deterministic
+theorem eval_det : type_of% @evalExpr_deterministic := @evalExpr_deterministic
 
 /-- Function execution is deterministic (given the same fuel bound). -/
-def exec_det := @execFunc_deterministic
+theorem exec_det : type_of% @execFunc_deterministic := @execFunc_deterministic
 
 /-- Instruction sequence execution is deterministic. -/
 theorem execInstrs_deterministic (ρ : Env) (instrs : List Instr) :

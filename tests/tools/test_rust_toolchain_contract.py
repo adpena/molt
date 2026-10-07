@@ -70,14 +70,52 @@ def test_cargo_version_probe_normalizes_config_wrapper(monkeypatch) -> None:
 
 def test_selected_compiler_meets_workspace_minimum() -> None:
     tool = _load_check_rust_toolchain()
+    pinned = tool.RUST_VERSION
+    major, minor, _patch = (int(part) for part in pinned.split("."))
     assert not tool.check_compiler_version(
-        "rustc 1.96.0-nightly (2d76d9bc7 2026-03-09)"
+        f"rustc {major}.{minor - 1}.0 (2d76d9bc7 2026-03-09)"
     ).ok
     assert not tool.check_compiler_version(
-        "rustc 1.96.1-nightly (abcdef 2026-06-01)"
+        f"rustc {pinned}-nightly (abcdef 2026-06-01)"
     ).ok
-    assert tool.check_compiler_version("rustc 1.96.1 (31fca3adb 2026-06-26)").ok
+    assert tool.check_compiler_version(f"rustc {pinned} (31fca3adb 2026-06-26)").ok
     assert tool.check_compiler_version(
-        "rustc 1.101.0-nightly (c1070d693 2026-09-28)"
+        f"rustc {major}.{minor + 2}.0-nightly (c1070d693 2026-09-28)"
     ).ok
     assert not tool.check_compiler_version("garbage").ok
+
+
+def test_pinned_version_is_the_rust_toolchain_channel() -> None:
+    import tomllib
+
+    tool = _load_check_rust_toolchain()
+    toolchain = tomllib.loads((ROOT / "rust-toolchain.toml").read_text("utf-8"))
+
+    assert tool.RUST_VERSION == toolchain["toolchain"]["channel"]
+
+
+def test_workflows_name_rust_toolchain_roles_not_versions() -> None:
+    tool = _load_check_rust_toolchain()
+    workflow = Path(".github/workflows/fixture.yml")
+    text = (
+        "jobs:\n"
+        "  a:\n"
+        "    steps:\n"
+        "      - uses: ./.github/actions/setup-project\n"
+        "        with:\n"
+        "          rust-toolchain: pinned\n"
+        "      - uses: ./.github/actions/setup-project\n"
+        "        with:\n"
+        "          rust-toolchain: sanitizer-nightly\n"
+        "      - uses: ./.github/actions/setup-project\n"
+        "        with:\n"
+        f'          rust-toolchain: "{tool.RUST_VERSION}"\n'
+        "      - uses: ./.github/actions/setup-project\n"
+        "        with:\n"
+        "          rust-toolchain: stable\n"
+    )
+
+    errors = tool.workflow_rust_toolchain_errors(workflow, text)
+
+    assert [error.split(":", 2)[1] for error in errors] == ["12", "15"]
+    assert all("must name a role" in error for error in errors)

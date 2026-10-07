@@ -261,7 +261,7 @@ structure PhaseSimulation (SourceSt TargetSt : Type)
     For Molt's deterministic fuel-bounded semantics, this is bypassed
     entirely by DeterministicPassSimulation.compose (below), which
     works with functional equality instead of relational refinement. -/
-def PhaseSimulation.compose
+theorem PhaseSimulation.compose
     {A B C : Type}
     {ref_AB : B -> A -> Prop}
     {ref_BC : C -> B -> Prop}
@@ -324,7 +324,7 @@ def DeterministicPassSimulation.toFuncSimulation {g : MoltTIR.Func -> MoltTIR.Fu
     This is strictly simpler than the general PhaseSimulation.compose:
     no existential witnesses, no receptiveness conditions, just functional
     equation chaining. -/
-def DeterministicPassSimulation.compose
+theorem DeterministicPassSimulation.compose
     {g1 g2 : MoltTIR.Func -> MoltTIR.Func}
     (sim1 : DeterministicPassSimulation g1)
     (sim2 : DeterministicPassSimulation g2) :
@@ -365,7 +365,7 @@ structure LoweringSimulation where
     MoltTIR.evalExpr tirEnv te = some tv
 
 /-- The lowering simulation instance (delegates to lowering_preserves_eval). -/
-def loweringSimulation : LoweringSimulation where
+theorem loweringSimulation : LoweringSimulation where
   preserves_eval := MoltLowering.lowering_preserves_eval
 
 /-- Phase 2 simulation: TIR midend optimization preserves expression
@@ -385,7 +385,7 @@ structure MidendSimulation where
     BehavioralEquivalence (cseFunc (dceFunc (sccpFunc (constFoldFunc f)))) f
 
 /-- The midend simulation instance. -/
-def midendSimulation : MidendSimulation where
+theorem midendSimulation : MidendSimulation where
   preserves_expr := fullPipelineExpr_correct
   preserves_func := fullPipeline_behavioral_equiv
 

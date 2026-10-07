@@ -314,7 +314,7 @@ theorem dceFunc_correct_wt (f : Func) (ht : InstrTotal f) (fuel : Nat) (ρ : Env
       | some (.ret v) => rfl
       | some (.jump target env') => exact ih env' target
 
-def dceSim : FuncSimulationWT dceFunc where
+theorem dceSim : FuncSimulationWT dceFunc where
   simulation := fun f ht fuel ρ lbl => dceFunc_correct_wt f ht fuel ρ lbl
   entry_preserved := fun _ => rfl
   entry_block_some := fun f blk h =>
@@ -997,7 +997,7 @@ private theorem guardHoistFunc_correct_wt (f : Func) (ht : InstrTotal f)
     - guardHoistInstrs_correct: guard hoisting preserves instruction execution
 
     Sorry count: 0 -/
-def guardHoistSim : FuncSimulationWT guardHoistFunc where
+theorem guardHoistSim : FuncSimulationWT guardHoistFunc where
   simulation := fun f ht fuel ρ lbl => guardHoistFunc_correct_wt f ht fuel ρ lbl
   entry_preserved := fun _ => rfl
   entry_block_some := fun f blk h =>

@@ -75,7 +75,7 @@ jobs:
         with:
           uv: "false"
           cache-uv: "false"
-          rust-toolchain: "1.96.1"
+          rust-toolchain: pinned
           cache-cargo: "true"
       - name: Configure adaptive Rust parallelism
         run: python3 tools/ci_resource_env.py --github-env "$GITHUB_ENV"

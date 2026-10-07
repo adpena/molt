@@ -30,6 +30,7 @@ from tools import proof_plan
 from molt.cargo_execution_policy import normalize_cargo_environment
 from molt.file_hashing import _sha256_file
 from molt import python_environment_identity
+from molt import rust_toolchain
 from molt.exact_json import ExactJsonError, canonical_json_sha256
 from tests.python_environment_test_support import (
     build_environment_manifest,
@@ -46,6 +47,7 @@ from tests.proof_queue_custody_test_support import (
     synthetic_receipt_custody as synthetic_receipt_custody,
 )
 from molt.cli.extension_manifest import _default_molt_c_api_version
+
 from molt.cli.source_extension_manifest_codec import (
     _compact_source_extension_manifest,
 )
@@ -101,6 +103,17 @@ from tests.cli.test_source_extension_producer import (
     _fixture_meson_targets,
     _fixture_source_plan,
     _write_target_metadata,
+)
+
+# Rows that build Rust select the channel rust-toolchain.toml pins.
+_RUST_CHANNEL = rust_toolchain.rust_channel(
+    (Path(__file__).resolve().parents[2] / "rust-toolchain.toml").read_bytes()
+)
+# The synthetic Quint install reports the version the proof plan pins.
+_QUINT_PIN = next(
+    policy.data["setup_value"]
+    for policy in proof_plan.ProofPlan.load().toolchain_policies
+    if policy.name == "quint"
 )
 
 
@@ -1658,7 +1671,7 @@ def test_quint_tool_identity_binds_resolved_node_package_tree(
     manifest = package / "package.json"
     entry = package / "cli.js"
     manifest.write_text(
-        json.dumps({"name": "@informalsystems/quint", "version": "0.32.0"}),
+        json.dumps({"name": "@informalsystems/quint", "version": _QUINT_PIN}),
         encoding="utf-8",
     )
     entry.write_text("console.log('quint')\n", encoding="utf-8")
@@ -1694,7 +1707,7 @@ def test_quint_tool_identity_binds_resolved_node_package_tree(
                 ),
                 "",
             )
-        return subprocess.CompletedProcess(argv, 0, "Quint 0.32.0", "")
+        return subprocess.CompletedProcess(argv, 0, f"Quint {_QUINT_PIN}", "")
 
     monkeypatch.setattr(command_identity, "_which_in_command_environment", fake_which)
     monkeypatch.setattr(command_identity, "_run_captured", fake_run)
@@ -9360,7 +9373,10 @@ def test_proof_queue_submit_run_executes_queued_row_in_place(
                 'reason = "prove queued row"',
                 'resource_family = "python"',
                 'contention_key = "python:queued"',
-                'env = { MOLT_PROOF_QUEUE_TEST = "queued-ok", RUSTUP_TOOLCHAIN = "1.96.1" }',
+                # The row's toolchain is the repository's pinned channel; the
+                # supervisor it provisions declares that rust-version.
+                'env = { MOLT_PROOF_QUEUE_TEST = "queued-ok", '
+                f'RUSTUP_TOOLCHAIN = "{_RUST_CHANNEL}" }}',
                 f'command = [{str(custody_python)!r}, "-c", "print(\'queued-python-ok\')"]',
             ]
         ),

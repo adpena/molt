@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -1470,7 +1471,10 @@ def test_update_toolchain_plan_uses_pinned_rust_and_wasi_target(
     commands = {step.name: step.cmd for step in steps}
     install_cmd = commands["rustup-install-pinned-toolchain"]
     assert install_cmd == WASM_TOOLCHAIN.rustup_toolchain_install_cmd(ROOT)
-    assert "1.96.1" in install_cmd
+    channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text("utf-8"))[
+        "toolchain"
+    ]["channel"]
+    assert channel in install_cmd
     assert "wasm32-wasip1" in install_cmd
     assert "rustup-target-add-wasm32-wasip1" not in commands
     assert all("stable" not in command for cmd in commands.values() for command in cmd)

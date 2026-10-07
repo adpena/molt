@@ -33,6 +33,7 @@ from molt.compiler_distribution import InstalledCompiler, installed_compiler
 from molt.exact_json import canonical_json_sha256, loads_exact
 from molt.file_publication import durable_remove_path
 from molt.python_interpreter import probe_python_command
+from molt.rust_toolchain import rust_channel
 from molt.toolchain_identity import (
     executable_candidates,
     executable_content_identity,
@@ -50,7 +51,6 @@ from .binary_compatibility import (
     audit_wheel,
 )
 from .runtime_cells import declared_cell_keys, inventory_cell_keys
-from .native_build import rust_channel
 
 _COMMANDS = CommandExecutor.for_file(__file__)
 

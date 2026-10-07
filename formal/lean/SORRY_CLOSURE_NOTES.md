@@ -1,17 +1,17 @@
 # Sorry Closure Working Notes
 
-## Lean 4.28 API patterns that work:
+## Lean API patterns that work on the pinned toolchain (`lean-toolchain`):
 
 ### BEq/Decide bridging
 - `¬decide (y < 0) = true` (Bool hyp) → `¬(y < 0)` (Prop): use `simp only [decide_eq_true_eq] at h` or `rwa [decide_eq_true_eq] at h`
-- Resolve `if y < 0` with Bool hyp: `rw [if_neg (by rwa [decide_eq_true_eq] at h)]`
-- Or: `simp [if_neg (show ¬(y < 0) by omega)]`
+- Resolve `if y < 0` with Bool hyp: `rw [ite_eq_right (by rwa [decide_eq_true_eq] at h)]`
+- Or: `simp [ite_eq_right (show ¬(y < 0) by omega)]`
 
 ### Operator case analysis
 - After `cases op <;> simp only [evalBinOp, ...] at hpv htv`: hypotheses become concrete
 - Simple ops (add/sub/mul): `cases hpv; simp_all [lowerValue]`
 - Conditional ops (mod/floorDiv): `split at hpv <;> first | simp_all | (subst ...; simp [lowerValue])`
-- Pow: `simp [if_neg (show ¬(y < 0) by omega), lowerValue]`
+- Pow: `simp [ite_eq_right (show ¬(y < 0) by omega), lowerValue]`
 
 ### UInt64 / BitVec
 - `UInt64.mk` → `UInt64.ofBitVec` in Lean 4.28
@@ -24,6 +24,11 @@
 - `List.get?` → `[i]?`
 - `List.mem_cons_self x xs` → `List.mem_cons_self` (implicit args)
 - `List.not_mem_nil x` → `List.not_mem_nil`
+- `List.Sublist.cons₂` → `List.Sublist.cons_cons` (Lean 4.34)
+
+### Renamed core lemmas (Lean 4.34)
+- `if_pos` / `if_neg` → `ite_eq_left` / `ite_eq_right`
+- `dif_pos` / `dif_neg` → `dite_eq_left` / `dite_eq_right`
 
 ## Remaining 7 sorrys:
 

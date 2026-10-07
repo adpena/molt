@@ -549,7 +549,7 @@ def _cargo_forwarded_compiler_context(
 ) -> dict[str, object]:
     """Resolve the compiler cwd from Cargo-owned workspace/package provenance.
 
-    Cargo 1.96 util/workspace.rs::path_args uses the workspace root for path
+    Cargo 1.99 src/util/workspace.rs::path_args uses the workspace root for path
     sources below that root, otherwise the package root. The optional root-dir
     flag changes the first root, not the fallback. Never infer this from cwd or
     a hand-parsed Cargo.toml, and never compile an original package here.

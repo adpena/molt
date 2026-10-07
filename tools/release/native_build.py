@@ -10,7 +10,6 @@ import re
 import shlex
 import sys
 import tempfile
-import tomllib
 from typing import Any
 
 from molt.cargo_execution_policy import CARGO_WRAPPER_ENV_NAMES
@@ -36,6 +35,7 @@ from molt.platform_toolchain import (
 from molt.rust_toolchain import (
     cargo_configuration_paths,
     resolve_rustup_proxy,
+    rust_channel,
     rustc_host,
 )
 from molt.toolchain_identity import (
@@ -118,16 +118,6 @@ def source_record(snapshot: GitSourceSnapshot) -> dict[str, Any]:
             [entry.as_record() for entry in snapshot.files]
         ),
     }
-
-
-def rust_channel(data: bytes) -> str:
-    try:
-        channel = tomllib.loads(data.decode("utf-8"))["toolchain"]["channel"]
-    except (KeyError, TypeError, UnicodeError, tomllib.TOMLDecodeError) as exc:
-        raise ValueError("release source has no valid Rust toolchain channel") from exc
-    if not isinstance(channel, str) or re.fullmatch(r"\d+\.\d+\.\d+", channel) is None:
-        raise ValueError("native release requires an exact Rust channel")
-    return channel
 
 
 def snapshot_rust_channel(repo_root: Path, snapshot: GitSourceSnapshot) -> str:

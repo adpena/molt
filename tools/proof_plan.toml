@@ -428,7 +428,7 @@ setup_value = "24.16.0"
 setup_evidence = [
   "config/tool_releases.toml::version = \"24.16.0\"",
   ".github/actions/setup-project/action.yml::uses: actions/setup-node@",
-  ".github/workflows/formal.yml::node-version: \"24.16.0\"",
+  ".github/workflows/formal.yml::node-version: pinned",
 ]
 
 [[toolchain_policy]]
@@ -439,10 +439,10 @@ version_args = ["--version", "--verbose"]
 content_path_command = ["rustup", "which", "rustc"]
 linker_process_helpers = { "link.exe" = ["vctip.exe"] }
 linker_build_tools = { "link.exe" = { "cl.exe" = "rust-build-c-compiler", "lib.exe" = "rust-build-archiver" } }
-version_pattern = '^rustc 1\.96\.1\b'
-setup_value = "1.96.1"
+version_pattern = '^rustc 1\.99\.0\b'
+setup_value = "1.99.0"
 setup_evidence = [
-  "rust-toolchain.toml::channel = \"1.96.1\"",
+  "rust-toolchain.toml::channel = \"1.99.0\"",
   ".github/actions/setup-project/action.yml::rustup toolchain install",
   ".github/actions/setup-project/action.yml::steps.inputs.outputs.rust-toolchain",
 ]
@@ -462,10 +462,10 @@ dependencies = ["rustc", "git"]
 fingerprint_domain = "rustup"
 version_args = ["--version"]
 content_path_command = ["rustup", "which", "cargo"]
-version_pattern = '^cargo 1\.96\.1\b'
-setup_value = "1.96.1"
+version_pattern = '^cargo 1\.99\.0\b'
+setup_value = "1.99.0"
 setup_evidence = [
-  "rust-toolchain.toml::channel = \"1.96.1\"",
+  "rust-toolchain.toml::channel = \"1.99.0\"",
   ".github/actions/setup-project/action.yml::rustup toolchain install",
   ".github/actions/setup-project/action.yml::steps.inputs.outputs.rust-toolchain",
 ]
@@ -487,8 +487,8 @@ executable = "rustfmt"
 fingerprint_domain = "rustup"
 version_args = ["--version"]
 content_path_command = ["rustup", "which", "rustfmt"]
-version_pattern = '^rustfmt 1\.9\.0-stable\b'
-setup_value = "1.9.0"
+version_pattern = '^rustfmt 1\.10\.0-stable\b'
+setup_value = "1.10.0"
 setup_evidence = [
   "rust-toolchain.toml::components = [\"rustfmt\", \"clippy\"]",
   ".github/workflows/ci.yml::components: rustfmt, clippy",
@@ -549,10 +549,10 @@ executable = "lean"
 probe_cwd = "formal/lean"
 version_args = ["--version"]
 content_path_command = ["elan", "which", "lean"]
-version_pattern = 'version 4\.28\.0\b'
-setup_value = "4.28.0"
+version_pattern = 'version 4\.34\.1\b'
+setup_value = "4.34.1"
 setup_evidence = [
-  "formal/lean/lean-toolchain::leanprover/lean4:v4.28.0",
+  "formal/lean/lean-toolchain::leanprover/lean4:v4.34.1",
   ".github/actions/setup-lean/action.yml::toolchain install \"$toolchain\"",
   ".github/workflows/formal.yml::uses: ./.github/actions/setup-lean",
 ]
@@ -562,9 +562,9 @@ name = "quint"
 executable = "quint"
 version_args = ["--version"]
 node_package = "@informalsystems/quint"
-version_pattern = '^(?:Quint\s+)?0\.32\.0$'
-setup_value = "0.32.0"
-setup_evidence = [".github/workflows/formal.yml::@informalsystems/quint@0.32.0"]
+version_pattern = '^(?:Quint\s+)?0\.33\.0$'
+setup_value = "0.33.0"
+setup_evidence = [".github/workflows/formal.yml::@informalsystems/quint@0.33.0"]
 
 [[toolchain_policy]]
 name = "cargo-deny"
