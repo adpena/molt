@@ -46,12 +46,13 @@ PYTHON_IMPORT_FINDER_POLICY = (
 )
 
 # Reviewed upstream artifact, not a digest minted from the local environment.
-# https://github.com/astral-sh/uv/blob/0.11.24/crates/uv-virtualenv/src/_virtualenv.py
-# The GitHub tag tree and immutable blob were independently fetched; their bytes
-# matched the uv=0.11.24 pyvenv.cfg environment. New templates require review.
+# https://github.com/astral-sh/uv/blob/0.12.23/crates/uv-virtualenv/src/_virtualenv.py
+# The GitHub tag tree and immutable blob were independently fetched; uv 0.11.24
+# and 0.12.23 ship this same blob, and its bytes matched the pyvenv.cfg
+# environment. New templates require review.
 _UV_BOOTSTRAP_PROVENANCE = {
     "project": "astral-sh/uv",
-    "version": "0.11.24",
+    "version": "0.12.23",
     "path": "crates/uv-virtualenv/src/_virtualenv.py",
     "git_blob_sha1": "c4af24d43878f22da47efa43a3ef7899c6a7c8aa",
     "sha256": "cfb3db86aaa53bb62b5ff764970bec2d71c9228590a0ebec57f6ec926cc0bf1a",

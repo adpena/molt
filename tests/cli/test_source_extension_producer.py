@@ -1386,7 +1386,7 @@ def test_source_build_environment_address_is_worktree_neutral(
             tmp_path / "uv.exe",
             {
                 "executable": "uv.exe",
-                "version": "uv 0.11.24",
+                "version": "uv 0.12.23",
                 "sha256": "d" * 64,
             },
         ),

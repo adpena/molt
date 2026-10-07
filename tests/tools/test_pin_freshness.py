@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import re
 import shutil
 import tarfile
 from pathlib import Path
@@ -263,8 +264,13 @@ def test_update_moves_the_manifest_and_its_plan_policy(tmp_path) -> None:
         if old != new
     ]
     assert changed and all(
-        old.replace(release.version, "9.9.9") == new for old, new in changed
+        old.replace(release.version, "9.9.9").replace(
+            re.escape(release.version), re.escape("9.9.9")
+        )
+        == new
+        for old, new in changed
     )
+    assert any(re.escape("9.9.9") in line for _, line in changed)
     manifest_after = (root / tool_releases.TOOL_RELEASES_PATH).read_text(
         encoding="utf-8"
     )

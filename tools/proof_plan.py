@@ -781,6 +781,17 @@ class ProofPlan:
                     re.compile(pattern)
                 except re.error as exc:
                     errors.append(f"{policy.name}: invalid version pattern: {exc}")
+                setup_value = policy.data.get("setup_value")
+                # An exact pin and the identity pattern move together.
+                if (
+                    isinstance(setup_value, str)
+                    and re.fullmatch(r"\d+(?:\.\d+)+", setup_value)
+                    and re.escape(setup_value) not in pattern
+                ):
+                    errors.append(
+                        f"{policy.name}: version_pattern {pattern!r} does not "
+                        f"pin setup_value {setup_value!r}"
+                    )
             evidence = policy.data.get("setup_evidence")
             if not isinstance(evidence, list) or not evidence:
                 errors.append(f"{policy.name}: setup_evidence must be non-empty")

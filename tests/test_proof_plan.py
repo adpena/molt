@@ -3223,6 +3223,20 @@ def test_plan_rejects_tiers_outside_the_vocabulary() -> None:
     ) in errors
 
 
+def test_exact_pins_and_their_identity_patterns_move_together() -> None:
+    policies = tuple(
+        replace(policy, data={**policy.data, "setup_value": "99.0.0"})
+        if policy.name == "node"
+        else policy
+        for policy in PLAN.toolchain_policies
+    )
+    errors = replace(PLAN, toolchain_policies=policies).validate()
+    assert any(
+        error.startswith("node: version_pattern") and "'99.0.0'" in error
+        for error in errors
+    ), errors
+
+
 def test_plan_rejects_a_family_tier_that_gates_no_command() -> None:
     families = tuple(
         replace(family, data={**family.data, "tiers": ["pre-push", "pr", "main"]})

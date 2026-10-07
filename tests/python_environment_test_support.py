@@ -412,7 +412,7 @@ def build_environment_manifest(
         "python_runtime": runtime,
         "uv": {
             "executable": "uv.exe",
-            "version": "uv 0.11.24",
+            "version": "uv 0.12.23",
             "sha256": "d" * 64,
         },
     }
