@@ -48,13 +48,17 @@ def mock_symbol_reader_admission(monkeypatch, facts_cache: Path) -> Iterator[Non
 
     def reader_family(executable: str) -> str:
         path = Path(executable)
-        if path.is_file() and path.resolve() != identity.path:
-            family, _banner = native_symbol_inspection._cached_nm_reader_family(
-                str(path), stable_regular_file_identity(path, label="nm").sha256
-            )
-            if family is not None:
-                return family
-        return "llvm"
+        if not path.is_file():
+            return "llvm"
+        # Probe the resolved entrypoint, as reader admission does: hosts install
+        # nm behind a symlink (Ubuntu's /usr/bin/nm -> <triple>-nm).
+        entrypoint = path.resolve(strict=True)
+        if entrypoint == identity.path:
+            return "llvm"
+        family, _banner = native_symbol_inspection._cached_nm_reader_family(
+            str(entrypoint), stable_regular_file_identity(entrypoint, label="nm").sha256
+        )
+        return "llvm" if family is None else family
 
     @contextmanager
     def admitted_reader(path, *, label, identity=None):
