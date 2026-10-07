@@ -69,7 +69,7 @@ jobs:
       - name: Setup performance gate toolchains
         uses: ./.github/actions/setup-project
         with:
-          rust-toolchain: "1.96.1"
+          rust-toolchain: pinned
           cache-cargo: "true"
           cache-namespace: perf-${{ matrix.backend }}
           sync: "true"

@@ -1,7 +1,8 @@
 /-
   MoltTIR.Runtime.NanBoxBV — DRAFT: NanBox sorry closures via bv_decide
 
-  Lean toolchain upgraded to 4.28.0 — bv_decide now available with UInt64 support.
+  The pinned Lean toolchain (formal/lean/lean-toolchain) provides bv_decide
+  with UInt64 support.
 
   This file shows how the 2 remaining sorry obligations
   in NanBoxCorrect.lean can be closed using the `bv_decide` tactic, which
@@ -153,7 +154,7 @@ theorem fused_xor_unbox (n : Int) (h : intFitsInline n) :
         · simp [hi]
       exact UInt64.eq_of_toBitVec_eq (BitVec.eq_of_toNat_eq h_toNat_eq)
     -- The if-branch goes to the else (sign bit clear)
-    rw [if_neg (by rw [h_sign_clear]; simp)]
+    rw [ite_eq_right (by rw [h_sign_clear]; simp)]
     rw [hraw_nat]; omega
   · -- ── Case n < 0 ──
     have hn_neg : n < 0 := by omega
@@ -183,7 +184,7 @@ theorem fused_xor_unbox (n : Int) (h : intFitsInline n) :
       rw [h_nat] at hcontra
       exact absurd hcontra (by simp [Nat.zero_testBit])
     -- The if-branch goes to the then (sign bit set)
-    rw [if_pos h_sign_set, hraw_nat, hraw_val]
+    rw [ite_eq_left h_sign_set, hraw_nat, hraw_val]
     omega
 
 -- ══════════════════════════════════════════════════════════════════

@@ -9,13 +9,15 @@ inputs:
     description: Install exact uv
     default: "true"
   node-version:
-    description: Optional exact Node version
+    description: Optional Node; "pinned" installs the config/tool_releases.toml version
     default: ""
   node-cache-dependency-path:
     description: Optional npm lockfile path
     default: ""
   rust-toolchain:
-    description: Optional exact Rust toolchain
+    description: >-
+      Optional Rust; "pinned" installs the rust-toolchain.toml channel and
+      "sanitizer-nightly" the config/rust_nightly_toolchain.txt nightly
     default: ""
   rust-components:
     description: Optional Rust components
@@ -55,6 +57,9 @@ outputs:
   rust-toolchain:
     description: Exact normalized Rust toolchain selected by this setup
     value: ${{ steps.inputs.outputs.rust-toolchain }}
+  node-version:
+    description: Exact Node version selected by this setup
+    value: ${{ steps.inputs.outputs.node-version }}
 
 runs:
   using: composite
@@ -71,6 +76,8 @@ runs:
         INPUT_CACHE_NAMESPACE: ${{ inputs.cache-namespace }}
         INPUT_ACTIONLINT: ${{ inputs.actionlint }}
         INPUT_RUST_TOOLCHAIN: ${{ inputs.rust-toolchain }}
+        INPUT_NODE_VERSION: ${{ inputs.node-version }}
+        INPUT_NODE_CACHE_DEPENDENCY_PATH: ${{ inputs.node-cache-dependency-path }}
         INPUT_RUST_COMPONENTS: ${{ inputs.rust-components }}
         INPUT_RUST_TARGETS: ${{ inputs.rust-targets }}
         INPUT_SYNC: ${{ inputs.sync }}
@@ -92,18 +99,18 @@ runs:
         version: "0.11.24"
 
     - name: Install exact Node with npm cache
-      if: inputs.node-version != '' && inputs.node-cache-dependency-path != ''
+      if: steps.inputs.outputs.node-version != '' && inputs.node-cache-dependency-path != ''
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
-        node-version: ${{ inputs.node-version }}
+        node-version: ${{ steps.inputs.outputs.node-version }}
         cache: npm
         cache-dependency-path: ${{ inputs.node-cache-dependency-path }}
 
     - name: Install exact Node
-      if: inputs.node-version != '' && inputs.node-cache-dependency-path == ''
+      if: steps.inputs.outputs.node-version != '' && inputs.node-cache-dependency-path == ''
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
-        node-version: ${{ inputs.node-version }}
+        node-version: ${{ steps.inputs.outputs.node-version }}
 
     - name: Install exact Rust
       if: steps.inputs.outputs.rust-toolchain != ''

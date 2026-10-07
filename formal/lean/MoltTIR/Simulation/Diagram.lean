@@ -322,7 +322,7 @@ structure FuncSimulationWT (g : Func → Func) where
   preserves_total : ∀ (f : Func), InstrTotal f → InstrTotal (g f)
 
 /-- FuncSimulation implies FuncSimulationWT (stronger implies weaker). -/
-def FuncSimulation.toWT {g : Func → Func} (sim : FuncSimulation g)
+theorem FuncSimulation.toWT {g : Func → Func} (sim : FuncSimulation g)
     (hpres : ∀ f, InstrTotal f → InstrTotal (g f)) :
     FuncSimulationWT g where
   simulation := fun f _ => sim.simulation f
@@ -350,7 +350,7 @@ theorem FuncSimulationWT.toBehavioralEquiv {g : Func → Func}
 
 /-- Compose a FuncSimulation with a FuncSimulationWT. The first pass
     doesn't need well-typedness; the second does. -/
-def composeFuncSimWT
+theorem composeFuncSimWT
     {g1 g2 : Func → Func}
     (sim1 : FuncSimulation g1)
     (sim2 : FuncSimulationWT g2)

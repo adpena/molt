@@ -12,9 +12,9 @@
   - No Mathlib dependency; self-contained.
 
   Axiom census: 60 axioms -> 14 axioms -> 0 axioms remaining
-  (all 14 former axioms converted to theorems; 1 sorry remains for
-   set_idempotent which needs List.nodup_eraseDups / List.eraseDups_of_nodup
-   not yet in Lean 4.28.0 stdlib).
+  (all 14 former axioms converted to theorems; set_idempotent is proven
+   with the local `eraseDups_idem` lemma because the Lean stdlib of the
+   pinned toolchain has no List.nodup_eraseDups / List.eraseDups_of_nodup).
 -/
 import MoltTIR.Syntax
 import Init.Data.List.Sort.Lemmas
@@ -310,7 +310,7 @@ theorem abs_float_nonneg : ∀ (f : Int), 0 ≤ intrinsic_abs_float f := by
 /-- `min(a, b)` returns a when a ≤ b. -/
 theorem min_left : ∀ (a b : Int), a ≤ b → intrinsic_min a b = a := by
   intro a b hab
-  simp only [intrinsic_min, if_pos hab]
+  simp only [intrinsic_min, ite_eq_left hab]
 
 /-- `min(a, b)` returns b when b < a. -/
 theorem min_right : ∀ (a b : Int), b < a → intrinsic_min a b = b := by
@@ -331,7 +331,7 @@ theorem max_right : ∀ (a b : Int), a ≤ b → intrinsic_max a b = b := by
 /-- `max(a, b)` returns a when b < a. -/
 theorem max_left : ∀ (a b : Int), b < a → intrinsic_max a b = a := by
   intro a b hba
-  simp only [intrinsic_max, if_pos hba]
+  simp only [intrinsic_max, ite_eq_left hba]
 
 /-- `min(a, b) ≤ max(a, b)` always holds. -/
 theorem min_le_max : ∀ (a b : Int), intrinsic_min a b ≤ intrinsic_max a b := by
@@ -533,7 +533,7 @@ theorem range_length_nonneg : ∀ (n : Int), 0 ≤ n →
   have h : ¬ (n ≤ 0) ∨ n = 0 := by omega
   cases h with
   | inl h =>
-    rw [if_neg h]
+    rw [ite_eq_right h]
     simp [List.length_map, List.length_range]
   | inr h =>
     subst h
@@ -543,7 +543,7 @@ theorem range_length_nonneg : ∀ (n : Int), 0 ≤ n →
 theorem range_length_nonpos : ∀ (n : Int), n ≤ 0 →
     (intrinsic_range n).length = 0 := by
   intro n hn
-  simp only [intrinsic_range, if_pos hn, List.length_nil]
+  simp only [intrinsic_range, ite_eq_left hn, List.length_nil]
 
 -- set -------------------------------------------------------------
 

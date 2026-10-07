@@ -31,7 +31,7 @@ def build_native_executable(path: Path, rust_source: str) -> Path:
     source = path.with_name(f"{path.name}.rs")
     source.write_text(rust_source, encoding="utf-8")
     run_guarded_test_process(
-        ["rustc", "--edition=2021", "-C", "opt-level=0", "-o", str(path), str(source)],
+        ["rustc", "--edition=2024", "-C", "opt-level=0", "-o", str(path), str(source)],
         cwd=path.parent,
         check=True,
     )

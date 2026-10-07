@@ -9,11 +9,11 @@ The MSVC target requires the Windows SDK + MSVC headers, which Apple machines do
 ## Build natively on Windows
 
 ```powershell
-# On Windows with Visual Studio Build Tools 2022 + Rust:
-rustup toolchain install 1.96.1-x86_64-pc-windows-msvc --profile minimal --component rustfmt --component clippy
-rustup default 1.96.1-x86_64-pc-windows-msvc
+# On Windows with Visual Studio Build Tools 2022 + rustup:
 git clone <your-fork>
 cd molt
+# Installs the channel, components and targets pinned in rust-toolchain.toml.
+rustup toolchain install
 cargo build --profile release-fast -p molt-backend --features native-backend
 
 # Verify

@@ -25,10 +25,15 @@ if str(SRC) not in sys.path:
 
 from molt.cargo_execution_policy import cargo_subprocess_environment  # noqa: E402
 from molt.cargo_workspace import workspace_member_manifests  # noqa: E402
+from molt.rust_toolchain import rust_channel  # noqa: E402
 
 RUST_EDITION = "2024"
-RUST_VERSION = "1.96.1"
+# rust-toolchain.toml is the one Rust version authority; every other pin
+# (Cargo rust-version, CI setup, the proof plan's preflight) is checked
+# against it here.
+RUST_VERSION = rust_channel((ROOT / "rust-toolchain.toml").read_bytes())
 RUST_TARGETS = ["wasm32-wasip1"]
+WORKFLOW_RUST_TOOLCHAIN_ROLES = frozenset({"pinned", "sanitizer-nightly"})
 RUST_NIGHTLY_CONFIG = Path("config/rust_nightly_toolchain.txt")
 VENDOR_PREFIX = "vendor/"
 SELF_EXCLUDES = {
@@ -91,6 +96,24 @@ def _is_vendor(path: Path) -> bool:
     return path.as_posix().startswith(VENDOR_PREFIX)
 
 
+def workflow_rust_toolchain_errors(workflow: Path, text: str) -> list[str]:
+    """Workflows name a toolchain role, never a version.
+
+    setup-project resolves each role from its one authority file, so a Rust
+    bump never edits a workflow.
+    """
+    errors: list[str] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        match = re.match(r"\s*rust-toolchain:\s*(\S+)", line)
+        if match and match[1] not in WORKFLOW_RUST_TOOLCHAIN_ROLES:
+            errors.append(
+                f"{workflow}:{line_number}: rust-toolchain must name a role "
+                f"({', '.join(sorted(WORKFLOW_RUST_TOOLCHAIN_ROLES))}), "
+                f"got {match[1]!r}"
+            )
+    return errors
+
+
 def check_repository_contract() -> CheckReport:
     errors: list[str] = []
 
@@ -101,10 +124,6 @@ def check_repository_contract() -> CheckReport:
         )
 
     toolchain = _read_toml(Path("rust-toolchain.toml")).get("toolchain", {})
-    if toolchain.get("channel") != RUST_VERSION:
-        errors.append(
-            f"rust-toolchain.toml channel must be {RUST_VERSION}, got {toolchain.get('channel')!r}"
-        )
     if toolchain.get("components") != ["rustfmt", "clippy"]:
         errors.append("rust-toolchain.toml components must be ['rustfmt', 'clippy']")
     if toolchain.get("targets") != RUST_TARGETS:
@@ -158,6 +177,13 @@ def check_repository_contract() -> CheckReport:
         for fragment in BAD_FRAGMENTS:
             if fragment in text:
                 errors.append(f"{path}: stale Rust toolchain fragment {fragment!r}")
+
+    for workflow in _git_files(".github/workflows/*.yml"):
+        errors.extend(
+            workflow_rust_toolchain_errors(
+                workflow, (ROOT / workflow).read_text(encoding="utf-8")
+            )
+        )
 
     sanitizer = (ROOT / ".github/workflows/sanitizers.yml").read_text(encoding="utf-8")
     setup_project = (

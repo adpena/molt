@@ -2,7 +2,7 @@
 name = "molt-proof-supervisor"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.96.1"
+rust-version = "1.99.0"
 publish = false
 
 # This is a bootstrap/developer tool, deliberately isolated from Molt's runtime

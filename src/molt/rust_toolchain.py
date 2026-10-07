@@ -1,6 +1,6 @@
 """Rust-owned host tool lookup for compiler-selected linker commands.
 
-Rust 1.96 Session::get_tools_search_paths uses each selected sysroot's
+Rust 1.99 Session::get_tools_search_paths uses each selected sysroot's
 lib/rustlib/<compiler host>/bin, not the compilation target's bin directory.
 Keep this lookup separate from PATH discovery and preserve its provenance.
 """
@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
+import tomllib
 from typing import Mapping, Sequence
 
 from molt import process_guard
@@ -20,6 +21,23 @@ from molt.toolchain_identity import (
     resolve_executable,
     stable_executable_probe,
 )
+
+
+def rust_channel(data: bytes) -> str:
+    """Return the exact ``X.Y.Z`` channel a ``rust-toolchain.toml`` pins.
+
+    The repository's ``rust-toolchain.toml`` is the one Rust version authority;
+    CI setup, the toolchain contract check and release builds all read it here.
+    """
+    try:
+        channel = tomllib.loads(data.decode("utf-8"))["toolchain"]["channel"]
+    except (KeyError, TypeError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError("rust-toolchain.toml has no [toolchain] channel") from exc
+    if not isinstance(channel, str) or re.fullmatch(r"\d+\.\d+\.\d+", channel) is None:
+        raise ValueError(
+            f"rust-toolchain.toml must pin an exact X.Y.Z channel, got {channel!r}"
+        )
+    return channel
 
 
 class RustupProxyUnavailable(ValueError):

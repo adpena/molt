@@ -72,8 +72,8 @@ jobs:
       - name: Setup verified-subset build toolchains
         uses: ./.github/actions/setup-project
         with:
-          node-version: ${{ matrix.backend == 'wasm' && '24.16.0' || '' }}
-          rust-toolchain: "1.96.1"
+          node-version: ${{ matrix.backend == 'wasm' && 'pinned' || '' }}
+          rust-toolchain: pinned
           rust-targets: ${{ matrix.backend == 'wasm' && 'wasm32-wasip1' || '' }}
           cache-cargo: "true"
           cache-namespace: verified-subset-${{ matrix.backend }}

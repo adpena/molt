@@ -101,19 +101,19 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `source-extension` | `target-derived` | `source-extension` | `^molt-source-extension-toolchain-v2$` | — | — | — |
 | `uv` | `executable` | — | `^uv 0\.11\.24\b` | `.` | `0.11.24` | 1 |
 | `node` | `executable` | — | `^v24\.16\.0$` | `.` | `24.16.0` | 3 |
-| `rustc` | `executable` | — | `^rustc 1\.96\.1\b` | `.` | `1.96.1` | 3 |
+| `rustc` | `executable` | — | `^rustc 1\.99\.0\b` | `.` | `1.99.0` | 3 |
 | `lune` | `executable` | — | `^lune 0\.10\.5$` | `.` | `0.10.5` | 2 |
-| `cargo` | `executable` | — | `^cargo 1\.96\.1\b` | `.` | `1.96.1` | 3 |
+| `cargo` | `executable` | — | `^cargo 1\.99\.0\b` | `.` | `1.99.0` | 3 |
 | `git` | `executable` | — | `^git version 2\.` | `.` | `2.x` | 1 |
-| `rustfmt` | `executable` | — | `^rustfmt 1\.9\.0-stable\b` | `.` | `1.9.0` | 3 |
+| `rustfmt` | `executable` | — | `^rustfmt 1\.10\.0-stable\b` | `.` | `1.10.0` | 3 |
 | `clang` | `executable` | — | `clang version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `llvm-config` | `executable` | — | `^22\.1\.8$` | `.` | `22.1.8` | 1 |
 | `mlir-opt` | `executable` | — | `version 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `ld.lld` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `ld64.lld` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
 | `lld-link` | `executable` | — | `\bLLD 22\.1\.8\b` | `.` | `22.1.8` | 1 |
-| `lean` | `executable` | — | `version 4\.28\.0\b` | `formal/lean` | `4.28.0` | 3 |
-| `quint` | `executable` | — | `^(?:Quint\s+)?0\.32\.0$` | `.` | `0.32.0` | 1 |
+| `lean` | `executable` | — | `version 4\.34\.1\b` | `formal/lean` | `4.34.1` | 3 |
+| `quint` | `executable` | — | `^(?:Quint\s+)?0\.33\.0$` | `.` | `0.33.0` | 1 |
 | `cargo-deny` | `executable` | — | `^cargo-deny 0\.20\.2\b` | `.` | `0.20.2` | 1 |
 | `cargo-audit` | `executable` | — | `^cargo-audit 0\.22\.2\b` | `.` | `0.22.2` | 1 |
 | `llvm-ar` | `executable` | — | `LLVM version 22\.1\.8\b` | `.` | `22.1.8` | 1 |

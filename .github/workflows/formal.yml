@@ -9,10 +9,10 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  MOLT_QUINT_NPM_PACKAGE: "@informalsystems/quint@0.32.0"
-  MOLT_QUINT_RUST_EVALUATOR_VERSION: "v0.6.0"
+  MOLT_QUINT_NPM_PACKAGE: "@informalsystems/quint@0.33.0"
+  MOLT_QUINT_RUST_EVALUATOR_VERSION: "v0.7.0"
   MOLT_QUINT_RUST_EVALUATOR_ASSET: "quint_evaluator-x86_64-unknown-linux-gnu.tar.gz"
-  MOLT_QUINT_RUST_EVALUATOR_SHA256: "61755a09d5052d93a4e75e840059edfd0d3674aeda164b9d2464be3d6e21b1c2"
+  MOLT_QUINT_RUST_EVALUATOR_SHA256: "869adb8762a518483eb39f67fde622253a58527494e15afe77d610a0b6dab7d2"
 
 jobs:
   formal-lean:
@@ -59,7 +59,7 @@ jobs:
         with:
           uv: "false"
           cache-uv: "false"
-          node-version: "24.16.0"
+          node-version: pinned
 
       - name: Install Quint
         run: npm install -g "$MOLT_QUINT_NPM_PACKAGE"

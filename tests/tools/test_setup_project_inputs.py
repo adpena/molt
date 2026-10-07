@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import tomllib
+
+from molt import tool_releases
 
 from tests.process_guard_common import run_guarded_test_process
 
@@ -18,10 +21,12 @@ BASH = (
 )
 
 
-def _normalize(
+def _run_normalizer(
     tmp_path: Path,
     *,
     toolchain: str,
+    node_version: str = "",
+    node_cache_dependency_path: str = "",
     components: str = "",
     targets: str = "",
     namespace: str = "project",
@@ -43,6 +48,8 @@ def _normalize(
         "INPUT_CACHE_NAMESPACE": namespace,
         "INPUT_ACTIONLINT": "false",
         "INPUT_RUST_TOOLCHAIN": toolchain,
+        "INPUT_NODE_VERSION": node_version,
+        "INPUT_NODE_CACHE_DEPENDENCY_PATH": node_cache_dependency_path,
         "INPUT_RUST_COMPONENTS": components,
         "INPUT_RUST_TARGETS": targets,
         "INPUT_SYNC": sync,
@@ -60,21 +67,38 @@ def _normalize(
         capture_output=True,
         check=False,
     )
-    assert completed.returncode == 0, completed.stderr
-    return dict(
-        line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines()
+    outputs = (
+        dict(
+            line.split("=", 1)
+            for line in output.read_text(encoding="utf-8").splitlines()
+        )
+        if output.is_file()
+        else {}
     )
+    return completed.returncode, completed.stderr, outputs
+
+
+def _normalize(tmp_path: Path, **inputs: str) -> dict[str, str]:
+    returncode, stderr, outputs = _run_normalizer(tmp_path, **inputs)
+    assert returncode == 0, stderr
+    return outputs
+
+
+def _pinned_rust_channel() -> str:
+    return tomllib.loads((ROOT / "rust-toolchain.toml").read_text(encoding="utf-8"))[
+        "toolchain"
+    ]["channel"]
 
 
 def test_stable_lists_are_sorted_deduplicated_and_cache_safe(tmp_path: Path) -> None:
     normalized = _normalize(
         tmp_path,
-        toolchain="1.96.1",
+        toolchain="pinned",
         components="rustfmt, clippy, rustfmt",
         targets="wasm32-wasip1, aarch64-unknown-linux-gnu",
     )
 
-    assert normalized["rust-toolchain"] == "1.96.1"
+    assert normalized["rust-toolchain"] == _pinned_rust_channel()
     assert normalized["rust-components"] == "clippy,rustfmt"
     assert normalized["rust-targets"] == "aarch64-unknown-linux-gnu,wasm32-wasip1"
     assert len(normalized["rust-cache-token"]) == 40
@@ -102,13 +126,13 @@ def test_nightly_components_select_nightly_identity(tmp_path: Path) -> None:
 def test_list_order_and_whitespace_do_not_change_cache_identity(tmp_path: Path) -> None:
     first = _normalize(
         tmp_path / "first",
-        toolchain="1.96.1",
+        toolchain="pinned",
         components="rustfmt, clippy",
         targets="wasm32-wasip1,aarch64-unknown-linux-gnu",
     )
     second = _normalize(
         tmp_path / "second",
-        toolchain="1.96.1",
+        toolchain="pinned",
         components=" clippy ,rustfmt ",
         targets="aarch64-unknown-linux-gnu, wasm32-wasip1",
     )
@@ -119,9 +143,9 @@ def test_list_order_and_whitespace_do_not_change_cache_identity(tmp_path: Path) 
 def test_cache_identity_separates_jobs(tmp_path: Path) -> None:
     # Jobs build different crate sets into different target directories; a
     # shared key would let one job's cache shadow every other job's.
-    first = _normalize(tmp_path / "first", toolchain="1.96.1", job="rust-build")
-    second = _normalize(tmp_path / "second", toolchain="1.96.1", job="llvm-backend")
-    again = _normalize(tmp_path / "again", toolchain="1.96.1", job="rust-build")
+    first = _normalize(tmp_path / "first", toolchain="pinned", job="rust-build")
+    second = _normalize(tmp_path / "second", toolchain="pinned", job="llvm-backend")
+    again = _normalize(tmp_path / "again", toolchain="pinned", job="rust-build")
 
     assert first["rust-cache-token"] != second["rust-cache-token"]
     assert first["rust-cache-token"] == again["rust-cache-token"]
@@ -140,7 +164,7 @@ def test_control_characters_and_empty_atoms_fail_closed(tmp_path: Path) -> None:
             "INPUT_CACHE_LEAN": "false",
             "INPUT_CACHE_NAMESPACE": "project",
             "INPUT_ACTIONLINT": "false",
-            "INPUT_RUST_TOOLCHAIN": "1.96.1",
+            "INPUT_RUST_TOOLCHAIN": "pinned",
             "INPUT_RUST_COMPONENTS": components,
             "INPUT_RUST_TARGETS": "wasm32-wasip1",
             "INPUT_SYNC": "false",
@@ -240,3 +264,33 @@ def test_shell_metacharacters_never_execute_before_validation(tmp_path: Path) ->
     assert completed.returncode == 2
     assert not marker.exists()
     assert not output.exists()
+
+
+def test_pinned_roles_resolve_from_their_one_authority(tmp_path: Path) -> None:
+    normalized = _normalize(tmp_path, toolchain="pinned", node_version="pinned")
+
+    assert normalized["rust-toolchain"] == _pinned_rust_channel()
+    assert normalized["node-version"] == tool_releases.tool_release("node").version
+
+
+def test_literal_versions_fail_closed(tmp_path: Path) -> None:
+    channel = _pinned_rust_channel()
+    node = tool_releases.tool_release("node").version
+    for name, inputs, message in (
+        ("rust", {"toolchain": channel}, "rust-toolchain must be 'pinned'"),
+        ("stable", {"toolchain": "stable"}, "rust-toolchain must be 'pinned'"),
+        (
+            "node",
+            {"toolchain": "", "node_version": node},
+            "node-version must be 'pinned'",
+        ),
+        (
+            "cache",
+            {"toolchain": "", "node_cache_dependency_path": "package-lock.json"},
+            "node-cache-dependency-path requires node-version",
+        ),
+    ):
+        returncode, stderr, outputs = _run_normalizer(tmp_path / name, **inputs)
+        assert returncode == 2, (name, stderr)
+        assert message in stderr, (name, stderr)
+        assert outputs == {}, name

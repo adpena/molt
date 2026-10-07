@@ -29,6 +29,11 @@ from tools.proof_queue_pkg import evidence as proof_queue_evidence
 
 
 PLAN = proof_plan.ProofPlan.load()
+_LEAN_PIN = next(
+    policy.data["setup_value"]
+    for policy in PLAN.toolchain_policies
+    if policy.name == "lean"
+)
 
 
 def test_execution_authority_covers_its_transitive_python_imports() -> None:
@@ -1306,7 +1311,7 @@ def test_lean_toolchain_probe_cwd_is_project_authority() -> None:
     lean = next(policy for policy in PLAN.toolchain_policies if policy.name == "lean")
     assert lean.data["probe_cwd"] == "formal/lean"
     assert lean.data["setup_evidence"] == [
-        "formal/lean/lean-toolchain::leanprover/lean4:v4.28.0",
+        f"formal/lean/lean-toolchain::leanprover/lean4:v{lean.data['setup_value']}",
         '.github/actions/setup-lean/action.yml::toolchain install "$toolchain"',
         ".github/workflows/formal.yml::uses: ./.github/actions/setup-lean",
     ]
@@ -1397,7 +1402,7 @@ def test_toolchain_content_and_version_probes_share_declared_cwd(monkeypatch) ->
         output = (
             "lean-toolchain\n"
             if command == ("probe-content",)
-            else "Lean (version 4.28.0)\n"
+            else f"Lean (version {_LEAN_PIN})\n"
         )
         return proof_plan.subprocess.CompletedProcess(argv, 0, output)
 
@@ -1740,24 +1745,29 @@ def test_portability_streams_node_outcomes_before_possible_timeout() -> None:
 def _receipt_for(
     command: proof_plan.ProofCommand, evidence_root: Path | None = None
 ) -> dict[str, Any]:
-    versions = {
-        "python": "Python 3.12.13",
-        "uv": "uv 0.11.24",
-        "node": "v24.16.0",
-        "rustc": "rustc 1.96.1",
-        "cargo": "cargo 1.96.1",
-        "git": "git version 2.53.0",
-        "lune": "lune 0.10.5",
-        "clang": "clang version 22.1.8",
-        "llvm-config": "22.1.8",
-        "mlir-opt": "LLVM version 22.1.8",
-        "lld": "LLD 22.1.8",
-        "lean": "Lean (version 4.28.0)",
-        "quint": "0.32.0",
-        "cargo-deny": "cargo-deny 0.20.2",
-        "cargo-audit": "cargo-audit 0.22.2",
-    }
     policies = {policy.name: policy for policy in PLAN.toolchain_policies}
+    # Each tool's --version spelling around the plan's pinned setup value, so
+    # the fixture tracks every pin bump without a second copy of the versions.
+    spellings = {
+        "python": "Python {}.0",
+        "uv": "uv {}",
+        "node": "v{}",
+        "rustc": "rustc {}",
+        "cargo": "cargo {}",
+        "lune": "lune {}",
+        "clang": "clang version {}",
+        "llvm-config": "{}",
+        "mlir-opt": "LLVM version {}",
+        "lean": "Lean (version {})",
+        "quint": "{}",
+        "cargo-deny": "cargo-deny {}",
+        "cargo-audit": "cargo-audit {}",
+    }
+    versions = {
+        name: spelling.format(policies[name].data["setup_value"])
+        for name, spelling in spellings.items()
+    }
+    versions["git"] = "git version 2.53.0"
     toolchains: dict[str, dict[str, str]] = {}
     for name in PLAN.required_toolchains(command):
         path = f"/toolchain/{name}"
@@ -2101,7 +2111,7 @@ def test_toolchain_fingerprint_domains_serialize_shared_provisioners(
             "launcher_path": f"/toolchain/{policy.name}",
             "launcher_sha256": "0" * 64,
             "content_path": f"/toolchain/{policy.name}",
-            "version": f"{policy.name} 1.96.1",
+            "version": f"{policy.name} {policy.data['setup_value']}",
             "version_pattern": str(policy.data["version_pattern"]),
             "probe_cwd": str(policy.data.get("probe_cwd", ".")),
             "executable_sha256": "0" * 64,
@@ -2187,7 +2197,7 @@ def test_provisioned_lean_fingerprint_admits_formal_build_receipt(
         return {
             name: {
                 "identity_sha256": "0" * 64,
-                "version": "Lean (version 4.28.0)"
+                "version": f"Lean (version {_LEAN_PIN})"
                 if name == "lean"
                 else f"{name} synthetic",
             }

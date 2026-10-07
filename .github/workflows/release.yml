@@ -163,10 +163,11 @@ jobs:
           ref: ${{ needs.plan.outputs.source_sha }}
 
       - name: Setup exact candidate toolchains
+        id: toolchains
         uses: ./.github/actions/setup-project
         with:
-          node-version: "24.16.0"
-          rust-toolchain: "1.96.1"
+          node-version: pinned
+          rust-toolchain: pinned
           rust-targets: wasm32-wasip1
           cache-cargo: "true"
           cache-namespace: release-${{ matrix.id }}
@@ -181,9 +182,11 @@ jobs:
 
       - name: Verify candidate toolchain identity
         shell: bash
+        env:
+          RUST_TOOLCHAIN: ${{ steps.toolchains.outputs.rust-toolchain }}
         run: |
-          rustc --version --verbose | grep -F 'release: 1.96.1'
-          cargo --version | grep -F 'cargo 1.96.1'
+          rustc --version --verbose | grep -Fx "release: $RUST_TOOLCHAIN"
+          cargo --version | grep -F "cargo $RUST_TOOLCHAIN "
           clang --version
           "$MOLT_WASM_LD" --version
           "$MOLT_LLVM_NM" --version
