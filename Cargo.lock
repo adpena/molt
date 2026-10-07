@@ -3194,6 +3194,7 @@ version = "0.1.0"
 name = "molt-runtime-core"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
  "molt-lang-obj-model",
  "num-bigint 0.4.8",
  "num-traits",
