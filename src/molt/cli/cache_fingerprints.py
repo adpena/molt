@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 import pathlib
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -298,7 +298,7 @@ _SOURCE_TREE_FINGERPRINT_TRANSACTION: ContextVar[
 
 
 @contextmanager
-def _source_tree_fingerprint_transaction() -> Iterator[None]:
+def _source_tree_fingerprint_transaction() -> Generator[None]:
     """Share immutable tooling snapshots within one frontend operation.
 
     Build and shared run/deploy wrappers own the outer transaction. Graph,
@@ -325,7 +325,7 @@ def _source_tree_fingerprint_transaction() -> Iterator[None]:
 
 
 @contextmanager
-def _fresh_compiler_identity_inputs() -> Iterator[None]:
+def _fresh_compiler_identity_inputs() -> Generator[None]:
     """Force live publication checks without reusing operation snapshots."""
     transaction_token = _SOURCE_TREE_FINGERPRINT_TRANSACTION.set(
         _SourceTreeFingerprintTransaction()

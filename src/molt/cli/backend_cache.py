@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import time
 from dataclasses import dataclass
-from typing import Any, Collection, Iterator, Mapping, Sequence, cast
+from typing import Any, Collection, Generator, Mapping, Sequence, cast
 import uuid
 
 from molt.backend_environment import compilation_diagnostics_requested
@@ -862,7 +862,7 @@ def _temporary_backend_output_path(
     artifacts_root: Path,
     *,
     artifact_contract: BackendArtifactContract,
-) -> Iterator[Path]:
+) -> Generator[Path]:
     suffix = artifact_contract.suffix
     artifacts_root.mkdir(parents=True, exist_ok=True)
     path = artifacts_root / f"backend_{os.getpid()}_{uuid.uuid4().hex}{suffix}"
@@ -1050,7 +1050,7 @@ def _shared_stdlib_manifest(
 
 
 @contextmanager
-def _shared_stdlib_cache_lock(stdlib_object_path: Path) -> Iterator[None]:
+def _shared_stdlib_cache_lock(stdlib_object_path: Path) -> Generator[None]:
     lock_path = _shared_stdlib_publish_lock_path(stdlib_object_path)
     handle = _acquire_file_lock(
         lock_path,

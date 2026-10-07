@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 import json
@@ -143,7 +143,7 @@ def cython_execution(
     pyproject: Mapping[str, Any],
     working_directory: Path,
     inventory: SourceBuildInventory | None = None,
-) -> Iterator[CythonTool]:
+) -> Generator[CythonTool]:
     """Fence the installed generator once across a complete regeneration plan.
 
     Runtime/site startup remains under the owning environment contract. This

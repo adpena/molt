@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Sequence, cast
 
@@ -120,7 +120,7 @@ def unique_result_definitions(ops: Sequence[MoltOp]) -> dict[str, MoltOp]:
 @contextmanager
 def current_unique_result_definitions(
     generator: _GeneratorProtocol, ops: Sequence[MoltOp]
-) -> Iterator[dict[str, MoltOp]]:
+) -> Generator[dict[str, MoltOp]]:
     """Scope flow-insensitive provenance; never borrow the emitter's old index."""
     definitions = unique_result_definitions(ops)
     previous_definitions = generator._op_by_result

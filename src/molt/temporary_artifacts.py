@@ -7,7 +7,7 @@ Owner/terminal records and the OS lock live outside the deletable target.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -118,7 +118,7 @@ def _target(generation: Path, owner: Mapping[str, object]) -> Path:
 
 
 @contextmanager
-def _locked(generation: Path) -> Iterator[None]:
+def _locked(generation: Path) -> Generator[None]:
     resolve_owned_path(generation)
     _identity(generation)
     handle = _try_acquire_file_lock(resolve_owned_path(generation / "lock"))

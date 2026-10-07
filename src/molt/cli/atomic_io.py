@@ -8,7 +8,7 @@ import os
 import shutil
 import stat
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Generator, Mapping
 import zipfile
 
 from molt import file_publication
@@ -96,7 +96,7 @@ def _staged_copy_file(
     codesign: bool = False,
     expected_sha256: str | None = None,
     observed: StableRegularFileIdentity | None = None,
-) -> Iterator[Path]:
+) -> Generator[Path]:
     """Own the final byte/mode copy until its caller publishes or abandons it."""
     from molt import artifact_publication
 
@@ -154,7 +154,7 @@ def _atomic_link_or_copy_file(src: Path, dst: Path) -> None:
 
 
 @contextmanager
-def _atomic_zip_file(path: Path) -> Iterator[zipfile.ZipFile]:
+def _atomic_zip_file(path: Path) -> Generator[zipfile.ZipFile]:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = file_publication.staged_file_path(path, purpose="zip")
     try:

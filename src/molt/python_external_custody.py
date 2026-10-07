@@ -63,7 +63,7 @@ _UV_BOOTSTRAP_PROVENANCE = {
 # hashes were independently verified against the immutable PyPI downloads.
 # Coverage's reviewed wheels differ only in the final newline of the .pth file;
 # both exact variants are recorded, never inferred from the installed name.
-_COVERAGE_RELEASE = {"project": "nedbat/coveragepy", "version": "7.16.1"}
+_COVERAGE_RELEASE = {"project": "nedbat/coveragepy", "version": "7.16.2"}
 _SETUPTOOLS_WHEEL = {
     "project": "pypa/setuptools",
     "version": "83.0.0",
@@ -89,16 +89,16 @@ _STARTUP_CAPABILITIES: dict[str, dict[str, object]] = {
         "declaration_artifacts": [
             {
                 **_COVERAGE_RELEASE,
-                "url": "https://files.pythonhosted.org/packages/96/1a/d6d16babd0a5fe4c3fae40702158c570351694e74516d8d81b86c5637448/coverage-7.16.1-py3-none-any.whl",
-                "artifact_sha256": "3d8bd4e58b6a5c2018d808f297905393c6c61da466a48c3f0596a76a4900ebe4",
+                "url": "https://files.pythonhosted.org/packages/3f/0c/7a64e1ac90541a8edf50daef0914848011fb057a5bf55284a4811e21939a/coverage-7.16.2-py3-none-any.whl",
+                "artifact_sha256": "11d28e9123a9156cb405d8d27b44256c9a58fb5decc2073a8f17862057e3aa0f",
                 "path": "a1_coverage.pth",
                 "sha256": "ef2ed06d19867ec669c09a804060666a9cd5e383af0a9d11aa2de79b77d448e8",
                 "size": 205,
             },
             {
                 **_COVERAGE_RELEASE,
-                "url": "https://files.pythonhosted.org/packages/73/27/ec3d032375735dd331477caa051419678079ff90fcb53d0284a6c2bfb757/coverage-7.16.1-cp312-cp312-win_amd64.whl",
-                "artifact_sha256": "d0f02c633630e2b74522108ee95a84ad6e1204a8016a6cca5297f335ea27147e",
+                "url": "https://files.pythonhosted.org/packages/db/de/e3ad6d864c0833624b4f1f9b53f9e58e116c945e5e965c3f1e172c5e84cd/coverage-7.16.2-cp312-cp312-win_amd64.whl",
+                "artifact_sha256": "e6c52d3307824ff93b39efd99e4185d557db40bd841452abfb32e5d9151ca162",
                 "path": "a1_coverage.pth",
                 "sha256": "f1498191b7f52180654ccdb6195233612805e26344100c093058343ea04afd36",
                 "size": 206,

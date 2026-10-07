@@ -6,7 +6,7 @@ import ast
 import hashlib
 import json
 import os
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
@@ -74,7 +74,7 @@ class LocalPythonSourceClosure:
 
 
 @contextmanager
-def local_python_import_graph_transaction(*, fresh: bool = False) -> Iterator[None]:
+def local_python_import_graph_transaction(*, fresh: bool = False) -> Generator[None]:
     """Reuse immutable tooling closure queries only within one build command."""
     if not fresh and _GRAPH_TRANSACTION.get() is not None:
         yield

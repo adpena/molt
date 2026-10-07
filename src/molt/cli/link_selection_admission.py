@@ -11,7 +11,7 @@ import hashlib
 import contextlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Mapping
+from typing import Generator, Mapping
 
 from molt.c_api_symbols import (
     is_c_api_external_requirement,
@@ -317,7 +317,7 @@ def native_link_selection(
     candidate: Path,
     *,
     surface: _ExtensionScanSurface | None = None,
-) -> Iterator[NativeLinkSelection | None]:
+) -> Generator[NativeLinkSelection | None]:
     requirements = plan.selection_requirements
     if requirements is None:
         yield None

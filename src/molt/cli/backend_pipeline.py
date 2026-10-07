@@ -9,7 +9,7 @@ from molt.cli.runtime_build_python import BuildPythonAdmission
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import Iterator
+from typing import Generator
 
 from molt import file_publication
 from molt.artifact_publication import discard_staged_output
@@ -48,7 +48,7 @@ from molt.cli.output import (
 @contextlib.contextmanager
 def _staged_native_object_output(
     output_layout: _BuildOutputLayout, *, project_root: Path
-) -> Iterator[tuple[_BuildOutputLayout, Path | None]]:
+) -> Generator[tuple[_BuildOutputLayout, Path | None]]:
     """Keep native object candidates private through cache sync and admission."""
     if (
         output_layout.emit_mode != "obj"

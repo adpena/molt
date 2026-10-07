@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar, Token
 from contextlib import contextmanager
-from collections.abc import Iterator
+from collections.abc import Generator
 from functools import wraps
 import os
 import sys
@@ -164,7 +164,7 @@ def success_is_visible() -> bool:
 @contextmanager
 def subprocess_status(
     label: str | None, *, announce: bool = False
-) -> Iterator[str | None]:
+) -> Generator[str | None]:
     """Route existing subprocess labels through this renderer, once.
 
     Outside a CLI build, retain the guard's existing keepalive behavior.

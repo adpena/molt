@@ -8,7 +8,7 @@ from pathlib import Path
 import platform
 import re
 import sys
-from typing import TYPE_CHECKING, Iterator, Sequence
+from typing import TYPE_CHECKING, Generator, Sequence
 
 if TYPE_CHECKING:
     from molt.cli.native_link_manifest import NativeLinkInputs
@@ -178,7 +178,7 @@ def native_link_execution_command(
     planned_output: Path,
     execution_output: Path,
     selection_arguments: Sequence[str] = (),
-) -> Iterator[list[str]]:
+) -> Generator[list[str]]:
     """Own private sidecars while retargeting one typed plan for execution."""
 
     result = [*plan.command, *selection_arguments]
