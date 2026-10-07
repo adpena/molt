@@ -31,6 +31,7 @@ from molt.cargo_execution_policy import normalize_cargo_environment
 from molt.file_hashing import _sha256_file
 from molt import python_environment_identity
 from molt import rust_toolchain
+from molt import tool_releases
 from molt.exact_json import ExactJsonError, canonical_json_sha256
 from tests.python_environment_test_support import (
     build_environment_manifest,
@@ -1626,9 +1627,11 @@ def test_environment_tool_paths_with_spaces_share_execution_resolution(
 def test_node_tool_identity_binds_runtime_versions_configuration_and_global_paths(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The plan's node policy pins config/tool_releases.toml's version.
+    node_version = tool_releases.tool_release("node").version
     runtime_payload = {
         "execPath": str(Path(sys.executable).resolve()),
-        "versions": {"node": "24.16.0", "modules": "137"},
+        "versions": {"node": node_version, "modules": "137"},
         "config": {"variables": {"node_module_version": 137}},
         "globalPaths": [],
     }
@@ -1646,7 +1649,7 @@ def test_node_tool_identity_binds_runtime_versions_configuration_and_global_path
         argv = list(command)
         if "-e" in argv:
             return subprocess.CompletedProcess(argv, 0, json.dumps(runtime_payload), "")
-        return subprocess.CompletedProcess(argv, 0, "v24.16.0", "")
+        return subprocess.CompletedProcess(argv, 0, f"v{node_version}", "")
 
     monkeypatch.setattr(command_identity, "_run_captured", fake_run)
     plan = proof_plan.ProofPlan.load()
