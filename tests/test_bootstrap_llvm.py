@@ -1210,3 +1210,100 @@ def test_canonical_configure_failure_removes_transaction_staging(
         )
 
     assert not tuple(tmp_path.glob(".llvm.*.staging"))
+
+
+def _reattest_fixture(monkeypatch, tmp_path, *, live_digest: str):
+    prefix = tmp_path / "llvm"
+    prefix.mkdir()
+    (prefix / ".molt-llvm-toolchain.json").write_text(
+        json.dumps({"content_digest": "a" * 64, "version": "22.1.8", "release": None}),
+        encoding="utf-8",
+    )
+    verification = SimpleNamespace(
+        content_digest=live_digest, version="22.1.8", release=None
+    )
+    written = []
+    monkeypatch.setattr(
+        bootstrap_llvm, "verify_llvm_toolchain_prefix", lambda *a, **k: verification
+    )
+    monkeypatch.setattr(
+        bootstrap_llvm,
+        "write_llvm_toolchain_attestation",
+        lambda root, verified, **kwargs: (
+            written.append((verified, kwargs)) or prefix / ".molt-llvm-toolchain.json"
+        ),
+    )
+    return prefix, verification, written
+
+
+def test_reattest_rewrites_an_unchanged_prefix(monkeypatch, tmp_path) -> None:
+    prefix, verification, written = _reattest_fixture(
+        monkeypatch, tmp_path, live_digest="a" * 64
+    )
+    bootstrap_llvm._reattest_prefix(
+        prefix,
+        version="22.1.8",
+        expected_targets=("X86",),
+        projects=("clang",),
+        build_type="Release",
+    )
+    assert written == [
+        (verification, {"projects": ("clang",), "build_type": "Release"})
+    ]
+
+
+def test_reattest_refuses_a_prefix_whose_content_changed(monkeypatch, tmp_path) -> None:
+    prefix, _verification, written = _reattest_fixture(
+        monkeypatch, tmp_path, live_digest="b" * 64
+    )
+    with pytest.raises(SystemExit, match="changed since its attestation"):
+        bootstrap_llvm._reattest_prefix(
+            prefix,
+            version="22.1.8",
+            expected_targets=("X86",),
+            projects=("clang",),
+            build_type="Release",
+        )
+    assert written == []
+
+
+def test_managed_builds_exclude_host_optional_libraries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A Homebrew zstd found at configure time became a dynamic dependency of
+    # the managed clang; the configure command pins it off.
+    source = tmp_path / "source"
+    source.mkdir()
+    commands: list[list[str]] = []
+
+    def missing_prefix(*_args, **_kwargs):
+        raise bootstrap_llvm.LlvmToolchainConfigError("missing")
+
+    def capture(command, *_args, **_kwargs):
+        commands.append(list(command))
+        raise subprocess.CalledProcessError(1, "cmake")
+
+    monkeypatch.setattr(bootstrap_llvm, "verify_llvm_toolchain_prefix", missing_prefix)
+    monkeypatch.setattr(bootstrap_llvm, "_run", capture)
+    with pytest.raises(subprocess.CalledProcessError):
+        bootstrap_llvm._build_and_publish(
+            SimpleNamespace(
+                version="22.1.8",
+                build_type="Release",
+                projects="clang;lld;mlir;polly",
+                configure_only=True,
+                jobs=1,
+            ),
+            prefix=tmp_path / "llvm",
+            build_dir=tmp_path / "build",
+            llvm_source=source,
+            targets="X86;WebAssembly",
+            required_targets={"X86", "WebAssembly"},
+            project_set={"clang", "lld", "mlir", "polly"},
+            env={},
+            is_canonical=True,
+            build_identity={"schema": bootstrap_llvm.LLVM_BUILD_SCHEMA},
+            cmake=CMAKE_TOOL,
+            ninja=NINJA_TOOL,
+        )
+    assert "-DLLVM_ENABLE_ZSTD=OFF" in commands[0]

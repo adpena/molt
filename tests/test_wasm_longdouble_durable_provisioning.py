@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -34,18 +35,14 @@ from molt.cli import wasm_link_inputs
 from molt.cli import runtime_wasm_build_support as rb
 from molt.cli import runtime_wasm_build_timings as timings
 from molt.cli import wasm_toolchain
+from molt.llvm_toolchain import load_llvm_releases
+from molt.source_root import compiler_source_root
 
-# Pinned provenance (wasi-sdk-33 / LLVM 22.1.0); see vendor/wasm-builtins/README.
-_VENDORED = {
-    "libc-printscan-long-double.a": (
-        111146,
-        "744a4c150a0352732923c167ba284f435947f5836205d9470827bb84256148b9",
-    ),
-    "libclang_rt.builtins-wasm32.a": (
-        456060,
-        "b1e23c0376609e09052ff225f290d971b0f8eabd3ffd0737e5d0ebb10f1880d1",
-    ),
-}
+_PROVENANCE = tomllib.loads(
+    (wasm_link_inputs.wasm_builtins_vendor_dir() / "provenance.toml").read_text(
+        encoding="utf-8"
+    )
+)
 
 
 def _clear_sysroot_env(monkeypatch: pytest.MonkeyPatch, empty_root: Path) -> None:
@@ -64,12 +61,28 @@ def _clear_sysroot_env(monkeypatch: pytest.MonkeyPatch, empty_root: Path) -> Non
 
 def test_vendored_archives_match_pinned_provenance() -> None:
     vendor_dir = wasm_link_inputs.wasm_builtins_vendor_dir()
-    for name, (size, sha) in _VENDORED.items():
+    archives = _PROVENANCE["archives"]
+    assert set(archives) == set(wasm_link_inputs.WASI_SDK_VENDORED_ARCHIVE_SOURCES)
+    for name, record in archives.items():
         archive = vendor_dir / name
         assert archive.exists(), f"vendored {name} missing from {vendor_dir}"
         blob = archive.read_bytes()
-        assert len(blob) == size, f"{name} size drift"
-        assert hashlib.sha256(blob).hexdigest() == sha, f"{name} sha256 drift"
+        assert len(blob) == record["size"], f"{name} size drift"
+        assert hashlib.sha256(blob).hexdigest() == record["sha256"], f"{name} drift"
+
+
+def test_vendored_archives_come_from_the_pinned_wasi_sdk() -> None:
+    # Moving the WASI SDK pin without re-vendoring fails here; the one move is
+    # `tools/pin_freshness.py --update wasi-sdk`.
+    wasi = load_llvm_releases(compiler_source_root()).wasi_sdk
+    assert _PROVENANCE["wasi_sdk_archive_version"] == wasi.archive_version
+    assert _PROVENANCE["wasi_sdk_version"] == wasi.sdk_version
+    assert _PROVENANCE["llvm_version"] == wasi.llvm_version
+    llvm_major = wasi.llvm_version.split(".", 1)[0]
+    for name, record in _PROVENANCE["archives"].items():
+        assert record["sdk_path"] == wasm_link_inputs.WASI_SDK_VENDORED_ARCHIVE_SOURCES[
+            name
+        ].format(llvm_major=llvm_major)
 
 
 def test_archives_resolve_in_fresh_session_without_sysroot(

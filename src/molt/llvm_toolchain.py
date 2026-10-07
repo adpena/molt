@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from molt.source_root import compiler_source_root
+from molt.source_root import compiler_source_root, source_file_revision
 from molt.file_hashing import content_change_time_ns
 from molt.file_publication import staged_file_path
 from molt.exact_json import canonical_json_sha256
@@ -244,7 +244,7 @@ class LlvmContentFact:
     sha256: str
 
 
-LLVM_ATTESTATION_SCHEMA = "molt.llvm-toolchain.v5"
+LLVM_ATTESTATION_SCHEMA = "molt.llvm-toolchain.v6"
 LLVM_ATTESTATION_FILENAME = ".molt-llvm-toolchain.json"
 
 
@@ -288,7 +288,7 @@ def llvm_release_manifest_path(root: Path | None = None) -> Path:
 
 @lru_cache(maxsize=8)
 def _load_llvm_releases_cached(
-    path_text: str,
+    path_text: str, _revision: tuple[int, int, int]
 ) -> LlvmReleaseManifest:
     path = Path(path_text)
     try:
@@ -548,7 +548,8 @@ def _load_wasi_sdk_release(table: dict[str, Any], path: Path) -> WasiSdkRelease:
 
 
 def load_llvm_releases(root: Path | None = None) -> LlvmReleaseManifest:
-    return _load_llvm_releases_cached(str(llvm_release_manifest_path(root)))
+    path = llvm_release_manifest_path(root)
+    return _load_llvm_releases_cached(str(path), source_file_revision(path))
 
 
 def llvm_release(version: str, root: Path | None = None) -> LlvmRelease | None:
@@ -563,7 +564,9 @@ def canonical_llvm_build_type(root: Path | None = None) -> str:
 
 
 @lru_cache(maxsize=8)
-def _load_llvm_architecture_contract_cached(path_text: str) -> LlvmArchitectureContract:
+def _load_llvm_architecture_contract_cached(
+    path_text: str, _revision: tuple[int, int, int]
+) -> LlvmArchitectureContract:
     path = Path(path_text)
     raw = path.read_bytes()
     try:
@@ -665,8 +668,9 @@ def _load_llvm_architecture_contract_cached(path_text: str) -> LlvmArchitectureC
 
 
 def load_llvm_architecture_contract(root: Path) -> LlvmArchitectureContract:
+    path = llvm_architecture_contract_path(root)
     return _load_llvm_architecture_contract_cached(
-        str(llvm_architecture_contract_path(root))
+        str(path), source_file_revision(path)
     )
 
 
@@ -1528,7 +1532,15 @@ def _compile_link_probe(
             "-o",
             str(output),
         ]
+        probe_env = dict(os.environ)
         try:
+            if sys.platform == "darwin":
+                # Upstream clang finds the macOS SDK only through SDKROOT; pin
+                # the selected Xcode SDK instead of trusting the caller's shell.
+                # (platform_toolchain imports this module, so import here.)
+                from molt.platform_toolchain import select_darwin_toolchain
+
+                probe_env.update(select_darwin_toolchain(probe_env).environment())
             result = subprocess.run(
                 command,
                 check=False,
@@ -1536,8 +1548,9 @@ def _compile_link_probe(
                 text=True,
                 timeout=120,
                 encoding="utf-8",
+                env=probe_env,
             )
-        except (OSError, subprocess.SubprocessError) as exc:
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
             raise LlvmToolchainConfigError(
                 f"LLVM/MLIR SDK compile-link probe could not run: {exc}"
             ) from exc
@@ -1981,7 +1994,6 @@ def verify_llvm_toolchain_prefix(
             "link_probe": list(link_probe),
             "release": asdict(release) if release is not None else None,
             "custody": _llvm_attestation_custody(root, resolved, release),
-            "release_manifest_sha256": load_llvm_releases(root).digest,
             "build_config": {
                 "projects": sorted(contract.required_projects),
                 "targets": list(built_targets),
@@ -2212,7 +2224,6 @@ def write_llvm_toolchain_attestation(
         "link_probe": list(verification.link_probe),
         "release": (asdict(release) if release is not None else None),
         "custody": custody,
-        "release_manifest_sha256": load_llvm_releases(root).digest,
         "build_config": {
             "projects": sorted(projects),
             "targets": list(verification.targets),

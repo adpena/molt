@@ -25,12 +25,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import io
 import json
 import os
 import re
+import shutil
 import sys
 import tarfile
+import tempfile
 import tomllib
 import urllib.request
 import zipfile
@@ -39,12 +40,35 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
-from molt import tool_releases
-from molt.binaryen_toolchain import load_binaryen_manifest
-from molt.llvm_toolchain import load_llvm_releases
-from molt.rust_toolchain import rust_channel
+if __package__ in (None, ""):
+    from import_file import bind_repository_imports
+else:
+    from tools.import_file import bind_repository_imports
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = bind_repository_imports(__file__)
+
+from molt import tool_releases  # noqa: E402
+from molt.cli.static_archive_identity import (  # noqa: E402
+    open_static_archive_members,
+)
+from molt.cli.wasm_link_inputs import (  # noqa: E402
+    WASI_SDK_VENDORED_ARCHIVE_SOURCES,
+)
+from molt.binaryen_toolchain import (  # noqa: E402
+    BinaryenConfigError,
+    load_binaryen_manifest,
+)
+from molt.llvm_toolchain import (  # noqa: E402
+    LlvmToolchainConfigError,
+    load_llvm_releases,
+)
+from molt.rust_toolchain import rust_channel  # noqa: E402
+from molt.wasi_sdk_identity import (  # noqa: E402
+    WasiSdkIdentityError,
+    read_wasi_sdk_version_identity,
+)
+from tools import provision_binaryen, provision_wasi_sdk  # noqa: E402
+
 PROOF_PLAN = Path("tools/proof_plan.toml")
 LEDGER = Path("docs/agent/V1_HANDOFF_FINDINGS.md")
 USER_AGENT = "molt-pin-freshness"
@@ -58,6 +82,7 @@ HOLDS = {
 
 FetchJson = Callable[[str], object]
 FetchBytes = Callable[[str], bytes]
+FetchFile = Callable[[str, Path], None]
 
 
 class PinFreshnessError(RuntimeError):
@@ -76,6 +101,16 @@ def fetch_bytes(url: str) -> bytes:
     request = _request(url, "*/*")
     with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
         return response.read()
+
+
+def fetch_file(url: str, destination: Path) -> None:
+    """Stream one download to disk; release archives reach hundreds of MB."""
+    request = _request(url, "*/*")
+    with (
+        urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response,
+        destination.open("xb") as stream,
+    ):
+        shutil.copyfileobj(response, stream, 1024 * 1024)
 
 
 def fetch_json(url: str) -> object:
@@ -284,15 +319,10 @@ def check(
     return 1 if failures else 0
 
 
-# --update for config/tool_releases.toml.
-
-
-def _archive_members(filename: str, data: bytes) -> set[str]:
-    if filename.endswith(".zip"):
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
-            return set(archive.namelist())
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as archive:
-        return {member.name.removeprefix("./") for member in archive.getmembers()}
+# --update: each updater downloads every asset to disk, accepts it only when
+# its SHA-256 and size match the upstream's own record, derives the pinned
+# identities with the provisioner's validators, and returns its file edits.
+# The edits land only if the product loaders accept the result.
 
 
 @dataclass(frozen=True)
@@ -301,111 +331,102 @@ class UpstreamAsset:
     size: int | None
 
 
-def _upstream_assets(
-    provenance: tool_releases.ToolProvenance,
+def github_release_assets(
+    url: str, fetch: FetchJson
+) -> tuple[dict[str, UpstreamAsset], int]:
+    """Return {asset filename: digest record} and the release id."""
+    release = fetch(url)
+    assets = {}
+    for asset in release["assets"]:
+        digest = str(asset.get("digest") or "")
+        if digest.startswith("sha256:"):
+            assets[str(asset["name"])] = UpstreamAsset(
+                digest.removeprefix("sha256:"), int(asset["size"])
+            )
+    return assets, int(release["id"])
+
+
+def checksum_manifest_assets(
+    url: str, fetch_text: FetchBytes
+) -> dict[str, UpstreamAsset]:
+    assets = {}
+    for line in fetch_text(url).decode("utf-8").splitlines():
+        parts = line.split()
+        if len(parts) == 2 and re.fullmatch(r"[0-9a-f]{64}", parts[0]):
+            assets[parts[1].removeprefix("*")] = UpstreamAsset(parts[0], None)
+    return assets
+
+
+def _sha256_file(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def verified_download(
     url: str,
-    fetch: FetchJson,
-    fetch_text: FetchBytes,
-) -> tuple[dict[str, UpstreamAsset], int | None]:
-    """Return {asset filename: upstream record} and the GitHub release id."""
-    if provenance.kind == tool_releases.PROVENANCE_GITHUB_RELEASE:
-        release = fetch(url)
-        assets = {}
-        for asset in release["assets"]:
-            digest = str(asset.get("digest") or "")
-            if digest.startswith("sha256:"):
-                assets[str(asset["name"])] = UpstreamAsset(
-                    digest.removeprefix("sha256:"), int(asset["size"])
-                )
-        return assets, int(release["id"])
-    if provenance.kind == tool_releases.PROVENANCE_CHECKSUM_MANIFEST:
-        assets = {}
-        for line in fetch_text(url).decode("utf-8").splitlines():
-            parts = line.split()
-            if len(parts) == 2 and re.fullmatch(r"[0-9a-f]{64}", parts[0]):
-                assets[parts[1].removeprefix("*")] = UpstreamAsset(parts[0], None)
-        return assets, None
-    raise PinFreshnessError(f"unsupported provenance kind {provenance.kind!r}")
-
-
-def plan_tool_update(
-    release: tool_releases.ToolRelease,
-    new_version: str,
+    upstream: Mapping[str, UpstreamAsset],
+    directory: Path,
+    fetch_file: FetchFile,
     *,
-    fetch: FetchJson = fetch_json,
-    fetch_text: FetchBytes = fetch_bytes,
-) -> dict[str, object]:
-    """Resolve and verify every asset of `release` at `new_version`."""
-    old = release.version
-    provenance_url = release.provenance.url.replace(old, new_version)
-    upstream, release_id = _upstream_assets(
-        release.provenance, provenance_url, fetch, fetch_text
-    )
-    provenance: dict[str, object] = {"url": provenance_url}
-    if release_id is not None:
-        provenance["release_id"] = release_id
-    assets: dict[str, dict[str, object]] = {}
-    for key, asset in release.assets.items():
-        url = asset.url.replace(old, new_version)
-        member = asset.archive_member.replace(old, new_version)
-        filename = url.rsplit("/", 1)[-1]
-        where = f"{release.name} {new_version}: {filename}"
-        record = upstream.get(filename)
-        if record is None:
-            raise PinFreshnessError(f"{where}: upstream records no SHA-256")
-        data = fetch_text(url)
-        actual = hashlib.sha256(data).hexdigest()
-        if actual != record.sha256:
-            raise PinFreshnessError(
-                f"{where}: sha256 {actual} != upstream {record.sha256}"
-            )
-        if record.size is not None and record.size != len(data):
-            raise PinFreshnessError(
-                f"{where}: {len(data)} bytes != upstream {record.size}"
-            )
-        if member not in _archive_members(filename, data):
-            raise PinFreshnessError(f"{where}: archive has no member {member}")
-        assets[key] = {
-            "url": url,
-            "size": len(data),
-            "sha256": actual,
-            "archive_member": member,
-        }
-    return {"version": new_version, "provenance": provenance, "assets": assets}
+    where: str,
+) -> Path:
+    filename = url.rsplit("/", 1)[-1]
+    record = upstream.get(filename)
+    if record is None:
+        raise PinFreshnessError(f"{where}: upstream records no SHA-256 for {filename}")
+    path = directory / filename
+    fetch_file(url, path)
+    actual = _sha256_file(path)
+    if actual != record.sha256:
+        raise PinFreshnessError(
+            f"{where}: {filename} sha256 {actual} != upstream {record.sha256}"
+        )
+    size = path.stat().st_size
+    if record.size is not None and record.size != size:
+        raise PinFreshnessError(
+            f"{where}: {filename} has {size} bytes, upstream records {record.size}"
+        )
+    return path
+
+
+def _archive_members(path: Path) -> set[str]:
+    if path.name.endswith(".zip"):
+        with zipfile.ZipFile(path) as archive:
+            return set(archive.namelist())
+    with tarfile.open(path, mode="r:*") as archive:
+        return {member.name.removeprefix("./") for member in archive.getmembers()}
 
 
 def _toml_value(value: object) -> str:
     return json.dumps(value) if isinstance(value, str) else str(value)
 
 
-_TOOL_HEADER = re.compile(
-    r"^\[tools\.(?P<tool>[^\].]+)"
-    r"(?:\.(?P<table>provenance|assets\.[^\]]+))?\]\s*$"
-)
+TableEdits = Mapping[str | None, Mapping[str, object]]
 
 
-def rewrite_tool(text: str, name: str, update: Mapping[str, object]) -> str:
-    """Rewrite one tool's version, provenance and asset fields in place."""
-    tables: dict[str | None, Mapping[str, object]] = {
-        None: {"version": update["version"]},
-        "provenance": update["provenance"],
-        **{f"assets.{key}": fields for key, fields in dict(update["assets"]).items()},
-    }
-    owner: str | None = None
+def rewrite_toml_fields(text: str, edits: TableEdits) -> str:
+    """Set `key = value` lines in named `[table]`s (None: the root table).
+
+    Comments, order and every other line stay; each edited field must exist.
+    """
     table: str | None = None
+    pending = {(name, key) for name, fields in edits.items() for key in fields}
     out = []
     for line in text.splitlines(keepends=True):
-        header = _TOOL_HEADER.match(line)
+        header = re.match(r"^\[([^\[\]]+)\]\s*$", line)
         if header is not None:
-            owner, table = header.group("tool"), header.group("table")
-        elif line.startswith("["):
-            owner = None
-        elif owner == name and "=" in line:
+            table = header.group(1).strip()
+        elif line.startswith("[["):
+            table = "[[array]]"
+        elif "=" in line and not line.lstrip().startswith("#"):
             key = line.split("=", 1)[0].strip()
-            fields = tables.get(table, {})
-            if key in fields:
+            fields = edits.get(table)
+            if fields is not None and key in fields:
                 line = f"{key} = {_toml_value(fields[key])}\n"
+                pending.discard((table, key))
         out.append(line)
+    if pending:
+        raise PinFreshnessError(f"fields not found: {sorted(pending, key=str)!r}")
     return "".join(out)
 
 
@@ -429,46 +450,346 @@ def rewrite_policy(text: str, name: str, old: str, new: str) -> str:
     return "".join(blocks)
 
 
-def update_tool(
-    root: Path,
-    name: str,
-    *,
-    fetch: FetchJson = fetch_json,
-    fetch_text: FetchBytes = fetch_bytes,
+@dataclass(frozen=True)
+class Fetchers:
+    fetch: FetchJson = fetch_json
+    fetch_text: FetchBytes = fetch_bytes
+    fetch_file: FetchFile = fetch_file
+
+
+def tool_release_edits(
+    release: tool_releases.ToolRelease,
+    new: str,
+    directory: Path,
+    fetchers: Fetchers,
+) -> TableEdits:
+    """Edits that move one `config/tool_releases.toml` tool to `new`."""
+    old = release.version
+    provenance_url = release.provenance.url.replace(old, new)
+    provenance: dict[str, object] = {"url": provenance_url}
+    if release.provenance.kind == tool_releases.PROVENANCE_GITHUB_RELEASE:
+        upstream, provenance["release_id"] = github_release_assets(
+            provenance_url, fetchers.fetch
+        )
+    elif release.provenance.kind == tool_releases.PROVENANCE_CHECKSUM_MANIFEST:
+        upstream = checksum_manifest_assets(provenance_url, fetchers.fetch_text)
+    else:
+        raise PinFreshnessError(f"unsupported provenance {release.provenance.kind!r}")
+    table = f"tools.{release.name}"
+    edits: dict[str | None, Mapping[str, object]] = {
+        table: {"version": new},
+        f"{table}.provenance": provenance,
+    }
+    for key, asset in release.assets.items():
+        url = asset.url.replace(old, new)
+        member = asset.archive_member.replace(old, new)
+        where = f"{release.name} {new}"
+        path = verified_download(
+            url, upstream, directory, fetchers.fetch_file, where=where
+        )
+        if member not in _archive_members(path):
+            raise PinFreshnessError(f"{where}: {path.name} has no member {member}")
+        edits[f"{table}.assets.{key}"] = {
+            "url": url,
+            "size": path.stat().st_size,
+            "sha256": _sha256_file(path),
+            "archive_member": member,
+        }
+        path.unlink()
+    return edits
+
+
+def binaryen_edits(
+    root: Path, new: str, directory: Path, fetchers: Fetchers
+) -> TableEdits:
+    """Edits that move `config/binaryen_releases.toml` to `version_<new>`."""
+    release = load_binaryen_manifest(root).release
+    old = release.version
+
+    def move(text: str) -> str:
+        return text.replace(f"version_{old}", f"version_{new}")
+
+    provenance_url = move(release.provenance_url)
+    upstream, _ = github_release_assets(provenance_url, fetchers.fetch)
+    archive_root = move(release.targets[0].archive_root)
+    edits: dict[str | None, Mapping[str, object]] = {
+        None: {
+            "version": new,
+            "archive_root": archive_root,
+            "provenance_url": provenance_url,
+        }
+    }
+    for target in release.targets:
+        url = move(target.url)
+        path = verified_download(
+            url, upstream, directory, fetchers.fetch_file, where=f"binaryen {new}"
+        )
+        with tarfile.open(path, "r:gz") as archive:
+            identity = provision_binaryen._archive_identity(
+                archive,
+                asset_id=target.id,
+                expected_root=archive_root,
+                executable=target.executable,
+            )
+        edits[f"targets.{target.id}"] = {
+            "url": url,
+            "size": path.stat().st_size,
+            "sha256": _sha256_file(path),
+            "tree_entries": identity.tree.entries,
+            "tree_total_bytes": identity.tree.total_bytes,
+            "tree_sha256": identity.tree.sha256,
+            "executable_sha256": identity.executable_sha256,
+        }
+        path.unlink()
+    return edits
+
+
+# wasm32 archives committed under vendor/wasm-builtins (see its README).
+WASM_BUILTINS = Path("vendor/wasm-builtins")
+
+
+@dataclass(frozen=True)
+class WasiSdkMove:
+    edits: TableEdits
+    old_llvm: str
+    new_llvm: str
+    builtins: Mapping[str, bytes]
+    provenance: str
+
+
+# Each host builds the wasm32 archives from one source, but the objects embed
+# host build paths (compiler-rt's __FILE__ abort strings shift its data and
+# code), so hosts never agree byte for byte. The vendored copy comes from the
+# CI reference host's verified SDK archive; every host must ship the same
+# archive members.
+CANONICAL_BUILTINS_HOST = "linux-x86_64"
+
+
+def wasm_archive_members(path: Path) -> tuple[str, ...]:
+    with open_static_archive_members(path) as (members, _stream):
+        return tuple(member.name for member in members)
+
+
+@dataclass(frozen=True)
+class VendoredArchive:
+    sdk_path: str
+    data: bytes
+    members: int
+
+
+def _wasm_builtins_provenance(
+    archive_version: str,
+    sdk_version: str,
+    llvm_version: str,
+    archives: Mapping[str, VendoredArchive],
 ) -> str:
-    pins = collect_pins(root, fetch=fetch, fetch_text=fetch_text)
+    lines = [
+        "# Generated by `tools/pin_freshness.py --update wasi-sdk`; do not edit.",
+        "# wasm32 archives copied from the pinned WASI SDK of the CI reference",
+        "# host; every host's SDK ships the same archive members.",
+        "schema_version = 1",
+        f"wasi_sdk_archive_version = {_toml_value(archive_version)}",
+        f"wasi_sdk_version = {_toml_value(sdk_version)}",
+        f"llvm_version = {_toml_value(llvm_version)}",
+        f"source_host = {_toml_value(CANONICAL_BUILTINS_HOST)}",
+    ]
+    for name, archive in sorted(archives.items()):
+        lines += [
+            "",
+            f"[archives.{_toml_value(name)}]",
+            f"sdk_path = {_toml_value(archive.sdk_path)}",
+            f"size = {len(archive.data)}",
+            f"sha256 = {_toml_value(hashlib.sha256(archive.data).hexdigest())}",
+            f"members = {archive.members}",
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def wasi_sdk_edits(
+    root: Path, new_tag: str, directory: Path, fetchers: Fetchers
+) -> WasiSdkMove:
+    """Edits that move the WASI SDK pin and the archives vendored from it."""
+    wasi = load_llvm_releases(root).wasi_sdk
+    old_archive = wasi.archive_version
+    old_tag = old_archive.split(".", 1)[0]
+    new_archive = f"{new_tag}.0"
+
+    def move(text: str) -> str:
+        return text.replace(
+            f"wasi-sdk-{old_archive}", f"wasi-sdk-{new_archive}"
+        ).replace(f"wasi-sdk-{old_tag}/", f"wasi-sdk-{new_tag}/")
+
+    tag_suffix = f"/tags/wasi-sdk-{old_tag}"
+    if not wasi.provenance_url.endswith(tag_suffix):
+        raise PinFreshnessError(f"WASI SDK provenance {wasi.provenance_url!r}")
+    provenance_url = wasi.provenance_url.removesuffix(tag_suffix) + (
+        f"/tags/wasi-sdk-{new_tag}"
+    )
+    upstream, _ = github_release_assets(provenance_url, fetchers.fetch)
+    identities: set[tuple[str, str]] = set()
+    member_lists: dict[str, dict[tuple[str, ...], list[str]]] = {
+        name: {} for name in WASI_SDK_VENDORED_ARCHIVE_SOURCES
+    }
+    vendored: dict[str, VendoredArchive] = {}
+    edits: dict[str | None, Mapping[str, object]] = {}
+    where = f"wasi-sdk {new_tag}"
+    for target in wasi.targets:
+        url = move(target.url)
+        archive_root = move(target.archive_root)
+        path = verified_download(
+            url, upstream, directory, fetchers.fetch_file, where=where
+        )
+        version_file = directory / f"{target.id}.VERSION"
+        with tarfile.open(path, "r:gz") as archive:
+            provision_wasi_sdk._validate_archive(archive, expected_root=archive_root)
+            member = archive.extractfile(f"{archive_root}/VERSION")
+            if member is None:
+                raise PinFreshnessError(f"{where}: {path.name} has no VERSION file")
+            with member:
+                version_file.write_bytes(member.read(64 * 1024 + 1))
+            identity = read_wasi_sdk_version_identity(version_file)
+            llvm_major = identity.llvm_version.split(".", 1)[0]
+            for name, template in WASI_SDK_VENDORED_ARCHIVE_SOURCES.items():
+                sdk_path = template.format(llvm_major=llvm_major)
+                builtin = archive.extractfile(f"{archive_root}/{sdk_path}")
+                if builtin is None:
+                    raise PinFreshnessError(f"{where}: {path.name} has no {name}")
+                with builtin:
+                    data = builtin.read()
+                extracted = directory / f"{target.id}-{name}"
+                extracted.write_bytes(data)
+                members = wasm_archive_members(extracted)
+                member_lists[name].setdefault(members, []).append(target.id)
+                if target.id == CANONICAL_BUILTINS_HOST:
+                    vendored[name] = VendoredArchive(sdk_path, data, len(members))
+        identities.add((identity.sdk_version, identity.llvm_version))
+        edits[f"wasi_sdk.targets.{target.id}"] = {
+            "url": url,
+            "size": path.stat().st_size,
+            "sha256": _sha256_file(path),
+            "archive_root": archive_root,
+        }
+        path.unlink()
+    if len(identities) != 1:
+        raise PinFreshnessError(f"WASI SDK targets disagree: {sorted(identities)!r}")
+    for name, variants in member_lists.items():
+        if len(variants) != 1:
+            hosts = {len(members): ids for members, ids in variants.items()}
+            raise PinFreshnessError(
+                f"WASI SDK hosts ship different {name} members: {hosts}"
+            )
+    if set(vendored) != set(WASI_SDK_VENDORED_ARCHIVE_SOURCES):
+        raise PinFreshnessError(f"{where}: no {CANONICAL_BUILTINS_HOST} SDK")
+    sdk_version, llvm_version = identities.pop()
+    edits["wasi_sdk"] = {
+        "archive_version": new_archive,
+        "sdk_version": sdk_version,
+        "llvm_version": llvm_version,
+        "provenance_url": provenance_url,
+    }
+    return WasiSdkMove(
+        edits=edits,
+        old_llvm=wasi.llvm_version,
+        new_llvm=llvm_version,
+        builtins={name: archive.data for name, archive in vendored.items()},
+        provenance=_wasm_builtins_provenance(
+            new_archive, sdk_version, llvm_version, vendored
+        ),
+    )
+
+
+def _apply_edits(
+    edits: Mapping[Path, str | bytes], validate: Callable[[], None]
+) -> None:
+    """Write every edit; restore every file unless the loaders accept them."""
+    originals = {path: path.read_bytes() if path.exists() else None for path in edits}
+    for path, content in edits.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(
+            content.encode("utf-8") if isinstance(content, str) else content
+        )
+    try:
+        validate()
+    except Exception:
+        for path, original in originals.items():
+            if original is None:
+                path.unlink()
+            else:
+                path.write_bytes(original)
+        raise
+
+
+def update(root: Path, name: str, fetchers: Fetchers = Fetchers()) -> str:
+    pins = collect_pins(root, fetch=fetchers.fetch, fetch_text=fetchers.fetch_text)
     pin = next((pin for pin in pins if pin.name == name), None)
-    manifest = root / tool_releases.TOOL_RELEASES_PATH
-    if pin is None or pin.authority != tool_releases.TOOL_RELEASES_PATH:
-        raise PinFreshnessError(f"{name} is not a {manifest.name} tool")
+    if pin is None:
+        raise PinFreshnessError(f"unknown pin {name!r}")
     latest = pin.latest()
     if version_key(latest) <= version_key(pin.current):
         return f"{name}: already at {pin.current}"
-    release = tool_releases.load_tool_releases(root)[name]
-    update = plan_tool_update(release, latest, fetch=fetch, fetch_text=fetch_text)
     plan_path = root / PROOF_PLAN
-    originals = {
-        manifest: manifest.read_text(encoding="utf-8"),
-        plan_path: plan_path.read_text(encoding="utf-8"),
-    }
-    manifest.write_text(
-        rewrite_tool(originals[manifest], name, update), encoding="utf-8"
-    )
-    plan_path.write_text(
-        rewrite_policy(originals[plan_path], name, pin.current, latest),
-        encoding="utf-8",
-    )
-    try:
-        moved = tool_releases.load_tool_releases(root)[name]
-        if moved.version != latest:
-            raise PinFreshnessError(f"{manifest.name} still pins {moved.version}")
-    except (PinFreshnessError, tool_releases.ToolReleaseError):
-        for path, original in originals.items():
-            path.write_text(original, encoding="utf-8")
-        raise
+    plan_text = plan_path.read_text(encoding="utf-8")
+    with tempfile.TemporaryDirectory(prefix="pin-freshness-") as scratch:
+        directory = Path(scratch)
+        if pin.authority == tool_releases.TOOL_RELEASES_PATH:
+            manifest = root / tool_releases.TOOL_RELEASES_PATH
+            release = tool_releases.load_tool_releases(root)[name]
+            table_edits = tool_release_edits(release, latest, directory, fetchers)
+            edits = {
+                manifest: rewrite_toml_fields(
+                    manifest.read_text(encoding="utf-8"), table_edits
+                ),
+                plan_path: rewrite_policy(plan_text, name, pin.current, latest),
+            }
+
+            def validate() -> None:
+                moved = tool_releases.load_tool_releases(root)[name]
+                if moved.version != latest:
+                    raise PinFreshnessError(f"{manifest} still pins {moved.version}")
+
+        elif name == "binaryen":
+            manifest = root / "config/binaryen_releases.toml"
+            table_edits = binaryen_edits(root, latest, directory, fetchers)
+            edits = {
+                manifest: rewrite_toml_fields(
+                    manifest.read_text(encoding="utf-8"), table_edits
+                )
+            }
+
+            def validate() -> None:
+                if load_binaryen_manifest(root).release.version != latest:
+                    raise PinFreshnessError(f"{manifest} did not move")
+
+        elif name == "wasi-sdk":
+            manifest = root / "config/llvm_toolchain_releases.toml"
+            move = wasi_sdk_edits(root, latest, directory, fetchers)
+            edits = {
+                manifest: rewrite_toml_fields(
+                    manifest.read_text(encoding="utf-8"), move.edits
+                ),
+                root / WASM_BUILTINS / "provenance.toml": move.provenance,
+                **{
+                    root / WASM_BUILTINS / name: data
+                    for name, data in move.builtins.items()
+                },
+            }
+            if move.new_llvm != move.old_llvm:
+                edits[plan_path] = rewrite_policy(
+                    plan_text, "wasm-ld", move.old_llvm, move.new_llvm
+                )
+
+            def validate() -> None:
+                if load_llvm_releases(root).wasi_sdk.archive_version != f"{latest}.0":
+                    raise PinFreshnessError(f"{manifest} did not move")
+
+        else:
+            raise PinFreshnessError(
+                f"{name} moves at its own authority ({pin.authority})"
+            )
+        _apply_edits(edits, validate)
     return (
-        f"{name}: {pin.current} -> {latest} ({len(update['assets'])} assets "
-        "verified); regenerate with `tools/gen_proof_plan.py`"
+        f"{name}: {pin.current} -> {latest} (every asset verified); "
+        "regenerate with `tools/gen_proof_plan.py`"
     )
 
 
@@ -482,11 +803,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.check:
             return check(collect_pins(args.root), open_ledger_rows(args.root))
-        print(update_tool(args.root, args.update))
+        print(update(args.root, args.update))
         return 0
     except (
         PinFreshnessError,
         tool_releases.ToolReleaseError,
+        BinaryenConfigError,
+        LlvmToolchainConfigError,
+        WasiSdkIdentityError,
         KeyError,
         OSError,
         ValueError,

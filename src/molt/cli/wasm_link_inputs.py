@@ -345,14 +345,28 @@ def wasm_wasi_printscan_long_double_archive(
     ) or _vendored_wasm_lib_archive("libc-printscan-long-double.a")
 
 
+# Where the pinned WASI SDK ships each archive committed under
+# vendor/wasm-builtins, relative to the SDK root; ``{llvm_major}`` is the SDK's
+# LLVM major version. ``tools/pin_freshness.py --update wasi-sdk`` re-vendors
+# from these paths whenever the SDK pin moves.
+WASI_SDK_VENDORED_ARCHIVE_SOURCES = {
+    "libc-printscan-long-double.a": (
+        "share/wasi-sysroot/lib/wasm32-wasip1/libc-printscan-long-double.a"
+    ),
+    "libclang_rt.builtins-wasm32.a": (
+        "lib/clang/{llvm_major}/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a"
+    ),
+}
+
+
 def _wasi_sdk_compiler_rt_builtins_archive(
     *, env: Mapping[str, str] | None = None
 ) -> Path | None:
     """``libclang_rt.builtins-wasm32.a`` from a full wasi-sdk's clang resource dir.
 
-    In a complete wasi-sdk install the compiler-rt builtins live under
-    ``<wasi-sdk>/lib/clang/<ver>/lib/{wasip1,wasi}/`` rather than inside the
-    wasi-sysroot's ``lib`` multilib. When the active sysroot resolves to
+    In a complete wasi-sdk install the compiler-rt builtins live in the clang
+    resource dir's per-target directory rather than inside the wasi-sysroot's
+    ``lib`` multilib. When the active sysroot resolves to
     ``<wasi-sdk>/share/wasi-sysroot`` (or ``<wasi-sdk>/wasi-sysroot``) probe the
     sibling resource dir so a genuine wasi-sdk resolves the archive without the
     vendored fallback. Returns ``None`` when no such tree exists.
@@ -363,16 +377,11 @@ def _wasi_sdk_compiler_rt_builtins_archive(
     sdk_roots: list[Path] = [sysroot.parent]
     if sysroot.parent.name == "share":
         sdk_roots.append(sysroot.parent.parent)
+    pattern = WASI_SDK_VENDORED_ARCHIVE_SOURCES["libclang_rt.builtins-wasm32.a"]
     for sdk_root in sdk_roots:
-        clang_lib = sdk_root / "lib" / "clang"
-        if not clang_lib.is_dir():
-            continue
-        for subdir in ("wasip1", "wasi"):
-            matches = sorted(
-                clang_lib.glob(f"*/lib/{subdir}/libclang_rt.builtins-wasm32.a")
-            )
-            if matches:
-                return matches[-1].resolve(strict=False)
+        matches = sorted(sdk_root.glob(pattern.format(llvm_major="*")))
+        if matches:
+            return matches[-1].resolve(strict=False)
     return None
 
 
@@ -395,7 +404,7 @@ def _vendored_wasm_lib_archive(name: str) -> Path | None:
     not the sysroot). Both were otherwise placed by hand and raced provisioning,
     so the reloc link degraded and relinked the long-double ``unreachable`` stub.
     Byte-identical copies are committed under :func:`wasm_builtins_vendor_dir`
-    (pinned to wasi-sdk-33 / LLVM 22.1.0; see its README) so the archives resolve
+    (pinned to the WASI SDK in its ``provenance.toml``) so the archives resolve
     with zero provisioning on every machine/session/CI.
     """
     candidate = wasm_builtins_vendor_dir() / name
@@ -487,10 +496,10 @@ def long_double_archives_missing_message(missing: Sequence[str]) -> str:
         "to build a module that traps (no silent degrade). Provision the archives "
         "(both ship pinned in-repo at vendor/wasm-builtins/, resolved by "
         "molt.cli.wasm_link_inputs automatically): libc-printscan-long-double.a "
-        "ships in the wasi-sysroot-33.0+m tarball (lib/wasm32-wasip1/) — set "
+        "ships in the pinned WASI SDK's sysroot (lib/wasm32-wasip1/) — set "
         "MOLT_WASI_SYSROOT / MOLT_TARGET_ROOT to a complete sysroot; "
-        "libclang_rt.builtins-wasm32.a is wasi-sdk-33 compiler-rt "
-        "(lib/clang/*/lib/wasip1/). If they resolve None the committed "
+        "libclang_rt.builtins-wasm32.a is that SDK's compiler-rt "
+        "(lib/clang/*/lib/wasm32-unknown-wasip1/). If they resolve None the committed "
         "vendor/wasm-builtins copy is missing — restore it (see its README)."
     )
 

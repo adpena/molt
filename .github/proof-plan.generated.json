@@ -325,7 +325,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "3856b2133968962e53e53d3b0fb1d52955991a7e706641fa61c0be93bc994192",
+  "authority_sha256": "4c2b5404ec4092461cdaf40c04baeea6efe9516c8c7cb6153e178b4c912f857d",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -7120,14 +7120,14 @@
       "executable": "wasm-ld",
       "name": "wasm-ld",
       "setup_evidence": [
-        "config/llvm_toolchain_releases.toml::llvm_version = \"22.1.0\"",
+        "config/llvm_toolchain_releases.toml::llvm_version = \"23.1.0\"",
         ".github/actions/setup-llvm/action.yml::python -m tools.provision_wasi_sdk"
       ],
-      "setup_value": "22.1.0",
+      "setup_value": "23.1.0",
       "version_args": [
         "--version"
       ],
-      "version_pattern": "\\bLLD 22\\.1\\.0\\b"
+      "version_pattern": "\\bLLD 23\\.1\\.0\\b"
     },
     {
       "executable": "wasm-tools",

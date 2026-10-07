@@ -61,6 +61,19 @@ def packaged_distribution_root() -> Path | None:
     return None
 
 
+def source_file_revision(path: Path) -> tuple[int, int, int]:
+    """Identify one revision of a compiler input file for cache keys.
+
+    A loader that caches a parsed manifest keys on this as well as the path,
+    so a rewrite in the same process is never served from the old parse.
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return (-1, -1, -1)
+    return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+
+
 def compiler_source_root() -> Path:
     """Return compiler inputs, never a writable artifact or guest-project root."""
     override = compiler_source_root_override()

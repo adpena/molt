@@ -621,10 +621,10 @@ setup_evidence = ["config/llvm_toolchain_releases.toml::default_release = \"22.1
 name = "wasm-ld"
 executable = "wasm-ld"
 version_args = ["--version"]
-version_pattern = '\bLLD 22\.1\.0\b'
-setup_value = "22.1.0"
+version_pattern = '\bLLD 23\.1\.0\b'
+setup_value = "23.1.0"
 setup_evidence = [
-  "config/llvm_toolchain_releases.toml::llvm_version = \"22.1.0\"",
+  "config/llvm_toolchain_releases.toml::llvm_version = \"23.1.0\"",
   ".github/actions/setup-llvm/action.yml::python -m tools.provision_wasi_sdk",
 ]
 

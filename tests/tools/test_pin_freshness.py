@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import io
-import json
 import re
 import shutil
 import tarfile
+import tomllib
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from molt import tool_releases
+from molt.binaryen_toolchain import BinaryenConfigError, load_binaryen_manifest
+from molt.llvm_toolchain import load_llvm_releases
 from tools import pin_freshness
 from tools.pin_freshness import Pin, PinFreshnessError
 
@@ -114,117 +117,123 @@ def test_every_pin_reads_its_authority_loader() -> None:
     assert {"rust", "python", "uv", "llvm", "wasi-sdk", "binaryen", "lean"} <= set(pins)
 
 
-def _tarball(member: str, payload: bytes = b"binary") -> bytes:
+def _leb128(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte, value = value & 0x7F, value >> 7
+        out.append(byte | (0x80 if value else 0))
+        if not value:
+            return bytes(out)
+
+
+def _wasm(*sections: tuple[int, bytes]) -> bytes:
+    return b"\0asm\x01\0\0\0" + b"".join(
+        bytes([section]) + _leb128(len(payload)) + payload
+        for section, payload in sections
+    )
+
+
+def _custom(name: str, data: bytes) -> tuple[int, bytes]:
+    return 0, _leb128(len(name)) + name.encode() + data
+
+
+def _ar(members: dict[str, bytes]) -> bytes:
+    out = b"!<arch>\n"
+    for name, data in members.items():
+        out += f"{name + '/':<16}{0:<12}{0:<6}{0:<6}{644:<8}{len(data):<10}`\n".encode()
+        out += data + (b"\n" if len(data) % 2 else b"")
+    return out
+
+
+def _wasm_archive(producer: bytes = b"clang") -> bytes:
+    """One wasm32 object archive; `producer` varies like host build paths."""
+    return _ar({"a.o": _wasm((1, b"\x00"), _custom("producers", producer))})
+
+
+def _tarball(
+    *members: str, payload: bytes = b"binary", builtin: bytes | None = None
+) -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
-        info = tarfile.TarInfo(member)
-        info.size = len(payload)
-        archive.addfile(info, io.BytesIO(payload))
+        for member in members:
+            if member.endswith("/"):
+                info = tarfile.TarInfo(member.rstrip("/"))
+                info.type = tarfile.DIRTYPE
+                info.mode = 0o755
+                archive.addfile(info)
+                continue
+            if member.endswith("VERSION"):
+                body = _WASI_VERSION
+            elif member.endswith(".a") and builtin is not None:
+                body = builtin
+            else:
+                body = payload
+            info = tarfile.TarInfo(member)
+            info.size = len(body)
+            info.mode = 0o755
+            archive.addfile(info, io.BytesIO(body))
     return buffer.getvalue()
 
 
-class _FakeGithubRelease:
-    """Upstream for one GitHub-released tool at a new version."""
-
-    def __init__(self, release: tool_releases.ToolRelease, new: str) -> None:
-        self.release = release
-        self.new = new
-        self.blobs: dict[str, bytes] = {}
-        assets = []
-        for asset in release.assets.values():
-            url = asset.url.replace(release.version, new)
-            member = asset.archive_member.replace(release.version, new)
-            data = _zip(member) if url.endswith(".zip") else _tarball(member)
-            self.blobs[url] = data
-            assets.append(
-                {
-                    "name": url.rsplit("/", 1)[-1],
-                    "size": len(data),
-                    "digest": "sha256:" + hashlib.sha256(data).hexdigest(),
-                }
-            )
-        self.record = {"id": 424242, "tag_name": f"v{new}", "assets": assets}
-
-    def fetch(self, url: str) -> object:
-        if url.endswith("/releases/latest"):
-            return {"tag_name": f"v{self.new}"}
-        if url == self.release.provenance.url.replace(self.release.version, self.new):
-            return self.record
-        return {"tag_name": "v0.0.1", "crate": {"max_stable_version": "0.0.1"}}
-
-    def fetch_text(self, url: str) -> bytes:
-        return self.blobs[url]
+_WASI_VERSION = b"99.0+m\nwasi-libc: 0000000\nllvm: 0000000\nllvm-version: 99.1.0\nconfig: 0000000\n"
 
 
 def _zip(member: str, payload: bytes = b"binary") -> bytes:
-    import zipfile
-
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
         archive.writestr(member, payload)
     return buffer.getvalue()
 
 
-def test_github_release_update_verifies_every_asset() -> None:
-    release = tool_releases.load_tool_releases(ROOT)["wasm-tools"]
-    upstream = _FakeGithubRelease(release, "9.9.9")
-    update = pin_freshness.plan_tool_update(
-        release, "9.9.9", fetch=upstream.fetch, fetch_text=upstream.fetch_text
-    )
-    assert update["version"] == "9.9.9"
-    assert update["provenance"]["release_id"] == 424242
-    assert set(update["assets"]) == set(release.assets)
-    for key, fields in update["assets"].items():
-        assert "9.9.9" in fields["url"] and "9.9.9" in fields["archive_member"]
-        assert (
-            fields["sha256"]
-            == hashlib.sha256(upstream.blobs[fields["url"]]).hexdigest()
-        ), key
+def _release_record(blobs: dict[str, bytes], release_id: int = 424242) -> dict:
+    return {
+        "id": release_id,
+        "assets": [
+            {
+                "name": url.rsplit("/", 1)[-1],
+                "size": len(data),
+                "digest": "sha256:" + hashlib.sha256(data).hexdigest(),
+            }
+            for url, data in blobs.items()
+        ],
+    }
 
 
-@pytest.mark.parametrize("defect", ["digest", "size", "missing", "member"])
-def test_github_release_update_fails_closed(defect: str) -> None:
-    release = tool_releases.load_tool_releases(ROOT)["wasm-tools"]
-    upstream = _FakeGithubRelease(release, "9.9.9")
-    first = upstream.record["assets"][0]
-    if defect == "digest":
-        first["digest"] = "sha256:" + "0" * 64
-    elif defect == "size":
-        first["size"] += 1
-    elif defect == "missing":
-        del first["digest"]
-    else:
-        url = next(url for url in upstream.blobs if url.endswith(first["name"]))
-        archive = _zip if first["name"].endswith(".zip") else _tarball
-        data = archive("unexpected/member")
-        upstream.blobs[url] = data
-        first["size"] = len(data)
-        first["digest"] = "sha256:" + hashlib.sha256(data).hexdigest()
-    with pytest.raises(PinFreshnessError):
-        pin_freshness.plan_tool_update(
-            release, "9.9.9", fetch=upstream.fetch, fetch_text=upstream.fetch_text
-        )
+class _Upstream:
+    """One faked upstream: a latest tag, a release record and its blobs."""
+
+    def __init__(self, latest_tag: str, record_url: str, blobs: dict[str, bytes]):
+        self.latest_tag = latest_tag
+        self.record_url = record_url
+        self.blobs = blobs
+        self.record = _release_record(blobs)
+
+    def fetch(self, url: str) -> object:
+        if url.endswith("/releases/latest"):
+            return {"tag_name": self.latest_tag}
+        if url == self.record_url:
+            return self.record
+        raise AssertionError(f"unexpected fetch {url}")
+
+    def fetch_text(self, url: str) -> bytes:
+        return self.blobs[url]
+
+    def fetch_file(self, url: str, destination: Path) -> None:
+        destination.write_bytes(self.blobs[url])
+
+    def fetchers(self) -> pin_freshness.Fetchers:
+        return pin_freshness.Fetchers(self.fetch, self.fetch_text, self.fetch_file)
 
 
-def test_checksum_manifest_update_verifies_against_shasums() -> None:
-    release = tool_releases.load_tool_releases(ROOT)["node"]
-    new = "99.0.0"
+def _tool_upstream(release: tool_releases.ToolRelease, new: str) -> _Upstream:
     blobs = {}
-    lines = []
     for asset in release.assets.values():
         url = asset.url.replace(release.version, new)
         member = asset.archive_member.replace(release.version, new)
-        data = _zip(member) if url.endswith(".zip") else _tarball(member)
-        blobs[url] = data
-        lines.append(f"{hashlib.sha256(data).hexdigest()}  {url.rsplit('/', 1)[-1]}")
-    blobs[release.provenance.url.replace(release.version, new)] = "\n".join(
-        lines
-    ).encode()
-    update = pin_freshness.plan_tool_update(
-        release, new, fetch=_no_network, fetch_text=blobs.__getitem__
+        blobs[url] = _zip(member) if url.endswith(".zip") else _tarball(member)
+    return _Upstream(
+        f"v{new}", release.provenance.url.replace(release.version, new), blobs
     )
-    assert "release_id" not in update["provenance"]
-    assert len(update["assets"]) == len(release.assets)
 
 
 def _pin_root(tmp_path: Path) -> Path:
@@ -235,34 +244,35 @@ def _pin_root(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_update_moves_the_manifest_and_its_plan_policy(tmp_path) -> None:
+def _changed_lines(before: str, after: str) -> list[tuple[str, str]]:
+    return [
+        (old, new)
+        for old, new in zip(before.splitlines(), after.splitlines(), strict=True)
+        if old != new
+    ]
+
+
+def test_tool_update_verifies_every_asset_and_moves_its_policy(tmp_path) -> None:
     root = _pin_root(tmp_path)
     release = tool_releases.load_tool_releases(root)["wasm-tools"]
-    upstream = _FakeGithubRelease(release, "9.9.9")
+    upstream = _tool_upstream(release, "9.9.9")
     plan_before = (root / "tools/proof_plan.toml").read_text(encoding="utf-8")
-    manifest_before = (root / tool_releases.TOOL_RELEASES_PATH).read_text(
-        encoding="utf-8"
-    )
 
-    message = pin_freshness.update_tool(
-        root, "wasm-tools", fetch=upstream.fetch, fetch_text=upstream.fetch_text
-    )
+    message = pin_freshness.update(root, "wasm-tools", upstream.fetchers())
 
     assert message.startswith(f"wasm-tools: {release.version} -> 9.9.9")
     moved = tool_releases.load_tool_releases(root)
     assert moved["wasm-tools"].version == "9.9.9"
     assert moved["wasm-tools"].provenance.release_id == 424242
+    for key, asset in moved["wasm-tools"].assets.items():
+        assert asset.sha256 == hashlib.sha256(upstream.blobs[asset.url]).hexdigest()
+        assert asset.size == len(upstream.blobs[asset.url]), key
     for name, other in tool_releases.load_tool_releases(ROOT).items():
         if name != "wasm-tools":
             assert moved[name] == other
-    plan_after = (root / "tools/proof_plan.toml").read_text(encoding="utf-8")
-    changed = [
-        (old, new)
-        for old, new in zip(
-            plan_before.splitlines(), plan_after.splitlines(), strict=True
-        )
-        if old != new
-    ]
+    changed = _changed_lines(
+        plan_before, (root / "tools/proof_plan.toml").read_text(encoding="utf-8")
+    )
     assert changed and all(
         old.replace(release.version, "9.9.9").replace(
             re.escape(release.version), re.escape("9.9.9")
@@ -271,16 +281,204 @@ def test_update_moves_the_manifest_and_its_plan_policy(tmp_path) -> None:
         for old, new in changed
     )
     assert any(re.escape("9.9.9") in line for _, line in changed)
-    manifest_after = (root / tool_releases.TOOL_RELEASES_PATH).read_text(
-        encoding="utf-8"
-    )
-    assert manifest_after.count("\n") == manifest_before.count("\n")
 
 
-def test_update_rejects_pins_outside_the_tool_manifest(tmp_path) -> None:
+@pytest.mark.parametrize("defect", ["digest", "size", "missing", "member"])
+def test_tool_update_fails_closed_and_leaves_files_unchanged(tmp_path, defect) -> None:
     root = _pin_root(tmp_path)
-    with pytest.raises(PinFreshnessError, match="uv is not a tool_releases.toml tool"):
-        pin_freshness.update_tool(root, "uv", fetch=_no_network, fetch_text=_no_network)
+    release = tool_releases.load_tool_releases(root)["wasm-tools"]
+    upstream = _tool_upstream(release, "9.9.9")
+    first = upstream.record["assets"][0]
+    url = next(url for url in upstream.blobs if url.endswith(first["name"]))
+    if defect == "digest":
+        first["digest"] = "sha256:" + "0" * 64
+    elif defect == "size":
+        first["size"] += 1
+    elif defect == "missing":
+        del first["digest"]
+    else:
+        archive = _zip if first["name"].endswith(".zip") else _tarball
+        upstream.blobs[url] = archive("unexpected/member")
+        first["size"] = len(upstream.blobs[url])
+        first["digest"] = "sha256:" + hashlib.sha256(upstream.blobs[url]).hexdigest()
+    before = {relative: (root / relative).read_bytes() for relative in PIN_AUTHORITIES}
+    with pytest.raises(PinFreshnessError):
+        pin_freshness.update(root, "wasm-tools", upstream.fetchers())
+    assert before == {
+        relative: (root / relative).read_bytes() for relative in PIN_AUTHORITIES
+    }
+
+
+def test_checksum_manifest_update_verifies_against_shasums(tmp_path) -> None:
+    root = _pin_root(tmp_path)
+    release = tool_releases.load_tool_releases(root)["node"]
+    upstream = _tool_upstream(release, "99.0.0")
+    manifest_url = release.provenance.url.replace(release.version, "99.0.0")
+    upstream.blobs[manifest_url] = "\n".join(
+        f"{hashlib.sha256(data).hexdigest()}  {url.rsplit('/', 1)[-1]}"
+        for url, data in upstream.blobs.items()
+    ).encode()
+
+    def fetch(url: str) -> object:
+        assert url == "https://nodejs.org/dist/index.json", url
+        return [{"version": "v99.0.0"}]
+
+    pin_freshness.update(
+        root,
+        "node",
+        pin_freshness.Fetchers(fetch, upstream.fetch_text, upstream.fetch_file),
+    )
+    moved = tool_releases.load_tool_releases(root)["node"]
+    assert moved.version == "99.0.0"
+    assert moved.provenance.release_id is None
+
+
+def test_binaryen_update_derives_tree_identity_with_the_provisioner(tmp_path) -> None:
+    root = _pin_root(tmp_path)
+    release = load_binaryen_manifest(root).release
+    new = "999"
+    archive_root = f"binaryen-version_{new}"
+    blobs = {
+        target.url.replace(f"version_{release.version}", f"version_{new}"): _tarball(
+            f"{archive_root}/",
+            f"{archive_root}/bin/",
+            f"{archive_root}/{target.executable}",
+        )
+        for target in release.targets
+    }
+    upstream = _Upstream(
+        f"version_{new}",
+        release.provenance_url.replace(f"version_{release.version}", f"version_{new}"),
+        blobs,
+    )
+
+    pin_freshness.update(root, "binaryen", upstream.fetchers())
+
+    moved = load_binaryen_manifest(root).release
+    assert moved.version == new
+    for target in moved.targets:
+        assert target.archive_root == archive_root
+        assert target.tree_entries == 3
+        assert target.executable_sha256 == hashlib.sha256(b"binary").hexdigest()
+        assert target.sha256 == hashlib.sha256(blobs[target.url]).hexdigest()
+
+
+def test_wasi_sdk_update_reads_versions_and_moves_wasm_ld(tmp_path) -> None:
+    root = _pin_root(tmp_path)
+    wasi = load_llvm_releases(root).wasi_sdk
+    old_tag = wasi.archive_version.split(".")[0]
+
+    def move(text: str) -> str:
+        return text.replace(
+            f"wasi-sdk-{wasi.archive_version}", "wasi-sdk-99.0"
+        ).replace(f"wasi-sdk-{old_tag}/", "wasi-sdk-99/")
+
+    builtin_paths = [
+        "share/wasi-sysroot/lib/wasm32-wasip1/libc-printscan-long-double.a",
+        "lib/clang/99/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a",
+    ]
+    builtins = {
+        target.id: _wasm_archive(producer=target.id.encode()) for target in wasi.targets
+    }
+    blobs = {
+        move(target.url): _tarball(
+            f"{move(target.archive_root)}/",
+            f"{move(target.archive_root)}/VERSION",
+            *(f"{move(target.archive_root)}/{path}" for path in builtin_paths),
+            builtin=builtins[target.id],
+        )
+        for target in wasi.targets
+    }
+    upstream = _Upstream(
+        "wasi-sdk-99",
+        wasi.provenance_url.replace(f"wasi-sdk-{old_tag}", "wasi-sdk-99"),
+        blobs,
+    )
+    plan_before = (root / "tools/proof_plan.toml").read_text(encoding="utf-8")
+
+    pin_freshness.update(root, "wasi-sdk", upstream.fetchers())
+
+    moved = load_llvm_releases(root).wasi_sdk
+    assert (moved.archive_version, moved.sdk_version, moved.llvm_version) == (
+        "99.0",
+        "99.0+m",
+        "99.1.0",
+    )
+    changed = _changed_lines(
+        plan_before, (root / "tools/proof_plan.toml").read_text(encoding="utf-8")
+    )
+    assert changed and all(
+        wasi.llvm_version in old or re.escape(wasi.llvm_version) in old
+        for old, _ in changed
+    )
+    vendor = root / "vendor/wasm-builtins"
+    provenance = tomllib.loads((vendor / "provenance.toml").read_text())
+    assert provenance["wasi_sdk_archive_version"] == "99.0"
+    assert provenance["llvm_version"] == "99.1.0"
+    assert provenance["source_host"] == "linux-x86_64"
+    reference = builtins["linux-x86_64"]
+    for name, record in provenance["archives"].items():
+        assert (vendor / name).read_bytes() == reference
+        assert record["sha256"] == hashlib.sha256(reference).hexdigest()
+        assert record["members"] == 1
+        assert record["sdk_path"] in builtin_paths
+
+
+def test_wasi_sdk_update_rejects_hosts_with_different_archive_members(
+    tmp_path,
+) -> None:
+    root = _pin_root(tmp_path)
+    wasi = load_llvm_releases(root).wasi_sdk
+    old_tag = wasi.archive_version.split(".")[0]
+
+    def move(text: str) -> str:
+        return text.replace(
+            f"wasi-sdk-{wasi.archive_version}", "wasi-sdk-99.0"
+        ).replace(f"wasi-sdk-{old_tag}/", "wasi-sdk-99/")
+
+    blobs = {}
+    for index, target in enumerate(wasi.targets):
+        archive_root = move(target.archive_root)
+        members = (
+            f"{archive_root}/",
+            f"{archive_root}/VERSION",
+            f"{archive_root}/share/wasi-sysroot/lib/wasm32-wasip1/"
+            "libc-printscan-long-double.a",
+            f"{archive_root}/lib/clang/99/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a",
+        )
+        blobs[move(target.url)] = _tarball(
+            *members,
+            builtin=_ar({f"m{index}.o": _wasm((1, b"\x00"))}),
+        )
+    upstream = _Upstream(
+        "wasi-sdk-99",
+        wasi.provenance_url.replace(f"wasi-sdk-{old_tag}", "wasi-sdk-99"),
+        blobs,
+    )
+    before = (root / "config/llvm_toolchain_releases.toml").read_bytes()
+    with pytest.raises(PinFreshnessError, match="different .* members"):
+        pin_freshness.update(root, "wasi-sdk", upstream.fetchers())
+    assert (root / "config/llvm_toolchain_releases.toml").read_bytes() == before
+
+
+def test_update_rejects_pins_it_does_not_own(tmp_path) -> None:
+    root = _pin_root(tmp_path)
+
+    def fetch(url: str) -> object:
+        return {"tag_name": "99.0.0"}
+
+    with pytest.raises(PinFreshnessError, match="uv moves at its own authority"):
+        pin_freshness.update(root, "uv", pin_freshness.Fetchers(fetch=fetch))
+
+
+def test_rewrite_toml_fields_requires_every_field() -> None:
+    text = '[a]\nx = "1"\n\n[b]\ny = 2\n'
+    assert (
+        pin_freshness.rewrite_toml_fields(text, {"a": {"x": "9"}, "b": {"y": 3}})
+        == '[a]\nx = "9"\n\n[b]\ny = 3\n'
+    )
+    with pytest.raises(PinFreshnessError, match="fields not found"):
+        pin_freshness.rewrite_toml_fields(text, {"a": {"z": "9"}})
 
 
 def test_rewrite_policy_requires_exactly_one_policy() -> None:
@@ -290,6 +488,10 @@ def test_rewrite_policy_requires_exactly_one_policy() -> None:
         )
 
 
-def test_toml_values_are_quoted_exactly() -> None:
-    assert pin_freshness._toml_value('a"b') == json.dumps('a"b')
-    assert pin_freshness._toml_value(12) == "12"
+def test_manifest_loaders_reread_a_rewritten_file(tmp_path) -> None:
+    root = _pin_root(tmp_path)
+    assert load_binaryen_manifest(root).release.version != "0"
+    manifest = root / "config/binaryen_releases.toml"
+    manifest.write_text("schema_version = 1\n", encoding="utf-8")
+    with pytest.raises(BinaryenConfigError):
+        load_binaryen_manifest(root)

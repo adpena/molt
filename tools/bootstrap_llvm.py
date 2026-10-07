@@ -41,7 +41,6 @@ from molt.llvm_toolchain import (  # noqa: E402
     llvm_release,
     llvm_sys_prefix_env_var_for_version,
     load_llvm_architecture_contract,
-    load_llvm_releases,
     managed_llvm_paths,
     project_llvm_toolchain_environment,
     required_llvm_targets_for_host,
@@ -1089,7 +1088,6 @@ def _validate_projected_publication(
         "version": verification.version,
         "release": expected_release,
         "custody": _llvm_attestation_custody(ROOT, destination, verification.release),
-        "release_manifest_sha256": load_llvm_releases(ROOT).digest,
         "build_config": {
             "projects": sorted(load_llvm_architecture_contract(ROOT).required_projects),
             "targets": list(verification.targets),
@@ -1187,6 +1185,9 @@ def _build_and_publish(
             f"-DLLVM_TARGETS_TO_BUILD={targets}",
             f"-DLLVM_ENABLE_PROJECTS={args.projects}",
             "-DLLVM_ENABLE_ASSERTIONS=ON",
+            # Host-optional libraries make a prefix depend on whatever the build
+            # machine had installed (Homebrew zstd on macOS); Molt needs none.
+            "-DLLVM_ENABLE_ZSTD=OFF",
             "-DLLVM_INCLUDE_BENCHMARKS=OFF",
             "-DLLVM_INCLUDE_DOCS=OFF",
             "-DLLVM_INCLUDE_EXAMPLES=OFF",
@@ -1243,6 +1244,51 @@ def _build_and_publish(
         finally:
             if is_canonical and install_prefix.exists():
                 shutil.rmtree(install_prefix)
+
+
+def _reattest_prefix(
+    prefix: Path,
+    *,
+    version: str,
+    expected_targets: tuple[str, ...],
+    projects: tuple[str, ...],
+    build_type: str,
+) -> Path:
+    """Rewrite a built prefix's attestation without rebuilding it.
+
+    The new attestation is written only when a full re-verification of the
+    live tree reproduces the previously attested content digest and release,
+    so it never vouches for bytes the build did not produce.
+    """
+    attestation = prefix / ".molt-llvm-toolchain.json"
+    try:
+        previous = json.loads(attestation.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"cannot re-attest without an attestation: {exc}") from exc
+    verification = verify_llvm_toolchain_prefix(
+        ROOT,
+        prefix,
+        version=version,
+        expected_targets=expected_targets,
+        content_policy="full",
+    )
+    release = asdict(verification.release) if verification.release else None
+    drift = {
+        field: (previous.get(field), live)
+        for field, live in (
+            ("content_digest", verification.content_digest),
+            ("version", verification.version),
+            ("release", release),
+        )
+        if previous.get(field) != live
+    }
+    if drift:
+        raise SystemExit(
+            f"{prefix} changed since its attestation; rebuild it instead: {drift}"
+        )
+    return write_llvm_toolchain_attestation(
+        ROOT, verification, projects=projects, build_type=build_type
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1322,10 +1368,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--required-free-gb", type=float, default=40.0)
     parser.add_argument("--required-memory-gb", type=float, default=8.0)
     parser.add_argument("--configure-only", action="store_true")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--check",
         action="store_true",
         help="Only verify an existing prefix and print the required env var.",
+    )
+    mode.add_argument(
+        "--reattest",
+        action="store_true",
+        help=(
+            "Fully re-verify an existing prefix and rewrite its attestation in the "
+            "current schema; refused unless its content digest still equals the "
+            "attested one."
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -1413,6 +1469,16 @@ def main(argv: list[str] | None = None) -> int:
                 f"build type expected={expected_build_type} found={args.build_type}"
             )
     env_var = _llvm_sys_prefix_env_var(args.version)
+    if args.reattest:
+        attestation = _reattest_prefix(
+            prefix,
+            version=args.version,
+            expected_targets=tuple(sorted(required_targets)),
+            projects=tuple(sorted(project_set)),
+            build_type=args.build_type,
+        )
+        print(f"[bootstrap-llvm] re-attested {prefix}: {attestation}")
+        return 0
     if args.check:
         verification = verify_llvm_toolchain_prefix(
             ROOT,

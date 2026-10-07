@@ -1,64 +1,64 @@
 schema_version = 1
-version = "130"
-archive_root = "binaryen-version_130"
-provenance_url = "https://api.github.com/repos/WebAssembly/binaryen/releases/tags/version_130"
+version = "133"
+archive_root = "binaryen-version_133"
+provenance_url = "https://api.github.com/repos/WebAssembly/binaryen/releases/tags/version_133"
 
 [targets.linux-x86_64]
-url = "https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-x86_64-linux.tar.gz"
-size = 107371282
-sha256 = "0a18362361ad05465118cd8eeb72edaeec89de6894bc283576ef4e07aa3babcc"
+url = "https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz"
+size = 111200018
+sha256 = "2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489"
 executable = "bin/wasm-opt"
 tree_entries = 21
-tree_total_bytes = 307435649
-tree_sha256 = "41afccdd3788863d452e7aca0e335c07280db3a1dad52dd1abd3c6f0660a8900"
-executable_sha256 = "052fe3ae03ba9c566f9d0273cc94d943258bc20a92a0d25f148b55c1caf43558"
+tree_total_bytes = 319004035
+tree_sha256 = "00d18ca7ac4b36fcec7fbcd332d1553059b973faccfeb09f8523deb43b4e5c5b"
+executable_sha256 = "8f25e9fd5db0fc5f210003aaa432922feb2e52d309e430def2f929e34da9466b"
 
 [targets.linux-aarch64]
-url = "https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-aarch64-linux.tar.gz"
-size = 101874616
-sha256 = "e6ae6e09ac40f4e14bc5be6f687c58e2995c84170013975fa641809dd3b480a0"
+url = "https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-aarch64-linux.tar.gz"
+size = 105577739
+sha256 = "89c07ea56faf38d0fbecf36ca8ec0721756716185f265b568e133d427f299bf8"
 executable = "bin/wasm-opt"
 tree_entries = 21
-tree_total_bytes = 292820873
-tree_sha256 = "b3ec95ca94f208a7bfd6a80a5bc0f88885e55b2b658b81d196e71f313f2c8693"
-executable_sha256 = "99a4351f464f16f825afed154f7300896533ebce58b43b20db5542b602fd100e"
+tree_total_bytes = 303233189
+tree_sha256 = "4cb37e7fcfc7ebfb3272bef4553aca0ff17ec873e81ea244e3d441e2e64a205c"
+executable_sha256 = "e5a823487bb83ed522625cc5d9c383e94e0479bfdb1ba387a387505df27daa6a"
 
 [targets.macos-x86_64]
-url = "https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-x86_64-macos.tar.gz"
-size = 8705522
-sha256 = "d3e2d1235b70c93c54b52eabc1625ea960965152218754f1f4eeb0f873c48e03"
+url = "https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-macos.tar.gz"
+size = 9276271
+sha256 = "13a9b90be775c6389ce3d1f879cb8627bea56708ba8c122983941d53a8199b95"
 executable = "bin/wasm-opt"
 tree_entries = 21
-tree_total_bytes = 27533785
-tree_sha256 = "36bb42e064e15edd2ecc78e835c8f61e45b2523b1375e9f19cd44e9819087fed"
-executable_sha256 = "bbfb5f25fe43e95a86e45410047c816b036be6dcf363f05b7d768b552fd00606"
+tree_total_bytes = 29326877
+tree_sha256 = "b29f576f0ca92780a92f2c9a607d4ebe63435f15ea70b55e343716bab26e5776"
+executable_sha256 = "e26344b1d0d0986ac4a1090f58e478470eb2a52ba0625ae9a0f880511bb31d51"
 
 [targets.macos-aarch64]
-url = "https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-arm64-macos.tar.gz"
-size = 7362973
-sha256 = "79d3ab9f417d9e215f15f598f523d001a7d9ac1e59367e5c869fbdabd1cba72e"
+url = "https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-arm64-macos.tar.gz"
+size = 7810532
+sha256 = "ad66da82ac13f163e424b1643f16c6dfcccc98b5966296b43e52d3cab04f84a8"
 executable = "bin/wasm-opt"
 tree_entries = 21
-tree_total_bytes = 25162001
-tree_sha256 = "71825330fa7d956a4f162aaad503fc382150550dcf905dc8aacc612b023260e4"
-executable_sha256 = "fa49ec32a92b72b368b66f8f19d84e9adffeef002449e6a07cd95a3ed2612b41"
+tree_total_bytes = 26604101
+tree_sha256 = "c12208f5e00586d949fd398181170ec19c001e9ad6c7aefecdc6239f95cc0c81"
+executable_sha256 = "81041e09f332df94db1c2009a64d8f3b85f0431a2c920ccd014d3ceebb343402"
 
 [targets.windows-x86_64]
-url = "https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-x86_64-windows.tar.gz"
-size = 80320428
-sha256 = "cc09c874f4332d00aa32ab72745a9b98c9a172f795762f21d03e70638a3f7f4c"
+url = "https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-windows.tar.gz"
+size = 111045528
+sha256 = "17a2cbeac6b5693c5fbafab3838d3c65fd9c1eb38b05f5baec6c657e8c84995b"
 executable = "bin/wasm-opt.exe"
 tree_entries = 21
-tree_total_bytes = 330414607
-tree_sha256 = "0ec2b40af8efabe69240bae63600ce73c3f108a51a150ba08a571846ba8f278c"
-executable_sha256 = "7d1a954d0a1c11dc50ba3e41ec483a27b40e769ae4d577a2de7ed41c6463bbe9"
+tree_total_bytes = 632981762
+tree_sha256 = "ceff0ddd9312d11f50671590ce97b2184e0abc934eb39c4e530a6cdc06bbef37"
+executable_sha256 = "4217d75f81cf33c4032d82b5d531120069af1a4b43eb7737977bdb2c99a8f4ba"
 
 [targets.windows-aarch64]
-url = "https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-arm64-windows.tar.gz"
-size = 105980303
-sha256 = "b18c9cbe000562b1ee5d9cb60146616a949aca504903ad63f27fd9fd679898a7"
+url = "https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-arm64-windows.tar.gz"
+size = 109735160
+sha256 = "492a8e1847a0be1554bb9a7f384227981d60bc013aedc02d8ba1372c3943178c"
 executable = "bin/wasm-opt.exe"
 tree_entries = 21
-tree_total_bytes = 641724419
-tree_sha256 = "8eafa801069d0462efbe34ea7eb49061858a741e4dc0f4036850c32381e04034"
-executable_sha256 = "37ddf73166f4daffc1344ca60170cd52b7aac1f1df1f2250e300404d13ade219"
+tree_total_bytes = 664316580
+tree_sha256 = "4f56124c37b3734fa67e1366c87c08d302759ba8bc52ee6a8abd41976a5ac96d"
+executable_sha256 = "d6c01791133b2eded195b6461e9393de02a9bc36bdc3379918870780ca1c6a4d"

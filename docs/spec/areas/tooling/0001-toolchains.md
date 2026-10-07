@@ -73,7 +73,7 @@ the commit-pinned Debian installer) and verifies the complete
 LLVM/MLIR/LLD/Polly SDK. `wasi=true` provisions the exact host wasi-sdk through
 `tools/provision_wasi_sdk.py` on every release host: Linux, macOS, and Windows
 on x86-64 and arm64. `profile=wasm` is that SDK alone and requires `wasi=true`.
-`config/llvm_toolchain_releases.toml` owns wasi-sdk 33.0, its LLVM 22.1.0
+`config/llvm_toolchain_releases.toml` owns the WASI SDK release, its LLVM
 producer identity, the provenance release, and each host asset's URL, byte
 size, SHA-256, and archive root; every asset URL must belong to the provenance
 release, and the asset set must equal the shipped release matrix.
