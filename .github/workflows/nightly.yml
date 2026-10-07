@@ -474,7 +474,6 @@ jobs:
       - name: Setup receipt verifier
         uses: ./.github/actions/setup-project
         with:
-          uv: "false"
           cache-uv: "false"
 
       - name: Download nightly proof artifacts

@@ -261,6 +261,7 @@ jobs:
       - name: Setup Python unit toolchain
         uses: ./.github/actions/setup-project
         with:
+          rust-toolchain: pinned
           sync: "true"
           sync-frozen: "true"
           sync-groups: dev
@@ -477,7 +478,6 @@ jobs:
       - name: Setup proof verdict Python
         uses: ./.github/actions/setup-project
         with:
-          uv: "false"
           cache-uv: "false"
       - name: Download executable proof receipts
         if: needs.classify-changes.outputs.selected != '[]'

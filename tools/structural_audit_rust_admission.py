@@ -14,6 +14,7 @@ import re
 import tomllib
 
 from molt.rust_source_scan import (
+    scan_memo,
     mask_rust_comments_and_strings,
     mask_rust_test_items,
     read_rust_module_cluster,
@@ -103,6 +104,7 @@ class AdmittedWireDomain:
         return self.registered - self.denied
 
 
+@scan_memo()
 def proven_admitted_wire_domain(
     root: Path, compile_body: str
 ) -> AdmittedWireDomain | None:
@@ -395,6 +397,7 @@ def proven_admitted_wire_domain(
     )
 
 
+@scan_memo()
 def proven_rejected_kinds(root: Path, compile_body: str) -> frozenset[str] | None:
     """Project the denied bound for callers that do not need registration."""
     domain = proven_admitted_wire_domain(root, compile_body)

@@ -18,7 +18,7 @@ validate_bool() {
 
 validate_atom() {
   local label=$1 value=$2
-  if [[ -z "$value" || ! "$value" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+  if [[ -z "$value" || ! "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]; then
     echo "invalid $label atom: $value" >&2
     exit 2
   fi
@@ -112,8 +112,20 @@ components=$(normalize_list rust-component "${INPUT_RUST_COMPONENTS:-}")
 targets=$(normalize_list rust-target "${INPUT_RUST_TARGETS:-}")
 sync_groups=$(normalize_list sync-group "${INPUT_SYNC_GROUPS:-}")
 
+if [[ "$python" == "true" && "$uv" != "true" ]]; then
+  echo "python requires uv as its managed provisioner" >&2
+  exit 2
+fi
+if [[ -n "$toolchain" && "$python" != "true" ]]; then
+  echo "rust-toolchain requires the verified repository Python" >&2
+  exit 2
+fi
 if [[ "$cache_uv" == "true" && "$uv" != "true" ]]; then
   echo "cache-uv requires uv" >&2
+  exit 2
+fi
+if [[ "$sync" == "true" && "$python" != "true" ]]; then
+  echo "sync requires the verified repository Python" >&2
   exit 2
 fi
 if [[ "$sync" == "true" && "$uv" != "true" ]]; then

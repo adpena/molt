@@ -24,9 +24,43 @@
   independently of the backend release above. A separately discovered linker
   or package-manager sysroot is not an equivalent release toolchain.
 - Rust (for runtime components + WASM + package implementations)
-- Python 3.12+ for tooling and tests (Molt targets 3.12+ semantics only; do not support <=3.11).
+- Tooling and tests use the exact CPython patch in `.python-version`. Guest
+  semantics target Python 3.12 and later; the host tooling pin is a separate contract.
 - Cargo-hosted DX helpers: `wasm-tools`, `wasm-pack`, and `cargo-edit`
   (`cargo-upgrade`) for dependency sweeps.
+
+## CI toolchain admission
+
+`.github/actions/setup-project` is the shared CI provisioner on Linux, macOS,
+and Windows. It installs the pinned uv release, then `provision-python.sh`
+installs the exact `.python-version` CPython into the job's ephemeral custody
+root. It selects through uv's managed interpreter API and validates CPython,
+the exact patch, the managed installation root, and both `python` and `python3`
+aliases before publishing any Python environment outputs. It does not depend
+on the Actions Python catalog or an assumed Windows executable layout. Python
+setup requires uv; later consumers inherit `UV_PYTHON_DOWNLOADS=never` and the
+verified `UV_PYTHON` executable. An unavailable archive or invalid alias fails
+setup before repository Python code executes.
+
+Rust setup resolves one complete installation plan through
+`tools/check_rust_toolchain.py`. The `pinned` role includes the stable channel,
+components, and targets in `rust-toolchain.toml`, plus normalized caller
+additions. The separate `sanitizer-nightly` role uses the dated nightly in
+`config/rust_nightly_toolchain.txt` and its explicit components and targets.
+`provision-rust.py` performs one explicit installation, verifies compiler and
+Cargo versions, selected sysroot and tool paths, component inventory, and
+host/target standard-library files, then selects the default. Installation or
+validation failure stops setup without destructive cleanup or retry.
+`RUSTUP_AUTO_INSTALL=0` is exported before consumers start, so a missing or
+partial installation cannot trigger competing repairs during proof fanout.
+
+Proof commands that build Rust declare both `rustc` and `cargo`, including the
+Python binding and runtime-artifact partitions. The existing proof executor
+fingerprints the union of declared tools before scheduling commands; Rust
+fingerprints share its serialized `rustup` domain. This developer setup has no
+emitted guest runtime cost. Archive availability, aliases, native binaries,
+and target libraries still require real cold-provision validation on each
+supported runner OS and architecture; simulated setup tests are not that proof.
 
 ## Python tooling source ownership
 

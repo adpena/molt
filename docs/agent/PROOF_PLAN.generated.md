@@ -14,9 +14,9 @@ Index mode executes the captured staged generator with its staged manifest, poli
 |---|---:|---:|
 | Hand-maintained path-to-proof authorities | 4 | 1 |
 | CI selection families | 5 | 11 |
-| Hashed executable authority inputs | 1 | 324 |
+| Hashed executable authority inputs | 1 | 330 |
 | Local path rules | 35 | 43 |
-| Unique local commands | 73 | 97 |
+| Unique local commands | 73 | 98 |
 | Handwritten Python classifier rule tables | 5 | 0 |
 
 ## CI families
@@ -46,14 +46,14 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `repository_policy` | pre-push, pr, main | yes | `github-job` | 60 min | 3540 s | 60 s | `repository-policy` | none | `docs-gates` needs none | 1 |
 | `wasm` | pr, main | yes | `github-job` | 160 min | 9600 s | 0 s | `compiler-build-resource` | none | `wasm-validation` needs `classify-changes` | 18 |
 | `python_static` | pre-push, pr, main | yes | `github-job` | 15 min | 300 s | 600 s | `python-static` | none | `python-static` needs `classify-changes` | 8 |
-| `python_unit` | pre-push, pr, main | yes | `github-matrix` | 20 min | 1200 s per cell | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 10 |
+| `python_unit` | pre-push, pr, main | yes | `github-matrix` | 20 min | 1200 s per cell | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 11 |
 | `native_integration` | pr, main | yes | `github-job` | 25 min | 1500 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 19 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 240 min | 14160 s | 240 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 17 |
 | `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 25 |
 | `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
 | `rust_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
 | `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
-| `platform_portability` | pr, main | yes | `github-matrix` | 180 min | 10800 s per cell | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 106 |
+| `platform_portability` | pr, main | yes | `github-matrix` | 180 min | 10800 s per cell | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 110 |
 
 ## Scheduled families
 
@@ -103,7 +103,7 @@ Executable identities bind resolved path, version text, and the repository-relat
 
 | Toolchain | Identity kind | Provider | Required version | Probe cwd | Setup value | Setup evidence |
 |---|---|---|---|---|---|---:|
-| `python` | `executable` | — | `^Python 3\.12\.15$` | `.` | `3.12.15` | 1 |
+| `python` | `executable` | — | `^Python 3\.12\.15$` | `.` | `3.12.15` | 2 |
 | `source-extension` | `target-derived` | `source-extension` | `^molt-source-extension-toolchain-v2$` | — | — | — |
 | `uv` | `executable` | — | `^uv 0\.12\.23\b` | `.` | `0.12.23` | 1 |
 | `node` | `executable` | — | `^v26\.10\.0$` | `.` | `26.10.0` | 3 |
@@ -308,7 +308,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `ecosystem-compat` | 2 | 1 | no |
 | `tinygrad-upat-static-exec-registry` | 2 | 1 | no |
 | `docs-architecture` | 3 | 2 | no |
-| `dev-tooling` | 10 | 4 | no |
+| `dev-tooling` | 12 | 5 | no |
 | `rust-ffi-blocks` | 6 | 2 | no |
 | `rust-toolchain` | 10 | 2 | no |
 | `table-drift` | 8 | 2 | no |

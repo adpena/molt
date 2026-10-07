@@ -41,8 +41,11 @@ import io
 import json
 import re
 import sys
-from collections.abc import Callable
-from dataclasses import dataclass, asdict
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, asdict, field as dataclass_field
+from functools import wraps
+from threading import local
 from pathlib import Path
 import tokenize
 from typing import TypeVar, cast
@@ -100,7 +103,6 @@ _EXCLUDE_PATH_FRAGMENTS = ("memory/recovery/", "memory/index_snapshots")
 
 # Source roots actually owned by the project.
 _SOURCE_ROOTS = ("runtime", "src", "tools")
-_ACTIVE_SOURCE_FILE_SCOPE: frozenset[str] | None = None
 
 
 def _is_excluded(path: Path, root: Path) -> bool:
@@ -118,43 +120,41 @@ def _is_excluded(path: Path, root: Path) -> bool:
     return any(frag in rel_str for frag in _EXCLUDE_PATH_FRAGMENTS)
 
 
-_MANIFEST_OUTPUTS_CACHE: set[str] | None = None
 _GENERATED_FILE_MARKER_RE = re.compile(
     r"(?im)^\s*(?://|#|/\*|\*)\s*(?:@generated\b|.*\bDO NOT EDIT\b)"
 )
 
 
-def _manifest_declared_outputs(root: Path | None = None) -> set[str]:
-    """The authoritative set of generated-file outputs declared in
-    tools/generator_manifest.toml (doc 59 F1). Consulted by `_is_generated` so the
-    "this file is generated, skip it" exclusion is backed by an AUTHORITY, not only
-    a header heuristic (doc 46 rule #1). Lazily parsed + cached; absent/malformed
-    manifest degrades to the heuristic (structural_audit must run standalone)."""
-    global _MANIFEST_OUTPUTS_CACHE
-    if _MANIFEST_OUTPUTS_CACHE is not None:
-        return _MANIFEST_OUTPUTS_CACHE
-    outputs: set[str] = set()
-    base = root or ROOT_DEFAULT
-    manifest = base / "tools" / "generator_manifest.toml"
-    try:
-        import tomllib
+def _manifest_declared_outputs(root: Path) -> frozenset[str]:
+    """Manifest authority for this explicit root and this audit operation.
 
-        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
-        for row in data.get("generator", []):
-            for out in row.get("outputs", []):
-                if isinstance(out, str):
-                    outputs.add(out)
-        for row in data.get("orphan_generated", []):
-            p = row.get("path")
-            if isinstance(p, str):
-                outputs.add(p)
-    except (OSError, ValueError):
-        outputs = set()
-    _MANIFEST_OUTPUTS_CACHE = outputs
-    return outputs
+    Absent/malformed manifests retain the standalone audit's header heuristic;
+    the owning generator checker separately validates the manifest itself.
+    """
+
+    def read() -> frozenset[str]:
+        outputs: set[str] = set()
+        manifest = root / "tools" / "generator_manifest.toml"
+        try:
+            import tomllib
+
+            data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+            for row in data.get("generator", []):
+                for out in row.get("outputs", []):
+                    if isinstance(out, str):
+                        outputs.add(out)
+            for row in data.get("orphan_generated", []):
+                path = row.get("path")
+                if isinstance(path, str):
+                    outputs.add(path)
+        except (OSError, ValueError):
+            outputs = set()
+        return frozenset(outputs)
+
+    return _run_cached(("manifest_outputs", _resolved(root)), read)
 
 
-def _is_generated(path: Path) -> bool:
+def _is_generated(path: Path, root: Path) -> bool:
     name = path.name
     if name.endswith("_generated.rs") or name.endswith("_generated.py"):
         return True
@@ -163,8 +163,8 @@ def _is_generated(path: Path) -> bool:
     # Authoritative manifest list (doc 59 F1) — a declared generated output is
     # generated even if its @generated header were ever stripped.
     try:
-        rel = _resolved(path).relative_to(ROOT_DEFAULT).as_posix()
-        if rel in _manifest_declared_outputs():
+        rel = _resolved(path).relative_to(_resolved(root)).as_posix()
+        if rel in _manifest_declared_outputs(root):
             return True
     except (ValueError, OSError):
         pass
@@ -175,18 +175,64 @@ def _is_generated(path: Path) -> bool:
     return bool(_GENERATED_FILE_MARKER_RE.search(head))
 
 
-# One run_all pass shares filesystem walks and derived indexes across probes.
-# The cache never outlives that run (tests mutate sources between runs), and a
-# probe called outside run_all stays uncached.
-_RUN_CACHE: dict[tuple[object, ...], object] | None = None
+@dataclass
+class _AuditOperation:
+    root: Path
+    path_scope: frozenset[str] | None
+    cache: dict[tuple[object, ...], object] = dataclass_field(default_factory=dict)
+
+
+_AUDIT_STATE = local()
+
+
+@contextmanager
+def audit_operation(
+    root: Path, path_scope: frozenset[str] | None = None
+) -> Iterator[None]:
+    """Own one synchronous filesystem view and lexical memo in this thread.
+
+    Every explicit operation gets fresh filesystem/manifest state. Nested
+    operations restore the outer view, including its source scope; only pure,
+    content-keyed lexical results may be shared with that outer operation.
+    """
+    previous = getattr(_AUDIT_STATE, "operation", None)
+    _AUDIT_STATE.operation = _AuditOperation(root.resolve(), path_scope)
+    try:
+        with scan_memo():
+            yield
+    finally:
+        if previous is None:
+            del _AUDIT_STATE.operation
+        else:
+            _AUDIT_STATE.operation = previous
+
+
+def _audit_probe(probe: Callable[..., _T]) -> Callable[..., _T]:
+    @wraps(probe)
+    def scoped(root: Path, *args, **kwargs) -> _T:
+        operation = getattr(_AUDIT_STATE, "operation", None)
+        if operation is not None and operation.root == root.resolve():
+            return probe(root, *args, **kwargs)
+        with audit_operation(root):
+            return probe(root, *args, **kwargs)
+
+    return scoped
+
+
+def _source_scope(root: Path) -> frozenset[str] | None:
+    operation = getattr(_AUDIT_STATE, "operation", None)
+    if operation is not None and operation.root == root.resolve():
+        return operation.path_scope
+    return None
 
 
 def _run_cached(key: tuple[object, ...], compute: Callable[[], _T]) -> _T:
-    if _RUN_CACHE is None:
+    operation = getattr(_AUDIT_STATE, "operation", None)
+    if operation is None:
         return compute()
-    if key not in _RUN_CACHE:
-        _RUN_CACHE[key] = compute()
-    return cast(_T, _RUN_CACHE[key])
+    if key not in operation.cache:
+        operation.cache[key] = compute()
+    return cast(_T, operation.cache[key])
 
 
 def _resolved(path: Path) -> Path:
@@ -232,9 +278,10 @@ def _iter_pruned_files(base: Path, root: Path, suffixes: tuple[str, ...]) -> lis
 
 
 def _iter_source_files(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
-    if _ACTIVE_SOURCE_FILE_SCOPE is not None:
+    scope = _source_scope(root)
+    if scope is not None:
         scoped: list[Path] = []
-        for rel_str in sorted(_ACTIVE_SOURCE_FILE_SCOPE):
+        for rel_str in sorted(scope):
             path = root / rel_str
             if not path.is_file() or path.suffix not in suffixes:
                 continue
@@ -718,7 +765,7 @@ def _large_source_files(
 ) -> list[LargeSourceFile]:
     return list(
         _run_cached(
-            ("large", root, ceiling, py_ceiling, _ACTIVE_SOURCE_FILE_SCOPE),
+            ("large", root, ceiling, py_ceiling, _source_scope(root)),
             lambda: _scan_large_source_files(root, ceiling, py_ceiling),
         )
     )
@@ -731,7 +778,7 @@ def _scan_large_source_files(
     test_paths = _rust_test_source_paths(root)
     for suffix, lang_ceiling in ((".rs", ceiling), (".py", py_ceiling)):
         for path in _iter_source_files(root, (suffix,)):
-            if _is_generated(path) or (
+            if _is_generated(path, root) or (
                 suffix == ".rs" and _resolved(path) in test_paths
             ):
                 continue
@@ -762,7 +809,7 @@ def _source_sibling_count(root: Path, directory: Path, suffix: str) -> int:
     for path in directory.iterdir():
         if not path.is_file() or path.suffix != suffix:
             continue
-        if _is_excluded(path, root) or _is_generated(path):
+        if _is_excluded(path, root) or _is_generated(path, root):
             continue
         count += 1
     return count
@@ -785,6 +832,7 @@ def _cohesive_decomposition_ceiling(item: LargeSourceFile) -> int:
     return int(item.ceiling * _COHESIVE_DECOMPOSITION_CEILING_FACTOR)
 
 
+@_audit_probe
 def probe_semantic_fallthroughs(root: Path) -> list[Finding]:
     """Hand-maintained semantic classifications over OpCode/kind that drift
     silently: `match {.. _ => default}` and `matches!(x, OpCode::A | B | ..)`.
@@ -795,7 +843,7 @@ def probe_semantic_fallthroughs(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     test_paths = _rust_test_source_paths(root)
     for path in _iter_source_files(root, (".rs",)):
-        if _is_generated(path) or _resolved(path) in test_paths:
+        if _is_generated(path, root) or _resolved(path) in test_paths:
             continue
         try:
             raw = _source_text(path)
@@ -890,6 +938,7 @@ def probe_semantic_fallthroughs(root: Path) -> list[Finding]:
     return findings
 
 
+@_audit_probe
 def probe_large_source_files(
     root: Path,
     ceiling: int = 4000,
@@ -932,6 +981,7 @@ def probe_large_source_files(
     return findings
 
 
+@_audit_probe
 def probe_kitchen_sink_files(
     root: Path,
     ceiling: int = 4000,
@@ -978,6 +1028,7 @@ def probe_kitchen_sink_files(
     return findings
 
 
+@_audit_probe
 def probe_undecomposed_god_files(
     root: Path,
     ceiling: int = 4000,
@@ -1092,12 +1143,13 @@ def _is_stdlib_upstream_advisory_marker(
     return marker.upper() == "XXX"
 
 
+@_audit_probe
 def probe_debt_markers(root: Path) -> list[Finding]:
     """Workaround/debt markers — the CLAUDE.md zero-workaround policy made
     machine-checkable. Reported per file (ranked), ratcheted in aggregate."""
     findings: list[Finding] = []
     for path in _iter_source_files(root, (".rs", ".py")):
-        if _is_generated(path):
+        if _is_generated(path, root):
             continue
         try:
             text = _source_text(path)
@@ -1265,6 +1317,7 @@ def _compatibility_projection_inventory(path: Path, root: Path, proved: bool):
     ]
 
 
+@_audit_probe
 def probe_python_stub_surfaces(root: Path) -> list[Finding]:
     """Python implementation-gap surfaces as a first-class ratchet.
 
@@ -1277,7 +1330,7 @@ def probe_python_stub_surfaces(root: Path) -> list[Finding]:
     compatibility_proved = not compatibility_errors.projection_errors(root)
     for path in _iter_source_files(root, (".py",)):
         if (
-            _is_generated(path)
+            _is_generated(path, root)
             and path.relative_to(root).as_posix()
             not in compatibility_errors.projections()
         ):
@@ -1412,6 +1465,7 @@ def _rust_stub_surface_hits(text: str) -> list[ImplementationGapHit]:
     )
 
 
+@_audit_probe
 def probe_rust_stub_surfaces(root: Path) -> list[Finding]:
     """Rust/backend/runtime implementation-gap surfaces.
 
@@ -1425,7 +1479,7 @@ def probe_rust_stub_surfaces(root: Path) -> list[Finding]:
     test_paths = _rust_test_source_paths(root)
     for path in _iter_source_files(root, (".rs",)):
         if (
-            _is_generated(path)
+            _is_generated(path, root)
             and path.relative_to(root).as_posix()
             not in compatibility_errors.projections()
         ) or _resolved(path) in test_paths:
@@ -2157,6 +2211,7 @@ def _rust_rejection_family(
     return rejected, findings, projection
 
 
+@_audit_probe
 def probe_rust_backend_lowering_gaps(root: Path) -> list[Finding]:
     """Backend ops that fail closed because Rust lowering is not implemented.
 
@@ -2259,6 +2314,7 @@ _NATIVE_SCALAR_PLAN_FORBIDDEN = {
 }
 
 
+@_audit_probe
 def probe_native_scalar_plan_authority(root: Path) -> list[Finding]:
     """Native scalar lowering must consume ScalarRepresentationPlan directly.
 
@@ -2269,7 +2325,7 @@ def probe_native_scalar_plan_authority(root: Path) -> list[Finding]:
     path optimized around one plan: handlers may ask plan predicates, but may
     not clone carrier or scalar-kind membership into local side sets.
     """
-    if _ACTIVE_SOURCE_FILE_SCOPE is not None:
+    if _source_scope(root) is not None:
         targets = []
         surface_prefix = f"{_NATIVE_SCALAR_PLAN_SURFACE_REL}/"
         for path in _iter_source_files(root, (".rs",)):
@@ -2330,6 +2386,7 @@ _REPR_NAME_SCALAR_FORBIDDEN = {
 }
 
 
+@_audit_probe
 def probe_repr_name_scalar_authority(root: Path) -> list[Finding]:
     """Name-keyed scalar carriers must have one representation-map authority.
 
@@ -2383,6 +2440,7 @@ _PREDICATE_RE = re.compile(
 _OPCODE_CONTEXT_RE = re.compile(r"OpCode::|\bopcode\b|\.kind\b|_original_kind")
 
 
+@_audit_probe
 def probe_duplicate_authorities(root: Path) -> list[Finding]:
     """Council Q1: the same opcode-semantic property decided in more than one
     file. Groups opcode-classifying predicate functions (whose body inspects an
@@ -2406,7 +2464,7 @@ def probe_duplicate_authorities(root: Path) -> list[Finding]:
     }
     test_paths = _rust_test_source_paths(root)
     for path in _iter_source_files(root, (".rs",)):
-        if _is_generated(path) or _resolved(path) in test_paths:
+        if _is_generated(path, root) or _resolved(path) in test_paths:
             continue
         rel_path = path.relative_to(root)
         try:
@@ -2491,6 +2549,7 @@ def _count_enum_variants(rust_text: str, enum_name: str) -> set[str]:
     return variants
 
 
+@_audit_probe
 def probe_registry_reconciliation(root: Path) -> list[Finding]:
     """Confidence (INFO) check: the [[opcode]] effect-oracle table is rendered as
     an EXHAUSTIVE rustc match, so coverage is compiler-enforced — this only
@@ -2547,20 +2606,11 @@ PROBES = (
 
 def run_all(root: Path, path_scope: frozenset[str] | None = None) -> list[Finding]:
     findings: list[Finding] = []
-    global _ACTIVE_SOURCE_FILE_SCOPE, _RUN_CACHE
-    previous_scope = _ACTIVE_SOURCE_FILE_SCOPE
-    previous_cache = _RUN_CACHE
-    _ACTIVE_SOURCE_FILE_SCOPE = path_scope
-    _RUN_CACHE = {}
-    try:
-        with scan_memo():
-            for probe in PROBES:
-                if path_scope is not None and probe is probe_registry_reconciliation:
-                    continue
-                findings.extend(probe(root))
-    finally:
-        _ACTIVE_SOURCE_FILE_SCOPE = previous_scope
-        _RUN_CACHE = previous_cache
+    with audit_operation(root, path_scope):
+        for probe in PROBES:
+            if path_scope is not None and probe is probe_registry_reconciliation:
+                continue
+            findings.extend(probe(root))
     findings.sort(key=lambda f: f.sort_key())
     return findings
 

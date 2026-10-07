@@ -3349,3 +3349,69 @@ def test_family_without_tier_commands_starts_no_runner(tmp_path) -> None:
             output = proof_plan.family_matrix_output(family.name)
             assert json.loads(outputs[output]) == {"include": []}
     assert all(outputs[family.name] == "false" for family in PLAN.families)
+
+
+@pytest.mark.parametrize("suffix", ["", ".macos"])
+def test_python_rust_consumers_admit_tools_before_any_partition(
+    tmp_path: Path, monkeypatch, suffix: str
+) -> None:
+    # The frontend frame and CLI cache-identity suites really invoke Cargo.
+    # Removing either typed prerequisite must fail before the executor can
+    # schedule a command, rather than be masked by a warm runner installation.
+    commands = tuple(
+        next(command for command in PLAN.commands if command.id == name + suffix)
+        for name in ("python.unit.binding-authority", "python.unit.runtime-artifacts")
+    )
+    assert "tests/test_python_execution_frame.py" in commands[0].argv
+    assert "tests/cli/test_cli_shared_stdlib_cache.py" in commands[1].argv
+    for command in commands:
+        assert {"rustc", "cargo"} <= set(PLAN.required_toolchains(command))
+    observed = []
+
+    def reject_incomplete_installation(_plan, names):
+        observed.append(names)
+        assert {"python", "uv", "rustc", "cargo"} <= set(names)
+        raise ValueError("independent fixture: partial Rust installation")
+
+    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(
+        proof_plan, "toolchain_fingerprints", reject_incomplete_installation
+    )
+    monkeypatch.setattr(
+        proof_plan,
+        "_run_command",
+        lambda *_args: pytest.fail("payload scheduled before toolchain admission"),
+    )
+    receipt_path = tmp_path / "unprovisioned.json"
+    assert proof_plan.execute_commands(PLAN, commands, receipt_path) == 2
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert len(observed) == 1
+    assert receipt["commands"] == []
+    assert receipt["execution"]["scheduled_commands"] == 0
+    assert receipt["status"] == "failure"
+
+
+def test_setup_contract_inputs_and_native_portability_routes_are_complete() -> None:
+    for path in (
+        ".github/actions/setup-project/normalize-inputs.sh",
+        ".github/actions/setup-project/provision-python.sh",
+        ".github/actions/setup-project/provision-rust.py",
+        "tools/check_rust_toolchain.py",
+        "tests/tools/test_setup_project_inputs.py",
+        "tests/tools/test_rust_toolchain_contract.py",
+    ):
+        assert path in PLAN.authority_inputs
+        assert _classes(path)["platform_portability"] is True
+        assert _classes(path)["python_unit"] is True
+    commands = {command.id: command for command in PLAN.commands}
+    for name in (
+        "repository.docs-tests",
+        "portability.queue.linux",
+        "portability.queue.macos",
+        "portability.queue.windows",
+    ):
+        for path in (
+            "tests/tools/test_setup_project_inputs.py",
+            "tests/tools/test_rust_toolchain_contract.py",
+        ):
+            assert commands[name].argv.count(path) == 1

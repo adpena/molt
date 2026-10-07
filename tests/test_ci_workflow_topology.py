@@ -185,22 +185,16 @@ def test_setup_project_cache_identity_is_complete_and_non_incremental() -> None:
     assert "cache-cargo requires rust-toolchain" in normalizer
     assert "actionlint requires python" in normalizer
     assert "dtolnay/rust-toolchain@" not in action
-    assert "rustup toolchain install" in action
-    assert "rustup default" in action
-    assert 'if [[ -n "$RUST_COMPONENTS" ]]' in action
-    assert 'if [[ -n "$RUST_TARGETS" ]]' in action
+    assert (
+        install["run"]
+        == "python3 -I -B .github/actions/setup-project/provision-rust.py"
+    )
+    assert install["env"]["RUST_TOOLCHAIN_ROLE"] == "${{ inputs.rust-toolchain }}"
+    assert "RUSTUP_AUTO_INSTALL=0" in steps[0]["run"]
     assert 'if [[ -n "$SYNC_GROUPS" ]]' in action
-    component_guard = action.split('if [[ -n "$RUST_COMPONENTS" ]]', 1)[1].split(
-        "        fi", 1
-    )[0]
-    target_guard = action.split('if [[ -n "$RUST_TARGETS" ]]', 1)[1].split(
-        "        fi", 1
-    )[0]
     group_guard = action.split('if [[ -n "$SYNC_GROUPS" ]]', 1)[1].split(
         "        fi", 1
     )[0]
-    assert 'for component in "${components[@]}"' in component_guard
-    assert 'for target in "${targets[@]}"' in target_guard
     assert 'for group in "${groups[@]}"' in group_guard
     assert "steps.inputs.outputs.rust-cache-token" in action
     assert "steps.inputs.outputs.cache-namespace" in action
@@ -1361,7 +1355,10 @@ def test_default_ci_python_version_comes_from_single_file() -> None:
             assert f"python-version: '{version}'" not in text
 
     setup_project = _read(".github/actions/setup-project/action.yml")
-    assert "python-version-file: .python-version" in setup_project
+    assert "actions/setup-python@" not in setup_project
+    assert "bash .github/actions/setup-project/provision-python.sh" in setup_project
+    bootstrap = _read(".github/actions/setup-project/provision-python.sh")
+    assert "cat .python-version" in bootstrap
     for workflow in ("ci.yml", "formal.yml", "release.yml"):
         assert "uses: ./.github/actions/setup-project" in _read(
             f".github/workflows/{workflow}"
@@ -1988,3 +1985,39 @@ def test_every_action_reference_is_admitted_by_repository_policy() -> None:
         assert admitted, (
             f"{source}: {use} is not allowed by the repository Actions policy"
         )
+
+
+def test_bootstrap_binds_managed_python_before_repository_or_rust_consumers() -> None:
+    action = yaml.safe_load(_read(".github/actions/setup-project/action.yml"))
+    steps = action["runs"]["steps"]
+    names = [step.get("name") for step in steps]
+    python = names.index("Provision and bind repository Python")
+    assert names.index("Install exact uv") < python < names.index("Install exact Rust")
+    assert (
+        action["outputs"]["python-path"]["value"]
+        == "${{ steps.python.outputs.python-path }}"
+    )
+    for step in steps[:python]:
+        assert not re.search(r"\bpython3?\s", str(step.get("run", "")))
+    for workflow in sorted(WORKFLOW_ROOT.glob("*.yml")):
+        payload = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        for job in payload.get("jobs", {}).values():
+            for step in job.get("steps", []):
+                if step.get("uses") != "./.github/actions/setup-project":
+                    continue
+                inputs = step.get("with", {})
+                if str(inputs.get("python", "true")) == "true":
+                    assert str(inputs.get("uv", "true")) == "true", workflow
+    job = yaml.safe_load(_read(".github/workflows/ci.yml"))["jobs"]["python-unit"]
+    setup = next(
+        step
+        for step in job["steps"]
+        if step.get("uses") == "./.github/actions/setup-project"
+    )
+    assert setup["with"]["rust-toolchain"] == "pinned"
+    execute = next(
+        step
+        for step in job["steps"]
+        if "--run-family python_unit" in step.get("run", "")
+    )
+    assert job["steps"].index(setup) < job["steps"].index(execute)

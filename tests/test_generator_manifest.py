@@ -782,3 +782,43 @@ def test_malformed_manifest_temp(tmp_path: Path):
     )
     with pytest.raises(CGM.ManifestError):
         CGM.load_manifest(tmp_path)
+
+
+def test_generator_scans_use_selected_root_and_refresh_manifest(tmp_path):
+    left, right = tmp_path / "left", tmp_path / "right"
+    left.mkdir()
+    right.mkdir()
+    for root in (left, right):
+        _mirror_min_tree(root)
+        target = root / "runtime/molt-passes/src/custody_probe.rs"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(_silent_default_match("Terminator"), encoding="utf-8")
+    relative = "runtime/molt-passes/src/custody_probe.rs"
+    manifest_path = left / "tools/generator_manifest.toml"
+    original = manifest_path.read_text(encoding="utf-8")
+    declaration = (
+        '\n[[orphan_generated]]\npath = "' + relative + '"\n'
+        'producer = "independent fixture"\nreason = "declared source projection"\n'
+    )
+    manifest_path.write_text(original + declaration, encoding="utf-8")
+    sa = CGM._load_structural_audit()
+
+    def findings(root):
+        return [
+            v
+            for v in CGM.audit_closed_domains(root, CGM.load_manifest(root), sa)
+            if v.location.split(":", 1)[0] == relative
+        ]
+
+    assert findings(left) == []  # manifest-only ownership, no magic header
+    assert findings(right), "the other root must retain its real missing-arm finding"
+    manifest_path.write_text(original, encoding="utf-8")
+    assert findings(left), "a new operation must observe removed generator ownership"
+    # Orphan detection uses the same explicit-root authority, even when the
+    # caller deliberately supplies a manifest without the on-disk declaration.
+    before = CGM.load_manifest(left)
+    manifest_path.write_text(original + declaration, encoding="utf-8")
+    orphans = CGM.detect_orphans(left, before, sa)
+    assert any(v.kind == "orphan" and v.location == relative for v in orphans)
+    manifest_path.write_text(original, encoding="utf-8")
+    assert not any(v.location == relative for v in CGM.detect_orphans(left, before, sa))
