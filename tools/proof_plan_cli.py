@@ -163,6 +163,11 @@ def main(api: ModuleType, argv: list[str] | None = None) -> int:
         return 0
     if args.verify_selected is not None:
         try:
+            if not args.verify_selected.strip():
+                raise ValueError(
+                    "--verify-selected is empty: the changed-path classifier "
+                    "produced no selection"
+                )
             selected = json.loads(args.verify_selected)
             if not isinstance(selected, list) or not all(
                 isinstance(name, str) for name in selected
@@ -219,7 +224,9 @@ def main(api: ModuleType, argv: list[str] | None = None) -> int:
     else:
         for family in plan.families:
             print(f"{family.name}={outputs[family.name]}")
-        print(f"matrix={outputs['matrix']}")
+            if family.data["executor"] == "github-matrix":
+                matrix = api.family_matrix_output(family.name)
+                print(f"{matrix}={outputs[matrix]}")
         if selection.fail_closed_reason:
             print(f"proof-plan: {selection.fail_closed_reason}", file=sys.stderr)
     if args.github_output is not None:
