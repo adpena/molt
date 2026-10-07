@@ -27,7 +27,7 @@ class WasmCodegenLayout:
                 self.split_app_table_base
             )
         if self.relocatable:
-            env["MOLT_WASM_LINK"] = "1"
+            env["MOLT_WASM_RELOCATABLE"] = "1"
         return env
 
 
@@ -79,5 +79,5 @@ def prepare_wasm_codegen_layout(
         data_base=data_base,
         table_base=table_base,
         split_app_table_base=split_app_table_base,
-        relocatable=linked or os.environ.get("MOLT_WASM_LINK") == "1",
+        relocatable=linked or os.environ.get("MOLT_WASM_RELOCATABLE") == "1",
     )

@@ -45,7 +45,7 @@ def _molt_build(
     """Run `molt build` and return the output .wasm path, or None on failure."""
     env = wasm_test_build_env(ROOT, linked=linked)
     if linked:
-        env["MOLT_WASM_LINK"] = "1"
+        env["MOLT_WASM_RELOCATABLE"] = "1"
     if extra_env:
         env.update(extra_env)
     cmd = [

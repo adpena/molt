@@ -653,7 +653,7 @@ _REGISTRY_JSON = r"""{
     },
     {
       "name": "MOLT_WASM_LINK",
-      "owner": "src/molt/cli/backend_compile.py",
+      "owner": "src/molt/cli/non_native_output.py",
       "summary": "Guard scope for WASM link steps (wasm-ld and post-link tools)."
     },
     {
@@ -7531,6 +7531,15 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
+      "default": "",
+      "kind": "path",
+      "name": "MOLT_WASM_OPT",
+      "owner": "src/molt/wasm_optimizer_identity.py",
+      "summary": "Path of the wasm-opt executable for post-link WASM optimization; a non-empty value is an explicit pin, and an unusable pin stops resolution instead of falling back. When unset, wasm-opt comes from PATH, then from the manifest-owned Binaryen release under MOLT_TARGET_ROOT/toolchains. The molt-wasm-ci workflow sets it to the provisioned Binaryen's wasm-opt. The MOLT_WASM_OPT stem separately scopes the guard limits of wasm-opt runs.",
+      "values": []
+    },
+    {
+      "audience": "user",
       "default": "0",
       "kind": "bool",
       "name": "MOLT_WASM_POLL_DEBUG",
@@ -7577,6 +7586,15 @@ _REGISTRY_JSON = r"""{
         "full",
         "pure"
       ]
+    },
+    {
+      "audience": "internal",
+      "default": "",
+      "kind": "bool",
+      "name": "MOLT_WASM_RELOCATABLE",
+      "owner": "runtime/molt-backend-wasm/src/wasm_options.rs",
+      "summary": "src/molt/cli/wasm_codegen_layout.py sets it to 1 in the WASM backend environment, after backend_compile.py drops any inherited value, when the build links the module (relocatable codegen with relocation sections for wasm-ld); only the exact value 1 enables it.",
+      "values": []
     },
     {
       "audience": "developer",

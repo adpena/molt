@@ -2129,7 +2129,11 @@ def check(
             continue
         if not site.enforced:
             continue
-        if name in registry.stem_by_name or registry.is_registered(name):
+        if registry.is_registered(name):
+            continue
+        # A stem's bare name scopes guard variables; reading or writing it as a
+        # value makes it a variable of its own, which needs its own row.
+        if name in registry.stem_by_name and site.access not in DEFINITE_ACCESSES:
             continue
         if site.access in DEFINITE_ACCESSES or site.access == ACCESS_STEM:
             violations.append(

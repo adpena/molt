@@ -327,7 +327,7 @@ def stage_link(
     if proc.returncode != 0:
         err = proc.stderr.strip() or proc.stdout.strip()
         # Non-relocatable files cannot be linked — this is expected for
-        # modules compiled without MOLT_WASM_LINK=1.
+        # modules compiled without MOLT_WASM_RELOCATABLE=1.
         if "not a relocatable wasm file" in err:
             return StageResult(
                 name="link",

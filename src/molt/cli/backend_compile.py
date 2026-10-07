@@ -565,7 +565,7 @@ def _prepare_backend_dispatch(
         backend_env.pop("MOLT_WASM_DATA_BASE", None)
         backend_env.pop("MOLT_WASM_TABLE_BASE", None)
         backend_env.pop("MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE", None)
-        backend_env.pop("MOLT_WASM_LINK", None)
+        backend_env.pop("MOLT_WASM_RELOCATABLE", None)
         backend_env.update(wasm_layout.backend_environment())
     # Single source of truth (shared with setup, the backend prewarm, and the
     # cache-key binary-identity resolver): the 'llvm' feature is folded in by
@@ -756,7 +756,7 @@ def _execute_backend_compile(
         wasm_table_base: int | None = None
         wasm_split_runtime_app_table_base: int | None = None
         if is_wasm and backend_env is not None:
-            wasm_link = backend_env.get("MOLT_WASM_LINK") == "1"
+            wasm_link = backend_env.get("MOLT_WASM_RELOCATABLE") == "1"
             raw_data_base = backend_env.get("MOLT_WASM_DATA_BASE")
             raw_table_base = backend_env.get("MOLT_WASM_TABLE_BASE")
             raw_split_runtime_app_table_base = backend_env.get(
