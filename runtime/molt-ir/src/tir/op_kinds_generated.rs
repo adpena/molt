@@ -1656,6 +1656,7 @@ pub fn simpleir_runtime_requirements_table(kind: &str) -> Option<SimpleIrRuntime
         | "loop_index_start"
         | "loop_start"
         | "lshift"
+        | "missing"
         | "mod"
         | "mod_"
         | "modulo"

@@ -161,10 +161,10 @@ fn rust_source_for_ir_rejects_unknown_ops_at_generated_semantic_authority() {
 
     let err = rust_source_for_ir(&ir).expect_err("Rust target must reject unknown operations");
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-    assert!(
-        err.to_string()
-            .contains("unclassified in the generated runtime semantic authority"),
-        "unexpected error: {err}"
+    assert_eq!(
+        err.to_string(),
+        "Rust validation failed: rust SimpleIR validation failed: function `molt_main` op#0: \
+         unregistered op kind `unsupported_for_rust_target_test`"
     );
 }
 
