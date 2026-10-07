@@ -1183,6 +1183,7 @@ def test_sccache_environment_policy_covers_every_rust_proof_family(
         "nightly_shard_prepare",
         "nightly_verification_t3",
         "platform_portability",
+        "python_unit",
         "rust",
         "rust_security",
         "wasm",
