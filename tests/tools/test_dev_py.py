@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from molt import custody_layout
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEV_PY = REPO_ROOT / "tools" / "dev.py"
@@ -598,15 +600,18 @@ def test_dev_py_run_uv_installs_canonical_guard_env(monkeypatch) -> None:
     assert env["CARGO_TARGET_DIR"] == str(module.ROOT / "target")
     assert env["MOLT_DIFF_CARGO_TARGET_DIR"] == env["CARGO_TARGET_DIR"]
     assert env["MOLT_CACHE"] == str(module.ROOT / ".molt_cache")
-    assert env["MOLT_DIFF_ROOT"] == str(module.ROOT / "tmp" / "diff")
-    assert env["MOLT_DIFF_TMPDIR"] == str(module.ROOT / "tmp")
+    # Scratch is <artifact root>/tmp unless that sits inside the checkout, as
+    # it does here; the custody layout then places it out of tree.
+    scratch = custody_layout.scratch_root(module.ROOT, module.ROOT)
+    assert env["MOLT_DIFF_ROOT"] == str(scratch / "diff")
+    assert env["MOLT_DIFF_TMPDIR"] == str(scratch)
     assert env["UV_CACHE_DIR"] == str(module.ROOT / ".uv-cache")
     assert env["UV_PROJECT_ENVIRONMENT"].startswith(
         str(module.ROOT / "uv-project-envs")
     )
     assert env["PIP_CACHE_DIR"] == str(module.ROOT / ".pip-cache")
-    assert env["PYTHONPYCACHEPREFIX"] == str(module.ROOT / "tmp" / "pycache")
-    assert env["TMPDIR"] == str(module.ROOT / "tmp")
+    assert env["PYTHONPYCACHEPREFIX"] == str(scratch / "pycache")
+    assert env["TMPDIR"] == str(scratch)
     assert env["TMP"] == env["TMPDIR"]
     assert env["TEMP"] == env["TMPDIR"]
     assert env["MOLT_SESSION_ID"].startswith("dev-")

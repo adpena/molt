@@ -41,7 +41,7 @@ from molt.cli.compiler_identity import (
     backend_build_admission,
     installed_compiler_admission,
 )
-from molt.cli.native_toolchain import _codesign_binary
+from molt.cli import native_toolchain
 from molt.cli.runtime_fingerprints import (
     _artifact_semantic_identity,
     _admitted_runtime_fingerprint,
@@ -461,7 +461,8 @@ def _ensure_backend_binary(
             if not source.exists():
                 return None
             if source == backend_bin:
-                _codesign_binary(backend_bin)
+                # One signing seam: atomic copies sign through it as well.
+                native_toolchain._codesign_binary(backend_bin)
             with stable_executable_probe(
                 source, label="backend alias source", identity=expected_identity
             ) as (

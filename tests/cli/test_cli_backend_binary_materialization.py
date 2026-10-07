@@ -12,6 +12,7 @@ from pathlib import Path
 
 import molt.cli as cli
 from molt.cli import backend_binary as cli_backend_binary
+from molt.cli import native_toolchain
 from molt.cli import backend_execution as cli_backend_execution
 from molt.backend_executable_names import backend_executable_name
 from molt.cli.backend_compile import _backend_environment_with_compiler_fingerprint
@@ -83,7 +84,7 @@ def test_target_switch_preserves_admitted_native_and_wasm_compilers(
 
     monkeypatch.setattr(cli_backend_binary, "_backend_fingerprint", fingerprint)
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", build)
-    monkeypatch.setattr(cli_backend_binary, "_codesign_binary", lambda _p: None)
+    monkeypatch.setattr(native_toolchain, "_codesign_binary", lambda _p: None)
     monkeypatch.setattr(
         cli_backend_binary,
         "_maybe_hydrate_artifact_from_canonical_target",
@@ -344,7 +345,7 @@ def test_ensure_backend_binary_refreshes_feature_tagged_alias_only_from_admitted
     monkeypatch.setattr(
         cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint
     )
-    monkeypatch.setattr(cli_backend_binary, "_codesign_binary", lambda _path: None)
+    monkeypatch.setattr(native_toolchain, "_codesign_binary", lambda _path: None)
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", fail_run_cargo)
     monkeypatch.setattr(
         cli_backend_binary,
@@ -708,7 +709,7 @@ def test_backend_build_publishes_provenance_only_after_successful_probe(
         cli_backend_binary, "_backend_fingerprint", lambda *_a, **_k: fingerprint
     )
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", fake_cargo)
-    monkeypatch.setattr(cli_backend_binary, "_codesign_binary", lambda _p: None)
+    monkeypatch.setattr(native_toolchain, "_codesign_binary", lambda _p: None)
     monkeypatch.setattr(
         cli_backend_binary,
         "_maybe_hydrate_artifact_from_canonical_target",
@@ -796,7 +797,7 @@ def test_backend_alias_replacement_during_publication_cannot_acquire_provenance(
     monkeypatch.setattr(
         cli_backend_binary, "_backend_fingerprint", lambda *_a, **_k: fingerprint
     )
-    monkeypatch.setattr(cli_backend_binary, "_codesign_binary", lambda _p: None)
+    monkeypatch.setattr(native_toolchain, "_codesign_binary", lambda _p: None)
     monkeypatch.setattr(
         cli_backend_binary,
         "_maybe_hydrate_artifact_from_canonical_target",

@@ -123,13 +123,12 @@ cargo_build_jobs = 2
 backend_daemon = true
 prefer_external_artifacts = true
 
+# Scratch (TMPDIR, MOLT_DIFF_ROOT, MOLT_DIFF_TMPDIR, ...) is owned by
+# molt.custody_layout, which keeps it out of the checkout; it is not templated.
 [tool.molt.dx.env]
 MOLT_EXT_ROOT = "{artifact_root}"
 MOLT_CACHE = "{artifact_root}/.molt_cache"
-MOLT_DIFF_ROOT = "{artifact_root}/tmp/diff"
-MOLT_DIFF_TMPDIR = "{artifact_root}/tmp"
 UV_CACHE_DIR = "{artifact_root}/.uv-cache"
-TMPDIR = "{artifact_root}/tmp"
 PYTHONPATH = "{root}/src"
 
 [tool.molt.dx.commands]
