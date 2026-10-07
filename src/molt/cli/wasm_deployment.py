@@ -8,7 +8,7 @@ import shutil
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterator, Mapping
+from typing import Callable, Generator, Mapping
 
 from molt.artifact_publication import (
     discard_staged_output,
@@ -155,7 +155,7 @@ class WasmDeploymentGeneration:
 
     @classmethod
     @contextlib.contextmanager
-    def prepare(cls, plan: WasmDeploymentPlan) -> Iterator[WasmDeploymentGeneration]:
+    def prepare(cls, plan: WasmDeploymentPlan) -> Generator[WasmDeploymentGeneration]:
         plan.root.mkdir(parents=True, exist_ok=True)
         root = staged_file_path(plan.root / "manifest.json", purpose="wasm-generation")
         root.mkdir()

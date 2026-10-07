@@ -14,7 +14,7 @@ import shutil
 import sys
 import stat
 import tomllib
-from collections.abc import Iterator, MutableMapping
+from collections.abc import Generator, Iterator, MutableMapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from enum import Enum
@@ -681,7 +681,7 @@ def _resolve_c_build_resources(
 @contextmanager
 def _rust_probe_command(
     rustc: Path, wrappers: Mapping[str, Path], *, label: str
-) -> Iterator[list[str]]:
+) -> Generator[list[str]]:
     """Cargo workspace_process order, with every executable fenced together."""
     with ExitStack() as stack:
         command = []

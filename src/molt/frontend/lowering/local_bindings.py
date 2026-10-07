@@ -15,7 +15,7 @@ from typing import (
     TYPE_CHECKING,
     Callable,
     Iterable,
-    Iterator,
+    Generator,
     Mapping,
     Sequence,
     TypeVar,
@@ -1526,7 +1526,7 @@ class LocalBindingMixin(GeneratorMixinBase):
     @contextmanager
     def _comprehension_scope(
         self, node: ast.ListComp | ast.SetComp | ast.DictComp
-    ) -> Iterator[None]:
+    ) -> Generator[None]:
         """Fresh PEP 709 locals; caller storage survives normal and exceptional exit.
 
         In a synchronous frame each scope binding takes over its name's home:

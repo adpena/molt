@@ -9,7 +9,7 @@ import signal
 import subprocess
 import sys
 import time
-from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Generator, Mapping, Sequence
 
 if TYPE_CHECKING:
     from tools.memory_guard_core.process_custody import GuardInfrastructureFailure
@@ -807,7 +807,7 @@ def _build_slot_dir() -> Path:
 
 
 @contextlib.contextmanager
-def _build_slot() -> Iterator[int]:
+def _build_slot() -> Generator[int]:
     build_slot_dir = _build_slot_dir()
     max_slots_raw = os.environ.get("MOLT_MAX_CONCURRENT_BUILDS", "").strip()
     try:

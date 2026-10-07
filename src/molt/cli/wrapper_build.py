@@ -9,7 +9,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Generator, Mapping, Sequence
 
 from molt.capability_manifest import resolve_runtime_policy_from_env
 from molt.cli import build_inputs as _build_inputs
@@ -78,7 +78,7 @@ def _build_args_has_python_version_flag(args: Sequence[str]) -> bool:
 
 
 @contextmanager
-def _scoped_environ_updates(updates: Mapping[str, str]) -> Iterator[None]:
+def _scoped_environ_updates(updates: Mapping[str, str]) -> Generator[None]:
     if not updates:
         yield
         return

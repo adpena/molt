@@ -21,8 +21,8 @@ import ast
 from typing import (
     Any,
     Callable,
+    Generator,
     Iterable,
-    Iterator,
     Literal,
     Mapping,
     Protocol,
@@ -655,7 +655,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     @contextmanager
     def _comprehension_scope(
         self, node: ast.ListComp | ast.SetComp | ast.DictComp
-    ) -> Iterator[None]: ...
+    ) -> Generator[None]: ...
 
     def _compute_block_use_def(
         self, ops: list[MoltOp]

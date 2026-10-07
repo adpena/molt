@@ -106,11 +106,13 @@ OUT_ATTRS = ROOT / "src/molt/frontend/_protocol_attrs.py"
 # by the scaffold; the rest are pulled in on demand from observed usage.
 _TYPING_NAMES = {
     "Any",
+    "AsyncGenerator",
     "AsyncIterator",
     "Callable",
     "ClassVar",
     "Collection",
     "Final",
+    "Generator",
     "Iterable",
     "Iterator",
     "Literal",

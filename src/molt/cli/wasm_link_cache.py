@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import re
 import time
-from typing import Collection, Iterator, Mapping
+from typing import Collection, Generator, Mapping
 
 from molt.cli.atomic_io import _atomic_write_bytes, _atomic_write_json
 from molt.file_locks import _acquire_file_lock, _release_file_lock
@@ -99,7 +99,7 @@ def _locked_wasm_link_cache_entry(
     entry: WasmLinkCacheEntry,
     *,
     timeout_s: float = 900.0,
-) -> Iterator[float]:
+) -> Generator[float]:
     started = time.perf_counter()
     handle = _acquire_file_lock(
         entry.lock,

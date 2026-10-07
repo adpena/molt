@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
@@ -528,7 +528,7 @@ def open_stable_regular_file(
     label: str,
     expected_path_stat: os.stat_result | None = None,
     observed: StableRegularFileVersion | None = None,
-) -> Iterator[StableRegularFileHandle]:
+) -> Generator[StableRegularFileHandle]:
     """Open one direct regular file, optionally bound to a no-follow snapshot row.
 
     Supplied metadata replaces only the opening path lookup. The freshly opened
@@ -962,7 +962,7 @@ def stable_executable_probe(
     *,
     label: str,
     identity: StableRegularFileIdentity | None = None,
-) -> Iterator[tuple[Path, StableRegularFileIdentity]]:
+) -> Generator[tuple[Path, StableRegularFileIdentity]]:
     """Bind a probe to a cold-captured or already-attested executable generation."""
     entrypoint, resolved = _executable_paths(path, label=label)
     before_entry = _stat_identity(entrypoint.lstat())
@@ -1028,7 +1028,7 @@ def _native_executable_header(header: bytes) -> bool:
 @contextmanager
 def stable_native_executable_probe(
     path: Path, *, label: str
-) -> Iterator[tuple[Path, StableRegularFileIdentity]]:
+) -> Generator[tuple[Path, StableRegularFileIdentity]]:
     """Bind native executable admission and a probe to one captured generation."""
     entrypoint, identity, header = _capture_executable_content(path, label=label)
     if not _native_executable_header(header):

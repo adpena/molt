@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,7 +80,7 @@ def harness_repo_sentinel(
     project_root: Path,
     *,
     limits: "harness_memory_guard.HarnessMemoryLimits | None" = None,
-) -> Iterator[object]:
+) -> Generator[object]:
     guard = _require_harness_memory_guard()
     resolved_limits = limits or harness_memory_limits()
     with guard.repo_process_sentinel(

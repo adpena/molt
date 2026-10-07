@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
-from typing import Iterator, Mapping, TYPE_CHECKING
+from typing import Generator, Mapping, TYPE_CHECKING
 
 from molt import process_guard
 from molt.cli.runtime_identity_schema import _BUILD_PYTHON_SCHEMA, _digest
@@ -435,7 +435,7 @@ class BuildPythonAdmission:
 @contextmanager
 def build_python_scope(
     state: _RuntimeArtifactState | None,
-) -> Iterator[BuildPythonAdmission]:
+) -> Generator[BuildPythonAdmission]:
     """Borrow the enclosing build owner, or close one standalone producer scope."""
     if state is not None and state.build_python_admission is not None:
         yield state.build_python_admission

@@ -17,7 +17,7 @@ import sys
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from typing import Literal, Sequence
 
 from molt.cli.atomic_io import _atomic_write_json
@@ -544,7 +544,7 @@ def _require_unchanged_symbol_artifact(
 @contextlib.contextmanager
 def _open_native_symbol_artifact(
     path: Path, identity: StableRegularFileIdentity | None = None
-) -> Iterator[tuple[StableRegularFileHandle, StableRegularFileIdentity]]:
+) -> Generator[tuple[StableRegularFileHandle, StableRegularFileIdentity]]:
     """Admit current bytes and retain their descriptor through every consumer.
 
     Windows excludes writes/deletion while this handle is owned. POSIX retains
@@ -1000,7 +1000,7 @@ def _native_symbol_facts_admission(
     requirement: NativeSymbolRequirement = NativeSymbolRequirement(),
     publish: bool = False,
     validate_shape: Callable[[StableRegularFileHandle], None] | None = None,
-) -> Iterator[
+) -> Generator[
     tuple[StableRegularFileHandle, StableRegularFileIdentity, _NativeGlobalSymbolFacts]
 ]:
     """One owned admission for native shape, member framing and symbol facts.

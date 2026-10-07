@@ -9,7 +9,7 @@ import stat
 import time
 import uuid
 import warnings
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Generator, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, TypedDict
@@ -209,7 +209,7 @@ def staged_copy_file(
     prepare: Callable[[Path], None] | None = None,
     expected_sha256: str | None = None,
     observed: StableRegularFileIdentity | None = None,
-) -> Iterator[Path]:
+) -> Generator[Path]:
     """Own a verified private copy until its caller publishes or abandons it."""
 
     tmp_path = staged_output_path(dst, purpose="copy")
@@ -560,7 +560,7 @@ def publication_receipt_path(anchor: Path) -> Path:
 @contextmanager
 def _publication_locks(
     initial_parents: set[Path],
-) -> Iterator[tuple[set[Path], Mapping[Path, _PublicationDirectoryResidue]]]:
+) -> Generator[tuple[set[Path], Mapping[Path, _PublicationDirectoryResidue]]]:
     parents = {parent.resolve() for parent in initial_parents}
     while True:
         handles = []
@@ -626,7 +626,7 @@ def _recover_locked_publications(
 
 
 @contextmanager
-def publication_locks(paths: Iterable[Path]) -> Iterator[None]:
+def publication_locks(paths: Iterable[Path]) -> Generator[None]:
     """Recover and lock every destination directory for a consistent family read."""
 
     parents = {
@@ -690,7 +690,7 @@ def publication_payload_snapshot(
     roots: Iterable[Path],
     *,
     include: Callable[[Path, Path], bool] | None = None,
-) -> Iterator[dict[Path, tuple[Path, ...]]]:
+) -> Generator[dict[Path, tuple[Path, ...]]]:
     """Read coherent payload trees without packaging private publication state.
 
     Lock existing publication namespaces, recover their journals, and reject
@@ -904,7 +904,7 @@ def _reap_orphan_journal_stages(
 def _publication_write_scope(
     parents: set[Path],
     select_removals: Callable[[frozenset[Path]], Iterable[Path]] | None,
-) -> Iterator[tuple[Path, ...]]:
+) -> Generator[tuple[Path, ...]]:
     while True:
         with _publication_locks(parents) as (locked, residue):
             _recover_locked_publications(residue)

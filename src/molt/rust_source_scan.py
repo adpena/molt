@@ -8,7 +8,7 @@ comments/strings extend to EOF so their contents cannot become apparent code.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 import re
@@ -25,7 +25,7 @@ _SCAN_STATE = local()
 
 
 @contextmanager
-def scan_memo() -> Iterator[None]:
+def scan_memo() -> Generator[None]:
     """Share content projections in a synchronous, thread-owned scan.
 
     Nested callers in this thread reuse the outer memo. Independent threads

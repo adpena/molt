@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import contextmanager, nullcontext
-from collections.abc import Iterator
+from collections.abc import Generator
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -312,7 +312,7 @@ def open_static_archive_members(
     path: Path,
     *,
     opened: StableRegularFileHandle | None = None,
-) -> Iterator[tuple[tuple[StaticArchiveMember, ...], BinaryIO]]:
+) -> Generator[tuple[tuple[StaticArchiveMember, ...], BinaryIO]]:
     """Expose the canonical member envelope and its one verified source handle.
 
     Callers may project member bytes, symbols, or identities while the context

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 import os
 
 
 @contextmanager
-def temporary_env_overrides(overrides: Mapping[str, str]) -> Iterator[None]:
+def temporary_env_overrides(overrides: Mapping[str, str]) -> Generator[None]:
     previous = {name: os.environ.get(name) for name in overrides}
     try:
         for name, value in overrides.items():

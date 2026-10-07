@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
 import contextlib
 from dataclasses import dataclass
 import hashlib
@@ -144,7 +144,7 @@ class NativeLinkCustodyAdmission:
 @contextlib.contextmanager
 def _open_custody_archive(
     path: Path, *, observed: StableRegularFileIdentity | None = None
-) -> Iterator[_CustodyArchiveAdmission]:
+) -> Generator[_CustodyArchiveAdmission]:
     try:
         with open_stable_regular_file(
             path, label="native custody archive", observed=observed
@@ -637,7 +637,7 @@ def _admit_native_link_custody(
     custody: Mapping[str, object],
     *,
     previous: NativeLinkCustodyObservation | None = None,
-) -> Iterator[NativeLinkCustodyAdmission]:
+) -> Generator[NativeLinkCustodyAdmission]:
     value, entries = validate_native_link_custody(custody, context=str(runtime_lib))
     if not entries:
         yield NativeLinkCustodyAdmission(
@@ -808,7 +808,7 @@ def copy_native_link_custody_archive(
     custody: Mapping[str, object],
     *,
     source_identity: StableRegularFileIdentity | None = None,
-) -> Iterator[NativeLinkCustodyAdmission]:
+) -> Generator[NativeLinkCustodyAdmission]:
     """Copy and admit the destination custody closure for one owned operation."""
     _value, entries = validate_native_link_custody(
         custody,
