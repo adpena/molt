@@ -125,7 +125,10 @@ def test_every_pin_reads_its_authority_loader() -> None:
         "lean",
     } <= set(pins)
     assert pins["python"].current == pins["python-patch"].current
-    assert pins["python"].current == (ROOT / ".python-version").read_text().strip()
+    assert (
+        pins["python"].current
+        == (ROOT / ".python-version").read_text(encoding="utf-8").strip()
+    )
 
 
 def _leb128(value: int) -> bytes:
@@ -423,7 +426,7 @@ def test_wasi_sdk_update_reads_versions_and_moves_wasm_ld(tmp_path) -> None:
         for old, _ in changed
     )
     vendor = root / "vendor/wasm-builtins"
-    provenance = tomllib.loads((vendor / "provenance.toml").read_text())
+    provenance = tomllib.loads((vendor / "provenance.toml").read_text(encoding="utf-8"))
     assert provenance["wasi_sdk_archive_version"] == "99.0"
     assert provenance["llvm_version"] == "99.1.0"
     assert provenance["source_host"] == "linux-x86_64"
