@@ -438,6 +438,23 @@ def _value_contract(schema: str) -> bool:
 
 
 def _operand_shapes(schema: str, generated: str) -> dict[str, int] | None:
+    # Registration is a dominating fallible check, not a second shape table.
+    # Bind its current producer too: accepting only the call spelling would
+    # conceal a producer changed to admit every kind or discard its error.
+    registered = _bool_table(generated, "simpleir_kind_is_registered")
+    if registered is None or _compact(
+        _body(schema, "validate_registered_op_kind") or ""
+    ) != _compact("""
+        validate_op_not_retired(kind)?;
+        if !simpleir_kind_is_registered(kind) {
+            return Err(OpShapeDiagnostic {
+                family: "registration", kind: kind.into(),
+                violation: OpShapeViolation::UnregisteredKind,
+            });
+        }
+        Ok(())
+    """):
+        return None
     if _compact(_body(schema, "validate_op_shape") or "") != _compact("""
         validate_op_not_retired(kind)?;
         let Some(shape) = simpleir_op_shape(kind) else { return Ok(()); };
@@ -448,15 +465,16 @@ def _operand_shapes(schema: str, generated: str) -> dict[str, int] | None:
         { Some(OpShapeViolation::NonNegativeValue { actual: value }) }
         else { None };
         match violation {
-            Some(violation) => Err(OpShapeDiagnostic { family: shape.family, kind: shape.kind, violation, }),
+            Some(violation) => Err(OpShapeDiagnostic { family: shape.family, kind: shape.kind.into(), violation, }),
             None => Ok(()),
         }
     """) or _compact(_body(schema, "validate_simple_op_shape") or "") != _compact("""
+        validate_registered_op_kind(&op.kind)?;
         validate_op_shape(&op.kind, op.args.as_ref().map(Vec::len), op.value)?;
         if let Some(shape) = simpleir_op_shape(&op.kind)
             && simpleir_var_field_role_table(&op.kind) == SimpleIrVarFieldRole::Forbidden
             && op.var.is_some()
-        { return Err(OpShapeDiagnostic { family: shape.family, kind: shape.kind, violation: OpShapeViolation::ForbiddenVar, }); }
+        { return Err(OpShapeDiagnostic { family: shape.family, kind: shape.kind.into(), violation: OpShapeViolation::ForbiddenVar, }); }
         Ok(())
     """):
         return None
@@ -478,9 +496,13 @@ def _operand_shapes(schema: str, generated: str) -> dict[str, int] | None:
         r"Some\(&SIMPLEIR_OP_SHAPES\[(?P<value>\d+)\]\)",
         "_=>None,",
     )
-    if table is None or any(
-        int(index) >= len(values) or values[int(index)]["kind"] != kind
-        for kind, index in table.items()
+    if (
+        table is None
+        or not table.keys() <= registered
+        or any(
+            int(index) >= len(values) or values[int(index)]["kind"] != kind
+            for kind, index in table.items()
+        )
     ):
         return None
     return {kind: int(values[int(index)]["arity"]) for kind, index in table.items()}
