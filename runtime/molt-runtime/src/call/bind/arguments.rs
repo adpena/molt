@@ -170,7 +170,7 @@ impl CallKeywords {
                     .flatten();
                 dec_ref_bits(py, bits);
                 if let Some(entries) = reversed {
-                    for pair in entries.chunks_exact(2).rev() {
+                    for pair in entries.as_chunks::<2>().0.iter().rev() {
                         dec_ref_bits(py, pair[1]);
                         dec_ref_bits(py, pair[0]);
                     }
@@ -527,13 +527,13 @@ impl<'a, 'py> CallArguments<'a, 'py> {
                     let entries = detached
                         .expect("an exclusively owned call dictionary is mutable")
                         .into_owned_bits();
-                    for pair in entries.chunks_exact(2) {
+                    for pair in entries.as_chunks::<2>().0 {
                         keywords.names.push(pair[0]);
                         keywords.values.push(pair[1]);
                     }
                 } else {
                     // No Python callback or dictionary mutation occurs here.
-                    for pair in unsafe { dict_order(dict) }.chunks_exact(2) {
+                    for pair in unsafe { dict_order(dict) }.as_chunks::<2>().0 {
                         inc_ref_bits(self.py, pair[0]);
                         inc_ref_bits(self.py, pair[1]);
                         keywords.names.push(pair[0]);

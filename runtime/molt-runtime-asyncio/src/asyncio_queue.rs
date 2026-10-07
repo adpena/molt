@@ -188,7 +188,7 @@ impl QueueState {
     fn drain_all(&mut self) -> Vec<u64> {
         match self.queue_type {
             QueueType::Fifo => self.fifo_items.drain(..).collect(),
-            QueueType::Lifo => self.lifo_items.drain(..).collect(),
+            QueueType::Lifo => std::mem::take(&mut self.lifo_items),
             QueueType::Priority => self.priority_items.drain().map(|r| r.0.0).collect(),
         }
     }

@@ -221,7 +221,9 @@ unsafe fn observe_dictionary(
             && selected.is_some()
             && !order.is_some_and(|order| {
                 order
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .any(|pair| string_bytes_view(pair[0]) == selected)
             })
         {
@@ -248,7 +250,7 @@ unsafe fn observe_dictionary(
             return;
         };
         let hashes = crate::builtins::containers::dict_hashes_ptr(dict).as_ref();
-        for (index, pair) in order.chunks_exact(2).enumerate() {
+        for (index, pair) in order.as_chunks::<2>().0.iter().enumerate() {
             let Some(bytes) = string_bytes_view(pair[0]) else {
                 continue;
             };

@@ -838,7 +838,7 @@ pub extern "C" fn molt_string_maketrans(x_bits: u64, y_bits: u64, z_bits: u64) -
                 }
                 let out_bits = MoltObject::from_ptr(out_ptr).bits();
                 let pairs = dict_order(x_ptr);
-                for pair in pairs.chunks_exact(2) {
+                for pair in pairs.as_chunks::<2>().0 {
                     let key_bits = pair[0];
                     let value_bits = pair[1];
                     let key_obj = obj_from_bits(key_bits);

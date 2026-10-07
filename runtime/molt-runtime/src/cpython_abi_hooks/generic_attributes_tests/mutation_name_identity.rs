@@ -228,8 +228,10 @@ fn raw_c_generic_mutation_roundtrips_name_subclass_identity_and_hash() {
                 assert_eq!(crate::dict_get_in_place(py, dictionary, spelling), None);
                 assert!(
                     crate::dict_order(dictionary)
-                        .chunks_exact(2)
-                        .any(|pair| pair[0] == name)
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .any(|&[key, _]| key == name)
                 );
                 let read = object::PyObject_GenericGetAttr(view, name_view);
                 assert_eq!(take_bits(read), value_bits);
@@ -361,7 +363,9 @@ fn managed_type_defaults_canonicalize_names_without_projection() {
                     Some(MoltObject::from_int(31).bits())
                 );
                 let key = crate::dict_order(dictionary)
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .find(|pair| {
                         crate::string_obj_to_owned(obj_from_bits(pair[0])).as_deref()
                             == Some("mutation_name_identity")

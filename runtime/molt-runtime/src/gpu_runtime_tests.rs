@@ -21,6 +21,19 @@ fn f32_bytes(values: &[f32]) -> Vec<u8> {
     out
 }
 
+fn f32_values(bytes: &[u8]) -> Vec<f32> {
+    let (values, trailing) = bytes.as_chunks::<4>();
+    assert!(
+        trailing.is_empty(),
+        "{} bytes is not a whole f32 buffer",
+        bytes.len()
+    );
+    values
+        .iter()
+        .map(|&value| f32::from_ne_bytes(value))
+        .collect()
+}
+
 fn make_tensor_from_f32(
     _py: &crate::PyToken<'_>,
     tensor_cls_bits: u64,
@@ -212,10 +225,7 @@ fn gpu_repeat_axis_contiguous_f32_roundtrip() {
             .as_ptr()
             .expect("repeat intrinsic should return bytes");
         let out = unsafe { std::slice::from_raw_parts(bytes_data(out_ptr), bytes_len(out_ptr)) };
-        let values = out
-            .chunks_exact(4)
-            .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
-            .collect::<Vec<_>>();
+        let values = f32_values(out);
         assert_eq!(
             values,
             vec![1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0, 3.0, 4.0]
@@ -476,10 +486,7 @@ fn gpu_linear_contiguous_f32_roundtrip() {
             .as_ptr()
             .expect("linear intrinsic should return bytes");
         let out = unsafe { std::slice::from_raw_parts(bytes_data(out_ptr), bytes_len(out_ptr)) };
-        let mut values = Vec::new();
-        for chunk in out.chunks_exact(4) {
-            values.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
-        }
+        let values = f32_values(out);
         assert_eq!(values, vec![17.0, 23.0, 29.0, 39.0, 53.0, 67.0]);
     });
 }
@@ -529,14 +536,8 @@ fn gpu_linear_split_last_dim_contiguous_f32_roundtrip() {
         let right =
             unsafe { std::slice::from_raw_parts(bytes_data(right_ptr), bytes_len(right_ptr)) };
 
-        let mut left_values = Vec::new();
-        for chunk in left.chunks_exact(4) {
-            left_values.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
-        }
-        let mut right_values = Vec::new();
-        for chunk in right.chunks_exact(4) {
-            right_values.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
-        }
+        let left_values = f32_values(left);
+        let right_values = f32_values(right);
 
         assert_eq!(left_values, vec![1.0, 2.0, 3.0, 4.0]);
         assert_eq!(right_values, vec![3.0, 2.0, 4.0, 7.0, 6.0, 8.0]);
@@ -589,10 +590,7 @@ fn gpu_linear_split_last_dim_contiguous_f32_three_way_wider_roundtrip() {
         let decode = |bits: u64| {
             let ptr = obj_from_bits(bits).as_ptr().expect("bytes");
             let bytes = unsafe { std::slice::from_raw_parts(bytes_data(ptr), bytes_len(ptr)) };
-            bytes
-                .chunks_exact(4)
-                .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
-                .collect::<Vec<_>>()
+            f32_values(bytes)
         };
 
         assert_eq!(decode(parts[0]), vec![1.0, 2.0]);
@@ -622,10 +620,7 @@ fn gpu_linear_squared_relu_gate_interleaved_contiguous_f32_roundtrip() {
             .as_ptr()
             .expect("linear squared relu gate intrinsic should return bytes");
         let out = unsafe { std::slice::from_raw_parts(bytes_data(out_ptr), bytes_len(out_ptr)) };
-        let mut values = Vec::new();
-        for chunk in out.chunks_exact(4) {
-            values.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
-        }
+        let values = f32_values(out);
         assert_eq!(values, vec![2.0, 18.0, 36.0, 294.0]);
     });
 }
@@ -657,10 +652,7 @@ fn gpu_linear_squared_relu_gate_interleaved_contiguous_f32_wide_roundtrip() {
             .as_ptr()
             .expect("linear squared relu gate intrinsic should return bytes");
         let out = unsafe { std::slice::from_raw_parts(bytes_data(out_ptr), bytes_len(out_ptr)) };
-        let mut values = Vec::new();
-        for chunk in out.chunks_exact(4) {
-            values.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
-        }
+        let values = f32_values(out);
         assert_eq!(values, vec![12.0, 48.0, 108.0, 192.0, 300.0]);
     });
 }
@@ -693,10 +685,7 @@ fn gpu_linear_squared_relu_gate_interleaved_contiguous_f32_wider_roundtrip() {
             .as_ptr()
             .expect("linear squared relu gate intrinsic should return bytes");
         let out = unsafe { std::slice::from_raw_parts(bytes_data(out_ptr), bytes_len(out_ptr)) };
-        let mut values = Vec::new();
-        for chunk in out.chunks_exact(4) {
-            values.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
-        }
+        let values = f32_values(out);
         assert_eq!(
             values,
             vec![12.0, 48.0, 108.0, 192.0, 300.0, 432.0, 588.0, 768.0, 972.0]
@@ -740,10 +729,7 @@ fn gpu_broadcast_binary_contiguous_f32_roundtrip() {
             .as_ptr()
             .expect("broadcast intrinsic should return bytes-like");
         let out = unsafe { std::slice::from_raw_parts(bytes_data(out_ptr), bytes_len(out_ptr)) };
-        let mut values = Vec::new();
-        for chunk in out.chunks_exact(4) {
-            values.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
-        }
+        let values = f32_values(out);
         assert_eq!(values, vec![11.0, 22.0, 13.0, 24.0]);
     });
 }
@@ -783,10 +769,7 @@ fn gpu_matmul_contiguous_f32_roundtrip() {
             .as_ptr()
             .expect("matmul intrinsic should return bytes");
         let out = unsafe { std::slice::from_raw_parts(bytes_data(out_ptr), bytes_len(out_ptr)) };
-        let mut values = Vec::new();
-        for chunk in out.chunks_exact(4) {
-            values.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
-        }
+        let values = f32_values(out);
         assert_eq!(values, vec![19.0, 22.0, 43.0, 50.0]);
     });
 }
@@ -817,10 +800,7 @@ fn gpu_rope_apply_contiguous_f32_roundtrip() {
             .as_ptr()
             .expect("rope intrinsic should return bytes-like");
         let out = unsafe { std::slice::from_raw_parts(bytes_data(out_ptr), bytes_len(out_ptr)) };
-        let mut values = Vec::new();
-        for chunk in out.chunks_exact(4) {
-            values.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
-        }
+        let values = f32_values(out);
         assert_eq!(values, vec![-3.0, 2.0, 1.0, 4.0]);
     });
 }
@@ -878,10 +858,7 @@ fn gpu_softmax_last_axis_contiguous_f32_roundtrip() {
             .as_ptr()
             .expect("softmax intrinsic should return bytes");
         let out = unsafe { std::slice::from_raw_parts(bytes_data(out_ptr), bytes_len(out_ptr)) };
-        let mut values = Vec::new();
-        for chunk in out.chunks_exact(4) {
-            values.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
-        }
+        let values = f32_values(out);
         assert!((values[0] + values[1] - 1.0).abs() < 1e-6);
         assert!((values[2] + values[3] - 1.0).abs() < 1e-6);
     });
@@ -912,10 +889,7 @@ fn gpu_rms_norm_last_axis_contiguous_f32_roundtrip() {
             .as_ptr()
             .expect("rms_norm intrinsic should return bytes");
         let out = unsafe { std::slice::from_raw_parts(bytes_data(out_ptr), bytes_len(out_ptr)) };
-        let mut values = Vec::new();
-        for chunk in out.chunks_exact(4) {
-            values.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
-        }
+        let values = f32_values(out);
         assert!((values[0] - 0.84852815).abs() < 1e-6);
         assert!((values[1] - 1.1313709).abs() < 1e-6);
         assert!((values[2] - 0.0).abs() < 1e-6);
@@ -950,10 +924,7 @@ fn gpu_squared_relu_gate_interleaved_contiguous_f32_roundtrip() {
             .as_ptr()
             .expect("squared relu gate intrinsic should return bytes");
         let out = unsafe { std::slice::from_raw_parts(bytes_data(out_ptr), bytes_len(out_ptr)) };
-        let mut values = Vec::new();
-        for chunk in out.chunks_exact(4) {
-            values.push(f32::from_ne_bytes(chunk.try_into().unwrap()));
-        }
+        let values = f32_values(out);
         assert_eq!(values, vec![10.0, 0.0, 270.0, 640.0]);
     });
 }

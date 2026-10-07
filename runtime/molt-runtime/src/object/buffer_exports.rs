@@ -23,7 +23,7 @@ impl BufferExports {
 
     pub(crate) fn acquire(&self) -> Result<(), ()> {
         self.0
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_add(1)
             })
             .map(|_| ())
@@ -33,7 +33,7 @@ impl BufferExports {
     pub(crate) fn release(&self) {
         if self
             .0
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_sub(1)
             })
             .is_err()

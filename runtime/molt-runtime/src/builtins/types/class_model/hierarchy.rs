@@ -348,7 +348,7 @@ pub(crate) unsafe fn class_apply_descriptor_names(_py: &PyToken<'_>, class_ptr: 
             return false;
         }
         let _snapshot_owner = crate::PtrDropGuard::new(snapshot);
-        for pair in entries.chunks_exact(2) {
+        for pair in entries.as_chunks::<2>().0 {
             let name_bits = pair[0];
             let value_bits = pair[1];
             let Some(set_name) =
@@ -524,7 +524,7 @@ unsafe fn merge_class_layout_metadata(
                 )
                 .map_err(|()| MoltObject::none().bits())?;
                 if hinted_size > size
-                    || dict_order(source).chunks_exact(2).any(|pair| {
+                    || dict_order(source).as_chunks::<2>().0.iter().any(|pair| {
                         crate::builtins::attr::class_field_offset(py, class, pair[0])
                             != obj_from_bits(pair[1])
                                 .as_int()
@@ -609,7 +609,7 @@ unsafe fn merge_class_layout_metadata(
             crate::object::validate_class_field_offsets(py, target, 0, usize::MAX)
                 .map_err(|()| MoltObject::none().bits())?;
             let entries = dict_order(source).clone();
-            for pair in entries.chunks_exact(2) {
+            for pair in entries.as_chunks::<2>().0 {
                 if let Some(prior) = dict_get_in_place(py, target, pair[0]) {
                     if prior != pair[1] {
                         return Err(raise_exception::<u64>(

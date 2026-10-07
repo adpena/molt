@@ -611,7 +611,7 @@ pub(crate) unsafe fn for_each_field(
         let rows = obj_from_bits(rows).as_ptr().expect("sealed row tuple");
         super::seq_access::with_immutable_tuple_slice(rows, |rows| {
             assert_eq!(rows.len() % 3, 0, "invalid physical rows");
-            for row in rows.chunks_exact(3) {
+            for row in rows.as_chunks::<3>().0 {
                 visit(decode_row(row));
             }
         })
@@ -636,16 +636,19 @@ pub(crate) unsafe fn fields_match(py: &PyToken<'_>, left: *mut u8, right: *mut u
                     obj_from_bits(right).as_ptr().unwrap(),
                     |right| {
                         left.len() == right.len()
-                            && left.chunks_exact(3).zip(right.chunks_exact(3)).all(
-                                |(left, right)| {
+                            && left
+                                .as_chunks::<3>()
+                                .0
+                                .iter()
+                                .zip(right.as_chunks::<3>().0)
+                                .all(|(left, right)| {
                                     let left = decode_row(left);
                                     let right = decode_row(right);
                                     left.offset == right.offset
                                         && left.kind == right.kind
                                         && (left.kind.is_intrinsic()
                                             || string_storage_equal(left.name, right.name))
-                                },
-                            )
+                                })
                     },
                 )
                 .expect("sealed row tuple")
@@ -874,7 +877,7 @@ pub(crate) unsafe fn prepare(py: &PyToken<'_>, class: *mut u8) -> Result<Prepare
         if let Some(offsets) = original_ptr {
             let extent = size_hint.map_or(usize::MAX, |size| size.saturating_sub(tail));
             super::validate_class_field_offsets(py, offsets, prefix, extent)?;
-            for pair in dict_order(offsets).chunks_exact(2) {
+            for pair in dict_order(offsets).as_chunks::<2>().0 {
                 let field = ClassField {
                     name: pair[0],
                     offset: usize::try_from(obj_from_bits(pair[1]).as_int().unwrap()).unwrap(),

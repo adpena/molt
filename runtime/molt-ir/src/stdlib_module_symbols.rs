@@ -92,9 +92,81 @@ pub fn original_partition_source<'a>(
     panic!("cyclic compiler partition provenance for {name:?}");
 }
 
+/// Move `ir.functions` into user-owned and stdlib halves.
+///
+/// Ownership is a property of the symbol name, so every definition of a name
+/// lands on the same side. The stdlib half keeps the first definition of each
+/// name: the shared stdlib object defines each symbol exactly once.
+pub fn partition_user_owned_functions(
+    ir: &mut crate::ir::SimpleIR,
+    mut is_user_owned: impl FnMut(&str) -> bool,
+) -> (Vec<crate::ir::FunctionIR>, Vec<crate::ir::FunctionIR>) {
+    let user_names: BTreeSet<String> = ir
+        .functions
+        .iter()
+        .filter(|function| is_user_owned(&function.name))
+        .map(|function| function.name.clone())
+        .collect();
+    let (user, mut stdlib): (Vec<_>, Vec<_>) = std::mem::take(&mut ir.functions)
+        .into_iter()
+        .partition(|function| user_names.contains(&function.name));
+    let mut seen = BTreeSet::new();
+    stdlib.retain(|function| seen.insert(function.name.clone()));
+    (user, stdlib)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn function(name: &str, params: &[&str]) -> crate::ir::FunctionIR {
+        crate::ir::FunctionIR {
+            name: name.to_string(),
+            params: params.iter().map(|param| param.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn partition_user_owned_functions_moves_every_function_once() {
+        let mut ir = crate::ir::SimpleIR {
+            functions: vec![
+                function("app__main", &[]),
+                function("json__dumps", &["first"]),
+                function("app__main", &["again"]),
+                function("json__dumps", &["second"]),
+                function("os__path", &[]),
+            ],
+            profile: None,
+        };
+
+        let (user, stdlib) =
+            partition_user_owned_functions(&mut ir, |name| name.starts_with("app__"));
+
+        assert!(ir.functions.is_empty());
+        let user: Vec<_> = user
+            .iter()
+            .map(|f| (f.name.as_str(), f.params.clone()))
+            .collect();
+        assert_eq!(
+            user,
+            [
+                ("app__main", vec![]),
+                ("app__main", vec!["again".to_string()]),
+            ]
+        );
+        let stdlib: Vec<_> = stdlib
+            .iter()
+            .map(|f| (f.name.as_str(), f.params.clone()))
+            .collect();
+        assert_eq!(
+            stdlib,
+            [
+                ("json__dumps", vec!["first".to_string()]),
+                ("os__path", vec![]),
+            ]
+        );
+    }
 
     #[test]
     fn parse_stdlib_module_symbols_accepts_sorted_set_authority() {

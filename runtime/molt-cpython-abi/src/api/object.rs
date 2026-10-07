@@ -4061,7 +4061,7 @@ impl Drop for ThreadStateDrainPhase {
 impl ThreadStateRecord {
     fn new() -> Box<Self> {
         let id = NEXT_THREAD_STATE_ID
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .expect("PyThreadState ID space exhausted");
         assert_ne!(id, 0, "PyThreadState IDs must be nonzero");
         let mut record = Box::new(Self {

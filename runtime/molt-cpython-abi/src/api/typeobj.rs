@@ -202,7 +202,7 @@ fn insert_type_lifetime(
         return false;
     }
     let Ok(generation) =
-        NEXT_TYPE_IDENTITY_GENERATION.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        NEXT_TYPE_IDENTITY_GENERATION.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             value.checked_add(1)
         })
     else {
@@ -2721,7 +2721,7 @@ unsafe fn assign_type_version_tag_inner(tp: *mut PyTypeObject, seen: &mut HashSe
 }
 
 fn allocate_type_version_tag(counter: &AtomicU32) -> Option<u32> {
-    match counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    match counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         current.checked_add(1)
     }) {
         Ok(tag) if tag != 0 => Some(tag),

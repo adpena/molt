@@ -538,8 +538,12 @@ pub extern "C" fn molt_ordereddict_update(handle_bits: u64, other_bits: u64) -> 
             if type_id == TYPE_ID_DICT {
                 let pairs = unsafe { dict_order_clone(_py, ptr) };
                 // pairs is flattened [k0, v0, k1, v1, ...]
-                let kv_pairs: Vec<(u64, u64)> =
-                    pairs.chunks_exact(2).map(|c| (c[0], c[1])).collect();
+                let kv_pairs: Vec<(u64, u64)> = pairs
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&[k, v]| (k, v))
+                    .collect();
                 {
                     let mut map = collections_state().ordereddict_registry.lock().unwrap();
                     if let Some(state) = map.get_mut(&id) {

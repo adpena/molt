@@ -7,8 +7,12 @@
 //! Gated behind `#[cfg(target_os = "macos")]` — these tests are no-ops on
 //! non-macOS platforms.
 
+#[path = "support/le_bytes.rs"]
+mod le_bytes;
+
 #[cfg(target_os = "macos")]
 mod metal_real {
+    use crate::le_bytes::{bytes_to_f32, f32_to_bytes};
     use molt_gpu::device::cpu::interpret;
     use molt_gpu::device::metal::MetalDevice;
     use molt_gpu::device::{Allocator, Compiler, Executor};
@@ -19,17 +23,6 @@ mod metal_real {
         BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, ReductionDomain, Renderer,
     };
     use molt_gpu::shapetracker::ShapeTracker;
-
-    fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
-        vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-    }
-
-    fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
-        bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect()
-    }
 
     // ========================================================================
     // Vector Add (1M elements)

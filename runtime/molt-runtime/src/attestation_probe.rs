@@ -57,7 +57,7 @@ fn record_allocation(size: usize) {
 
 #[inline]
 fn record_deallocation(size: usize) {
-    let _ = LIVE_BYTES.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
+    let _ = LIVE_BYTES.try_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
         Some(live.saturating_sub(size as u64))
     });
 }

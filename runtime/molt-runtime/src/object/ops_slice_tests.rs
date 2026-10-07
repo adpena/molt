@@ -577,8 +577,10 @@ fn dataclass_slot_state_follows_mro_then_declaration_order() {
         };
         let keys = unsafe {
             dict_order(obj_from_bits(slot_state).as_ptr().unwrap())
-                .chunks_exact(2)
-                .map(|pair| pair[0])
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&[key, _]| key)
                 .collect::<Vec<_>>()
         };
         assert_eq!(keys, vec![child_first, child_second, base_field]);

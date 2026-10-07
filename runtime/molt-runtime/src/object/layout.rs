@@ -2320,7 +2320,7 @@ pub(crate) unsafe fn class_set_qualname_bits(_py: &PyToken<'_>, ptr: *mut u8, bi
 pub(crate) unsafe fn class_bump_layout_version(ptr: *mut u8) {
     unsafe {
         (*(ptr.add(4 * std::mem::size_of::<u64>()) as *const std::sync::atomic::AtomicU64))
-            .fetch_update(
+            .try_update(
                 std::sync::atomic::Ordering::AcqRel,
                 std::sync::atomic::Ordering::Acquire,
                 |version| version.checked_add(1),

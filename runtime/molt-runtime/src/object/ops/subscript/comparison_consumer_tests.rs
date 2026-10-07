@@ -378,12 +378,17 @@ fn dataclass_equality_matches_versioned_operand_order_and_raw_result_contract() 
             dec_ref_bits(py, property);
             dec_ref_bits(py, getter);
         }
-        let names: Vec<u64> = field_pairs.chunks_exact(2).map(|pair| pair[0]).collect();
+        let names: Vec<u64> = field_pairs
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&[name, _]| name)
+            .collect();
         let compare_names = MoltObject::from_ptr(alloc_tuple(py, &names)).bits();
         let fields = MoltObject::from_ptr(alloc_dict_with_pairs(py, &field_pairs)).bits();
         attr(py, record_class, b"__dataclass_fields__", fields);
         // Decoration captured the names before public Field metadata changed.
-        for pair in field_pairs.chunks_exact(2) {
+        for pair in field_pairs.as_chunks::<2>().0 {
             attr(py, pair[1], b"compare", MoltObject::from_bool(false).bits());
         }
         let cleared = crate::molt_dict_clear(fields);

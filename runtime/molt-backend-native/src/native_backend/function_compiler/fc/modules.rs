@@ -245,7 +245,7 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                         "mga: func={} op={} arg1={} has_slot={} slot_count={}\n",
                         func_name,
                         op_idx,
-                        &args[1],
+                        args[1],
                         _has,
                         hoisted_str_slot.len()
                     ),

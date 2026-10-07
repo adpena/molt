@@ -192,8 +192,8 @@ fn decode_f16_payload_to_f32_bytes(raw: &[u8]) -> Result<Vec<u8>, &'static str> 
         return Err("F16 payload length must be even");
     }
     let mut out = Vec::with_capacity((raw.len() / 2) * 4);
-    for chunk in raw.chunks_exact(2) {
-        let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+    for &pair in raw.as_chunks::<2>().0 {
+        let bits = u16::from_le_bytes(pair);
         out.extend_from_slice(&decode_f16_to_f32_bits(bits).to_le_bytes());
     }
     Ok(out)
@@ -204,8 +204,8 @@ fn decode_bf16_payload_to_f32_bytes(raw: &[u8]) -> Result<Vec<u8>, &'static str>
         return Err("BF16 payload length must be even");
     }
     let mut out = Vec::with_capacity((raw.len() / 2) * 4);
-    for chunk in raw.chunks_exact(2) {
-        let bits = u16::from_le_bytes([chunk[0], chunk[1]]);
+    for &pair in raw.as_chunks::<2>().0 {
+        let bits = u16::from_le_bytes(pair);
         let widened = (bits as u32) << 16;
         out.extend_from_slice(&widened.to_le_bytes());
     }
@@ -730,8 +730,8 @@ fn buffer_host_bytes_for_gpu_compute(
         "f" | "q" => Ok(raw.to_vec()),
         "d" => {
             let mut out = Vec::with_capacity(arg.size * 4);
-            for chunk in raw.chunks_exact(8) {
-                let val = f64::from_le_bytes(chunk.try_into().map_err(|_| "invalid f64 bytes")?);
+            for &chunk in raw.as_chunks::<8>().0 {
+                let val = f64::from_le_bytes(chunk);
                 out.extend_from_slice(&(val as f32).to_le_bytes());
             }
             Ok(out)
@@ -752,16 +752,16 @@ fn encode_webgpu_buffer_bytes(raw: &[u8], format: ScalarFormat) -> Result<Vec<u8
         ScalarFormat::F32 => Ok(raw.to_vec()),
         ScalarFormat::F64 => {
             let mut out = Vec::with_capacity(raw.len() / 2);
-            for chunk in raw.chunks_exact(8) {
-                let val = f64::from_le_bytes(chunk.try_into().map_err(|_| "invalid f64 bytes")?);
+            for &chunk in raw.as_chunks::<8>().0 {
+                let val = f64::from_le_bytes(chunk);
                 out.extend_from_slice(&(val as f32).to_le_bytes());
             }
             Ok(out)
         }
         ScalarFormat::I64 => {
             let mut out = Vec::with_capacity(raw.len() / 2);
-            for chunk in raw.chunks_exact(8) {
-                let val = i64::from_le_bytes(chunk.try_into().map_err(|_| "invalid i64 bytes")?);
+            for &chunk in raw.as_chunks::<8>().0 {
+                let val = i64::from_le_bytes(chunk);
                 let narrowed = i32::try_from(val)
                     .map_err(|_| "webgpu backend only supports q values that fit in i32")?;
                 out.extend_from_slice(&narrowed.to_le_bytes());
@@ -846,10 +846,8 @@ fn rebuild_host_bytes_from_gpu32_output(
         ScalarFormat::F32 | ScalarFormat::I64 => {
             if format == ScalarFormat::I64 {
                 let mut out = Vec::with_capacity(elem_count * 8);
-                for chunk in gpu_output.chunks_exact(4) {
-                    let val = i32::from_le_bytes(chunk.try_into().map_err(|_| {
-                        raise_exception::<u64>(_py, "RuntimeError", "invalid gpu i32 output bytes")
-                    })?) as i64;
+                for &chunk in gpu_output.as_chunks::<4>().0 {
+                    let val = i64::from(i32::from_le_bytes(chunk));
                     out.extend_from_slice(&val.to_le_bytes());
                 }
                 Ok(out)
@@ -859,10 +857,8 @@ fn rebuild_host_bytes_from_gpu32_output(
         }
         ScalarFormat::F64 => {
             let mut out = Vec::with_capacity(elem_count * 8);
-            for chunk in gpu_output.chunks_exact(4) {
-                let val = f32::from_le_bytes(chunk.try_into().map_err(|_| {
-                    raise_exception::<u64>(_py, "RuntimeError", "invalid f32 output bytes")
-                })?) as f64;
+            for &chunk in gpu_output.as_chunks::<4>().0 {
+                let val = f64::from(f32::from_le_bytes(chunk));
                 out.extend_from_slice(&val.to_le_bytes());
             }
             Ok(out)

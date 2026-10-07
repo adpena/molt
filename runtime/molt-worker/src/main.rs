@@ -2397,13 +2397,9 @@ fn main() -> io::Result<()> {
         .ok()
         .and_then(|val| val.parse::<u64>().ok())
         .unwrap_or(0);
-    let sqlite_path = env::var("MOLT_DB_SQLITE_PATH").ok().and_then(|val| {
-        if val.trim().is_empty() {
-            None
-        } else {
-            Some(val)
-        }
-    });
+    let sqlite_path = env::var("MOLT_DB_SQLITE_PATH")
+        .ok()
+        .filter(|val| !val.trim().is_empty());
     let sqlite_readwrite = env::var("MOLT_DB_SQLITE_READWRITE")
         .ok()
         .map(|val| matches!(val.as_str(), "1" | "true" | "yes"))
@@ -2420,13 +2416,7 @@ fn main() -> io::Result<()> {
         .unwrap_or(1000);
     let pg_config = env::var("MOLT_DB_POSTGRES_DSN")
         .ok()
-        .and_then(|val| {
-            if val.trim().is_empty() {
-                None
-            } else {
-                Some(val)
-            }
-        })
+        .filter(|val| !val.trim().is_empty())
         .map(|dsn| {
             let mut config = PgPoolConfig::new(dsn);
             if let Some(val) = env::var("MOLT_DB_POSTGRES_MIN_CONNS")

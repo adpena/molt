@@ -16,6 +16,9 @@ use molt_gpu::render::*;
 use molt_gpu::schedule::{deduplicate_kernels, specialize_shapes};
 use molt_gpu::shapetracker::{ShapeTracker, View};
 
+#[path = "support/le_bytes.rs"]
+mod le_bytes;
+
 // ============================================================
 // ShapeTracker: contiguous fast path
 // ============================================================
@@ -689,17 +692,8 @@ fn test_small_allocation_works() {
 #[cfg(feature = "simd-accel")]
 mod simd_tests {
     use super::*;
+    use crate::le_bytes::{bytes_to_f32, f32_to_bytes};
     use molt_gpu::device::cpu::interpret;
-
-    fn f32_to_bytes(values: &[f32]) -> Vec<u8> {
-        values.iter().flat_map(|v| v.to_le_bytes()).collect()
-    }
-
-    fn bytes_to_f32(buf: &[u8]) -> Vec<f32> {
-        buf.chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect()
-    }
 
     #[test]
     fn test_simd_add_matches_scalar() {

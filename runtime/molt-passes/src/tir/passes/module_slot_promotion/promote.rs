@@ -436,9 +436,7 @@ fn candidate_is_legal(
             ));
             return false;
         }
-        for pair in block.ops.chunks_exact(2) {
-            let name = &pair[0];
-            let store = &pair[1];
+        for [name, store] in block.ops.as_chunks::<2>().0 {
             let valid_name = name.opcode == OpCode::ConstStr
                 && name.operands.is_empty()
                 && name.results.len() == 1

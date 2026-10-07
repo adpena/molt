@@ -2166,7 +2166,7 @@ unsafe fn install_guarded_class_namespace(
     let Some(dict_ptr) = obj_from_bits(dict_bits).as_ptr() else {
         return false;
     };
-    for pair in attrs.chunks_exact(2) {
+    for pair in attrs.as_chunks::<2>().0 {
         unsafe { crate::dict_set_in_place(_py, dict_ptr, pair[0], pair[1]) };
         if exception_pending(_py) {
             return false;
@@ -2350,7 +2350,7 @@ pub unsafe extern "C" fn molt_guarded_class_def(
                     "molt class_def init_subclass name={} nbases={} nattrs={} flags={}",
                     class_name, nb, na, flags
                 );
-                for pair in attrs_vec.chunks_exact(2) {
+                for pair in attrs_vec.as_chunks::<2>().0 {
                     eprintln!(
                         "molt class_def attr key_type={} val_type={} val_bits=0x{:x}",
                         type_name(_py, obj_from_bits(pair[0])),
@@ -2440,7 +2440,7 @@ pub extern "C" fn molt_fstring_build(parts_ptr: *const u64, n_parts: u64) -> u64
         }
         let mut total_len: usize = 0;
 
-        for pair in raw_parts.chunks_exact(2) {
+        for pair in raw_parts.as_chunks::<2>().0 {
             let is_literal = pair[0];
             let value_bits = pair[1];
 

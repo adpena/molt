@@ -164,7 +164,7 @@ pub extern "C" fn molt_dataclasses_repr(self_bits: u64) -> u64 {
         let name = dc_try!(dc_attr(py, class.bits, b"__qualname__"));
         let name = string_obj_to_owned(obj_from_bits(name.bits)).unwrap_or_else(|| "?".into());
         let mut parts = Vec::new();
-        for pair in fields.chunks_exact(2) {
+        for pair in fields.as_chunks::<2>().0 {
             let field = pair[1];
             if !dc_try!(dc_is_field(py, field))
                 || !dc_try!(dc_field_bool_attr(py, field, b"repr", true))
@@ -295,7 +295,7 @@ pub extern "C" fn molt_dataclasses_hash_fn(self_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let fields = dc_try!(dc_fields_ordered(py, self_bits));
         let mut values = Vec::new();
-        for pair in fields.chunks_exact(2) {
+        for pair in fields.as_chunks::<2>().0 {
             let field = pair[1];
             if !dc_try!(dc_is_field(py, field)) {
                 continue;
@@ -322,7 +322,7 @@ pub extern "C" fn molt_dataclasses_check_default_order(fields_dict_bits: u64) ->
     crate::with_gil_entry_nopanic!(py, {
         let fields = dc_try!(dc_dict_fields(py, fields_dict_bits));
         let mut previous: Option<String> = None;
-        for pair in fields.chunks_exact(2) {
+        for pair in fields.as_chunks::<2>().0 {
             let field = pair[1];
             if !dc_try!(dc_field_has_tag(py, field, b"_FIELD"))
                 && !dc_try!(dc_field_has_tag(py, field, b"_FIELD_INITVAR"))
@@ -362,7 +362,7 @@ pub extern "C" fn molt_dataclasses_field_flags(fields_dict_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         let fields = dc_try!(dc_dict_fields(py, fields_dict_bits));
         let mut flags = Vec::new();
-        for pair in fields.chunks_exact(2) {
+        for pair in fields.as_chunks::<2>().0 {
             let field = pair[1];
             if !dc_try!(dc_is_field(py, field)) {
                 continue;

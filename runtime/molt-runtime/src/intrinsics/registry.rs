@@ -2174,11 +2174,7 @@ mod tests {
                     Some(first)
                 );
                 let order = unsafe { crate::dict_order(registry) };
-                assert!(
-                    order
-                        .chunks_exact(2)
-                        .any(|entry| entry[0] == forged && entry[1] == marker)
-                );
+                assert!(order.as_chunks::<2>().0.contains(&[forged, marker]));
                 for bits in [first, first, owner_bits] {
                     dec_ref_bits(_py, bits);
                 }

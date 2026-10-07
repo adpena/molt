@@ -262,7 +262,9 @@ pub(crate) unsafe fn validate_keywords(py: &PyToken<'_>, dict: *mut u8) -> bool 
     validate_keyword_names(
         py,
         unsafe { dict_order(dict) }
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| pair[0]),
     )
 }

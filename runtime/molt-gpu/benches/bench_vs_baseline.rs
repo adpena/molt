@@ -20,19 +20,12 @@ use molt_gpu::render::{
 #[allow(unused_imports)]
 use molt_gpu::shapetracker::ShapeTracker;
 
+#[path = "../tests/support/le_bytes.rs"]
+mod le_bytes;
+use le_bytes::{bytes_to_f32, f32_to_bytes};
+
 const WARMUP_ITERS: usize = 5;
 const MEASURE_ITERS: usize = 50;
-
-fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
-    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-}
-
-fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-        .collect()
-}
 
 struct BenchResult {
     name: String,

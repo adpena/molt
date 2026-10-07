@@ -890,7 +890,7 @@ pub extern "C" fn molt_this_payload() -> u64 {
 
         let mut pairs: Vec<u64> = Vec::with_capacity(52 * 2);
         let mut owned_pairs: Vec<u64> = Vec::with_capacity(52 * 2);
-        for base in [b'A', b'a'] {
+        for base in *b"Aa" {
             for idx in 0u8..26u8 {
                 let key = [(base + idx) as char];
                 let value = [(base + ((idx + 13) % 26)) as char];

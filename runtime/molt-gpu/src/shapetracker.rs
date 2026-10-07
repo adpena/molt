@@ -625,10 +625,7 @@ impl ShapeTracker {
         // Multi-view: compose from outer to inner.
         let mut idx = linear_idx;
         for view in self.views.iter().rev() {
-            match view.expr_idx(idx) {
-                Some(next_idx) => idx = next_idx,
-                None => return None,
-            }
+            idx = view.expr_idx(idx)?;
         }
         Some(idx)
     }

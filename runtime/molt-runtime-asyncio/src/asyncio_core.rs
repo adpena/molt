@@ -761,7 +761,7 @@ pub extern "C" fn molt_asyncio_semaphore_release_fast(
         let max_value: Option<i64> = if max_value_obj.is_none() {
             None
         } else {
-            to_i64(max_value_obj).and_then(|v| if v < 0 { None } else { Some(v) })
+            to_i64(max_value_obj).filter(|&v| v >= 0)
         };
 
         let registry = asyncio_core_state(_py);

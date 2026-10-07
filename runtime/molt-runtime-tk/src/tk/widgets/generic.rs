@@ -389,11 +389,9 @@ pub(super) fn handle_generic_widget_path_command(
                 let callback_invocations: Vec<Vec<String>> =
                     if let Some(command_words) = callback_words {
                         let mut calls = Vec::new();
-                        for triple in flat_words.chunks_exact(3) {
+                        for triple in flat_words.as_chunks::<3>().0 {
                             let mut words = command_words.clone();
-                            words.push(triple[0].clone());
-                            words.push(triple[1].clone());
-                            words.push(triple[2].clone());
+                            words.extend_from_slice(triple);
                             calls.push(words);
                         }
                         calls

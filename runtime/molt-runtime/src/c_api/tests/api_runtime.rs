@@ -932,7 +932,7 @@ fn memoryview_from_c_buffer_rejects_base_pointer_spoof() {
         let bytearray_ptr = alloc_bytearray(_py, b"abcde");
         assert!(!bytearray_ptr.is_null());
         let bytearray_bits = MoltObject::from_ptr(bytearray_ptr).bits();
-        let mut bogus = [b'x'];
+        let mut bogus = *b"x";
         let mut source = MoltBufferView {
             data: bogus.as_mut_ptr(),
             len: 1,

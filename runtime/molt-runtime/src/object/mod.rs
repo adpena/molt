@@ -851,7 +851,7 @@ impl MoltAuxWord {
     }
 
     #[inline]
-    pub fn fetch_update<F>(
+    pub fn try_update<F>(
         &self,
         set_order: AtomicOrdering,
         fetch_order: AtomicOrdering,
@@ -862,7 +862,7 @@ impl MoltAuxWord {
     {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.0.fetch_update(set_order, fetch_order, f)
+            self.0.try_update(set_order, fetch_order, f)
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -1225,7 +1225,7 @@ pub(crate) unsafe fn class_set_instance_shape_id(class_ptr: *mut u8, shape: Obje
     let encoded = (shape as u64) << CLASS_POLICY_INSTANCE_SHAPE_SHIFT;
     unsafe {
         class_policy_word(class_ptr)
-            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
+            .try_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
                 let current = word & CLASS_POLICY_INSTANCE_SHAPE_MASK;
                 (current == 0 || current == encoded).then_some(
                     (word & !CLASS_POLICY_INSTANCE_SHAPE_MASK)
@@ -1258,7 +1258,7 @@ pub(crate) unsafe fn class_inherit_instance_shape_id(
     let encoded = (inherited as u64) << CLASS_POLICY_INSTANCE_SHAPE_SHIFT;
     unsafe {
         class_policy_word(class_ptr)
-            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
+            .try_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
                 let current = word & CLASS_POLICY_INSTANCE_SHAPE_MASK;
                 let explicit = word & CLASS_POLICY_INSTANCE_SHAPE_EXPLICIT != 0;
                 if inherited == ObjectShapeId::Plain {
@@ -1300,7 +1300,7 @@ pub(crate) unsafe fn class_set_exception_layout_root(
     let encoded = (root as u64) << CLASS_POLICY_EXCEPTION_LAYOUT_SHIFT;
     unsafe {
         class_policy_word(class_ptr)
-            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
+            .try_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
                 let current = word & CLASS_POLICY_EXCEPTION_LAYOUT_MASK;
                 (current == 0 || current == encoded).then_some(
                     (word & !CLASS_POLICY_EXCEPTION_LAYOUT_MASK)
@@ -1333,7 +1333,7 @@ pub(crate) unsafe fn class_inherit_exception_layout_root(
     let encoded = (inherited as u64) << CLASS_POLICY_EXCEPTION_LAYOUT_SHIFT;
     unsafe {
         class_policy_word(class_ptr)
-            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
+            .try_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
                 let current = word & CLASS_POLICY_EXCEPTION_LAYOUT_MASK;
                 let explicit = word & CLASS_POLICY_EXCEPTION_LAYOUT_EXPLICIT != 0;
                 if inherited == molt_obj_model::ExceptionLayoutRoot::Base {
@@ -1381,7 +1381,7 @@ impl<'a> ClassDefinitionFinishGuard<'a> {
         // typed word preserves unrelated policy bits on both native and WASM.
         let _ = self
             .policy
-            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
+            .try_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
                 Some((word | CLASS_POLICY_DEFINITION_FINISHED) & !CLASS_POLICY_DEFINITION_FINISHING)
             });
         self.active = false;
@@ -1393,7 +1393,7 @@ impl Drop for ClassDefinitionFinishGuard<'_> {
         if self.active {
             let _ =
                 self.policy
-                    .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
+                    .try_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
                         Some(word & !CLASS_POLICY_DEFINITION_FINISHING)
                     });
         }
@@ -1439,7 +1439,7 @@ pub(crate) unsafe fn class_set_instance_type_id(class_ptr: *mut u8, type_id: u32
     let encoded = (type_id as u64) << CLASS_POLICY_INSTANCE_KIND_SHIFT;
     unsafe {
         class_policy_word(class_ptr)
-            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
+            .try_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
                 let current = word & CLASS_POLICY_INSTANCE_KIND_MASK;
                 (current == 0 || current == encoded).then_some(
                     (word & !CLASS_POLICY_INSTANCE_KIND_MASK)
@@ -1463,7 +1463,7 @@ pub(crate) unsafe fn class_inherit_instance_type_id(
     let inherited = (inherited_type_id as u64) << CLASS_POLICY_INSTANCE_KIND_SHIFT;
     unsafe {
         class_policy_word(class_ptr)
-            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
+            .try_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |word| {
                 let current = word & CLASS_POLICY_INSTANCE_KIND_MASK;
                 let explicit = word & CLASS_POLICY_INSTANCE_KIND_EXPLICIT != 0;
                 let current_type_id = if current == 0 {
@@ -1870,7 +1870,7 @@ pub(crate) unsafe fn object_init_shape_unpublished(
         let sidecar = sidecar_from_snapshot(object_aux_snapshot(data_ptr));
         sidecar
             .shape
-            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |current| {
+            .try_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |current| {
                 (current == 0 || current == shape as u64).then_some(shape as u64)
             })
             .is_ok()
@@ -2878,7 +2878,7 @@ pub(crate) unsafe fn validate_class_field_offsets(
             );
             return Err(());
         }
-        for (index, pair) in entries.chunks_exact(2).enumerate() {
+        for (index, pair) in entries.as_chunks::<2>().0.iter().enumerate() {
             let key_is_exact_string = obj_from_bits(pair[0]).as_ptr().is_some_and(|key| {
                 object_type_id(key) == TYPE_ID_STRING
                     && (object_class_bits(key) == 0
@@ -2926,7 +2926,9 @@ pub(crate) unsafe fn validate_class_field_offsets(
                 return Err(());
             }
             if entries[..index * 2]
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .any(|prior| obj_from_bits(prior[1]).as_int() == Some(offset as i64))
             {
                 crate::raise_exception::<()>(

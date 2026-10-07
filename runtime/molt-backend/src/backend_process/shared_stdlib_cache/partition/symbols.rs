@@ -23,23 +23,13 @@ pub(crate) fn prune_and_partition_native_stdlib(
         ir,
         &molt_backend::tir::target_info::TargetInfo::native_release_fast(),
     );
-    let user_func_set: std::collections::BTreeSet<String> = ir
-        .functions
-        .iter()
-        .filter(|f| {
+    let (user_remaining, stdlib_funcs) =
+        molt_backend::stdlib_module_symbols::partition_user_owned_functions(ir, |name| {
             is_user_owned_symbol(
-                module_context.original_function_name(&f.name),
+                module_context.original_function_name(name),
                 entry_module,
                 stdlib_module_symbols,
             )
-        })
-        .map(|f| f.name.clone())
-        .collect();
-    let all_funcs: Vec<_> = ir.functions.drain(..).collect();
-    let (user_remaining, mut stdlib_funcs): (Vec<_>, Vec<_>) = all_funcs
-        .into_iter()
-        .partition(|f| user_func_set.contains(&f.name));
-    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    stdlib_funcs.retain(|f| seen.insert(f.name.clone()));
+        });
     (user_remaining, stdlib_funcs, module_context)
 }
