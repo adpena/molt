@@ -27,7 +27,6 @@ jobs:
       - name: Setup project Python and Lean cache
         uses: ./.github/actions/setup-project
         with:
-          uv: "false"
           cache-uv: "false"
           cache-lean: "true"
 
@@ -57,7 +56,6 @@ jobs:
       - name: Setup project Python and Node
         uses: ./.github/actions/setup-project
         with:
-          uv: "false"
           cache-uv: "false"
           node-version: pinned
 
@@ -101,7 +99,6 @@ jobs:
       - name: Setup project Python
         uses: ./.github/actions/setup-project
         with:
-          uv: "false"
           cache-uv: "false"
 
       - name: Check comprehensive source correspondence

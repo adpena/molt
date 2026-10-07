@@ -299,80 +299,81 @@ _GENERATED_FAMILY_OWNERS = {
 }
 
 
-def _is_generated_file(sa, path: Path) -> bool:
+def _is_generated_file(sa, path: Path, root: Path) -> bool:
     """A file is generated iff structural_audit's authoritative heuristic says so.
     We reuse that one predicate rather than re-deriving the marker scan."""
-    return sa._is_generated(path)
+    return sa._is_generated(path, root)
 
 
 def detect_orphans(root: Path, manifest: Manifest, sa) -> list[Violation]:
-    declared_outputs: set[str] = set()
-    declared_sources: set[str] = set()
-    for g in manifest.generators:
-        declared_outputs.update(g["outputs"])
-        # A `source` may be a repo-relative file (a SEED table with an @generated
-        # header) or a free-text description; only the former matters here.
-        src = g.get("source", "")
-        if src and (root / src).is_file():
-            declared_sources.add(src)
-    for cd in manifest.closed_domains:
-        st = cd.get("source_table", "")
-        if st and (root / st).is_file():
-            declared_sources.add(st)
-    allowlisted = {og["path"] for og in manifest.orphan_generated}
-    # Fact-plane tooling DESCRIBES @generated in its prose; it is hand-maintained
-    # authority, not a generated file. Exempt the manifest and its checker.
-    tooling_exemptions = {MANIFEST_REL, "tools/check_generator_manifest.py"}
+    with sa.audit_operation(root):
+        declared_outputs: set[str] = set()
+        declared_sources: set[str] = set()
+        for g in manifest.generators:
+            declared_outputs.update(g["outputs"])
+            # A `source` may be a repo-relative file (a SEED table with an @generated
+            # header) or a free-text description; only the former matters here.
+            src = g.get("source", "")
+            if src and (root / src).is_file():
+                declared_sources.add(src)
+        for cd in manifest.closed_domains:
+            st = cd.get("source_table", "")
+            if st and (root / st).is_file():
+                declared_sources.add(st)
+        allowlisted = {og["path"] for og in manifest.orphan_generated}
+        # Fact-plane tooling DESCRIBES @generated in its prose; it is hand-maintained
+        # authority, not a generated file. Exempt the manifest and its checker.
+        tooling_exemptions = {MANIFEST_REL, "tools/check_generator_manifest.py"}
 
-    violations: list[Violation] = []
-    for sub in manifest.generated_scan_roots:
-        base = root / sub
-        if not base.is_dir():
-            continue
-        for path in base.rglob("*"):
-            if not path.is_file():
+        violations: list[Violation] = []
+        for sub in manifest.generated_scan_roots:
+            base = root / sub
+            if not base.is_dir():
                 continue
-            if path.suffix not in (
-                ".rs",
-                ".py",
-                ".pyi",
-                ".inc",
-                ".txt",
-                ".md",
-                ".toml",
-            ):
-                continue
-            if sa._is_excluded(path, root):
-                continue
-            if not _is_generated_file(sa, path):
-                continue
-            rel = path.relative_to(root).as_posix()
-            if rel in declared_outputs or rel in allowlisted:
-                continue
-            # A declared `source`/seed table is the INPUT to a generator (it may
-            # carry an @generated-SEED header), not a generated output.
-            if rel in declared_sources:
-                continue
-            # Credit a recognized dynamic family to its generator.
-            if any(frag in rel for frag in _GENERATED_FAMILY_OWNERS):
-                continue
-            # The fact-plane tooling describes @generated; it is not generated.
-            if rel in tooling_exemptions:
-                continue
-            violations.append(
-                Violation(
-                    kind="orphan",
-                    severity="high",
-                    location=rel,
-                    detail=(
-                        "@generated/DO-NOT-EDIT file with no registered generator. "
-                        "Add its generator's outputs[] row to generator_manifest.toml, "
-                        "or add an [[orphan_generated]] allowlist row naming the real "
-                        "producer (e.g. a Rust build-side generator)."
-                    ),
+            for path in base.rglob("*"):
+                if not path.is_file():
+                    continue
+                if path.suffix not in (
+                    ".rs",
+                    ".py",
+                    ".pyi",
+                    ".inc",
+                    ".txt",
+                    ".md",
+                    ".toml",
+                ):
+                    continue
+                if sa._is_excluded(path, root):
+                    continue
+                if not _is_generated_file(sa, path, root):
+                    continue
+                rel = path.relative_to(root).as_posix()
+                if rel in declared_outputs or rel in allowlisted:
+                    continue
+                # A declared `source`/seed table is the INPUT to a generator (it may
+                # carry an @generated-SEED header), not a generated output.
+                if rel in declared_sources:
+                    continue
+                # Credit a recognized dynamic family to its generator.
+                if any(frag in rel for frag in _GENERATED_FAMILY_OWNERS):
+                    continue
+                # The fact-plane tooling describes @generated; it is not generated.
+                if rel in tooling_exemptions:
+                    continue
+                violations.append(
+                    Violation(
+                        kind="orphan",
+                        severity="high",
+                        location=rel,
+                        detail=(
+                            "@generated/DO-NOT-EDIT file with no registered generator. "
+                            "Add its generator's outputs[] row to generator_manifest.toml, "
+                            "or add an [[orphan_generated]] allowlist row naming the real "
+                            "producer (e.g. a Rust build-side generator)."
+                        ),
+                    )
                 )
-            )
-    return violations
+        return violations
 
 
 # ---------------------------------------------------------------------------
@@ -751,67 +752,75 @@ def _top_level_named_variants(sa, block: str, arm_pat: str, enum_name: str) -> s
 
 
 def audit_closed_domains(root: Path, manifest: Manifest, sa) -> list[Violation]:
-    violations: list[Violation] = []
+    with sa.audit_operation(root):
+        violations: list[Violation] = []
 
-    # Resolve every declared domain's live variant set ONCE up front.
-    domains: list[
-        tuple[str, str, set[str], set[str]]
-    ] = []  # (name, marker, variants, audited)
-    for cd in manifest.closed_domains:
-        enum_file = root / cd["enum_file"]
-        enum_name = cd["enum_name"]
-        if not enum_file.is_file():
-            violations.append(
-                Violation(
-                    kind="closed_domain_structural",
-                    severity="high",
-                    location=cd["enum_file"],
-                    detail=f"closed_domain {cd['name']}: enum_file does not exist",
+        # Resolve every declared domain's live variant set ONCE up front.
+        domains: list[
+            tuple[str, str, set[str], set[str]]
+        ] = []  # (name, marker, variants, audited)
+        for cd in manifest.closed_domains:
+            enum_file = root / cd["enum_file"]
+            enum_name = cd["enum_name"]
+            if not enum_file.is_file():
+                violations.append(
+                    Violation(
+                        kind="closed_domain_structural",
+                        severity="high",
+                        location=cd["enum_file"],
+                        detail=f"closed_domain {cd['name']}: enum_file does not exist",
+                    )
                 )
-            )
-            continue
-        variants = sa._count_enum_variants(
-            enum_file.read_text(errors="replace", encoding="utf-8"), enum_name
-        )
-        if not variants:
-            violations.append(
-                Violation(
-                    kind="closed_domain_structural",
-                    severity="high",
-                    location=f"{cd['enum_file']}::{enum_name}",
-                    detail=(
-                        f"closed_domain {cd['name']}: could not parse any variants of "
-                        f"`enum {enum_name}` (the discovery parser found nothing — the "
-                        "enum may have been renamed/moved; fix enum_file/enum_name)."
-                    ),
-                )
-            )
-            continue
-        domains.append(
-            (enum_name, enum_name + "::", variants, set(cd.get("audited_defaults", [])))
-        )
-
-    if not domains:
-        return violations
-
-    # Single file-read pass: scan each .rs source file once for every domain whose
-    # `Enum::` marker it contains (the Comprehensive Analysis Spine — one pass, not
-    # one pass per domain).
-    test_paths = sa._rust_test_source_paths(root)
-    for path in sa._iter_source_files(root, (".rs",)):
-        if sa._is_generated(path) or path.resolve() in test_paths:
-            continue
-        text = path.read_text(errors="replace", encoding="utf-8")
-        rel = None
-        for enum_name, marker, variants, audited in domains:
-            if marker not in text:
                 continue
-            if rel is None:
-                rel = path.relative_to(root).as_posix()
-            violations.extend(
-                _scan_closed_domain_matches(sa, text, rel, enum_name, variants, audited)
+            variants = sa._count_enum_variants(
+                enum_file.read_text(errors="replace", encoding="utf-8"), enum_name
             )
-    return violations
+            if not variants:
+                violations.append(
+                    Violation(
+                        kind="closed_domain_structural",
+                        severity="high",
+                        location=f"{cd['enum_file']}::{enum_name}",
+                        detail=(
+                            f"closed_domain {cd['name']}: could not parse any variants of "
+                            f"`enum {enum_name}` (the discovery parser found nothing — the "
+                            "enum may have been renamed/moved; fix enum_file/enum_name)."
+                        ),
+                    )
+                )
+                continue
+            domains.append(
+                (
+                    enum_name,
+                    enum_name + "::",
+                    variants,
+                    set(cd.get("audited_defaults", [])),
+                )
+            )
+
+        if not domains:
+            return violations
+
+        # Single file-read pass: scan each .rs source file once for every domain whose
+        # `Enum::` marker it contains (the Comprehensive Analysis Spine — one pass, not
+        # one pass per domain).
+        test_paths = sa._rust_test_source_paths(root)
+        for path in sa._iter_source_files(root, (".rs",)):
+            if sa._is_generated(path, root) or path.resolve() in test_paths:
+                continue
+            text = path.read_text(errors="replace", encoding="utf-8")
+            rel = None
+            for enum_name, marker, variants, audited in domains:
+                if marker not in text:
+                    continue
+                if rel is None:
+                    rel = path.relative_to(root).as_posix()
+                violations.extend(
+                    _scan_closed_domain_matches(
+                        sa, text, rel, enum_name, variants, audited
+                    )
+                )
+        return violations
 
 
 # ---------------------------------------------------------------------------

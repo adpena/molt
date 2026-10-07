@@ -129,6 +129,12 @@
     ".github/actions/setup-lean/action.yml",
     ".github/actions/setup-llvm/action.yml",
     ".github/actions/setup-project/action.yml",
+    ".github/actions/setup-project/normalize-inputs.sh",
+    ".github/actions/setup-project/provision-python.sh",
+    ".github/actions/setup-project/provision-rust.py",
+    "tools/check_rust_toolchain.py",
+    "tests/tools/test_setup_project_inputs.py",
+    "tests/tools/test_rust_toolchain_contract.py",
     ".github/workflows/ci.yml",
     ".github/workflows/formal.yml",
     ".github/workflows/molt-wasm-ci.yml",
@@ -326,7 +332,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "3dbf0d9a700b60c16f3e1d3cb44d5de6560d12894aaf04d4a0c62ddcf4f33b07",
+  "authority_sha256": "10c9f2209596f1d03c2fd4053acdef3d7c18b0b3b979f6a7a7c258ee66eed23a",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -457,9 +463,10 @@
       ],
       "admission_workflow": ".github/workflows/ci.yml",
       "dependencies": [],
-      "description": "Pure Python unit and harness-contract proof on Linux and macOS.",
+      "description": "Python unit and harness-contract proof on Linux and macOS, with Rust prerequisites for actual compiler consumers.",
       "executor": "github-matrix",
       "inputs": [
+        ".github/actions/setup-project/**",
         ".github/workflows/ci.yml",
         ".python-version",
         "pyproject.toml",
@@ -709,6 +716,10 @@
       "description": "Hosted Linux, macOS, and Windows queue, process, path, and source-build custody proof, plus Rust workspace lint/compile and runtime test truth on macOS.",
       "executor": "github-matrix",
       "inputs": [
+        ".github/actions/setup-project/**",
+        "tools/check_rust_toolchain.py",
+        "tests/tools/test_setup_project_inputs.py",
+        "tests/tools/test_rust_toolchain_contract.py",
         ".github/workflows/ci.yml",
         ".python-version",
         ".cargo/**",
@@ -1326,7 +1337,9 @@
         "tests/cli/test_source_extension_compiler_target.py",
         "tests/cli/test_extension_wheel_retained_inputs.py",
         "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
-        "tests/tools/test_proof_queue_output_layout.py"
+        "tests/tools/test_proof_queue_output_layout.py",
+        "tests/tools/test_setup_project_inputs.py",
+        "tests/tools/test_rust_toolchain_contract.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-queue-portability",
@@ -1384,7 +1397,9 @@
         "tests/cli/test_source_extension_compiler_target.py",
         "tests/cli/test_extension_wheel_retained_inputs.py",
         "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
-        "tests/tools/test_proof_queue_output_layout.py"
+        "tests/tools/test_proof_queue_output_layout.py",
+        "tests/tools/test_setup_project_inputs.py",
+        "tests/tools/test_rust_toolchain_contract.py"
       ],
       "cache_domain": "pytest",
       "cell": "macos-arm64-py312-queue-portability",
@@ -1442,7 +1457,9 @@
         "tests/cli/test_source_extension_compiler_target.py",
         "tests/cli/test_extension_wheel_retained_inputs.py",
         "tests/cli/test_cli_extension_commands.py::test_direct_build_audits_and_reseals_extracted_wheel",
-        "tests/tools/test_proof_queue_output_layout.py"
+        "tests/tools/test_proof_queue_output_layout.py",
+        "tests/tools/test_setup_project_inputs.py",
+        "tests/tools/test_rust_toolchain_contract.py"
       ],
       "cache_domain": "pytest",
       "cell": "windows-x86_64-py312-queue-portability",
@@ -2780,7 +2797,9 @@
         "tests/tools/test_runtime_descendant_receipts.py",
         "tests/tools/test_runtime_test_gate.py",
         "tests/test_environment_registry.py",
-        "tests/tools/test_check_environment_registry.py"
+        "tests/tools/test_check_environment_registry.py",
+        "tests/tools/test_setup_project_inputs.py",
+        "tests/tools/test_rust_toolchain_contract.py"
       ],
       "cache_domain": "pytest",
       "cell": "linux-x86_64-py312-repository-policy",
@@ -3761,7 +3780,9 @@
       "timeout_seconds": 300,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "rustc",
+        "cargo"
       ]
     },
     {
@@ -3805,7 +3826,9 @@
       "timeout_seconds": 300,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "rustc",
+        "cargo"
       ]
     },
     {
@@ -3879,7 +3902,9 @@
       "timeout_seconds": 600,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "rustc",
+        "cargo"
       ]
     },
     {
@@ -3953,7 +3978,9 @@
       "timeout_seconds": 600,
       "toolchains": [
         "python",
-        "uv"
+        "uv",
+        "rustc",
+        "cargo"
       ]
     },
     {
@@ -5403,10 +5430,11 @@
       "local.ci-wiring.1": "python3 tools/venv_exec.py python -m pytest -q tests/test_proof_plan.py tests/test_ci_workflow_topology.py tests/test_ci_cargo_cache.py tests/test_generator_manifest.py tests/test_resource_pressure.py tests/test_translation_validate_roots.py tests/tools/test_ci_resource_env.py tests/tools/test_ci_gate.py tests/tools/test_fuzz_compiler_cli.py tests/tools/test_formal_correspondence_truth.py tests/tools/test_nightly_prepare.py tests/tools/test_nightly_profile_feedback.py tests/tools/test_nightly_runtime_bundle.py tests/tools/test_nightly_shard_profile.py tests/tools/test_nightly_sharding.py tests/tools/test_reproducible_build_truth.py",
       "local.codec-tables.0": "python3 tools/gen_codecs.py --check",
       "local.codec-tables.1": "uv run python -m pytest -q tests/test_gen_codecs.py",
-      "local.dev-tooling.0": "python3 tools/venv_exec.py python -m pytest -q tests/test_molt_dev.py",
-      "local.dev-tooling.1": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_check_rust_ffi_blocks.py",
-      "local.dev-tooling.2": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
-      "local.dev-tooling.3": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_check_rustfmt.py",
+      "local.dev-tooling.0": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_setup_project_inputs.py",
+      "local.dev-tooling.1": "python3 tools/venv_exec.py python -m pytest -q tests/test_molt_dev.py",
+      "local.dev-tooling.2": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_check_rust_ffi_blocks.py",
+      "local.dev-tooling.3": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
+      "local.dev-tooling.4": "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_check_rustfmt.py",
       "local.docs-architecture.0": "python3 tools/update_status_blocks.py --check",
       "local.docs-architecture.1": "python3 tools/check_docs_architecture.py",
       "local.ecosystem-compat.0": "python3 tools/check_ecosystem_compat.py",
@@ -6132,16 +6160,20 @@
           "local.dev-tooling.0",
           "local.dev-tooling.1",
           "local.dev-tooling.2",
-          "local.dev-tooling.3"
+          "local.dev-tooling.3",
+          "local.dev-tooling.4"
         ],
         "description": "dev drivers, Rust toolchain/formatting custody, or their config/tests: run the failure-mode tests.",
         "gates": [
+          "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_setup_project_inputs.py",
           "python3 tools/venv_exec.py python -m pytest -q tests/test_molt_dev.py",
           "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_check_rust_ffi_blocks.py",
           "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_rust_toolchain_contract.py",
           "python3 tools/venv_exec.py python -m pytest -q tests/tools/test_check_rustfmt.py"
         ],
         "globs": [
+          ".github/actions/setup-project/**",
+          "tests/tools/test_setup_project_inputs.py",
           "tools/dev.py",
           "tools/check_rust_ffi_blocks.py",
           "tools/check_rust_toolchain.py",
@@ -6817,7 +6849,8 @@
       "executable": "{python}",
       "name": "python",
       "setup_evidence": [
-        ".python-version::3.12.15"
+        ".python-version::3.12.15",
+        ".github/actions/setup-project/action.yml::bash .github/actions/setup-project/provision-python.sh"
       ],
       "setup_value": "3.12.15",
       "version_args": [
@@ -6884,7 +6917,7 @@
       "name": "rustc",
       "setup_evidence": [
         "rust-toolchain.toml::channel = \"1.99.0\"",
-        ".github/actions/setup-project/action.yml::rustup toolchain install",
+        ".github/actions/setup-project/action.yml::python3 -I -B .github/actions/setup-project/provision-rust.py",
         ".github/actions/setup-project/action.yml::steps.inputs.outputs.rust-toolchain"
       ],
       "setup_value": "1.99.0",
@@ -6922,7 +6955,7 @@
       "name": "cargo",
       "setup_evidence": [
         "rust-toolchain.toml::channel = \"1.99.0\"",
-        ".github/actions/setup-project/action.yml::rustup toolchain install",
+        ".github/actions/setup-project/action.yml::python3 -I -B .github/actions/setup-project/provision-rust.py",
         ".github/actions/setup-project/action.yml::steps.inputs.outputs.rust-toolchain"
       ],
       "setup_value": "1.99.0",

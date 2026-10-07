@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 
 from molt.rust_source_scan import (
+    scan_memo,
     mask_rust_comments_and_strings,
     mask_rust_test_items,
     rust_source_tokens as _tokens,
@@ -686,6 +687,7 @@ def _literal_refusal_exclusions(
     return result
 
 
+@scan_memo()
 def proven_branch_projection(
     root: Path, methods: dict[str, str], domain: AdmittedWireDomain
 ) -> BranchProjection:

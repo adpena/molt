@@ -730,7 +730,7 @@ def test_generated_marker_inside_string_literal_is_not_generated(tmp_path: Path)
         encoding="utf-8",
     )
 
-    assert not SA._is_generated(path)
+    assert not SA._is_generated(path, tmp_path)
 
 
 def test_duplicate_authority_probe_ignores_split_rust_test_modules(tmp_path: Path):
@@ -2551,3 +2551,102 @@ def test_compatibility_classification_does_not_exempt_raw_raises(tmp_path):
     assert len(hits) == 1
     rust = 'fn unrelated() { raise_exception(py, "NotImplementedError", "multi-dimensional sub-views are not implemented"); }'
     assert len(SA._rust_stub_surface_hits(rust)) == 1
+
+
+def _operation_fixture(root):
+    (root / "src").mkdir(parents=True)
+    (root / "tools").mkdir()
+    for name in ("a.py", "b.py"):
+        (root / "src" / name).write_text("# TODO repair\n", encoding="utf-8")
+    (root / "tools/generator_manifest.toml").write_text("", encoding="utf-8")
+    return root
+
+
+def test_audit_nested_root_scope_and_exception_restore(tmp_path):
+    left = _operation_fixture(tmp_path / "left")
+    right = _operation_fixture(tmp_path / "right")
+    with SA.audit_operation(left, frozenset({"src/a.py"})):
+        assert [f.location for f in SA.probe_debt_markers(left)] == ["src/a.py:1"]
+        with pytest.raises(ValueError, match="nested"):
+            with SA.audit_operation(right, frozenset({"src/b.py"})):
+                assert [f.location for f in SA.probe_debt_markers(right)] == [
+                    "src/b.py:1"
+                ]
+                raise ValueError("nested")
+        assert [f.location for f in SA.probe_debt_markers(left)] == ["src/a.py:1"]
+    assert {f.location for f in SA.probe_debt_markers(right)} == {
+        "src/a.py:1",
+        "src/b.py:1",
+    }
+
+
+def test_audit_manifest_and_source_refresh_between_operations(tmp_path):
+    root = _operation_fixture(tmp_path)
+    manifest = root / "tools/generator_manifest.toml"
+    source = root / "src/a.py"
+    with SA.audit_operation(root):
+        assert not SA._is_generated(source, root)
+        assert SA._source_text(source) == "# TODO repair\n"
+        source.write_text("# finished\n", encoding="utf-8")
+        manifest.write_text('[[generator]]\noutputs=["src/a.py"]\n', encoding="utf-8")
+        assert not SA._is_generated(source, root)
+        assert SA._source_text(source) == "# TODO repair\n"
+        with SA.audit_operation(root):
+            assert SA._is_generated(source, root)
+            assert SA._source_text(source) == "# finished\n"
+        assert not SA._is_generated(source, root)
+    with SA.audit_operation(root):
+        assert SA._is_generated(source, root)
+        assert SA._source_text(source) == "# finished\n"
+    manifest.write_text("", encoding="utf-8")
+    assert not SA._is_generated(source, root)
+    assert [f.location for f in SA.probe_debt_markers(root)] == ["src/b.py:1"]
+
+
+def test_audit_concurrent_run_scopes_do_not_leak_or_resurrect(tmp_path, monkeypatch):
+    from threading import Event, Thread
+
+    left = _operation_fixture(tmp_path / "left")
+    right = _operation_fixture(tmp_path / "right")
+    entered_a, entered_b, exited_a = Event(), Event(), Event()
+    results, errors = {}, []
+
+    def probe(root):
+        initial = SA.probe_debt_markers(root)
+        if root == left:
+            entered_a.set()
+            assert entered_b.wait(5)
+        else:
+            assert entered_a.wait(5)
+            entered_b.set()
+            assert exited_a.wait(5)
+        assert SA.probe_debt_markers(root) == initial
+        return initial
+
+    monkeypatch.setattr(SA, "PROBES", (probe,))
+
+    def run(root, name):
+        try:
+            results[name] = SA.run_all(root, frozenset({f"src/{name}.py"}))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            if name == "a":
+                exited_a.set()
+            else:
+                entered_b.set()
+
+    threads = [
+        Thread(target=run, args=(left, "a")),
+        Thread(target=run, args=(right, "b")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(12)
+    assert not any(thread.is_alive() for thread in threads)
+    assert not errors
+    assert [f.location for f in results["a"]] == ["src/a.py:1"]
+    assert [f.location for f in results["b"]] == ["src/b.py:1"]
+    (right / "src/b.py").write_text("# finished\n", encoding="utf-8")
+    assert [f.location for f in SA.probe_debt_markers(right)] == ["src/a.py:1"]

@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 import re
+from threading import local
 from typing import Literal, NamedTuple, TypeVar, cast
 
 _T = TypeVar("_T")
@@ -20,24 +21,29 @@ _T = TypeVar("_T")
 # projections below are pure functions of the text, so inside scan_memo() they
 # are memoized by content: one lexical pass per file per scan, released when
 # the scan ends. A mutated file is a different key, never a stale hit.
-_SCAN_MEMO: dict[tuple[str, object, str], object] | None = None
+_SCAN_STATE = local()
 
 
 @contextmanager
 def scan_memo() -> Iterator[None]:
-    """Share lexical projections across every query within one scan."""
-    global _SCAN_MEMO
-    previous = _SCAN_MEMO
-    if previous is None:
-        _SCAN_MEMO = {}
+    """Share content projections in a synchronous, thread-owned scan.
+
+    Nested callers in this thread reuse the outer memo. Independent threads
+    never share its mutable dictionary. Do not suspend an async task inside
+    this synchronous scope; the outermost exit drops every retained buffer.
+    """
+    if getattr(_SCAN_STATE, "memo", None) is not None:
+        yield
+        return
+    _SCAN_STATE.memo = {}
     try:
         yield
     finally:
-        _SCAN_MEMO = previous
+        del _SCAN_STATE.memo
 
 
 def _memoized(kind: str, option: object, text: str, compute: Callable[[], _T]) -> _T:
-    memo = _SCAN_MEMO
+    memo = getattr(_SCAN_STATE, "memo", None)
     if memo is None:
         return compute()
     key = (kind, option, text)

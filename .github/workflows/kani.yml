@@ -23,7 +23,6 @@ jobs:
       - name: Setup Kani Rust toolchain
         uses: ./.github/actions/setup-project
         with:
-          uv: "false"
           cache-uv: "false"
           rust-toolchain: pinned
           cache-cargo: "true"

@@ -56,7 +56,6 @@ jobs:
         id: project
         uses: ./.github/actions/setup-project
         with:
-          uv: "false"
           cache-uv: "false"
           rust-toolchain: sanitizer-nightly
           rust-components: rust-src
@@ -106,7 +105,6 @@ jobs:
         id: project
         uses: ./.github/actions/setup-project
         with:
-          uv: "false"
           cache-uv: "false"
           rust-toolchain: sanitizer-nightly
           rust-components: miri, rust-src

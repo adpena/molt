@@ -425,3 +425,113 @@ def test_module_edges_share_balanced_prefixes_and_literal_path_boundaries(tmp_pa
     assert (
         read_rust_module_cluster(root) == child_text + "\n" + retained + blanked + "\n"
     )
+
+
+def test_scan_memo_nested_exception_content_and_result_ownership(monkeypatch):
+    from molt import rust_source_scan as scan
+
+    calls = []
+    original = scan._non_code_spans
+
+    def observed(text):
+        calls.append(text)
+        return original(text)
+
+    monkeypatch.setattr(scan, "_non_code_spans", observed)
+    text = 'let first = "opaque"; // comment\n'
+    changed = 'let second = "opaque"; // comment\n'
+    with scan.scan_memo():
+        first = scan.rust_source_tokens(text)
+        after_first = len(calls)
+        with pytest.raises(ValueError, match="inner"):
+            with scan.scan_memo():
+                assert scan.rust_source_tokens(text) == first
+                raise ValueError("inner")
+        first.clear()  # callers own the list, never the cached tuple
+        assert scan.rust_source_tokens(text)[1].text == "first"
+        assert len(calls) == after_first
+        assert scan.rust_source_tokens(changed)[1].text == "second"
+        assert len(calls) > after_first
+    before_next = len(calls)
+    scan.rust_source_tokens(text)
+    assert len(calls) > before_next
+
+
+def test_scan_memo_overlapping_threads_release_without_resurrection():
+    import gc
+    from threading import Event, Thread
+    import weakref
+    from molt import rust_source_scan as scan
+
+    class Buffer:
+        pass
+
+    entered_a, entered_b, exited_a = Event(), Event(), Event()
+    refs, errors = {}, []
+
+    def value(owner):
+        def compute():
+            buffer = Buffer()
+            refs[owner] = weakref.ref(buffer)
+            return buffer
+
+        return scan._memoized("lifetime-oracle", None, "equal source", compute)
+
+    def a():
+        try:
+            with scan.scan_memo():
+                held = value("a")
+                entered_a.set()
+                assert entered_b.wait(5)
+                assert value("a") is held
+            del held
+            exited_a.set()
+        except BaseException as exc:
+            errors.append(exc)
+            entered_a.set()
+            exited_a.set()
+
+    def b():
+        try:
+            assert entered_a.wait(5)
+            with scan.scan_memo():
+                held = value("b")
+                assert "b" in refs, "independent thread reused the other memo"
+                entered_b.set()
+                assert exited_a.wait(5)
+                assert value("b") is held, "other thread's exit discarded this memo"
+            del held
+            # A resurrected outer dictionary would retain a cached buffer here.
+            assert scan._memoized(
+                "outside", None, "source", Buffer
+            ) is not scan._memoized("outside", None, "source", Buffer)
+        except BaseException as exc:
+            errors.append(exc)
+            entered_b.set()
+
+    threads = [Thread(target=a), Thread(target=b)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(12)
+    assert not any(thread.is_alive() for thread in threads)
+    assert not errors
+    gc.collect()
+    assert set(refs) == {"a", "b"}
+    assert all(ref() is None for ref in refs.values())
+
+
+def test_scan_memo_failed_compute_never_publishes():
+    from molt import rust_source_scan as scan
+
+    def failed():
+        raise ValueError("not a projection")
+
+    with pytest.raises(ValueError):
+        with scan.scan_memo():
+            scan._memoized("failure-oracle", None, "source", failed)
+    marker = object()
+    with scan.scan_memo():
+        assert (
+            scan._memoized("failure-oracle", None, "source", lambda: marker) is marker
+        )

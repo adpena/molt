@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -65,8 +66,61 @@ class CheckReport:
         return not self.errors
 
 
+@dataclass(frozen=True)
+class RustInstallationPlan:
+    channel: str
+    components: tuple[str, ...]
+    targets: tuple[str, ...]
+    nightly: bool
+
+
+def _atoms(label: str, values: object) -> tuple[str, ...]:
+    if not isinstance(values, list) or any(
+        not isinstance(value, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", value) is None
+        for value in values
+    ):
+        raise ValueError(f"invalid {label} list")
+    return tuple(sorted(set(values)))
+
+
+def installation_plan(
+    role: str, *, components: str = "", targets: str = ""
+) -> RustInstallationPlan:
+    """Resolve complete install inputs from their one declarative authority."""
+    extra_components = _atoms("component", components.split(",") if components else [])
+    extra_targets = _atoms("target", targets.split(",") if targets else [])
+    if role == "pinned":
+        table = _read_toml(Path("rust-toolchain.toml"))["toolchain"]
+        channel = table["channel"]
+        if (
+            not isinstance(channel, str)
+            or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", channel) is None
+        ):
+            raise ValueError("Rust channel must be an exact stable release")
+        base_components = _atoms("manifest component", table["components"])
+        base_targets = _atoms("manifest target", table["targets"])
+    elif role == "sanitizer-nightly":
+        channel = (ROOT / RUST_NIGHTLY_CONFIG).read_text(encoding="utf-8").strip()
+        if re.fullmatch(r"nightly-[0-9]{4}-[0-9]{2}-[0-9]{2}", channel) is None:
+            raise ValueError("Rust nightly must be an exact dated release")
+        base_components = base_targets = ()
+    else:
+        raise ValueError("Rust role must be pinned or sanitizer-nightly")
+    return RustInstallationPlan(
+        channel,
+        tuple(sorted(set(base_components) | set(extra_components))),
+        tuple(sorted(set(base_targets) | set(extra_targets))),
+        role == "sanitizer-nightly",
+    )
+
+
 def _run(args: list[str], *, timeout: float = 15.0) -> subprocess.CompletedProcess[str]:
-    env, _cargo_policies = cargo_subprocess_environment(args, None)
+    # A version/identity check must never mutate rustup while another command is
+    # using its installation. Explicit setup remains a separate caller action.
+    env, _cargo_policies = cargo_subprocess_environment(
+        args, {**os.environ, "RUSTUP_AUTO_INSTALL": "0"}
+    )
     return subprocess.run(
         args,
         cwd=ROOT,
@@ -208,40 +262,130 @@ def check_repository_contract() -> CheckReport:
     return CheckReport(tuple(errors))
 
 
-def _toolchain_path_errors(tool: str) -> list[str]:
-    proc = _run(["rustup", "which", tool])
-    if proc.returncode != 0:
-        return [
-            f"rustup which {tool} failed: {proc.stderr.strip() or proc.stdout.strip()}"
-        ]
-    path = proc.stdout.strip().replace("\\", "/")
-    if f"/toolchains/{RUST_VERSION}-" not in path:
-        return [
-            f"{tool} must resolve through rustup toolchain {RUST_VERSION}, got {path}"
-        ]
-    return []
-
-
-def _version_errors(tool: str, pattern: str) -> list[str]:
-    proc = _run([tool, "--version"])
-    if proc.returncode != 0:
-        return [
-            f"{tool} --version failed: {proc.stderr.strip() or proc.stdout.strip()}"
-        ]
-    version = proc.stdout.strip()
-    if re.match(pattern, version) is None:
-        return [f"{tool} must report {RUST_VERSION}, got {version!r}"]
-    return []
-
-
-def check_installed_toolchain() -> CheckReport:
+def check_installed_toolchain(plan: RustInstallationPlan | None = None) -> CheckReport:
+    plan = installation_plan("pinned") if plan is None else plan
     errors: list[str] = []
-    errors.extend(_version_errors("rustc", rf"^rustc {re.escape(RUST_VERSION)}\b"))
-    errors.extend(_version_errors("cargo", rf"^cargo {re.escape(RUST_VERSION)}\b"))
-    for tool in ("rustc", "cargo", "rustfmt", "cargo-clippy"):
-        errors.extend(_toolchain_path_errors(tool))
+    compiler = _run(["rustc", f"+{plan.channel}", "--version", "--verbose"])
+    if compiler.returncode:
+        return CheckReport(("selected rustc failed: " + compiler.stderr.strip(),))
+    fields = dict(
+        line.split(": ", 1) for line in compiler.stdout.splitlines() if ": " in line
+    )
+    host = fields.get("host", "")
+    if re.fullmatch(r"[A-Za-z0-9._+-]+", host) is None:
+        return CheckReport(("selected rustc has no valid host triple",))
+    release = fields.get("release", "")
+    if plan.nightly:
+        if not release.endswith("-nightly"):
+            errors.append("selected nightly compiler is not a nightly release")
+        errors.extend(check_compiler_version(compiler.stdout.splitlines()[0]).errors)
+    elif release != plan.channel:
+        errors.append(
+            f"rustc must report exact release {plan.channel}, got {release!r}"
+        )
+    cargo = _run(["cargo", f"+{plan.channel}", "--version"])
+    pattern = (
+        r"cargo \d+\.\d+\.\d+-nightly(?:\s.*)?"
+        if plan.nightly
+        else rf"cargo {re.escape(plan.channel)}(?:\s.*)?"
+    )
+    if cargo.returncode or re.fullmatch(pattern, cargo.stdout.strip()) is None:
+        errors.append(
+            f"selected cargo has invalid version: {cargo.stdout!r} {cargo.stderr}"
+        )
+    sysroot = _run(["rustc", f"+{plan.channel}", "--print", "sysroot"])
+    selected_root = Path(sysroot.stdout.strip())
+    if (
+        sysroot.returncode
+        or not selected_root.is_absolute()
+        or not selected_root.is_dir()
+        or selected_root.name != f"{plan.channel}-{host}"
+    ):
+        return CheckReport(
+            (*errors, "selected Rust sysroot is unavailable or mismatched")
+        )
+    tools = ["rustc", "cargo"]
+    for component, executables in (
+        ("rustfmt", ("rustfmt",)),
+        ("clippy", ("cargo-clippy", "clippy-driver")),
+        ("miri", ("cargo-miri", "miri")),
+    ):
+        if component in plan.components:
+            tools.extend(executables)
+    for tool in tools:
+        selected = _run(["rustup", "which", "--toolchain", plan.channel, tool])
+        path = Path(selected.stdout.strip())
+        if (
+            selected.returncode
+            or not path.is_absolute()
+            or not path.is_file()
+            or not path.stat().st_size
+        ):
+            errors.append(f"selected {tool} executable is unavailable")
+            continue
+        try:
+            path.resolve(strict=True).relative_to(selected_root.resolve(strict=True))
+        except (OSError, ValueError):
+            errors.append(f"selected {tool} is outside the admitted sysroot")
+            continue
+        if tool in {"rustc", "cargo"}:
+            continue
+        # Cargo plugins have their own argv dialect. Their version branches do
+        # not load the compiler driver, so admit each driver independently too.
+        # rustup run supplies the selected sysroot's dynamic-library search path
+        # (including DLL lookup on Windows) while retaining the admitted path.
+        arguments = {
+            "rustfmt": ["--version"],
+            "cargo-clippy": ["--version"],
+            "clippy-driver": ["--rustc", "--version", "--verbose"],
+            "cargo-miri": ["miri", "--version"],
+            "miri": ["--version", "--verbose"],
+        }[tool]
+        version = _run(["rustup", "run", plan.channel, str(path), *arguments])
+        if tool in {"clippy-driver", "miri"}:
+            driver_fields = dict(
+                line.split(": ", 1)
+                for line in version.stdout.splitlines()
+                if ": " in line
+            )
+            valid_version = all(
+                fields.get(key) and driver_fields.get(key) == fields[key]
+                for key in ("host", "release", "commit-hash")
+            )
+        else:
+            identity = {
+                "rustfmt": "rustfmt",
+                "cargo-clippy": "clippy",
+                "cargo-miri": "miri",
+            }[tool]
+            valid_version = (
+                re.fullmatch(
+                    rf"{identity} [0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?"
+                    r"(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?",
+                    version.stdout.strip(),
+                )
+                is not None
+            )
+        if version.returncode or not valid_version:
+            errors.append(f"selected {tool} version probe failed")
+    if "rust-src" in plan.components:
+        library = selected_root / "lib" / "rustlib" / "src" / "rust" / "library"
+        for crate in ("core", "std"):
+            source = library / crate / "src" / "lib.rs"
+            if not source.is_file() or not source.stat().st_size:
+                errors.append(f"Rust source component is missing {crate}")
+    components = _run(
+        ["rustup", "component", "list", "--installed", "--toolchain", plan.channel]
+    )
+    if components.returncode:
+        errors.append("rustup component inventory failed: " + components.stderr.strip())
+    else:
+        installed = set(components.stdout.splitlines())
+        for component in ("rustc", "cargo", "rust-std", *plan.components):
+            if component not in installed and f"{component}-{host}" not in installed:
+                errors.append(f"Rust component {component} is missing")
     targets = _run(
-        ["rustup", "target", "list", "--installed", "--toolchain", RUST_VERSION]
+        ["rustup", "target", "list", "--installed", "--toolchain", plan.channel]
     )
     if targets.returncode != 0:
         errors.append(
@@ -250,12 +394,19 @@ def check_installed_toolchain() -> CheckReport:
         )
     else:
         installed = set(targets.stdout.split())
-        for target in RUST_TARGETS:
+        for target in (host, *plan.targets):
             if target not in installed:
-                errors.append(
-                    f"Rust target {target} is missing; run: "
-                    f"rustup target add {target} --toolchain {RUST_VERSION}"
+                errors.append(f"Rust target {target} is missing")
+                continue
+            library = selected_root / "lib" / "rustlib" / target / "lib"
+            if any(
+                not any(
+                    path.is_file() and path.stat().st_size
+                    for path in library.glob(pattern)
                 )
+                for pattern in ("libcore-*.rlib", "libstd-*.rlib")
+            ):
+                errors.append(f"Rust target {target} has incomplete standard libraries")
     return CheckReport(tuple(errors))
 
 
