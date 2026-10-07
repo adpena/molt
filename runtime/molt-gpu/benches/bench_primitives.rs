@@ -16,6 +16,10 @@ use molt_gpu::ops::PrimitiveOp;
 use molt_gpu::render::{BufferAccess, BufferBinding, FusedKernel, FusedOp, FusedSrc, KernelBody};
 use molt_gpu::shapetracker::ShapeTracker;
 
+#[path = "../tests/support/le_bytes.rs"]
+mod le_bytes;
+use le_bytes::f32_to_bytes;
+
 /// Number of warmup iterations before measurement.
 const WARMUP_ITERS: usize = 3;
 /// Number of measurement iterations.
@@ -29,10 +33,6 @@ fn fill_buffer(device: &CpuDevice, buf: &DeviceBuffer, num_elements: usize) {
         data[i * 4..(i + 1) * 4].copy_from_slice(&val.to_le_bytes());
     }
     device.copy_in(buf, &data).expect("copy_in failed");
-}
-
-fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
-    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
 
 fn patterned_bytes(len: usize) -> Vec<u8> {

@@ -18,6 +18,10 @@ use std::time::Instant;
 
 use molt_gpu::device::cpu::interpret;
 
+#[path = "../tests/support/le_bytes.rs"]
+mod le_bytes;
+use le_bytes::{bytes_to_f32, f32_to_bytes};
+
 const DIM: usize = 64;
 const HEADS: usize = 4;
 const HEAD_DIM: usize = DIM / HEADS;
@@ -27,17 +31,6 @@ const LAYERS: usize = 2;
 const WARMUP: usize = 3;
 const MEASURE_SINGLE: usize = 50;
 const MEASURE_BATCH: usize = 10;
-
-fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
-    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-}
-
-fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-        .collect()
-}
 
 /// Random-ish deterministic initialization (not cryptographic, just needs variation).
 fn pseudo_random_f32(seed: usize, count: usize) -> Vec<f32> {

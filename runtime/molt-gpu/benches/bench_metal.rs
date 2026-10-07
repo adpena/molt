@@ -6,6 +6,9 @@
 //! Gated behind `#[cfg(target_os = "macos")]` — produces a "skip" message
 //! on non-macOS platforms.
 
+#[path = "../tests/support/le_bytes.rs"]
+mod le_bytes;
+
 #[cfg(not(target_os = "macos"))]
 fn main() {
     println!("# Metal Benchmark\n");
@@ -21,6 +24,7 @@ fn main() {
 mod metal_bench {
     use std::time::Instant;
 
+    use crate::le_bytes::{bytes_to_f32, f32_to_bytes};
     use molt_gpu::device::cpu::interpret;
     use molt_gpu::device::metal::MetalDevice;
     use molt_gpu::device::{Allocator, Compiler, Executor};
@@ -34,17 +38,6 @@ mod metal_bench {
 
     const WARMUP: usize = 5;
     const MEASURE: usize = 50;
-
-    fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
-        vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-    }
-
-    fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
-        bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect()
-    }
 
     struct BenchResult {
         name: String,

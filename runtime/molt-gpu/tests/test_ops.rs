@@ -6,6 +6,12 @@ use molt_gpu::render::{
 };
 use molt_gpu::shapetracker::ShapeTracker;
 
+#[path = "support/le_bytes.rs"]
+mod le_bytes;
+use le_bytes::{
+    bytes_to_f32, bytes_to_i32, bytes_to_u32, f32_to_bytes, i32_to_bytes, u32_to_bytes,
+};
+
 #[test]
 fn test_all_26_ops() {
     assert_eq!(PrimitiveOp::ALL.len(), 26);
@@ -37,35 +43,6 @@ fn test_elementwise() {
 }
 
 // --- CPU interpreter tests ---
-
-fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
-    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-}
-
-fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-        .collect()
-}
-
-fn bytes_to_i32(bytes: &[u8]) -> Vec<i32> {
-    bytes
-        .chunks_exact(4)
-        .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
-        .collect()
-}
-
-fn u32_to_bytes(vals: &[u32]) -> Vec<u8> {
-    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-}
-
-fn bytes_to_u32(bytes: &[u8]) -> Vec<u32> {
-    bytes
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
-        .collect()
-}
 
 fn run_unary_typed_raw(
     op: PrimitiveOp,
@@ -699,16 +676,6 @@ fn test_cpu_idiv() {
         vectorize_width: 1,
     };
 
-    fn i32_to_bytes(vals: &[i32]) -> Vec<u8> {
-        vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-    }
-    fn bytes_to_i32(bytes: &[u8]) -> Vec<i32> {
-        bytes
-            .chunks_exact(4)
-            .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
-            .collect()
-    }
-
     let mut bufs = vec![
         vec![0u8; n * 4],
         i32_to_bytes(&[7, -7, 7, -7]),
@@ -754,16 +721,6 @@ fn test_cpu_mod() {
         spec: None,
         vectorize_width: 1,
     };
-
-    fn i32_to_bytes(vals: &[i32]) -> Vec<u8> {
-        vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-    }
-    fn bytes_to_i32(bytes: &[u8]) -> Vec<i32> {
-        bytes
-            .chunks_exact(4)
-            .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
-            .collect()
-    }
 
     let mut bufs = vec![
         vec![0u8; n * 4],
@@ -832,16 +789,6 @@ fn test_cpu_bitwise_and() {
         spec: None,
         vectorize_width: 1,
     };
-
-    fn i32_to_bytes(vals: &[i32]) -> Vec<u8> {
-        vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-    }
-    fn bytes_to_i32(bytes: &[u8]) -> Vec<i32> {
-        bytes
-            .chunks_exact(4)
-            .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
-            .collect()
-    }
 
     let mut bufs = vec![
         vec![0u8; n * 4],

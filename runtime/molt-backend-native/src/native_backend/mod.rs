@@ -96,13 +96,10 @@ pub(crate) mod vec_layout;
 pub(crate) use vec_layout::vec_u64_layout;
 
 mod simple_backend;
-// The three externally-public backend types must flow through a `pub` path so
-// `lib.rs` can re-export them publicly (`molt_backend::SimpleBackend`, etc.);
-// the remaining crate-internal items stay `pub(crate)`.
-pub(crate) use simple_backend::*;
-pub use simple_backend::{
-    CompileOutput, NativeBackendModuleContext, NativeFunctionLinkageAbi, SimpleBackend,
-};
+// `lib.rs` re-exports the externally-public backend types
+// (`molt_backend::SimpleBackend`, etc.). Each item keeps its declared
+// visibility through this glob, so crate-internal items stay `pub(crate)`.
+pub use simple_backend::*;
 
 mod function_compiler;
 
@@ -172,8 +169,10 @@ mod header_flags_tests {
             .buffer
             .data();
         let instructions: Vec<u32> = code
-            .chunks_exact(4)
-            .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("instruction")))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&bytes| u32::from_le_bytes(bytes))
             .collect();
         assert!(
             instructions.iter().any(|instruction| {

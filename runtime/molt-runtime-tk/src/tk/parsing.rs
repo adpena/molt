@@ -726,13 +726,10 @@ pub(super) fn parse_text_end_delta(spec: &str) -> Option<i64> {
     if compact.is_empty() {
         return Some(0);
     }
-    let (sign, tail) = if let Some(rest) = compact.strip_prefix('+') {
-        (1, rest)
-    } else if let Some(rest) = compact.strip_prefix('-') {
-        (-1, rest)
-    } else {
-        return None;
-    };
+    let (sign, tail) = compact
+        .strip_prefix('+')
+        .map(|rest| (1, rest))
+        .or_else(|| compact.strip_prefix('-').map(|rest| (-1, rest)))?;
     let tail = tail
         .strip_suffix('c')
         .or_else(|| tail.strip_suffix('C'))

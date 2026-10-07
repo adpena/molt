@@ -372,7 +372,7 @@ fn snapshot_list(py: &PyToken<'_>, self_bits: u64, project: impl Fn(u64, u64) ->
         };
         let pairs: Vec<u64> = unsafe { dict_order(dict).clone() };
         let mut items = Vec::with_capacity(pairs.len() / 2);
-        for pair in pairs.chunks_exact(2) {
+        for pair in pairs.as_chunks::<2>().0 {
             let item = project(pair[0], pair[1]);
             if exception_pending(py) {
                 for bits in items {
@@ -598,7 +598,7 @@ pub extern "C" fn molt_frame_locals_proxy_update(
         for &bits in &pairs {
             inc_ref_bits(py, bits);
         }
-        for pair in pairs.chunks_exact(2) {
+        for pair in pairs.as_chunks::<2>().0 {
             // The first failure leaves its exception pending.
             if proxy_write(py, self_bits, pair[0], Some(pair[1])).is_err() {
                 break;

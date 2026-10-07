@@ -66,13 +66,9 @@ fn decode_float_sequence_bits(_py: &PyToken, bits: u64, label: &str) -> Result<V
             let mut out = Vec::with_capacity(elems.len());
             for &elem_bits in elems {
                 let elem = obj_from_bits(elem_bits);
-                let value = if let Some(value) = to_f64(elem) {
-                    value as f32
-                } else if let Some(value) = to_i64(elem) {
-                    value as f32
-                } else {
-                    return None;
-                };
+                let value = to_f64(elem)
+                    .map(|value| value as f32)
+                    .or_else(|| to_i64(elem).map(|value| value as f32))?;
                 out.push(value);
             }
             Some(out)

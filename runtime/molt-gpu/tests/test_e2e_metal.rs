@@ -4,8 +4,12 @@
 //! with CPU reference bit-for-bit. Tests softmax and matmul compositions,
 //! and IEEE 754 edge cases.
 
+#[path = "support/le_bytes.rs"]
+mod le_bytes;
+
 #[cfg(target_os = "macos")]
 mod metal_e2e {
+    use crate::le_bytes::{bytes_to_f32, bytes_to_u16, f32_to_bytes, u16_to_bytes, u32_to_bytes};
     use molt_gpu::device::cpu::interpret;
     use molt_gpu::device::metal::MetalDevice;
     use molt_gpu::device::{Allocator, Compiler, DeviceBuffer, Executor};
@@ -18,32 +22,6 @@ mod metal_e2e {
         Renderer,
     };
     use molt_gpu::shapetracker::ShapeTracker;
-
-    fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
-        vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-    }
-
-    fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
-        bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect()
-    }
-
-    fn u16_to_bytes(vals: &[u16]) -> Vec<u8> {
-        vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-    }
-
-    fn u32_to_bytes(vals: &[u32]) -> Vec<u8> {
-        vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-    }
-
-    fn bytes_to_u16(bytes: &[u8]) -> Vec<u16> {
-        bytes
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
-            .collect()
-    }
 
     fn run_kernel_metal_bytes(kernel: &FusedKernel, inputs: &[Vec<u8>]) -> Vec<u8> {
         let device = MetalDevice::new().expect("Metal device required");

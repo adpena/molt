@@ -117,8 +117,10 @@ fn linear_rows4_store_unaligned_matches_scalar_rows() {
     }
 
     let got = out_bytes[1..]
-        .chunks_exact(4)
-        .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&chunk| f32::from_ne_bytes(chunk))
         .collect::<Vec<_>>();
     let mut expected = Vec::new();
     for row_off in row_offsets {
@@ -169,8 +171,10 @@ fn linear_gate_up4_store_unaligned_matches_reference_outputs() {
     }
 
     let got = out_bytes[3..]
-        .chunks_exact(4)
-        .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&chunk| f32::from_ne_bytes(chunk))
         .collect::<Vec<_>>();
     let mut expected = Vec::new();
     for hidden_idx in 0..4usize {
@@ -333,8 +337,10 @@ fn linear_gate_up8_store_unaligned_matches_reference_outputs() {
     }
 
     let got = out_bytes[3..]
-        .chunks_exact(4)
-        .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&chunk| f32::from_ne_bytes(chunk))
         .collect::<Vec<_>>();
     let mut expected = Vec::new();
     for hidden_idx in 0..8usize {

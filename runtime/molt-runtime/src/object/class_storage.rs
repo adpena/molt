@@ -323,7 +323,7 @@ pub(crate) unsafe fn class_set_abstract(
         if abstract_type {
             word.fetch_or(CLASS_STATE_ABSTRACT, super::AtomicOrdering::AcqRel);
         } else {
-            let _ = word.fetch_update(
+            let _ = word.try_update(
                 super::AtomicOrdering::AcqRel,
                 super::AtomicOrdering::Acquire,
                 |old| Some(old & !CLASS_STATE_ABSTRACT),
@@ -804,7 +804,7 @@ impl RuntimeClassRetirement {
                                 let dict = self.assert_exact_metadata(py, map, crate::TYPE_ID_DICT);
                                 let entries = crate::dict_order(dict);
                                 assert_eq!(entries.len() % 2, 0);
-                                for pair in entries.chunks_exact(2) {
+                                for pair in entries.as_chunks::<2>().0 {
                                     self.assert_exact_metadata(py, pair[0], crate::TYPE_ID_STRING);
                                     assert!(crate::obj_from_bits(pair[1]).as_int().is_some());
                                 }
@@ -812,7 +812,7 @@ impl RuntimeClassRetirement {
                             let rows = self.assert_exact_metadata(py, rows, crate::TYPE_ID_TUPLE);
                             super::seq_access::with_immutable_tuple_slice(rows, |rows| {
                                 assert_eq!(rows.len() % 3, 0);
-                                for row in rows.chunks_exact(3) {
+                                for row in rows.as_chunks::<3>().0 {
                                     let field = super::class_layout::decode_row(row);
                                     if field.kind.is_intrinsic() {
                                         assert!(crate::obj_from_bits(field.name).is_none());

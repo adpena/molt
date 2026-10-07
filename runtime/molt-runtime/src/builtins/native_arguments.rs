@@ -177,7 +177,9 @@ impl<'a, 'py> NativeArguments<'a, 'py> {
 
     pub(crate) fn keyword_pairs(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
         self.keyword_entries
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| (pair[0], pair[1]))
     }
 

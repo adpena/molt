@@ -159,7 +159,7 @@ impl GcWord {
     }
 
     #[inline]
-    fn fetch_update<F>(
+    fn try_update<F>(
         &self,
         set_order: AtomicOrdering,
         fetch_order: AtomicOrdering,
@@ -170,7 +170,7 @@ impl GcWord {
     {
         #[cfg(all(not(target_arch = "wasm32"), feature = "free-threaded"))]
         {
-            self.0.fetch_update(set_order, fetch_order, update)
+            self.0.try_update(set_order, fetch_order, update)
         }
         #[cfg(any(target_arch = "wasm32", not(feature = "free-threaded")))]
         {
@@ -406,7 +406,7 @@ impl GcRuntimeState {
     pub(crate) fn on_allocation(&self) {
         Self::assert_custody();
         self.counts[0]
-            .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |count| {
+            .try_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |count| {
                 count.checked_add(1)
             })
             .unwrap_or_else(|_| std::process::abort());
@@ -415,11 +415,10 @@ impl GcRuntimeState {
 
     pub(crate) fn on_deallocation(&self) {
         Self::assert_custody();
-        let _ = self.counts[0].fetch_update(
-            AtomicOrdering::Relaxed,
-            AtomicOrdering::Relaxed,
-            |count| (count != 0).then(|| count - 1),
-        );
+        let _ =
+            self.counts[0].try_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |count| {
+                (count != 0).then(|| count - 1)
+            });
     }
 
     #[inline]
@@ -467,7 +466,7 @@ impl GcRuntimeState {
         let generation = generation as usize;
         if generation + 1 < NUM_GENERATIONS {
             self.counts[generation + 1]
-                .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |count| {
+                .try_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |count| {
                     count.checked_add(1)
                 })
                 .unwrap_or_else(|_| std::process::abort());
@@ -491,14 +490,14 @@ impl GcRuntimeState {
             (&self.stats[generation].collected, collected as u64),
             (&self.stats[generation].scanned, scanned as u64),
         ] {
-            word.fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |value| {
+            word.try_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |value| {
                 value.checked_add(delta)
             })
             .unwrap_or_else(|_| std::process::abort());
         }
         if generation == NUM_GENERATIONS - 2 {
             self.long_lived_pending
-                .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |value| {
+                .try_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |value| {
                     value.checked_add(survivors as u64)
                 })
                 .unwrap_or_else(|_| std::process::abort());
@@ -791,11 +790,10 @@ fn profile_gc_track() {
 fn profile_gc_untrack(count: u64) {
     if profile_enabled_unchecked() {
         GC_UNTRACK_COUNT.fetch_add(count, AtomicOrdering::Relaxed);
-        let _ = GC_TRACKED_LIVE.fetch_update(
-            AtomicOrdering::Relaxed,
-            AtomicOrdering::Relaxed,
-            |live| Some(live.saturating_sub(count)),
-        );
+        let _ =
+            GC_TRACKED_LIVE.try_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |live| {
+                Some(live.saturating_sub(count))
+            });
     }
 }
 
@@ -878,7 +876,7 @@ fn gc_admit_membership(py: &PyToken<'_>, ptr: *mut u8) -> GcMembershipAdmission 
         }
         let allocation_id = tracked_registry()
             .next_allocation_id
-            .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |next| {
+            .try_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |next| {
                 next.checked_add(1)
             })
             .expect("GC allocation ordinal exhausted");
@@ -1153,7 +1151,7 @@ pub(crate) fn native_gc_allocate(py: &PyToken<'_>, address: usize) -> bool {
     }
     let allocation_id = registry
         .next_allocation_id
-        .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |next| {
+        .try_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |next| {
             next.checked_add(1)
         })
         .expect("GC allocation ordinal exhausted");

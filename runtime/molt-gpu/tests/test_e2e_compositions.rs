@@ -15,16 +15,9 @@ use molt_gpu::render::{
 use molt_gpu::schedule::schedule;
 use molt_gpu::shapetracker::ShapeTracker;
 
-fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
-    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-}
-
-fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-        .collect()
-}
+#[path = "support/le_bytes.rs"]
+mod le_bytes;
+use le_bytes::{bytes_to_f32, bytes_to_u16, f32_to_bytes, u16_to_bytes};
 
 fn assert_f32_close(label: &str, actual: f32, expected: f64, tol: f64) {
     let diff = (actual as f64 - expected).abs();
@@ -36,17 +29,6 @@ fn assert_f32_close(label: &str, actual: f32, expected: f64, tol: f64) {
         expected,
         diff
     );
-}
-
-fn u16_to_bytes(vals: &[u16]) -> Vec<u8> {
-    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-}
-
-fn bytes_to_u16(bytes: &[u8]) -> Vec<u16> {
-    bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
-        .collect()
 }
 
 fn patterned_bytes(len: usize) -> Vec<u8> {

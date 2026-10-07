@@ -1013,7 +1013,7 @@ pub extern "C" fn molt_logging_handler_flush(handler_bits: u64) -> u64 {
                 return raise_exception::<u64>(_py, "ValueError", "invalid Handler handle");
             };
 
-            handler.buffer.drain(..).collect()
+            std::mem::take(&mut handler.buffer)
         };
         for msg in &messages {
             eprintln!("{msg}");
@@ -1720,7 +1720,7 @@ pub extern "C" fn molt_logging_shutdown() -> u64 {
             let messages: Vec<String> = {
                 let mut registry = logging_state().handler_registry.lock().unwrap();
                 if let Some(handler) = registry.get_mut(&h_id) {
-                    let msgs: Vec<String> = handler.buffer.drain(..).collect();
+                    let msgs = std::mem::take(&mut handler.buffer);
                     handler.closed = true;
                     msgs
                 } else {

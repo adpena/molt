@@ -1419,13 +1419,7 @@ pub extern "C" fn molt_inspect_getcoroutinestate(coro_bits: u64) -> u64 {
                 Ok(value) => value,
                 Err(err) => return err,
             }
-            .and_then(|bits| {
-                if obj_from_bits(bits).is_none() {
-                    None
-                } else {
-                    Some(bits)
-                }
-            })
+            .filter(|&bits| !obj_from_bits(bits).is_none())
         };
 
         let Some(frame_bits) = selected_frame else {

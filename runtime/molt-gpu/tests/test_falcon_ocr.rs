@@ -17,16 +17,9 @@ use molt_gpu::render::{
 };
 use molt_gpu::shapetracker::ShapeTracker;
 
-fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
-    vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-}
-
-fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-        .collect()
-}
+#[path = "support/le_bytes.rs"]
+mod le_bytes;
+use le_bytes::{bytes_to_f32, f32_to_bytes};
 
 /// Run a chain of ops on CPU using the interpreter.
 fn run_chain(ops: Vec<FusedOp>, bufs: Vec<BufferBinding>, input_bufs: Vec<Vec<u8>>) -> Vec<f32> {

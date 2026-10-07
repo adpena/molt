@@ -675,8 +675,8 @@ pub unsafe extern "C" fn molt_gpu_prim_read_data(
         let count = numel.min(out_len);
         let out = unsafe { std::slice::from_raw_parts_mut(out_ptr, count) };
 
-        for (i, chunk) in data[..count * 4].chunks_exact(4).enumerate() {
-            out[i] = f32::from_le_bytes(chunk.try_into().unwrap());
+        for (i, &chunk) in data[..count * 4].as_chunks::<4>().0.iter().enumerate() {
+            out[i] = f32::from_le_bytes(chunk);
         }
 
         count as u64
@@ -862,8 +862,10 @@ fn flat_usize_pairs(values: &[usize], ndim: usize) -> Option<Vec<(usize, usize)>
     }
     Some(
         values
-            .chunks_exact(2)
-            .map(|pair| (pair[0], pair[1]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&[first, second]| (first, second))
             .collect(),
     )
 }
@@ -1459,6 +1461,10 @@ pub extern "C" fn molt_gpu_prim_tensor_count() -> u64 {
     TENSOR_STORE.with(|store| store.borrow().iter().filter(|s| s.is_some()).count() as u64)
 }
 
+#[cfg(test)]
+#[path = "../tests/support/le_bytes.rs"]
+mod test_le_bytes;
+
 /// Regression for the "device reports METAL but `realize()` runs CPU" drift.
 ///
 /// Verifies the new Metal execution path is BIT-EXACT with the CPU interpreter
@@ -1467,20 +1473,11 @@ pub extern "C" fn molt_gpu_prim_tensor_count() -> u64 {
 /// device is present (headless CI), so it never produces a false failure.
 #[cfg(all(test, target_os = "macos", feature = "metal-backend"))]
 mod metal_realize_tests {
+    use super::test_le_bytes::{bytes_to_f32, f32_to_bytes};
     use super::*;
     use crate::device::cpu::interpret;
     use crate::ops::PrimitiveOp;
     use crate::render::{BufferAccess, BufferBinding, FusedOp, FusedSrc, ReductionDomain};
-
-    fn f32_to_bytes(vals: &[f32]) -> Vec<u8> {
-        vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-    }
-    fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
-        bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect()
-    }
 
     fn binary_kernel(op: PrimitiveOp, n: usize) -> FusedKernel {
         let st = || ShapeTracker::contiguous(&[n]);
@@ -1835,30 +1832,9 @@ mod metal_realize_tests {
 ///   reduce_sum(b)`) — the case the old `last_output`-only routing mis-handled.
 #[cfg(test)]
 mod cpu_realize_value_tests {
+    use super::test_le_bytes::{bytes_to_f32, bytes_to_i32, i32_to_bytes, u16_to_bytes};
     use super::*;
     use crate::render::{BufferAccess, BufferBinding, KernelBody};
-
-    fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
-        bytes
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect()
-    }
-
-    fn bytes_to_i32(bytes: &[u8]) -> Vec<i32> {
-        bytes
-            .chunks_exact(4)
-            .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
-            .collect()
-    }
-
-    fn i32_to_bytes(vals: &[i32]) -> Vec<u8> {
-        vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-    }
-
-    fn u16_to_bytes(vals: &[u16]) -> Vec<u8> {
-        vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-    }
 
     /// Schedule + specialize + fuse a tensor handle's DAG and run it through the
     /// CPU pipeline, returning the realized f32 values.

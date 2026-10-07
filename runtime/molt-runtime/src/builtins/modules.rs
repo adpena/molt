@@ -2492,7 +2492,7 @@ pub extern "C" fn molt_module_get_attr(module_bits: u64, attr_bits: u64) -> u64 
                 let mut present = false;
                 let order = dict_order(_dict_ptr);
                 let entries = order.len() / 2;
-                for pair in order.chunks_exact(2) {
+                for pair in order.as_chunks::<2>().0 {
                     if let Some(key_name) = string_obj_to_owned(obj_from_bits(pair[0]))
                         && key_name == attr_name
                     {
@@ -2825,7 +2825,7 @@ fn global_name_suggestion(py: &PyToken<'_>, dictionary: u64, name: &str) -> Opti
             return None;
         }
         let mut candidates = Vec::with_capacity(order.len() / 2);
-        for pair in order.chunks_exact(2) {
+        for pair in order.as_chunks::<2>().0 {
             let key = obj_from_bits(pair[0]).as_ptr()?;
             if object_type_id(key) != TYPE_ID_STRING {
                 return None;

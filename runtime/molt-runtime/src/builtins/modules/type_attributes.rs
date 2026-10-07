@@ -85,7 +85,9 @@ pub extern "C" fn molt_module_dir(module: u64) -> u64 {
             return result;
         }
         let keys: Vec<u64> = unsafe { dict_order(dict) }
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| pair[0])
             .collect();
         let list = alloc_list(py, &keys);

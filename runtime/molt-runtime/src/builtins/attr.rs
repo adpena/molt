@@ -2933,13 +2933,10 @@ pub(crate) unsafe fn object_method_ic_resolve<R>(
         );
         let getattribute_raw = class_attr_lookup_raw_mro(_py, class_ptr, getattribute_bits);
         if let Some(raw_bits) = getattribute_raw {
-            match crate::builtins::methods::object_method_bits(_py, "__getattribute__") {
-                Some(default_bits) => {
-                    if raw_bits != default_bits {
-                        return None;
-                    }
-                }
-                None => return None,
+            let default_bits =
+                crate::builtins::methods::object_method_bits(_py, "__getattribute__")?;
+            if raw_bits != default_bits {
+                return None;
             }
         }
 

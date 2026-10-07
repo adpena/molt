@@ -1,5 +1,7 @@
 use super::*;
-use crate::stdlib_module_symbols::{is_user_owned_symbol, original_partition_source};
+use crate::stdlib_module_symbols::{
+    is_user_owned_symbol, original_partition_source, partition_user_owned_functions,
+};
 
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::simple_backend) struct NativeBackendIrAnalysis {
@@ -543,25 +545,13 @@ pub(in crate::native_backend::simple_backend) fn prune_and_partition_native_stdl
     partition_sources: &BTreeMap<String, String>,
 ) -> (Vec<FunctionIR>, Vec<FunctionIR>) {
     eliminate_dead_functions_with_roots(ir, module_registry_roots);
-    let user_func_set: BTreeSet<String> = ir
-        .functions
-        .iter()
-        .filter(|f| {
-            is_user_owned_symbol(
-                original_partition_source(&f.name, partition_sources),
-                entry_module,
-                stdlib_module_symbols,
-            )
-        })
-        .map(|f| f.name.clone())
-        .collect();
-    let all_funcs: Vec<_> = ir.functions.drain(..).collect();
-    let (user_remaining, mut stdlib_funcs): (Vec<_>, Vec<_>) = all_funcs
-        .into_iter()
-        .partition(|f| user_func_set.contains(&f.name));
-    let mut seen: BTreeSet<String> = BTreeSet::new();
-    stdlib_funcs.retain(|f| seen.insert(f.name.clone()));
-    (user_remaining, stdlib_funcs)
+    partition_user_owned_functions(ir, |name| {
+        is_user_owned_symbol(
+            original_partition_source(name, partition_sources),
+            entry_module,
+            stdlib_module_symbols,
+        )
+    })
 }
 
 /// The names of the functions `externalize_shared_stdlib_partition` *will*

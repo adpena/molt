@@ -63,7 +63,7 @@ impl CargoTestArtifacts {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         loop {
             let sequence = NEXT
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                     value.checked_add(1)
                 })
                 .map_err(|_| io::Error::other("Cargo test artifact sequence exhausted"))?;

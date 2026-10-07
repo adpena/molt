@@ -1422,7 +1422,7 @@ unsafe fn hook_object_call_with_pos(
     } else {
         unsafe { std::slice::from_raw_parts(kw_order_ptr, kw_order_len) }
     };
-    for pair in kw_order.chunks_exact(2) {
+    for pair in kw_order.as_chunks::<2>().0 {
         let _ = unsafe { crate::molt_callargs_push_kw(builder_bits, pair[0], pair[1]) };
         if with_gil(|_py| crate::exception_pending(&_py)) {
             release_builder();
