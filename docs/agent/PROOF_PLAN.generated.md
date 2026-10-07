@@ -43,10 +43,10 @@ GitHub job budgets are validated against a deterministic worst-case DAG schedule
 | `python_unit` | pre-push, pr, main | yes | `github-matrix` | 20 min | 1200 s per cell | 0 s | `python-tests` | none | `python-unit` needs `classify-changes` | 10 |
 | `native_integration` | pr, main | yes | `github-job` | 25 min | 1500 s | 0 s | `compiler-build-resource` | none | `native-integration` needs `classify-changes` | 19 |
 | `rust` | pre-push, pr, main | yes | `github-job` | 240 min | 13920 s | 480 s | `compiler-build-resource` | none | `rust-build-unit-smoke` needs `classify-changes` | 17 |
-| `llvm` | pre-push, pr, main, nightly | yes | `github-job` | 75 min | 4200 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 25 |
-| `python_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
-| `rust_security` | pr, main, weekly | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
-| `formal` | pr, main, nightly | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
+| `llvm` | pre-push, pr, main, scheduled | yes | `github-job` | 75 min | 4200 s | 300 s | `compiler-build-resource` | none | `llvm-backend` needs `classify-changes` | 25 |
+| `python_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 4 |
+| `rust_security` | pr, main, scheduled | yes | `github-job` | 20 min | 900 s | 300 s | `network-audit` | none | `security-hardening` needs `classify-changes` | 5 |
+| `formal` | pr, main, scheduled | yes | `github-workflow` | 45 min | n/a | n/a | `formal-tools` | none | `formal-verification` needs `classify-changes` | 8 |
 | `platform_portability` | pr, main | yes | `github-matrix` | 180 min | 10800 s per cell | 0 s | `python-tests` | none | `platform-portability` needs `classify-changes` | 106 |
 
 ## Scheduled families
@@ -255,6 +255,7 @@ The wrapper conflict was reconfirmed by native CI run `30211145633` job `8981749
 | `linker.test.plan-authority` | `llvm` | `linux-x86_64-py312-linker-release-fast` | `explicit` | 120 s | `python-tests` | 1 |
 | `llvm.test.differential` | `llvm` | `linux-x86_64-py312-llvm-release-fast` | `suite` | 1800 s | `compiler-build-resource` | 1 |
 | `security.python.audit` | `python_security` | `linux-x86_64-py312-python-audit` | `explicit` | 900 s | `network-audit` | 0 |
+| `security.pin-freshness` | `python_security` | `linux-x86_64-py312-python-audit` | `explicit` | 300 s | `network-audit` | 0 |
 | `security.rust.deny` | `rust_security` | `linux-x86_64-rust-audit` | `explicit` | 450 s | `network-audit` | 0 |
 | `security.rust.audit` | `rust_security` | `linux-x86_64-rust-audit` | `explicit` | 450 s | `network-audit` | 1 |
 | `formal.lean.build` | `formal` | `linux-x86_64-formal-verification` | `explicit` | 900 s | `formal-tools` | 0 |

@@ -1657,14 +1657,16 @@ def test_hosted_workflow_heavy_commands_enter_memory_guard() -> None:
 
     assert "--run-family python_security --receipt" in security_text
     assert "--run-family rust_security --receipt" in security_text
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
-        "cargo install cargo-deny --version 0.20.2 --locked"
-    ) in security_text
-    assert (
-        "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
-        "cargo install cargo-audit --version 0.22.2 --locked"
-    ) in security_text
+    policies = {
+        policy["name"]: policy["setup_value"]
+        for policy in tomllib.loads(_read("tools/proof_plan.toml"))["toolchain_policy"]
+        if "setup_value" in policy
+    }
+    for tool in ("cargo-deny", "cargo-audit"):
+        assert (
+            "python3 tools/guarded_exec.py --prefix MOLT_TEST_SUITE -- "
+            f"cargo install {tool} --version {policies[tool]} --locked"
+        ) in security_text
     assert "run: uv run pip-audit --ignore-vuln CVE-2025-69872" not in security_text
     assert "run: cargo deny check" not in security_text
     assert "          cargo install cargo-deny --locked" not in security_text

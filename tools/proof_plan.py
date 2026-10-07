@@ -841,6 +841,13 @@ class ProofPlan:
             errors.append("at least one [[ci_family]] is required")
         if len(names) != len(set(names)):
             errors.append("ci_family names must be unique")
+        for family in (*self.families, *self.scheduled_families):
+            tiers = family.data.get("tiers")
+            if not isinstance(tiers, list) or not set(tiers) <= set(PROOF_TIERS):
+                errors.append(
+                    f"{family.name}: tiers {tiers!r} must come from "
+                    f"{list(PROOF_TIERS)!r}"
+                )
         for family in self.families:
             if not family.name:
                 errors.append("ci_family.name must be non-empty")
@@ -1000,9 +1007,10 @@ class ProofPlan:
                     f"{family.data.get('resource_class')!r}"
                 )
             tiers = family.data.get("tiers")
-            if tiers != ["nightly"]:
+            if tiers != [SCHEDULED_TIER]:
                 errors.append(
-                    f"{family.name}: scheduled family tiers must be ['nightly']"
+                    f"{family.name}: scheduled family tiers must be "
+                    f"[{SCHEDULED_TIER!r}]"
                 )
             timeout_minutes = family.data.get("timeout_minutes")
             if not isinstance(timeout_minutes, int) or timeout_minutes <= 0:
@@ -1342,6 +1350,24 @@ class ProofPlan:
         for family, count in commands_by_family.items():
             if count == 0:
                 errors.append(f"{family}: selected family has no executable commands")
+        # Every tier a family claims gates at least one of its commands in each
+        # matrix cell; otherwise that event would run an empty, green job.
+        for name, family_data in execution_families.items():
+            members = [command for command in self.commands if command.family == name]
+            cells = (
+                sorted({str(command.data.get("cell")) for command in members})
+                if family_data.get("executor") == "github-matrix"
+                else [None]
+            )
+            for tier in family_data.get("tiers") or ():
+                for cell in cells:
+                    if not any(
+                        tier in (command.data.get("tiers") or ())
+                        and (cell is None or command.data.get("cell") == cell)
+                        for command in members
+                    ):
+                        where = "" if cell is None else f" in matrix cell {cell!r}"
+                        errors.append(f"{name}: tier {tier!r} gates no command{where}")
         for family in self.scheduled_families:
             outputs = tuple(
                 output
@@ -1808,9 +1834,14 @@ def _event_payload(path: str) -> dict[str, Any]:
 
 
 # Each command's `tiers` names the CI events it gates. A pull request runs the
-# fast `pr` tier; pushes to main and the merge queue run `main`; the scheduled
-# workflow runs `nightly`. Dependencies always run with their dependents.
+# fast `pr` tier; pushes to main and the merge queue run `main`; every
+# scheduled workflow runs `scheduled`, whatever its cron cadence. `pre-push` is
+# selected explicitly. A scheduled family always runs its scheduled tier, so a
+# manual dispatch of a scheduled workflow proves what the schedule proves.
+# Dependencies always run with their dependents.
 PROOF_TIER_ENV = "MOLT_PROOF_TIER"
+SCHEDULED_TIER = "scheduled"
+PROOF_TIERS = ("pre-push", "pr", "main", SCHEDULED_TIER)
 _EVENT_TIERS = {
     "pull_request": "pr",
     "pull_request_target": "pr",
@@ -1818,7 +1849,7 @@ _EVENT_TIERS = {
     "merge_group": "main",
     "workflow_dispatch": "main",
     "workflow_call": "main",
-    "schedule": "nightly",
+    "schedule": SCHEDULED_TIER,
 }
 
 
@@ -1827,6 +1858,10 @@ def active_tier(environ: Mapping[str, str] | None = None) -> str | None:
     source = os.environ if environ is None else environ
     explicit = source.get(PROOF_TIER_ENV, "").strip()
     if explicit:
+        if explicit not in PROOF_TIERS:
+            raise ValueError(
+                f"{PROOF_TIER_ENV}={explicit!r} is not one of {list(PROOF_TIERS)!r}"
+            )
         return explicit
     return _EVENT_TIERS.get(source.get("GITHUB_EVENT_NAME", "").strip())
 
@@ -2234,8 +2269,17 @@ def _topological_commands(
         if not members:
             suffix = "" if matrix_cell is None else f" in matrix cell {matrix_cell!r}"
             raise ValueError(f"unknown or empty proof family {family!r}{suffix}")
+        if tier is not None and family in {
+            scheduled.name for scheduled in plan.scheduled_families
+        }:
+            tier = SCHEDULED_TIER
         # Tier filtering selects roots only; their dependencies still run.
         roots = {member for member in members if _command_in_tier(by_id[member], tier)}
+        if not roots:
+            suffix = "" if matrix_cell is None else f" in matrix cell {matrix_cell!r}"
+            raise ValueError(
+                f"proof family {family!r} has no commands in tier {tier!r}{suffix}"
+            )
     elif command_id is not None:
         if command_id not in by_id:
             raise ValueError(f"unknown proof command {command_id!r}")

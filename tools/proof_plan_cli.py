@@ -81,6 +81,7 @@ def main(api: ModuleType, argv: list[str] | None = None) -> int:
     parser.add_argument("--run-family")
     parser.add_argument(
         "--tier",
+        choices=api.PROOF_TIERS,
         help="gate only commands in this tier (default: from GITHUB_EVENT_NAME "
         "or MOLT_PROOF_TIER; unset runs every tier)",
     )
@@ -93,7 +94,11 @@ def main(api: ModuleType, argv: list[str] | None = None) -> int:
     parser.add_argument("--before", default="")
     parser.add_argument("--after", default=os.environ.get("GITHUB_SHA", ""))
     args = parser.parse_args(argv)
-    tier = args.tier or api.active_tier()
+    try:
+        tier = args.tier or api.active_tier()
+    except ValueError as exc:
+        print(f"proof-plan: {exc}", file=sys.stderr)
+        return 2
 
     try:
         plan = api.ProofPlan.load(args.manifest)
