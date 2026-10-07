@@ -122,21 +122,23 @@ as generated programs; a pass on one host cannot establish the whole matrix.
 - **Parallelism**: auto-selected based on CPU and available memory (default budget: 2 GB/worker).
   - Override with `--jobs <n>` or `MOLT_DIFF_MAX_JOBS=<n>`.
   - Tune memory budget with `MOLT_DIFF_MEM_PER_JOB_GB=<n>` or `MOLT_DIFF_MEMORY_AVAILABLE_GB=<n>`.
-- **Memory guard**: enabled by default with adaptive per-process,
-  per-test-tree, global RSS, and a direct-child `RLIMIT_RSS` backstop. Configure
-  deliberate investigation caps with `MOLT_DIFF_MAX_PROCESS_RSS_GB`,
-  `MOLT_DIFF_MAX_TOTAL_RSS_GB`, `MOLT_DIFF_MAX_GLOBAL_RSS_GB`, or
-  `MOLT_DIFF_CHILD_RLIMIT_GB`. Test execution is not allowed to bypass memory
-  custody; direct pytest sessions re-exec through `tools/memory_guard.py` before
-  collection, and differential/conformance/regrtest harnesses keep their RSS
-  guards active by policy. The child limit never constrains virtual-address
-  reservations through `RLIMIT_AS` or `RLIMIT_DATA`; recursive RSS polling
-  remains authoritative. The lineage tracker keeps
-  reparented/session-changing descendants inside RSS accounting, while teardown
-  stays scoped to the guarded root process group plus exact escaped descendant
-  PIDs; repo sentinels must exclude ancestor and Claude/Codex/control-plane
-  process groups from kill sets even when those groups contain repo-looking
-  children.
+- **Development memory supervision**: repository pytest entry points and
+  differential/conformance/regrtest harnesses use the developer guard before
+  collection or execution. Configure requested process/tree budgets with
+  `MOLT_DIFF_MAX_PROCESS_RSS_GB` and `MOLT_DIFF_MAX_TOTAL_RSS_GB`;
+  `MOLT_DIFF_MAX_GLOBAL_RSS_GB` and `MOLT_DIFF_CHILD_RLIMIT_GB` are guard
+  configuration, not proof of an aggregate host cap or portable hard RSS limit.
+  Sampling, an attempted direct-child `RLIMIT_RSS`, actual platform enforcement
+  and generation-owned cleanup have different scopes. Missing samples or census
+  rows cannot establish closure. Process groups, numeric PIDs and invocation
+  text do not grant custody over escaped or reparented descendants; preserve
+  unrelated processes and the host control plane. The actual platform receipt
+  and independent failure/cleanup controls must qualify each cell before it
+  counts as release evidence. These obligations remain open under
+  [V1-12](../../../agent/V1_HANDOFF_FINDINGS.md); see the
+  [proof queue contract](../../../agent/PROOF_QUEUE.md). This supervision belongs
+  to development and proof tooling; runtime deployment limits are a separate
+  [resource contract](../../../RESOURCE_CONTROLS.md).
 - **OOM retry**: OOM failures are retried once with `--jobs 1` (disable via `--no-retry-oom` or `MOLT_DIFF_RETRY_OOM=0`).
 - **Warm cache**: `--warm-cache` or `MOLT_DIFF_WARM_CACHE=1` prebuilds all tests to seed `MOLT_CACHE`.
 - **Failure queue**: failed tests are written to `MOLT_DIFF_ROOT/failures.txt` (override with `--failures-output` or `MOLT_DIFF_FAILURES`).
