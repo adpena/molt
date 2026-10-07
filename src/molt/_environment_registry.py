@@ -15,7 +15,7 @@ _REGISTRY_JSON = r"""{
       "owner": "tools/harness_memory_guard.py",
       "root_fallback": "MOLT_CHILD_RLIMIT_GB",
       "suffix": "_CHILD_RLIMIT_GB",
-      "summary": "Direct-child RLIMIT_RSS backstop in GB for the scope; default is the live per-process budget capped by the tree and global budgets; 0 disables only this kernel layer.",
+      "summary": "Guard-scope direct-child RLIMIT_RSS request in GiB; the default follows the live process budget capped by tree/global budgets, and zero disables this optional kernel layer without disabling sampled RSS checks. Separately, the root MOLT_CHILD_RLIMIT_GB is read by Linux runtime child startup: a positive resolved value tightens the budget derived from raw-integer MOLT_RESOURCE_MAX_MEMORY (including headroom), or supplies the budget when absent; zero skips this explicit RLIMIT_DATA installation. Human-readable parent memory values do not enter that numeric derivation. A selected runtime child cap that cannot be installed fails child startup; inherited OS limits remain separate.",
       "values": []
     },
     {
@@ -5160,7 +5160,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_ALLOCATIONS",
       "owner": "src/molt/capability_manifest.py",
-      "summary": "Maximum number of tracked object allocations for the runtime resource tracker (a positive integer); the capability manifest emits it from resources.max_allocations, the runtime rejects zero or non-integer values at startup, and spawned children inherit the tighter of parent and child values; unset means no cap.",
+      "summary": "Positive live-allocation-count limit configured on each LimitedTracker; emitted from resources.max_allocations. Runtime init rejects empty, zero or non-integer values. Only selected allocation hooks account usage, and independent thread-local trackers do not provide an aggregate cap. Numeric child environment values are min-merged with the parent. Unset leaves this count unlimited; whole-runtime enforcement remains V1-19 work (docs/RESOURCE_CONTROLS.md).",
       "values": []
     },
     {
@@ -5169,16 +5169,16 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_DURATION_MS",
       "owner": "src/molt/capability_manifest.py",
-      "summary": "Maximum wall-clock run time in milliseconds for the runtime resource tracker (a positive integer); the capability manifest emits it from resources.max_duration, the runtime rejects zero or non-integer values at startup, and spawned children inherit the tighter of parent and child values; unset means no cap.",
+      "summary": "Positive elapsed-time limit in milliseconds configured on each LimitedTracker; emitted from resources.max_duration. Runtime init rejects empty, zero or non-integer values, and numeric child environment values are min-merged with the parent. Unset leaves duration unlimited. No production consumers of the tracker time-check method are present in the inspected runtime; this setting does not establish execution-time enforcement (docs/RESOURCE_CONTROLS.md).",
       "values": []
     },
     {
       "audience": "user",
       "default": "",
-      "kind": "int",
+      "kind": "string",
       "name": "MOLT_RESOURCE_MAX_MEMORY",
       "owner": "src/molt/capability_manifest.py",
-      "summary": "Maximum tracked heap memory in bytes for the runtime resource tracker (a positive integer); the capability manifest emits it from resources.max_memory, MOLT_MEMORY_LIMIT overrides it with a human-readable size, Unix child spawns derive a pre-exec memory rlimit from it, and spawned children inherit the tighter of parent and child values; unset means no cap.",
+      "summary": "Memory limit configured on each LimitedTracker; accepts positive raw bytes or a human-readable size such as 64M or 1.5GiB directly, with base-1024 units. The manifest emits raw bytes from resources.max_memory; malformed or non-positive values abort runtime init. Only raw-integer parent values participate in child environment min-merge and the numeric Linux child-budget derivation. Native Linux init attempts an optional RLIMIT_DATA backstop; lookup or installation failure does not establish protection. Selected hooks and independent thread-local usage do not provide a whole-runtime or aggregate cap. Unset leaves tracker memory unlimited (docs/RESOURCE_CONTROLS.md).",
       "values": []
     },
     {
@@ -5187,7 +5187,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_OPERATION_RESULT",
       "owner": "runtime/molt-runtime/src/object/ops_sys.rs",
-      "summary": "Combined cap in bytes on the result size of one pow, repeat, shift, or string operation checked by the runtime resource tracker (a positive integer); the runtime parses it at startup and spawned children inherit the tighter of parent and child values; the capability manifest does not emit it; unset means no combined cap.",
+      "summary": "Positive combined result-size fallback in bytes for LimitedTracker operation checks; runtime init parses it, but the capability manifest does not emit it. Numeric child environment values are min-merged with the parent. Each unset per-operation cap uses this value, or 10 MiB when it is absent; UnlimitedTracker performs no operation checks. No production consumers of the tracker operation-check method are present in the inspected runtime, so this configuration is not builtin enforcement (docs/RESOURCE_CONTROLS.md).",
       "values": []
     },
     {
@@ -5196,7 +5196,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_POW_RESULT",
       "owner": "src/molt/capability_manifest.py",
-      "summary": "Cap in bytes on the result size of integer pow for the runtime resource tracker (a positive integer); the capability manifest emits it from resources.operation_limits.max_pow_result, and spawned children inherit the tighter of parent and child values; unset means no cap.",
+      "summary": "Positive byte cap configured for LimitedTracker integer-power estimates; emitted from resources.operation_limits.max_pow_result. Runtime init rejects empty, zero or non-integer values, and numeric child environment values are min-merged with the parent. Unset falls back to MOLT_RESOURCE_MAX_OPERATION_RESULT or 10 MiB when LimitedTracker is installed. The tracker operation-check method has no production runtime consumers; this setting does not enforce a builtin power limit (docs/RESOURCE_CONTROLS.md).",
       "values": []
     },
     {
@@ -5205,7 +5205,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_RECURSION_DEPTH",
       "owner": "src/molt/capability_manifest.py",
-      "summary": "Maximum call recursion depth for the runtime resource tracker (a positive integer); the capability manifest emits it from resources.max_recursion_depth, the runtime rejects zero or non-integer values at startup, and spawned children inherit the tighter of parent and child values; unset means no cap.",
+      "summary": "Positive recursion-depth limit configured on each LimitedTracker; emitted from resources.max_recursion_depth. Runtime init rejects empty, zero or non-integer values, and numeric child environment values are min-merged with the parent. Unset leaves tracker recursion unlimited. No production consumers of the tracker recursion-check method are present in the inspected runtime; frame enforcement and catchable RecursionError behavior remain unqualified (docs/RESOURCE_CONTROLS.md).",
       "values": []
     },
     {
@@ -5214,7 +5214,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_REPEAT_RESULT",
       "owner": "src/molt/capability_manifest.py",
-      "summary": "Cap in bytes on the result size of sequence repeat for the runtime resource tracker (a positive integer); the capability manifest emits it from resources.operation_limits.max_repeat_result, and spawned children inherit the tighter of parent and child values; unset means no cap.",
+      "summary": "Positive byte cap configured for LimitedTracker repetition estimates; emitted from resources.operation_limits.max_repeat_result. Runtime init rejects empty, zero or non-integer values, and numeric child environment values are min-merged with the parent. Unset falls back to MOLT_RESOURCE_MAX_OPERATION_RESULT or 10 MiB when LimitedTracker is installed. The tracker operation-check method has no production runtime consumers; this setting does not enforce a builtin repetition limit (docs/RESOURCE_CONTROLS.md).",
       "values": []
     },
     {
@@ -5223,7 +5223,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_SHIFT_RESULT",
       "owner": "src/molt/capability_manifest.py",
-      "summary": "Pre-emptive cap in bytes on the result of an integer left shift or multiplication; a positive integer, read by the capability manifest (ManifestError otherwise) and by runtime init (abort on empty, zero, or non-integer values); unset means no cap, and a spawned child inherits the tighter of its own and the parent's value.",
+      "summary": "Positive byte cap configured for LimitedTracker integer left-shift and multiplication estimates; emitted from resources.operation_limits.max_shift_result. Runtime init rejects empty, zero or non-integer values, and numeric child environment values are min-merged with the parent. Unset falls back to MOLT_RESOURCE_MAX_OPERATION_RESULT or 10 MiB when LimitedTracker is installed. The tracker operation-check method has no production runtime consumers; standalone arithmetic guards are separate and do not establish enforcement of this setting (docs/RESOURCE_CONTROLS.md).",
       "values": []
     },
     {
@@ -5232,7 +5232,7 @@ _REGISTRY_JSON = r"""{
       "kind": "int",
       "name": "MOLT_RESOURCE_MAX_STRING_RESULT",
       "owner": "src/molt/capability_manifest.py",
-      "summary": "Pre-emptive cap in bytes on the result of a string replace operation; a positive integer, read by the capability manifest (ManifestError otherwise) and by runtime init (abort on empty, zero, or non-integer values); unset means no cap, and a spawned child inherits the tighter of its own and the parent's value.",
+      "summary": "Positive byte cap configured for LimitedTracker string-replacement estimates; emitted from resources.operation_limits.max_string_result. Runtime init rejects empty, zero or non-integer values, and numeric child environment values are min-merged with the parent. Unset falls back to MOLT_RESOURCE_MAX_OPERATION_RESULT or 10 MiB when LimitedTracker is installed. The tracker operation-check method has no production runtime consumers; this setting does not enforce a builtin string-result limit (docs/RESOURCE_CONTROLS.md).",
       "values": []
     },
     {
