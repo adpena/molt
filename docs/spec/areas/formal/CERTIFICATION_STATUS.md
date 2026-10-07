@@ -418,8 +418,8 @@ The formalization achieves genuine results within its scope:
 6. **Lean type system extension (P2):** Add Union, Box/DynBox, Func, Never to match
    the Rust type system. Without this, type-driven passes cannot be meaningfully proven.
 
-7. **Lean upgrade (P3):** Complete the upgrade to Lean 4.28 to use `bv_decide` for
-   the NaN-boxing BitVec proofs in `NanBoxBV.lean`. See `LEAN_UPGRADE_PLAN.md`.
+7. **`bv_decide` proofs (P3):** Lean 4.34.1 is pinned and provides `bv_decide`; use it
+   for the NaN-boxing BitVec proofs in `NanBoxBV.lean`. See `LEAN_UPGRADE_PLAN.md`.
 
 8. **Intrinsic axiom reduction (P4):** Some of the 61 intrinsic axioms are provable
    if the runtime builtins are given concrete definitions in the model (e.g.,
