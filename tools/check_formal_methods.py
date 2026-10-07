@@ -179,11 +179,12 @@ def check_lean_build(*, skip_build: bool = False) -> CheckResult:
         if elan_lake.exists():
             lake = str(elan_lake)
         else:
+            # Fail closed: a missing prover is not a passing proof.
             return CheckResult(
                 "Lean build",
-                True,
-                f"SKIPPED (lake not found; install elan). Stats: {stats}",
-                ["lake not installed -- Lean build check skipped"],
+                False,
+                "lake not found: install elan, which provisions the toolchain "
+                f"formal/lean/lean-toolchain pins. Stats: {stats}",
             )
 
     print("  Running: lake build (formal/lean/) ...")
@@ -242,12 +243,13 @@ def check_quint_models() -> list[CheckResult]:
 
     quint = shutil.which("quint")
     if quint is None:
+        # Fail closed: unchecked models are not passing models.
         results.append(
             CheckResult(
                 "Quint models",
-                True,
-                "SKIPPED (quint not found; install via: npm install -g @informalsystems/quint)",
-                ["quint not installed -- Quint model checks skipped"],
+                False,
+                "quint not found: install the version .github/workflows/formal.yml "
+                "pins (MOLT_QUINT_NPM_PACKAGE) with npm",
             )
         )
         return results
@@ -326,9 +328,8 @@ def check_known_bad_model() -> CheckResult:
     if quint is None:
         return CheckResult(
             "Known-bad meta-test",
-            True,
-            "SKIPPED (quint not installed)",
-            ["quint not installed -- meta-test skipped"],
+            False,
+            "quint not found: the known-bad meta-test needs the pinned quint",
         )
 
     model_path = QUINT_DIR / KNOWN_BAD_MODEL
