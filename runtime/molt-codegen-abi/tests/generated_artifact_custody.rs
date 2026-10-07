@@ -33,9 +33,9 @@ fn generated_outputs_retain_distinct_cargo_owned_inputs_and_images_after_test_sc
 #[test]
 fn generated_output_labels_cannot_escape_the_owned_directory() {
     for label in ["", ".", "..", "../escape", "..\\escape", "a/b", "a:b"] {
-        let error = cargo_test_artifacts::CargoTestArtifacts::new(label)
-            .err()
-            .expect("invalid label rejected");
+        let Err(error) = cargo_test_artifacts::CargoTestArtifacts::new(label) else {
+            panic!("invalid label rejected");
+        };
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
     }
 }

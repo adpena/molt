@@ -3713,7 +3713,7 @@ def test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody(
     )
     (repo / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
     (repo / "rust-toolchain.toml").write_text(
-        '[toolchain]\nchannel = "1.96.1"\n', encoding="utf-8"
+        f'[toolchain]\nchannel = "{_RUST_CHANNEL}"\n', encoding="utf-8"
     )
     run_custody_subject_process(
         ["cargo", "generate-lockfile", "--offline"], cwd=repo, check=True
