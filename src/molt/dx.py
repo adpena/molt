@@ -53,6 +53,16 @@ CANONICAL_ROOT_ENV_KEYS = (
     "TMP",
     "TEMP",
 )
+# Scratch roots derive from molt.custody_layout.scratch_root, which keeps them
+# out of the checkout. Project configuration must not restate them.
+SCRATCH_ENV_KEYS = (
+    "MOLT_DIFF_ROOT",
+    "MOLT_DIFF_TMPDIR",
+    "PYTHONPYCACHEPREFIX",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+)
 CANONICAL_RUN_ENV_KEYS = (
     *CANONICAL_ROOT_ENV_KEYS,
     "CARGO_INCREMENTAL",
@@ -1782,6 +1792,12 @@ class DxProject:
             for key, raw_value in env_cfg.items():
                 if not isinstance(key, str) or not isinstance(raw_value, str):
                     continue
+                if key in SCRATCH_ENV_KEYS:
+                    raise DxConfigError(
+                        f"[tool.molt.dx.env] must not set {key}: scratch roots are "
+                        "derived by molt.custody_layout.scratch_root, which keeps "
+                        "them out of the checkout. Remove the entry."
+                    )
                 if key in CANONICAL_RUN_ENV_KEYS and env.get(key):
                     continue
                 value = raw_value.format(

@@ -736,10 +736,7 @@ prefer_external_artifacts = true
 [tool.molt.dx.env]
 MOLT_EXT_ROOT = "{artifact_root}"
 MOLT_CACHE = "{artifact_root}/.molt_cache"
-MOLT_DIFF_ROOT = "{artifact_root}/tmp/diff"
-MOLT_DIFF_TMPDIR = "{artifact_root}/tmp"
 UV_CACHE_DIR = "{artifact_root}/.uv-cache"
-TMPDIR = "{artifact_root}/tmp"
 PYTHONPATH = "{root}/src"
 """.lstrip(),
         encoding="utf-8",
@@ -760,6 +757,33 @@ PYTHONPATH = "{root}/src"
     assert env["CARGO_TARGET_DIR"] == str(resolved_root / "target")
     assert env["MOLT_CACHE"] == str(resolved_root / ".molt_cache")
     assert env["PYTHONPATH"] == str(project_root / "src")
+
+
+@pytest.mark.parametrize("key", ["TMPDIR", "MOLT_DIFF_ROOT", "PYTHONPYCACHEPREFIX"])
+def test_dx_project_rejects_templated_scratch_roots(tmp_path: Path, key: str) -> None:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    (project_root / "pyproject.toml").write_text(
+        f'[tool.molt.dx.env]\n{key} = "{{artifact_root}}/tmp"\n', encoding="utf-8"
+    )
+    with pytest.raises(dx.DxConfigError, match=f"must not set {key}: scratch roots"):
+        DxProject(project_root).canonical_env({"PATH": "/usr/bin"}, create_dirs=False)
+
+
+def test_dx_project_scratch_stays_out_of_an_in_checkout_artifact_root() -> None:
+    root = DxProject.from_current_repo().root
+    env = DxProject(root).canonical_env(
+        {"PATH": "/usr/bin", "MOLT_EXT_ROOT": str(root)}, create_dirs=False
+    )
+    scratch = custody_layout.scratch_root(root, root)
+    assert not scratch.is_relative_to(root)
+    # Every scratch key agrees with the one layout authority.
+    assert {key: env[key] for key in ("TMPDIR", "MOLT_DIFF_TMPDIR")} == {
+        "TMPDIR": str(scratch),
+        "MOLT_DIFF_TMPDIR": str(scratch),
+    }
+    assert env["MOLT_DIFF_ROOT"] == str(scratch / "diff")
+    assert env["PYTHONPYCACHEPREFIX"] == str(scratch / "pycache")
 
 
 def test_dx_project_dx_env_uses_same_key_authority(tmp_path: Path) -> None:

@@ -15,6 +15,7 @@ import pytest
 import molt.cli as cli
 from molt.capability_manifest import CapabilityManifest, resolve_runtime_policy_from_env
 from molt.cli import backend_binary as cli_backend_binary
+from molt.cli import native_toolchain
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
 from molt.cli.native_link_plan import resolve_native_target_spec
@@ -1640,7 +1641,7 @@ def test_ensure_backend_binary_preserves_repo_local_shared_stdlib_cache(
     monkeypatch.setattr(
         cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint
     )
-    monkeypatch.setattr(cli_backend_binary, "_codesign_binary", lambda _path: None)
+    monkeypatch.setattr(native_toolchain, "_codesign_binary", lambda _path: None)
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", fake_run_cargo)
     monkeypatch.setattr(
         cli_backend_binary,
