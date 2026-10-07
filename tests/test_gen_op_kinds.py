@@ -7565,7 +7565,7 @@ def test_fuzz_and_primitive_effect_shapes_cannot_override_operand_authority() ->
         primitive_effect_cases(bad)
 
 
-def test_serialized_ellipsis_is_registered_without_broad_runtime_admission():
+def test_serialized_singletons_are_registered_without_broad_runtime_admission():
     import tomllib
     from tools.op_kinds.frontend_validate import _simpleir_registered_runtime_kinds
     from tools.op_kinds.render_rust import _render_rs_unformatted
@@ -7576,6 +7576,7 @@ def test_serialized_ellipsis_is_registered_without_broad_runtime_admission():
     neutral = {
         "const_ellipsis",
         "const_not_implemented",
+        "missing",
         "binding_alias",
         "identity_alias",
     }

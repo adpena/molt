@@ -432,7 +432,7 @@ simpleir_deterministic_lifetime_semantics_kinds = [
 # runtime service; identity observation, mutable objects and Python finalizers
 # continue to require their independent runtime capabilities.
 simpleir_runtime_neutral_semantics_kinds = [
-    "const_ellipsis", "const_not_implemented", "binding_alias", "identity_alias",
+    "const_ellipsis", "const_not_implemented", "missing", "binding_alias", "identity_alias",
     "drop_inserted", "exception_region_drops_inserted",
 ]
 # Internal execution-frame state used to preserve source-location and unwind
