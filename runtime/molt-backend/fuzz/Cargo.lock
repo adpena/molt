@@ -505,6 +505,7 @@ dependencies = [
  "molt-backend-native",
  "molt-backend-wasm",
  "molt-ir",
+ "molt-passes",
  "molt-tir",
  "molt-wasm-facts",
  "object",
@@ -542,6 +543,8 @@ dependencies = [
  "molt-tir",
  "rayon",
  "serde",
+ "serde_json",
+ "target-lexicon",
 ]
 
 [[package]]

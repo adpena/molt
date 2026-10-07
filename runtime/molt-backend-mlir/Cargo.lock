@@ -617,6 +617,7 @@ dependencies = [
  "molt-artifact-publish",
  "molt-backend-native",
  "molt-ir",
+ "molt-passes",
  "molt-tir",
  "object",
  "rmp-serde",

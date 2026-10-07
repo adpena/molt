@@ -326,7 +326,7 @@
     "tests/tools/test_win_job_contract.py",
     "tests/tools/test_windows_process_api.py"
   ],
-  "authority_sha256": "b68dad1917c80b836619aabe31a11d7784e3d6d3dee5967ef94dfced7bb3a895",
+  "authority_sha256": "329cd8552c024332662df77190eed7d8535ef5f4446da20d0f093ba090c3ce35",
   "cargo_environment_policy": {
     "incident_command": "cargo metadata --locked --format-version 1",
     "incident_commit": "20b046b79bd4ca64a8c859f737f6e330377bcc4e",
@@ -4179,6 +4179,34 @@
     },
     {
       "argv": [
+        "uv",
+        "run",
+        "--frozen",
+        "python3",
+        "tools/check_cargo_locks.py"
+      ],
+      "cache_domain": "cargo-workspace",
+      "cell": "linux-x86_64-rust-native-dev",
+      "dependencies": [],
+      "family": "rust",
+      "id": "rust.cargo-locks",
+      "resource_class": "compiler-build-resource",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_budget": "cross-check",
+      "timeout_seconds": 240,
+      "toolchains": [
+        "python",
+        "uv",
+        "rustc",
+        "cargo"
+      ]
+    },
+    {
+      "argv": [
         "cargo",
         "check",
         "--locked",
@@ -5135,10 +5163,10 @@
       "rust": {
         "budget_seconds": 14400,
         "critical_path_seconds": 11400,
-        "headroom_seconds": 480,
-        "projected_makespan_seconds": 13920,
+        "headroom_seconds": 240,
+        "projected_makespan_seconds": 14160,
         "resource_capacity_floor_seconds": {
-          "compiler-build-resource": 13920
+          "compiler-build-resource": 14160
         }
       },
       "rust_security": {
