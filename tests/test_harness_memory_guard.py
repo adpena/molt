@@ -516,7 +516,7 @@ def test_limits_from_env_canonicalizes_implausible_overrides(monkeypatch) -> Non
 
 
 def test_limits_from_env_honors_explicit_child_rlimit_above_rss_budget(
-    monkeypatch,
+    monkeypatch, generous_host_memory
 ) -> None:
     monkeypatch.setenv("MOLT_WASM_TEST_MAX_PROCESS_RSS_GB", "3")
     monkeypatch.setenv("MOLT_WASM_TEST_MAX_TOTAL_RSS_GB", "4")

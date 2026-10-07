@@ -614,6 +614,9 @@ def test_prepare_backend_cache_setup_threads_capability_config_to_stdlib_key(
         module_graph_metadata=module_graph_metadata,
         target_python=cli._DEFAULT_TARGET_PYTHON_VERSION,
         stdlib_profile="micro",
+        # The key under test is the capability config's; a fixed compiler
+        # identity keeps the test off the host's Rust toolchain.
+        backend_compiler_fingerprint="test-compiler",
     )
 
     setup_base = cli_backend_cache_setup._prepare_backend_cache_setup(
