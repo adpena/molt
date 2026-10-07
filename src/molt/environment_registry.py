@@ -24,7 +24,7 @@ import difflib
 import functools
 import os
 import sys
-from typing import TextIO
+from typing import Any, TextIO
 
 AUDIENCES: tuple[str, ...] = ("user", "developer", "ci", "internal")
 KINDS: tuple[str, ...] = (
@@ -214,7 +214,8 @@ def _tuple_of_str(value: object, *, context: str) -> tuple[str, ...]:
     return tuple(value)
 
 
-def _str(row: Mapping[str, object], key: str, *, context: str) -> str:
+def _str(row: Mapping[str, object], key: str, *, context: object) -> str:
+    """Read one required string field; `context` names the row in errors."""
     value = row.get(key)
     if not isinstance(value, str):
         raise EnvironmentRegistryError(f"{context}: field {key!r} must be a string")
@@ -320,7 +321,8 @@ def _rows(payload: Mapping[str, object], key: str) -> list[Mapping[str, object]]
     return rows
 
 
-def _trusted_registry(payload: Mapping[str, object]) -> EnvironmentRegistry:
+def _trusted_registry(payload: Mapping[str, Any]) -> EnvironmentRegistry:
+    """Build the registry from the generated projection, validated at generation."""
     rows = payload["variables"]
     return EnvironmentRegistry(
         variables=tuple(
@@ -333,12 +335,12 @@ def _trusted_registry(payload: Mapping[str, object]) -> EnvironmentRegistry:
                 r["owner"],
                 r["summary"],
             )
-            for r in rows  # type: ignore[union-attr]
+            for r in rows
         ),
         stems=tuple(
             EnvironmentStem(r["name"], r["owner"], r["summary"])
             for r in payload["stems"]
-        ),  # type: ignore[union-attr]
+        ),
         families=tuple(
             EnvironmentFamily(
                 r["suffix"],
@@ -350,13 +352,13 @@ def _trusted_registry(payload: Mapping[str, object]) -> EnvironmentRegistry:
                 r["owner"],
                 r["summary"],
             )
-            for r in payload["families"]  # type: ignore[union-attr]
+            for r in payload["families"]
         ),
         prefix_families=tuple(
             EnvironmentPrefixFamily(
                 r["prefix"], r["audience"], r["kind"], r["owner"], r["summary"]
             )
-            for r in payload["prefix_families"]  # type: ignore[union-attr]
+            for r in payload["prefix_families"]
         ),
         retired=tuple(
             RetiredVariable(
@@ -366,11 +368,11 @@ def _trusted_registry(payload: Mapping[str, object]) -> EnvironmentRegistry:
                 r["note"],
                 tuple(r["rejected_by"]),
             )
-            for r in payload["retired"]  # type: ignore[union-attr]
+            for r in payload["retired"]
         ),
         retired_suffixes=tuple(
             RetiredSuffix(r["suffix"], r["replacement_suffix"], r["retired"])
-            for r in payload["retired_suffixes"]  # type: ignore[union-attr]
+            for r in payload["retired_suffixes"]
         ),
     )
 
