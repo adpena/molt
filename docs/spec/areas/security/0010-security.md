@@ -1,30 +1,40 @@
 # Molt Security Model
 
-## 1. Threat Model
-Molt is designed for:
-- **Untrusted Input**: Fast processing of network data with memory safety (Rust runtime).
-- **Untrusted Code (WASM)**: Running third-party packages in a sandbox.
-- **Supply Chain**: Protecting the build pipeline from malicious dependencies.
+## Contract and verification scope
 
-## 2. Sandboxing
-- **WASM Isolation**: Packages compiled to WASM cannot access memory outside their linear memory space.
-- **Capability-based Security**: Every capability (File, Network, Time) must be explicitly granted in the application manifest.
-- **Maximum built-in tier**: explicit `--trusted` resolves the finite generated `full` tier; it does not disable checks or grant unknown/future capabilities.
-- **Runtime Guards**: Even in native code, Molt inserts bounds checks for all collection accesses (unless proven safe by the compiler).
+[`docs/SECURITY.md`](../../../SECURITY.md) describes the current security
+boundaries. Security acceptance applies to the declared target, backend, profile,
+Python version and host configuration in the
+[release acceptance matrix](../../../../config/release_acceptance_matrix.toml).
+Implemented checks, headers and configured audit commands do not establish a
+passing release cell.
 
-## 3. Supply Chain Security
-- **Lockfile Enforcement**: `molt build` requires a frozen `uv.lock`.
-- **Package Verification**: All Molt Packages are verified against a checksum.
-- **SBOM Generation**: Mandatory for all production builds.
+## Required authorities
 
-## 4. Memory Safety
-- **Rust Spine**: The runtime is written in safe Rust. `unsafe` is used sparingly and only for performance-critical object manipulation, subject to strict audit.
-- **No C-Extensions**: Eliminating the largest source of memory unsafety in the Python ecosystem.
+- [Capability policy](../../../CAPABILITIES.md) owns grants, denial, effects and
+  native/WASM host boundaries. Filesystem confinement belongs to the selected
+  mount or host adapter. Foreign code and callbacks retain their process or host
+  authority.
+- [Resource controls](../../../RESOURCE_CONTROLS.md) owns configuration and
+  tracker limitations. Complete aggregate runtime enforcement remains V1-19
+  release work; developer RSS guards do not enforce an emitted guest budget.
+- [The extension ABI contract](../compat/contracts/libmolt_extension_abi_contract.md)
+  owns stable C API declarations and the bounded CPython source facade.
+  Extension admission requires actual compilation, link, execution and lifecycle
+  evidence for its claimed coordinate.
+- [Packaging](../../../../packaging/PACKAGING.md) and
+  [toolchain custody](../tooling/0001-toolchains.md) own immutable inputs,
+  provenance, reproducibility and artifact trust. Checksums provide integrity
+  within their declared coverage; release authentication requires the trust
+  policy and validated signatures.
 
-## 5. Operational security checks (implementation)
-- Enforce lockfiles (`uv sync --frozen`) in build pipelines; `molt build` fails
-  when `pyproject.toml` is present but `uv.lock` is missing.
-- Verify package checksums for all Molt Packages.
-- Require explicit capability manifests (`molt.toml` or `pyproject.toml`) for I/O, time, and randomness.
-- Deny ambient FS/network access by default for WASM modules and FFI boundaries.
-- Run security scans (e.g., `cargo audit`) for release builds where available.
+## Verification obligations
+
+The [sanitizer workflow](../../../../.github/workflows/sanitizers.yml) owns the
+configured ASan and Miri lanes, including their explicit limitations. The
+[proof plan](../../../agent/PROOF_PLAN.generated.md) selects dependency and audit
+checks. Unsafe Rust, FFI, generated code, allocation rollback and capability
+boundaries require tests at their real consumers. CPython differential tests
+prove the exercised semantic behavior; sanitizers, Miri, fuzzing and dependency
+audits provide their own scoped evidence. Unsupported, failed and unexecuted
+cells remain explicit in the [release findings](../../../agent/V1_HANDOFF_FINDINGS.md).
