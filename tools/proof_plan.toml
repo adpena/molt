@@ -1437,6 +1437,48 @@ argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", 
 toolchains = ["python", "uv", "rustc", "cargo"]
 
 [[command]]
+id = "portability.cargo-link.linux"
+family = "platform_portability"
+cell = "linux-x86_64-py312-queue-portability"
+# Main already runs this real Cargo fixture in the complete queue suite.
+# PRs prove the changed pinned-toolchain boundary without repeating that suite.
+tiers = ["pr"]
+resource_class = "python-tests"
+timeout_seconds = 120
+cache_domain = "pytest"
+dependencies = []
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "portability.cargo-link.macos"
+family = "platform_portability"
+cell = "macos-arm64-py312-queue-portability"
+# Main already runs this real Cargo fixture in the complete queue suite.
+# PRs prove the changed pinned-toolchain boundary without repeating that suite.
+tiers = ["pr"]
+resource_class = "python-tests"
+timeout_seconds = 120
+cache_domain = "pytest"
+dependencies = []
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
+id = "portability.cargo-link.windows"
+family = "platform_portability"
+cell = "windows-x86_64-py312-queue-portability"
+# Main already runs this real Cargo fixture in the complete queue suite.
+# PRs prove the changed pinned-toolchain boundary without repeating that suite.
+tiers = ["pr"]
+resource_class = "python-tests"
+timeout_seconds = 120
+cache_domain = "pytest"
+dependencies = []
+argv = ["uv", "run", "--active", "--project", ".", "--no-sync", "python", "-u", "-m", "pytest", "-v", "tests/tools/test_proof_queue.py::test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody"]
+toolchains = ["python", "uv", "rustc", "cargo"]
+
+[[command]]
 id = "portability.ir.macos"
 family = "platform_portability"
 cell = "macos-arm64-py312-queue-portability"
@@ -2512,13 +2554,13 @@ tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
 timeout_budget = "integration"
 cache_domain = "cargo-workspace"
-dependencies = ["rust.test.ir-wasm-runtime-authorities"]
+dependencies = []
 # Correctness-only host build: cold dependency optimization dominated the proof
 # window. Keep generated-program optimization unchanged; measure total build and
 # test time separately from optimized-host compiler performance.
 # Retain Cargo unit timings in the run-owned target for critical-path profiling;
 # process-custody event sequence numbers are not wall-clock timestamps.
-# Pass and WASM libtests are owned by the prerequisite, not repeated here.
+# Pass and WASM libtests belong to their own partition, not repeated here.
 argv = ["cargo", "test", "--locked", "--timings", "--profile", "dev-fast", "--config", "profile.dev-fast.package.cranelift-codegen.opt-level=0", "--no-fail-fast", "--lib", "--bins", "--test", "generated_artifact_custody", "--test", "ir_contract_validation", "-p", "molt-artifact-publish", "-p", "molt-codegen-abi", "-p", "molt-ir", "-p", "molt-tir", "-p", "molt-backend", "-p", "molt-backend-native", "-p", "molt-backend-luau", "-p", "molt-backend-rust", "--no-default-features", "--features", "molt-backend/native-backend,molt-backend/wasm-backend,molt-backend/luau-backend,molt-backend/rust-backend", "--", "--include-ignored", "--skip", "arith_codegen_golden_capture", "--nocapture", "--test-threads=1"]
 toolchains = ["cargo", "lune", "node", "wasm-ld"]
 
@@ -2530,7 +2572,7 @@ tiers = ["pre-push", "pr", "main"]
 resource_class = "compiler-build-resource"
 timeout_budget = "integration"
 cache_domain = "cargo-workspace"
-dependencies = ["rust.test.default-truth"]
+dependencies = []
 # IR/pass and WASM consumer repair plus runtime ownership acceptance do not
 # require native code generation. Keep the captured Node/WASM linker closure;
 # the full compiler-authorities command separately owns native/Rust/Luau proofs.
@@ -2554,7 +2596,7 @@ resource_class = "compiler-build-resource"
 # 9000-second command envelope. Linux cold timing remains unmeasured.
 timeout_budget = "shipping"
 cache_domain = "cargo-workspace"
-dependencies = ["rust.test.ir-wasm-runtime-authorities"]
+dependencies = []
 # Full default-feature shipping runtime: parallel remainder plus seven separate
 # fresh-process lifecycle/GIL witnesses. Four performance probes remain explicit
 # unrun entries; no missing child or incomplete result accounting can pass.

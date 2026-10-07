@@ -348,7 +348,7 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
 
     assert test_packages(core) == {"molt-passes", "molt-backend-wasm", "molt-runtime"}
     assert not test_packages(core) & test_packages(complement)
-    assert core.id in complement.data["dependencies"]
+    assert core.dependencies == complement.dependencies == ()
     assert set(core.toolchains) == {"cargo", "node", "wasm-ld"}
     assert "--lib" in core.argv
     assert [
@@ -393,7 +393,7 @@ def test_shipping_runtime_gate_requires_full_parallel_and_fresh_child_accounting
     assert shipping.family == core.family
     assert shipping.data["cell"] == "linux-x86_64-rust-native-release-output"
     assert shipping.data["tiers"] == core.data["tiers"]
-    assert shipping.data["dependencies"] == [core.id]
+    assert shipping.dependencies == ()
     assert shipping.data["timeout_budget"] == "shipping"
     assert shipping.data["timeout_seconds"] == 9000
     assert shipping.data["resource_class"] == core.data["resource_class"]
@@ -1678,10 +1678,12 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
     assert {entry["cell"]: entry["command_ids"] for entry in matrix} == {
         "linux-x86_64-py312-queue-portability": [
             "portability.queue.linux",
+            "portability.cargo-link.linux",
             "portability.cargo-custody.linux",
         ],
         "macos-arm64-py312-queue-portability": [
             "portability.queue.macos",
+            "portability.cargo-link.macos",
             "portability.ir.macos",
             "portability.cargo-custody.macos",
         ],
@@ -1694,6 +1696,7 @@ def test_generated_platform_matrix_is_runner_executable_and_cell_exact() -> None
         ],
         "windows-x86_64-py312-queue-portability": [
             "portability.queue.windows",
+            "portability.cargo-link.windows",
             "portability.ir.windows",
             "portability.cargo-custody.windows",
         ],
@@ -2488,6 +2491,94 @@ def test_executor_partition_failure_preserves_independent_work_and_blocks_depend
     assert receipt["execution"]["global_stop_triggered"] is False
     assert receipt["execution"]["cancelled_commands"] == 0
     assert receipt["execution"]["skipped_commands"] == 2
+
+
+def test_actual_rust_roots_continue_after_failure_without_overlapping_capacity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Exercise the declared Rust DAG with finite real guarded child bodies."""
+    expected = [
+        "rust.test.default-truth",
+        "rust.test.compiler-authorities",
+        "rust.test.ir-wasm-runtime-authorities",
+        "rust.test.runtime-cold-lifecycle",
+    ]
+    declared = tuple(command for command in PLAN.commands if command.id in expected)
+    assert [command.id for command in declared] == expected
+    marker = tmp_path / "events.jsonl"
+    lease = tmp_path / "active-child"
+    body = tmp_path / "finite-rust-partition.py"
+    body.write_text(
+        "import json, os, pathlib, sys, time\n"
+        "marker, lease = map(pathlib.Path, sys.argv[1:3])\n"
+        "identity = sys.argv[3]\n"
+        "fd = os.open(lease, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)\n"
+        "def record(event):\n"
+        "    with marker.open('a', encoding='utf-8') as output:\n"
+        "        output.write(json.dumps([event, identity]) + '\\n')\n"
+        "try:\n"
+        "    record('start')\n"
+        "    time.sleep(0.03)\n"
+        "    record('finish')\n"
+        "finally:\n"
+        "    os.close(fd)\n"
+        "    lease.unlink()\n"
+        "raise SystemExit(7 if identity == 'rust.test.default-truth' else 0)\n",
+        encoding="utf-8",
+    )
+    commands = tuple(
+        replace(
+            command,
+            data={
+                **command.data,
+                "argv": [
+                    sys.executable,
+                    str(body),
+                    str(marker),
+                    str(lease),
+                    command.id,
+                ],
+                "toolchains": ["python"],
+                "timeout_seconds": 30,
+            },
+        )
+        for command in declared
+    )
+    # Preserve actual declaration dependencies, executor fanout and capacity.
+    # Source/toolchain admission is supplied by this unit fixture; execution and
+    # failure classification still use the real executor, guard and children.
+    plan = replace(PLAN, commands=commands)
+    monkeypatch.setattr(proof_plan, "_source_tree_state", lambda: "clean")
+    monkeypatch.setattr(
+        proof_plan,
+        "toolchain_fingerprints",
+        lambda _plan, _names: {"python": {"identity_sha256": "0" * 64}},
+    )
+    receipt_path = tmp_path / "receipt.json"
+    assert proof_plan.execute_commands(plan, commands, receipt_path) == 7
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["status"] == "failure"
+    # The receipt's successful-partition inventory intentionally omits failures.
+    assert receipt["executed_partitions"] == expected[1:]
+    assert [record["id"] for record in receipt["commands"]] == expected
+    assert receipt["execution"]["scheduled_commands"] == len(expected)
+    assert receipt["execution"]["completed_commands"] == len(expected)
+    assert [record["status"] for record in receipt["commands"]] == [
+        "failure",
+        "success",
+        "success",
+        "success",
+    ]
+    assert receipt["commands"][0]["failure_scope"] == "partition"
+    assert receipt["execution"]["global_stop_triggered"] is False
+    assert receipt["execution"]["peak_active_commands"] == 1
+    assert (
+        receipt["execution"]["peak_active_by_resource"]["compiler-build-resource"] == 1
+    )
+    assert [json.loads(line) for line in marker.read_text().splitlines()] == [
+        [event, identity] for identity in expected for event in ("start", "finish")
+    ]
+    assert not lease.exists()
 
 
 def test_executor_does_not_convert_control_plane_interrupts_into_records(
@@ -3333,6 +3424,29 @@ def test_pull_requests_skip_main_only_commands_but_keep_their_dependencies() -> 
         for command_id in entry["command_ids"]
     }
     assert "portability.queue.linux" in main_ids - pr_ids
+    # The complete main queue owns the fixture once; PRs exercise the real
+    # compiler/toolchain custody boundary directly before any main landing.
+    selector = (
+        "tests/tools/test_proof_queue.py::"
+        "test_real_minimal_cargo_link_has_one_selection_per_unit_and_compact_custody"
+    )
+    cells = {
+        "linux": "linux-x86_64-py312-queue-portability",
+        "macos": "macos-arm64-py312-queue-portability",
+        "windows": "windows-x86_64-py312-queue-portability",
+    }
+    for host, cell in cells.items():
+        command_id = f"portability.cargo-link.{host}"
+        assert command_id in pr_ids - main_ids
+        command = next(c for c in PLAN.commands if c.id == command_id)
+        assert command.data["cell"] == cell
+        assert selector in command.data["argv"]
+        assert command.data["timeout_seconds"] == 120
+        assert {"python", "uv", "rustc", "cargo"} <= set(command.toolchains)
+        main_command = next(
+            c for c in PLAN.commands if c.id == f"portability.queue.{host}"
+        )
+        assert main_command.data["argv"].count("tests/tools/test_proof_queue.py") == 1
     for family in {command.family for command in PLAN.commands}:
         ran = proof_plan._topological_commands(PLAN, family=family, tier="pr")
         ran_ids = {command.id for command in ran}
